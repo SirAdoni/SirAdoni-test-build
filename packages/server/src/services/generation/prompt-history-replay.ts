@@ -7,7 +7,9 @@ export interface PromptHistoryReplayScope {
   scope: string;
 }
 
-export const PROMPT_HISTORY_REPLAY_SCOPE_VERSION = 1 as const;
+// Any change to the canonical message boundary invalidates persisted replay
+// descriptors instead of risking reuse against a differently scoped prompt.
+export const PROMPT_HISTORY_REPLAY_SCOPE_VERSION = 2 as const;
 
 export interface PromptHistoryReplayDescriptor {
   descriptorVersion: 1;
@@ -39,7 +41,84 @@ export interface PromptHistoryReplayResult {
 }
 
 export const PROMPT_HISTORY_REPLAY_TAIL_PREAMBLE =
-  "The following context applies to this turn. In later turns, use the newest turn context; earlier context describes the state at that earlier turn.";
+  "The following context applies to the following user turn. The newest snapshot replaces prior snapshots, including fields now absent. Prior snapshots describe only prior turns. The standing instruction hierarchy remains unchanged.";
+
+const SNAPSHOT_MARKER = "marinaraPromptHistoryReplaySnapshot";
+const RUNTIME_MARKER = "marinaraRuntimeContext";
+const PREAMBLE_MARKER = "marinaraPromptHistoryReplayPreamble";
+
+function isReplaySnapshot(message: ChatMessage): boolean {
+  return (
+    message.role === "system" &&
+    message.contextKind === "injection" &&
+    message.providerMetadata?.[SNAPSHOT_MARKER] === true &&
+    message.providerMetadata?.[RUNTIME_MARKER] === true
+  );
+}
+
+function isReplayPreamble(message: ChatMessage): boolean {
+  return (
+    message.role === "system" &&
+    message.content === PROMPT_HISTORY_REPLAY_TAIL_PREAMBLE &&
+    message.contextKind === "injection" &&
+    message.providerMetadata?.[PREAMBLE_MARKER] === true &&
+    message.providerMetadata?.[RUNTIME_MARKER] === true
+  );
+}
+
+/**
+ * Seed the producer-owned boundary before the first current-turn injection.
+ * The marker is deliberately narrow: arbitrary system text cannot become
+ * archived replay state merely by resembling a runtime snapshot.
+ */
+export function seedPromptHistoryReplaySnapshot(messages: readonly ChatMessage[]): ChatMessage[] {
+  const historyIndexes = messages
+    .map((message, index) => (message.contextKind === "history" ? index : -1))
+    .filter((index) => index >= 0);
+  const currentUserIndex = historyIndexes.at(-1);
+  const previousHistoryIndex = historyIndexes.at(-2);
+  if (
+    currentUserIndex === undefined ||
+    previousHistoryIndex === undefined ||
+    currentUserIndex !== messages.length - 1 ||
+    messages[currentUserIndex]?.role !== "user"
+  )
+    return [...messages];
+  const mutableTail = messages.slice(previousHistoryIndex + 1, currentUserIndex);
+  if (
+    mutableTail.some((message) => message.role === "system" && !isReplayPreamble(message) && !isReplaySnapshot(message))
+  )
+    return [...messages];
+  const firstInjection = messages.findIndex(
+    (message, index) => index > previousHistoryIndex && index < currentUserIndex && message.contextKind === "injection",
+  );
+  if (firstInjection < 0) return [...messages];
+  const preambleIndex = messages.findIndex(
+    (message, index) => index > previousHistoryIndex && index < currentUserIndex && isReplayPreamble(message),
+  );
+  if (preambleIndex === firstInjection) return [...messages];
+  const preamble: ChatMessage = {
+    role: "system",
+    content: PROMPT_HISTORY_REPLAY_TAIL_PREAMBLE,
+    contextKind: "injection",
+    // Keep the preamble at the same provider priority and cache boundary as
+    // the snapshot it scopes; otherwise adjacent-message merging can erase it.
+    providerMetadata: { [PREAMBLE_MARKER]: true, [RUNTIME_MARKER]: true },
+  };
+  return [...messages.slice(0, firstInjection), preamble, ...messages.slice(firstInjection)];
+}
+
+function validReplaySystemLayout(messages: readonly ChatMessage[], tailStart: number): boolean {
+  const tail = messages.slice(tailStart);
+  const firstInjection = tail.findIndex((message) => message.contextKind === "injection");
+  if (firstInjection < 0 || !isReplayPreamble(tail[firstInjection]!)) return false;
+  for (const message of tail) {
+    if (isReplayPreamble(message)) continue;
+    if (isReplaySnapshot(message)) continue;
+    if (message.role === "system") return false;
+  }
+  return true;
+}
 
 /** Retained state adds input: only opt in after a measured large partial cache hit. */
 export function shouldReplayPromptHistory(input: {
@@ -150,7 +229,7 @@ export function createPromptHistoryReplayDescriptor(
   if (
     previousHistoryIndex >= tailStart ||
     tailStart >= messages.length - 1 ||
-    messages.slice(tailStart).some((m) => m.role === "system") ||
+    !validReplaySystemLayout(messages, tailStart) ||
     !messages.slice(tailStart, -1).some((m) => m.contextKind === "injection") ||
     !messages.every(isTextOnly) ||
     !messages.some((message) => message.providerMetadata?.marinaraFullLoreContext === true)
@@ -205,7 +284,13 @@ function appendableTail(messages: readonly ChatMessage[], tailStart: number): Ch
   const tail = messages.slice(tailStart + 1);
   const current = messages.at(-1);
   if (!current || current.role !== "user" || current.contextKind !== "history") return null;
-  if (tail.length < 2 || tail.some((message) => message.role === "system" || message.role === "tool")) return null;
+  if (
+    tail.length < 2 ||
+    tail.some((message) => message.role === "tool") ||
+    tail.some((message) => message.role === "system" && !isReplayPreamble(message) && !isReplaySnapshot(message)) ||
+    !tail.some(isReplayPreamble)
+  )
+    return null;
   if (!tail.some((message) => message.role === "assistant" && message.contextKind === "history")) return null;
   return [...tail];
 }
@@ -245,17 +330,10 @@ export function tryReplayPromptHistory(options: PromptHistoryReplayOptions): Pro
 
   const tail = appendableTail(currentMessages, previousDescriptor.tailStart);
   if (!tail) return null;
-  const mutableTailIndex = tail.findIndex((message) => message.contextKind === "injection");
-  if (mutableTailIndex < 0) return null;
-
   const currentChars = canonicalCharCount(currentMessages);
-  const preamble: ChatMessage = {
-    role: "user",
-    content: PROMPT_HISTORY_REPLAY_TAIL_PREAMBLE,
-    contextKind: "injection",
-  };
-  const annotatedTail = [...tail.slice(0, mutableTailIndex), preamble, ...tail.slice(mutableTailIndex)];
-  const prompt = [...previousPrompt, ...annotatedTail];
+  // Persist the descriptor from canonical messages while replaying the exact
+  // expanded prompt separately; this keeps the next turn's prefix index valid.
+  const prompt = [...previousPrompt, ...tail];
   const expandedChars = canonicalCharCount(prompt);
   const extraLimit = Math.min(500_000, Math.floor(currentChars * 0.5));
   if (expandedChars - currentChars > extraLimit) return null;

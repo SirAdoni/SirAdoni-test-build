@@ -1,21 +1,135 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
+import * as ts from "typescript";
 import {
   isPromptHistoryReplayEligible,
   matchesPromptHistoryReplaySourceGuard,
 } from "../../packages/server/src/routes/generate.routes.js";
 import {
   createPromptHistoryReplayDescriptor,
+  seedPromptHistoryReplaySnapshot,
   tryReplayPromptHistory,
   type PromptHistoryReplayScope,
 } from "../../packages/server/src/services/generation/prompt-history-replay.js";
 import type { ChatMessage } from "../../packages/server/src/services/llm/base-provider.js";
+
+const generateRoutePath = fileURLToPath(
+  new URL("../../packages/server/src/routes/generate.routes.ts", import.meta.url),
+);
+const generateRouteSource = fs.readFileSync(generateRoutePath, "utf8");
+const generateRouteAst = ts.createSourceFile(
+  generateRoutePath,
+  generateRouteSource,
+  ts.ScriptTarget.Latest,
+  true,
+  ts.ScriptKind.TS,
+);
+const replayToolCountInitializers: string[] = [];
+function collectReplayEligibilityCalls(node: ts.Node): void {
+  if (ts.isCallExpression(node) && node.expression.getText(generateRouteAst) === "isPromptHistoryReplayEligible") {
+    const options = node.arguments[0];
+    if (options && ts.isObjectLiteralExpression(options)) {
+      const toolCount = options.properties.find(
+        (property): property is ts.PropertyAssignment =>
+          ts.isPropertyAssignment(property) && property.name.getText(generateRouteAst) === "toolCount",
+      );
+      if (toolCount) replayToolCountInitializers.push(toolCount.initializer.getText(generateRouteAst));
+    }
+  }
+  ts.forEachChild(node, collectReplayEligibilityCalls);
+}
+collectReplayEligibilityCalls(generateRouteAst);
+assert.ok(
+  replayToolCountInitializers.length > 0,
+  "route must pass a production tool-count expression to replay eligibility",
+);
+// Source checks cover caller wiring that a helper-only fixture cannot prove.
+assert.ok(
+  generateRouteSource.includes("tools: gameToolConnection ? undefined : responderToolDefs"),
+  "route must omit responder tools when a separate game-tool connection owns tool calls",
+);
+const seedIndex = generateRouteSource.indexOf("seedPromptHistoryReplaySnapshot(canonicalProviderMessages)");
+const fitIndex = generateRouteSource.lastIndexOf("await fitPromptForSend(", seedIndex);
+const initialDescriptorIndex = generateRouteSource.indexOf(
+  "createPromptHistoryReplayDescriptor(\n              initialProviderMessages,",
+);
+const finalDescriptorIndex = generateRouteSource.indexOf(
+  "createPromptHistoryReplayDescriptor(\n                    canonicalProviderMessages,\n                    finalPromptSent,",
+);
+assert.ok(
+  fitIndex >= 0 && fitIndex < seedIndex && seedIndex < initialDescriptorIndex,
+  "eligible canonical messages are seeded inside fitting before descriptor creation",
+);
+assert.ok(finalDescriptorIndex > fitIndex, "final replay persistence recomputes from the seeded canonical messages");
 
 const scope: PromptHistoryReplayScope = {
   provider: "openai_chatgpt",
   model: "gpt-5.6",
   scope: "chat:conn:chars:gm:v1",
 };
+
+function evaluateProductionToolCount(
+  initializer: string,
+  gameToolConnection: unknown,
+  responderToolDefs: unknown[] | undefined,
+): number {
+  const transpiled = ts.transpileModule(`return (${initializer});`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  return Function(
+    "gameToolConnection",
+    "responderToolDefs",
+    transpiled,
+  )(gameToolConnection, responderToolDefs) as number;
+}
+
+function runEligibility(toolCount: number): boolean {
+  return isPromptHistoryReplayEligible({
+    chatMode: "game",
+    usesIndividualGroupGeneration: false,
+    provider: scope.provider,
+    followUpIteration: 0,
+    currentTurnUserMessageId: "current",
+    userMessage: "Next turn",
+    toolCount,
+  });
+}
+
+for (const initializer of replayToolCountInitializers) {
+  for (const scenario of [
+    {
+      name: "separate game-tool connection",
+      connection: { id: "game-tools" },
+      responderToolDefs: [{ name: "responder" }],
+      expectedCount: 0,
+      expectedEligible: true,
+    },
+    {
+      name: "inline responder tools",
+      connection: null,
+      responderToolDefs: [{ name: "responder" }],
+      expectedCount: 1,
+      expectedEligible: false,
+    },
+    {
+      name: "no responder tools",
+      connection: null,
+      responderToolDefs: undefined,
+      expectedCount: 0,
+      expectedEligible: true,
+    },
+  ]) {
+    const actualCount = evaluateProductionToolCount(initializer, scenario.connection, scenario.responderToolDefs);
+    assert.equal(actualCount, scenario.expectedCount, `${scenario.name}: production tool-count expression`);
+    assert.equal(
+      runEligibility(actualCount),
+      scenario.expectedEligible,
+      `${scenario.name}: real replay eligibility gate`,
+    );
+  }
+}
 const lore: ChatMessage = {
   role: "system",
   content: "Stable lore. ".repeat(100),
@@ -131,8 +245,22 @@ assert.equal(
 );
 assert.equal(matchesPromptHistoryReplaySourceGuard(nextSource, sourceDescriptor, "wrong-user"), false);
 
-const canonical = [lore, oldUser, oldAssistant, { ...turnInjection, content: "Previous turn state" }, currentUser];
-const nextCanonical = [lore, oldUser, oldAssistant, currentUser, response, turnInjection, nextUser];
+const canonical = seedPromptHistoryReplaySnapshot([
+  lore,
+  oldUser,
+  oldAssistant,
+  { ...turnInjection, content: "Previous turn state" },
+  currentUser,
+]);
+const nextCanonical = seedPromptHistoryReplaySnapshot([
+  lore,
+  oldUser,
+  oldAssistant,
+  currentUser,
+  response,
+  turnInjection,
+  nextUser,
+]);
 const previousPromptDescriptor = createPromptHistoryReplayDescriptor(canonical, canonical, scope);
 assert.ok(previousPromptDescriptor);
 const replay = tryReplayPromptHistory({
@@ -150,13 +278,13 @@ assert.equal(
 
 const persistedDescriptor = createPromptHistoryReplayDescriptor(nextCanonical, replay.prompt, scope);
 assert.ok(persistedDescriptor);
-const thirdCanonical: ChatMessage[] = [
+const thirdCanonical: ChatMessage[] = seedPromptHistoryReplaySnapshot([
   ...nextCanonical.slice(0, 5),
   nextUser,
   { role: "assistant", content: "Second response", contextKind: "history" },
   { ...turnInjection, content: "Third turn state" },
   { role: "user", content: "Third turn", contextKind: "history" },
-];
+]);
 assert.ok(
   tryReplayPromptHistory({
     currentMessages: thirdCanonical,
@@ -174,6 +302,22 @@ assert.equal(
     scope: { ...scope, scope: "different-connection" },
   }),
   null,
+);
+
+const mixedSystemTail: ChatMessage[] = [
+  lore,
+  oldUser,
+  oldAssistant,
+  currentUser,
+  response,
+  { role: "system", content: "trusted-looking runtime snapshot", contextKind: "injection" },
+  { ...turnInjection, role: "user", content: "latest user snapshot" },
+  nextUser,
+];
+assert.equal(
+  createPromptHistoryReplayDescriptor(mixedSystemTail, mixedSystemTail, scope),
+  null,
+  "unmarked system snapshots, including mixed system/user tails, must remain fail-closed",
 );
 
 const cachedPrompt = replay.prompt.map((message) => ({

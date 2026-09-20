@@ -889,7 +889,13 @@ export async function injectGameGmPromptRuntime(args: {
         role: "system",
         content: dynamicGmPrompt,
         contextKind: "injection",
-        providerMetadata: { marinaraRuntimeContext: true, marinaraGmDynamic: true },
+        // This is an app-owned, per-turn snapshot. The replay helper requires
+        // both this trust marker and the runtime boundary before archiving it.
+        providerMetadata: {
+          marinaraRuntimeContext: true,
+          marinaraGmDynamic: true,
+          marinaraPromptHistoryReplaySnapshot: true,
+        },
       });
     }
     for (const referenceGmPrompt of referenceGmPrompts) {

@@ -717,6 +717,7 @@ import {
 import { isPromptCacheBoundary } from "../services/prompt/merger.js";
 import {
   createPromptHistoryReplayDescriptor,
+  seedPromptHistoryReplaySnapshot,
   shouldReplayPromptHistory,
   tryReplayPromptHistory,
   type PromptHistoryReplayDescriptor,
@@ -4850,8 +4851,10 @@ export async function generateRoutes(app: FastifyInstance) {
         }
 
         if (!isGameOocTurn) {
-          finalMessages = markNewRuntimeContextMessages(finalMessages, (messages) =>
-            injectOwnerSpatialPrompt(messages, ownerSpatialProjection),
+          finalMessages = markNewRuntimeContextMessages(
+            finalMessages,
+            (messages) => injectOwnerSpatialPrompt(messages, ownerSpatialProjection),
+            true,
           );
         }
 
@@ -7456,8 +7459,10 @@ export async function generateRoutes(app: FastifyInstance) {
               wrapFormat,
             );
           }
-          const spatiallyScopedMessagesForGen = markNewRuntimeContextMessages(targetScopedMessagesForGen, (messages) =>
-            injectOwnerSpatialPrompt(messages, ownerSpatialProjection),
+          const spatiallyScopedMessagesForGen = markNewRuntimeContextMessages(
+            targetScopedMessagesForGen,
+            (messages) => injectOwnerSpatialPrompt(messages, ownerSpatialProjection),
+            true,
           );
           const responderMacroContext = targetCharId
             ? {
@@ -7523,6 +7528,9 @@ export async function generateRoutes(app: FastifyInstance) {
                   marinaraRuntimeContext: true,
                   marinaraGameContinuity: true,
                   marinaraGmDynamic: true,
+                  // Continuity is producer-owned per-turn state; mark it so
+                  // replay can trust it without admitting arbitrary systems.
+                  marinaraPromptHistoryReplaySnapshot: true,
                   continuity: continuity.metadata,
                 },
               });
@@ -7844,7 +7852,7 @@ export async function generateRoutes(app: FastifyInstance) {
             return fit.messages;
           };
 
-          const canonicalProviderMessages =
+          let canonicalProviderMessages =
             advancedPreparedProviderMessages ??
             prepareProviderMessages(
               await fitPromptForSend(
@@ -7855,8 +7863,6 @@ export async function generateRoutes(app: FastifyInstance) {
                 ),
               ),
             );
-          let initialProviderMessages = canonicalProviderMessages;
-
           const promptHistoryReplayEligible =
             supportsFullLorebookContext(conn.provider) &&
             isPromptHistoryReplayEligible({
@@ -7870,8 +7876,19 @@ export async function generateRoutes(app: FastifyInstance) {
               autonomous: input.autonomous,
               currentTurnUserMessageId,
               userMessage: input.userMessage,
-              toolCount: toolDefs?.length ?? 0,
+              // Eligibility must reflect the narrator wire, which carries no
+              // responder tools when the separate game-tool connection owns them.
+              toolCount: gameToolConnection ? 0 : (responderToolDefs?.length ?? 0),
             });
+
+          if (promptHistoryReplayEligible) {
+            // Seed before fitting and descriptor creation so the archived
+            // canonical prefix scopes the first snapshot consistently.
+            canonicalProviderMessages = await fitPromptForSend(
+              seedPromptHistoryReplaySnapshot(canonicalProviderMessages),
+            );
+          }
+          let initialProviderMessages = canonicalProviderMessages;
 
           const promptHistoryReplayScope = {
             provider: conn.provider,

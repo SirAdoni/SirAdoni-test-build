@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import {
   createPromptHistoryReplayDescriptor,
+  PROMPT_HISTORY_REPLAY_TAIL_PREAMBLE,
+  seedPromptHistoryReplaySnapshot,
   shouldReplayPromptHistory,
   tryReplayPromptHistory,
   type PromptHistoryReplayScope,
@@ -19,7 +21,7 @@ assert.equal(shouldReplayPromptHistory({ promptTokens: 300000, cachedTokens: 300
 const scope: PromptHistoryReplayScope = { provider: "openai_chatgpt", model: "gpt-5.6-sol", scope: "chat-1" };
 const lore: ChatMessage = {
   role: "system",
-  content: `Stable canon ${"x".repeat(500)}`,
+  content: `Stable canon ${"x".repeat(2000)}`,
   contextKind: "prompt",
   providerMetadata: { marinaraFullLoreContext: true },
 };
@@ -31,8 +33,8 @@ const historyUserC: ChatMessage = { role: "user", content: "Question C", context
 const stateOld: ChatMessage = { role: "user", content: "STATE_OLD", contextKind: "injection" };
 const stateNew: ChatMessage = { role: "user", content: "STATE_NEW", contextKind: "injection" };
 
-const oldCanonical = [lore, historyUserA, historyAssistantA, stateOld, historyUserB];
-const currentCanonical = [
+const oldCanonical = seedPromptHistoryReplaySnapshot([lore, historyUserA, historyAssistantA, stateOld, historyUserB]);
+const currentCanonical = seedPromptHistoryReplaySnapshot([
   lore,
   historyUserA,
   historyAssistantA,
@@ -40,7 +42,7 @@ const currentCanonical = [
   historyAssistantB,
   stateNew,
   historyUserC,
-];
+]);
 const descriptor = createPromptHistoryReplayDescriptor(oldCanonical, oldCanonical, scope);
 assert.ok(descriptor);
 const originalCurrent = structuredClone(currentCanonical);
@@ -56,24 +58,19 @@ assert.ok(replay);
 assert.deepEqual(replay.prompt.slice(0, oldCanonical.length), oldCanonical);
 assert.deepEqual(
   replay.prompt.slice(oldCanonical.length).map((m) => m.content),
-  [
-    "Answer B",
-    "The following context applies to this turn. In later turns, use the newest turn context; earlier context describes the state at that earlier turn.",
-    "STATE_NEW",
-    "Question C",
-  ],
+  ["Answer B", PROMPT_HISTORY_REPLAY_TAIL_PREAMBLE, "STATE_NEW", "Question C"],
 );
 assert.equal(replay.prompt.at(-1)?.content, historyUserC.content);
 assert.deepEqual(currentCanonical, originalCurrent);
 assert.deepEqual(oldCanonical, originalPrompt);
 
-const nextCanonical = [
+const nextCanonical = seedPromptHistoryReplaySnapshot([
   ...currentCanonical.slice(0, 5),
   historyUserC,
   { ...historyAssistantB, content: "Answer C" },
   stateOld,
   { role: "user", content: "Question D", contextKind: "history" as const },
-];
+]);
 const recursive = tryReplayPromptHistory({
   currentMessages: nextCanonical,
   previousPrompt: replay.prompt,
@@ -90,7 +87,15 @@ for (const mutate of [
 ]) {
   assert.equal(
     tryReplayPromptHistory({
-      currentMessages: [lore, mutate(), historyAssistantA, historyUserB, historyAssistantB, stateNew, historyUserC],
+      currentMessages: seedPromptHistoryReplaySnapshot([
+        lore,
+        mutate(),
+        historyAssistantA,
+        historyUserB,
+        historyAssistantB,
+        stateNew,
+        historyUserC,
+      ]),
       previousPrompt: oldCanonical,
       previousDescriptor: descriptor,
       scope,
@@ -154,10 +159,18 @@ assert.equal(
 );
 const compactLore: ChatMessage = { ...lore, content: "Lore" };
 const hugeStateOld: ChatMessage = { ...stateOld, content: `STATE_OLD ${"x".repeat(3000)}` };
-const hugeOld = [compactLore, historyUserA, historyAssistantA, hugeStateOld, historyUserB];
+const hugeOld = seedPromptHistoryReplaySnapshot([
+  compactLore,
+  historyUserA,
+  historyAssistantA,
+  hugeStateOld,
+  historyUserB,
+]);
 const hugeDescriptor = createPromptHistoryReplayDescriptor(hugeOld, hugeOld, scope);
 assert.ok(hugeDescriptor);
-const compactCurrent = currentCanonical.map((message) => (message === lore ? compactLore : message));
+const compactCurrent = seedPromptHistoryReplaySnapshot(
+  currentCanonical.map((message) => (message === lore ? compactLore : message)),
+);
 assert.equal(
   tryReplayPromptHistory({
     currentMessages: compactCurrent,

@@ -165,6 +165,7 @@ export function normalizePromptCacheLayout<T extends PromptCacheLayoutMessage>(m
 export function markNewRuntimeContextMessages<T extends PromptCacheLayoutMessage>(
   before: readonly T[],
   transform: (messages: T[]) => T[],
+  replaySnapshot = false,
 ): T[] {
   const marker = Symbol("prompt-cache-origin");
   const tagged = before.map((message) => ({ ...message, [marker]: true }) as T);
@@ -173,10 +174,16 @@ export function markNewRuntimeContextMessages<T extends PromptCacheLayoutMessage
     const clean = { ...message } as Record<PropertyKey, unknown>;
     delete clean[marker];
     if (marked || message.role !== "system") return clean as T;
+    // Runtime context is common infrastructure; only explicit producer-owned
+    // snapshots may opt into history replay, so generic injections stay untrusted.
     return {
       ...(clean as T),
       contextKind: message.contextKind ?? "injection",
-      providerMetadata: { ...(message.providerMetadata ?? {}), marinaraRuntimeContext: true },
+      providerMetadata: {
+        ...(message.providerMetadata ?? {}),
+        marinaraRuntimeContext: true,
+        ...(replaySnapshot ? { marinaraPromptHistoryReplaySnapshot: true } : {}),
+      },
     } as T;
   });
 }

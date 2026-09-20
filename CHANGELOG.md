@@ -4,6 +4,10 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Fixed ChatGPT Game Mode history-cache reuse when GM, continuity and spatial snapshots change between turns. Eligible requests retain the previous request prefix and append the newest state instead of rewriting historical context.
+- Fixed cache replay being unnecessarily disabled when tools run through a separate Game Mode connection. Narrator requests that actually carry tools still use the existing conservative path.
+- Kept the newest turn state authoritative, including removed fields, while preserving Claude behavior and existing replay limits and invalidation checks.
+
 - Current-turn dialogue speakers can resolve a unique library portrait and saved crop even when the scene timeline has not recorded them yet; ambiguous names remain unresolved.
 
 - Widget layouts, edge bookmarks, collapsed state, stacks and pinning follow a campaign across sessions. Existing session layouts migrate once without overwriting saved campaign preferences or undoing layout resets.
