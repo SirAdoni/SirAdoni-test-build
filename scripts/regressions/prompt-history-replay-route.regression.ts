@@ -50,6 +50,10 @@ assert.ok(
   generateRouteSource.includes("tools: gameToolConnection ? undefined : responderToolDefs"),
   "route must omit responder tools when a separate game-tool connection owns tool calls",
 );
+assert.ok(
+  generateRouteSource.includes('conn.provider === "openai_chatgpt"'),
+  "route must account for ChatGPT Responses transport omitting native tool schemas",
+);
 const seedIndex = generateRouteSource.indexOf("seedPromptHistoryReplaySnapshot(canonicalProviderMessages)");
 const fitIndex = generateRouteSource.lastIndexOf("await fitPromptForSend(", seedIndex);
 const initialDescriptorIndex = generateRouteSource.indexOf(
@@ -63,6 +67,14 @@ assert.ok(
   "eligible canonical messages are seeded inside fitting before descriptor creation",
 );
 assert.ok(finalDescriptorIndex > fitIndex, "final replay persistence recomputes from the seeded canonical messages");
+assert.ok(
+  generateRouteSource.includes("[prompt-history-replay] eligibility mode=%s provider=%s"),
+  "route emits privacy-safe replay eligibility diagnostics",
+);
+assert.ok(
+  generateRouteSource.includes("[prompt-history-replay] persistence finalDescriptor=%s"),
+  "route emits privacy-safe replay persistence diagnostics",
+);
 
 const scope: PromptHistoryReplayScope = {
   provider: "openai_chatgpt",
@@ -74,6 +86,7 @@ function evaluateProductionToolCount(
   initializer: string,
   gameToolConnection: unknown,
   responderToolDefs: unknown[] | undefined,
+  provider: string,
 ): number {
   const transpiled = ts.transpileModule(`return (${initializer});`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
@@ -81,8 +94,9 @@ function evaluateProductionToolCount(
   return Function(
     "gameToolConnection",
     "responderToolDefs",
+    "conn",
     transpiled,
-  )(gameToolConnection, responderToolDefs) as number;
+  )(gameToolConnection, responderToolDefs, { provider }) as number;
 }
 
 function runEligibility(toolCount: number): boolean {
@@ -103,13 +117,23 @@ for (const initializer of replayToolCountInitializers) {
       name: "separate game-tool connection",
       connection: { id: "game-tools" },
       responderToolDefs: [{ name: "responder" }],
+      provider: "openai_chatgpt",
       expectedCount: 0,
       expectedEligible: true,
     },
     {
-      name: "inline responder tools",
+      name: "ChatGPT configured tools omitted from wire",
       connection: null,
       responderToolDefs: [{ name: "responder" }],
+      provider: "openai_chatgpt",
+      expectedCount: 0,
+      expectedEligible: true,
+    },
+    {
+      name: "ordinary OpenAI inline responder tools",
+      connection: null,
+      responderToolDefs: [{ name: "responder" }],
+      provider: "openai",
       expectedCount: 1,
       expectedEligible: false,
     },
@@ -117,11 +141,17 @@ for (const initializer of replayToolCountInitializers) {
       name: "no responder tools",
       connection: null,
       responderToolDefs: undefined,
+      provider: "openai_chatgpt",
       expectedCount: 0,
       expectedEligible: true,
     },
   ]) {
-    const actualCount = evaluateProductionToolCount(initializer, scenario.connection, scenario.responderToolDefs);
+    const actualCount = evaluateProductionToolCount(
+      initializer,
+      scenario.connection,
+      scenario.responderToolDefs,
+      scenario.provider,
+    );
     assert.equal(actualCount, scenario.expectedCount, `${scenario.name}: production tool-count expression`);
     assert.equal(
       runEligibility(actualCount),

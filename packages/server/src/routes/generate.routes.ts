@@ -7863,6 +7863,9 @@ export async function generateRoutes(app: FastifyInstance) {
                 ),
               ),
             );
+          const configuredResponderToolCount = responderToolDefs?.length ?? 0;
+          const narratorWireToolCount =
+            gameToolConnection || conn.provider === "openai_chatgpt" ? 0 : configuredResponderToolCount;
           const promptHistoryReplayEligible =
             supportsFullLorebookContext(conn.provider) &&
             isPromptHistoryReplayEligible({
@@ -7878,14 +7881,42 @@ export async function generateRoutes(app: FastifyInstance) {
               userMessage: input.userMessage,
               // Eligibility must reflect the narrator wire, which carries no
               // responder tools when the separate game-tool connection owns them.
-              toolCount: gameToolConnection ? 0 : (responderToolDefs?.length ?? 0),
+              // ChatGPT uses the Responses transport, whose request builder
+              // intentionally omits native tool schemas. Replay eligibility
+              // must follow the narrator wire, not configured definitions.
+              toolCount:
+                gameToolConnection || conn.provider === "openai_chatgpt" ? 0 : (responderToolDefs?.length ?? 0),
             });
+          debugLog(
+            "[prompt-history-replay] eligibility mode=%s provider=%s fullLore=%s individualGroup=%s followUp=%d regenerate=%s continue=%s impersonate=%s autonomous=%s hasTurnUser=%s hasUserText=%s gameToolConnection=%s configuredResponderTools=%d narratorWireTools=%d eligible=%s",
+            chatMode,
+            conn.provider,
+            supportsFullLorebookContext(conn.provider),
+            usesIndividualGroupGeneration,
+            followUpIteration,
+            Boolean(input.regenerateMessageId),
+            Boolean(input.continueMessageId),
+            Boolean(input.impersonate),
+            Boolean(input.autonomous),
+            Boolean(currentTurnUserMessageId),
+            Boolean(input.userMessage?.trim()),
+            Boolean(gameToolConnection),
+            configuredResponderToolCount,
+            narratorWireToolCount,
+            promptHistoryReplayEligible,
+          );
 
           if (promptHistoryReplayEligible) {
             // Seed before fitting and descriptor creation so the archived
             // canonical prefix scopes the first snapshot consistently.
+            const beforeSeedMessageCount = canonicalProviderMessages.length;
             canonicalProviderMessages = await fitPromptForSend(
               seedPromptHistoryReplaySnapshot(canonicalProviderMessages),
+            );
+            debugLog(
+              "[prompt-history-replay] seed messageCount=%d delta=%d",
+              canonicalProviderMessages.length,
+              canonicalProviderMessages.length - beforeSeedMessageCount,
             );
           }
           let initialProviderMessages = canonicalProviderMessages;
@@ -7908,6 +7939,11 @@ export async function generateRoutes(app: FastifyInstance) {
               initialProviderMessages,
               canonicalProviderMessages,
               promptHistoryReplayScope,
+            );
+            debugLog(
+              "[prompt-history-replay] canonical descriptor created=%s messageCount=%d",
+              Boolean(canonicalDescriptor),
+              initialProviderMessages.length,
             );
             if (canonicalDescriptor) {
               promptHistoryReplayExpectedPromptHash = canonicalDescriptor.promptSha256;
@@ -7947,16 +7983,19 @@ export async function generateRoutes(app: FastifyInstance) {
             );
 
             const previousGenerationInfo = sourceExtra.generationInfo as Record<string, unknown> | undefined;
-            if (
-              sourceGuardMatches &&
-              storedDescriptor.helper &&
-              storedDescriptor.scope &&
-              shouldReplayPromptHistory({
-                replayed: storedDescriptor.replayed,
-                promptTokens: previousGenerationInfo?.tokensPrompt,
-                cachedTokens: previousGenerationInfo?.tokensCachedPrompt,
-              })
-            ) {
+            const shouldReplayPreviousPrompt = shouldReplayPromptHistory({
+              replayed: storedDescriptor.replayed,
+              promptTokens: previousGenerationInfo?.tokensPrompt,
+              cachedTokens: previousGenerationInfo?.tokensCachedPrompt,
+            });
+            debugLog(
+              "[prompt-history-replay] sourceGuard matched=%s storedDescriptor=%s priorReplayed=%s shouldReplay=%s",
+              sourceGuardMatches,
+              Boolean(storedDescriptor.helper),
+              storedDescriptor.replayed === true,
+              shouldReplayPreviousPrompt,
+            );
+            if (sourceGuardMatches && storedDescriptor.helper && storedDescriptor.scope && shouldReplayPreviousPrompt) {
               const previousPromptRaw: unknown = sourceExtra.cachedPrompt;
               const previousPrompt = Array.isArray(previousPromptRaw)
                 ? previousPromptRaw
@@ -10292,6 +10331,13 @@ export async function generateRoutes(app: FastifyInstance) {
                     helper: finalReplayDescriptor,
                   }
                 : null;
+            debugLog(
+              "[prompt-history-replay] persistence finalDescriptor=%s expectedHash=%s persisted=%s cachedPromptMessages=%d",
+              Boolean(finalReplayDescriptor),
+              Boolean(promptHistoryReplayExpectedPromptHash),
+              Boolean(replayDescriptorToPersist),
+              finalPromptSent.length,
+            );
             extraUpdate.promptHistoryReplay = replayDescriptorToPersist;
             // Cache the lorebook scan that produced the prompt so Active Context
             // reflects the last generation instead of a best-effort rescan.

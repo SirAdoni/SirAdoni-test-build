@@ -55,6 +55,27 @@ const r3 = tryReplayPromptHistory({
 });
 assert.ok(r3);
 const provider = new OpenAIProvider("", "", undefined, undefined, undefined, "openai-chatgpt");
+const replayTool = {
+  type: "function",
+  function: { name: "state_probe", description: "synthetic regression tool", parameters: { type: "object" } },
+};
+const buildResponsesBody = (candidate: OpenAIProvider) =>
+  (
+    candidate as unknown as {
+      buildResponsesBody(messages: ChatMessage[], options: Record<string, unknown>): Record<string, unknown>;
+    }
+  ).buildResponsesBody(initial, { model: "gpt-5.6-sol", tools: [replayTool], stream: true });
+assert.equal(
+  buildResponsesBody(provider).tools,
+  undefined,
+  "ChatGPT Responses transport omits configured native tool schemas",
+);
+const ordinaryOpenAiProvider = new OpenAIProvider("", "", undefined, undefined, undefined, "openai");
+assert.equal(
+  Array.isArray(buildResponsesBody(ordinaryOpenAiProvider).tools),
+  true,
+  "ordinary OpenAI Responses transport retains configured native tool schemas",
+);
 const format = (messages: ChatMessage[]) =>
   (
     provider as unknown as {

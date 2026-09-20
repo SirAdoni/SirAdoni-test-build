@@ -4,6 +4,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Fixed ChatGPT history replay remaining disabled when configured tools are omitted by the ChatGPT transport. Added debug diagnostics explaining replay eligibility and persistence without including prompt text.
+
 - Fixed ChatGPT Game Mode history-cache reuse when GM, continuity and spatial snapshots change between turns. Eligible requests retain the previous request prefix and append the newest state instead of rewriting historical context.
 - Fixed cache replay being unnecessarily disabled when tools run through a separate Game Mode connection. Narrator requests that actually carry tools still use the existing conservative path.
 - Kept the newest turn state authoritative, including removed fields, while preserving Claude behavior and existing replay limits and invalidation checks.
