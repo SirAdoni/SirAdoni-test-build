@@ -105,7 +105,7 @@ for (let turn = 1; turn <= 3; turn += 1) {
     marked(continuity),
     { role: "user", content: `Player canon ${turn}`, contextKind: "injection" },
     marked(`GM dynamic ${turn}`),
-    marked(`Spatial state ${turn}`),
+    marked("Unchanged spatial state. ".repeat(150)),
     u(`turn ${turn}`),
   ]);
   assert.equal(canonical[history.length]?.providerMetadata?.marinaraPromptHistoryReplayPreamble, true);
@@ -126,8 +126,13 @@ for (let turn = 1; turn <= 3; turn += 1) {
     body.input.slice(-7).map((message) => message.role),
     ["system", "user", "system", "user", "system", "system", "user"],
   );
-  assert.equal(body.input.at(-5)?.content, continuity);
+  assert.equal(String(body.input.at(-5)?.content).includes(continuity), true);
   assert.equal(body.input.at(-1)?.content, `turn ${turn}`);
+  assert.equal(
+    String(body.input.at(-2)?.content).startsWith("<marinara_replay_snapshot_ref "),
+    turn > 1,
+    "actual Responses wire uses a compact reference after first full state",
+  );
   history.push(u(`turn ${turn}`), a(`response ${turn}`));
   previousPrompt = prompt;
   previousDescriptor = descriptor;

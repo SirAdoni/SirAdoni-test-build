@@ -162,7 +162,8 @@ for (const initializer of replayToolCountInitializers) {
 }
 const lore: ChatMessage = {
   role: "system",
-  content: "Stable lore. ".repeat(100),
+  // Keep this multi-turn persistence fixture below the unchanged overhead cap.
+  content: "Stable lore. ".repeat(2_000),
   providerMetadata: { marinaraFullLoreContext: true },
 };
 const oldUser: ChatMessage = { role: "user", content: "Old turn", contextKind: "history" };

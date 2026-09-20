@@ -9,7 +9,7 @@ export interface PromptHistoryReplayScope {
 
 // Any change to the canonical message boundary invalidates persisted replay
 // descriptors instead of risking reuse against a differently scoped prompt.
-export const PROMPT_HISTORY_REPLAY_SCOPE_VERSION = 2 as const;
+export const PROMPT_HISTORY_REPLAY_SCOPE_VERSION = 3 as const;
 
 export interface PromptHistoryReplayDescriptor {
   descriptorVersion: 1;
@@ -41,19 +41,120 @@ export interface PromptHistoryReplayResult {
 }
 
 export const PROMPT_HISTORY_REPLAY_TAIL_PREAMBLE =
-  "The following context applies to the following user turn. The newest snapshot replaces prior snapshots, including fields now absent. Prior snapshots describe only prior turns. The standing instruction hierarchy remains unchanged.";
+  "The following context applies to the following user turn. The newest snapshot replaces prior snapshots, including fields now absent. Prior snapshots describe only prior turns. A <marinara_replay_snapshot_ref id=...>...</marinara_replay_snapshot_ref> is identical to the earlier full <marinara_replay_snapshot id=...>...</marinara_replay_snapshot> with the matching id; references may resolve only backward to that full snapshot and never to another reference. Omitted snapshot sections are absent and must not be inherited. The standing instruction hierarchy remains unchanged.";
 
 const SNAPSHOT_MARKER = "marinaraPromptHistoryReplaySnapshot";
 const RUNTIME_MARKER = "marinaraRuntimeContext";
 const PREAMBLE_MARKER = "marinaraPromptHistoryReplayPreamble";
+const SNAPSHOT_ID = "marinaraPromptHistoryReplaySnapshotId";
+const SNAPSHOT_FULL = "marinaraPromptHistoryReplaySnapshotFull";
+const SNAPSHOT_REFERENCE = "marinaraPromptHistoryReplaySnapshotReference";
+const SNAPSHOT_BEGIN = "<marinara_replay_snapshot";
+const SNAPSHOT_END = "</marinara_replay_snapshot>";
+const REFERENCE_BEGIN = "<marinara_replay_snapshot_ref";
+const REFERENCE_END = "</marinara_replay_snapshot_ref>";
+const MIN_SNAPSHOT_REFERENCE_CONTENT_LENGTH = 256;
+const REPLAY_METADATA_KEYS = new Set([SNAPSHOT_ID, SNAPSHOT_FULL, SNAPSHOT_REFERENCE]);
 
-function isReplaySnapshot(message: ChatMessage): boolean {
-  return (
-    message.role === "system" &&
-    message.contextKind === "injection" &&
-    message.providerMetadata?.[SNAPSHOT_MARKER] === true &&
-    message.providerMetadata?.[RUNTIME_MARKER] === true
-  );
+function stripReplaySnapshotMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> {
+  const stripped = { ...(metadata ?? {}) };
+  for (const key of REPLAY_METADATA_KEYS) delete stripped[key];
+  return stripped;
+}
+
+function hashSnapshotPayload(role: string, content: string, metadata: Record<string, unknown>): string {
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalize({ role, content, metadata })), "utf8")
+    .digest("hex");
+}
+
+function labeledSnapshotContent(message: ChatMessage): { id: string; original: string } | null {
+  const id = message.providerMetadata?.[SNAPSHOT_ID];
+  if (typeof id !== "string" || !message.content.startsWith(`${SNAPSHOT_BEGIN} id="${id}">\n`)) return null;
+  if (!message.content.endsWith(`\n${SNAPSHOT_END}`)) return null;
+  return {
+    id,
+    original: message.content.slice(`${SNAPSHOT_BEGIN} id="${id}">\n`.length, -`\n${SNAPSHOT_END}`.length),
+  };
+}
+
+function isReplaySnapshotFull(message: ChatMessage): boolean {
+  if (
+    message.role !== "system" ||
+    message.contextKind !== "injection" ||
+    message.providerMetadata?.[SNAPSHOT_MARKER] !== true ||
+    message.providerMetadata?.[RUNTIME_MARKER] !== true ||
+    message.providerMetadata?.[SNAPSHOT_FULL] !== true ||
+    message.providerMetadata?.[SNAPSHOT_REFERENCE] === true
+  )
+    return false;
+  const labeled = labeledSnapshotContent(message);
+  if (!labeled) return false;
+  const baseMetadata = stripReplaySnapshotMetadata(message.providerMetadata);
+  return labeled.id === hashSnapshotPayload(message.role, labeled.original, baseMetadata);
+}
+
+function makeLabeledSnapshot(message: ChatMessage): ChatMessage {
+  if (isReplaySnapshotFull(message)) return { ...message };
+  // Bind producer metadata as well as text so equal-looking sections from
+  // different producers cannot accidentally share an identity.
+  const baseMetadata = stripReplaySnapshotMetadata(message.providerMetadata);
+  const id = hashSnapshotPayload(message.role, message.content, baseMetadata);
+  return {
+    ...message,
+    content: `${SNAPSHOT_BEGIN} id="${id}">\n${message.content}\n${SNAPSHOT_END}`,
+    providerMetadata: {
+      ...baseMetadata,
+      [RUNTIME_MARKER]: true,
+      [SNAPSHOT_MARKER]: true,
+      [SNAPSHOT_ID]: id,
+      [SNAPSHOT_FULL]: true,
+      [SNAPSHOT_REFERENCE]: false,
+    },
+  };
+}
+
+function makeSnapshotReference(message: ChatMessage): ChatMessage {
+  const id = message.providerMetadata?.[SNAPSHOT_ID];
+  if (typeof id !== "string") return { ...message };
+  const baseMetadata = stripReplaySnapshotMetadata(message.providerMetadata);
+  return {
+    ...message,
+    content: `${REFERENCE_BEGIN} id="${id}">${id}${REFERENCE_END}`,
+    providerMetadata: {
+      ...baseMetadata,
+      [RUNTIME_MARKER]: true,
+      [SNAPSHOT_MARKER]: true,
+      [SNAPSHOT_ID]: id,
+      [SNAPSHOT_FULL]: false,
+      [SNAPSHOT_REFERENCE]: true,
+    },
+  };
+}
+
+function sameFullSnapshot(a: ChatMessage, b: ChatMessage): boolean {
+  if (!isReplaySnapshotFull(a) || !isReplaySnapshotFull(b) || a.role !== b.role) return false;
+  const aLabeled = labeledSnapshotContent(a);
+  const bLabeled = labeledSnapshotContent(b);
+  return Boolean(aLabeled && bLabeled && aLabeled.id === bLabeled.id && fingerprint(a) === fingerprint(b));
+}
+
+// Only replace explicitly producer-owned full snapshots already retained in the
+// previous request. Never deduplicate dialogue or reference a reference: the
+// complete original payload must remain available to interpret the newest state.
+function compactReplayTail(tail: readonly ChatMessage[], previousPrompt: readonly ChatMessage[]): ChatMessage[] {
+  const previousFull = previousPrompt.filter(isReplaySnapshotFull);
+  return tail.map((message) => {
+    if (
+      !isReplaySnapshotFull(message) ||
+      labeledSnapshotContent(message)!.original.length < MIN_SNAPSHOT_REFERENCE_CONTENT_LENGTH
+    )
+      return { ...message };
+    const matchingFull = previousFull.find((candidate) => sameFullSnapshot(candidate, message));
+    if (!matchingFull) return { ...message };
+    const reference = makeSnapshotReference(message);
+    return wireText(reference).length < wireText(message).length ? reference : { ...message };
+  });
 }
 
 function isReplayPreamble(message: ChatMessage): boolean {
@@ -62,6 +163,15 @@ function isReplayPreamble(message: ChatMessage): boolean {
     message.content === PROMPT_HISTORY_REPLAY_TAIL_PREAMBLE &&
     message.contextKind === "injection" &&
     message.providerMetadata?.[PREAMBLE_MARKER] === true &&
+    message.providerMetadata?.[RUNTIME_MARKER] === true
+  );
+}
+
+function isReplaySnapshotProducer(message: ChatMessage): boolean {
+  return (
+    message.role === "system" &&
+    message.contextKind === "injection" &&
+    message.providerMetadata?.[SNAPSHOT_MARKER] === true &&
     message.providerMetadata?.[RUNTIME_MARKER] === true
   );
 }
@@ -84,9 +194,16 @@ export function seedPromptHistoryReplaySnapshot(messages: readonly ChatMessage[]
     messages[currentUserIndex]?.role !== "user"
   )
     return [...messages];
-  const mutableTail = messages.slice(previousHistoryIndex + 1, currentUserIndex);
+  const labeled = messages.map((message, index) =>
+    index > previousHistoryIndex && index < currentUserIndex && isReplaySnapshotProducer(message)
+      ? makeLabeledSnapshot(message)
+      : message,
+  );
+  const mutableTail = labeled.slice(previousHistoryIndex + 1, currentUserIndex);
   if (
-    mutableTail.some((message) => message.role === "system" && !isReplayPreamble(message) && !isReplaySnapshot(message))
+    mutableTail.some(
+      (message) => message.role === "system" && !isReplayPreamble(message) && !isReplaySnapshotFull(message),
+    )
   )
     return [...messages];
   const firstInjection = messages.findIndex(
@@ -96,7 +213,7 @@ export function seedPromptHistoryReplaySnapshot(messages: readonly ChatMessage[]
   const preambleIndex = messages.findIndex(
     (message, index) => index > previousHistoryIndex && index < currentUserIndex && isReplayPreamble(message),
   );
-  if (preambleIndex === firstInjection) return [...messages];
+  if (preambleIndex === firstInjection) return [...labeled];
   const preamble: ChatMessage = {
     role: "system",
     content: PROMPT_HISTORY_REPLAY_TAIL_PREAMBLE,
@@ -105,7 +222,7 @@ export function seedPromptHistoryReplaySnapshot(messages: readonly ChatMessage[]
     // the snapshot it scopes; otherwise adjacent-message merging can erase it.
     providerMetadata: { [PREAMBLE_MARKER]: true, [RUNTIME_MARKER]: true },
   };
-  return [...messages.slice(0, firstInjection), preamble, ...messages.slice(firstInjection)];
+  return [...labeled.slice(0, firstInjection), preamble, ...labeled.slice(firstInjection)];
 }
 
 function validReplaySystemLayout(messages: readonly ChatMessage[], tailStart: number): boolean {
@@ -114,7 +231,7 @@ function validReplaySystemLayout(messages: readonly ChatMessage[], tailStart: nu
   if (firstInjection < 0 || !isReplayPreamble(tail[firstInjection]!)) return false;
   for (const message of tail) {
     if (isReplayPreamble(message)) continue;
-    if (isReplaySnapshot(message)) continue;
+    if (isReplaySnapshotFull(message)) continue;
     if (message.role === "system") return false;
   }
   return true;
@@ -287,7 +404,7 @@ function appendableTail(messages: readonly ChatMessage[], tailStart: number): Ch
   if (
     tail.length < 2 ||
     tail.some((message) => message.role === "tool") ||
-    tail.some((message) => message.role === "system" && !isReplayPreamble(message) && !isReplaySnapshot(message)) ||
+    tail.some((message) => message.role === "system" && !isReplayPreamble(message) && !isReplaySnapshotFull(message)) ||
     !tail.some(isReplayPreamble)
   )
     return null;
@@ -333,7 +450,8 @@ export function tryReplayPromptHistory(options: PromptHistoryReplayOptions): Pro
   const currentChars = canonicalCharCount(currentMessages);
   // Persist the descriptor from canonical messages while replaying the exact
   // expanded prompt separately; this keeps the next turn's prefix index valid.
-  const prompt = [...previousPrompt, ...tail];
+  const compactedTail = compactReplayTail(tail, previousPrompt);
+  const prompt = [...previousPrompt, ...compactedTail];
   const expandedChars = canonicalCharCount(prompt);
   const extraLimit = Math.min(500_000, Math.floor(currentChars * 0.5));
   if (expandedChars - currentChars > extraLimit) return null;
@@ -349,5 +467,5 @@ export function tryReplayPromptHistory(options: PromptHistoryReplayOptions): Pro
 
   const descriptor = createPromptHistoryReplayDescriptor(currentMessages, prompt, scope);
   if (!descriptor) return null;
-  return { prompt, appendedMessages: tail, canonicalMessages: [...currentMessages], descriptor };
+  return { prompt, appendedMessages: compactedTail, canonicalMessages: [...currentMessages], descriptor };
 }

@@ -24,6 +24,25 @@ const marked = (content: string): ChatMessage => ({
 });
 const user = (content: string): ChatMessage => ({ role: "user", content, contextKind: "history" });
 const assistant = (content: string): ChatMessage => ({ role: "assistant", content, contextKind: "history" });
+const materializeReferences = (messages: readonly ChatMessage[]): ChatMessage[] => {
+  const fullById = new Map<string, ChatMessage>();
+  return messages.map((message) => {
+    const full = /^<marinara_replay_snapshot id="([a-f0-9]{64})">\n[\s\S]*\n<\/marinara_replay_snapshot>$/.exec(
+      message.content,
+    );
+    if (full && message.providerMetadata?.marinaraPromptHistoryReplaySnapshotFull === true) {
+      fullById.set(full[1]!, message);
+      return message;
+    }
+    const ref = /^<marinara_replay_snapshot_ref id="([a-f0-9]{64})">\1<\/marinara_replay_snapshot_ref>$/.exec(
+      message.content,
+    );
+    if (!ref) return message;
+    const target = fullById.get(ref[1]!);
+    assert.ok(target, "each visible reference must resolve backward to full content");
+    return target;
+  });
+};
 
 const initialUnseeded = [lore, user("A"), assistant("A answer"), marked("STATE A"), user("B")];
 assert.equal(createPromptHistoryReplayDescriptor(initialUnseeded, initialUnseeded, scope), null);
@@ -31,7 +50,7 @@ const initial = seedPromptHistoryReplaySnapshot(initialUnseeded);
 assert.equal(initial.filter((m) => m.content === PROMPT_HISTORY_REPLAY_TAIL_PREAMBLE).length, 1);
 assert.equal(
   initial.findIndex((m) => m.content === PROMPT_HISTORY_REPLAY_TAIL_PREAMBLE) <
-    initial.findIndex((m) => m.content === "STATE A"),
+    initial.findIndex((m) => m.content.includes("STATE A")),
   true,
 );
 const descriptor = createPromptHistoryReplayDescriptor(initial, initial, scope);
@@ -57,7 +76,16 @@ assert.ok(replay2);
 assert.deepEqual(turn2, originalTurn2);
 assert.deepEqual(replay2.prompt.slice(0, initial.length), initial);
 assert.deepEqual(
-  replay2.prompt.slice(initial.length).map((m) => [m.role, m.content]),
+  replay2.prompt
+    .slice(initial.length)
+    .map((m) => [
+      m.role,
+      m.content === PROMPT_HISTORY_REPLAY_TAIL_PREAMBLE
+        ? m.content
+        : m.content.includes("STATE B")
+          ? "STATE B"
+          : m.content,
+    ]),
   [
     ["assistant", "B answer"],
     ["system", PROMPT_HISTORY_REPLAY_TAIL_PREAMBLE],
@@ -87,7 +115,7 @@ const replay3 = tryReplayPromptHistory({
 assert.ok(replay3);
 assert.equal(replay3.prompt.at(-1)?.content, "D");
 assert.equal(replay3.prompt.filter((m) => m.content === PROMPT_HISTORY_REPLAY_TAIL_PREAMBLE).length, 3);
-assert.equal(replay3.prompt.at(-2)?.content, "STATE C");
+assert.equal(replay3.prompt.at(-2)?.content.includes("STATE C"), true);
 
 const pureInitial = seedPromptHistoryReplaySnapshot([
   lore,
@@ -197,7 +225,7 @@ for (const contextKind of [undefined, "prompt" as const, "injection" as const]) 
   assert.equal(createPromptHistoryReplayDescriptor(invalid, invalid, scope), null);
 }
 const genericOnly = turn2.map((message) =>
-  message.content === "STATE B" ? { ...message, providerMetadata: { marinaraRuntimeContext: true } } : message,
+  message.content.includes("STATE B") ? { ...message, providerMetadata: { marinaraRuntimeContext: true } } : message,
 );
 assert.equal(createPromptHistoryReplayDescriptor(genericOnly, genericOnly, scope), null);
 assert.deepEqual(seedPromptHistoryReplaySnapshot(initial), initial);
@@ -220,5 +248,97 @@ assert.equal(
   originalMessages.some((message) => message.providerMetadata?.marinaraRuntimeContext),
   false,
 );
+
+// Reconstruct only the newest appended snapshot. Finding an old full payload
+// elsewhere in the history would not prove that a reference resolves correctly.
+const largeSnapshot = (state: string, producer = "continuity"): ChatMessage => ({
+  ...marked(`${state}|${"x".repeat(2_000)}`),
+  providerMetadata: { ...marked("").providerMetadata, producer },
+});
+const originalState = '{"present":["guide","visitor"],"temporary":true}';
+const reducedState = '{"present":["guide"]}';
+const states = [originalState, originalState, originalState, reducedState, null, originalState, originalState];
+const expectedReferences = [0, 1, 1, 0, 0, 1, 0];
+// Production replay targets large contexts; leave room for seven appended turns
+// without tripping the separately tested 50-percent historical-overhead guard.
+const history = [{ ...lore, content: "Stable canon ".repeat(20_000) }, user("opening"), assistant("opening answer")];
+const repeatedInstruction: ChatMessage = {
+  role: "user",
+  content: "Unmarked instruction. ".repeat(50),
+  contextKind: "injection",
+};
+let previousPrompt: ChatMessage[] | undefined;
+let previousDescriptor: ReturnType<typeof createPromptHistoryReplayDescriptor> = null;
+const snapshots = (messages: readonly ChatMessage[]) =>
+  messages.filter((message) => message.providerMetadata?.marinaraPromptHistoryReplaySnapshot === true);
+for (let turn = 0; turn < states.length; turn += 1) {
+  const state = states[turn];
+  const canonical = seedPromptHistoryReplaySnapshot([
+    ...history,
+    ...(state === null ? [] : [largeSnapshot(state!, turn === 6 ? "other-producer" : "continuity")]),
+    marked("Small unchanged section"),
+    repeatedInstruction,
+    user("Repeated dialogue"),
+  ]);
+  let prompt = canonical;
+  if (previousPrompt && previousDescriptor) {
+    const result = tryReplayPromptHistory({ currentMessages: canonical, previousPrompt, previousDescriptor, scope });
+    assert.ok(result, `replay turn ${turn}`);
+    prompt = result.prompt;
+    assert.deepEqual(prompt.slice(0, previousPrompt.length), previousPrompt, "retained prefix must be exact");
+    assert.deepEqual(result.appendedMessages, prompt.slice(previousPrompt.length), "result exposes actual sent tail");
+    const references = result.appendedMessages.filter(
+      (message) => message.providerMetadata?.marinaraPromptHistoryReplaySnapshotReference === true,
+    );
+    assert.equal(references.length, expectedReferences[turn], `reference count turn ${turn}`);
+    const materializedTail = materializeReferences(prompt).slice(previousPrompt.length);
+    assert.deepEqual(
+      snapshots(materializedTail),
+      snapshots(canonical),
+      `latest snapshot must reconstruct exactly on turn ${turn}`,
+    );
+    assert.deepEqual(
+      result.appendedMessages.filter((message) => message.role === "user"),
+      [repeatedInstruction, user("Repeated dialogue")],
+      "unmarked instructions and repeated dialogue are never deduplicated",
+    );
+    assert.ok(
+      result.appendedMessages.some((message) => message.role === "assistant" && message.content === "Repeated answer"),
+      "assistant history remains intact",
+    );
+    if (references.length) {
+      const fullTail = canonical.slice(previousDescriptor.tailStart + 1);
+      const chars = (messages: readonly ChatMessage[]) =>
+        messages.reduce((sum, message) => sum + message.content.length, 0);
+      assert.ok(
+        chars(fullTail) - chars(result.appendedMessages) > 1_700,
+        "large unchanged content actually saves appended characters",
+      );
+      for (const reference of references) {
+        const id = reference.providerMetadata?.marinaraPromptHistoryReplaySnapshotId;
+        assert.ok(
+          previousPrompt.some(
+            (message) =>
+              message.providerMetadata?.marinaraPromptHistoryReplaySnapshotFull === true &&
+              message.providerMetadata?.marinaraPromptHistoryReplaySnapshotId === id,
+          ),
+          "reference always targets an earlier full payload, never another reference",
+        );
+      }
+    }
+    if (turn === 3)
+      assert.ok(
+        !snapshots(materializedTail).some(
+          (message) => message.content.includes("temporary") || message.content.includes("visitor"),
+        ),
+        "removed fields are not inherited",
+      );
+    if (turn === 4) assert.equal(snapshots(materializedTail).length, 1, "omitted large section stays absent");
+  }
+  previousDescriptor = createPromptHistoryReplayDescriptor(canonical, prompt, scope);
+  assert.ok(previousDescriptor);
+  previousPrompt = prompt;
+  history.push(user("Repeated dialogue"), assistant("Repeated answer"));
+}
 
 process.stdout.write("Prompt history replay snapshot regression passed.\n");
