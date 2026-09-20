@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { AgentOutputSpoiler } from "../agents/AgentOutputSpoiler";
-import { estimateTextTokens, type Chat, type GameState } from "@marinara-engine/shared";
+import { LOCAL_SIDECAR_CONNECTION_ID, estimateTextTokens, type Chat, type GameState } from "@marinara-engine/shared";
 import {
   useAgentMemory,
   useAgentSuiteRewrite,
@@ -41,12 +41,13 @@ import {
   getChatExcludedLorebookIds,
 } from "../../lib/chat-lorebooks";
 import { getChatCharacterIds } from "../../lib/chat-macros";
-import { filterLanguageGenerationConnections } from "../../lib/connection-filters";
+import { appendLocalSidecarConnectionOption } from "../../lib/connection-filters";
 import { AGENT_SUITE_TRACKER_SLICES } from "../../lib/agent-suite-tracker-slices";
 import { cn } from "../../lib/utils";
 import { useAgentStore } from "../../stores/agent.store";
 import { useChatStore } from "../../stores/chat.store";
 import { useGameStateStore } from "../../stores/game-state.store";
+import { useSidecarStore } from "../../stores/sidecar.store";
 import { Modal } from "../ui/Modal";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
@@ -495,6 +496,8 @@ export function AgentSuiteModal({ chat, open, onClose, onCloseGuardChange, agent
     isError: entriesError,
   } = useEntriesAcrossLorebooks(open ? contextLorebookIds : []);
   const contextSourcesLoading = charactersLoading || entriesLoading;
+  const sidecarModelDownloaded = useSidecarStore((state) => state.modelDownloaded);
+  const sidecarModelDisplayName = useSidecarStore((state) => state.modelDisplayName);
 
   // 3. Local state
   const [rewriteConnectionId, setRewriteConnectionId] = useState("");
@@ -516,18 +519,39 @@ export function AgentSuiteModal({ chat, open, onClose, onCloseGuardChange, agent
   }, [gameStateKey, isAgentProcessing, open, qc]);
 
   // 4. Memos and callbacks
-  const connectionOptions = useMemo(() => {
-    return filterLanguageGenerationConnections((connections ?? []) as ConnectionOption[]);
-  }, [connections]);
+  const connectionOptions = useMemo<ConnectionOption[]>(
+    () =>
+      appendLocalSidecarConnectionOption(
+        (connections ?? []) as ConnectionOption[],
+        import.meta.env.VITE_MARINARA_LITE !== "true" &&
+          (sidecarModelDownloaded || chat.connectionId === LOCAL_SIDECAR_CONNECTION_ID),
+        sidecarModelDisplayName,
+      ),
+    [chat.connectionId, connections, sidecarModelDisplayName, sidecarModelDownloaded],
+  );
 
   const effectiveRewriteConnectionId = useMemo(() => {
     if (rewriteConnectionId && connectionOptions.some((c) => c.id === rewriteConnectionId)) {
       return rewriteConnectionId;
     }
+    if (chat.connectionId === "random") return "";
     const agentDefault = connectionOptions.find((c) => c.defaultForAgents === true || c.defaultForAgents === "true");
     const chatConnection = connectionOptions.find((c) => c.id === chat.connectionId);
     return (agentDefault ?? chatConnection ?? connectionOptions[0])?.id ?? "";
   }, [chat.connectionId, connectionOptions, rewriteConnectionId]);
+  const displayedRewriteConnectionOptions = useMemo<ConnectionOption[]>(
+    () =>
+      chat.connectionId === "random" && !effectiveRewriteConnectionId
+        ? [
+            {
+              id: "",
+              name: localizeUi("ui.chat.datablock.randomRequiresSpecificConnection"),
+            },
+            ...connectionOptions,
+          ]
+        : connectionOptions,
+    [chat.connectionId, connectionOptions, effectiveRewriteConnectionId, localizeUi],
+  );
 
   const handleBlockDirtyChange = useCallback((blockId: string, dirty: boolean) => {
     if (dirty) dirtyBlocksRef.current.add(blockId);
@@ -981,7 +1005,7 @@ export function AgentSuiteModal({ chat, open, onClose, onCloseGuardChange, agent
                         onDirtyChange={handleBlockDirtyChange}
                         disabled={isAgentProcessing}
                         agentName={selectedAgent.name}
-                        connectionOptions={connectionOptions}
+                        connectionOptions={displayedRewriteConnectionOptions}
                         rewriteConnectionId={effectiveRewriteConnectionId}
                         onRewriteConnectionChange={setRewriteConnectionId}
                         contextPicker={contextPicker}
@@ -1027,7 +1051,7 @@ export function AgentSuiteModal({ chat, open, onClose, onCloseGuardChange, agent
                           onDirtyChange={handleBlockDirtyChange}
                           disabled={isAgentProcessing}
                           agentName={selectedAgent.name}
-                          connectionOptions={connectionOptions}
+                          connectionOptions={displayedRewriteConnectionOptions}
                           rewriteConnectionId={effectiveRewriteConnectionId}
                           onRewriteConnectionChange={setRewriteConnectionId}
                           contextPicker={contextPicker}
@@ -1084,12 +1108,12 @@ export function AgentSuiteModal({ chat, open, onClose, onCloseGuardChange, agent
                             value={serializeValue(run.resultData, mode)}
                             onSave={async (draftText) => {
                               const parsed: unknown = mode === "json" ? JSON.parse(draftText) : draftText;
-                              await updateRunData.mutateAsync({ id: run.id, chatId: run.chatId, resultData: parsed });
+                              await updateRunData.mutateAsync({ id: run.id, chatId: chat.id, resultData: parsed });
                             }}
                             onDirtyChange={handleBlockDirtyChange}
                             disabled={isAgentProcessing}
                             agentName={selectedAgent.name}
-                            connectionOptions={connectionOptions}
+                            connectionOptions={displayedRewriteConnectionOptions}
                             rewriteConnectionId={effectiveRewriteConnectionId}
                             onRewriteConnectionChange={setRewriteConnectionId}
                             contextPicker={contextPicker}

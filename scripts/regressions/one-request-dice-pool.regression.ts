@@ -427,9 +427,23 @@ const db = await getDB();
 const chats = createChatsStorage(db);
 const pools = createGameDicePoolsStorage(db);
 const calls: ChatMessage[][] = [];
+const isBackgroundGameRequest = (messages: ChatMessage[]): boolean => {
+  const first = messages[0]?.content ?? "";
+  return (
+    first.startsWith("You maintain an evidence-based scene timeline") ||
+    (messages.length === 1 &&
+      /^(?:Extract durable continuity records|Review continuity source-first|Repair only the reviewed continuity findings)/u.test(
+        first,
+      ))
+  );
+};
 const draft =
   'You slip along the wall. [skill_check: skill="Stealth" dc="15" mode="normal" dice="1d20" rolls="14" pool="d20:1"] The guard turns at the worst moment.';
 async function* scriptedChat(messages: ChatMessage[], _options: ChatOptions): AsyncGenerator<string, LLMUsage> {
+  if (isBackgroundGameRequest(messages)) {
+    yield '{"visits":[],"records":[],"dispositions":[],"recordChecks":[],"findings":[]}';
+    return { promptTokens: 1, completionTokens: 1, totalTokens: 2, finishReason: "stop" };
+  }
   calls.push(structuredClone(messages));
   yield draft;
   return { promptTokens: 10, completionTokens: 5, totalTokens: 15, finishReason: "stop" };

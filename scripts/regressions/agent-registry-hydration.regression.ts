@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import {
-  replaceBuiltInAgentDefinitions,
-  type BuiltInAgentManifest,
-  type InstalledCapabilityPackage,
-} from "../../packages/shared/dist/index.js";
+import type { BuiltInAgentManifest, InstalledCapabilityPackage } from "../../packages/shared/src/index.js";
 import {
   buildRoleplayAgentSettingsOrder,
   hasStandaloneRoleplayAgentSettings,
@@ -15,6 +11,11 @@ import {
   selectVisibleTrackerCapabilityAgents,
 } from "../../packages/client/src/hooks/use-capability-packages.js";
 import { isReviewableWriterAgentType } from "../../packages/server/src/services/generation/runtime-agent-sections.js";
+
+// Use the same built shared module instance that the server package resolves;
+// the workspace package exposes an ESM-only export, so createRequire cannot
+// resolve it under the generic regression runner.
+const { replaceBuiltInAgentDefinitions } = await import("../../packages/shared/dist/index.js");
 
 const manifests: BuiltInAgentManifest[] = [
   {

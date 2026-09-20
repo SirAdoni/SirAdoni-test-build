@@ -17,6 +17,7 @@ export interface CreateGameTurnStoryboardInput {
   provider?: string;
   model?: string;
   directorPrompt?: string;
+  visualSceneState?: string;
   error?: string | null;
 }
 
@@ -114,6 +115,7 @@ export function createGameStoryboardsStorage(db: DB) {
         provider: input.provider ?? "",
         model: input.model ?? "",
         directorPrompt: input.directorPrompt ?? "",
+        visualSceneState: input.visualSceneState ?? "",
         error: input.error ?? null,
         createdAt: timestamp,
         updatedAt: timestamp,

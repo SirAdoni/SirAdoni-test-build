@@ -40,6 +40,8 @@ export interface CharacterExtensions {
   backstory: string;
   /** Marinara Engine extension: physical appearance description */
   appearance: string;
+  /** Library organization only; does not change party membership or NPC identity. */
+  libraryCategory?: "characters" | "npcs";
   /** Marinara Engine: Name display color/gradient (CSS value, e.g. "linear-gradient(90deg, #ff6b6b, #ffd93d)" or "#ff6b6b") */
   nameColor?: string;
   /** Marinara Engine: Dialogue highlight color — text in quotation marks is bold + colored with this */

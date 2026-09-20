@@ -41,7 +41,8 @@ assert.deepEqual(
     environment: {
       ComSpec: windowsComSpec,
       npm_config_user_agent: "pnpm/10.34.5 npm/? node/v24.15.0 win32 x64",
-      npm_execpath: "C:\\Users\\runner\\AppData\\Local\\pnpm\\.tools\\@pnpm+exe\\10.34.5\\node_modules\\@pnpm\\exe\\pnpm.exe",
+      npm_execpath:
+        "C:\\Users\\runner\\AppData\\Local\\pnpm\\.tools\\@pnpm+exe\\10.34.5\\node_modules\\@pnpm\\exe\\pnpm.exe",
     },
   }),
   { command: windowsComSpec, args: ["/d", "/s", "/c", "pnpm"] },
@@ -94,7 +95,7 @@ async function reservePort() {
 function stopTree(child) {
   if (child.exitCode !== null || child.pid === undefined) return;
   if (process.platform === "win32") {
-    spawnSync("taskkill.exe", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+    spawnSync("taskkill.exe", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
     return;
   }
   child.kill("SIGTERM");

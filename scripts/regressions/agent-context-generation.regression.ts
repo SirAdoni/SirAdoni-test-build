@@ -15,6 +15,12 @@ const requireServer = createRequire(new URL("../../packages/server/package.json"
 const Fastify = requireServer("fastify") as typeof import("fastify").default;
 const { getDB, closeDB } = await import("../../packages/server/src/db/connection.js");
 const { generateRoutes } = await import("../../packages/server/src/routes/generate.routes.js");
+const { capabilityPackageManager } = await import(
+  "../../packages/server/src/services/capability-packages/package-manager.service.js",
+);
+const { refreshCapabilityAgentRegistry } = await import(
+  "../../packages/server/src/services/capability-packages/capability-agent-registry.service.js",
+);
 const { createChatsStorage } = await import("../../packages/server/src/services/storage/chats.storage.js");
 const { createAgentsStorage } = await import("../../packages/server/src/services/storage/agents.storage.js");
 const { createConnectionsStorage } = await import("../../packages/server/src/services/storage/connections.storage.js");
@@ -26,6 +32,24 @@ const prompts: string[] = [];
 const trackerPrompts: string[] = [];
 const mainPrompts: string[] = [];
 let trackerOutputs: Record<string, unknown> = {};
+const originalAgentDefinitions = capabilityPackageManager.agentDefinitions;
+
+function parseSseEvents(body: string): Array<{ type?: string; data?: unknown }> {
+  return body
+    .split("\n")
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => JSON.parse(line.slice(6)) as { type?: string; data?: unknown });
+}
+
+function withoutInventoryIds(rows: unknown): unknown {
+  return Array.isArray(rows)
+    ? rows.map((row) => {
+        if (!row || typeof row !== "object" || Array.isArray(row)) return row;
+        const { itemId: _itemId, ...semantic } = row as Record<string, unknown>;
+        return semantic;
+      })
+    : rows;
+}
 
 const provider = createServer(async (req, res) => {
   const chunks: Buffer[] = [];
@@ -37,7 +61,11 @@ const provider = createServer(async (req, res) => {
   const trackerType = Object.keys(trackerOutputs).find((type) => prompt.includes(`TRACKER_FIXTURE_${type}`));
   if (trackerType) trackerPrompts.push(prompt);
   if (!isAgent && !trackerType) mainPrompts.push(prompt);
-  const trackerOutput = prompt.includes("<agent_task ") ? trackerOutputs : trackerOutputs[trackerType ?? ""];
+  // Batch prompt formats have used both XML task blocks and the newer markdown agent headers.
+  // Return the complete keyed envelope for either shape; individual requests still receive one
+  // tracker payload.
+  const isTrackerBatch = prompt.includes("<agent_task ") || prompt.includes("# Agent: ");
+  const trackerOutput = isTrackerBatch ? trackerOutputs : trackerOutputs[trackerType ?? ""];
   const content = trackerType
     ? JSON.stringify(trackerOutput)
     : isAgent
@@ -190,8 +218,7 @@ try {
   }
   // The same real provider/route harness exercises ordinary batched tracking and manual retry.
   const trackerTypes = ["world-state", "character-tracker", "inventory-tracker", "custom-tracker"];
-  replaceBuiltInAgentDefinitions(
-    trackerTypes.map((type) => ({
+  const trackerDefinitions = trackerTypes.map((type) => ({
       id: type,
       name: type,
       description: "Synthetic tracker",
@@ -200,8 +227,9 @@ try {
       category: "tracker" as const,
       defaultTools: [],
       defaultPromptTemplate: `TRACKER_FIXTURE_${type} Return JSON.`,
-    })),
-  );
+    }));
+  capabilityPackageManager.agentDefinitions = async () => trackerDefinitions;
+  await refreshCapabilityAgentRegistry();
   for (const type of trackerTypes) {
     await agents.create({
       type,
@@ -284,12 +312,24 @@ try {
   const generated = await app.inject({ method: "POST", url: "/api/generate/", payload: { chatId: trackerChat.id } });
   assert.equal(generated.statusCode, 200, generated.body);
   assert.ok(!generated.body.includes('"type":"error"'), generated.body);
+  const generatedEvents = parseSseEvents(generated.body);
+  assert.ok(generatedEvents.some((event) => event.type === "done"), generated.body);
+  assert.ok(!generatedEvents.some((event) => event.type === "error"), generated.body);
   assert.ok(!trackerPrompts.at(-1)?.includes("SUMMARY_CONTEXT_SENTINEL"), "omitted setting excludes summaries");
   const target = (await chats.listMessages(trackerChat.id)).filter((message) => message.role === "assistant").at(-1)!;
   assert.notEqual(target.id, priorMessage.id);
   const readTarget = async () => {
     const row = await stateStore.getByChatAndMessage(trackerChat.id, target.id, 0);
-    assert.ok(row);
+    assert.ok(
+      row,
+      `tracker generation completed without a persisted state snapshot; events=${generatedEvents
+        .map((event) => event.type)
+        .join(",")}; agentProgressStages=${JSON.stringify(
+        generatedEvents
+          .filter((event) => event.type === "agent_progress")
+          .map((event) => (event.data as { stage?: unknown } | undefined)?.stage),
+      )}; trackerPromptCount=${trackerPrompts.length}`,
+    );
     return parseGameStateRow(row as Record<string, unknown>);
   };
   const normalState = await readTarget();
@@ -297,18 +337,43 @@ try {
     normalState.presentCharacters.map(({ name, mood, outfit }) => ({ name, mood, outfit })),
     [{ name: "Alice", mood: "alert", outfit: "coat" }],
   );
-  assert.deepEqual(normalState.playerStats?.inventoryTrackerInventory, [
+  const normalInventory = normalState.playerStats?.inventoryTrackerInventory;
+  assert.deepEqual(withoutInventoryIds(normalInventory), [
     { ...detailedRope, location: "Belt" },
     detailedCompass,
   ]);
-  const inventoryEvent = generated.body
-    .split("\n")
-    .filter((line) => line.startsWith("data: "))
-    .map((line) => JSON.parse(line.slice(6)))
-    .find((event) => event.type === "game_state_patch" && event.data.playerStats?.inventoryTrackerInventory);
+  assert.ok(
+    Array.isArray(normalInventory) &&
+      normalInventory.every((row) => typeof row.itemId === "string" && row.itemId.length > 0),
+    "persisted inventory rows have stable identities",
+  );
+  assert.equal(
+    new Set((normalInventory ?? []).map((row) => row.itemId)).size,
+    (normalInventory ?? []).length,
+    "persisted inventory row identities are unique",
+  );
+  const inventoryEvent = generatedEvents.find(
+    (event) =>
+      event.type === "game_state_patch" &&
+      event.data &&
+      typeof event.data === "object" &&
+      "playerStats" in event.data &&
+      (event.data as { playerStats?: { inventoryTrackerInventory?: unknown } }).playerStats?.inventoryTrackerInventory,
+  );
   assert.deepEqual(
-    inventoryEvent?.data.playerStats.inventoryTrackerInventory,
-    normalState.playerStats?.inventoryTrackerInventory,
+    withoutInventoryIds(
+      (inventoryEvent?.data as { playerStats?: { inventoryTrackerInventory?: unknown } } | undefined)?.playerStats
+        ?.inventoryTrackerInventory,
+    ),
+    withoutInventoryIds(normalInventory),
+  );
+  assert.deepEqual(
+    (
+      (inventoryEvent?.data as { playerStats?: { inventoryTrackerInventory?: Array<{ itemId?: string }> } } | undefined)
+        ?.playerStats?.inventoryTrackerInventory ?? []
+    ).map((row) => row.itemId),
+    (normalInventory ?? []).map((row) => row.itemId),
+    "SSE inventory patch preserves persisted row identities",
   );
   assert.deepEqual(normalState.playerStats?.customTrackerFields, [
     { name: "Clue", value: "north" },
@@ -318,11 +383,13 @@ try {
     normalState.worldCustomFields.map((field) => field.name),
     ["Note", "Locked"],
   );
-  const worldEvent = generated.body
-    .split("\n")
-    .filter((line) => line.startsWith("data: "))
-    .map((line) => JSON.parse(line.slice(6)))
-    .find((event) => event.type === "game_state_patch" && event.data.worldCustomFields);
+  const worldEvent = generatedEvents.find(
+    (event) =>
+      event.type === "game_state_patch" &&
+      event.data &&
+      typeof event.data === "object" &&
+      "worldCustomFields" in event.data,
+  );
   assert.ok(worldEvent, generated.body);
   assert.deepEqual(
     worldEvent.data.worldCustomFields.removed,
@@ -358,7 +425,7 @@ try {
   const retried = await retry();
   assert.ok(!trackerPrompts.at(-1)?.includes("SUMMARY_CONTEXT_SENTINEL"), "manual grouped retry excludes summaries");
   assert.deepEqual(retried.presentCharacters, []);
-  assert.deepEqual(retried.playerStats?.inventoryTrackerInventory, [detailedCompass]);
+  assert.deepEqual(withoutInventoryIds(retried.playerStats?.inventoryTrackerInventory), [detailedCompass]);
   assert.deepEqual(retried.playerStats?.customTrackerFields, [{ name: "Luck", value: "5" }]);
   assert.deepEqual(
     retried.worldCustomFields.map((field) => field.name),
@@ -374,7 +441,7 @@ try {
   const legacy = await retry();
   assert.ok(trackerPrompts.at(-1)?.includes("SUMMARY_CONTEXT_SENTINEL"), "manual grouped retry restores summaries");
   assert.equal(legacy.weather, "Sun");
-  assert.deepEqual(legacy.playerStats?.inventoryTrackerInventory, [
+  assert.deepEqual(withoutInventoryIds(legacy.playerStats?.inventoryTrackerInventory), [
     { name: "Lantern", description: "Oil lamp", location: "Pack" },
   ]);
   assert.deepEqual(legacy.playerStats?.customTrackerFields, [{ name: "Full", value: "legacy" }]);
@@ -385,8 +452,17 @@ try {
     "normal trackers share the real batch path",
   );
   assert.deepEqual(
-    parseGameStateRow((await stateStore.getById(priorState.id))! as Record<string, unknown>).playerStats,
-    initialState.playerStats,
+    {
+      ...parseGameStateRow((await stateStore.getById(priorState.id))! as Record<string, unknown>).playerStats,
+      inventoryTrackerInventory: withoutInventoryIds(
+        parseGameStateRow((await stateStore.getById(priorState.id))! as Record<string, unknown>).playerStats
+          ?.inventoryTrackerInventory,
+      ),
+    },
+    {
+      ...initialState.playerStats,
+      inventoryTrackerInventory: withoutInventoryIds(initialState.playerStats.inventoryTrackerInventory),
+    },
     "tracker writes must not change the preceding snapshot",
   );
   for (const prompt of trackerPrompts) assert.ok(prompt.includes("tracker_incremental_updates: supported"));
@@ -406,6 +482,8 @@ try {
     "main summary is independent of the agent toggle",
   );
 } finally {
+  capabilityPackageManager.agentDefinitions = originalAgentDefinitions;
+  await refreshCapabilityAgentRegistry();
   provider.closeAllConnections();
   await new Promise<void>((done) => provider.close(() => done()));
   await app.close();

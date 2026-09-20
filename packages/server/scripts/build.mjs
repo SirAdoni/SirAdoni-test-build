@@ -16,6 +16,7 @@ function run(command, args, options = {}) {
     env: { ...process.env, ...options.env },
     shell: options.shell ?? false,
     stdio: "inherit",
+    windowsHide: true,
   });
   if (result.status !== 0) {
     process.exit(result.status ?? 1);

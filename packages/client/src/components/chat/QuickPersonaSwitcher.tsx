@@ -15,6 +15,7 @@ import type { CharacterGroup } from "@marinara-engine/shared";
 import { buildCharacterIdentityGroups, type CharacterIdentityChoice } from "../../lib/character-identity-groups";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import type { Persona } from "@marinara-engine/shared";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 
 interface PersonaGroupRow {
   id: string;
@@ -39,7 +40,7 @@ export function QuickPersonaSwitcher({ className }: { className?: string }) {
   const [showCharacterGroups, setShowCharacterGroups] = useState(false);
   const [expandedCharacterGroups, setExpandedCharacterGroups] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
-  const btnRef = useRef<HTMLButtonElement>(null);
+  const btnRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const activeChatId = useChatStore((s) => s.activeChatId);
   const showCharacterIdentities = useUIStore((state) => state.showCharactersInPersonaPickers);
@@ -262,10 +263,17 @@ export function QuickPersonaSwitcher({ className }: { className?: string }) {
   const renderPersonaRow = (persona: Persona, indented: boolean = false) => {
     const isActive = persona.id === activePersonaId;
     return (
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={0}
         key={persona.id}
         onClick={() => handleSwitch(persona.id)}
+        onKeyDown={(event) => {
+          if (event.target !== event.currentTarget) return;
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          handleSwitch(persona.id);
+        }}
         className={cn(
           "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors",
           isActive ? "bg-foreground/10 text-foreground ring-1 ring-foreground/15" : "hover:bg-foreground/10",
@@ -273,14 +281,22 @@ export function QuickPersonaSwitcher({ className }: { className?: string }) {
         )}
       >
         {persona.avatarPath ? (
-          <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded-full border border-foreground/10">
-            <img
-              src={persona.avatarPath}
-              alt={persona.name}
-              className="h-full w-full object-cover"
-              style={getAvatarCropStyle(persona.avatarCrop)}
-            />
-          </div>
+          <CharacterPhoto
+            src={persona.avatarPath}
+            name={persona.name}
+            className="block h-9 w-9 shrink-0 rounded-full"
+            wrapperClassName="relative inline-flex shrink-0 items-center gap-1"
+            onUpdate={() => useUIStore.getState().openPersonaDetail(persona.id)}
+          >
+            <span className="absolute inset-0 overflow-hidden rounded-full border border-foreground/10">
+              <img
+                src={persona.avatarPath}
+                alt={persona.name}
+                className="h-full w-full object-cover"
+                style={getAvatarCropStyle(persona.avatarCrop)}
+              />
+            </span>
+          </CharacterPhoto>
         ) : (
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-foreground/10 bg-foreground/10 text-xs font-semibold text-foreground/45">
             {(persona.name || "?")[0].toUpperCase()}
@@ -297,16 +313,23 @@ export function QuickPersonaSwitcher({ className }: { className?: string }) {
           )}
         </div>
         {isActive && <span className="ml-auto shrink-0 text-[0.6875rem]">✓</span>}
-      </button>
+      </div>
     );
   };
 
   return (
     <>
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={0}
         ref={btnRef}
         onClick={() => setOpen((v) => !v)}
+        onKeyDown={(event) => {
+          if (event.target !== event.currentTarget) return;
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          setOpen((v) => !v);
+        }}
         title={
           activePersona || activeCharacter
             ? localizeUi("ui.chat.quickpersonaswitcher.value1Value2", {
@@ -316,30 +339,49 @@ export function QuickPersonaSwitcher({ className }: { className?: string }) {
             : localizeUi("ui.chat.quickpersonaswitcher.quickPersonaSwitcher")
         }
         className={cn(
-          "relative flex h-8 w-8 items-center justify-center rounded-full overflow-hidden transition-all border-2",
+          "relative flex h-8 w-auto min-w-8 items-center justify-center gap-1 rounded-full overflow-visible px-0.5 transition-all border-2",
           open ? "border-foreground/40" : "border-transparent hover:border-foreground/30 hover:opacity-90",
           className,
         )}
       >
         {activePersona?.avatarPath || activeCharacter?.avatarPath ? (
-          <img
+          <CharacterPhoto
             src={activePersona?.avatarPath ?? activeCharacter?.avatarPath ?? ""}
-            alt={activePersona?.name ?? activeCharacterName ?? ""}
-            className="h-full w-full object-cover rounded-full"
-            style={getAvatarCropStyle(
-              activePersona?.avatarPath
-                ? activePersona.avatarCrop
+            name={activePersona?.name ?? activeCharacterName ?? "character"}
+            className="block h-8 w-8 shrink-0 rounded-full"
+            wrapperClassName="relative inline-flex shrink-0 items-center gap-1"
+            onUpdate={
+              activePersona
+                ? () => useUIStore.getState().openPersonaDetail(activePersona.id)
                 : activeCharacter
-                  ? parseCharacterDisplayData(activeCharacter).avatarCrop
-                  : undefined,
-            )}
-          />
+                  ? () => useUIStore.getState().openCharacterDetail(activeCharacter.id)
+                  : undefined
+            }
+          >
+            <span className="absolute inset-0 overflow-hidden rounded-full">
+              <img
+                src={activePersona?.avatarPath ?? activeCharacter?.avatarPath ?? ""}
+                alt={activePersona?.name ?? activeCharacterName ?? ""}
+                className="h-full w-full object-cover"
+                style={getAvatarCropStyle(
+                  activePersona?.avatarPath
+                    ? activePersona.avatarCrop
+                    : activeCharacter
+                      ? parseCharacterDisplayData(activeCharacter).avatarCrop
+                      : undefined,
+                )}
+              />
+            </span>
+          </CharacterPhoto>
         ) : (
-          <div className="flex h-full w-full items-center justify-center rounded-full bg-foreground/10 text-[0.75rem] font-semibold text-foreground/45">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-[0.75rem] font-semibold text-foreground/45">
             {(activePersona?.name ?? activeCharacterName ?? "?")[0]?.toUpperCase()}
           </div>
         )}
-      </button>
+        <span aria-hidden="true" className="flex shrink-0 items-center text-foreground/60">
+          <ChevronDown size="0.75rem" />
+        </span>
+      </div>
 
       {open &&
         typeof document !== "undefined" &&
@@ -424,8 +466,16 @@ export function QuickPersonaSwitcher({ className }: { className?: string }) {
 
                 return (
                   <div key={group.id}>
-                    <button
+                    <div
+                      role="button"
+                      tabIndex={0}
                       onClick={() => toggleGroup(group.id)}
+                      onKeyDown={(event) => {
+                        if (event.target !== event.currentTarget) return;
+                        if (event.key !== "Enter" && event.key !== " ") return;
+                        event.preventDefault();
+                        toggleGroup(group.id);
+                      }}
                       className={cn(
                         "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors",
                         hasActiveInGroup
@@ -434,14 +484,22 @@ export function QuickPersonaSwitcher({ className }: { className?: string }) {
                       )}
                     >
                       {firstMember?.avatarPath ? (
-                        <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded-full border border-foreground/10">
-                          <img
-                            src={firstMember.avatarPath}
-                            alt={group.name}
-                            className="h-full w-full object-cover"
-                            style={getAvatarCropStyle(firstMember.avatarCrop)}
-                          />
-                        </div>
+                        <CharacterPhoto
+                          src={firstMember.avatarPath}
+                          name={group.name}
+                          className="block h-9 w-9 shrink-0 rounded-full"
+                          wrapperClassName="relative inline-flex shrink-0 items-center gap-1"
+                          onUpdate={() => useUIStore.getState().openPersonaDetail(firstMember.id)}
+                        >
+                          <span className="absolute inset-0 overflow-hidden rounded-full border border-foreground/10">
+                            <img
+                              src={firstMember.avatarPath}
+                              alt={group.name}
+                              className="h-full w-full object-cover"
+                              style={getAvatarCropStyle(firstMember.avatarCrop)}
+                            />
+                          </span>
+                        </CharacterPhoto>
                       ) : (
                         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-foreground/10 bg-foreground/10 text-xs font-semibold text-foreground/45">
                           {group.name[0].toUpperCase()}
@@ -464,7 +522,7 @@ export function QuickPersonaSwitcher({ className }: { className?: string }) {
                       <span className="ml-auto shrink-0 text-foreground/45">
                         {isExpanded ? <ChevronDown size="0.875rem" /> : <ChevronRight size="0.875rem" />}
                       </span>
-                    </button>
+                    </div>
 
                     {isExpanded && (
                       <div className="ml-2 border-l border-foreground/10 pl-1">
@@ -505,8 +563,9 @@ export function QuickPersonaSwitcher({ className }: { className?: string }) {
                       if (members.length === 0) return null;
                       return (
                         <div key={group.id}>
-                          <button
-                            type="button"
+                          <div
+                            role="button"
+                            tabIndex={0}
                             onClick={() =>
                               setExpandedCharacterGroups((current) => {
                                 const next = new Set(current);
@@ -516,14 +575,37 @@ export function QuickPersonaSwitcher({ className }: { className?: string }) {
                               })
                             }
                             aria-expanded={expanded}
+                            onKeyDown={(event) => {
+                              if (event.target !== event.currentTarget) return;
+                              if (event.key !== "Enter" && event.key !== " ") return;
+                              event.preventDefault();
+                              setExpandedCharacterGroups((current) => {
+                                const next = new Set(current);
+                                if (next.has(group.id)) next.delete(group.id);
+                                else next.add(group.id);
+                                return next;
+                              });
+                            }}
                             className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs hover:bg-foreground/10"
                           >
                             {group.avatarPath || group.members[0]?.avatarPath ? (
-                              <img
+                              <CharacterPhoto
                                 src={group.avatarPath ?? group.members[0]?.avatarPath ?? ""}
-                                alt=""
-                                className="h-7 w-7 shrink-0 rounded-full object-cover ring-1 ring-foreground/10"
-                              />
+                                name={group.name}
+                                className="block h-7 w-7 shrink-0 rounded-full"
+                                wrapperClassName="relative inline-flex shrink-0 items-center gap-1"
+                                onUpdate={
+                                  group.members[0]
+                                    ? () => useUIStore.getState().openCharacterDetail(group.members[0].id)
+                                    : undefined
+                                }
+                              >
+                                <img
+                                  src={group.avatarPath ?? group.members[0]?.avatarPath ?? ""}
+                                  alt=""
+                                  className="h-7 w-7 shrink-0 rounded-full object-cover ring-1 ring-foreground/10"
+                                />
+                              </CharacterPhoto>
                             ) : expanded ? (
                               <FolderOpen size="0.875rem" className="shrink-0 text-foreground/45" />
                             ) : (
@@ -532,30 +614,47 @@ export function QuickPersonaSwitcher({ className }: { className?: string }) {
                             <span className="min-w-0 flex-1 truncate">{group.name}</span>
                             <span className="text-[0.625rem] text-foreground/45">{members.length}</span>
                             {expanded ? <ChevronDown size="0.75rem" /> : <ChevronRight size="0.75rem" />}
-                          </button>
+                          </div>
                           {expanded &&
                             members.map((character) => {
                               const characterData = parseCharacterDisplayData(character);
                               const name = characterData.name;
                               const isActive = activeCharacterId === character.id;
                               return (
-                                <button
+                                <div
+                                  role="button"
+                                  tabIndex={0}
                                   key={`character-${character.id}`}
-                                  type="button"
                                   onClick={() => handleCharacterSwitch(character.id)}
+                                  onKeyDown={(event) => {
+                                    if (event.target !== event.currentTarget) return;
+                                    if (event.key !== "Enter" && event.key !== " ") return;
+                                    event.preventDefault();
+                                    handleCharacterSwitch(character.id);
+                                  }}
                                   className={cn(
                                     "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-foreground/10",
                                     isActive && "bg-foreground/10 text-foreground ring-1 ring-foreground/15",
                                   )}
                                 >
-                                  <div className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full border border-foreground/10 bg-foreground/10 text-xs font-semibold">
+                                  <div className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-visible rounded-full border border-foreground/10 bg-foreground/10 text-xs font-semibold">
                                     {character.avatarPath ? (
-                                      <img
+                                      <CharacterPhoto
                                         src={character.avatarPath}
-                                        alt=""
-                                        className="h-full w-full object-cover"
-                                        style={getAvatarCropStyle(characterData.avatarCrop)}
-                                      />
+                                        name={name}
+                                        className="block h-9 w-9 shrink-0 rounded-full"
+                                        wrapperClassName="relative inline-flex shrink-0 items-center gap-1"
+                                        onUpdate={() => useUIStore.getState().openCharacterDetail(character.id)}
+                                      >
+                                        <span className="absolute inset-0 overflow-hidden rounded-full">
+                                          <img
+                                            src={character.avatarPath}
+                                            alt=""
+                                            className="h-full w-full object-cover"
+                                            style={getAvatarCropStyle(characterData.avatarCrop)}
+                                          />
+                                        </span>
+                                      </CharacterPhoto>
                                     ) : (
                                       name[0]
                                     )}
@@ -567,7 +666,7 @@ export function QuickPersonaSwitcher({ className }: { className?: string }) {
                                     </span>
                                   </div>
                                   {isActive && <span className="text-[0.6875rem]">✓</span>}
-                                </button>
+                                </div>
                               );
                             })}
                         </div>

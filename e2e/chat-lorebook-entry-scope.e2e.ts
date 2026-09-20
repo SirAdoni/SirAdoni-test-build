@@ -81,6 +81,7 @@ for (const mode of ["game", "roleplay", "conversation"] as const) {
                 gameId: id,
                 gameSessionStatus: "active",
                 gameIntroPresented: true,
+                ...(mode === "game" ? { campaignIndexPrompt: { dismissedAt: "2026-01-01T00:00:00.000Z" } } : {}),
                 ...(id === a.id ? { entryStateOverrides: { [entry.id]: { ephemeral: 3 } } } : {}),
               },
             })

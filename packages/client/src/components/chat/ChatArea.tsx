@@ -2,6 +2,7 @@ import { notifyRoleplayTTSParagraph, withRoleplayTTSParagraphs } from "../../lib
 // ──────────────────────────────────────────────
 // Chat: Main chat area — mode-aware rendering
 // ──────────────────────────────────────────────
+import { CharacterReferencesProvider } from "../characters/CharacterReferences";
 import {
   Suspense,
   lazy,
@@ -36,6 +37,7 @@ import {
 import { getCurrentInputSnapshot, useChatStore } from "../../stores/chat.store";
 import { hasActiveTextSelection } from "../../lib/text-selection";
 import { useGenerate } from "../../hooks/use-generate";
+import { useGenerationRecovery } from "../../hooks/use-generation-recovery";
 import { useGenerateGallerySelfie } from "../../hooks/use-gallery";
 import {
   characterKeys,
@@ -55,6 +57,7 @@ import { getChatDisplayName, getConnectedChatDisplayName, parseChatMetadata } fr
 import { getChatCharacterIds } from "../../lib/chat-macros";
 import { resolveSpriteExpression } from "../../lib/sprite-expression-match";
 import { parseCharacterDisplayData } from "../../lib/character-display";
+import { normalizeGameCharacterLibraryProfile } from "../../lib/game-character-profile";
 import { showConfirmDialog } from "../../lib/app-dialogs";
 import { parseMessageExtraRecord } from "../../lib/chat-message-extra";
 import { trimInactiveMessagePageCaches } from "../../lib/message-page-cache";
@@ -150,6 +153,7 @@ import { useTranslation as useUiTranslation } from "react-i18next";
 import { ChatResourceDropOverlay } from "./ChatResourceDropOverlay";
 import { ChatHelpOverlay } from "./ChatHelpOverlay";
 import { readChatHelpMode } from "../../lib/chat-help-events";
+import { PrivateNotebookPanel, type PrivateNotebookPanelHandle } from "./PrivateNotebookPanel";
 
 export type { CharacterMap };
 
@@ -455,6 +459,12 @@ const CharacterScheduleEditorModal = lazy(preloadCharacterScheduleEditorModal);
 
 type FloatingPanelAnchor = ReturnType<typeof readChatToolbarFloatingPanelAnchor>;
 type OpenSettingsOptions = { initialSection?: ChatSettingsInitialSection };
+type PrivateNotebookSession = {
+  chatId: string;
+  mode: string;
+  anchor: FloatingPanelAnchor;
+  opener: HTMLElement | null;
+};
 type TTSGenerationSnapshot = {
   chatId: string;
   beforeRevision: string | null;
@@ -462,12 +472,20 @@ type TTSGenerationSnapshot = {
 };
 
 export const ChatArea = memo(function ChatArea() {
+  return (
+    <CharacterReferencesProvider>
+      <ChatAreaContent />
+    </CharacterReferencesProvider>
+  );
+});
+const ChatAreaContent = memo(function ChatAreaContent() {
   const { t: localizeUi } = useUiTranslation();
   useRenderTimer("chat-area"); // [#3104 diagnostic]
   const activeChatId = useChatStore((s) => s.activeChatId);
   const streamingChatId = useChatStore((s) => s.streamingChatId);
   const isStreamingGlobal = useChatStore((s) => s.isStreaming);
   const isStreaming = isStreamingGlobal && streamingChatId === activeChatId;
+  useGenerationRecovery(activeChatId);
   const isBackgroundIllustration = useChatStore((s) =>
     activeChatId ? s.backgroundIllustrationChatIds.has(activeChatId) : false,
   );
@@ -499,6 +517,8 @@ export const ChatArea = memo(function ChatArea() {
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [settingsAnchor, setSettingsAnchor] = useState<FloatingPanelAnchor>(null);
   const [galleryAnchor, setGalleryAnchor] = useState<FloatingPanelAnchor>(null);
+  const [privateNotebookSession, setPrivateNotebookSession] = useState<PrivateNotebookSession | null>(null);
+  const privateNotebookPanelRef = useRef<PrivateNotebookPanelHandle>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [spriteArrangeMode, setSpriteArrangeMode] = useState(false);
   const [agentInjectionReview, setAgentInjectionReview] = useState<AgentInjectionReviewRequest | null>(null);
@@ -557,28 +577,85 @@ export const ChatArea = memo(function ChatArea() {
   const readFloatingPanelAnchor = useCallback((event?: ReactMouseEvent<HTMLElement>): FloatingPanelAnchor => {
     return readChatToolbarFloatingPanelAnchor(event?.currentTarget ?? null);
   }, []);
+  const requestPrivateNotebookClose = useCallback(
+    () => privateNotebookPanelRef.current?.requestClose() ?? Promise.resolve(true),
+    [],
+  );
+  const handlePrivateNotebookClosed = useCallback(() => setPrivateNotebookSession(null), []);
   const handleOpenSettingsPanel = useCallback(
     (event?: ReactMouseEvent<HTMLElement>, options?: OpenSettingsOptions) => {
       void preloadChatSettingsDrawer();
       const nextOpen = event ? !settingsOpen : true;
-      setGalleryOpen(false);
-      setGalleryAnchor(null);
-      setSettingsAnchor(nextOpen ? readFloatingPanelAnchor(event) : null);
-      setSettingsInitialSection(nextOpen ? (options?.initialSection ?? null) : null);
-      setSettingsOpen(nextOpen);
+      const nextAnchor = nextOpen ? readFloatingPanelAnchor(event) : null;
+      const apply = () => {
+        setGalleryOpen(false);
+        setGalleryAnchor(null);
+        setSettingsAnchor(nextAnchor);
+        setSettingsInitialSection(nextOpen ? (options?.initialSection ?? null) : null);
+        setSettingsOpen(nextOpen);
+      };
+      if (nextOpen && privateNotebookSession) {
+        void requestPrivateNotebookClose().then((closed) => {
+          if (closed) apply();
+        });
+        return;
+      }
+      apply();
     },
-    [readFloatingPanelAnchor, settingsOpen],
+    [privateNotebookSession, readFloatingPanelAnchor, requestPrivateNotebookClose, settingsOpen],
   );
   const handleOpenGalleryPanel = useCallback(
     (event?: ReactMouseEvent<HTMLElement>) => {
       const nextOpen = event ? !galleryOpen : true;
-      setSettingsOpen(false);
-      setSettingsAnchor(null);
-      setSettingsInitialSection(null);
-      setGalleryAnchor(nextOpen ? readFloatingPanelAnchor(event) : null);
-      setGalleryOpen(nextOpen);
+      const nextAnchor = nextOpen ? readFloatingPanelAnchor(event) : null;
+      const apply = () => {
+        setSettingsOpen(false);
+        setSettingsAnchor(null);
+        setSettingsInitialSection(null);
+        setGalleryAnchor(nextAnchor);
+        setGalleryOpen(nextOpen);
+      };
+      if (nextOpen && privateNotebookSession) {
+        void requestPrivateNotebookClose().then((closed) => {
+          if (closed) apply();
+        });
+        return;
+      }
+      apply();
     },
-    [galleryOpen, readFloatingPanelAnchor],
+    [galleryOpen, privateNotebookSession, readFloatingPanelAnchor, requestPrivateNotebookClose],
+  );
+  const handleOpenPrivateNotebook = useCallback(
+    (event?: ReactMouseEvent<HTMLElement>) => {
+      if (!activeChatId) return;
+      const nextAnchor = readFloatingPanelAnchor(event);
+      const opener =
+        event?.currentTarget ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+      const openForActiveChat = () => {
+        setSettingsOpen(false);
+        setSettingsAnchor(null);
+        setSettingsInitialSection(null);
+        setGalleryOpen(false);
+        setGalleryAnchor(null);
+        setPrivateNotebookSession({
+          chatId: activeChatId,
+          mode: typeof chatDetail?.mode === "string" ? chatDetail.mode : "conversation",
+          anchor: nextAnchor,
+          opener,
+        });
+      };
+
+      if (!privateNotebookSession) {
+        openForActiveChat();
+        return;
+      }
+
+      const shouldReopenForActiveChat = privateNotebookSession.chatId !== activeChatId;
+      void requestPrivateNotebookClose().then((closed) => {
+        if (closed && shouldReopenForActiveChat) openForActiveChat();
+      });
+    },
+    [activeChatId, chatDetail?.mode, privateNotebookSession, readFloatingPanelAnchor, requestPrivateNotebookClose],
   );
   const handleCloseSettingsPanel = useCallback(() => {
     blurActiveChatFloatingUiControl();
@@ -599,21 +676,25 @@ export const ChatArea = memo(function ChatArea() {
     setHomeProfessorChatOpen(false);
     setHomeProfessorChatActive(false);
   }, [activeChatId]);
-  const closeFloatingChatDrawers = useCallback((event?: Event) => {
-    const preservedPanel = event ? readAnnouncedChatToolbarPanelAction(event) : null;
-    blurActiveChatFloatingUiControl();
-    if (preservedPanel !== "settings") {
-      setSettingsOpen(false);
-      setSettingsAnchor(null);
-      setSettingsInitialSection(null);
-    }
-    if (preservedPanel !== "gallery") {
-      setGalleryOpen(false);
-      setGalleryAnchor(null);
-    }
-    setPeekPromptData(null);
-    setDeleteDialogMessageId(null);
-  }, []);
+  const closeFloatingChatDrawers = useCallback(
+    (event?: Event) => {
+      const preservedPanel = event ? readAnnouncedChatToolbarPanelAction(event) : null;
+      blurActiveChatFloatingUiControl();
+      if (preservedPanel !== "settings") {
+        setSettingsOpen(false);
+        setSettingsAnchor(null);
+        setSettingsInitialSection(null);
+      }
+      if (preservedPanel !== "gallery") {
+        setGalleryOpen(false);
+        setGalleryAnchor(null);
+      }
+      if (preservedPanel !== "notebook") void requestPrivateNotebookClose();
+      setPeekPromptData(null);
+      setDeleteDialogMessageId(null);
+    },
+    [requestPrivateNotebookClose],
+  );
   // A dropped agent parks a setup request; open chat settings so its modal can run.
   useEffect(() => {
     const openAgentSetup = (event: Event) => {
@@ -643,6 +724,11 @@ export const ChatArea = memo(function ChatArea() {
       window.removeEventListener(CHAT_FLOATING_UI_DISMISS_EVENT, closeFloatingChatDrawers);
     };
   }, [closeFloatingChatDrawers]);
+  useEffect(() => {
+    if (privateNotebookSession && privateNotebookSession.chatId !== activeChatId) {
+      void requestPrivateNotebookClose();
+    }
+  }, [activeChatId, privateNotebookSession, requestPrivateNotebookClose]);
   const chat = chatDetail ?? null;
   const rawMode = (chat as unknown as { mode?: string })?.mode;
   // Remember the last known chat mode so that a transient `undefined` from
@@ -1004,6 +1090,7 @@ export const ChatArea = memo(function ChatArea() {
           {
             id: c.id,
             name: display.name,
+            referenceNames: Array.isArray(parsed.extensions?.referenceNames) ? parsed.extensions.referenceNames : [],
             comment: display.comment,
             avatarUrl: c.avatarPath ?? undefined,
             avatarCrop: display.avatarCrop ?? null,
@@ -1014,6 +1101,7 @@ export const ChatArea = memo(function ChatArea() {
             backstory: parsed.extensions?.backstory ?? "",
             appearance: parsed.extensions?.appearance ?? "",
             tags: parsed.tags ?? [],
+            libraryProfile: normalizeGameCharacterLibraryProfile(parsed),
           },
         ];
       } catch {
@@ -3068,6 +3156,22 @@ export const ChatArea = memo(function ChatArea() {
     </Suspense>
   ) : null;
   const resourceDropOverlay = chat ? <ChatResourceDropOverlay chat={chat} /> : null;
+  const privateNotebookCharacterNames = Object.fromEntries(
+    [...characterMap].map(([characterId, character]) => [characterId, character.name]),
+  );
+  const privateNotebookPanel = privateNotebookSession ? (
+    <PrivateNotebookPanel
+      key={privateNotebookSession.chatId}
+      ref={privateNotebookPanelRef}
+      open
+      chatId={privateNotebookSession.chatId}
+      mode={privateNotebookSession.mode}
+      anchor={privateNotebookSession.anchor}
+      opener={privateNotebookSession.opener}
+      characterNames={privateNotebookCharacterNames}
+      onClose={handlePrivateNotebookClosed}
+    />
+  ) : null;
   const chatHelpMode = readChatHelpMode(chatMode);
   const chatHelpOverlay =
     chat && chatHelpMode ? (
@@ -3079,6 +3183,7 @@ export const ChatArea = memo(function ChatArea() {
           wizardOpen ||
           settingsOpen ||
           galleryOpen ||
+          !!privateNotebookSession ||
           !!pendingNewChatMode ||
           !!peekPromptData ||
           !!deleteDialogMessageId
@@ -3111,6 +3216,8 @@ export const ChatArea = memo(function ChatArea() {
             chatBackground={chatBackground}
             connectedChatName={connectedChatName}
             onOpenSettings={handleOpenSettingsPanel}
+            privateNotebookOpen={privateNotebookSession?.chatId === activeChatId}
+            onOpenPrivateNotebook={handleOpenPrivateNotebook}
             onCloseSettings={handleCloseSettingsPanel}
             externalGalleryOpen={galleryOpen}
             externalGalleryAnchor={galleryAnchor}
@@ -3165,6 +3272,7 @@ export const ChatArea = memo(function ChatArea() {
             onSelectAllBelowSelection={handleSelectAllBelowSelection}
           />
           {chatHelpOverlay}
+          {privateNotebookPanel}
         </>
       </Suspense>
     );
@@ -3224,6 +3332,8 @@ export const ChatArea = memo(function ChatArea() {
             onConcludeScene={chatMeta.sceneStatus === "active" ? () => concludeScene(activeChatId) : undefined}
             onAbandonScene={chatMeta.sceneStatus === "active" ? () => abandonScene(activeChatId) : undefined}
             onOpenSettings={handleOpenSettingsPanel}
+            privateNotebookOpen={privateNotebookSession?.chatId === activeChatId}
+            onOpenPrivateNotebook={handleOpenPrivateNotebook}
             onOpenGallery={handleOpenGalleryPanel}
             onOpenScheduleEditor={handleOpenScheduleEditor}
             onCloseSettings={handleCloseSettingsPanel}
@@ -3263,6 +3373,7 @@ export const ChatArea = memo(function ChatArea() {
           onConfirm={confirmConversationSelfiePromptReview}
         />
         {chatHelpOverlay}
+        {privateNotebookPanel}
         {pendingNewChatMode && (
           <NewChatConnectionGate
             mode={pendingNewChatMode}
@@ -3368,6 +3479,8 @@ export const ChatArea = memo(function ChatArea() {
           onForkScene={forkScene}
           isForkingScene={isForking || isStreaming}
           onOpenSettings={handleOpenSettingsPanel}
+          privateNotebookOpen={privateNotebookSession?.chatId === activeChatId}
+          onOpenPrivateNotebook={handleOpenPrivateNotebook}
           onOpenGallery={handleOpenGalleryPanel}
           onCloseSettings={handleCloseSettingsPanel}
           onCloseGallery={handleCloseGalleryPanel}
@@ -3425,6 +3538,7 @@ export const ChatArea = memo(function ChatArea() {
         onConfirm={confirmRoleplayVideoPromptReview}
       />
       {chatHelpOverlay}
+      {privateNotebookPanel}
       {pendingNewChatMode && (
         <NewChatConnectionGate
           mode={pendingNewChatMode}

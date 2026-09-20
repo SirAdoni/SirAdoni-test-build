@@ -1,18 +1,22 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import type { AgentContext, AgentResult } from "../../packages/shared/src/index.js";
+import { capabilityPackageManifestSchema } from "../../packages/shared/src/index.js";
 import type { AgentExecConfig } from "../../packages/server/src/services/agents/agent-executor.js";
 import {
   assertCapabilityAgentRuntimeServiceRegistration,
   finalizeCapabilityAgentResults,
   prepareCapabilityAgentContexts,
   shouldDeferCapabilityAgentResult,
+  canReuseCapabilityAgentInjection,
 } from "../../packages/server/src/services/capability-packages/capability-agent-runtime.service.js";
 import {
   registerCapabilityService,
   resetCapabilityServices,
 } from "../../packages/server/src/services/capability-packages/capability-service-registry.service.js";
 import { withDeadline } from "../../packages/server/src/services/capability-packages/capability-prompt-context.service.js";
+import { createAgentPipeline, type ResolvedAgent } from "../../packages/server/src/services/agents/agent-pipeline.js";
+import { BaseLLMProvider, type ChatMessage } from "../../packages/server/src/services/llm/base-provider.js";
 
 const agent = {
   id: "memory-nag-config",
@@ -43,6 +47,37 @@ const result: AgentResult = {
 };
 
 resetCapabilityServices();
+const localManifest = {
+  schemaVersion: 2,
+  capabilityApi: { major: 1, minor: 15 },
+  builtAgainst: { engineVersion: "2.4.4", localSourceHash: "a".repeat(64) },
+  id: "local-proof",
+  name: "Local proof",
+  version: "0.1.0",
+  description: "Local source provenance regression",
+  engine: { min: "2.4.4", maxExclusive: "4.0.0" },
+  kind: ["agent"],
+  entrypoints: { agents: "agents.json" },
+  files: [{ path: "agents.json", bytes: 1, sha256: "b".repeat(64) }],
+  permissions: ["agent-runtime"],
+  restartRequired: false,
+};
+assert.equal(capabilityPackageManifestSchema.safeParse(localManifest).success, true);
+assert.equal(
+  capabilityPackageManifestSchema.safeParse({
+    ...localManifest,
+    builtAgainst: { engineVersion: "2.4.4" },
+  }).success,
+  false,
+  "An unversioned local build still needs verifiable source provenance",
+);
+assert.equal(
+  capabilityPackageManifestSchema.safeParse({
+    ...localManifest,
+    builtAgainst: { engineVersion: "2.4.4", localSourceHash: "not-a-hash" },
+  }).success,
+  false,
+);
 assert.doesNotThrow(() =>
   assertCapabilityAgentRuntimeServiceRegistration("memory-nag", ["agent-runtime"], "agent-runtime:memory-nag"),
 );
@@ -131,5 +166,59 @@ try {
 } finally {
   finishRelease();
 }
+resetCapabilityServices();
+
+let requestMessages: ChatMessage[] = [];
+class LocalProofProvider extends BaseLLMProvider {
+  async *chat(messages: ChatMessage[]) {
+    requestMessages = messages;
+    yield "unvalidated suggestion";
+  }
+}
+const preAgent = {
+  ...agent,
+  id: "runtime-proof",
+  type: "runtime-proof",
+  name: "Runtime proof",
+  phase: "pre_generation",
+  promptTemplate: "Use supplied context.",
+  settings: { resultType: "context_injection", maxTokens: 1000 },
+  isCustomAgent: false,
+  provider: new LocalProofProvider("local-proof", ""),
+  model: "local-proof",
+} as ResolvedAgent;
+let reject = false;
+let validated = false;
+const stopPre = registerCapabilityService("agent-runtime:runtime-proof", {
+  reuseCachedInjection: false,
+  prepareContext: () => ({ candidates: ["source-backed-hook"] }),
+  finalizeResult: ({ result: input }: { result: AgentResult }) => {
+    if (reject) throw new Error("Closed hook rejected");
+    validated = true;
+    return { ...input, data: { text: "validated direction" } };
+  },
+});
+assert.equal(canReuseCapabilityAgentInjection("runtime-proof"), false);
+assert.equal(canReuseCapabilityAgentInjection("ordinary-agent"), true);
+const pipeline = createAgentPipeline([preAgent], context, (entry, options) => {
+  assert.equal(options?.finalized, true);
+  if (entry.success) assert.equal(validated, true, "Never publish before validation");
+});
+const injections = await pipeline.preGenerate();
+assert.equal(injections[0]?.text, "validated direction");
+assert.match(JSON.stringify(requestMessages), /source-backed-hook/);
+assert.deepEqual(pipeline.results[0]?.data, { text: "validated direction" });
+const disconnectedPipeline = createAgentPipeline([preAgent], context, () => {
+  throw new Error("Simulated closed SSE stream");
+});
+assert.equal(
+  (await disconnectedPipeline.preGenerate())[0]?.text,
+  "validated direction",
+  "A disconnected result listener must not discard validated injections",
+);
+reject = true;
+assert.deepEqual(await pipeline.preGenerate(), [], "Rejected package output must not enter the GM prompt");
+assert.equal(pipeline.results.at(-1)?.success, false);
+stopPre();
 resetCapabilityServices();
 console.info("Capability agent runtime regression passed");

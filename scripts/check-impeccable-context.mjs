@@ -21,6 +21,7 @@ if (failures.length === 0) {
   const result = spawnSync(process.execPath, [loaderPath], {
     cwd: root,
     encoding: "utf8",
+    windowsHide: true,
   });
 
   if (result.status !== 0) {

@@ -684,7 +684,7 @@ assert.doesNotMatch(
 }
 if (process.platform !== "win32") {
   const { spawn } = await import("node:child_process");
-  const leader = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+  const leader = spawn("sleep", ["30"], { detached: true, stdio: "ignore", windowsHide: true });
   const exited = new Promise<void>((resolveExit) => leader.once("close", () => resolveExit()));
   killSandboxedProcessTree(leader, "SIGKILL");
   const winner = await Promise.race([
@@ -930,6 +930,7 @@ if (process.platform === "win32") {
   const child = spawn("bash", ["-c", "trap '' TERM; (trap '' TERM; sleep 300) & echo GRANDCHILD:$!; wait"], {
     detached: true,
     stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
   });
   const grandchildPid = await new Promise<number>((resolvePid, rejectPid) => {
     let buffered = "";

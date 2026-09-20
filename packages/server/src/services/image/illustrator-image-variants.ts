@@ -4,9 +4,11 @@ export async function generateIllustratorImageVariants<T>({
   count,
   generate,
   onVariantError,
+  onVariantReady,
 }: {
   count: unknown;
   generate: (index: number) => Promise<T>;
+  onVariantReady?: (result: T, index: number) => Promise<void>;
   onVariantError?: (error: unknown, index: number) => void;
 }): Promise<T[]> {
   const variantCount = normalizeIllustratorImagesPerGeneration(count);
@@ -15,7 +17,10 @@ export async function generateIllustratorImageVariants<T>({
 
   for (let index = 0; index < variantCount; index += 1) {
     try {
-      results.push(await generate(index));
+      const result = await generate(index);
+      // Persist each completed image before waiting for the next slow variant.
+      await onVariantReady?.(result, index);
+      results.push(result);
     } catch (error) {
       lastError = error;
       onVariantError?.(error, index);

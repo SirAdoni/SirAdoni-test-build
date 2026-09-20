@@ -1,6 +1,8 @@
 import type { ChatCompletionResult, ChatMessage, ChatOptions, LLMUsage } from "../llm/base-provider.js";
 import { BaseLLMProvider } from "../llm/base-provider.js";
 import { logger } from "../../lib/logger.js";
+import { setTimeout as delay } from "node:timers/promises";
+import { timeStoryboardStage } from "../game/storyboard-progress.js";
 
 // Admission keys identify one physical provider endpoint. Text work keys on the configured
 // connection id; image work keys on the resolved base URL plus the endpoint id where the
@@ -8,7 +10,8 @@ import { logger } from "../../lib/logger.js";
 // unregistered foreground work would defeat the priority rule. The keyspaces do not overlap.
 type ConnectionState = {
   foregroundActive: number;
-  backgroundActive: boolean;
+  backgroundActive: number;
+  backgroundGroupId: string | null;
   lastForegroundFinishedAt: number;
   consecutiveBackgroundFailures: number;
   backgroundQuarantinedUntil: number;
@@ -19,12 +22,14 @@ export const BACKGROUND_CONNECTION_IDLE_MS = 30_000;
 export const BACKGROUND_CONNECTION_FAILURE_THRESHOLD = 3;
 export const BACKGROUND_CONNECTION_FAILURE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
-export type ConnectionAttemptOutcome = "completed" | "failed";
+export type ConnectionAttemptOutcome = "completed" | "failed" | "ignored";
 export type ConnectionAttemptFinalizer = (outcome: ConnectionAttemptOutcome) => void | Promise<void>;
 export type ConnectionAdmissionMode =
   | { kind: "foreground" }
   | {
       kind: "background";
+      /** Concurrent requests from one admitted batch may share the connection. */
+      groupId?: string;
       beforeAttempt?: () => void | ConnectionAttemptFinalizer | Promise<void | ConnectionAttemptFinalizer>;
     }
   /**
@@ -46,8 +51,21 @@ export function admissionModeForRequest(headers: Record<string, unknown>): Conne
 }
 
 export class BackgroundConnectionBusyError extends Error {
-  constructor(readonly connectionId: string) {
-    super(`Connection ${connectionId} is not available for background generation.`);
+  constructor(
+    readonly connectionId: string,
+    readonly reason: "foreground" | "background" | "cooldown" | "quarantined" = "background",
+    readonly retryAfterMs = 1000,
+  ) {
+    const seconds = Math.ceil(retryAfterMs / 1000);
+    const detail =
+      reason === "foreground"
+        ? "An interactive request is using the image connection."
+        : reason === "background"
+          ? "Another background batch is using the connection."
+          : reason === "cooldown"
+            ? `The connection is cooling down after an interactive request (${seconds}s remaining).`
+            : `Automatic generation is paused after repeated provider failures (${Math.ceil(seconds / 60)} minutes remaining). Test the image connection in Settings, then retry.`;
+    super(`No request was sent to the provider. ${detail}`);
     this.name = "BackgroundConnectionBusyError";
   }
 }
@@ -79,7 +97,8 @@ function stateFor(connectionId: string): ConnectionState {
   if (existing) return existing;
   const state = {
     foregroundActive: 0,
-    backgroundActive: false,
+    backgroundActive: 0,
+    backgroundGroupId: null,
     lastForegroundFinishedAt: 0,
     consecutiveBackgroundFailures: 0,
     backgroundQuarantinedUntil: 0,
@@ -117,24 +136,41 @@ export function beginForegroundConnection(connectionId: string): (outcome?: Conn
 export function tryBackgroundConnection(
   connectionId: string,
   at: Date,
-): { acquired: false } | { acquired: true; release: (outcome?: ConnectionAttemptOutcome) => void } {
+  groupId?: string,
+):
+  | { acquired: false; reason: BackgroundConnectionBusyError["reason"]; retryAfterMs: number }
+  | { acquired: true; release: (outcome?: ConnectionAttemptOutcome) => void } {
   const state = stateFor(connectionId);
+  const normalizedGroupId = groupId?.trim() || null;
+  const joinsActiveGroup =
+    state.backgroundActive > 0 && normalizedGroupId !== null && state.backgroundGroupId === normalizedGroupId;
   if (
-    state.backgroundActive ||
-    state.foregroundActive > 0 ||
-    at.getTime() < state.backgroundQuarantinedUntil ||
-    at.getTime() - state.lastForegroundFinishedAt < BACKGROUND_CONNECTION_IDLE_MS
+    !joinsActiveGroup &&
+    (state.backgroundActive > 0 ||
+      state.foregroundActive > 0 ||
+      at.getTime() < state.backgroundQuarantinedUntil ||
+      at.getTime() - state.lastForegroundFinishedAt < BACKGROUND_CONNECTION_IDLE_MS)
   ) {
-    return { acquired: false };
+    if (at.getTime() < state.backgroundQuarantinedUntil)
+      return { acquired: false, reason: "quarantined", retryAfterMs: state.backgroundQuarantinedUntil - at.getTime() };
+    if (state.foregroundActive > 0) return { acquired: false, reason: "foreground", retryAfterMs: 1000 };
+    if (state.backgroundActive > 0) return { acquired: false, reason: "background", retryAfterMs: 1000 };
+    return {
+      acquired: false,
+      reason: "cooldown",
+      retryAfterMs: Math.max(1, BACKGROUND_CONNECTION_IDLE_MS - (at.getTime() - state.lastForegroundFinishedAt)),
+    };
   }
-  state.backgroundActive = true;
+  state.backgroundActive += 1;
+  if (state.backgroundActive === 1) state.backgroundGroupId = normalizedGroupId;
   let released = false;
   return {
     acquired: true,
     release: (outcome) => {
       if (released) return;
       released = true;
-      state.backgroundActive = false;
+      state.backgroundActive = Math.max(0, state.backgroundActive - 1);
+      if (state.backgroundActive === 0) state.backgroundGroupId = null;
       recordConnectionOutcome(state, outcome);
     },
   };
@@ -151,8 +187,9 @@ async function beginConnectionAttempt(
   if (mode.kind === "none") return { release: () => undefined };
   if (mode.kind === "foreground") return { release: beginForegroundConnection(connectionId) };
 
-  const admission = tryBackgroundConnection(connectionId, new Date());
-  if (!admission.acquired) throw new BackgroundConnectionBusyError(connectionId);
+  const admission = tryBackgroundConnection(connectionId, new Date(), mode.groupId);
+  if (!admission.acquired)
+    throw new BackgroundConnectionBusyError(connectionId, admission.reason, admission.retryAfterMs);
   try {
     return { release: admission.release, finalize: (await mode.beforeAttempt?.()) || undefined };
   } catch (error) {
@@ -184,6 +221,7 @@ export async function withConnectionAdmission<T>(
   connectionId: string,
   mode: ConnectionAdmissionMode,
   operation: () => Promise<T>,
+  classifyFailure?: (error: unknown) => ConnectionAttemptOutcome,
 ): Promise<T> {
   const attempt = await beginConnectionAttempt(connectionId, mode);
   let outcome: ConnectionAttemptOutcome = "failed";
@@ -191,8 +229,36 @@ export async function withConnectionAdmission<T>(
     const result = await operation();
     outcome = "completed";
     return result;
+  } catch (error) {
+    outcome = classifyFailure?.(error) ?? "failed";
+    throw error;
   } finally {
     await finalizeConnectionAttempt(attempt, outcome);
+  }
+}
+
+/** Retry only local admission refusals, outside the media queue so waiting holds no permit. */
+export async function waitForImageConnection<T>(
+  operation: () => Promise<T>,
+  signal?: AbortSignal,
+  maxWaitMs = 5 * 60_000,
+): Promise<T> {
+  const deadline = Date.now() + maxWaitMs;
+  for (;;) {
+    signal?.throwIfAborted();
+    try {
+      return await operation();
+    } catch (error) {
+      if (!(error instanceof BackgroundConnectionBusyError) || error.reason === "quarantined") throw error;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        error.message = `Image generation could not start after waiting ${Math.ceil(maxWaitMs / 60_000)} minutes. ${error.message} Retry generation when the connection is idle.`;
+        throw error;
+      }
+      await timeStoryboardStage("Busy connection retry wait", () =>
+        delay(Math.min(error.retryAfterMs, remaining), undefined, { signal }),
+      );
+    }
   }
 }
 
@@ -223,6 +289,7 @@ export function splitConnectionAttemptAcrossFallback(mode: ConnectionAdmissionMo
   return {
     primaryMode: {
       kind: "background",
+      groupId: mode.groupId,
       beforeAttempt: async () => {
         finalize = (await book()) || undefined;
         return noopLegFinalizer;
@@ -230,7 +297,7 @@ export function splitConnectionAttemptAcrossFallback(mode: ConnectionAdmissionMo
     },
     // The fallback takes its own physical slot but books nothing: it is a retry of the attempt
     // the primary already booked.
-    fallbackMode: { kind: "background" },
+    fallbackMode: { kind: "background", groupId: mode.groupId },
     settle: async (outcome) => {
       const pending = finalize;
       // A rejected primary never booked anything, and settle must stay idempotent because a

@@ -93,6 +93,13 @@ export type GameDialogueDisplayMode = "classic" | "stacked";
 export type ChatListBackgroundMode = "hover" | "always" | "off";
 export type SummaryPopoverSourceMode = "last" | "range";
 export const DEFAULT_ROLEPLAY_BACKGROUND_URL = "/api/backgrounds/file/Black.jpg";
+const DEFAULT_CONVERSATION_BACKGROUND_IMAGE_OPACITY = 45;
+
+function normalizeConversationBackgroundImageOpacity(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, Math.min(100, Math.round(value)))
+    : DEFAULT_CONVERSATION_BACKGROUND_IMAGE_OPACITY;
+}
 export interface FloatingWidgetPosition {
   x: number;
   y: number;
@@ -614,6 +621,8 @@ interface UIState {
   defaultRoleplayBackground: string;
   /** Native blur applied to selected chat/game background images, in px. */
   chatBackgroundBlur: number;
+  /** Device-local opacity applied to conversation background images, as a percentage. */
+  conversationBackgroundImageOpacity: number;
   /** When set, the main area shows the full-page character editor instead of chat */
   characterDetailId: string | null;
   /** When set, the main area shows the full-page lorebook editor instead of chat */
@@ -1034,6 +1043,7 @@ interface UIState {
   setChatBackground: (url: string | null) => void;
   setDefaultRoleplayBackground: (url: string) => void;
   setChatBackgroundBlur: (v: number) => void;
+  setConversationBackgroundImageOpacity: (v: number) => void;
   setCharacterLibrarySelectedId: (id: string | null) => void;
   setPersonaLibrarySelectedId: (id: string | null) => void;
   setCharacterLibrarySort: (sort: CharacterLibrarySort) => void;
@@ -1337,6 +1347,7 @@ export function pickSyncedSettings(state: UIState) {
     chatBackground: state.chatBackground,
     defaultRoleplayBackground: state.defaultRoleplayBackground,
     chatBackgroundBlur: state.chatBackgroundBlur,
+    conversationBackgroundImageOpacity: state.conversationBackgroundImageOpacity,
     language: state.language,
     fontFamily: state.fontFamily,
     enableStreaming: state.enableStreaming,
@@ -1540,6 +1551,7 @@ export function pickPersistedUIState(state: UIState) {
     chatBackground: state.chatBackground,
     defaultRoleplayBackground: state.defaultRoleplayBackground,
     chatBackgroundBlur: state.chatBackgroundBlur,
+    conversationBackgroundImageOpacity: state.conversationBackgroundImageOpacity,
     fontSize: state.fontSize,
     language: state.language,
     chatFontSize: state.chatFontSize,
@@ -1734,6 +1746,7 @@ export const useUIStore = create<UIState>()(
         chatBackground: null,
         defaultRoleplayBackground: DEFAULT_ROLEPLAY_BACKGROUND_URL,
         chatBackgroundBlur: 0,
+        conversationBackgroundImageOpacity: DEFAULT_CONVERSATION_BACKGROUND_IMAGE_OPACITY,
         characterDetailId: null,
         lorebookDetailId: null,
         presetDetailId: null,
@@ -2061,6 +2074,8 @@ export const useUIStore = create<UIState>()(
         setDefaultRoleplayBackground: (url) =>
           set({ defaultRoleplayBackground: normalizeDefaultRoleplayBackground(url) }),
         setChatBackgroundBlur: (v) => set({ chatBackgroundBlur: Math.max(0, Math.min(24, Math.round(v))) }),
+        setConversationBackgroundImageOpacity: (v) =>
+          set({ conversationBackgroundImageOpacity: normalizeConversationBackgroundImageOpacity(v) }),
         setCharacterLibrarySelectedId: (id) => set({ characterLibrarySelectedId: id }),
         setPersonaLibrarySelectedId: (id) => set({ personaLibrarySelectedId: id }),
         setCharacterLibrarySort: (sort) => set({ characterLibrarySort: normalizeCharacterLibrarySort(sort) }),
@@ -3247,6 +3262,12 @@ export const useUIStore = create<UIState>()(
         if (version <= 31 && persisted.chatBackgroundBlur === undefined) {
           persisted.chatBackgroundBlur = 0;
         }
+        if (persisted.conversationBackgroundImageOpacity === undefined) {
+          persisted.conversationBackgroundImageOpacity = DEFAULT_CONVERSATION_BACKGROUND_IMAGE_OPACITY;
+        }
+        persisted.conversationBackgroundImageOpacity = normalizeConversationBackgroundImageOpacity(
+          persisted.conversationBackgroundImageOpacity,
+        );
         persisted.trackerPanelThoughtBubbleDisplay = normalizeTrackerThoughtBubbleDisplay(
           persisted.trackerPanelThoughtBubbleDisplay,
         );

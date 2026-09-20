@@ -29,6 +29,7 @@ interface STWorldInfoEntry {
   content?: string;
   description?: string;
   constant?: boolean;
+  alwaysLoaded?: boolean;
   selective?: boolean;
   selectiveLogic?: number | string;
   position?: number | string;
@@ -456,6 +457,7 @@ export async function importSTLorebook(
       secondaryKeys: resolvedSecondaryKeys,
       enabled: resolvedEnabled,
       constant: entry.constant ?? false,
+      alwaysLoaded: entry.alwaysLoaded ?? false,
       selective: entry.selective ?? false,
       selectiveLogic: resolveSelectiveLogic(entry.selectiveLogic),
       probability: resolveProbability(entry),

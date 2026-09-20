@@ -29,7 +29,7 @@
 
 import { existsSync, statSync, watch, watchFile, unwatchFile, type FSWatcher } from "node:fs";
 import { basename, dirname } from "node:path";
-import { logger } from "../lib/logger.js";
+import { logger, refreshConsoleLogLevel } from "../lib/logger.js";
 import { getEnvFilePath, getLogLevel, reloadRuntimeEnv, type EnvReloadResult } from "./runtime-config.js";
 import { personalServerExtensionRuntime } from "../services/extensions/personal-server-extension-runtime.js";
 
@@ -70,6 +70,10 @@ const RESTART_REQUIRED_KEYS = new Set<string>([
   // Fastify reads the LogController configuration once at boot (app.ts), so
   // toggling this after startup has no effect until a restart.
   "LOG_DISABLE_REQUEST_LOGGING",
+  "LOG_DIR",
+  "LOG_FILE_LEVEL",
+  "LOG_FILE_MAX_MB",
+  "LOG_FILE_KEEP",
   // The watcher mode itself is decided once at startup.
   "MARINARA_ENV_WATCH",
 ]);
@@ -121,11 +125,8 @@ function applyLogLevel(diff: EnvReloadResult) {
     return;
   }
   const next = getLogLevel();
-  try {
-    logger.level = next;
-  } catch (err) {
-    logger.warn({ err, requested: next }, "[env-watcher] Could not apply new LOG_LEVEL to logger");
-  }
+  refreshConsoleLogLevel();
+  logger.debug("[env-watcher] Applied console LOG_LEVEL=%s", next);
 }
 
 function applyExternalExtensionsGate(diff: EnvReloadResult) {

@@ -17,7 +17,6 @@ import { ColorPicker } from "../ui/ColorPicker";
 import { AgentSettingsActionButton } from "../chat/AgentSettingsControls";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
-export const MAX_GAME_SETUP_WIDGETS = 4;
 const GAME_WIDGET_EXPORT_KIND = "marinara-game-hud-widgets";
 const GAME_WIDGET_EXPORT_VERSION = 1;
 
@@ -270,7 +269,7 @@ export function normalizeGameHudWidgets(value: unknown, options: NormalizeGameHu
   const draftMode = options.mode === "draft";
 
   for (const entry of value) {
-    if (!entry || typeof entry !== "object" || normalized.length >= MAX_GAME_SETUP_WIDGETS) continue;
+    if (!entry || typeof entry !== "object") continue;
     const raw = entry as Partial<HudWidget>;
     const type = isHudWidgetType(raw.type) ? raw.type : "progress_bar";
     const rawLabel = typeof raw.label === "string" ? raw.label : "";
@@ -430,7 +429,6 @@ export function GameWidgetSetupEditor({ widgets, onChange, disabled, className }
   const { t: localizeUi } = useUiTranslation();
   const [newWidgetType, setNewWidgetType] = useState<HudWidgetType>("progress_bar");
   const normalizedWidgets = useMemo(() => normalizeGameHudWidgets(widgets), [widgets]);
-  const canAddWidget = normalizedWidgets.length < MAX_GAME_SETUP_WIDGETS;
 
   const replaceWidget = (widgetId: string, patch: Partial<HudWidget>) => {
     onChange(
@@ -465,12 +463,12 @@ export function GameWidgetSetupEditor({ widgets, onChange, disabled, className }
   };
 
   const addWidget = () => {
-    if (!canAddWidget || disabled) return;
+    if (disabled) return;
     onChange([...normalizedWidgets, createDefaultGameHudWidget(newWidgetType, normalizedWidgets)]);
   };
 
   const duplicateWidget = (widget: HudWidget) => {
-    if (!canAddWidget || disabled) return;
+    if (disabled) return;
     const label = widget.label.trim() || formatWidgetTypeLabel(widget.type);
     onChange([
       ...normalizedWidgets,
@@ -487,13 +485,13 @@ export function GameWidgetSetupEditor({ widgets, onChange, disabled, className }
     <div className={cn("space-y-3", className)}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
-          {normalizedWidgets.length}/{MAX_GAME_SETUP_WIDGETS} {localizeUi("ui.game.gamewidgetsetupeditor.widgets")}
+          {localizeUi("ui.game.gamewidgetsetupeditor.widgetCount", { count: normalizedWidgets.length })}
         </span>
         <div className="flex min-w-0 items-center gap-2">
           <select
             value={newWidgetType}
             onChange={(event) => setNewWidgetType(event.target.value as HudWidgetType)}
-            disabled={disabled || !canAddWidget}
+            disabled={disabled}
             className="min-w-0 rounded-lg border border-[var(--border)] bg-[var(--background)] px-2.5 py-1.5 text-xs text-[var(--foreground)] disabled:opacity-50"
           >
             {WIDGET_TYPES.map((type) => (
@@ -502,12 +500,7 @@ export function GameWidgetSetupEditor({ widgets, onChange, disabled, className }
               </option>
             ))}
           </select>
-          <AgentSettingsActionButton
-            type="button"
-            variant="primary"
-            onClick={addWidget}
-            disabled={disabled || !canAddWidget}
-          >
+          <AgentSettingsActionButton type="button" variant="primary" onClick={addWidget} disabled={disabled}>
             <Plus size="0.75rem" />
             <span>{localizeUi("ui.characters.metadatatab.add")}</span>
           </AgentSettingsActionButton>
@@ -567,7 +560,7 @@ export function GameWidgetSetupEditor({ widgets, onChange, disabled, className }
                   <button
                     type="button"
                     onClick={() => duplicateWidget(widget)}
-                    disabled={disabled || !canAddWidget}
+                    disabled={disabled}
                     className="inline-flex h-9 items-center justify-center rounded-lg border border-[var(--border)] px-3 text-[var(--foreground)] transition-colors hover:bg-[var(--accent)] disabled:opacity-50"
                     aria-label={localizeUi("ui.game.gamewidgetsetupeditor.duplicateValue1", {
                       value1: widget.label.trim() || formatWidgetTypeLabel(widget.type),
@@ -636,6 +629,17 @@ export function GameWidgetSetupEditor({ widgets, onChange, disabled, className }
                   onChange={(accent) => replaceWidget(widget.id, { accent: accent || DEFAULT_ACCENTS[widget.type] })}
                 />
               </div>
+
+              <label className="mt-2 flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--secondary)] px-2.5 py-2 text-xs text-[var(--foreground)]">
+                <input
+                  type="checkbox"
+                  checked={widget.config.autoSize !== false}
+                  disabled={disabled}
+                  onChange={(event) => updateWidgetConfig(widget.id, { autoSize: event.target.checked })}
+                  className="h-3.5 w-3.5 accent-[var(--primary)]"
+                />
+                {localizeUi("ui.game.gamewidgetsetupeditor.autoSize")}
+              </label>
 
               <WidgetConfigFields
                 widget={widget}

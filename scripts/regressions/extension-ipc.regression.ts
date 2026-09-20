@@ -184,6 +184,7 @@ writeFileSync(outputPath, "");
 writeFileSync(heartbeatPath, "");
 const runnerPath = join(REPOSITORY_ROOT, "packages/server/src/assets/personal-extension-runner.mjs");
 const child = spawn(process.execPath, [runnerPath, inputPath, outputPath, heartbeatPath], {
+  windowsHide: true,
   stdio: ["ignore", "ignore", "pipe"],
 });
 let stderr = "";

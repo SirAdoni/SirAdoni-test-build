@@ -37,6 +37,7 @@ import {
 import { ConversationPresenceScheduleSection } from "./ConversationPresenceScheduleSection";
 import { formatRelativeContact } from "../../lib/relative-time";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 
 type StatusEntry = {
   status: ConversationPresenceStatus;
@@ -139,7 +140,7 @@ export function ConversationPresenceCard({
   const [pendingStatuses, setPendingStatuses] = useState<Record<string, ConversationPresenceStatus>>({});
   const [replyNowCharacterId, setReplyNowCharacterId] = useState<string | null>(null);
   const [draftActivity, setDraftActivity] = useState("");
-  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const buttonRef = useRef<HTMLDivElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const statusButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const activityFieldRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
@@ -546,13 +547,20 @@ export function ConversationPresenceCard({
 
   return (
     <>
-      <button
+      <div
         ref={buttonRef}
-        type="button"
+        role="button"
+        tabIndex={0}
         data-chat-help="identity"
         className={identityPillClass}
         title={title}
         onClick={() => {
+          announceChatToolbarAction();
+          setOpen((value) => !value);
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
           announceChatToolbarAction();
           setOpen((value) => !value);
         }}
@@ -561,14 +569,20 @@ export function ConversationPresenceCard({
           <>
             <div className="relative flex-shrink-0">
               {characters[0].avatarUrl ? (
-                <span className={avatarShellClass}>
+                <CharacterPhoto
+                  src={characters[0].avatarUrl}
+                  name={characters[0].name}
+                  className={avatarShellClass}
+                  wrapperClassName="relative inline-flex shrink-0 items-center gap-0.5"
+                  onUpdate={() => openCharacterDetail(characters[0].id)}
+                >
                   <img
                     src={characters[0].avatarUrl}
                     alt={characters[0].name}
                     className="h-full w-full object-cover"
                     style={getAvatarCropStyle(characters[0].avatarCrop)}
                   />
-                </span>
+                </CharacterPhoto>
               ) : (
                 <div className={avatarFallbackClass}>{characters[0].name[0]}</div>
               )}
@@ -590,21 +604,24 @@ export function ConversationPresenceCard({
           </>
         ) : (
           <>
-            <div
-              className="relative flex-shrink-0"
-              style={{ width: `${Math.min(characters.length, 3) * 12 + 8}px`, height: 20 }}
-            >
-              {characters.slice(0, 3).map((character, index) => (
-                <div key={character.id} className="absolute top-0" style={{ left: index * 12 }}>
+            <div className="flex shrink-0 items-center gap-0.5">
+              {characters.slice(0, 3).map((character) => (
+                <div key={character.id} className="relative flex shrink-0 items-center">
                   {character.avatarUrl ? (
-                    <span className={avatarShellClass}>
+                    <CharacterPhoto
+                      src={character.avatarUrl}
+                      name={character.name}
+                      className={avatarShellClass}
+                      wrapperClassName="relative inline-flex shrink-0 items-center gap-0.5"
+                      onUpdate={() => openCharacterDetail(character.id)}
+                    >
                       <img
                         src={character.avatarUrl}
                         alt={character.name}
                         className="h-full w-full object-cover"
                         style={getAvatarCropStyle(character.avatarCrop)}
                       />
-                    </span>
+                    </CharacterPhoto>
                   ) : (
                     <div className={avatarFallbackClass}>{character.name[0]}</div>
                   )}
@@ -627,7 +644,7 @@ export function ConversationPresenceCard({
             </span>
           </>
         )}
-      </button>
+      </div>
 
       {open &&
         createPortal(
@@ -709,14 +726,19 @@ export function ConversationPresenceCard({
                     <div className="min-w-0">
                       <div className="flex min-w-0 items-start gap-3">
                         {character.avatarUrl ? (
-                          <span className="relative block h-9 w-9 shrink-0 overflow-hidden rounded-xl ring-1 ring-[var(--border)]/80">
+                          <CharacterPhoto
+                            src={character.avatarUrl}
+                            name={character.name}
+                            className="relative block h-9 w-9 shrink-0 overflow-hidden rounded-xl ring-1 ring-[var(--border)]/80"
+                            onUpdate={() => openCharacterDetail(character.id)}
+                          >
                             <img
                               src={character.avatarUrl}
                               alt={character.name}
                               className="h-full w-full object-cover"
                               style={getAvatarCropStyle(character.avatarCrop)}
                             />
-                          </span>
+                          </CharacterPhoto>
                         ) : (
                           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--secondary)] text-xs font-bold text-[var(--foreground)]/70 ring-1 ring-[var(--border)]/80">
                             {character.name[0]}

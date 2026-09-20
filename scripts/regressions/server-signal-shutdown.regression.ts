@@ -39,7 +39,7 @@ if (process.platform === "win32") {
         "-Port",
         String(port),
       ],
-      { stdio: "inherit", timeout: 45_000 },
+      { stdio: "inherit", timeout: 45_000, windowsHide: true },
     );
   } catch (error) {
     for (const name of ["progress.log", "stdout.log", "stderr.log"]) {
@@ -81,7 +81,8 @@ const child = spawn(
       AUTO_CREATE_DEFAULT_CONNECTION: "false",
       AUTO_OPEN_BROWSER: "false",
     },
-    stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
   },
 );
 let output = "";
@@ -152,7 +153,7 @@ for (const nodeEnv of ["production", "development"]) {
         mode,
         nodeEnv,
       ],
-      { stdio: "inherit", timeout: 40_000 },
+      { stdio: "inherit", timeout: 40_000, windowsHide: true },
     );
   }
 }

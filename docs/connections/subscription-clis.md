@@ -73,6 +73,8 @@ codex login
 
 Marinara reads your local Codex login file and refreshes the session when it can.
 
+The same sign-in also powers image generation. Create an **Image Generation** connection and pick the **ChatGPT Subscription** service; no API key or Base URL is needed. See [Image Generation Providers and Setup](../media/image-providers.md).
+
 ## Grok CLI (Subscription)
 
 You need a SuperGrok or X Premium+ account.

@@ -283,11 +283,14 @@ export function buildCommittedTrackerContextBlock(args: {
 
   if (trackerParts.length === 0) return null;
 
+  const knowledgeBoundary =
+    "Tracker state is reference material for continuity, not automatically visible or known to characters. A character may use only what the fiction establishes they witnessed, were told, or can infer from concrete observable evidence; private thoughts, plans, notes, and inventory remain private.";
+
   return args.wrapFormat === "none"
-    ? `Context:\n${trackerParts.join("\n\n")}`
+    ? `${knowledgeBoundary}\n\n${trackerParts.join("\n\n")}`
     : args.wrapFormat === "xml"
-      ? `<context>\n${trackerParts.map((part) => "    " + part.replace(/\n/g, "\n    ")).join("\n")}\n</context>`
-      : `# Context\n*(Established state as of the last message. Do not re-describe — advance from here.)*\n${trackerParts.join("\n")}`;
+      ? `<context>\n    <knowledge_boundary>${knowledgeBoundary}</knowledge_boundary>\n${trackerParts.map((part) => "    " + part.replace(/\n/g, "\n    ")).join("\n")}\n</context>`
+      : `# Context\n*${knowledgeBoundary}*\n*(Established state as of the last message. Do not re-describe — advance from here.)*\n${trackerParts.join("\n")}`;
 }
 
 export function injectCommittedTrackerContext(args: {

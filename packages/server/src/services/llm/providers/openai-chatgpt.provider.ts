@@ -14,15 +14,25 @@ import {
   buildOpenAIChatGPTHeaders,
   getOpenAIChatGPTAuth,
 } from "../openai-chatgpt-auth.js";
+import { formatOpenAIChatGPTCacheSession, resolveOpenAIChatGPTCacheIdentity } from "./openai-chatgpt-cache.js";
 
 /**
  * Routes OpenAI Responses API calls through the user's local Codex ChatGPT
  * login instead of an API key. The auth helper reads and refreshes the same
  * `auth.json` created by `codex login`.
  */
+/** Keep requests for the same chat's full-lore prefix on a stable cache session. */
+export function resolveOpenAIChatGPTCacheSession(messages: ChatMessage[]): string | undefined {
+  const identity = resolveOpenAIChatGPTCacheIdentity(messages);
+  return identity ? formatOpenAIChatGPTCacheSession(identity) : undefined;
+}
+
 export class OpenAIChatGPTProvider extends BaseLLMProvider {
-  private async delegate(): Promise<OpenAIProvider> {
+  private async delegate(messages: ChatMessage[]): Promise<OpenAIProvider> {
     const auth = await getOpenAIChatGPTAuth();
+    const sessionId = resolveOpenAIChatGPTCacheSession(messages);
+    const headers = buildOpenAIChatGPTHeaders(auth);
+    if (sessionId) headers.session_id = sessionId;
     return new OpenAIProvider(
       OPENAI_CHATGPT_CODEX_BASE_URL,
       auth.accessToken,
@@ -30,17 +40,17 @@ export class OpenAIChatGPTProvider extends BaseLLMProvider {
       this.defaultOpenrouterProvider,
       this.maxTokensOverride,
       "openai-chatgpt",
-      buildOpenAIChatGPTHeaders(auth),
+      headers,
     );
   }
 
   async *chat(messages: ChatMessage[], options: ChatOptions): AsyncGenerator<string, LLMUsage | void, unknown> {
-    const provider = await this.delegate();
+    const provider = await this.delegate(messages);
     return yield* provider.chat(messages, options);
   }
 
   override async chatComplete(messages: ChatMessage[], options: ChatOptions): Promise<ChatCompletionResult> {
-    const provider = await this.delegate();
+    const provider = await this.delegate(messages);
     return provider.chatComplete(messages, options);
   }
 }

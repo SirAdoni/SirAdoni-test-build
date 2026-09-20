@@ -160,10 +160,16 @@ export interface GameCharacterCard {
 /** A tracked NPC in the game world. */
 export interface GameNpc {
   id: string;
+  /** Linked reusable Character-library card created for or assigned to this NPC. */
+  characterId?: string | null;
   name: string;
   emoji: string;
   description: string;
-  /** Origin of the description. "model", "library", and "user" descriptions are canonical profile text. */
+  /** Public, scene-grounded description recorded after this NPC is introduced. */
+  observedDescription?: string;
+  /** Public physical appearance observed in the current or a prior scene. */
+  observedAppearance?: string;
+  /** Origin of the description. Model setup text may be GM-private; observed fields are presentation-safe. */
   descriptionSource?: "model" | "library" | "narration" | "user";
   /** Optional presentation hint used for systems like NPC voice matching. */
   gender?: string | null;
@@ -774,6 +780,8 @@ export interface HudWidget {
 
 /** Type-specific widget config. */
 export interface HudWidgetConfig {
+  /** Fit the panel to its visible labels instead of keeping the default fixed width. */
+  autoSize?: boolean;
   // progress_bar / gauge / relationship_meter
   /** Initial value used when the widget is created for a new session. */
   startingValue?: number;
@@ -810,6 +818,11 @@ export interface WidgetUpdate {
   widgetId: string;
   /** Partial config / value changes to merge. */
   changes: Omit<Partial<HudWidgetConfig>, "value"> & {
+    action?: "create" | "delete";
+    type?: HudWidgetType;
+    label?: string;
+    icon?: string;
+    position?: "hud_left" | "hud_right";
     value?: number | string;
     add?: string;
     remove?: string;

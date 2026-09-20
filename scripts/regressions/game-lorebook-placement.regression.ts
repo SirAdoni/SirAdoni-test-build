@@ -25,7 +25,10 @@ const provider = createServer(async (request, response) => {
   let raw = "";
   for await (const chunk of request) raw += chunk;
   const body = JSON.parse(raw);
-  requests.push(body.messages);
+  // Background continuity jobs share the connection; count only the narrator's wire requests.
+  if (body.messages.some((message: WireMessage) => message.content.includes("GM_INSTRUCTIONS_MARKER"))) {
+    requests.push(body.messages);
+  }
   const content = "The lantern is steady.";
   response.writeHead(200, { "content-type": "text/event-stream" });
   response.end(
@@ -126,7 +129,10 @@ try {
     assert.equal(containing("KEEPER_DEPTH_ZERO").role, "assistant");
     const order = ["HISTORY_3", "MANUAL_DEPTH_TWO", "HISTORY_4", "GAME_DEPTH_ONE", "HISTORY_5", "KEEPER_DEPTH_ZERO"];
     for (let index = 1; index < order.length; index++) {
-      assert.ok(text.indexOf(order[index - 1]!) < text.indexOf(order[index]!), "Depth stays relative to chat history");
+      assert.ok(
+        text.indexOf(order[index - 1]!) < text.indexOf(order[index]!),
+        `Depth stays relative to chat history: ${order[index - 1]} before ${order[index]} (strict=${strictRoleFormatting}); order=${order.map((marker) => `${marker}:${text.indexOf(marker)}`).join(", ")}`,
+      );
     }
     const system = containing("GM_INSTRUCTIONS_MARKER");
     assert.equal(system.role, "system");

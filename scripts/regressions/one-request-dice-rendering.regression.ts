@@ -334,7 +334,21 @@ assert.match(
 
 // ── The route: the filter is in the chain, and only while the switch is on ───
 const draft = "The axe bites deep for [[roll: 2d6+3]] damage, and the wound burns for [[roll: 1d4]] rounds.";
-async function* scriptedChat(_messages: ChatMessage[], _options: ChatOptions): AsyncGenerator<string, LLMUsage> {
+const isBackgroundGameRequest = (messages: ChatMessage[]): boolean => {
+  const first = messages[0]?.content ?? "";
+  return (
+    first.startsWith("You maintain an evidence-based scene timeline") ||
+    (messages.length === 1 &&
+      /^(?:Extract durable continuity records|Review continuity source-first|Repair only the reviewed continuity findings)/u.test(
+        first,
+      ))
+  );
+};
+async function* scriptedChat(messages: ChatMessage[], _options: ChatOptions): AsyncGenerator<string, LLMUsage> {
+  if (isBackgroundGameRequest(messages)) {
+    yield '{"visits":[],"records":[],"dispositions":[],"recordChecks":[],"findings":[]}';
+    return { promptTokens: 1, completionTokens: 1, totalTokens: 2, finishReason: "stop" };
+  }
   // One character at a time, which is the worst case the filter has to survive.
   for (const character of draft) yield character;
   return { promptTokens: 10, completionTokens: 5, totalTokens: 15, finishReason: "stop" };
@@ -362,7 +376,12 @@ try {
     promptPresetId: null,
   });
   assert.ok(chat);
-  await chats.patchMetadata(chat.id, { enableAgents: false, enableTools: false, gameOneRequestDice: true });
+  await chats.patchMetadata(chat.id, {
+    enableAgents: false,
+    enableTools: false,
+    gameOneRequestDice: true,
+    cacheSendGuard: { enabled: false },
+  });
 
   await chats.createMessage({ chatId: chat.id, role: "user", content: "Swing the axe." });
   const on = await app.inject({ method: "POST", url: "/api/generate/", payload: { chatId: chat.id } });

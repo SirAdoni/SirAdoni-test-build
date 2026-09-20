@@ -5790,6 +5790,10 @@ const chatMessageSource = readFileSync(
   new URL("../../packages/client/src/components/chat/ChatMessage.tsx", import.meta.url),
   "utf8",
 );
+const messageEditTextareaSource = readFileSync(
+  new URL("../../packages/client/src/components/chat/MessageEditTextarea.tsx", import.meta.url),
+  "utf8",
+);
 const assignedSweepChatAreaSource = readFileSync(
   new URL("../../packages/client/src/components/chat/ChatArea.tsx", import.meta.url),
   "utf8",
@@ -5823,6 +5827,7 @@ assert.equal(
   2,
   "Collapsed and expanded Echo Chamber windows must share the mobile edit marker",
 );
+assert.match(messageEditTextareaSource, /pointer-events-auto relative z-30 flex h-11 w-11/u);
 assert.match(chatRowPeekSource, /mari-chrome-accent-text-muted mari-accent-animated text-\[0\.6875rem\]/u);
 assert.match(assignedSweepChatAreaSource, /mari-chrome-accent-text-muted mari-accent-animated max-w-sm text-xs/u);
 assert.match(
@@ -5928,7 +5933,7 @@ assert.match(
   "Expanded macro editors must only initialize and focus when opened, not after every parent value update",
 );
 assert.match(
-  chatMessageSource,
+  messageEditTextareaSource,
   /aria-label=\{localizeUi\("ui\.chat\.edittextarea\.saveEdit"\)\}[\s\S]{0,180}h-11 w-11/u,
   "The Roleplay edit Save control must keep a full touch-sized hit target",
 );
@@ -5951,6 +5956,11 @@ assert.match(
   spriteOverlaySource,
   /const stageZIndexClass = editing \? "z-\[35\]" : "z-\[5\]"/u,
   "non-editing sprites must remain below the Roleplay transcript and its CYOA controls",
+);
+assert.match(
+  spriteOverlaySource,
+  /fitStage \? "max-h-\[98cqh\] max-w-\[98cqw\]" : ""/u,
+  "stage-fitted sprites must shrink to remain fully inside their visual stage",
 );
 assert.equal(SPRITE_DISPLAY_OPACITY_MIN, 0, "sprite opacity must support a fully transparent endpoint");
 assert.equal(SPRITE_DISPLAY_OPACITY_PERCENT_MIN, 0, "sprite opacity controls must expose zero percent");
@@ -6316,9 +6326,19 @@ const gameSurfaceSource = readFileSync(
   new URL("../../packages/client/src/components/game/GameSurface.tsx", import.meta.url),
   "utf8",
 );
+assert.equal(
+  gameSurfaceSource.match(/spriteStageSlot=\{gameSpriteContent\}/gu)?.length,
+  2,
+  "Game exploration and travel narration must share the bounded sprite stage",
+);
 const gameNarrationSource = readFileSync(
   new URL("../../packages/client/src/components/game/GameNarration.tsx", import.meta.url),
   "utf8",
+);
+assert.match(
+  gameNarrationSource,
+  /relative isolate min-h-0 flex flex-1[\s\S]{0,300}data-component="GameNarration\.SpriteStage"/u,
+  "the Game sprite stage must occupy only the flexible scene area above the narration panel",
 );
 const gameAudioSource = readFileSync(new URL("../../packages/client/src/lib/game-audio.ts", import.meta.url), "utf8");
 const gameSetupWizardSource = readFileSync(
@@ -6751,6 +6771,18 @@ assert.equal(
   2,
   "Game session conclusion requests must scope provider body timeouts to the configured chat timeout",
 );
+assert.equal(
+  gameRoutesSource.match(
+    /fitSessionConclusionMessages\(\{[\s\S]{0,240}?gameSpecialInstructions: readTrimmedString\(meta\.gameSpecialInstructions\),/gu,
+  )?.length,
+  2,
+  "Game session conclusion and regeneration must preserve live Extra Instructions",
+);
+assert.match(
+  gameRoutesSource,
+  /buildCampaignProgressionPrompt\(\{[\s\S]{0,240}gameSpecialInstructions: readTrimmedString\(currentMeta\.gameSpecialInstructions\)/u,
+  "Standalone campaign progression must preserve the current campaign's Extra Instructions",
+);
 assert.match(
   gameRoutesSource,
   /if \(!selectedTemplate\?\.promptTemplate\.trim\(\)\) \{[\s\S]*The Storyboard Agent has no/u,
@@ -6903,8 +6935,8 @@ assert.match(
 );
 assert.match(
   conversationSelfieRuntimeSource,
-  /resolveIllustratorCharacterReferences\(\{[\s\S]{0,800}persona: null,[\s\S]{0,200}requestedNames,[\s\S]{0,300}maxReferences: 6/u,
-  "Conversation group selfies must keep all depicted character references without attaching the photographer persona",
+  /resolveIllustratorCharacterReferences\(\{[\s\S]{0,800}persona: null,[\s\S]{0,200}requestedNames,[\s\S]{0,300}maxReferences: selfieReferenceLimit/u,
+  "Conversation group selfies must honor the active image connection's reference limit without attaching the photographer persona",
 );
 assert.match(
   conversationSelfieRuntimeSource,
@@ -9962,13 +9994,17 @@ assert.equal(({} as { tags?: string[] }).tags, undefined, "Background metadata m
   const gameMapSource = readFileSync(join(REPOSITORY_ROOT, "packages/client/src/components/game/GameMap.tsx"), "utf8");
   const gameWorldMapHosts = findCapabilityHosts(gameMapSource, "hierarchical-maps", "world-map");
   assert.equal(gameWorldMapHosts.length, 2, "Game Map must expose exactly its desktop and mobile World Maps hosts");
-  const desktopWorldMapHosts = gameWorldMapHosts.filter((host) => !host.includes("compact: true,"));
-  const mobileWorldMapHosts = gameWorldMapHosts.filter((host) => host.includes("compact: true,"));
-  assert.equal(desktopWorldMapHosts.length, 1, "Desktop Game Map must expose one non-compact World Maps host");
-  assert.equal(mobileWorldMapHosts.length, 1, "Mobile Game Map must expose one compact World Maps host");
+  // Both in-game hosts are intentionally compact nearby-place views. The
+  // fullscreen editor is opened through openSpatialMapDetail and owns its
+  // expanded presentation separately.
+  assert.equal(
+    gameWorldMapHosts.filter((host) => host.includes("compact: true,")).length,
+    2,
+    "Desktop and mobile Game Map hosts must use compact nearby-place presentation",
+  );
   for (const [surface, host] of [
-    ["Desktop", desktopWorldMapHosts[0]],
-    ["Mobile", mobileWorldMapHosts[0]],
+    ["Desktop", gameWorldMapHosts[0]],
+    ["Mobile", gameWorldMapHosts[1]],
   ] as const) {
     assert.match(
       host,
@@ -10468,10 +10504,18 @@ assert.equal(({} as { tags?: string[] }).tags, undefined, "Background metadata m
     /logDebugOverride\(requestDebug \|\| isDebugAgentsEnabled\(\), message, \.\.\.args\)/u,
     "Turn-game prompt logging must honor both UI debug mode and DEBUG_AGENTS",
   );
+  const directTurnGameRunnerBlocks = [
+    ...generateRouteSource.matchAll(/runTurnGameBotTurns\(\{[\s\S]*?\n\s*\}\);/gu),
+  ];
   assert.equal(
-    (generateRouteSource.match(/debugLog: turnGameDebugLog/gu) ?? []).length,
-    3,
-    "Every production turn-game runner path must receive the request-aware debug logger",
+    directTurnGameRunnerBlocks.length,
+    2,
+    "The generate route must retain both direct turn-game runner paths",
+  );
+  assert.equal(
+    directTurnGameRunnerBlocks.filter(([block]) => /debugLog: turnGameDebugLog/u.test(block)).length,
+    directTurnGameRunnerBlocks.length,
+    "Every direct turn-game runner path must receive the request-aware debug logger",
   );
   assert.match(turnGameCommandRuntimeSource, /debugLog: args\.debugLog/u);
   assert.match(

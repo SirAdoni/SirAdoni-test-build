@@ -11,6 +11,7 @@ import {
   useCallback,
   useMemo,
   useState,
+  type CSSProperties,
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
@@ -29,6 +30,7 @@ import {
   getChatToolbarButtonClass,
 } from "./ChatToolbarControls";
 import { ChatHelpButton } from "./ChatHelpButton";
+import { PrivateNotebookToolbarButton } from "./PrivateNotebookPanel";
 import { ConversationPresenceCard } from "./ConversationPresenceCard";
 import { PendingTypingDots } from "./PendingTypingDots";
 import { TranscriptWindowControls } from "./TranscriptWindowControls";
@@ -49,6 +51,7 @@ import {
 import { useThrottledStreamBuffer } from "../../hooks/use-throttled-stream-buffer";
 import { useConversationCustomEmojis } from "../../hooks/use-conversation-custom-emojis";
 import { useConversationCustomStickers } from "../../hooks/use-conversation-custom-stickers";
+import { useReducedAmbientEffects } from "../../hooks/use-reduced-ambient-effects";
 import type { CharacterMap, MessageSelectionToggle, PersonaInfo } from "./chat-area.types";
 import {
   normalizeTextForMatch,
@@ -98,6 +101,8 @@ interface ConversationViewProps {
   onGenerateSelfie?: (characterId?: string) => void | Promise<void>;
   lastAssistantMessageId: string | null;
   onOpenSettings: (event?: ReactMouseEvent<HTMLElement>, options?: { initialSection?: "autonomous" | null }) => void;
+  privateNotebookOpen: boolean;
+  onOpenPrivateNotebook: (event?: ReactMouseEvent<HTMLElement>) => void;
   onOpenScheduleEditor?: (characterId: string, options?: { initialDay?: string | null }) => void;
   onOpenGallery: (event?: ReactMouseEvent<HTMLElement>) => void;
   onBranch?: (messageId: string) => void;
@@ -282,6 +287,101 @@ function splitAssistantContentLines(content: string, charName?: string | null): 
 const globalSeenKeys = new Set<string>();
 const MAX_GLOBAL_SEEN_KEYS = 5_000;
 
+function getBackgroundBlurStyle(blurPx: number): Pick<CSSProperties, "filter" | "transform"> {
+  if (blurPx <= 0) return {};
+  return {
+    filter: `blur(${blurPx}px)`,
+    transform: `scale(${Math.min(1.08, 1 + blurPx * 0.0025)})`,
+  };
+}
+
+function CrossfadeBackground({
+  url,
+  blurPx,
+  opacity,
+  reduceMotion,
+}: {
+  url: string | null;
+  blurPx: number;
+  opacity: number;
+  reduceMotion: boolean;
+}) {
+  const [bgA, setBgA] = useState<string | null>(url);
+  const [bgB, setBgB] = useState<string | null>(null);
+  const [aActive, setAActive] = useState(true);
+  const activeSlot = useRef<"a" | "b">("a");
+  const backgroundBlurStyle = getBackgroundBlurStyle(blurPx);
+  const transition = reduceMotion
+    ? "none"
+    : "opacity 700ms ease-in-out, filter 180ms ease-out, transform 180ms ease-out";
+
+  useEffect(() => {
+    const currentUrl = activeSlot.current === "a" ? bgA : bgB;
+    if (url === currentUrl) return;
+
+    if (!url) {
+      applyUrl(null);
+      return;
+    }
+
+    let cancelled = false;
+    const image = document.createElement("img");
+    image.onload = () => {
+      if (!cancelled) applyUrl(url);
+    };
+    image.onerror = () => {
+      if (cancelled || useUIStore.getState().chatBackground !== url) return;
+      console.warn(`[Background] "${url}" could not be loaded — clearing`);
+      useUIStore.getState().setChatBackground(null);
+    };
+    image.src = url;
+    return () => {
+      cancelled = true;
+      image.onload = null;
+      image.onerror = null;
+    };
+
+    function applyUrl(nextUrl: string | null) {
+      if (activeSlot.current === "a") {
+        setBgB(nextUrl);
+        setAActive(false);
+        activeSlot.current = "b";
+      } else {
+        setBgA(nextUrl);
+        setAActive(true);
+        activeSlot.current = "a";
+      }
+    }
+  }, [bgA, bgB, url]);
+
+  return (
+    <>
+      <img
+        src={bgA ?? undefined}
+        alt=""
+        draggable={false}
+        className="mari-background pointer-events-none absolute inset-0 h-full w-full select-none object-cover object-center"
+        style={{
+          opacity: aActive && bgA ? opacity : 0,
+          transition,
+          ...backgroundBlurStyle,
+        }}
+      />
+      <img
+        src={bgB ?? undefined}
+        alt=""
+        draggable={false}
+        className="mari-background pointer-events-none absolute inset-0 h-full w-full select-none object-cover object-center"
+        style={{
+          opacity: !aActive && bgB ? opacity : 0,
+          transition,
+          ...backgroundBlurStyle,
+        }}
+      />
+    </>
+  );
+}
+
 export function ConversationView({
   chatId,
   messages,
@@ -308,6 +408,8 @@ export function ConversationView({
   onGenerateSelfie,
   lastAssistantMessageId,
   onOpenSettings,
+  privateNotebookOpen,
+  onOpenPrivateNotebook,
   onOpenScheduleEditor,
   onOpenGallery,
   onBranch,
@@ -433,6 +535,10 @@ export function ConversationView({
   // default stops without collapsing Marinara's two-color background.
   const convoGradient = useUIStore((s) => s.convoGradient);
   const theme = useUIStore((s) => s.theme);
+  const chatBackground = useUIStore((s) => s.chatBackground);
+  const chatBackgroundBlur = useUIStore((s) => s.chatBackgroundBlur);
+  const conversationBackgroundImageOpacity = useUIStore((s) => s.conversationBackgroundImageOpacity);
+  const reduceAmbientEffects = useReducedAmbientEffects();
   const gradientStyle = useMemo(() => {
     const g = convoGradient[theme];
     const defaults = theme === "dark" ? { from: "#0a0a0e", to: "#1c2133" } : { from: "#f2eff7", to: "#eae6f0" };
@@ -484,6 +590,7 @@ export function ConversationView({
         compact={compact}
       />
       <ActiveLorebookEntriesButton chatId={chatId} />
+      <PrivateNotebookToolbarButton open={privateNotebookOpen} compact={compact} onClick={onOpenPrivateNotebook} />
       <ChatToolbarButton
         icon={<ImageIcon size="0.875rem" />}
         title={t("chat.toolbar.gallery")}
@@ -1257,8 +1364,25 @@ export function ConversationView({
     <div
       className="mari-chat-area mari-card-css relative flex flex-1 flex-col overflow-hidden"
       data-chat-mode="conversation"
-      style={{ ...gradientStyle, isolation: "isolate" }}
+      style={{ isolation: "isolate" }}
     >
+      <div
+        className="pointer-events-none absolute inset-0 -z-10 overflow-hidden"
+        style={gradientStyle}
+        aria-hidden="true"
+      >
+        <CrossfadeBackground
+          url={chatBackground}
+          blurPx={chatBackgroundBlur}
+          opacity={conversationBackgroundImageOpacity / 100}
+          reduceMotion={reduceAmbientEffects}
+        />
+        <div
+          data-conversation-background-gradient-veil
+          className="pointer-events-none absolute inset-0"
+          style={{ ...gradientStyle, opacity: 0.35 }}
+        />
+      </div>
       {/* ── Messages scroll area ── */}
       <div
         ref={scrollRef}

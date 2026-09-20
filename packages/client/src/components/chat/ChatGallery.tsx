@@ -108,13 +108,14 @@ export function ChatGallery({
   onAnimateImage,
 }: ChatGalleryProps) {
   const { t: localizeUi } = useUiTranslation();
-  const { data: images, isLoading } = useGalleryImages(chatId);
+  const { data: images, isLoading } = useGalleryImages(chatId, true);
   const sceneVideosEnabled = mode === "game" || mode === "roleplay";
   const sceneVideosQuery = useSceneVideos(chatId, sceneVideosEnabled);
   const sceneVideos = sceneVideosEnabled ? (sceneVideosQuery.data ?? EMPTY_SCENE_VIDEOS) : EMPTY_SCENE_VIDEOS;
   const upload = useUploadGalleryImage(chatId);
   const remove = useDeleteGalleryImage(chatId);
   const deleteVideo = useDeleteSceneVideo(chatId);
+  const [visibleImageCount, setVisibleImageCount] = useState(48);
   const [lightbox, setLightbox] = useState<ChatImage | null>(null);
   const [videoLightbox, setVideoLightbox] = useState<GeneratedSceneVideo | null>(null);
   const [selectingImages, setSelectingImages] = useState(false);
@@ -176,6 +177,11 @@ export function ChatGallery({
         : filteredAssets,
     [chatId, filteredAssets, selectingImages],
   );
+
+  const lightboxIndex = lightbox ? (images?.findIndex((image) => image.id === lightbox.id) ?? -1) : -1;
+  useEffect(() => {
+    setVisibleImageCount(48);
+  }, [chatId, assetSearch]);
 
   const leaveImageSelection = useCallback(() => {
     setSelectingImages(false);
@@ -905,7 +911,7 @@ export function ChatGallery({
 
             {!assetsLoading && displayedAssets.length > 0 && (
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                {displayedAssets.map((asset) => {
+                {displayedAssets.slice(0, visibleImageCount).map((asset) => {
                   const imageId = getChatGalleryImageId(asset, chatId);
                   const selected = imageId ? selectedImageIds.has(imageId) : false;
                   return (
@@ -1051,7 +1057,7 @@ export function ChatGallery({
             {/* Image grid */}
             {hasImages && (
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-2">
-                {images!.map((img) => (
+                {images!.slice(0, visibleImageCount).map((img) => (
                   <div
                     key={img.id}
                     className={cn(
@@ -1169,6 +1175,17 @@ export function ChatGallery({
             )}
           </>
         )}
+
+        {(assetSearchActive || activeTab === "images") &&
+          (assetSearchActive ? displayedAssets.length : (images?.length ?? 0)) > visibleImageCount && (
+            <button
+              type="button"
+              className="w-full rounded-md border border-[var(--border)] px-3 py-2 text-sm hover:bg-[var(--secondary)]"
+              onClick={() => setVisibleImageCount((count) => count + 48)}
+            >
+              {localizeUi("ui.chat.chatgallery.showMoreImages")}
+            </button>
+          )}
 
         {!assetSearchActive && sceneVideosEnabled && activeTab === "videos" && (
           <>
@@ -1300,7 +1317,19 @@ export function ChatGallery({
         )}
 
       {/* Lightbox */}
-      {lightbox && <ChatImageLightbox image={lightbox} onPin={handlePinImage} onClose={() => setLightbox(null)} />}
+      {lightbox && (
+        <ChatImageLightbox
+          image={lightbox}
+          onPin={handlePinImage}
+          onClose={() => setLightbox(null)}
+          onPrevious={lightboxIndex > 0 ? () => setLightbox(images![lightboxIndex - 1]!) : undefined}
+          onNext={
+            lightboxIndex >= 0 && lightboxIndex < (images?.length ?? 0) - 1
+              ? () => setLightbox(images![lightboxIndex + 1]!)
+              : undefined
+          }
+        />
+      )}
       {sceneVideosEnabled && videoLightbox && (
         <ChatVideoLightbox video={videoLightbox} onPin={handlePinVideo} onClose={() => setVideoLightbox(null)} />
       )}

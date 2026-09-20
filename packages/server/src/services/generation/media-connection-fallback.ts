@@ -1,11 +1,12 @@
 import {
-  inferImageSource,
   inferVideoSource,
   normalizeVideoGenerationProfile,
+  resolveImageReferenceLimits,
   VIDEO_DEFAULTS_STORAGE_KEY,
 } from "@marinara-engine/shared";
 import type { ImageGenRequest } from "../image/image-generation.js";
 import { resolveConnectionImageDefaults, resolveConnectionImageQuality } from "../image/image-generation-defaults.js";
+import { OPENAI_CHATGPT_CODEX_BASE_URL } from "../llm/openai-chatgpt-auth.js";
 import type { VideoGenerationRequest } from "../video/video-generation.js";
 import { resolveBaseUrl } from "./connection-base-url.js";
 
@@ -16,6 +17,26 @@ type ImageFallbackStore = {
 type VideoFallbackStore = {
   getFallbackForVideoGeneration(): Promise<any | null>;
 };
+
+export function resolveImageFallbackReferenceLimit(fallback: ImageGenRequest["fallback"] | null | undefined): number {
+  if (!fallback) return 0;
+  return resolveImageReferenceLimits({
+    imageGenerationSource: fallback.imageGenerationSource || fallback.source,
+    imageService: fallback.imageService || fallback.serviceHint,
+    model: fallback.model,
+    baseUrl: fallback.baseUrl,
+    comfyuiWorkflow: fallback.comfyWorkflow,
+    maxImageReferences: fallback.maxImageReferences,
+  }).effectiveLimit;
+}
+
+export function resolveImageReferenceCollectionLimit(
+  primaryLimit: number,
+  fallback: ImageGenRequest["fallback"] | null | undefined,
+): number {
+  const normalizedPrimary = Number.isFinite(primaryLimit) ? Math.max(0, Math.trunc(primaryLimit)) : 0;
+  return Math.max(normalizedPrimary, resolveImageFallbackReferenceLimit(fallback));
+}
 
 function resolveConnectionVideoComfyDefaults(connection: { defaultParameters?: unknown }) {
   let root = connection.defaultParameters;
@@ -36,18 +57,25 @@ export async function resolveImageConnectionFallback(
 ): Promise<NonNullable<ImageGenRequest["fallback"]> | undefined> {
   const connection = await connections.getFallbackForImageGeneration();
   if (!connection || connection.id === primaryConnectionId) return undefined;
-  const baseUrl = resolveBaseUrl(connection);
-  if (!baseUrl) return undefined;
   const model = String(connection.model ?? "").trim();
   const imageGenerationSource = String(connection.imageGenerationSource ?? "").trim();
   const imageService = String(connection.imageService ?? "").trim();
-  const explicitSource = imageGenerationSource || imageService;
-  const source = explicitSource || inferImageSource(model, baseUrl);
+  const configuredBaseUrl = resolveBaseUrl(connection);
+  const source = resolveImageReferenceLimits({
+    imageGenerationSource,
+    imageService,
+    model,
+    baseUrl: configuredBaseUrl,
+    comfyuiWorkflow: connection.comfyuiWorkflow,
+    maxImageReferences: connection.maxImageReferences,
+  }).source;
+  const baseUrl = configuredBaseUrl || (source === "openai_chatgpt" ? OPENAI_CHATGPT_CODEX_BASE_URL : "");
+  if (!baseUrl) return undefined;
   return {
     connectionId: connection.id,
     connectionName: String(connection.name ?? "").trim() || connection.id,
     provider: String(connection.provider ?? "image_generation"),
-    source: model || source,
+    source,
     baseUrl,
     apiKey: connection.apiKey || "",
     serviceHint: String(connection.imageService ?? connection.imageGenerationSource ?? source),
@@ -56,6 +84,7 @@ export async function resolveImageConnectionFallback(
     comfyWorkflow: connection.comfyuiWorkflow || undefined,
     imageDefaults: resolveConnectionImageDefaults(connection),
     quality: resolveConnectionImageQuality(connection),
+    maxImageReferences: connection.maxImageReferences ?? null,
     ...(imageGenerationSource ? { imageGenerationSource } : {}),
     ...(imageService ? { imageService } : {}),
   };

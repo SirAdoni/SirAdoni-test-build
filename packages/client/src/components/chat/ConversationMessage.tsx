@@ -681,17 +681,20 @@ export const ConversationMessage = memo(function ConversationMessage({
     });
   }, [formattedEditSourceContent, message.activeSwipeIndex]);
 
-  const handleSaveEdit = useCallback(() => {
-    if (editSwipeIndexRef.current !== null && editSwipeIndexRef.current !== (message.activeSwipeIndex ?? null)) {
+  const handleSaveEdit = useCallback(
+    (content?: string) => {
+      if (editSwipeIndexRef.current !== null && editSwipeIndexRef.current !== (message.activeSwipeIndex ?? null)) {
+        editSwipeIndexRef.current = null;
+        setEditing(false);
+        return;
+      }
+      const val = formatTextQuotes(content ?? editValueRef.current, quoteFormat);
+      if (val.trim().length > 0 && val !== formattedEditSourceContent) onEdit?.(message.id, val);
       editSwipeIndexRef.current = null;
       setEditing(false);
-      return;
-    }
-    const val = formatTextQuotes(editValueRef.current, quoteFormat);
-    if (val.trim().length > 0 && val !== formattedEditSourceContent) onEdit?.(message.id, val);
-    editSwipeIndexRef.current = null;
-    setEditing(false);
-  }, [formattedEditSourceContent, message.activeSwipeIndex, message.id, onEdit, quoteFormat]);
+    },
+    [formattedEditSourceContent, message.activeSwipeIndex, message.id, onEdit, quoteFormat],
+  );
 
   const handleCancelEdit = useCallback(() => {
     editSwipeIndexRef.current = null;
@@ -862,6 +865,8 @@ export const ConversationMessage = memo(function ConversationMessage({
     isUser,
     isGrouped: !!isGrouped,
     displayName: headerDisplayName,
+    characterId: !isUser ? selfCharacterId : null,
+    onUpdateCharacter: (id) => useUIStore.getState().openCharacterDetail(id),
     avatarUrl,
     avatarCropStyle,
     avatarCornerClass: conversationAvatarShape === "square" ? "rounded-lg" : "rounded-full",

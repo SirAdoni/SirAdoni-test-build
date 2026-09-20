@@ -21,6 +21,7 @@ import {
   normalizeAgentPhaseValue,
   normalizeAgentPromptTemplateSelectionMap,
   normalizeImagePromptInstructions,
+  resolveImageReferenceLimits,
   resolveMacros,
   resolveGameSetupArtStylePrompt,
   resolveAgentPromptTemplate,
@@ -105,10 +106,12 @@ import {
   SPATIAL_LOCATION_REFERENCE_PROMPT_LINE,
 } from "../../services/image/spatial-location-reference.js";
 import { persistGeneratedImageToEntityGalleries } from "../../services/image/generated-image-entity-gallery.js";
-import { resolveImageConnectionFallback } from "../../services/generation/media-connection-fallback.js";
+import {
+  resolveImageConnectionFallback,
+  resolveImageReferenceCollectionLimit,
+} from "../../services/generation/media-connection-fallback.js";
 import type { GenerationFallbackNotifier } from "../../services/generation/fallback-notification.js";
 import { createReplyFallbackNotifier } from "./fallback-notification.js";
-import { runImageGenerationRequest } from "../../services/image/image-generation-queue.js";
 import { generateIllustratorImageVariants } from "../../services/image/illustrator-image-variants.js";
 import {
   buildCharacterAppearanceReferenceBlock,
@@ -128,6 +131,7 @@ import { normalizeCharacterRpgStats } from "../../services/generation/character-
 import { createLorebooksStorage } from "../../services/storage/lorebooks.storage.js";
 import { createCustomToolsStorage } from "../../services/storage/custom-tools.storage.js";
 import { syncGameMapMetaPartyPosition } from "../../services/game/map-position.service.js";
+import { persistRetryQuestUpdate } from "../../services/game/quest-retry-persistence.js";
 import {
   formatOwnerSpatialBreadcrumb,
   omitAuthoritativeGameLocation,
@@ -3307,10 +3311,7 @@ async function applyRetryResultEffects(args: {
           if (questMerge.changed && questTrackerPatch.changed) {
             if (snap) {
               assertRetryActive();
-              await app.db
-                .update(gameStateSnapshotsTable)
-                .set({ playerStats: JSON.stringify(questTrackerPatch.playerStats) })
-                .where(and(eq(gameStateSnapshotsTable.chatId, chatId), eq(gameStateSnapshotsTable.id, snap.id)));
+              await persistRetryQuestUpdate(app.db, chatId, snap.id, questTrackerPatch.playerStats, questMerge.updates);
               assertRetryActive();
             }
             assertRetryActive();
@@ -3368,10 +3369,23 @@ async function applyRetryResultEffects(args: {
         });
         if (snap && inventoryTrackerPatch.changed) {
           assertRetryActive();
-          await app.db
-            .update(gameStateSnapshotsTable)
-            .set({ playerStats: JSON.stringify(inventoryTrackerPatch.playerStats) })
-            .where(and(eq(gameStateSnapshotsTable.chatId, chatId), eq(gameStateSnapshotsTable.id, snap.id)));
+          const persisted = await gameStateStore.updatePlayerStatsAtSnapshot(
+            snap.id,
+            chatId,
+            inventoryTrackerPatch.playerStats,
+            (snap ? parseGameStateRow(snap as Record<string, unknown>) : null)?.fieldLocks,
+            { playerStats: snap.playerStats, fieldLocks: snap.fieldLocks },
+          );
+          if (!persisted) throw new Error("GAME_STATE_INVENTORY_SNAPSHOT_NOT_FOUND");
+          const persistedPlayerStats = parseSnapshotPlayerStats(persisted);
+          inventoryTrackerPatch.playerStats = persistedPlayerStats as any;
+          inventoryTrackerPatch.patch = {
+            playerStats: {
+              inventoryTrackerCurrencies: persistedPlayerStats.inventoryTrackerCurrencies,
+              inventoryTrackerEquipped: persistedPlayerStats.inventoryTrackerEquipped,
+              inventoryTrackerInventory: persistedPlayerStats.inventoryTrackerInventory,
+            },
+          } as any;
           assertRetryActive();
         }
         if (inventoryTrackerPatch.changed) {
@@ -3509,7 +3523,16 @@ async function applyRetryResultEffects(args: {
             const imgApiKey = imgConnFull.apiKey || "";
             const imgSource = (imgConnFull as any).imageGenerationSource || imgModel;
             const imgServiceHint = imgConnFull.imageService || imgSource;
+            const primaryImageReferenceLimit = resolveImageReferenceLimits({
+              imageGenerationSource: imgSource,
+              imageService: imgServiceHint,
+              model: imgModel,
+              baseUrl: imgBaseUrl,
+              comfyuiWorkflow: imgConnFull.comfyuiWorkflow,
+              maxImageReferences: imgConnFull.maxImageReferences,
+            }).effectiveLimit;
             const imageFallback = await resolveImageConnectionFallback(conns, imgConnFull.id);
+            const imageReferenceLimit = resolveImageReferenceCollectionLimit(primaryImageReferenceLimit, imageFallback);
             assertRetryActive();
             const suppressReferencePromptLine = suppressesReferencePromptLine(
               {
@@ -3642,7 +3665,7 @@ async function applyRetryResultEffects(args: {
               fallbackToChatCharacters: false,
               includeReferenceImages: useAvatarRefs,
               includePersonaWhenMentionedInPrompt: false,
-              maxReferences: spatialLocationReferenceImage ? 5 : 6,
+              maxReferences: imageReferenceLimit,
             });
             assertRetryActive();
             if (includeCharacterAppearance) {
@@ -3675,12 +3698,12 @@ async function applyRetryResultEffects(args: {
             const mergedReferenceImages = mergeSpatialLocationReferenceImages(
               spatialLocationReferenceImage,
               useAvatarRefs ? referenceResolution.referenceImages : [],
-              6,
+              imageReferenceLimit,
             );
             if (mergedReferenceImages.length > 0) {
               referenceImages = mergedReferenceImages;
             }
-            if (spatialLocationReferenceImage) {
+            if (spatialLocationReferenceImage && mergedReferenceImages.length > 0) {
               fullPrompt += `\n\n${SPATIAL_LOCATION_REFERENCE_PROMPT_LINE}`;
               logger.debug("[retry-agents] Illustrator sending the current Maps location reference image first");
             }
@@ -3798,11 +3821,10 @@ async function applyRetryResultEffects(args: {
                 promptSubmission.negativePrompt,
               );
             }
-            const imageConnectionQueueKey = imgConnFull.id?.trim() || `${imgServiceHint}:${imgBaseUrl}:${imgModel}`;
             logger.debug(
-              "[retry-agents] Illustrator image request queue=%s connection=%s",
-              queueImageGenerationRequests ? "enabled" : "disabled",
-              imageConnectionQueueKey,
+              "[retry-agents] Illustrator image provider queue requested=%s connection=%s",
+              queueImageGenerationRequests,
+              imgConnFull.id?.trim() || `${imgServiceHint}:${imgBaseUrl}:${imgModel}`,
             );
             assertRetryActive();
             sendSseEvent(reply, {
@@ -3812,32 +3834,26 @@ async function applyRetryResultEffects(args: {
             const imageResults = await generateIllustratorImageVariants({
               count: chatMeta.illustratorImagesPerGeneration,
               generate: () =>
-                runImageGenerationRequest({
-                  connectionKey: imageConnectionQueueKey,
-                  queue: queueImageGenerationRequests,
+                generateImage(imgSource, imgBaseUrl, imgApiKey, imgServiceHint, {
+                  prompt: promptSubmission.prompt,
+                  negativePrompt: promptSubmission.negativePrompt || undefined,
+                  model: imgModel,
+                  width: imgWidth,
+                  height: imgHeight,
+                  imageEndpointId: imgConnFull.imageEndpointId || undefined,
+                  comfyWorkflow: (imgConnFull as any).comfyuiWorkflow || undefined,
+                  imageDefaults,
+                  quality: resolveConnectionImageQuality(imgConnFull),
+                  maxImageReferences: imgConnFull.maxImageReferences ?? null,
+                  referenceImages,
+                  ...(illustratorCharacterPrompts.length > 0 ? { characterPrompts: illustratorCharacterPrompts } : {}),
                   signal: agentContext.signal,
-                  task: () =>
-                    generateImage(imgModel, imgBaseUrl, imgApiKey, imgServiceHint, {
-                      prompt: promptSubmission.prompt,
-                      negativePrompt: promptSubmission.negativePrompt || undefined,
-                      model: imgModel,
-                      width: imgWidth,
-                      height: imgHeight,
-                      imageEndpointId: imgConnFull.imageEndpointId || undefined,
-                      comfyWorkflow: (imgConnFull as any).comfyuiWorkflow || undefined,
-                      imageDefaults,
-                      quality: resolveConnectionImageQuality(imgConnFull),
-                      referenceImages,
-                      ...(illustratorCharacterPrompts.length > 0
-                        ? { characterPrompts: illustratorCharacterPrompts }
-                        : {}),
-                      signal: agentContext.signal,
-                      fallback: providerAwareImageFallback,
-                      onFallback: (notice) => {
-                        assertRetryActive();
-                        notifyImageFallback(notice);
-                      },
-                    }),
+                  fallback: providerAwareImageFallback,
+                  queueProviderRequests: queueImageGenerationRequests,
+                  onFallback: (notice) => {
+                    assertRetryActive();
+                    notifyImageFallback(notice);
+                  },
                 }),
               onVariantError: (error, index) =>
                 logger.warn(error, "[retry-agents] Illustrator image variant %d failed", index + 1),
@@ -4359,6 +4375,7 @@ export async function registerRetryAgentsRoute(
     // their existing disconnect cancellation.
     const preserveIllustratorOnDisconnect = agentTypes.every((agentType) => agentType === "illustrator");
     const abortController = new AbortController();
+    const cancelRetryOnDisconnect = () => abortController.abort();
     const assertRetrySetupActive = () => abortController.signal.throwIfAborted();
     const notifyFallback = createReplyFallbackNotifier(reply);
     const onFallback: typeof notifyFallback = (notice) => {
@@ -4379,7 +4396,7 @@ export async function registerRetryAgentsRoute(
     const stopSseKeepalive = startSseKeepalive(reply);
     const onClientClose = () => {
       clientDisconnected = true;
-      if (!preserveIllustratorOnDisconnect) abortController.abort();
+      if (!preserveIllustratorOnDisconnect) cancelRetryOnDisconnect();
     };
     reply.raw.on("close", onClientClose);
 
@@ -4432,7 +4449,7 @@ export async function registerRetryAgentsRoute(
 
       const unfilteredRecentMessages = recentMessages;
 
-      const supportsHiddenFromAI = chat.mode === "conversation" || chat.mode === "roleplay";
+      const supportsHiddenFromAI = chat.mode === "conversation" || chat.mode === "roleplay" || chat.mode === "game";
       if (supportsHiddenFromAI) {
         recentMessages = recentMessages.filter((message: any) => !isMessageHiddenFromAI(message));
         if (preGenerationRecentMessages) {

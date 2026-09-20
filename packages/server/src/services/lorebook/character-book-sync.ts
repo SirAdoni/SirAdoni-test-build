@@ -70,7 +70,7 @@ function toCharacterBookEntry(entry: LoreEntryRow, index: number): CharacterBook
   return {
     keys: asStringArray(entry.keys),
     content: asString(entry.content),
-    extensions: {},
+    extensions: { marinara: { alwaysLoaded: asBoolean(entry.alwaysLoaded) } },
     enabled: asBoolean(entry.enabled),
     insertion_order: order,
     case_sensitive: asBoolean(entry.caseSensitive),
@@ -82,6 +82,7 @@ function toCharacterBookEntry(entry: LoreEntryRow, index: number): CharacterBook
     selective: asBoolean(entry.selective),
     secondary_keys: asStringArray(entry.secondaryKeys),
     constant: asBoolean(entry.constant),
+    alwaysLoaded: asBoolean(entry.alwaysLoaded),
     position,
     outletName: asString(entry.outletName),
     depth: asNumber(entry.depth, 4),

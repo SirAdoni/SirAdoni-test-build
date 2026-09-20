@@ -1,0 +1,483 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import type { FastifyInstance } from "fastify";
+import { DATA_DIR } from "../../utils/data-dir.js";
+import { logger } from "../../lib/logger.js";
+import { reportDiagnosticError } from "../../lib/diagnostic-operation.js";
+import { getDiagnosticContext, withDiagnosticContext } from "../../lib/diagnostics.js";
+
+export type GenerationJobStatus = "running" | "completed" | "failed" | "cancelled" | "interrupted";
+export interface GenerationJobMetadata {
+  id: string;
+  kind: string;
+  label: string;
+  chatId: string | null;
+  status: GenerationJobStatus;
+  createdAt: string;
+  updatedAt: string;
+  error: string | null;
+  /** Additive correlation fields; absent in metadata written by older versions. */
+  errorCode?: string;
+  errorId?: string;
+  requestId?: string;
+  resultAvailable: boolean;
+}
+export interface GenerationJobRunOptions {
+  /** Optional caller-owned id for idempotent scheduling and immediate status responses. */
+  id?: string;
+  kind: string;
+  label: string;
+  chatId?: string;
+  timeoutMs: number;
+}
+export interface GenerationJobs {
+  run<T>(options: GenerationJobRunOptions, work: (signal: AbortSignal) => Promise<T>): Promise<T>;
+  list(chatId?: string): Promise<GenerationJobMetadata[]>;
+  get(id: string): Promise<GenerationJobMetadata | null>;
+  result(id: string): Promise<unknown>;
+  cancel(id: string): Promise<boolean>;
+}
+export interface GenerationJobsOptions {
+  dataDir?: string;
+  /** Maximum time close waits for provider work to settle after aborting it. */
+  shutdownWaitMs?: number;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const stores = new WeakMap<object, GenerationJobsStore>();
+
+function validId(id: string): boolean {
+  return UUID_RE.test(id);
+}
+function validMetadata(value: unknown, id: string): value is GenerationJobMetadata {
+  const item = value as Partial<GenerationJobMetadata>;
+  return (
+    !!item &&
+    item.id === id &&
+    validId(id) &&
+    typeof item.kind === "string" &&
+    typeof item.label === "string" &&
+    (item.chatId === null || typeof item.chatId === "string") &&
+    ["running", "completed", "failed", "cancelled", "interrupted"].includes(item.status ?? "") &&
+    typeof item.createdAt === "string" &&
+    typeof item.updatedAt === "string" &&
+    (item.error === null || typeof item.error === "string") &&
+    (item.errorCode === undefined || typeof item.errorCode === "string") &&
+    (item.errorId === undefined || typeof item.errorId === "string") &&
+    (item.requestId === undefined || typeof item.requestId === "string") &&
+    typeof item.resultAvailable === "boolean"
+  );
+}
+function abortError(message: string): Error {
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}
+
+export class GenerationJobsStore implements GenerationJobs {
+  private root: string;
+  private readonly shutdownWaitMs: number;
+  private readonly jobs = new Map<
+    string,
+    {
+      metadata: GenerationJobMetadata;
+      controller: AbortController;
+      timer?: ReturnType<typeof setTimeout>;
+      settled: boolean;
+      settledPromise: Promise<void>;
+      resolveSettled: () => void;
+      workSettledPromise: Promise<void>;
+      resolveWorkSettled: () => void;
+      workSettled: boolean;
+    }
+  >();
+  private closing = false;
+  private ready: Promise<void>;
+
+  constructor(app?: FastifyInstance, options: GenerationJobsOptions = {}) {
+    // Tests may provide a complete isolated job directory.
+    this.root = resolve(options.dataDir ?? join(DATA_DIR, "generation-jobs"));
+    this.shutdownWaitMs = Math.max(0, options.shutdownWaitMs ?? 3_500);
+    this.ready = this.initialize();
+    if (app) app.addHook("onClose", async () => this.close());
+  }
+
+  private async initialize(): Promise<void> {
+    await mkdir(this.root, { recursive: true });
+    const entries = await readdir(this.root, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".json") || entry.name.endsWith(".result.json")) continue;
+      const id = entry.name.slice(0, -5);
+      if (!validId(id)) continue;
+      try {
+        const metadata = JSON.parse(await readFile(join(this.root, entry.name), "utf8")) as GenerationJobMetadata;
+        if (!validMetadata(metadata, id)) continue;
+        if (metadata.status === "running") {
+          metadata.status = "interrupted";
+          metadata.updatedAt = new Date().toISOString();
+          metadata.error = "Generation was interrupted by server restart";
+          const reference = reportDiagnosticError(
+            new Error(metadata.error),
+            {
+              ...getDiagnosticContext(),
+              operation: "generation.job",
+              operationId: metadata.id,
+              stage: "recovery",
+              jobId: metadata.id,
+              chatId: metadata.chatId ?? undefined,
+            },
+            "ME_CANCELLED",
+          );
+          metadata.errorCode = reference.code;
+          metadata.errorId = reference.errorId;
+          if (reference.requestId) metadata.requestId = reference.requestId;
+          await this.persistMetadata(metadata);
+        }
+      } catch (error) {
+        logger.warn({ err: error, file: entry.name }, "Unable to recover generation job metadata");
+      }
+    }
+  }
+
+  private async persistMetadata(metadata: GenerationJobMetadata): Promise<void> {
+    await this.atomicWrite(join(this.root, `${metadata.id}.json`), JSON.stringify(metadata, null, 2));
+  }
+  private async atomicWrite(path: string, value: string): Promise<void> {
+    const temp = `${path}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temp, value, "utf8");
+      await rename(temp, path);
+    } catch (error) {
+      try {
+        await unlink(temp);
+      } catch {
+        /* best effort cleanup */
+      }
+      throw error;
+    }
+  }
+  private async readMetadata(id: string): Promise<GenerationJobMetadata | null> {
+    if (!validId(id)) return null;
+    try {
+      const value = JSON.parse(await readFile(join(this.root, `${id}.json`), "utf8"));
+      return validMetadata(value, id) ? value : null;
+    } catch (error: any) {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    }
+  }
+  private async update(
+    record: {
+      metadata: GenerationJobMetadata;
+      controller: AbortController;
+      timer?: ReturnType<typeof setTimeout>;
+      settled: boolean;
+    },
+    status: GenerationJobStatus,
+    error: string | null,
+    resultAvailable = record.metadata.resultAvailable,
+  ): Promise<void> {
+    record.metadata.status = status;
+    record.metadata.error = error;
+    record.metadata.resultAvailable = resultAvailable;
+    record.metadata.updatedAt = new Date().toISOString();
+    await this.persistMetadata(record.metadata);
+  }
+
+  private recordFailure(metadata: GenerationJobMetadata, error: unknown, stage: string, code?: string): void {
+    const reference = reportDiagnosticError(
+      error,
+      {
+        ...getDiagnosticContext(),
+        operation: "generation.job",
+        operationId: metadata.id,
+        stage,
+        jobId: metadata.id,
+        chatId: metadata.chatId ?? undefined,
+      },
+      code,
+    );
+    metadata.errorCode = reference.code;
+    metadata.errorId = reference.errorId;
+    if (reference.requestId) metadata.requestId = reference.requestId;
+  }
+
+  async run<T>(options: GenerationJobRunOptions, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    await this.ready;
+    if (this.closing) throw abortError("Generation job store is closing");
+    const id = options.id ?? randomUUID();
+    const now = new Date().toISOString();
+    const metadata: GenerationJobMetadata = {
+      id,
+      kind: options.kind,
+      label: options.label,
+      chatId: options.chatId ?? null,
+      status: "running",
+      createdAt: now,
+      updatedAt: now,
+      error: null,
+      resultAvailable: false,
+    };
+    let resolveSettled!: () => void;
+    const settledPromise = new Promise<void>((resolve) => {
+      resolveSettled = resolve;
+    });
+    let resolveWorkSettled!: () => void;
+    let workSettledRecord: { settled: boolean; workSettled: boolean } | undefined;
+    const workSettledPromise = new Promise<void>((resolve) => {
+      resolveWorkSettled = () => {
+        if (workSettledRecord) {
+          workSettledRecord.workSettled = true;
+          if (workSettledRecord.settled) this.jobs.delete(id);
+        }
+        resolve();
+      };
+    });
+    const record = {
+      metadata,
+      controller: new AbortController(),
+      settled: false,
+      settledPromise,
+      resolveSettled,
+      workSettledPromise,
+      resolveWorkSettled,
+      workSettled: false,
+    } as {
+      metadata: GenerationJobMetadata;
+      controller: AbortController;
+      timer?: ReturnType<typeof setTimeout>;
+      settled: boolean;
+      settledPromise: Promise<void>;
+      resolveSettled: () => void;
+      workSettledPromise: Promise<void>;
+      resolveWorkSettled: () => void;
+      workSettled: boolean;
+    };
+    workSettledRecord = record;
+    this.jobs.set(id, record);
+    const startedAt = Date.now();
+    logger.info(
+      {
+        operation: "generation.job",
+        operationId: id,
+        stage: "start",
+        jobId: id,
+        kind: options.kind,
+        chatId: metadata.chatId,
+      },
+      "Generation job started",
+    );
+    try {
+      await this.persistMetadata(metadata);
+    } catch (error) {
+      this.recordFailure(metadata, error, "persist-start", "ME_STORAGE");
+      this.jobs.delete(id);
+      throw error;
+    }
+    if (this.closing) {
+      await this.update(record, "interrupted", "Generation was interrupted by server shutdown", false);
+      this.jobs.delete(id);
+      throw abortError("Generation job store is closing");
+    }
+    if (record.controller.signal.aborted || record.metadata.status !== "running") {
+      await this.persistMetadata(record.metadata);
+      this.jobs.delete(id);
+      throw abortError(record.metadata.error ?? "Generation job cancelled");
+    }
+    const timeout = Math.max(1, options.timeoutMs);
+    let timeoutTriggered = false;
+    const abortPromise = new Promise<never>((_, reject) => {
+      record.controller.signal.addEventListener(
+        "abort",
+        () =>
+          reject(
+            abortError(
+              record.metadata.error ?? (timeoutTriggered ? "Generation job timed out" : "Generation job cancelled"),
+            ),
+          ),
+        { once: true },
+      );
+    });
+    abortPromise.catch(() => undefined);
+    record.timer = setTimeout(() => {
+      timeoutTriggered = true;
+      record.controller.abort();
+    }, timeout);
+    const workPromise = Promise.resolve().then(() =>
+      withDiagnosticContext(
+        {
+          ...getDiagnosticContext(),
+          operation: "generation.job",
+          operationId: id,
+          stage: "work",
+          jobId: id,
+          chatId: metadata.chatId ?? undefined,
+        },
+        () => work(record.controller.signal),
+      ),
+    );
+    workPromise.catch(() => undefined);
+    workPromise.then(record.resolveWorkSettled, record.resolveWorkSettled);
+    const promise = (async () => {
+      try {
+        const value = await Promise.race([workPromise, abortPromise]);
+        if (record.metadata.status !== "running" || record.controller.signal.aborted)
+          throw abortError(record.metadata.error ?? "Generation job cancelled");
+        const serialized = value === undefined ? "null" : JSON.stringify(value);
+        if (serialized === undefined) throw new Error("Generation result is not JSON serializable");
+        await this.atomicWrite(join(this.root, `${id}.result.json`), serialized);
+        if (record.metadata.status !== "running" || record.controller.signal.aborted)
+          throw abortError(record.metadata.error ?? "Generation job cancelled");
+        await this.update(record, "completed", null, true);
+        logger.info(
+          {
+            operation: "generation.job",
+            operationId: id,
+            stage: "success",
+            jobId: id,
+            kind: options.kind,
+            chatId: metadata.chatId,
+            elapsedMs: Date.now() - startedAt,
+          },
+          "Generation job completed",
+        );
+        return value;
+      } catch (error) {
+        const failure = error instanceof Error ? error : new Error(String(error));
+        if (record.metadata.status === "running") {
+          this.recordFailure(
+            record.metadata,
+            failure,
+            timeoutTriggered ? "timeout" : record.controller.signal.aborted ? "cancelled" : "failed",
+            timeoutTriggered ? "ME_TIMEOUT" : record.controller.signal.aborted ? "ME_CANCELLED" : undefined,
+          );
+          await this.update(
+            record,
+            timeoutTriggered ? "failed" : record.controller.signal.aborted ? "cancelled" : "failed",
+            failure.message,
+            false,
+          );
+          logger.warn(
+            {
+              operation: "generation.job",
+              operationId: id,
+              stage: timeoutTriggered ? "timeout" : record.controller.signal.aborted ? "cancelled" : "failure",
+              jobId: id,
+              kind: options.kind,
+              chatId: metadata.chatId,
+              elapsedMs: Date.now() - startedAt,
+            },
+            "Generation job failed",
+          );
+        }
+        throw failure;
+      } finally {
+        record.settled = true;
+        if (record.timer) clearTimeout(record.timer);
+        if (record.workSettled) this.jobs.delete(id);
+        record.resolveSettled();
+      }
+    })();
+    return promise;
+  }
+
+  async list(chatId?: string): Promise<GenerationJobMetadata[]> {
+    await this.ready;
+    const entries = await readdir(this.root, { withFileTypes: true });
+    const all: GenerationJobMetadata[] = [];
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".json") || entry.name.endsWith(".result.json")) continue;
+      const id = entry.name.slice(0, -5);
+      if (!validId(id)) continue;
+      try {
+        const item = JSON.parse(await readFile(join(this.root, entry.name), "utf8"));
+        if (validMetadata(item, id) && (!chatId || item.chatId === chatId)) all.push(item);
+      } catch (error) {
+        logger.warn({ err: error, file: entry.name }, "Unable to read generation job metadata");
+      }
+    }
+    return all.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 50);
+  }
+  async get(id: string): Promise<GenerationJobMetadata | null> {
+    await this.ready;
+    return this.readMetadata(id);
+  }
+  async result(id: string): Promise<unknown> {
+    await this.ready;
+    if (!validId(id)) throw new Error("Invalid generation job id");
+    const metadata = await this.get(id);
+    if (!metadata || metadata.status !== "completed" || !metadata.resultAvailable) {
+      const error = new Error("Generation result not available");
+      (error as any).code = "ENOENT";
+      throw error;
+    }
+    return JSON.parse(await readFile(join(this.root, `${id}.result.json`), "utf8"));
+  }
+  async cancel(id: string): Promise<boolean> {
+    await this.ready;
+    const record = this.jobs.get(id);
+    if (!record || record.metadata.status !== "running") return false;
+    record.metadata.status = "cancelled";
+    record.metadata.error = "Generation job cancelled";
+    this.recordFailure(record.metadata, abortError(record.metadata.error), "cancelled", "ME_CANCELLED");
+    record.controller.abort();
+    await this.update(record, "cancelled", "Generation job cancelled", false);
+    return true;
+  }
+  async close(): Promise<void> {
+    if (this.closing) return;
+    this.closing = true;
+    await this.ready;
+    const records = [...this.jobs.values()];
+    for (const record of records) {
+      if (record.metadata.status === "running") {
+        record.controller.abort();
+        try {
+          this.recordFailure(
+            record.metadata,
+            abortError("Generation was interrupted by server shutdown"),
+            "interrupted",
+            "ME_CANCELLED",
+          );
+          await this.update(record, "interrupted", "Generation was interrupted by server shutdown", false);
+        } catch (error) {
+          logger.error({ err: error, id: record.metadata.id }, "Unable to persist interrupted generation job");
+        }
+      }
+    }
+    if (records.length === 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.all(records.flatMap((record) => [record.settledPromise, record.workSettledPromise])),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, this.shutdownWaitMs);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    const unsettled = records.filter((record) => !record.settled || !record.workSettled);
+    if (unsettled.length > 0) {
+      logger.warn(
+        { count: unsettled.length, waitMs: this.shutdownWaitMs },
+        "Generation jobs did not settle before shutdown wait expired",
+      );
+    }
+  }
+  get dataDir(): string {
+    return this.root;
+  }
+}
+
+export function getGenerationJobs(app: FastifyInstance, options: GenerationJobsOptions = {}): GenerationJobsStore {
+  const key = app.server as object;
+  let store = stores.get(key);
+  if (!store) {
+    store = new GenerationJobsStore(app, options);
+    stores.set(key, store);
+  }
+  return store;
+}
+
+export function createGenerationJobs(options: GenerationJobsOptions | string = {}): GenerationJobsStore {
+  return new GenerationJobsStore(undefined, typeof options === "string" ? { dataDir: options } : options);
+}

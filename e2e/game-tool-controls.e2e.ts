@@ -37,6 +37,15 @@ for (const theme of ["dark", "light"] as const) {
         data: { role: "assistant", content: "The harbor is quiet." },
       });
       await page.route("**/api/app-settings/ui", (route) => route.fulfill({ json: { value: "" } }));
+      // Keep this settings-coverage fixture independent of whichever agent
+      // packages another browser test installed into the shared test host.
+      await page.route("**/api/agents", async (route) => {
+        if (route.request().method() === "GET") {
+          await route.fulfill({ json: [] });
+          return;
+        }
+        await route.continue();
+      });
       await seedUIState(page, {
         hasCompletedOnboarding: true,
         sidebarOpen: false,

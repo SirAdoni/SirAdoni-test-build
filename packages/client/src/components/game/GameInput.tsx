@@ -25,6 +25,7 @@ import { getChatInputShellClass } from "../chat/chat-input-styles";
 import { CapabilityElement } from "../capabilities/CapabilityElement";
 import type { PendingSpatialTransitionDraft } from "../../stores/chat.store";
 import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
+import { applyTextareaQuoteFormat } from "../../lib/textarea-quotes";
 
 interface Attachment {
   type: string;
@@ -642,11 +643,8 @@ export function GameInput({
           ref={inputRef}
           value={text}
           onChange={(e) => {
-            const cursor = e.target.selectionStart;
-            updateText(e.target.value);
-            requestAnimationFrame(() => {
-              inputRef.current?.setSelectionRange(cursor, cursor);
-            });
+            const formatted = applyTextareaQuoteFormat(e.target, quoteFormat, e.nativeEvent as InputEvent);
+            updateText(formatted);
             // Auto-grow: reset height then set to scrollHeight
             const el = e.target;
             el.style.height = "auto";

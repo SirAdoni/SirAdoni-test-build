@@ -3,6 +3,9 @@ import { resolveAssetTag } from "../../lib/asset-fuzzy-match";
 type AssetManifestMap = Record<string, { path: string }> | null;
 
 export type SceneAssetNpcAvatarCandidate = {
+  /** Local roster id accepted for GameNpc-shaped inputs; requests emit it as npcId. */
+  id?: string;
+  npcId?: string | null;
   name: string;
   description: string;
   gender?: string | null;
@@ -32,6 +35,28 @@ type MissingSceneAssetGenerationInput = {
 
 export function normalizeSceneAssetNameForGeneration(value: string): string {
   return value.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+}
+
+export function sceneAssetNpcAvatarKey(candidate: { id?: string; npcId?: string | null; name: string }): string {
+  const npcId = candidate.npcId?.trim() || candidate.id?.trim();
+  return npcId ? `id:${npcId}` : `name:${normalizeSceneAssetNameForGeneration(candidate.name)}`;
+}
+
+function normalizeSceneAssetFailureKey(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("id:") || trimmed.startsWith("name:")) return trimmed;
+  return `name:${normalizeSceneAssetNameForGeneration(trimmed)}`;
+}
+
+function sceneAssetNpcAvatarForceValue(candidate: SceneAssetNpcAvatarCandidate): string {
+  return candidate.npcId?.trim() || candidate.id?.trim() ? sceneAssetNpcAvatarKey(candidate) : candidate.name;
+}
+
+function findNpcAvatar(lookup: Map<string, string>, candidate: SceneAssetNpcAvatarCandidate): string | undefined {
+  const keyed = lookup.get(sceneAssetNpcAvatarKey(candidate));
+  if (keyed) return keyed;
+  // Compatibility for older callers/tests that supplied normalized-name keys.
+  return candidate.npcId || candidate.id ? undefined : lookup.get(normalizeSceneAssetNameForGeneration(candidate.name));
 }
 
 function isChatOwnedNpcAvatar(avatarUrl: string | undefined, chatId: string): boolean {
@@ -79,33 +104,36 @@ export function buildMissingSceneAssetGenerationPayload({
   const npcAssetCandidates = sceneAssetNpcs
     .filter((npc) => npc.description && npc.name)
     .map((npc) => ({
+      npcId: npc.npcId ?? npc.id ?? null,
       name: npc.name,
       description: npc.description,
       gender: npc.gender ?? null,
       pronouns: npc.pronouns ?? null,
     }))
     .slice(0, 10);
-  const forceNpcAvatarNameSet = new Set<string>();
+  const forceNpcAvatarValueSet = new Set<string>();
   if (savedGeneratedBackgroundMissing) {
     for (const npc of npcAssetCandidates) {
-      const avatarUrl = npcAvatarLookup.get(normalizeSceneAssetNameForGeneration(npc.name));
+      const avatarUrl = findNpcAvatar(npcAvatarLookup, npc);
       if (isChatOwnedNpcAvatar(avatarUrl, activeChatId)) {
-        forceNpcAvatarNameSet.add(npc.name);
+        forceNpcAvatarValueSet.add(sceneAssetNpcAvatarForceValue(npc));
       }
     }
   }
   const failedNpcAvatarNameSet = new Set(
-    [...(failedNpcAvatarNames ?? [])].map(normalizeSceneAssetNameForGeneration).filter(Boolean),
+    [...(failedNpcAvatarNames ?? [])].map(normalizeSceneAssetFailureKey).filter(Boolean),
   );
   for (const npc of npcAssetCandidates) {
-    const normalizedName = normalizeSceneAssetNameForGeneration(npc.name);
-    const avatarUrl = npcAvatarLookup.get(normalizedName);
-    if (failedNpcAvatarNameSet.has(normalizedName) && isChatOwnedNpcAvatar(avatarUrl, activeChatId)) {
-      forceNpcAvatarNameSet.add(npc.name);
+    const identityKey = sceneAssetNpcAvatarKey(npc);
+    const avatarUrl = findNpcAvatar(npcAvatarLookup, npc);
+    if (failedNpcAvatarNameSet.has(identityKey) && isChatOwnedNpcAvatar(avatarUrl, activeChatId)) {
+      forceNpcAvatarValueSet.add(sceneAssetNpcAvatarForceValue(npc));
     }
   }
-  const forceNpcAvatarNames = [...forceNpcAvatarNameSet];
-  const forcedNpcPayload = npcAssetCandidates.filter((npc) => forceNpcAvatarNameSet.has(npc.name));
+  const forceNpcAvatarNames = [...forceNpcAvatarValueSet];
+  const forcedNpcPayload = npcAssetCandidates.filter((npc) =>
+    forceNpcAvatarValueSet.has(sceneAssetNpcAvatarForceValue(npc)),
+  );
   const npcPayload =
     savedGeneratedBackgroundMissing && forceNpcAvatarNames.length > 0
       ? npcAssetCandidates
@@ -113,11 +141,7 @@ export function buildMissingSceneAssetGenerationPayload({
           ...npcsNeedingAvatars,
           ...forcedNpcPayload.filter(
             (forcedNpc) =>
-              !npcsNeedingAvatars.some(
-                (npc) =>
-                  normalizeSceneAssetNameForGeneration(npc.name) ===
-                  normalizeSceneAssetNameForGeneration(forcedNpc.name),
-              ),
+              !npcsNeedingAvatars.some((npc) => sceneAssetNpcAvatarKey(npc) === sceneAssetNpcAvatarKey(forcedNpc)),
           ),
         ].slice(0, 10);
 

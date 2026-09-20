@@ -102,7 +102,7 @@ try {
   // probe: a literal pid could belong to an unrelated live process and
   // classify as "unknown", so spawn a child, wait for it to exit, and use its
   // (now dead) pid. The liveness assertion doubles as a probe test.
-  const deadChild = spawnSync(process.execPath, ["-e", ""]);
+  const deadChild = spawnSync(process.execPath, ["-e", ""], { windowsHide: true });
   const deadChildPid = deadChild.pid;
   assert.ok(deadChildPid, "the probe child must report a pid");
   assert.equal(processIsAlive(deadChildPid), false, "the probe child must have exited before this check");

@@ -645,6 +645,8 @@ function storyboardSettingsForStorage(settings: StoryboardAgentSettings): Record
     videoConnectionId: settings.videoConnectionId,
     autoGenerateMode: settings.autoGenerateMode,
     keyframeCount: settings.keyframeCount,
+    adaptiveKeyframeCount: settings.adaptiveKeyframeCount,
+    maxAutomaticKeyframes: settings.maxAutomaticKeyframes,
     animationDurationSeconds: settings.animationDurationSeconds,
     viewerDisplayMode: settings.viewerDisplayMode,
     includeCharacterAppearance: settings.includeCharacterAppearance,
@@ -652,6 +654,7 @@ function storyboardSettingsForStorage(settings: StoryboardAgentSettings): Record
     useNovelAiCharacterPrompts: settings.useNovelAiCharacterPrompts,
     usePromptTemplate: settings.usePromptTemplate,
     imageAwareShotPlanningEnabled: settings.imageAwareShotPlanningEnabled,
+    visualContinuity: settings.visualContinuity,
     runInterval: settings.runInterval,
   };
 }
@@ -1218,7 +1221,7 @@ export function AgentEditor() {
 
   const allConnections =
     (connections as
-      | Array<{ id: string; name: string; provider: string; defaultForAgents?: boolean | string }>
+      | Array<{ id: string; name: string; provider: string; model?: string; defaultForAgents?: boolean | string }>
       | undefined) ?? [];
 
   /**
@@ -2448,7 +2451,7 @@ export function AgentEditor() {
                 )}
               {llmConnections.map((conn) => (
                 <option key={conn.id} value={conn.id}>
-                  {conn.name} ({conn.provider})
+                  {conn.name} ({conn.model || conn.provider})
                 </option>
               ))}
             </select>

@@ -808,6 +808,7 @@ async function importLorebookPayload(data: unknown, db: DB) {
         secondaryKeys: Array.isArray(e.secondaryKeys) ? e.secondaryKeys.map(String) : [],
         enabled: e.enabled !== false,
         constant: Boolean(e.constant),
+        alwaysLoaded: e.alwaysLoaded === true || e.alwaysLoaded === "true",
         selective: Boolean(e.selective),
         selectiveLogic: resolveNativeSelectiveLogic(e.selectiveLogic),
         probability: e.probability != null ? Number(e.probability) : null,

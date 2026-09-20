@@ -227,6 +227,7 @@ async function runGrokCliCommand(
   const grokScratchDir = await getGrokScratchDir();
 
   const child = spawn("grok", args, {
+    windowsHide: true,
     cwd: grokScratchDir,
     env: { ...process.env },
     stdio: ["ignore", "pipe", "pipe"],

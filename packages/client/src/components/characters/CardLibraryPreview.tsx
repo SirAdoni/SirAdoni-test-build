@@ -3,6 +3,7 @@ import type { AvatarCrop } from "@marinara-engine/shared";
 import { useTranslation } from "react-i18next";
 import { cn, getAvatarCropStyle, isLegacyAvatarCrop } from "../../lib/utils";
 import { formatEstimatedTokens } from "../../lib/character-token-count";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 
 export type LibraryPreviewCard = {
   id: string;
@@ -45,10 +46,17 @@ export function CardLibraryPreview({
     />
   ) : null;
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       data-card-library-card={card.id}
       onClick={onClick}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onClick();
+      }}
       className={cn(
         "group flex w-full items-stretch overflow-hidden rounded-[1.25rem] border bg-[var(--card)]/70 text-left shadow-[0_20px_50px_-32px_rgba(15,23,42,0.75)] transition-[border-color,box-shadow] hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:shadow-[0_24px_60px_-32px_color-mix(in_srgb,var(--marinara-chat-chrome-accent)_35%,transparent)]",
         compact ? "min-h-0 flex-1" : "sm:flex-col sm:rounded-[1.75rem]",
@@ -60,22 +68,33 @@ export function CardLibraryPreview({
       <div
         data-card-library-avatar
         className={cn(
-          "mari-avatar-placeholder relative shrink-0 self-stretch overflow-hidden [container-type:size]",
+          "mari-avatar-placeholder relative shrink-0 self-stretch [container-type:size]",
           placeholderClass,
           compact
             ? "min-h-0 w-[28%] max-w-20"
             : "min-h-24 w-24 sm:h-auto sm:min-h-0 sm:w-full sm:self-auto sm:aspect-square",
         )}
       >
-        {portrait ? (
-          card.avatarCrop && !isLegacyAvatarCrop(card.avatarCrop) ? (
-            // Source crops are square. Cover the rectangular preview with that square, without stretching it.
-            <div className="absolute left-1/2 top-1/2 aspect-square w-[max(100cqw,100cqh)] -translate-x-1/2 -translate-y-1/2">
-              {portrait}
-            </div>
-          ) : (
-            portrait
-          )
+        {portrait && card.avatarPath ? (
+          <div onClick={(event) => event.stopPropagation()} className="absolute inset-0">
+            <CharacterPhoto
+              src={card.avatarPath}
+              name={card.name}
+              className="absolute inset-0 block h-full w-full"
+              onUpdate={onClick}
+              updateLabel={localizeUi("ui.noodle.noodlepostcard.edit")}
+            >
+              {card.avatarCrop && !isLegacyAvatarCrop(card.avatarCrop) ? (
+                <div className="absolute inset-0 overflow-hidden rounded-[inherit]">
+                  <div className="absolute left-1/2 top-1/2 aspect-square w-[max(100cqw,100cqh)] -translate-x-1/2 -translate-y-1/2">
+                    {portrait}
+                  </div>
+                </div>
+              ) : (
+                <div className="absolute inset-0 overflow-hidden rounded-[inherit]">{portrait}</div>
+              )}
+            </CharacterPhoto>
+          </div>
         ) : (
           <div className="flex h-full w-full items-center justify-center text-[var(--marinara-chat-chrome-panel-title)]">
             <User size="1.5rem" className="sm:h-8 sm:w-8" />
@@ -157,6 +176,6 @@ export function CardLibraryPreview({
           </div>
         )}
       </div>
-    </button>
+    </div>
   );
 }

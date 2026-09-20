@@ -52,6 +52,16 @@ let nativeRollTotal = 0;
 const nativeNotation = "2d2";
 const originalRandom = Math.random;
 let stateBaseline: { id: string; chatId: string } | undefined;
+const isBackgroundGameRequest = (messages: ChatMessage[]): boolean => {
+  const first = messages[0]?.content ?? "";
+  return (
+    first.startsWith("You maintain an evidence-based scene timeline") ||
+    (messages.length === 1 &&
+      /^(?:Extract durable continuity records|Review continuity source-first|Repair only the reviewed continuity findings)/u.test(
+        first,
+      ))
+  );
+};
 const originalPlanner = OpenAIProvider.prototype.chatComplete;
 OpenAIProvider.prototype.chatComplete = async (messages, options) => {
   if (options.model === "native-narrator") {
@@ -124,6 +134,10 @@ OpenAIProvider.prototype.chatComplete = async (messages, options) => {
   };
 };
 async function* narrator(messages: ChatMessage[], options: ChatOptions): AsyncGenerator<string, LLMUsage> {
+  if (isBackgroundGameRequest(messages)) {
+    yield '{"visits":[],"records":[],"dispositions":[],"recordChecks":[],"findings":[]}';
+    return { promptTokens: 1, completionTokens: 1, totalTokens: 2, finishReason: "stop" };
+  }
   order.push("narrator");
   assert.equal(options.tools, undefined);
   assert.doesNotMatch(JSON.stringify(messages), /PRIVATE PLANNER/);
@@ -333,7 +347,12 @@ try {
       connectionId: connection.id,
       promptPresetId: null,
     }))!;
-    await chats.patchMetadata(chat.id, { enableAgents: false, enableTools: false, gameGmToolConnectionId: planner.id });
+    await chats.patchMetadata(chat.id, {
+      enableAgents: false,
+      enableTools: false,
+      gameGmToolConnectionId: planner.id,
+      cacheSendGuard: { enabled: false },
+    });
     for (const noCalls of [false, true]) {
       emptyPlan = noCalls;
       expectPlan = true;

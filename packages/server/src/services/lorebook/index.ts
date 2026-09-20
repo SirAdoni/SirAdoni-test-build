@@ -29,8 +29,16 @@ import {
   updateTimingStatesForScan,
 } from "./keyword-scanner.js";
 import { applyTokenBudget, processActivatedEntries } from "./prompt-injector.js";
+import { readGameContinuityState } from "../game/continuity-state.js";
+import { filterEligibleGameKeeperEntries } from "../game/game-keeper-lorebook.js";
 
 export interface LorebookScanResult {
+  /** Full scoped lore, carried separately so turn-dependent injections cannot rewrite its prefix. */
+  fullContext?: string;
+  /** Full-mode entries whose stored content contains no macro template syntax. */
+  stableFullContext?: string;
+  /** Full-mode entries whose stored content contains macro template syntax. */
+  dynamicFullContext?: string;
   worldInfoBefore: string;
   worldInfoAfter: string;
   depthEntries: Array<{ content: string; role: "system" | "user" | "assistant"; depth: number; order: number }>;
@@ -91,7 +99,28 @@ export function scopeLorebookScanResultToCharacterContext(
     });
   }
 
-  const processed = processActivatedEntries(scopedActivatedEntries, 0);
+  const processed =
+    result.fullContext !== undefined
+      ? {
+          worldInfoBefore: "",
+          worldInfoAfter: "",
+          depthEntries: [],
+          outlets: {},
+          fullContext: scopedActivatedEntries.map(({ entry }) => entry.content).join("\n\n"),
+          stableFullContext: scopedActivatedEntries
+            .filter(({ rawContent, entry }) => !hasMacroTemplateSyntax(rawContent ?? entry.content))
+            .map(({ entry }) => entry.content)
+            .join("\n\n"),
+          dynamicFullContext: scopedActivatedEntries
+            .filter(({ rawContent, entry }) => hasMacroTemplateSyntax(rawContent ?? entry.content))
+            .map(({ entry }) => entry.content)
+            .join("\n\n"),
+          totalEntries: scopedActivatedEntries.length,
+          totalTokensEstimate: Math.ceil(
+            scopedActivatedEntries.reduce((sum, { entry }) => sum + entry.content.length, 0) / 4,
+          ),
+        }
+      : processActivatedEntries(scopedActivatedEntries, 0);
   const scopedIds = new Set(scopedActivatedEntries.map((entry) => entry.entry.id));
   const scopedSkippedEntries = result.budgetSkippedEntries.filter((entry) => {
     const storedEntry = entriesById.get(entry.id);
@@ -112,6 +141,11 @@ export function scopeLorebookScanResultToCharacterContext(
     activatedEntries: result.activatedEntries.filter((entry) => scopedIds.has(entry.id)),
     budgetSkippedEntries: scopedSkippedEntries,
   };
+}
+
+/** Treat any stored macro template as turn-dependent for cache partitioning. */
+function hasMacroTemplateSyntax(value: string): boolean {
+  return /\{\{/u.test(value);
 }
 
 export async function scopeLorebookScanResultToCharacter(
@@ -138,7 +172,7 @@ export async function scopeLorebookScanResultToCharacter(
 }
 
 export type LorebookBudgetSkipReason = "lorebook" | "chat" | "both" | "location";
-export type LorebookMatchType = "keyword" | "semantic" | "constant" | "sticky";
+export type LorebookMatchType = "keyword" | "semantic" | "constant" | "always_loaded" | "sticky";
 
 export interface LorebookBudgetSkippedEntry {
   id: string;
@@ -386,14 +420,17 @@ export function enforceMaxActivatedEntries(
   maxEntries: number = LIMITS.MAX_LOREBOOK_ENTRIES,
 ): ActivatedEntry[] {
   if (maxEntries <= 0 || activatedEntries.length <= maxEntries) return activatedEntries;
-  return [...activatedEntries]
+  const mandatory = activatedEntries.filter((entry) => entry.entry.alwaysLoaded);
+  const remainingSlots = Math.max(0, maxEntries - mandatory.length);
+  const optional = activatedEntries
+    .filter((entry) => !entry.entry.alwaysLoaded)
     .sort((a, b) => {
       if (a.entry.constant && !b.entry.constant) return -1;
       if (!a.entry.constant && b.entry.constant) return 1;
       return a.injectionOrder - b.injectionOrder;
     })
-    .slice(0, maxEntries)
-    .sort((a, b) => a.injectionOrder - b.injectionOrder);
+    .slice(0, remainingSlots);
+  return [...mandatory, ...optional].sort((a, b) => a.injectionOrder - b.injectionOrder);
 }
 
 export function applyLorebookDefaults(
@@ -471,6 +508,8 @@ function resolveFinalLorebookContent(
 }
 
 function lorebookSelectionOrder(a: ActivatedEntry, b: ActivatedEntry): number {
+  if (a.entry.alwaysLoaded && !b.entry.alwaysLoaded) return -1;
+  if (!a.entry.alwaysLoaded && b.entry.alwaysLoaded) return 1;
   if (a.entry.constant && !b.entry.constant) return -1;
   if (!a.entry.constant && b.entry.constant) return 1;
   if (a.matchedCurrentContext && !b.matchedCurrentContext) return -1;
@@ -493,6 +532,10 @@ type LorebookBudgetSelectionState = {
   perLorebookEntryCounts: Map<string, number>;
   totalTokens: number;
 };
+
+function countLimitableLorebookEntries(entries: ActivatedEntry[]): number {
+  return entries.reduce((count, entry) => count + (entry.entry.alwaysLoaded ? 0 : 1), 0);
+}
 
 type LorebookBudgetSkipCandidate = {
   entry: ActivatedEntry;
@@ -612,6 +655,7 @@ function readSemanticScore(matchedKeys: string[]): number | undefined {
 
 function getLorebookMatchType(matchedKeys: string[]): LorebookMatchType {
   if (matchedKeys.some((key) => key.startsWith("[semantic:"))) return "semantic";
+  if (matchedKeys.includes("[always_loaded]")) return "always_loaded";
   if (matchedKeys.includes("[constant]")) return "constant";
   if (matchedKeys.includes("[sticky]")) return "sticky";
   return "keyword";
@@ -651,7 +695,7 @@ function applyCurrentLocationLoreBudget(
   let usedTokens = 0;
   for (const candidate of [...candidates].sort(lorebookSelectionOrder)) {
     const estimatedTokens = estimateLorebookTokens(candidate.entry.content);
-    if (tokenBudget > 0 && usedTokens + estimatedTokens > tokenBudget) {
+    if (!candidate.entry.alwaysLoaded && tokenBudget > 0 && usedTokens + estimatedTokens > tokenBudget) {
       skipped.push({
         id: candidate.entry.id,
         name: candidate.entry.name,
@@ -670,7 +714,7 @@ function applyCurrentLocationLoreBudget(
       continue;
     }
     selected.push(candidate);
-    usedTokens += estimatedTokens;
+    if (!candidate.entry.alwaysLoaded) usedTokens += estimatedTokens;
   }
   return { selected: selected.sort(lorebookInjectionOrder), skipped };
 }
@@ -683,13 +727,16 @@ function trySelectBudgetedLorebookEntry(
   maxEntries: number,
 ): BudgetedLorebookEntrySelection {
   if (state.selectedIds.has(candidate.entry.id)) return { selected: false };
-  if (maxEntries > 0 && state.selected.length >= maxEntries) return { selected: false };
+  const bypassLimits = candidate.entry.alwaysLoaded === true;
+  if (!bypassLimits && maxEntries > 0 && countLimitableLorebookEntries(state.selected) >= maxEntries) {
+    return { selected: false };
+  }
 
   const lorebookId = candidate.entry.lorebookId;
   const lorebook = lorebooksById.get(lorebookId);
   const lorebookEntryLimit = normalizeLorebookEntryLimit(lorebook?.entryLimit);
   const lorebookEntryCount = state.perLorebookEntryCounts.get(lorebookId) ?? 0;
-  if (lorebookEntryCount >= lorebookEntryLimit) return { selected: false };
+  if (!bypassLimits && lorebookEntryCount >= lorebookEntryLimit) return { selected: false };
 
   const entryTokens = estimateLorebookTokens(candidate.entry.content);
   const lorebookBudget = lorebook?.tokenBudget ?? 0;
@@ -697,7 +744,7 @@ function trySelectBudgetedLorebookEntry(
   const exceedsLorebookBudget = lorebookBudget > 0 && lorebookTokens + entryTokens > lorebookBudget;
   const exceedsGlobalBudget = tokenBudget > 0 && state.totalTokens + entryTokens > tokenBudget;
 
-  if (exceedsLorebookBudget || exceedsGlobalBudget) {
+  if (!bypassLimits && (exceedsLorebookBudget || exceedsGlobalBudget)) {
     return {
       selected: false,
       skipped: {
@@ -714,9 +761,11 @@ function trySelectBudgetedLorebookEntry(
 
   state.selected.push(candidate);
   state.selectedIds.add(candidate.entry.id);
-  state.perLorebookTokens.set(lorebookId, lorebookTokens + entryTokens);
-  state.perLorebookEntryCounts.set(lorebookId, lorebookEntryCount + 1);
-  state.totalTokens += entryTokens;
+  if (!bypassLimits) {
+    state.perLorebookTokens.set(lorebookId, lorebookTokens + entryTokens);
+    state.perLorebookEntryCounts.set(lorebookId, lorebookEntryCount + 1);
+    state.totalTokens += entryTokens;
+  }
 
   return { selected: true, entry: candidate };
 }
@@ -781,7 +830,6 @@ function selectBudgetedLorebookEntryBatch(
     const skippedFromCandidates: LorebookBudgetSkipCandidate[] = [];
 
     for (const candidate of [...pass.entries].sort(lorebookSelectionOrder)) {
-      if (maxEntries > 0 && nextState.selected.length >= maxEntries) break;
       const selected = trySelectBudgetedLorebookEntry(candidate, nextState, lorebooksById, tokenBudget, maxEntries);
       if (selected.selected) {
         selectedFromCandidates.push(selected.entry);
@@ -814,7 +862,6 @@ function selectBudgetedLorebookEntryBatch(
   const skippedFromCandidates: LorebookBudgetSkipCandidate[] = [];
 
   for (const candidate of [...pass.entries].sort(lorebookSelectionOrder)) {
-    if (maxEntries > 0 && nextState.selected.length >= maxEntries) break;
     const selected = trySelectBudgetedLorebookEntry(candidate, nextState, lorebooksById, tokenBudget, maxEntries);
     if (selected.selected) {
       selectedFromCandidates.push(selected.entry);
@@ -918,7 +965,7 @@ export function resolveBudgetAndRecursivelyActivateLorebookEntriesWithDiagnostic
       (candidate) =>
         !processedIds.has(candidate.entry.id) &&
         !state.selectedIds.has(candidate.entry.id) &&
-        !(candidate.entry.group && selectedGroups.has(candidate.entry.group)),
+        !(candidate.entry.group && !candidate.entry.alwaysLoaded && selectedGroups.has(candidate.entry.group)),
     );
     for (const candidate of candidates) {
       processedIds.add(candidate.entry.id);
@@ -935,7 +982,7 @@ export function resolveBudgetAndRecursivelyActivateLorebookEntriesWithDiagnostic
     state = selectedBatch.state;
     budgetSkippedEntries.push(...selectedBatch.budgetSkippedEntries);
     for (const selected of selectedBatch.selectedFromCandidates) {
-      if (selected.entry.group) selectedGroups.add(selected.entry.group);
+      if (selected.entry.group && !selected.entry.alwaysLoaded) selectedGroups.add(selected.entry.group);
     }
 
     const recursiveContentParts = selectedBatch.selectedFromCandidates
@@ -943,7 +990,7 @@ export function resolveBudgetAndRecursivelyActivateLorebookEntriesWithDiagnostic
       .map((selected) => selected.entry.content);
 
     if (depth >= maxDepth) break;
-    if (maxEntries > 0 && state.selected.length >= maxEntries) break;
+    if (maxEntries > 0 && countLimitableLorebookEntries(state.selected) >= maxEntries) break;
 
     const recursiveContent = recursiveContentParts.join("\n");
     if (!recursiveContent) break;
@@ -954,7 +1001,7 @@ export function resolveBudgetAndRecursivelyActivateLorebookEntriesWithDiagnostic
         !state.selectedIds.has(entry.id) &&
         canRecurseEntry(entry) &&
         !entry.excludeRecursion &&
-        !(entry.group && selectedGroups.has(entry.group)),
+        !(entry.group && !entry.alwaysLoaded && selectedGroups.has(entry.group)),
     );
     if (remaining.length === 0) break;
 
@@ -997,23 +1044,78 @@ export function resolveBudgetAndRecursivelyActivateLorebookEntries(
   ).selected;
 }
 
-/**
- * Main lorebook processing for a generation request.
- * 1. Fetch all active entries from enabled lorebooks
- * 2. Scan chat messages for keyword matches
- * 3. Process into injectable blocks
- */
+/** Build the full prefix without keyword, probability, depth or budget selection. */
+export function buildFullLorebookContext(
+  entries: readonly LorebookEntry[],
+  resolveContent?: LorebookFinalContentResolver,
+): LorebookScanResult {
+  // Stable tie breakers matter: storage order and activation scores must not shuffle the prefix.
+  const compareId = (left: string, right: string) => (left < right ? -1 : left > right ? 1 : 0);
+  const dynamicEntryIds = new Set(
+    entries
+      .filter(
+        (entry) =>
+          hasMacroTemplateSyntax(entry.content) ||
+          safeJsonParse<Record<string, unknown>>(entry.dynamicState, {}).source === "incremental-game-continuity",
+      )
+      .map((entry) => entry.id),
+  );
+  const activatedEntries = [...entries]
+    .sort(
+      (left, right) =>
+        compareId(left.lorebookId, right.lorebookId) || left.order - right.order || compareId(left.id, right.id),
+    )
+    .map((entry) => {
+      const resolved = resolveContent?.(entry.content) ?? entry.content;
+      if (typeof resolved !== "string") resolved.commit?.();
+      return {
+        id: entry.id,
+        content: typeof resolved === "string" ? resolved : resolved.content,
+        matchedKeys: ["[always_loaded]"],
+        activationSources: ["always_loaded" as const],
+        matchType: "always_loaded" as const,
+      };
+    });
+  const fullContext = activatedEntries.map((entry) => entry.content).join("\n\n");
+  const stableFullContext = activatedEntries
+    .filter((entry) => !dynamicEntryIds.has(entry.id))
+    .map((entry) => entry.content)
+    .join("\n\n");
+  const dynamicFullContext = activatedEntries
+    .filter((entry) => dynamicEntryIds.has(entry.id))
+    .map((entry) => entry.content)
+    .join("\n\n");
+  return {
+    fullContext,
+    stableFullContext,
+    dynamicFullContext,
+    worldInfoBefore: "",
+    worldInfoAfter: "",
+    depthEntries: [],
+    outlets: {},
+    totalEntries: activatedEntries.length,
+    totalTokensEstimate: Math.ceil(fullContext.length / 4),
+    activatedEntryIds: activatedEntries.map((entry) => entry.id),
+    activatedEntries,
+    budgetSkippedEntries: [],
+  };
+}
+
 export async function processLorebooks(
   db: DB,
   messages: ScanMessage[],
   gameState?: GameStateForScanning | null,
   options?: {
+    /** Include every enabled, scoped entry in a deterministic prefix instead of activation scanning. */
+    fullContext?: boolean;
     chatId?: string;
     characterIds?: string[];
     personaId?: string | null;
     activeLorebookIds?: string[];
     excludedLorebookIds?: string[];
     excludedSourceAgentIds?: string[];
+    /** Internal entry IDs excluded by current source validity checks. */
+    excludedEntryIds?: string[];
     /** Entries explicitly attached to the exact current hierarchical location. */
     forcedEntryIds?: string[];
     /** Assemble `forcedEntryIds` and NOTHING else: the ordinary scope-based scan is
@@ -1118,6 +1220,19 @@ export async function processLorebooks(
     relevantLorebooksById,
   );
 
+  // Keeper facts are campaign/session scoped. Apply the same fail-closed origin
+  // rule to ordinary and forced selections so an explicit id cannot resurrect a
+  // branch, a duplicate session, or a legacy row with no trustworthy donor.
+  if (
+    options?.chatId &&
+    allEntries.some((entry) =>
+      effectiveLorebooks.some((book) => book.id === entry.lorebookId && book.sourceAgentId === "game-lorebook-keeper"),
+    )
+  ) {
+    allEntries = await filterEligibleGameKeeperEntries(db, options.chatId, allEntries, effectiveLorebooks);
+    forcedEntries = forcedEntries.filter((entry) => allEntries.some((candidate) => candidate.id === entry.id));
+  }
+
   // Lazy staleness for agent-authored entries (deleted-turn lore must not keep
   // steering generations). The storage cascade handles message DELETION; this
   // check covers the regenerate path, where a swipe switch changes the active
@@ -1154,6 +1269,24 @@ export async function processLorebooks(
         return ref.swipeIndex === null || activeSwipeIndex === ref.swipeIndex;
       });
     });
+  }
+
+  if (options?.chatId) {
+    const continuity = await readGameContinuityState(db, options.chatId);
+    if (continuity.gameChat) {
+      // Hand-edited entries are the user's own words and always inject; generated ones only when the chat
+      // opts in, because the campaign-memory block already carries their facts to the GM within a budget.
+      const allowedGenerated = new Set(
+        continuity.injectGeneratedLore ? continuity.allowedEntryIds : continuity.manualOverrideEntryIds,
+      );
+      const explicitExcluded = new Set(options.excludedEntryIds ?? []);
+      allEntries = allEntries.filter((entry) => {
+        const state = safeJsonParse<Record<string, unknown>>(entry.dynamicState, {});
+        if (explicitExcluded.has(entry.id)) return false;
+        if (state.source !== "incremental-game-continuity") return true;
+        return allowedGenerated.has(entry.id);
+      });
+    }
   }
 
   // Apply per-chat entry state overrides — an entry that was disabled by ephemeral
@@ -1194,7 +1327,7 @@ export async function processLorebooks(
       activatedEntryIds: [],
       activatedEntries: [],
       budgetSkippedEntries: [],
-      ...(!previewOnly && hasSerializedTimingStates(options?.entryTimingStates)
+      ...(!options?.fullContext && !previewOnly && hasSerializedTimingStates(options?.entryTimingStates)
         ? { updatedEntryTimingStates: {} }
         : {}),
     };
@@ -1221,6 +1354,19 @@ export async function processLorebooks(
     options?.personaId ?? null,
     gameState ?? null,
   );
+
+  if (options?.fullContext) {
+    return buildFullLorebookContext(
+      allEntries.filter((entry) =>
+        lorebookEntryPassesContextFilters(entry, {
+          activeCharacterIds: matchingContext.activeCharacterIds,
+          activeCharacterTags: matchingContext.activeCharacterTags,
+          generationTriggers: options.generationTriggers ?? ["chat"],
+        }),
+      ),
+      resolveContent,
+    );
+  }
 
   // Scan for activated entries.
   // Bound the default global scan window so a lorebook/entry that leaves

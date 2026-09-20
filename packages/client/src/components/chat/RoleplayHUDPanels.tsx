@@ -75,6 +75,7 @@ import { trackerEditableText } from "../../features/tracker-panel/lib/tracker-di
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { InventoryTrackerPanel as InventoryTrackerGridPanel } from "../../features/tracker-panel/components/sections/InventoryTrackerPanel";
 import { CapabilityElement } from "../capabilities/CapabilityElement";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 
 export function RoleplayInventoryTrackerPanel({
   currencies,
@@ -1095,16 +1096,19 @@ export function CharactersPanel({
               <div className="group/field flex items-center gap-1.5">
                 {/* Avatar circle or emoji fallback */}
                 {char.avatarPath ? (
-                  <button
-                    onClick={() => {
+                  <CharacterPhoto
+                    src={char.avatarPath}
+                    name={char.name}
+                    wrapperClassName="relative inline-flex items-center gap-1"
+                    className="shrink-0 overflow-hidden rounded-full ring-1 ring-[var(--border)] transition-all hover:ring-[var(--foreground)]/30"
+                    onUpdate={() => {
                       setUploadIdx(idx);
                       fileInputRef.current?.click();
                     }}
-                    className="shrink-0 overflow-hidden rounded-full ring-1 ring-[var(--border)] transition-all hover:ring-[var(--foreground)]/30"
-                    title={localizeUi("ui.panels.personaspanel.changeAvatar")}
+                    updateLabel={localizeUi("ui.panels.personaspanel.changeAvatar")}
                   >
                     <img src={char.avatarPath} alt={char.name} className="w-8 h-8 object-cover" />
-                  </button>
+                  </CharacterPhoto>
                 ) : (
                   <button
                     onClick={() => {

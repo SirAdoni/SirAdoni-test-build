@@ -6483,6 +6483,7 @@ strong {
     padding: 0.25em 2% max(0.5em, var(--mari-safe-area-inset-bottom, env(safe-area-inset-bottom))) !important;
     scroll-margin-bottom: max(4.5rem, var(--mari-safe-area-inset-bottom, env(safe-area-inset-bottom)));
   }
+
   html[data-mari-software-keyboard-open] .chat-input-container {
     padding-top: 0 !important;
     padding-bottom: 0.25em !important;
@@ -6605,6 +6606,7 @@ strong {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
 }
+
 
 /* ─────────────────────────────────────────────
    22. DISPLAY SIZE SCALING

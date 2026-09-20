@@ -4,17 +4,20 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
-import { inferImageSource, isOpenAIGptImageModel, type ImagePromptKind } from "@marinara-engine/shared";
+import { resolveImageReferenceLimits, type ImagePromptKind } from "@marinara-engine/shared";
 import type { DB } from "../../db/connection.js";
 import { flushDB } from "../../db/connection.js";
 import { DATA_DIR } from "../../utils/data-dir.js";
 import { newId, now } from "../../utils/id-generator.js";
 import { assertInsideDir, extensionFromImageMime, isAllowedImageBuffer } from "../../utils/security.js";
-import { generateImage, type ImageGenResult } from "../image/image-generation.js";
+import { generateImage, type ImageGenRequest, type ImageGenResult } from "../image/image-generation.js";
 import { resolveConnectionImageDefaults, resolveConnectionImageQuality } from "../image/image-generation-defaults.js";
 import { loadImageGenerationUserSettings } from "../image/image-generation-settings.js";
 import { compileImagePrompt } from "../image/image-prompt-compiler.js";
-import { resolveImageConnectionFallback } from "../generation/media-connection-fallback.js";
+import {
+  resolveImageConnectionFallback,
+  resolveImageFallbackReferenceLimit,
+} from "../generation/media-connection-fallback.js";
 import { createConnectionsStorage } from "../storage/connections.storage.js";
 import { createCharactersStorage } from "../storage/characters.storage.js";
 import { createLorebooksStorage } from "../storage/lorebooks.storage.js";
@@ -60,6 +63,7 @@ type ImageConnection = {
   imageGenerationSource?: string | null;
   imageService?: string | null;
   imageEndpointId?: string | null;
+  maxImageReferences?: number | null;
   comfyuiWorkflow?: string | null;
 } & Record<string, unknown>;
 
@@ -243,106 +247,50 @@ function detectImageKind(target: ImageTarget | null, explicit?: string): ImagePr
   }
 }
 
-function isStabilityV1Base(baseUrl: string) {
-  try {
-    const url = new URL(baseUrl);
-    const parts = url.pathname.split("/").filter(Boolean);
-    return parts.includes("v1") && !parts.includes("v2beta");
-  } catch {
-    return /\/v1(?:\/|$)/i.test(baseUrl) && !/\/v2beta(?:\/|$)/i.test(baseUrl);
-  }
-}
-
-function comfyWorkflowHasReferenceInput(workflow: string | null | undefined) {
-  return !!workflow && /%reference_image(?:_name)?(?:_\d{2})?%/.test(workflow);
-}
-
-function resolveImageSource(conn: ImageConnection) {
-  const baseUrl = conn.baseUrl || "";
-  const model = conn.model || "";
-  const inferred = inferImageSource(conn.imageGenerationSource || model, baseUrl);
-  const explicit = (conn.imageService || "").trim().toLowerCase();
-  if (explicit === "drawthings") return "automatic1111";
-  return explicit || inferred;
-}
-
-function capabilityForConnection(conn: ImageConnection): ImageCapability {
-  const source = resolveImageSource(conn);
+export function capabilityForConnection(conn: ImageConnection): ImageCapability {
+  const referenceLimits = resolveImageReferenceLimits({
+    imageGenerationSource: conn.imageGenerationSource,
+    imageService: conn.imageService,
+    model: conn.model,
+    baseUrl: conn.baseUrl,
+    comfyuiWorkflow: conn.comfyuiWorkflow,
+    maxImageReferences: conn.maxImageReferences,
+  });
+  const source = referenceLimits.source;
   const serviceHint = (conn.imageService || conn.imageGenerationSource || conn.model || source || "").trim();
-  const model = (conn.model || "").toLowerCase();
   const notes: string[] = [];
-  let canEdit = false;
+  const canEdit = referenceLimits.effectiveLimit > 0;
   let editMode: ImageCapability["editMode"] = "none";
-  let maskEditing = false;
+  const maskEditing = false;
 
-  switch (source) {
-    case "openai":
-      canEdit = isOpenAIGptImageModel(conn.model);
-      editMode = canEdit ? "image-to-image" : "none";
-      if (canEdit)
-        notes.push(
-          "OpenAI GPT Image mask/inpaint exists at the provider level, but mari images currently exposes whole-image/reference editing only.",
-        );
-      if (!canEdit)
-        notes.push("Current Marinara OpenAI edit path requires a GPT Image model such as gpt-image-1 or gpt-image-2.");
-      break;
-    case "gemini_image":
-      canEdit = true;
-      editMode = "image-to-image";
-      notes.push("Uses text+image image output through chat-completions style payloads.");
-      break;
-    case "openrouter":
-      canEdit = /(?:gemini.*image|image.*gemini|nano.?banana|kontext)/i.test(model);
-      editMode = canEdit ? "model-dependent" : "none";
-      if (!canEdit)
-        notes.push(
-          "OpenRouter image editing is model-dependent; use a Gemini image/Nano Banana/Flux Kontext style model.",
-        );
-      break;
-    case "nanogpt":
-      canEdit = /(?:kontext|gpt-image|gemini|nano.?banana)/i.test(model);
-      editMode = canEdit ? "model-dependent" : "none";
-      if (!canEdit)
-        notes.push(
-          "NanoGPT references are model-dependent; choose an edit/reference-capable model such as Flux Kontext or GPT Image.",
-        );
-      break;
-    case "stability":
-      canEdit = !isStabilityV1Base(conn.baseUrl || "");
-      editMode = canEdit ? "image-to-image" : "none";
-      if (!canEdit)
-        notes.push(
-          "Stability legacy v1 path in Marinara is generation-only; use the v2beta Stable Image API for image-to-image.",
-        );
-      break;
-    case "automatic1111":
-      canEdit = true;
-      editMode = "image-to-image";
+  if (canEdit) {
+    editMode =
+      source === "comfyui" || source === "swarmui" || source === "runpod_comfyui"
+        ? "workflow"
+        : source === "novelai"
+          ? "reference"
+          : source === "openrouter" || source === "nanogpt" || source === "atlas"
+            ? "model-dependent"
+            : "image-to-image";
+    if (source === "openai") {
+      notes.push(
+        "OpenAI GPT Image mask/inpaint exists at the provider level, but mari images currently exposes whole-image/reference editing only.",
+      );
+    } else if (source === "automatic1111") {
       notes.push("Uses /sdapi/v1/img2img with the connection's denoising strength defaults.");
-      break;
-    case "comfyui":
-    case "runpod_comfyui":
-      canEdit = comfyWorkflowHasReferenceInput(conn.comfyuiWorkflow);
-      editMode = canEdit ? "workflow" : "none";
-      if (!canEdit)
-        notes.push(
-          "ComfyUI editing requires a workflow containing %reference_image% or %reference_image_name% placeholders.",
-        );
-      break;
-    case "novelai":
-      canEdit = /^nai-diffusion-4-5(?:-(?:curated|full))?$/i.test(model.trim());
-      editMode = canEdit ? "reference" : "none";
-      if (!canEdit) notes.push("NovelAI precise reference images require a V4.5 model in Marinara.");
-      break;
-    case "xai":
-      notes.push("The current xAI adapter rejects reference images, so edits are not available through this path yet.");
-      break;
-    case "pollinations":
-    case "togetherai":
-    case "horde":
-    default:
-      notes.push("This connection path is treated as generation-only by the current Marinara adapter.");
-      break;
+    } else if (source === "gemini_image") {
+      notes.push("Uses text+image image output through chat-completions style payloads.");
+    }
+  } else if (source === "comfyui" || source === "swarmui" || source === "runpod_comfyui") {
+    notes.push(
+      "ComfyUI editing requires a contiguous workflow reference slot beginning with %reference_image% or %reference_image_01%.",
+    );
+  } else if (source === "openai") {
+    notes.push("Current Marinara OpenAI edit path requires a GPT Image model such as gpt-image-1 or gpt-image-2.");
+  } else if (source === "novelai") {
+    notes.push("Native NovelAI precise reference images require its V4.5 model in Marinara.");
+  } else {
+    notes.push("This connection path is generation-only for the selected provider/model.");
   }
 
   return {
@@ -354,6 +302,14 @@ function capabilityForConnection(conn: ImageConnection): ImageCapability {
     maskEditing,
     notes,
   };
+}
+
+export function fallbackForMariImageOperation(
+  operation: "generate" | "edit",
+  fallback: ImageGenRequest["fallback"] | null | undefined,
+): ImageGenRequest["fallback"] | undefined {
+  if (!fallback) return undefined;
+  return operation === "edit" && resolveImageFallbackReferenceLimit(fallback) < 1 ? undefined : fallback;
 }
 
 function publicConnection(conn: ImageConnection) {
@@ -429,16 +385,16 @@ async function savePreviewAsset(args: {
     ext,
     operation: args.operation,
     kind: args.kind,
-    prompt: args.prompt,
-    negativePrompt: args.negativePrompt,
+    prompt: args.result.effectivePrompt ?? args.prompt,
+    negativePrompt: args.result.effectiveNegativePrompt ?? args.negativePrompt,
     width: args.width ?? null,
     height: args.height ?? null,
-    connectionId: args.connection.id,
-    connectionName: args.connection.name,
-    provider: args.connection.provider,
-    source: args.capability.source,
-    serviceHint: args.capability.serviceHint,
-    model: args.connection.model || "",
+    connectionId: args.result.effectiveConnection?.connectionId ?? args.connection.id,
+    connectionName: args.result.effectiveConnection?.connectionName ?? args.connection.name,
+    provider: args.result.effectiveConnection?.provider ?? args.connection.provider,
+    source: args.result.effectiveConnection?.source ?? args.capability.source,
+    serviceHint: args.result.effectiveConnection?.serviceHint ?? args.capability.serviceHint,
+    model: args.result.effectiveConnection?.model || args.connection.model || "",
     sourceImage: args.sourceImage ?? null,
     createdAt: now(),
   };
@@ -769,7 +725,10 @@ export class MariImagesService {
     const imgBaseUrl = connection.baseUrl || "https://image.pollinations.ai";
     const imgSource = connection.imageGenerationSource || imgModel;
     const imgServiceHint = connection.imageService || imgSource;
-    const fallback = await resolveImageConnectionFallback(createConnectionsStorage(this.db), connection.id);
+    const fallback = fallbackForMariImageOperation(
+      operation,
+      await resolveImageConnectionFallback(createConnectionsStorage(this.db), connection.id),
+    );
     const result = await generateImage(imgSource, imgBaseUrl, connection.apiKey || "", imgServiceHint, {
       prompt: compiled.prompt,
       negativePrompt: compiled.negativePrompt || undefined,
@@ -781,6 +740,7 @@ export class MariImagesService {
       comfyWorkflow: connection.comfyuiWorkflow || undefined,
       imageDefaults,
       quality: resolveConnectionImageQuality(connection),
+      maxImageReferences: connection.maxImageReferences ?? null,
       fallback,
     });
 

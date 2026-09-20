@@ -926,14 +926,14 @@ export function resolveCharacterAdvancedPromptIds(
   chatMode: string,
   chatMetadata: Record<string, unknown>,
 ): string[] {
-  const resolved = new Set(characterIds.filter((id) => id && !id.startsWith("npc:")));
-  if (chatMode !== "game") return [...resolved];
-
-  const partyIds = Array.isArray(chatMetadata.gamePartyCharacterIds) ? chatMetadata.gamePartyCharacterIds : [];
-  for (const id of partyIds) {
-    if (typeof id === "string" && id && !id.startsWith("npc:")) resolved.add(id);
+  // Game Mode's GM is the sole owner of the main generation turn. Party cards
+  // remain available through the ordinary character context, but their card
+  // commands must not compete with the GM's instructions.
+  if (chatMode === "game") {
+    const gmCharacterId = chatMetadata.gameGmCharacterId;
+    return typeof gmCharacterId === "string" && gmCharacterId ? [gmCharacterId] : [];
   }
-  const gmCharacterId = chatMetadata.gameGmCharacterId;
-  if (typeof gmCharacterId === "string" && gmCharacterId) resolved.add(gmCharacterId);
+
+  const resolved = new Set(characterIds.filter((id) => id && !id.startsWith("npc:")));
   return [...resolved];
 }

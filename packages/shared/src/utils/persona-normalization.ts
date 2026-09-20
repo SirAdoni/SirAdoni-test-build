@@ -2,6 +2,7 @@ import { convoBehaviorInsertionStrategySchema } from "../schemas/character.schem
 import { capImportedRulesetSheets } from "../schemas/ruleset.schema.js";
 import { normalizeStatIcon } from "../constants/stat-icons.js";
 import type { ConvoBehaviorConfig, RPGStatPool, RPGStatsConfig } from "../types/character.js";
+import { normalizeRpgStatAttributes } from "./rpg-stats.js";
 import type {
   PersonaStatBar,
   PersonaStatsConfig,
@@ -109,16 +110,18 @@ export function normalizeTrackerCardColorConfig(value: unknown): TrackerCardColo
 }
 
 function normalizeStatBar(value: unknown): (PersonaStatBar & UnknownRecord) | null {
-  if (
-    !isRecord(value) ||
-    typeof value.name !== "string" ||
-    !Number.isFinite(value.value) ||
-    !Number.isFinite(value.max) ||
-    typeof value.color !== "string"
-  )
-    return null;
-  return { ...value, name: value.name, value: value.value, max: value.max, color: value.color } as PersonaStatBar &
-    UnknownRecord;
+  if (!isRecord(value) || typeof value.name !== "string" || typeof value.color !== "string") return null;
+  const numericValue = Number(value.value ?? value.current);
+  const numericMax = Number(value.max);
+  if (!Number.isFinite(numericValue) || !Number.isFinite(numericMax)) return null;
+  const { current: _legacyCurrent, ...canonical } = value;
+  return {
+    ...canonical,
+    name: value.name,
+    value: numericValue,
+    max: numericMax,
+    color: value.color,
+  } as PersonaStatBar & UnknownRecord;
 }
 
 function normalizeRpgValueRange(value: number, max: number): { value: number; max: number } {
@@ -128,20 +131,18 @@ function normalizeRpgValueRange(value: number, max: number): { value: number; ma
 
 /** Tolerantly retain valid RPG subfields for stored-row projection. */
 function normalizeRpgStats(value: unknown): (RPGStatsConfig & UnknownRecord) | undefined {
+  const rawHpValue = isRecord(value) && isRecord(value.hp) ? Number(value.hp.value ?? value.hp.current) : Number.NaN;
+  const rawHpMax = isRecord(value) && isRecord(value.hp) ? Number(value.hp.max) : Number.NaN;
   if (
     !isRecord(value) ||
     typeof value.enabled !== "boolean" ||
-    !Array.isArray(value.attributes) ||
+    (!Array.isArray(value.attributes) && !isRecord(value.attributes)) ||
     !isRecord(value.hp) ||
-    !Number.isFinite(value.hp.value) ||
-    !Number.isFinite(value.hp.max)
+    !Number.isFinite(rawHpValue) ||
+    !Number.isFinite(rawHpMax)
   )
     return undefined;
-  const attributes = value.attributes.flatMap((attribute) =>
-    isRecord(attribute) && typeof attribute.name === "string" && Number.isFinite(attribute.value)
-      ? [{ ...attribute, name: attribute.name, value: attribute.value }]
-      : [],
-  );
+  const attributes = normalizeRpgStatAttributes(value.attributes);
   const pools = Array.isArray(value.pools)
     ? value.pools.flatMap((pool) => {
         const normalized = normalizeStatBar(pool);
@@ -154,12 +155,13 @@ function normalizeRpgStats(value: unknown): (RPGStatsConfig & UnknownRecord) | u
         ];
       })
     : undefined;
-  const hp = normalizeRpgValueRange(value.hp.value as number, value.hp.max as number);
+  const hp = normalizeRpgValueRange(rawHpValue, rawHpMax);
+  const { current: _legacyCurrent, ...canonicalHp } = value.hp;
   const result: UnknownRecord = {
     ...value,
     enabled: value.enabled,
     attributes,
-    hp: { ...value.hp, ...hp },
+    hp: { ...canonicalHp, ...hp },
   };
   if (pools) result.pools = pools;
   else delete result.pools;

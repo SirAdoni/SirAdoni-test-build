@@ -17,6 +17,7 @@ import {
   useTestVideoGeneration,
   useDiagnoseClaudeSubscription,
   useFetchModels,
+  useModelParameterCapabilities,
   useSaveConnectionDefaults,
   type ClaudeSubscriptionDiagnosis,
   type RemoteConnectionModel,
@@ -80,7 +81,6 @@ import {
   IMAGE_GENERATION_SOURCES,
   ZAI_IMAGE_MODELS,
   VIDEO_GENERATION_SOURCES,
-  inferImageSource,
   isOpenAIGptImageModel,
   isOpenAIGptImage25Model,
   resolveOpenAIImageQuality,
@@ -107,6 +107,8 @@ import {
   MAX_IMAGE_PROMPT_INSTRUCTIONS_LENGTH,
   normalizeImagePromptInstructions,
   parseConnectionImageCaptioningDefaults,
+  MAX_IMAGE_REFERENCES_PER_REQUEST,
+  resolveImageReferenceLimits,
   type APIProvider,
   type AudioGenerationSource,
   type ComfyUiLoraSetting,
@@ -368,6 +370,7 @@ export function ConnectionEditor() {
   const [localImageEndpointId, setLocalImageEndpointId] = useState("");
   const [localImagePromptInstructions, setLocalImagePromptInstructions] = useState("");
   const [localImageGenerationQuality, setLocalImageGenerationQuality] = useState<ImageGenerationQuality>("auto");
+  const [localMaxImageReferences, setLocalMaxImageReferences] = useState<number | null>(null);
   const [localVideoGenerationSource, setLocalVideoGenerationSource] = useState("");
   const [localVideoService, setLocalVideoService] = useState<string | null>(null);
   const [localAudioSource, setLocalAudioSource] = useState("elevenlabs");
@@ -426,12 +429,34 @@ export function ConnectionEditor() {
   const [remoteModels, setRemoteModels] = useState<RemoteConnectionModel[]>([]);
   const [remoteLoras, setRemoteLoras] = useState<RemoteConnectionModel[]>([]);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const imageReferenceLimits = useMemo(
+    () =>
+      resolveImageReferenceLimits({
+        imageGenerationSource: localImageGenerationSource,
+        imageService: localImageService,
+        model: localModel,
+        baseUrl: localBaseUrl,
+        comfyuiWorkflow: localComfyuiWorkflow,
+        maxImageReferences: localMaxImageReferences,
+      }),
+    [
+      localBaseUrl,
+      localComfyuiWorkflow,
+      localImageGenerationSource,
+      localImageService,
+      localMaxImageReferences,
+      localModel,
+    ],
+  );
+  const effectiveImageGenerationSource = localProvider === "image_generation" ? imageReferenceLimits.source : "";
+  const selectedImageService = effectiveImageGenerationSource;
+  const isChatGPTImageService = localProvider === "image_generation" && selectedImageService === "openai_chatgpt";
   const baseUrlValidation = useMemo(
     () =>
-      isLocalAuthConnectionProvider(localProvider)
+      isLocalAuthConnectionProvider(localProvider) || isChatGPTImageService
         ? { value: "", error: null }
         : normalizeEndpointUrlInput(localBaseUrl, "Base URL"),
-    [localBaseUrl, localProvider],
+    [isChatGPTImageService, localBaseUrl, localProvider],
   );
   const embeddingBaseUrlValidation = useMemo(
     () => normalizeEndpointUrlInput(localEmbeddingBaseUrl, "Embedding endpoint URL"),
@@ -466,11 +491,14 @@ export function ConnectionEditor() {
     setLocalOpenrouterProvider((c.openrouterProvider as string) ?? "");
     const imageGenerationSource =
       (c.provider as APIProvider) === "image_generation"
-        ? ((c.imageGenerationSource as string) ??
-          (c.imageService as string) ??
-          inferImageSource(model, (c.baseUrl as string) ?? ""))
+        ? resolveImageReferenceLimits({
+            imageGenerationSource: c.imageGenerationSource as string | null,
+            imageService: c.imageService as string | null,
+            model: c.model as string | null,
+            baseUrl: c.baseUrl as string | null,
+          }).source
         : "";
-    const imageService = ((c.imageService as string | null) ?? (c.imageGenerationSource as string | null)) || null;
+    const imageService = imageGenerationSource || null;
     const defaultsService = imageSourceToDefaultsService(imageService || imageGenerationSource);
     const storedImageDefaults = defaultsService
       ? getStoredImageGenerationDefaults(c.defaultParameters, defaultsService)
@@ -497,7 +525,19 @@ export function ConnectionEditor() {
     setLocalImageService(imageService);
     setLocalImageEndpointId((c.imageEndpointId as string) ?? "");
     setLocalImagePromptInstructions((c.imagePromptInstructions as string) ?? "");
-    setLocalImageGenerationQuality(resolveOpenAIImageQuality(c.imageGenerationQuality, model));
+    setLocalImageGenerationQuality(
+      c.imageGenerationQuality === "low" || c.imageGenerationQuality === "medium" || c.imageGenerationQuality === "high"
+        ? c.imageGenerationQuality
+        : "auto",
+    );
+    setLocalMaxImageReferences(
+      typeof c.maxImageReferences === "number" &&
+        Number.isInteger(c.maxImageReferences) &&
+        c.maxImageReferences >= 1 &&
+        c.maxImageReferences <= MAX_IMAGE_REFERENCES_PER_REQUEST
+        ? c.maxImageReferences
+        : null,
+    );
     setLocalVideoGenerationSource(videoProviderSource);
     setLocalVideoService(videoDefaultsService);
     setLocalAudioSource((c.audioSource as string) || "elevenlabs");
@@ -607,11 +647,6 @@ export function ConnectionEditor() {
     return { parseError: false as const, missing };
   }, [localBaseUrl, localComfyuiWorkflow, localModel, localProvider, localVideoGenerationSource, localVideoService]);
 
-  const effectiveImageGenerationSource = useMemo(() => {
-    if (localProvider !== "image_generation") return "";
-    return localImageGenerationSource || localImageService || inferImageSource(localModel, localBaseUrl);
-  }, [localProvider, localImageGenerationSource, localImageService, localModel, localBaseUrl]);
-
   const effectiveVideoGenerationSource = useMemo(() => {
     if (localProvider !== "video_generation") return "";
     return videoSourceToProviderOption(
@@ -619,13 +654,10 @@ export function ConnectionEditor() {
     );
   }, [localProvider, localVideoGenerationSource, localVideoService, localModel, localBaseUrl]);
 
-  const selectedImageService =
-    localProvider === "image_generation"
-      ? localImageGenerationSource || localImageService || effectiveImageGenerationSource
-      : "";
   const selectedImageDefaultsService = imageSourceToDefaultsService(selectedImageService);
   const supportsGptImageQuality =
-    localProvider === "image_generation" && selectedImageService === "openai" && isOpenAIGptImageModel(localModel);
+    (localProvider === "image_generation" && selectedImageService === "openai" && isOpenAIGptImageModel(localModel)) ||
+    isChatGPTImageService;
   const effectiveImageGenerationQuality = resolveOpenAIImageQuality(localImageGenerationQuality, localModel);
   const selectedVideoService =
     localProvider === "video_generation"
@@ -711,8 +743,14 @@ export function ConnectionEditor() {
     if (localProvider === "video_generation" && selectedVideoProvider === "nanogpt") return [];
     if (localProvider === "image_generation" && selectedImageService === "novelai")
       return (MODEL_LISTS[localProvider] ?? []).filter((m) => m.id.startsWith("nai-"));
+    if (isChatGPTImageService)
+      return [
+        { id: "gpt-image-2.5-sunburst", name: "GPT Image 2.5 Sunburst", context: 0, maxOutput: 0 },
+        { id: "gpt-image-2.5-flare", name: "GPT Image 2.5 Flare", context: 0, maxOutput: 0 },
+        ...MODEL_LISTS.openai_chatgpt,
+      ];
     return MODEL_LISTS[localProvider] ?? [];
-  }, [localProvider, selectedVideoProvider, selectedImageService]);
+  }, [isChatGPTImageService, localProvider, selectedVideoProvider, selectedImageService]);
 
   // Merge known models with remote models (remote first, deduped)
   const allModels = useMemo(() => {
@@ -721,6 +759,7 @@ export function ConnectionEditor() {
       name: m.name,
       context: m.context ?? 0,
       maxOutput: m.maxOutput ?? 0,
+      capabilities: m.capabilities,
       isRemote: true as const,
     }));
     const remoteIds = new Set(remote.map((m) => m.id));
@@ -737,6 +776,26 @@ export function ConnectionEditor() {
   const selectedModelInfo = useMemo(() => {
     return allModels.find((m) => m.id === localModel) ?? null;
   }, [allModels, localModel]);
+  const catalogModelCapabilities = useModelParameterCapabilities(
+    connectionDetailId ? { id: connectionDetailId, provider: localProvider, model: localModel } : null,
+  );
+  const selectedModelCapabilities =
+    (selectedModelInfo && "capabilities" in selectedModelInfo ? (selectedModelInfo.capabilities ?? null) : null) ??
+    catalogModelCapabilities;
+
+  // Subscription connections can report their real model list and what each model accepts, so load it on open.
+  const liveModelsRequestedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (localProvider !== "claude_subscription" || !connectionDetailId) return;
+    if (liveModelsRequestedFor.current === connectionDetailId) return;
+    liveModelsRequestedFor.current = connectionDetailId;
+    fetchModels.mutate(connectionDetailId, {
+      onSuccess: (data) => {
+        const result = data as { models: RemoteConnectionModel[] };
+        if (Array.isArray(result.models)) setRemoteModels(result.models);
+      },
+    });
+  }, [connectionDetailId, fetchModels, localProvider]);
 
   // Clear remote models when provider changes
   useEffect(() => {
@@ -798,7 +857,7 @@ export function ConnectionEditor() {
     const isVideoProvider = localProvider === "video_generation";
     const isAudioProvider = localProvider === "audio";
     const isMediaProvider = isImageProvider || isVideoProvider || isAudioProvider;
-    const isLocalAuthProvider = isLocalAuthConnectionProvider(localProvider);
+    const usesLocalAuth = isLocalAuthConnectionProvider(localProvider) || isChatGPTImageService;
     const canTreatAsLocalEndpoint = canProviderTreatAsLocalEndpoint(localProvider);
     const existingEmbeddingModel = (conn as { embeddingModel?: string | null } | undefined)?.embeddingModel ?? "";
     const existingEmbeddingBaseUrl = (conn as { embeddingBaseUrl?: string | null } | undefined)?.embeddingBaseUrl ?? "";
@@ -807,7 +866,7 @@ export function ConnectionEditor() {
       id: connectionDetailId,
       name: localName,
       provider: localProvider,
-      baseUrl: isLocalAuthProvider ? "" : baseUrlValidation.value,
+      baseUrl: usesLocalAuth ? "" : baseUrlValidation.value,
       model: normalizedModel,
       maxContext: localMaxContext,
       maxParallelJobs: localMaxParallelJobs,
@@ -824,17 +883,18 @@ export function ConnectionEditor() {
       embeddingConnectionId: localEmbeddingConnectionId || null,
       promptPresetId: !isMediaProvider ? localPromptPresetId || null : null,
       openrouterProvider: localOpenrouterProvider || null,
-      imageGenerationSource: isImageProvider ? localImageGenerationSource || localImageService || null : null,
+      imageGenerationSource: isImageProvider ? localImageService || localImageGenerationSource || null : null,
       comfyuiWorkflow:
         isImageProvider ||
         (isVideoProvider && (selectedVideoProvider === "comfyui" || selectedVideoProvider === "swarmui"))
           ? localComfyuiWorkflow || null
           : null,
-      imageService: isImageProvider ? localImageGenerationSource || localImageService || null : null,
+      imageService: isImageProvider ? localImageService || localImageGenerationSource || null : null,
       imageEndpointId:
         isImageProvider && selectedImageService === "runpod_comfyui" ? localImageEndpointId || null : null,
       imagePromptInstructions: isImageProvider ? normalizeImagePromptInstructions(localImagePromptInstructions) : null,
       imageGenerationQuality: isImageProvider ? effectiveImageGenerationQuality : "auto",
+      maxImageReferences: isImageProvider ? localMaxImageReferences : null,
       videoGenerationSource: isVideoProvider ? selectedVideoProvider || null : null,
       videoService: isVideoProvider
         ? selectedVideoProvider === "swarmui"
@@ -851,7 +911,7 @@ export function ConnectionEditor() {
       audioMusic: isAudioProvider && localAudioSource === "elevenlabs" ? localAudioMusic : false,
     };
     // Only send API key if user typed a new one
-    if (isLocalAuthProvider) {
+    if (usesLocalAuth) {
       payload.apiKey = "";
     } else if (localApiKey.trim()) {
       payload.apiKey = localApiKey;
@@ -898,7 +958,7 @@ export function ConnectionEditor() {
         });
       }
       await updateConnection.mutateAsync(payload as { id: string } & Record<string, unknown>);
-      if (isLocalAuthProvider && localBaseUrl) {
+      if (usesLocalAuth && localBaseUrl) {
         setLocalBaseUrl("");
       } else if (baseUrlValidation.value !== localBaseUrl.trim()) {
         setLocalBaseUrl(baseUrlValidation.value);
@@ -946,6 +1006,7 @@ export function ConnectionEditor() {
     localImageEndpointId,
     localImagePromptInstructions,
     effectiveImageGenerationQuality,
+    localMaxImageReferences,
     localMaxTokensOverride,
     localClaudeFastMode,
     localTreatAsLocalEndpoint,
@@ -966,6 +1027,7 @@ export function ConnectionEditor() {
     updateConnection,
     saveConnectionDefaults,
     conn,
+    isChatGPTImageService,
   ]);
 
   const handleDelete = useCallback(async () => {
@@ -1000,7 +1062,7 @@ export function ConnectionEditor() {
     const isVideoProvider = localProvider === "video_generation";
     const isAudioProvider = localProvider === "audio";
     const isMediaProvider = isImageProvider || isVideoProvider || isAudioProvider;
-    const isLocalAuthProvider = isLocalAuthConnectionProvider(localProvider);
+    const usesLocalAuth = isLocalAuthConnectionProvider(localProvider) || isChatGPTImageService;
     const defaultParameters = isImageProvider
       ? buildImageDefaultParameters(
           currentConnection.defaultParameters,
@@ -1025,7 +1087,7 @@ export function ConnectionEditor() {
                 localImageCaptioningConnectionId,
               )
             : null;
-    const imageService = isImageProvider ? localImageGenerationSource || localImageService || null : null;
+    const imageService = isImageProvider ? localImageService || localImageGenerationSource || null : null;
     const videoProvider = isVideoProvider ? selectedVideoProvider || null : null;
     const videoService = isVideoProvider
       ? videoProvider === "swarmui"
@@ -1040,7 +1102,7 @@ export function ConnectionEditor() {
       ...currentConnection,
       name: localName,
       provider: localProvider,
-      baseUrl: isLocalAuthProvider ? "" : localBaseUrl,
+      baseUrl: usesLocalAuth ? "" : localBaseUrl,
       model: normalizeGrokCliEditorModel(localProvider, localModel),
       maxContext: localMaxContext,
       maxTokensOverride: localMaxTokensOverride ?? null,
@@ -1072,6 +1134,7 @@ export function ConnectionEditor() {
         isImageProvider && selectedImageService === "runpod_comfyui" ? localImageEndpointId || null : null,
       imagePromptInstructions: isImageProvider ? normalizeImagePromptInstructions(localImagePromptInstructions) : null,
       imageGenerationQuality: isImageProvider ? effectiveImageGenerationQuality : "auto",
+      maxImageReferences: isImageProvider ? localMaxImageReferences : null,
       comfyuiWorkflow:
         isImageProvider || (isVideoProvider && (videoProvider === "comfyui" || videoProvider === "swarmui"))
           ? localComfyuiWorkflow || null
@@ -1119,6 +1182,7 @@ export function ConnectionEditor() {
     localImageEndpointId,
     localImagePromptInstructions,
     effectiveImageGenerationQuality,
+    localMaxImageReferences,
     localComfyuiWorkflow,
     localClaudeFastMode,
     selectedImageDefaultsService,
@@ -1129,6 +1193,7 @@ export function ConnectionEditor() {
     localAudioVoice,
     localAudioSoundEffects,
     localAudioMusic,
+    isChatGPTImageService,
   ]);
 
   const handleTestConnection = useCallback(async () => {
@@ -1360,11 +1425,16 @@ export function ConnectionEditor() {
   const isOpenAIChatGPTProvider = localProvider === "openai_chatgpt";
   const isGrokSubscriptionProvider = localProvider === "grok_subscription";
   const isLocalAuthProvider = isLocalAuthConnectionProvider(localProvider);
+  const usesLocalAuth = isLocalAuthProvider || isChatGPTImageService;
   const supportsDirectEmbeddingConfig = providerSupportsDirectEmbeddingConfig(localProvider);
   const canTreatAsLocalEndpoint = canProviderTreatAsLocalEndpoint(localProvider);
   const modelFetchSourceLabel = isGrokSubscriptionProvider ? "Grok CLI" : "API";
   const modelFetchButtonLabel = isGrokSubscriptionProvider ? "Fetch Models from Grok CLI" : "Fetch Models from API";
-  const emptyModelLabel = isGrokSubscriptionProvider ? "Use Grok CLI default model" : "Select a model…";
+  const emptyModelLabel = isGrokSubscriptionProvider
+    ? "Use Grok CLI default model"
+    : isChatGPTImageService
+      ? localizeUi("ui.connections.connectioneditor.chatgptImageModelAutomatic")
+      : "Select a model…";
   const canSendTestMessage = isGrokSubscriptionProvider || Boolean(localModel.trim());
 
   if (!connectionDetailId) return null;
@@ -1723,7 +1793,7 @@ export function ConnectionEditor() {
             </FieldGroup>
           )}
 
-          {!isLocalAuthProvider && (
+          {!usesLocalAuth && (
             <>
               {/* ── API Key ── */}
               <FieldGroup
@@ -1847,7 +1917,9 @@ export function ConnectionEditor() {
                           ? t("connections.mediaSources.zai.name")
                           : src.id === "arli"
                             ? t("connections.mediaSources.arli.name")
-                            : src.name;
+                            : src.id === "openai_chatgpt"
+                              ? t("connections.mediaSources.openaiChatgpt.name")
+                              : src.name;
                   const sourceDescription =
                     src.id === "fal"
                       ? t("connections.mediaSources.fal.imageDescription")
@@ -1859,7 +1931,9 @@ export function ConnectionEditor() {
                             ? t("connections.mediaSources.zai.imageDescription")
                             : src.id === "arli"
                               ? t("connections.mediaSources.arli.imageDescription")
-                              : src.description;
+                              : src.id === "openai_chatgpt"
+                                ? t("connections.mediaSources.openaiChatgpt.imageDescription")
+                                : src.description;
                   return (
                     <button
                       key={src.id}
@@ -1878,6 +1952,13 @@ export function ConnectionEditor() {
                         }
                         if (src.id === "fal" && selectedImageService !== "fal") {
                           setLocalModel("fal-ai/flux/schnell");
+                        } else if (
+                          src.id === "openai_chatgpt" &&
+                          !localModel.trim().startsWith("gpt-image-") &&
+                          !MODEL_LISTS.openai_chatgpt.some((model) => model.id === localModel.trim())
+                        ) {
+                          // Empty model lets the server pick from the account's live catalog.
+                          setLocalModel("");
                         }
                         markDirty();
                       }}
@@ -1915,6 +1996,11 @@ export function ConnectionEditor() {
               {selectedImageService === "swarmui" && (
                 <p className="mt-2 text-[0.625rem] text-[var(--muted-foreground)]">
                   {t("connections.mediaSources.swarmui.authHelp")}
+                </p>
+              )}
+              {isChatGPTImageService && (
+                <p className="mt-2 text-[0.625rem] text-[var(--muted-foreground)]">
+                  {t("connections.mediaSources.openaiChatgpt.authHelp")}
                 </p>
               )}
             </FieldGroup>
@@ -2106,9 +2192,17 @@ export function ConnectionEditor() {
 
           {/* ── Model Selection ── */}
           <FieldGroup
-            label={localizeUi("ui.connections.connectioneditor.model")}
+            label={
+              isChatGPTImageService
+                ? localizeUi("ui.connections.connectioneditor.chatgptImageModelLabel")
+                : localizeUi("ui.connections.connectioneditor.model")
+            }
             icon={<Server size="0.875rem" className="text-sky-400" />}
-            help={localizeUi("ui.connections.connectioneditor.theSpecificAiModelToUseYouCanPick")}
+            help={
+              isChatGPTImageService
+                ? localizeUi("ui.connections.connectioneditor.chatgptImageModelHelp")
+                : localizeUi("ui.connections.connectioneditor.theSpecificAiModelToUseYouCanPick")
+            }
           >
             {/* Standard model dropdown + manual input (used for all providers including image_generation) */}
             <div ref={modelDropdownRef} className={cn("relative min-w-0", showModelDropdown && "z-50")}>
@@ -2321,6 +2415,96 @@ export function ConnectionEditor() {
               </div>
             )}
           </FieldGroup>
+
+          {supportsGptImageQuality && (
+            <FieldGroup
+              label={localizeUi("ui.connections.connectioneditor.gptImageQuality")}
+              icon={<Sparkles size="0.875rem" className="text-sky-400" />}
+              help={localizeUi(
+                isChatGPTImageService
+                  ? "ui.connections.connectioneditor.chatgptImageQualityHelp"
+                  : "ui.connections.connectioneditor.gptImageQualityHelp",
+              )}
+            >
+              <select
+                aria-label={localizeUi("ui.connections.connectioneditor.gptImageQuality")}
+                value={localImageGenerationQuality}
+                onChange={(event) => {
+                  setLocalImageGenerationQuality(event.target.value as ImageGenerationQuality);
+                  markDirty();
+                }}
+                className="w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm outline-none ring-1 ring-[var(--border)] transition-shadow focus:ring-sky-400/50"
+              >
+                <option value="auto">{localizeUi("ui.connections.connectioneditor.imageQualityAuto")}</option>
+                <option value="low">{localizeUi("ui.connections.connectioneditor.imageQualityLow")}</option>
+                <option value="medium">{localizeUi("ui.connections.connectioneditor.imageQualityMedium")}</option>
+                <option value="high">{localizeUi("ui.connections.connectioneditor.imageQualityHigh")}</option>
+              </select>
+            </FieldGroup>
+          )}
+
+          {localProvider === "image_generation" && (
+            <FieldGroup
+              label={localizeUi("ui.connections.connectioneditor.referenceImagesPerRequest")}
+              icon={<ImageIcon size="0.875rem" className="text-sky-400" />}
+              help={localizeUi("ui.connections.connectioneditor.referenceImagesPerRequestHelp")}
+            >
+              <label className="sr-only" htmlFor="connection-max-image-references">
+                {localizeUi("ui.connections.connectioneditor.referenceImagesPerRequest")}
+              </label>
+              <select
+                id="connection-max-image-references"
+                aria-describedby="connection-max-image-references-status connection-max-image-references-help"
+                value={localMaxImageReferences ?? "automatic"}
+                onChange={(event) => {
+                  setLocalMaxImageReferences(
+                    event.target.value === "automatic" ? null : Number.parseInt(event.target.value, 10),
+                  );
+                  markDirty();
+                }}
+                className="min-h-11 w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm outline-none ring-1 ring-[var(--border)] transition-shadow focus:ring-2 focus:ring-[var(--ring)]"
+              >
+                <option value="automatic">
+                  {imageReferenceLimits.hardLimit === 0
+                    ? localizeUi("ui.connections.connectioneditor.referenceImagesAutomaticUnsupported")
+                    : localizeUi("ui.connections.connectioneditor.referenceImagesAutomatic", {
+                        value1: imageReferenceLimits.automaticLimit,
+                      })}
+                </option>
+                {Array.from({ length: MAX_IMAGE_REFERENCES_PER_REQUEST }, (_, index) => index + 1).map((limit) => (
+                  <option key={limit} value={limit} disabled={limit > imageReferenceLimits.hardLimit}>
+                    {limit}
+                  </option>
+                ))}
+              </select>
+              <p
+                id="connection-max-image-references-status"
+                aria-live="polite"
+                className="text-xs text-[var(--muted-foreground)]"
+              >
+                {imageReferenceLimits.hardLimit === 0
+                  ? localizeUi("ui.connections.connectioneditor.referenceImagesUnsupported")
+                  : localMaxImageReferences !== null && localMaxImageReferences > imageReferenceLimits.hardLimit
+                    ? localizeUi("ui.connections.connectioneditor.referenceImagesProviderClamped", {
+                        value1: localMaxImageReferences,
+                        value2: imageReferenceLimits.effectiveLimit,
+                      })
+                    : localizeUi("ui.connections.connectioneditor.referenceImagesEffectiveLimit", {
+                        value1: imageReferenceLimits.effectiveLimit,
+                      })}
+              </p>
+              <p
+                id="connection-max-image-references-help"
+                className="text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]"
+              >
+                {localizeUi(
+                  imageReferenceLimits.hardLimit === 0
+                    ? "ui.connections.connectioneditor.referenceImagesChooseAnotherProviderHelp"
+                    : "ui.connections.connectioneditor.referenceImagesPriorityAndLatencyHelp",
+                )}
+              </p>
+            </FieldGroup>
+          )}
 
           {/* ── RunPod Endpoint ID ── */}
           {localProvider === "image_generation" && selectedImageService === "runpod_comfyui" && (
@@ -2780,6 +2964,8 @@ export function ConnectionEditor() {
                     showCustomHeaders={
                       !["openai_chatgpt", "claude_subscription", "grok_subscription"].includes(localProvider)
                     }
+                    baseUrl={localBaseUrl}
+                    modelCapabilities={selectedModelCapabilities}
                     enabledParametersFallback={STRICT_CONNECTION_PARAMETER_SEND_DEFAULTS}
                     onChange={(next) => {
                       setLocalDefaultParameters(next);
@@ -3003,8 +3189,8 @@ export function ConnectionEditor() {
             </FieldGroup>
           )}
 
-          {/* ── Claude (Subscription) — Fast Mode toggle ── */}
-          {isClaudeSubscriptionProvider && (
+          {/* ── Claude (Subscription) — Fast Mode toggle, hidden when the selected model reports no fast mode ── */}
+          {isClaudeSubscriptionProvider && (selectedModelCapabilities?.fastMode !== false || localClaudeFastMode) && (
             <FieldGroup
               label={localizeUi("ui.connections.connectioneditor.fastMode")}
               icon={<Zap size="0.875rem" className="text-amber-400" />}
@@ -3258,7 +3444,9 @@ export function ConnectionEditor() {
               <strong>{localizeUi("ui.connections.connectioneditor.testConnection")}</strong>{" "}
               {selectedImageService === "fal"
                 ? t("connections.mediaSources.fal.testHelp")
-                : localizeUi("ui.connections.connectioneditor.verifiesYourApiKeyAgainstTheProviderCatalogOr")}
+                : isChatGPTImageService
+                  ? localizeUi("ui.connections.connectioneditor.chatgptImageTestConnectionHelp")
+                  : localizeUi("ui.connections.connectioneditor.verifiesYourApiKeyAgainstTheProviderCatalogOr")}
               {!isMediaGenerationProvider && (
                 <>
                   {" "}

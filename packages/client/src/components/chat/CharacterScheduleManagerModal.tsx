@@ -30,6 +30,7 @@ import { useTranslation as useUiTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { CharacterScheduleEditorModal } from "./CharacterScheduleEditorModal";
 import { getAvatarCropStyle } from "../../lib/utils";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 
 type ManagerCharacter = {
   id: string;
@@ -466,12 +467,20 @@ function CharacterScheduleGroup({
               )}
             </button>
             {character.avatarPath ? (
-              <img
+              <CharacterPhoto
                 src={character.avatarPath}
-                alt=""
+                name={character.name}
                 className="h-8 w-8 shrink-0 rounded-full object-cover"
-                style={getAvatarCropStyle(character.avatarCrop as Parameters<typeof getAvatarCropStyle>[0])}
-              />
+                wrapperClassName="relative inline-flex items-center gap-1"
+                onUpdate={() => useUIStore.getState().openCharacterDetail(character.id)}
+              >
+                <img
+                  src={character.avatarPath}
+                  alt={character.name}
+                  className="h-8 w-8 shrink-0 rounded-full object-cover"
+                  style={getAvatarCropStyle(character.avatarCrop as Parameters<typeof getAvatarCropStyle>[0])}
+                />
+              </CharacterPhoto>
             ) : (
               <div className="mari-avatar-placeholder mari-avatar-placeholder--character flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold">
                 {character.name.trim().charAt(0).toUpperCase() || "?"}

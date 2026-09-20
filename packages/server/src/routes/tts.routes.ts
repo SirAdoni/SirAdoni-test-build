@@ -24,6 +24,7 @@ import {
 } from "@marinara-engine/shared";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
+import { getGenerationJobs } from "../services/generation/generation-jobs.js";
 import { encryptApiKey, decryptApiKey } from "../utils/crypto.js";
 import { getChatGenerationTimeoutMs, isTtsLocalUrlsEnabled } from "../config/runtime-config.js";
 import { safeFetch } from "../utils/security.js";
@@ -1224,6 +1225,7 @@ async function fetchProviderVoices(cfg: TTSConfig): Promise<TTSVoicesResponse> {
 // ── Routes ──────────────────────────────────────
 
 export async function ttsRoutes(app: FastifyInstance) {
+  const generationJobs = getGenerationJobs(app);
   const storage = createAppSettingsStorage(app.db);
   const connections = createConnectionsStorage(app.db);
 
@@ -1447,9 +1449,18 @@ export async function ttsRoutes(app: FastifyInstance) {
     const lockKey = context ? `context\0${context.axis}\0${context.key}` : `${kind}\0${normalizedPrompt.toLowerCase()}`;
     let generation = gameAudioGenerationLocks.get(lockKey);
     if (!generation) {
-      generation = generateElevenLabsGameAudio(cfg, kind, normalizedPrompt, context).finally(() => {
-        gameAudioGenerationLocks.delete(lockKey);
-      });
+      generation = generationJobs
+        .run(
+          {
+            kind: `game-audio-${kind}`,
+            label: `Game ${kind}`,
+            timeoutMs: context ? 300_000 : 180_000,
+          },
+          () => generateElevenLabsGameAudio(cfg, kind, normalizedPrompt, context),
+        )
+        .finally(() => {
+          gameAudioGenerationLocks.delete(lockKey);
+        });
       gameAudioGenerationLocks.set(lockKey, generation);
     }
     try {

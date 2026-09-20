@@ -1,13 +1,26 @@
-import type { ResolvedSpatialTravel, SpatialContextDefinition, SpatialContextSnapshot } from "@marinara-engine/shared";
+import type {
+  ResolvedOwnerSpatialProjection,
+  ResolvedSpatialTravel,
+  SpatialContextDefinition,
+  SpatialContextSnapshot,
+  SpatialLocationKind,
+} from "@marinara-engine/shared";
 import { getCapabilityService } from "../capability-packages/capability-service-registry.service.js";
 import { isHierarchicalMapsEnabledForChat } from "./activation.js";
 
 export type AssistantSpatialDirective =
   | { type: "move"; destinationId: string }
+  | { type: "teleport"; destinationId: string; evidence: string; authorizationEvidence: string }
+  | {
+      type: "discover_path";
+      parentId: string | null;
+      locations: Array<{ name: string; kind: SpatialLocationKind; description: string }>;
+    }
   | {
       type: "discover";
       name: string;
-      relation: "enter" | "link";
+      relation: "enter" | "link" | "place";
+      parentId?: string | null;
       direction?: "outgoing" | "incoming" | "both";
       description?: string;
     };
@@ -21,10 +34,69 @@ export interface ParsedAssistantSpatialDirective {
 const ASSISTANT_SPATIAL_COMMAND_RE = /\[spatial_(move|discover):\s*([^\]\r\n]*)\]/giu;
 const ASSISTANT_SPATIAL_COMMAND_PREFIXES = ["[spatial_move:", "[spatial_discover:"] as const;
 const ASSISTANT_SPATIAL_COMMAND_PREFIX_ONLY_RE = /^\[spatial_(?:move|discover):\s*$/iu;
+const ASSISTANT_SPATIAL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u;
 
 export interface AssistantSpatialDirectiveStreamFilter {
   push(content: string): string;
   flush(): string;
+}
+
+function metadataRecord(rawMetadata: unknown): Record<string, unknown> {
+  if (typeof rawMetadata === "string") {
+    try {
+      return metadataRecord(JSON.parse(rawMetadata));
+    } catch {
+      return {};
+    }
+  }
+  return rawMetadata && typeof rawMetadata === "object" && !Array.isArray(rawMetadata)
+    ? (rawMetadata as Record<string, unknown>)
+    : {};
+}
+
+function normalizeLocationName(value: string): string {
+  return value
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[_-]+/gu, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/^\s*(?:the|a|an)\s+/u, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+/**
+ * Turn a World State tracker's exact known-location result into the same explicit
+ * move that the World Maps package accepts for automatic narrated travel.
+ */
+export function resolveTrackerSpatialMoveDirective(
+  locationGuidance: string | null | undefined,
+  projection: ResolvedOwnerSpatialProjection | null | undefined,
+  chatMetadata: unknown,
+): AssistantSpatialDirective | null {
+  if (
+    !locationGuidance ||
+    projection?.ownerMode !== "game" ||
+    metadataRecord(chatMetadata).spatialContextAutoTravelNowEnabled !== true
+  ) {
+    return null;
+  }
+
+  const normalizedGuidance = normalizeLocationName(locationGuidance);
+  if (!normalizedGuidance) return null;
+
+  const matches = new Set(
+    (projection.knownLocations ?? [])
+      .filter(({ path }) => {
+        const leaf = path.split(/\s*>\s*/u).at(-1) ?? path;
+        return normalizeLocationName(path) === normalizedGuidance || normalizeLocationName(leaf) === normalizedGuidance;
+      })
+      .map(({ id }) => id),
+  );
+  if (matches.size !== 1) return null;
+
+  const [destinationId] = matches;
+  return destinationId && destinationId !== projection.currentLocationId ? { type: "move", destinationId } : null;
 }
 
 /** Hide package-owned commands while they stream, before final response cleanup can replace the visible text. */
@@ -113,11 +185,19 @@ export function extractAssistantSpatialDirective(content: string): ParsedAssista
           ? directionValue
           : undefined;
       if (relation === "link" && !direction) continue;
+      let parentId: string | null | undefined;
+      if (values.has("parent_id")) {
+        const parentValue = values.get("parent_id")?.trim() ?? "";
+        if (parentValue.toLowerCase() === "root") parentId = null;
+        else if (parentValue.length <= 128 && ASSISTANT_SPATIAL_ID_RE.test(parentValue)) parentId = parentValue;
+        else continue;
+      }
       const description = (values.get("description") ?? "").trim().slice(0, 4_000);
       directive = {
         type: "discover",
         name,
         relation,
+        ...(parentId !== undefined ? { parentId } : {}),
         ...(direction ? { direction } : {}),
         ...(description ? { description } : {}),
       };
@@ -159,6 +239,8 @@ export interface ResolveSpatialStateOptions {
 }
 
 interface StateResolutionService {
+  supportsDiscoveryPaths?: boolean;
+  supportsNarratedTeleport?: boolean;
   parseStoredSpatialDefinition(rawMetadata: unknown): SpatialContextDefinition | null;
   resolveEffectiveSpatialState(chatId: string, options?: ResolveSpatialStateOptions): Promise<EffectiveSpatialState>;
   materializeAssistantSpatialState(input: {
@@ -167,12 +249,22 @@ interface StateResolutionService {
     swipeIndex: number;
     regenerate: boolean;
     continuation: boolean;
+    expectedCurrentLocationId?: string;
+    expectedDefinitionRevision?: number;
     directive?: AssistantSpatialDirective | null;
     locationGuidance?: string | null;
   }): Promise<SpatialContextSnapshot | null>;
 }
 
 const service = () => getCapabilityService<StateResolutionService>("hierarchical-maps:state-resolution");
+
+export function supportsSpatialDiscoveryPaths(): boolean {
+  return service()?.supportsDiscoveryPaths === true;
+}
+
+export function supportsSpatialNarratedTeleport(): boolean {
+  return service()?.supportsNarratedTeleport === true;
+}
 
 export function parseStoredSpatialDefinition(rawMetadata: unknown): SpatialContextDefinition | null {
   return service()?.parseStoredSpatialDefinition(rawMetadata) ?? null;
@@ -212,6 +304,8 @@ export async function materializeAssistantSpatialState(
     swipeIndex: number;
     regenerate: boolean;
     continuation: boolean;
+    expectedCurrentLocationId?: string;
+    expectedDefinitionRevision?: number;
     directive?: AssistantSpatialDirective | null;
     locationGuidance?: string | null;
   },

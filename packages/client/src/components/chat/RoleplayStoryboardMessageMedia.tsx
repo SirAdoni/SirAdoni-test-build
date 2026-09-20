@@ -3,7 +3,12 @@ import { ChevronLeft, ChevronRight, Loader2, PanelsTopLeft, TriangleAlert } from
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
-import { isGameTurnStoryboardRendering } from "../../hooks/use-game-storyboards";
+import {
+  isGameTurnStoryboardPreparationFailure,
+  isGameTurnStoryboardRendering,
+} from "../../hooks/use-game-storyboards";
+import { findVisibleStoryboardKeyframe } from "../../lib/game-storyboard-keyframes";
+import { GameStoryboardTimings } from "../game/GameStoryboardTimings";
 
 const EMPTY_STORYBOARD_FRAMES: GameTurnStoryboardKeyframe[] = [];
 
@@ -18,24 +23,31 @@ export function RoleplayStoryboardMessageMedia({
 }) {
   const { t: localizeUi } = useUiTranslation();
   const [activeFrameId, setActiveFrameId] = useState<string | null>(null);
+  const [manualFrameSelection, setManualFrameSelection] = useState(false);
   const storyboardIdRef = useRef(storyboard?.id);
   const frames = storyboard?.keyframes ?? EMPTY_STORYBOARD_FRAMES;
   const firstVisibleFrame = useMemo(
     () => frames.find((frame) => frame.video || frame.image) ?? frames[0] ?? null,
     [frames],
   );
-  const activeFrame = frames.find((frame) => frame.id === activeFrameId) ?? firstVisibleFrame;
+  const rendering = generating || isGameTurnStoryboardRendering(storyboard);
+  const activeFrame = findVisibleStoryboardKeyframe(
+    frames,
+    frames.find((frame) => frame.id === activeFrameId) ?? firstVisibleFrame,
+    rendering,
+    manualFrameSelection && frames.some((frame) => frame.id === activeFrameId),
+  );
   const activeIndex = activeFrame
     ? Math.max(
         0,
         frames.findIndex((frame) => frame.id === activeFrame.id),
       )
     : 0;
-  const rendering = generating || isGameTurnStoryboardRendering(storyboard);
 
   useEffect(() => {
     const storyboardChanged = storyboardIdRef.current !== storyboard?.id;
     storyboardIdRef.current = storyboard?.id;
+    if (storyboardChanged) setManualFrameSelection(false);
     setActiveFrameId((currentFrameId) => {
       if (storyboardChanged || !currentFrameId || !frames.some((frame) => frame.id === currentFrameId)) {
         return firstVisibleFrame?.id ?? null;
@@ -49,6 +61,7 @@ export function RoleplayStoryboardMessageMedia({
   const selectRelativeFrame = (offset: number) => {
     if (frames.length < 2) return;
     const nextIndex = (activeIndex + offset + frames.length) % frames.length;
+    setManualFrameSelection(true);
     setActiveFrameId(frames[nextIndex]?.id ?? null);
   };
 
@@ -72,6 +85,7 @@ export function RoleplayStoryboardMessageMedia({
         ) : null}
       </div>
 
+      {storyboard?.chatId ? <GameStoryboardTimings chatId={storyboard.chatId} generating={rendering} /> : null}
       {storyboard?.error ? (
         <div
           className="flex items-start gap-2 border-b border-amber-200/20 bg-amber-300/12 px-3 py-2 text-amber-50"
@@ -123,7 +137,11 @@ export function RoleplayStoryboardMessageMedia({
           <span className="line-clamp-2 text-center">
             {rendering
               ? localizeUi("ui.game.gamesurfacecomponent.creatingStoryboard")
-              : localizeUi("game.storyboard.status.failed")}
+              : localizeUi(
+                  isGameTurnStoryboardPreparationFailure(storyboard)
+                    ? "game.storyboard.status.unavailable"
+                    : "game.storyboard.status.failed",
+                )}
           </span>
         </div>
       )}

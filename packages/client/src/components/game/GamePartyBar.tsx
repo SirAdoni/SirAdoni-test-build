@@ -6,9 +6,11 @@ import { X } from "lucide-react";
 import { useGameModeStore } from "../../stores/game-mode.store";
 import type { AvatarCrop } from "@marinara-engine/shared";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 import { NEUTRAL_SURFACE_VARIABLES } from "../ui/neutral-surface-styles";
 import { useReducedAmbientEffects } from "../../hooks/use-reduced-ambient-effects";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { findBestNamedEntry } from "../../lib/game-character-name-match";
 
 interface PartyBarMember {
   id: string;
@@ -35,22 +37,58 @@ interface PartyBarCard {
 interface GamePartyBarProps {
   partyMembers: PartyBarMember[];
   partyCards: Record<string, PartyBarCard>;
+  mobileMenuLabel?: string;
   onRemovePartyMember?: (member: PartyBarMember) => void;
   removingPartyMemberId?: string | null;
 }
 
 type PartyMemberVisual = {
   member: PartyBarMember;
+  sheetId: string;
   avatarSrc?: string | null;
   avatarCrop?: AvatarCrop | null;
 };
 
-function PartyAvatar({ visual, className }: { visual: PartyMemberVisual; className?: string }) {
+function resolvePartyCardEntry(member: PartyBarMember, cards: Record<string, PartyBarCard>) {
+  if (cards[member.id]) return [member.id, cards[member.id]] as const;
+  const best = findBestNamedEntry(
+    Object.entries(cards),
+    member.name,
+    ([, card]) => card.title,
+    ([sheetId]) => sheetId,
+  );
+  return best ?? ([member.id, undefined] as const);
+}
+
+function PartyAvatar({
+  visual,
+  className,
+  onOpen,
+}: {
+  visual: PartyMemberVisual;
+  className?: string;
+  onOpen?: () => void;
+}) {
   const { member, avatarSrc, avatarCrop } = visual;
 
   if (avatarSrc) {
+    if (!onOpen) {
+      return (
+        <span className={cn("relative block h-8 w-8 overflow-hidden rounded-lg", className)}>
+          <img
+            src={avatarSrc}
+            alt={member.name}
+            className="h-full w-full object-cover object-top"
+            style={getAvatarCropStyle(avatarCrop)}
+          />
+        </span>
+      );
+    }
     return (
-      <span
+      <CharacterPhoto
+        src={avatarSrc}
+        name={member.name}
+        onUpdate={onOpen}
         className={cn(
           "relative block h-8 w-8 overflow-hidden rounded-lg border border-[var(--marinara-chat-chrome-button-border)] shadow-lg shadow-black/25 transition-colors group-hover:border-[var(--marinara-chat-chrome-button-border-hover)]",
           className,
@@ -59,10 +97,10 @@ function PartyAvatar({ visual, className }: { visual: PartyMemberVisual; classNa
         <img
           src={avatarSrc}
           alt={member.name}
-          className="h-full w-full object-cover"
+          className="h-full w-full object-cover object-top"
           style={getAvatarCropStyle(avatarCrop)}
         />
-      </span>
+      </CharacterPhoto>
     );
   }
 
@@ -82,6 +120,7 @@ function PartyAvatar({ visual, className }: { visual: PartyMemberVisual; classNa
 export function GamePartyBar({
   partyMembers,
   partyCards,
+  mobileMenuLabel,
   onRemovePartyMember,
   removingPartyMemberId,
 }: GamePartyBarProps) {
@@ -95,11 +134,12 @@ export function GamePartyBar({
   const memberVisuals = useMemo(
     () =>
       partyMembers.map((member) => {
-        const card = partyCards[member.id];
+        const [sheetId, card] = resolvePartyCardEntry(member, partyCards);
         return {
           member,
+          sheetId,
           avatarSrc: card?.avatarUrl ?? member.avatarUrl,
-          avatarCrop: card?.avatarCrop ?? member.avatarCrop ?? null,
+          avatarCrop: card?.avatarUrl ? (card.avatarCrop ?? null) : (member.avatarCrop ?? null),
         };
       }),
     [partyCards, partyMembers],
@@ -136,37 +176,45 @@ export function GamePartyBar({
 
   return (
     <>
-      <div ref={mobileMenuRef} className="relative shrink-0 md:hidden">
+      <div ref={mobileMenuRef} className="relative shrink-0 lg:hidden">
         {memberVisuals[previewIndex] && (
-          <button
-            type="button"
-            onClick={() => {
-              if (memberVisuals.length === 1) {
-                openCharacterSheet(memberVisuals[0].member.id);
-                return;
-              }
-              setMobileMenuOpen((open) => !open);
-            }}
-            className="group relative block rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--marinara-chat-chrome-focus-ring)]"
-            aria-expanded={mobileMenuOpen}
-            aria-label={
-              mobileMenuOpen
-                ? localizeUi("ui.game.gamepartybar.closePartyMembers")
-                : localizeUi("ui.game.gamepartybar.openPartyMembers")
-            }
-            title={
-              memberVisuals.length === 1
-                ? localizeUi("ui.game.gamepartybar.openCharacterSheet")
-                : localizeUi("ui.game.gamepartybar.openPartyMembers")
-            }
-          >
-            <PartyAvatar visual={memberVisuals[previewIndex]} className="h-9 w-9" />
+          <div className="flex items-center gap-1">
+            <PartyAvatar
+              visual={memberVisuals[previewIndex]}
+              className="h-9 w-9"
+              onOpen={() => openCharacterSheet(memberVisuals[previewIndex].sheetId)}
+            />
             {memberVisuals.length > 1 && (
-              <span className="absolute -bottom-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] px-1 text-[0.55rem] font-bold leading-none text-[var(--marinara-chat-chrome-button-text-hover)] shadow-md">
-                {memberVisuals.length}
-              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (memberVisuals.length === 1) {
+                    openCharacterSheet(memberVisuals[0].sheetId);
+                    return;
+                  }
+                  setMobileMenuOpen((open) => !open);
+                }}
+                className="group relative block rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--marinara-chat-chrome-focus-ring)]"
+                aria-expanded={mobileMenuOpen}
+                aria-label={
+                  mobileMenuOpen
+                    ? localizeUi("ui.game.gamepartybar.closePartyMembers")
+                    : (mobileMenuLabel ?? localizeUi("ui.game.gamepartybar.openPartyMembers"))
+                }
+                title={
+                  memberVisuals.length === 1
+                    ? localizeUi("ui.game.gamepartybar.openCharacterSheet")
+                    : (mobileMenuLabel ?? localizeUi("ui.game.gamepartybar.openPartyMembers"))
+                }
+              >
+                {memberVisuals.length > 1 && (
+                  <span className="flex h-6 min-w-6 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] px-1 text-xs font-bold leading-none text-[var(--marinara-chat-chrome-button-text-hover)] shadow-md">
+                    {memberVisuals.length}
+                  </span>
+                )}
+              </button>
             )}
-          </button>
+          </div>
         )}
 
         {mobileMenuOpen && memberVisuals.length > 1 && (
@@ -179,19 +227,20 @@ export function GamePartyBar({
             <div className="flex max-h-[min(44svh,18rem)] flex-col items-center gap-1.5 overflow-y-auto overscroll-contain pr-0.5 [-webkit-overflow-scrolling:touch]">
               {memberVisuals.map((visual) => (
                 <div key={visual.member.id} className="group relative shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      openCharacterSheet(visual.member.id);
-                      setMobileMenuOpen(false);
-                    }}
-                    className="block rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--marinara-chat-chrome-focus-ring)]"
+                  <div
                     title={localizeUi("ui.game.gamepartybar.value1ClickToOpenCharacterSheet", {
                       value1: visual.member.name,
                     })}
                   >
-                    <PartyAvatar visual={visual} className="h-9 w-9" />
-                  </button>
+                    <PartyAvatar
+                      visual={visual}
+                      className="h-9 w-9"
+                      onOpen={() => {
+                        openCharacterSheet(visual.sheetId);
+                        setMobileMenuOpen(false);
+                      }}
+                    />
+                  </div>
                   {visual.member.canRemove && onRemovePartyMember && (
                     <button
                       type="button"
@@ -216,7 +265,7 @@ export function GamePartyBar({
         )}
       </div>
 
-      <div className="scrollbar-hide hidden max-w-full touch-pan-x items-center gap-1.5 overflow-x-auto px-0.5 py-1 [-webkit-overflow-scrolling:touch] md:flex">
+      <div className="scrollbar-hide hidden max-w-full touch-pan-x items-center gap-1.5 overflow-x-auto px-0.5 py-1 [-webkit-overflow-scrolling:touch] lg:flex">
         {memberVisuals.map((visual) => {
           const { member } = visual;
 
@@ -225,14 +274,9 @@ export function GamePartyBar({
               key={member.id}
               className="group relative shrink-0 origin-left transition-transform duration-150 ease-out hover:scale-[1.03] active:scale-[0.98]"
             >
-              <button
-                type="button"
-                onClick={() => openCharacterSheet(member.id)}
-                className="block rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--marinara-chat-chrome-focus-ring)]"
-                title={localizeUi("ui.game.gamepartybar.value1ClickToOpenCharacterSheet", { value1: member.name })}
-              >
-                <PartyAvatar visual={visual} />
-              </button>
+              <div title={localizeUi("ui.game.gamepartybar.value1ClickToOpenCharacterSheet", { value1: member.name })}>
+                <PartyAvatar visual={visual} onOpen={() => openCharacterSheet(visual.sheetId)} />
+              </div>
               {member.canRemove && onRemovePartyMember && (
                 <button
                   type="button"
@@ -241,7 +285,7 @@ export function GamePartyBar({
                     onRemovePartyMember(member);
                   }}
                   disabled={removingPartyMemberId === member.id}
-                  className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-[var(--marinara-chat-chrome-button-text-hover)] opacity-80 shadow-md transition-opacity hover:bg-[var(--destructive)] disabled:cursor-not-allowed disabled:opacity-60 group-hover:opacity-100 focus:opacity-100 md:opacity-0"
+                  className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-[var(--marinara-chat-chrome-button-text-hover)] opacity-80 shadow-md transition-opacity hover:bg-[var(--destructive)] disabled:cursor-not-allowed disabled:opacity-60 group-hover:opacity-100 focus:opacity-100 lg:opacity-0"
                   aria-label={localizeUi("ui.game.gamepartybar.removeValue1FromParty", { value1: member.name })}
                   title={localizeUi("ui.game.gamepartybar.removeValue1FromParty", { value1: member.name })}
                 >

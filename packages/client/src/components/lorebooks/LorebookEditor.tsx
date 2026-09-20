@@ -339,6 +339,7 @@ type BatchEntryChanges = BulkUpdateLorebookEntriesInput["changes"];
 const BATCH_EDITABLE_ENTRY_FIELDS = [
   "enabled",
   "constant",
+  "alwaysLoaded",
   "selective",
   "selectiveLogic",
   "probability",
@@ -396,10 +397,11 @@ function omitBatchEditableEntryChanges(changes: Partial<LorebookEntry>): Partial
 }
 
 function entryStatusSortRank(entry: LorebookEntry): number {
-  if (!entry.enabled) return 3;
-  if (entry.constant) return 0;
-  if (entry.selective) return 2;
-  return 1;
+  if (!entry.enabled) return 4;
+  if (entry.alwaysLoaded) return 0;
+  if (entry.constant) return 1;
+  if (entry.selective) return 3;
+  return 2;
 }
 
 export function LorebookEditor() {
@@ -787,17 +789,21 @@ export function LorebookEditor() {
 
   // Keyword-test verdicts: for each entry, would the debounced preview text
   // activate it? Honors useRegex / matchWholeWords / caseSensitive / selective
-  // + secondaryKeys + selectiveLogic / enabled / constant. Skips runtime gates
+  // + secondaryKeys + selectiveLogic / enabled / constant / Always Loaded. Skips runtime gates
   // that have no meaning outside a live chat (timing, probability, character
   // filters, semantic embeddings, recursive scan, group selection).
   // Logic mirrors packages/server/src/services/lorebook/keyword-scanner.ts —
   // both sides import the same shared helpers so the preview cannot drift.
   const previewMatches = useMemo(() => {
-    const result = new Map<string, "matched" | "constant">();
+    const result = new Map<string, "matched" | "constant" | "always_loaded">();
     const text = keywordPreviewDebounced;
     if (!text.trim()) return result;
     for (const entry of entries) {
       if (!entry.enabled) continue;
+      if (entry.alwaysLoaded) {
+        result.set(entry.id, "always_loaded");
+        continue;
+      }
       if (entry.constant) {
         result.set(entry.id, "constant");
         continue;

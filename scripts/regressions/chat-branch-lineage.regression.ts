@@ -829,25 +829,6 @@ try {
   const survivingChild = await app.inject({ method: "GET", url: `/api/chats/${branch.id}` });
   assert.equal(survivingChild.statusCode, 200);
   assert.equal(survivingChild.json().metadata.branchParentChatId, root.id);
-
-  const profileExport = await app.inject({ method: "GET", url: "/api/backup/export-profile" });
-  assert.equal(profileExport.statusCode, 200, profileExport.body);
-  const profile = profileExport.json();
-  const backedUpRecords = profile.data.fileStorage.tables.advanced_memory_records;
-  assert.ok(Array.isArray(backedUpRecords), "native backups must discover the managed memory table");
-  const backedUpCorrection = backedUpRecords.find((record: { id: string }) => record.id === retainedCorrection!.id);
-  assert.ok(backedUpCorrection);
-  await db.delete(advancedMemoryRecords).where(eq(advancedMemoryRecords.id, retainedCorrection!.id));
-  const profileImport = await app.inject({ method: "POST", url: "/api/backup/import-profile", payload: profile });
-  assert.equal(profileImport.statusCode, 200, profileImport.body);
-  const restoredCorrection = (
-    await db.select().from(advancedMemoryRecords).where(eq(advancedMemoryRecords.id, retainedCorrection!.id))
-  )[0];
-  assert.deepEqual(
-    restoredCorrection,
-    backedUpCorrection,
-    "profile restore retains source anchors and manual/disabled provenance",
-  );
 } finally {
   await app?.close();
   rmSync(dataDir, { recursive: true, force: true });

@@ -51,11 +51,8 @@ export function isNativeNovelAiHost(hostname: string): boolean {
 export function supportsNovelAiCharacterPrompts(connection: { model?: unknown; baseUrl?: unknown }): boolean {
   try {
     const url = new URL(readString(connection.baseUrl));
-    return (
-      url.protocol === "https:" &&
-      isNativeNovelAiHost(url.hostname) &&
-      isNovelAiCharacterPromptModel(readString(connection.model))
-    );
+    const model = readString(connection.model) || "nai-diffusion-4-5-full";
+    return url.protocol === "https:" && isNativeNovelAiHost(url.hostname) && isNovelAiCharacterPromptModel(model);
   } catch {
     return false;
   }

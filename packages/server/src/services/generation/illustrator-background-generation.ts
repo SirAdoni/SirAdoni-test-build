@@ -417,6 +417,7 @@ async function prepareIllustratorSceneBackground(
     imgComfyWorkflow: imageConnection.comfyuiWorkflow || undefined,
     imgDefaults: imageDefaults,
     imgQuality: resolveConnectionImageQuality(imageConnection),
+    imgMaxImageReferences: imageConnection.maxImageReferences ?? null,
     imgFallback: imageFallback,
     styleProfiles: imageSettings.styleProfiles,
     styleProfileId,

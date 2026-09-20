@@ -6,7 +6,7 @@
 // by chatId so positions don't bleed across games.
 // `PanelLockButton` renders the lock toggle in headers.
 // ──────────────────────────────────────────────
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { useMotionValue } from "framer-motion";
 import { Lock, Unlock } from "lucide-react";
 import { cn } from "../../lib/utils";
@@ -19,6 +19,11 @@ interface PanelState {
   locked: boolean;
   x: number;
   y: number;
+  bottom?: number;
+  relativeX?: number;
+  relativeY?: number;
+  surfaceWidth?: number;
+  surfaceHeight?: number;
 }
 
 function storageKey(scopeId: string, panelId: string): string {
@@ -35,6 +40,11 @@ function readPanelState(key: string): PanelState {
       locked: parsed.locked !== false,
       x: Number.isFinite(parsed.x) ? (parsed.x as number) : 0,
       y: Number.isFinite(parsed.y) ? (parsed.y as number) : 0,
+      bottom: Number.isFinite(parsed.bottom) ? parsed.bottom : undefined,
+      relativeX: Number.isFinite(parsed.relativeX) ? Math.max(0, Math.min(1, parsed.relativeX!)) : undefined,
+      relativeY: Number.isFinite(parsed.relativeY) ? Math.max(0, Math.min(1, parsed.relativeY!)) : undefined,
+      surfaceWidth: parsed.surfaceWidth,
+      surfaceHeight: parsed.surfaceHeight,
     };
   } catch {
     return { locked: true, x: 0, y: 0 };
@@ -71,7 +81,19 @@ function clampPanelState(state: PanelState): PanelState {
  * synchronously on first render to avoid a hydration-flicker where a moved
  * panel paints at origin before snapping back.
  */
-export function useDraggablePanel(scopeId: string, panelId: string) {
+export function useDraggablePanel(
+  scopeId: string,
+  panelId: string,
+  bounds?: {
+    surface: RefObject<HTMLElement | null>;
+    panel: RefObject<HTMLElement | null>;
+    side: "hud_left" | "hud_right";
+    slot: number;
+    ready?: boolean;
+    anchor?: "top" | "bottom";
+    skipRightEdgeWidthAdjustment?: boolean;
+  },
+) {
   const key = storageKey(scopeId, panelId);
 
   // Synchronous first-render hydration via a ref-captured seed.
@@ -79,18 +101,108 @@ export function useDraggablePanel(scopeId: string, panelId: string) {
   if (seedRef.current === null) {
     seedRef.current = readPanelState(key);
   }
-  const seed = clampPanelState(seedRef.current);
+  // Measured panels clamp to their own size; a bookmark can be narrower than 96px.
+  const seed = bounds ? seedRef.current : clampPanelState(seedRef.current);
 
   const [locked, setLocked] = useState(seed.locked);
   const x = useMotionValue(seed.x);
   const y = useMotionValue(seed.y);
 
+  const boundsRef = useRef(bounds);
+  boundsRef.current = bounds;
+  const initialized = useRef(false);
+  const previousHeight = useRef<number | null>(null);
+  const previousAnchor = useRef(bounds?.anchor);
+  const bottomEdge = useRef<number | null>(null);
+  const appliedY = useRef<number | null>(null);
+  const surfaceSize = useRef<{ width: number; height: number } | null>(
+    seed.surfaceWidth && seed.surfaceHeight ? { width: seed.surfaceWidth, height: seed.surfaceHeight } : null,
+  );
+  const relative = useRef({ x: seed.relativeX, y: seed.relativeY });
+  const placementChanged = useRef(false);
+  const previousPanelWidth = useRef<number | null>(null);
+
   const clampAndPersist = useCallback(() => {
-    const next = clampPanelState({ locked, x: x.get(), y: y.get() });
+    let next = clampPanelState({ locked, x: x.get(), y: y.get() });
+    let shouldPersist = true;
+    const bounded = boundsRef.current;
+    if (bounded) {
+      const surface = bounded.surface.current;
+      const panel = bounded.panel.current;
+      if (!surface || !panel || !surface.clientWidth || !surface.clientHeight) return;
+      const maxX = Math.max(0, surface.clientWidth - panel.offsetWidth);
+      const panelWidth = panel.getBoundingClientRect().width;
+      const panelHeight = panel.getBoundingClientRect().height;
+      const hadSurfaceSize = surfaceSize.current != null;
+      const explicitPlacementChange = placementChanged.current;
+      shouldPersist = !hadSurfaceSize || explicitPlacementChange;
+      const maxY = Math.max(0, surface.clientHeight - panelHeight);
+      const surfaceChanged =
+        surfaceSize.current != null &&
+        (surfaceSize.current.width !== surface.clientWidth || surfaceSize.current.height !== surface.clientHeight);
+      if (!placementChanged.current && relative.current.x != null && surfaceChanged) x.set(relative.current.x * maxX);
+      else if (
+        !placementChanged.current &&
+        bounded.side === "hud_right" &&
+        !bounded.skipRightEdgeWidthAdjustment &&
+        previousPanelWidth.current != null &&
+        Math.abs(previousPanelWidth.current - panelWidth) > 0.1
+      )
+        x.set(x.get() + previousPanelWidth.current - panelWidth);
+      previousPanelWidth.current = panelWidth;
+      if (surfaceChanged && !placementChanged.current) {
+        if (relative.current.y != null) y.set(relative.current.y * maxY);
+        bottomEdge.current = y.get() + panelHeight;
+        appliedY.current = y.get();
+      }
+      surfaceSize.current = { width: surface.clientWidth, height: surface.clientHeight };
+      if (bounded.anchor === "bottom") {
+        if (bottomEdge.current == null || previousAnchor.current !== "bottom")
+          bottomEdge.current =
+            previousHeight.current == null && seedRef.current?.bottom != null
+              ? seedRef.current.bottom
+              : y.get() + panelHeight;
+        else if (appliedY.current != null && Math.abs(y.get() - appliedY.current) > 0.1)
+          bottomEdge.current = y.get() + (previousHeight.current ?? panelHeight);
+        bottomEdge.current = Math.min(surface.clientHeight, bottomEdge.current);
+        y.set(Math.max(0, bottomEdge.current - panelHeight));
+      }
+      previousHeight.current = panelHeight;
+      previousAnchor.current = bounded.anchor;
+      if (!initialized.current) {
+        initialized.current = true;
+        if (!window.localStorage.getItem(key)) {
+          x.set(bounded.side === "hud_right" ? Math.max(0, maxX - 12) : 12);
+          y.set(48 + bounded.slot * 44);
+        }
+      }
+      next = { locked, x: Math.max(0, Math.min(maxX, x.get())), y: Math.max(0, Math.min(maxY, y.get())) };
+      next.bottom = next.y + panelHeight;
+      next.surfaceWidth = surface.clientWidth;
+      next.surfaceHeight = surface.clientHeight;
+      if (relative.current.x == null || placementChanged.current) relative.current.x = maxX > 0 ? next.x / maxX : 0;
+      if (relative.current.y == null || placementChanged.current) relative.current.y = maxY > 0 ? next.y / maxY : 0;
+      next.relativeX = relative.current.x;
+      next.relativeY = relative.current.y;
+      placementChanged.current = false;
+      appliedY.current = next.y;
+    }
     if (next.x !== x.get()) x.set(next.x);
     if (next.y !== y.get()) y.set(next.y);
-    writePanelState(key, next);
+    // Automatic resize/collision reflow updates the display position only. Keep the
+    // user's saved anchor until an explicit drag/reset changes placement.
+    if (shouldPersist) writePanelState(key, next);
   }, [key, locked, x, y]);
+
+  useLayoutEffect(() => {
+    if (!boundsRef.current) return;
+    clampAndPersist();
+    const observer = new ResizeObserver(clampAndPersist);
+    for (const element of [boundsRef.current.surface.current, boundsRef.current.panel.current]) {
+      if (element) observer.observe(element);
+    }
+    return () => observer.disconnect();
+  }, [clampAndPersist, bounds?.ready, bounds?.anchor]);
 
   useEffect(() => {
     clampAndPersist();
@@ -102,12 +214,22 @@ export function useDraggablePanel(scopeId: string, panelId: string) {
   const toggleLocked = useCallback(() => {
     setLocked((prev) => {
       const next = !prev;
-      writePanelState(key, clampPanelState({ locked: next, x: x.get(), y: y.get() }));
+      writePanelState(
+        key,
+        clampPanelState({
+          locked: next,
+          x: x.get(),
+          y: y.get(),
+          relativeX: relative.current.x,
+          relativeY: relative.current.y,
+        }),
+      );
       return next;
     });
   }, [key, x, y]);
 
   const handleDragEnd = useCallback(() => {
+    placementChanged.current = true;
     clampAndPersist();
   }, [clampAndPersist]);
 

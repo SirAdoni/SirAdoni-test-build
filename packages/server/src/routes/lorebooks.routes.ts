@@ -158,7 +158,7 @@ type CachedLorebookScanEntry = {
   content: string;
   matchedKeys: string[];
   activationSources: string[];
-  matchType?: "keyword" | "semantic" | "constant" | "sticky";
+  matchType?: "keyword" | "semantic" | "constant" | "always_loaded" | "sticky";
   semanticScore?: number;
 };
 
@@ -208,6 +208,7 @@ function normalizeCachedLorebookScan(raw: unknown): CachedLorebookScan | null {
             ...(candidate.matchType === "keyword" ||
             candidate.matchType === "semantic" ||
             candidate.matchType === "constant" ||
+            candidate.matchType === "always_loaded" ||
             candidate.matchType === "sticky"
               ? { matchType: candidate.matchType }
               : {}),
@@ -307,6 +308,7 @@ function buildCompatibleLorebookExport(lb: Record<string, unknown>, entries: Arr
         content: String(entry.content ?? ""),
         disable: entry.enabled === false,
         constant: entry.constant === true,
+        alwaysLoaded: entry.alwaysLoaded === true,
         selective: entry.selective === true,
         selectiveLogic: stSelectiveLogic(entry.selectiveLogic),
         order: Number(entry.order ?? 100),
@@ -361,6 +363,7 @@ function buildTransferredEntryInput(
     secondaryKeys: entry.secondaryKeys,
     enabled: entry.enabled,
     constant: entry.constant,
+    alwaysLoaded: entry.alwaysLoaded ?? false,
     selective: entry.selective,
     selectiveLogic: entry.selectiveLogic,
     probability: entry.probability,
@@ -959,6 +962,7 @@ export async function lorebooksRoutes(app: FastifyInstance) {
             lorebookId: (e as Record<string, unknown>).lorebookId,
             order: (e as Record<string, unknown>).order,
             constant: (e as Record<string, unknown>).constant,
+            alwaysLoaded: (e as Record<string, unknown>).alwaysLoaded === true,
             lorebookName: lorebookNameById.get(String((e as Record<string, unknown>).lorebookId)) ?? "Unknown lorebook",
             selective: (e as Record<string, unknown>).selective === true,
             matchedKeys: matchedKeysById.get(String((e as Record<string, unknown>).id)) ?? [],
@@ -1148,6 +1152,7 @@ export async function lorebooksRoutes(app: FastifyInstance) {
         lorebookId: (e as Record<string, unknown>).lorebookId,
         order: (e as Record<string, unknown>).order,
         constant: (e as Record<string, unknown>).constant,
+        alwaysLoaded: (e as Record<string, unknown>).alwaysLoaded === true,
         selective: (e as Record<string, unknown>).selective === true,
         matchedKeys: matchedKeysById.get(String((e as Record<string, unknown>).id)) ?? [],
         lorebookName: lorebookNameById.get(String((e as Record<string, unknown>).lorebookId)) ?? "Unknown lorebook",

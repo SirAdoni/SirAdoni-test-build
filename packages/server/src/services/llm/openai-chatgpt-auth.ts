@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile, chmod } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { APP_VERSION } from "@marinara-engine/shared";
+import { APP_VERSION, type ModelParameterCapabilities, type StoredEffortLevel } from "@marinara-engine/shared";
 import { logger } from "../../lib/logger.js";
 import { safeFetch } from "../../utils/security.js";
 
@@ -256,8 +256,49 @@ export function buildOpenAIChatGPTHeaders(auth: OpenAIChatGPTAuth): Record<strin
   return headers;
 }
 
-export async function fetchOpenAIChatGPTModels(): Promise<Array<{ id: string; name: string }>> {
-  const auth = await getOpenAIChatGPTAuth();
+const STORED_EFFORT_LEVELS = new Set<string>(["low", "medium", "high", "xhigh", "maximum"]);
+
+/** What one ChatGPT catalog row says the model accepts: effort levels with their names and descriptions, and verbosity. */
+export function readOpenAIChatGPTModelCapabilities(record: JsonRecord): ModelParameterCapabilities {
+  const capabilities: ModelParameterCapabilities = {};
+  if (Array.isArray(record.supported_reasoning_levels)) {
+    const levels: StoredEffortLevel[] = [];
+    const labels: Partial<Record<StoredEffortLevel, string>> = {};
+    const descriptions: Partial<Record<StoredEffortLevel, string>> = {};
+    for (const entry of record.supported_reasoning_levels) {
+      const reported = stringValue(asRecord(entry)?.effort);
+      if (!reported) continue;
+      // Levels Marinara cannot store (for example "ultra") are skipped rather than mislabelled.
+      const stored = reported === "max" ? "maximum" : reported;
+      if (!STORED_EFFORT_LEVELS.has(stored)) continue;
+      const level = stored as StoredEffortLevel;
+      levels.push(level);
+      labels[level] = reported;
+      const description = stringValue(asRecord(entry)?.description);
+      if (description) descriptions[level] = description;
+    }
+    capabilities.effortLevels = levels;
+    capabilities.effortLabels = labels;
+    if (Object.keys(descriptions).length > 0) capabilities.effortDescriptions = descriptions;
+  }
+  const defaultEffort = stringValue(record.default_reasoning_level);
+  if (defaultEffort) capabilities.defaultEffort = defaultEffort;
+  if (typeof record.support_verbosity === "boolean") {
+    const defaultVerbosity = stringValue(record.default_verbosity);
+    capabilities.verbosity = {
+      supported: record.support_verbosity,
+      ...(defaultVerbosity ? { default: defaultVerbosity } : {}),
+    };
+  }
+  return capabilities;
+}
+
+export async function fetchOpenAIChatGPTModels(
+  existingAuth?: OpenAIChatGPTAuth,
+): Promise<
+  Array<{ id: string; name: string; description?: string; context?: number; capabilities?: ModelParameterCapabilities }>
+> {
+  const auth = existingAuth ?? (await getOpenAIChatGPTAuth());
   const url = `${OPENAI_CHATGPT_CODEX_BASE_URL}/models?client_version=${encodeURIComponent(APP_VERSION)}`;
   const res = await safeFetch(url, {
     headers: {
@@ -280,8 +321,17 @@ export async function fetchOpenAIChatGPTModels(): Promise<Array<{ id: string; na
     .map((item) => {
       const record = asRecord(item);
       const id = stringValue(record?.slug) ?? stringValue(record?.id);
-      if (!id) return null;
-      return { id, name: stringValue(record?.display_name) ?? stringValue(record?.name) ?? id };
+      if (!record || !id) return null;
+      const description = stringValue(record.description);
+      const context =
+        typeof record.context_window === "number" && record.context_window > 0 ? record.context_window : undefined;
+      return {
+        id,
+        name: stringValue(record.display_name) ?? stringValue(record.name) ?? id,
+        ...(description ? { description } : {}),
+        ...(context ? { context } : {}),
+        capabilities: readOpenAIChatGPTModelCapabilities(record),
+      };
     })
-    .filter((model): model is { id: string; name: string } => Boolean(model));
+    .filter((model): model is NonNullable<typeof model> => Boolean(model));
 }

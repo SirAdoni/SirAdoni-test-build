@@ -9,6 +9,7 @@ import { applyInlineMarkdown, renderMarkdownBlocks, applyInlineMarkdownHTML } fr
 import { MessageReplyPreview, ReplyToMessageButton } from "./MessageReplyPreview";
 import { RoleplayCommandResults, RoleplayDiceRoll, replaceRoleplayDiceMarkers } from "./RoleplayCommandResults";
 import { splitRoleplayParagraphs } from "../../lib/roleplay-vn-paragraphs";
+import { CharacterLinkedContent } from "../characters/CharacterReferences";
 import {
   notifyRoleplayTTSParagraph,
   withRoleplayTTSParagraphs,
@@ -80,7 +81,6 @@ import { hasActiveTextSelection } from "../../lib/text-selection";
 import { parseChatMetadata } from "../../lib/chat-display";
 import { useTranslate } from "../../hooks/use-translate";
 import { api } from "../../lib/api-client";
-import { applyTextareaQuoteFormat } from "../../lib/textarea-quotes";
 import { ttsService } from "../../lib/tts-service";
 import { useTTSConfig } from "../../hooks/use-tts";
 import { buildTTSVoiceRequests, normalizeTTSCharacterName, withTTSVoiceRequestCacheKeys } from "../../lib/tts-dialogue";
@@ -110,6 +110,10 @@ import { toast } from "sonner";
 import { MessageThinkingModal } from "./MessageThinkingModal";
 import { MESSAGE_ACTION_ICON_SIZE, MessageActionButton } from "./MessageActionButton";
 import { RoleplayStoryboardMessageMedia } from "./RoleplayStoryboardMessageMedia";
+import { MessageEditTextarea } from "./MessageEditTextarea";
+import { applyTextareaQuoteFormat } from "../../lib/textarea-quotes";
+import { GenerationTokenUsage } from "./GenerationTokenUsage";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 
 const MESSAGE_DOUBLE_TAP_MS = 320;
 const MESSAGE_DOUBLE_TAP_DISTANCE_PX = 26;
@@ -918,6 +922,8 @@ const EditTextarea = memo(function EditTextarea({
   );
 });
 
+void EditTextarea;
+
 /** Props for a single rendered chat message, including optional scene fork actions. */
 interface ChatMessageProps {
   message: Message & { swipes?: Array<{ id: string; content: string }> };
@@ -1587,7 +1593,10 @@ function colorNamesInNodes(
  * Render message content, handling both plain text with dialogue highlighting
  * and HTML blocks that should be rendered as actual HTML.
  */
-function renderContent(
+function renderContent(...args: Parameters<typeof renderContentUnlinked>): ReactNode {
+  return <CharacterLinkedContent>{renderContentUnlinked(...args)}</CharacterLinkedContent>;
+}
+function renderContentUnlinked(
   text: string,
   dialogueColor?: string,
   speakerColorMap?: Map<string, string>,
@@ -2384,17 +2393,6 @@ export const ChatMessage = memo(function ChatMessage({
     const parts: string[] = [];
     if (showModelName && genInfo.model) parts.push(genInfo.model);
     if (showTokenUsage) {
-      if (genInfo.tokensPrompt != null || genInfo.tokensCompletion != null) {
-        const p = genInfo.tokensPrompt != null ? genInfo.tokensPrompt : null;
-        const c = genInfo.tokensCompletion ?? "?";
-        parts.push(p != null ? `${p}→${c} tok` : `${c} tok`);
-      }
-      if ((genInfo.tokensCachedPrompt ?? 0) > 0) {
-        parts.push(`cache hit ${genInfo.tokensCachedPrompt!.toLocaleString()}`);
-      }
-      if ((genInfo.tokensCacheWritePrompt ?? 0) > 0) {
-        parts.push(`cache write ${genInfo.tokensCacheWritePrompt!.toLocaleString()}`);
-      }
       if (genInfo.durationMs != null) parts.push(`${(genInfo.durationMs / 1000).toFixed(1)}s`);
     }
     return parts.length > 0 ? parts.join(" · ") : null;
@@ -2645,6 +2643,8 @@ export const ChatMessage = memo(function ChatMessage({
         ? (expressionAvatarResolver?.(message, resolvedCharacterId) ?? null)
         : null;
   const displayAvatarUrl = expressionAvatarUrl ?? avatarUrl;
+  const onUpdateCharacter =
+    !isUser && resolvedCharacterId ? () => useUIStore.getState().openCharacterDetail(resolvedCharacterId) : undefined;
   const personaAvatarCrop = isUser
     ? msgPersona
       ? (normalizeAvatarCrop(msgPersona.avatarCrop) ?? null)
@@ -3156,8 +3156,9 @@ export const ChatMessage = memo(function ChatMessage({
       statusLabel={hiddenFromAIStatusLabel}
     />
   ) : editing ? (
-    <EditTextarea
+    <MessageEditTextarea
       initialContent={message.content}
+      messageRole={message.role}
       fontSize={chatFontSize}
       quoteFormat={quoteFormat}
       saving={editSavePending}
@@ -3349,19 +3350,36 @@ export const ChatMessage = memo(function ChatMessage({
             style={{ width: `min(${5 * vnPortraitScale}rem, 26vw)`, height: `min(${5 * vnPortraitScale}rem, 26vw)` }}
           >
             {displayAvatarUrl ? (
-              <button
-                type="button"
-                className="block h-full w-full cursor-zoom-in focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--primary)]"
-                onClick={() => openImageLightbox(displayAvatarUrl)}
-                aria-label={localizeUi("ui.chat.chatmessage.openValue1Avatar", { value1: displayName })}
-              >
-                <img
+              !isUser && resolvedCharacterId ? (
+                <CharacterPhoto
                   src={displayAvatarUrl}
-                  alt={displayName}
-                  className="h-full w-full object-cover"
-                  style={vnAvatarCropStyle}
-                />
-              </button>
+                  name={displayName}
+                  className="block h-full w-full cursor-zoom-in focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--primary)]"
+                  wrapperClassName="relative inline-flex items-center gap-1"
+                  onUpdate={onUpdateCharacter}
+                >
+                  <img
+                    src={displayAvatarUrl}
+                    alt={displayName}
+                    className="h-full w-full object-cover"
+                    style={vnAvatarCropStyle}
+                  />
+                </CharacterPhoto>
+              ) : (
+                <button
+                  type="button"
+                  className="block h-full w-full cursor-zoom-in focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--primary)]"
+                  onClick={() => openImageLightbox(displayAvatarUrl)}
+                  aria-label={localizeUi("ui.chat.chatmessage.openValue1Avatar", { value1: displayName })}
+                >
+                  <img
+                    src={displayAvatarUrl}
+                    alt={displayName}
+                    className="h-full w-full object-cover"
+                    style={vnAvatarCropStyle}
+                  />
+                </button>
+              )
             ) : (
               <div
                 className="flex h-full items-center justify-center text-[var(--muted-foreground)]"
@@ -3655,24 +3673,46 @@ export const ChatMessage = memo(function ChatMessage({
                 </button>
               ) : displayAvatarUrl ? (
                 <div className={cn(!isUser && "rpg-avatar-glow")}>
-                  <button
-                    type="button"
-                    className={cn(
-                      "relative cursor-pointer overflow-hidden ring-2 ring-white/10",
-                      compactAvatarFrameClass,
-                    )}
-                    onClick={() => openImageLightbox(displayAvatarUrl)}
-                    aria-label={localizeUi("ui.chat.chatmessage.openValue1Avatar", { value1: displayName })}
-                  >
-                    <img
+                  {!isUser && resolvedCharacterId ? (
+                    <CharacterPhoto
                       src={displayAvatarUrl}
-                      alt={displayName}
-                      loading="lazy"
-                      decoding="async"
-                      className="h-full w-full object-cover"
-                      style={compactAvatarCropStyle}
-                    />
-                  </button>
+                      name={displayName}
+                      className={cn(
+                        "relative cursor-pointer overflow-hidden ring-2 ring-white/10",
+                        compactAvatarFrameClass,
+                      )}
+                      wrapperClassName="relative inline-flex items-center gap-1"
+                      onUpdate={onUpdateCharacter}
+                    >
+                      <img
+                        src={displayAvatarUrl}
+                        alt={displayName}
+                        loading="lazy"
+                        decoding="async"
+                        className="h-full w-full object-cover"
+                        style={compactAvatarCropStyle}
+                      />
+                    </CharacterPhoto>
+                  ) : (
+                    <button
+                      type="button"
+                      className={cn(
+                        "relative cursor-pointer overflow-hidden ring-2 ring-white/10",
+                        compactAvatarFrameClass,
+                      )}
+                      onClick={() => openImageLightbox(displayAvatarUrl)}
+                      aria-label={localizeUi("ui.chat.chatmessage.openValue1Avatar", { value1: displayName })}
+                    >
+                      <img
+                        src={displayAvatarUrl}
+                        alt={displayName}
+                        loading="lazy"
+                        decoding="async"
+                        className="h-full w-full object-cover"
+                        style={compactAvatarCropStyle}
+                      />
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div
@@ -3735,6 +3775,7 @@ export const ChatMessage = memo(function ChatMessage({
                     {genLabel}
                   </span>
                 )}
+                {showTokenUsage && genInfo && <GenerationTokenUsage generationInfo={genInfo} />}
                 {(showRoleplayAvatarPanel || hideRoleplayAvatars) &&
                   (showActions || showMessageNumbers) &&
                   messageIndex != null && (
@@ -3829,24 +3870,46 @@ export const ChatMessage = memo(function ChatMessage({
                           ))}
                         </button>
                       ) : displayAvatarUrl ? (
-                        <button
-                          type="button"
-                          className={cn(
-                            "rpg-avatar-panel-media absolute inset-0 block h-full w-full cursor-zoom-in overflow-hidden",
-                            !isUser && "rpg-avatar-panel",
-                          )}
-                          onClick={() => openImageLightbox(displayAvatarUrl)}
-                          aria-label={localizeUi("ui.chat.chatmessage.openValue1Avatar", { value1: displayName })}
-                        >
-                          <img
+                        !isUser && resolvedCharacterId ? (
+                          <CharacterPhoto
                             src={displayAvatarUrl}
-                            alt={displayName}
-                            loading="lazy"
-                            decoding="async"
-                            className="h-full w-full object-cover object-top"
-                            style={panelAvatarCropStyle}
-                          />
-                        </button>
+                            name={displayName}
+                            className={cn(
+                              "rpg-avatar-panel-media absolute inset-0 block h-full w-full cursor-zoom-in overflow-hidden",
+                              "rpg-avatar-panel",
+                            )}
+                            wrapperClassName="relative inline-flex items-center gap-1"
+                            onUpdate={onUpdateCharacter}
+                          >
+                            <img
+                              src={displayAvatarUrl}
+                              alt={displayName}
+                              loading="lazy"
+                              decoding="async"
+                              className="h-full w-full object-cover object-top"
+                              style={panelAvatarCropStyle}
+                            />
+                          </CharacterPhoto>
+                        ) : (
+                          <button
+                            type="button"
+                            className={cn(
+                              "rpg-avatar-panel-media absolute inset-0 block h-full w-full cursor-zoom-in overflow-hidden",
+                              !isUser && "rpg-avatar-panel",
+                            )}
+                            onClick={() => openImageLightbox(displayAvatarUrl)}
+                            aria-label={localizeUi("ui.chat.chatmessage.openValue1Avatar", { value1: displayName })}
+                          >
+                            <img
+                              src={displayAvatarUrl}
+                              alt={displayName}
+                              loading="lazy"
+                              decoding="async"
+                              className="h-full w-full object-cover object-top"
+                              style={panelAvatarCropStyle}
+                            />
+                          </button>
+                        )
                       ) : (
                         <div
                           className={cn(
@@ -4118,21 +4181,40 @@ export const ChatMessage = memo(function ChatMessage({
                 ))}
               </button>
             ) : displayAvatarUrl ? (
-              <button
-                type="button"
-                className="relative h-8 w-8 cursor-pointer overflow-hidden rounded-full"
-                onClick={() => openImageLightbox(displayAvatarUrl)}
-                aria-label={localizeUi("ui.chat.chatmessage.openValue1Avatar", { value1: displayName })}
-              >
-                <img
+              !isUser && resolvedCharacterId ? (
+                <CharacterPhoto
                   src={displayAvatarUrl}
-                  alt={displayName}
-                  loading="lazy"
-                  decoding="async"
-                  className="h-full w-full object-cover"
-                  style={avatarCropStyle}
-                />
-              </button>
+                  name={displayName}
+                  className="relative h-8 w-8 cursor-pointer overflow-hidden rounded-full"
+                  wrapperClassName="relative inline-flex items-center gap-1"
+                  onUpdate={onUpdateCharacter}
+                >
+                  <img
+                    src={displayAvatarUrl}
+                    alt={displayName}
+                    loading="lazy"
+                    decoding="async"
+                    className="h-full w-full object-cover"
+                    style={avatarCropStyle}
+                  />
+                </CharacterPhoto>
+              ) : (
+                <button
+                  type="button"
+                  className="relative h-8 w-8 cursor-pointer overflow-hidden rounded-full"
+                  onClick={() => openImageLightbox(displayAvatarUrl)}
+                  aria-label={localizeUi("ui.chat.chatmessage.openValue1Avatar", { value1: displayName })}
+                >
+                  <img
+                    src={displayAvatarUrl}
+                    alt={displayName}
+                    loading="lazy"
+                    decoding="async"
+                    className="h-full w-full object-cover"
+                    style={avatarCropStyle}
+                  />
+                </button>
+              )
             ) : (
               <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--accent)] text-[0.6875rem] font-bold text-[var(--muted-foreground)]">
                 {displayName[0]}
@@ -4199,8 +4281,9 @@ export const ChatMessage = memo(function ChatMessage({
                 statusLabel={hiddenFromAIStatusLabel}
               />
             ) : editing ? (
-              <EditTextarea
+              <MessageEditTextarea
                 initialContent={message.content}
+                messageRole={message.role}
                 fontSize={chatFontSize}
                 quoteFormat={quoteFormat}
                 saving={editSavePending}
@@ -4320,6 +4403,7 @@ export const ChatMessage = memo(function ChatMessage({
                   {genLabel}
                 </span>
               )}
+              {showTokenUsage && genInfo && <GenerationTokenUsage generationInfo={genInfo} />}
             </div>
           )}
 

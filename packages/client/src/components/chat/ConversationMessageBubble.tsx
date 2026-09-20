@@ -23,6 +23,7 @@ import {
   type MessageRenderContext,
 } from "./ConversationMessageShared";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 
 export function ConversationMessageBubble({ ctx }: { ctx: MessageRenderContext }) {
   const { t: localizeUi } = useUiTranslation();
@@ -32,6 +33,8 @@ export function ConversationMessageBubble({ ctx }: { ctx: MessageRenderContext }
     isUser,
     isGrouped,
     displayName,
+    characterId,
+    onUpdateCharacter,
     avatarUrl,
     avatarCropStyle,
     avatarCornerClass,
@@ -117,7 +120,26 @@ export function ConversationMessageBubble({ ctx }: { ctx: MessageRenderContext }
         <div className={cn("mari-message-avatar w-10 flex-shrink-0", shouldHideUserAvatar && "hidden")}>
           {!isGrouped && (
             <>
-              {ctx.onOpenAboutMe ? (
+              {!isUser && characterId && avatarUrl ? (
+                <CharacterPhoto
+                  src={avatarUrl}
+                  name={displayName}
+                  wrapperClassName="relative inline-flex items-center gap-1"
+                  className={cn(
+                    "relative block h-10 w-10 overflow-hidden bg-[var(--accent)] cursor-zoom-in transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/50",
+                    avatarCornerClass,
+                  )}
+                  onUpdate={onUpdateCharacter ? () => onUpdateCharacter(characterId) : undefined}
+                >
+                  <img
+                    src={avatarUrl}
+                    alt={displayName}
+                    loading="lazy"
+                    className="h-full w-full object-cover"
+                    style={avatarCropStyle}
+                  />
+                </CharacterPhoto>
+              ) : ctx.onOpenAboutMe ? (
                 <button
                   type="button"
                   onClick={(e) => ctx.onOpenAboutMe?.(e.currentTarget.getBoundingClientRect())}
@@ -208,6 +230,7 @@ export function ConversationMessageBubble({ ctx }: { ctx: MessageRenderContext }
             <ConversationMessageEditForm
               editRef={editRef}
               editValue={editValue}
+              messageRole={message.role}
               onValueChange={onEditValueChange}
               onSave={onSaveEdit}
               onCancel={onCancelEdit}

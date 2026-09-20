@@ -186,8 +186,16 @@ export async function workspacePolicyPaths(workspaceRoot: string) {
   // whose caches must stay writable - tracked separately because a symlinked
   // store's canonical target carries a different basename.
   const nodeModulesStores: string[] = [];
+  const canonicalWorkspaceRoot = realpathSync(resolve(workspaceRoot));
   const visit = async (path: string) => {
-    const policy = workspacePathAccessPolicy(workspaceRoot, path);
+    const requestedPolicy = workspacePathAccessPolicy(workspaceRoot, path);
+    const canonicalPolicy = workspacePathAccessPolicy(canonicalWorkspaceRoot, realpathSync(path));
+    const policy =
+      requestedPolicy === "forbidden" || canonicalPolicy === "forbidden"
+        ? "forbidden"
+        : requestedPolicy === "sensitive" || canonicalPolicy === "sensitive"
+          ? "sensitive"
+          : "normal";
     if (policy === "forbidden") {
       forbidden.push(path);
       return;

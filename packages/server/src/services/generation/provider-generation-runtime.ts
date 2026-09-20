@@ -172,8 +172,10 @@ export function resolveGenerationProviderRuntime(args: GenerationProviderRuntime
       frequencyPenalty: 0,
       presencePenalty: 0,
       reasoningEffort: "maximum",
-      verbosity: null,
     });
+    // Keep the explicit game preset authoritative while allowing callers that
+    // supplied a smaller budget to inherit the minimum game context size.
+    if (typeof chatParams?.maxTokens !== "number") runtime.maxTokens = Math.max(runtime.maxTokens, 16_384);
   }
 
   if (args.chatMode === "game") {

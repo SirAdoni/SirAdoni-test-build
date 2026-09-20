@@ -6,7 +6,7 @@
 // and attribute-linked modifiers.
 // ──────────────────────────────────────────────
 
-import type { RPGAttributes } from "@marinara-engine/shared";
+import { normalizeRpgStatAttributes, type RPGAttributes } from "@marinara-engine/shared";
 
 export interface SkillCheckInput {
   /** Skill name (e.g. "Perception", "Stealth"). */
@@ -199,18 +199,14 @@ export function readContextAttributeScore(
   return sheet == null ? null : sheet;
 }
 
-export function mapSheetAttributesToRPG(
-  attrs: ReadonlyArray<{ name: string; value: number }> | null | undefined,
-): Partial<RPGAttributes> {
-  if (!Array.isArray(attrs)) return {};
+export function mapSheetAttributesToRPG(attrs: unknown): Partial<RPGAttributes> {
   const out: Partial<RPGAttributes> = {};
-  for (const attr of attrs) {
-    if (!attr || typeof attr.name !== "string") continue;
+  // Sheets sourced from imported cards may store attributes as a { STR: 18 }
+  // map rather than the canonical array; the normalizer accepts both.
+  for (const attr of normalizeRpgStatAttributes(attrs)) {
     const key = mapSheetAttributeName(attr.name);
     if (!key) continue;
-    const value = Number(attr.value);
-    if (!Number.isFinite(value)) continue;
-    out[key] = value;
+    out[key] = attr.value;
   }
   return out;
 }

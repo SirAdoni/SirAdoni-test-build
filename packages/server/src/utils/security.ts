@@ -63,6 +63,8 @@ export interface SafeFetchOptions extends Omit<RequestInit, "dispatcher"> {
   agentOptions?: Omit<AgentOptions, "connect">;
   /** Start TCP keepalive probes after this many idle milliseconds without exposing custom DNS/connect hooks. */
   keepAliveInitialDelayMs?: number;
+  /** Rotate among the request's fully validated DNS answers. Intended for bounded retry attempts. */
+  resolvedAddressOffset?: number;
   dispatcher?: unknown;
 }
 
@@ -261,6 +263,15 @@ async function resolveHostname(hostname: string): Promise<Array<{ address: strin
   );
 }
 
+type ResolvedAddress = { address: string; family: 4 | 6 };
+
+/** Rotate validated DNS answers without weakening the all-addresses SSRF check. */
+export function rotateResolvedAddresses(addresses: readonly ResolvedAddress[], offset: number): ResolvedAddress[] {
+  if (addresses.length < 2 || offset === 0) return [...addresses];
+  const start = offset % addresses.length;
+  return [...addresses.slice(start), ...addresses.slice(0, start)];
+}
+
 function isBlockedResolvedAddress(address: string, policy: OutboundUrlPolicy): boolean {
   if (!isReservedIp(address)) return false;
   return !(policy.allowLoopback && isLoopbackIp(address));
@@ -377,6 +388,7 @@ async function validateOutboundUrlForFetch(
   policy: OutboundUrlPolicy = {},
   agentOptions?: Omit<AgentOptions, "connect">,
   keepAliveInitialDelayMs?: number,
+  resolvedAddressOffset = 0,
 ): Promise<{ url: URL; dispatcher?: Agent }> {
   const parsed = await validateOutboundUrl(url, policy);
   if (policy.allowLocal) {
@@ -391,7 +403,10 @@ async function validateOutboundUrlForFetch(
   }
 
   const original = typeof url === "string" ? url : parsed.toString();
-  const addresses = await validateResolvedAddresses(parsed.hostname, policy, original);
+  const addresses = rotateResolvedAddresses(
+    await validateResolvedAddresses(parsed.hostname, policy, original),
+    resolvedAddressOffset,
+  );
   let used = false;
   const dispatcher = new Agent({
     ...(agentOptions ?? {}),
@@ -626,6 +641,7 @@ export async function safeFetch(url: string | URL, options: SafeFetchOptions = {
     decodeCompressedResponse = false,
     agentOptions,
     keepAliveInitialDelayMs,
+    resolvedAddressOffset = 0,
     dispatcher,
     headers,
     ...init
@@ -642,12 +658,16 @@ export async function safeFetch(url: string | URL, options: SafeFetchOptions = {
   if (dispatcher && keepAliveInitialDelayMs !== undefined) {
     throw new Error("TCP keepalive initial delay cannot be combined with a custom fetch dispatcher");
   }
+  if (!Number.isSafeInteger(resolvedAddressOffset) || resolvedAddressOffset < 0) {
+    throw new Error("Resolved address offset must be a non-negative integer");
+  }
 
   let current = await validateOutboundUrlForFetch(
     url,
     policy,
     dispatcher ? undefined : agentOptions,
     dispatcher ? undefined : keepAliveInitialDelayMs,
+    resolvedAddressOffset,
   );
   const redirects = policy?.maxRedirects ?? MAX_REDIRECTS;
   const sessionId = getOpenCodeSessionId();
@@ -683,7 +703,13 @@ export async function safeFetch(url: string | URL, options: SafeFetchOptions = {
         currentHeaders = new Headers(currentHeaders);
         currentHeaders.delete("x-opencode-session");
       }
-      current = await validateOutboundUrlForFetch(nextUrl, policy, agentOptions, keepAliveInitialDelayMs);
+      current = await validateOutboundUrlForFetch(
+        nextUrl,
+        policy,
+        agentOptions,
+        keepAliveInitialDelayMs,
+        resolvedAddressOffset,
+      );
       continue;
     }
 

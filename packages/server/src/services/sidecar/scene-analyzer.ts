@@ -84,11 +84,11 @@ export function buildSceneAnalyzerSystemPrompt(ctx: SceneAnalyzerContext): strin
   // genre/intensity hints and deterministic scoring picks the track — context
   // tracks included. Only SFX still generate from analyzer-written prompts.
   const generatedAudio = ctx.generateSoundEffects;
-  return `You are a game state analyzer. Read the narration, then fill in the JSON template using ${
+  return `You are a game state analyzer. Read the supplied sources in order, then fill in the JSON template using ${
     generatedAudio
       ? "the exact provided tags for asset-backed fields and concise descriptive prompts for enabled generated audio"
       : "ONLY the exact tags and enum values provided as options"
-  }. Output valid JSON only.`;
+  }. The player_action block is direct player-authored evidence; narration is generated evidence for explicit observable outcomes, not proof of unstated player interiority, consent, habits, or always/never claims. Output valid JSON only.`;
 }
 
 function backgroundOptionKey(tag: string): string {
@@ -354,6 +354,8 @@ export function buildSceneAnalyzerUserPrompt(
       : []),
     ``,
     `RULES:`,
+    `- Process narration beats in chronological order. The last explicit scene state wins; do not move a later disclosure or state backward, infer an unshown return, or use absence from narration as evidence.`,
+    `- For reputationChanges, require a concrete depicted relationship change. One disagreement, routine assistance, an NPC's interpretation, or praise/criticism without a changed stance is not enough; keep the array empty.`,
     `- Use ONLY the exact tags listed in the template below for asset-backed fields. If backgrounds:generated:<short-location-slug> is listed, replace <short-location-slug> with a short concrete location slug.${
       generateSoundEffects
         ? " Generated sound-effect prompts are the only exception: describe the requested sound plainly."

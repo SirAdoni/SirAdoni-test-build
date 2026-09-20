@@ -36,7 +36,7 @@ const role = args.includes("@marinara-engine/server")
     ? "client"
     : null;
 if (!role) process.exit(0);
-const worker = spawn(process.execPath, [process.env.FIXTURE_WORKER_PATH, role], { stdio: "inherit" });
+const worker = spawn(process.execPath, [process.env.FIXTURE_WORKER_PATH, role], { stdio: "inherit", windowsHide: true });
 worker.once("exit", (code, signal) => {
   process.exitCode = code ?? (signal ? 1 : 0);
 });
@@ -162,7 +162,7 @@ function waitForExit(child, timeoutMs = 8_000) {
 
 async function stopLauncher(run, signal = "SIGTERM") {
   if (process.platform === "win32") {
-    spawnSync("taskkill.exe", ["/pid", String(run.child.pid), "/T", "/F"], { stdio: "ignore" });
+    spawnSync("taskkill.exe", ["/pid", String(run.child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
   } else {
     run.child.kill(signal);
   }
@@ -182,7 +182,7 @@ function forceStopRun(run) {
     const pid = Number(rawPid);
     if (!Number.isInteger(pid) || pid <= 1 || !isProcessAlive(pid)) continue;
     if (process.platform === "win32") {
-      spawnSync("taskkill.exe", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
+      spawnSync("taskkill.exe", ["/pid", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
     } else {
       try {
         process.kill(-pid, "SIGKILL");

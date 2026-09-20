@@ -49,6 +49,8 @@ interface SpriteOverlayProps {
   onFinishPlacement?: () => void;
   /** When true, only show full-body sprites (full_ prefix) and hide characters without any */
   fullBodyOnly?: boolean;
+  /** Keep sprites within the stage bounds instead of allowing them to overlap adjacent UI. */
+  fitStage?: boolean;
   /** Multiplier for sprite size. Game mode passes this for full-body sprites. */
   spriteScale?: number;
   /** Multiplier for roleplay expression sprite size. Falls back to spriteScale. */
@@ -145,6 +147,7 @@ export function SpriteOverlay({
   onPlacementChange,
   onFinishPlacement,
   fullBodyOnly = false,
+  fitStage = false,
   spriteScale = 1,
   expressionSpriteScale,
   fullBodySpriteScale,
@@ -325,7 +328,10 @@ export function SpriteOverlay({
 
   const stageZIndexClass = editing ? "z-[35]" : "z-[5]";
   return (
-    <div ref={stageRef} className={`pointer-events-none absolute inset-0 overflow-hidden ${stageZIndexClass}`}>
+    <div
+      ref={stageRef}
+      className={`pointer-events-none absolute inset-0 overflow-hidden ${stageZIndexClass} ${fitStage ? "[container-type:size]" : ""}`}
+    >
       {visibleSpriteEntries.map((entry) => (
         <CharacterSprite
           key={entry.placementKey}
@@ -342,6 +348,7 @@ export function SpriteOverlay({
           onPlacementChange={onPlacementChange}
           onFinishPlacement={onFinishPlacement}
           fullBodyOnly={fullBodyOnly}
+          fitStage={fitStage}
           spriteDisplayModes={[entry.renderMode]}
           spriteScale={entry.spriteScale * spriteScaleMultiplier}
           spriteOpacity={
@@ -422,6 +429,7 @@ function CharacterSprite({
   onPlacementChange,
   onFinishPlacement,
   fullBodyOnly = false,
+  fitStage = false,
   spriteDisplayModes,
   spriteScale = 1,
   spriteOpacity = 1,
@@ -439,6 +447,7 @@ function CharacterSprite({
   onPlacementChange?: (placementKey: string, placement: SpritePlacement) => void;
   onFinishPlacement?: () => void;
   fullBodyOnly?: boolean;
+  fitStage?: boolean;
   spriteDisplayModes: SpriteDisplayMode[];
   spriteScale?: number;
   spriteOpacity?: number;
@@ -520,7 +529,9 @@ function CharacterSprite({
         : "h-[calc(64vh*var(--game-sprite-scale))] max-w-[calc(86vw*var(--game-sprite-scale))] md:h-[calc(62vh*var(--game-sprite-scale))] md:max-w-[calc(44vw*var(--game-sprite-scale))]";
   const fullBodyLayout =
     fullBodyOnly || (spriteDisplayModes.includes("full-body") && !spriteDisplayModes.includes("expressions"));
-  const sizeClass = fullBodyLayout ? fullBodySizeClass : standardSizeClass;
+  const sizeClass = `${fullBodyLayout ? fullBodySizeClass : standardSizeClass} ${
+    fitStage ? "max-h-[98cqh] max-w-[98cqw]" : ""
+  }`;
   const spriteScaleStyle = useMemo<CSSProperties>(
     () =>
       ({

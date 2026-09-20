@@ -104,12 +104,12 @@ export function moraleDiceModifier(tier: MoraleTier): number {
 /** Format morale for GM context injection. */
 export function formatMoraleContext(state: MoraleState): string {
   const tierDescriptions: Record<MoraleTier, string> = {
-    inspired: "The party is fired up and brimming with confidence. They believe they can overcome anything.",
-    high: "Spirits are high. The party moves with purpose and optimism.",
-    steady: "The party's morale is stable — neither particularly motivated nor discouraged.",
-    low: "Morale is flagging. Doubt and fatigue are setting in. The party is short-tempered.",
-    broken: "The party is demoralized. Fear and despair hang heavy. Arguments may break out.",
+    inspired: "The NPC companions are fired up and project tremendous confidence.",
+    high: "The NPC companions' spirits are high; they move with purpose and optimism.",
+    steady: "The NPC companions' morale is stable — neither particularly motivated nor discouraged.",
+    low: "The NPC companions show fatigue, doubt, and shorter tempers.",
+    broken: "The NPC companions are demoralized; fear, despair, or arguments may shape their behavior.",
   };
 
-  return `<party_morale>\nMorale: ${state.tier} (${state.value}/100)\n${tierDescriptions[state.tier]}\n</party_morale>`;
+  return `<party_morale>\nNPC companion morale: ${state.tier} (${state.value}/100)\n${tierDescriptions[state.tier]}\nThis meter never determines the player character's feelings, beliefs, decisions, dialogue, actions, or mechanical modifiers.\n</party_morale>`;
 }

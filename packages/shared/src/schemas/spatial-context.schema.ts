@@ -21,8 +21,8 @@ export const spatialTravelModeSchema = z.enum(["step_by_step", "travel_now"]);
 
 export const spatialLocationPlacementSchema = z
   .object({
-    x: z.number().finite().min(0).max(100),
-    y: z.number().finite().min(0).max(100),
+    x: z.number().finite().min(-Number.MAX_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER),
+    y: z.number().finite().min(-Number.MAX_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER),
   })
   .strict();
 
@@ -48,7 +48,10 @@ export const spatialLocationSchema = z
     referenceImageId: z.string().trim().min(1).max(200).optional(),
     useReferenceImage: z.boolean().optional(),
     mapBackgroundImageId: z.string().trim().min(1).max(200).optional(),
-    mapBackgroundPosition: spatialLocationPlacementSchema.optional(),
+    mapBackgroundPosition: z
+      .object({ x: z.number().finite().min(0).max(100), y: z.number().finite().min(0).max(100) })
+      .strict()
+      .optional(),
     lorebookEntryIds: z
       .array(z.string().trim().min(1))
       .max(SPATIAL_CONTEXT_LIMITS.maxLorebookEntryIdsPerLocation)

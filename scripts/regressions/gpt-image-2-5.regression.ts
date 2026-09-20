@@ -80,6 +80,7 @@ for (const model of ["gpt-image-2.5-flare", "gpt-image-2"]) {
 }
 
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+const pngReference = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 const requests: Array<{ path: string; contentType: string; body: Buffer }> = [];
 const server = createServer(async (request, response) => {
   const chunks: Buffer[] = [];
@@ -127,7 +128,7 @@ try {
       background: "transparent",
     });
 
-    const edit = await generate({ model, referenceImages: [png, `data:image/png;base64,${png}`] });
+    const edit = await generate({ model, referenceImages: [png, `data:image/png;base64,${pngReference}`] });
     assert.equal(edit.path, "/v1/images/edits");
     const form = await new Response(new Uint8Array(edit.body), {
       headers: { "content-type": edit.contentType },
@@ -143,10 +144,13 @@ try {
     assert.equal(form.has("response_format"), false);
     const references = form.getAll("image[]");
     assert.equal(references.length, 2);
-    for (const reference of references) {
+    for (const [index, reference] of references.entries()) {
       assert.ok(reference instanceof File);
       assert.equal(reference.type, "image/png");
-      assert.equal(Buffer.from(await reference.arrayBuffer()).toString("base64"), png);
+      assert.equal(
+        Buffer.from(await reference.arrayBuffer()).toString("base64"),
+        index === 0 ? png : pngReference,
+      );
     }
   }
 

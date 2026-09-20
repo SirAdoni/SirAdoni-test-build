@@ -1,6 +1,7 @@
 import { normalizeAgentPromptTemplateOptions, type AgentPromptTemplateOption } from "../../types/agent.js";
 import { LTX_DIRECTOR_GAME_VIDEO_PROMPT_TEMPLATE_ID } from "../../constants/game-video-prompts.js";
 import { normalizeGameStoryboardKeyframeCount } from "../../constants/game-storyboard-prompts.js";
+import { normalizeStoryboardContinuity, type StoryboardContinuitySettings } from "./storyboard-continuity-settings.js";
 
 export const STORYBOARD_AGENT_ID = "storyboard";
 
@@ -8,6 +9,7 @@ export type StoryboardAutoGenerateMode = "manual" | "illustration" | "animation"
 export type StoryboardViewerMode = "floating" | "background";
 
 export interface StoryboardAgentSettings {
+  visualContinuity: StoryboardContinuitySettings;
   plannerTemplates: AgentPromptTemplateOption[];
   illustrationPlannerTemplateIds: string[];
   animationPlannerTemplateIds: string[];
@@ -31,6 +33,8 @@ export interface StoryboardAgentSettings {
   videoConnectionId: string | null;
   autoGenerateMode: StoryboardAutoGenerateMode;
   keyframeCount: number;
+  adaptiveKeyframeCount: boolean;
+  maxAutomaticKeyframes: number;
   animationDurationSeconds: number;
   viewerDisplayMode: StoryboardViewerMode;
   includeCharacterAppearance: boolean;
@@ -143,6 +147,8 @@ export function normalizeStoryboardAgentSettings(value: unknown): StoryboardAgen
     videoConnectionId: normalizeId(settings.videoConnectionId),
     autoGenerateMode,
     keyframeCount: normalizeGameStoryboardKeyframeCount(settings.keyframeCount),
+    adaptiveKeyframeCount: settings.adaptiveKeyframeCount === true,
+    maxAutomaticKeyframes: normalizeGameStoryboardKeyframeCount(settings.maxAutomaticKeyframes, 10),
     animationDurationSeconds: normalizeBoundedInteger(settings.animationDurationSeconds, 5, 1, 15),
     viewerDisplayMode: settings.viewerDisplayMode === "background" ? "background" : "floating",
     includeCharacterAppearance: settings.includeCharacterAppearance !== false,
@@ -150,6 +156,7 @@ export function normalizeStoryboardAgentSettings(value: unknown): StoryboardAgen
     useNovelAiCharacterPrompts: settings.useNovelAiCharacterPrompts !== false,
     usePromptTemplate: settings.usePromptTemplate !== false,
     imageAwareShotPlanningEnabled: settings.imageAwareShotPlanningEnabled !== false,
+    visualContinuity: normalizeStoryboardContinuity(settings.visualContinuity),
     runInterval: normalizeBoundedInteger(settings.runInterval, 1, 1, 100),
   };
 }

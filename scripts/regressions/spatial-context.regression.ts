@@ -40,6 +40,7 @@ import {
   extractAssistantSpatialDirective,
   materializeAssistantSpatialState,
   resolveEffectiveSpatialState,
+  resolveTrackerSpatialMoveDirective,
 } from "../../packages/server/src/services/spatial-context/state-resolution.js";
 import { ensureTimestampAfter } from "../../packages/server/src/services/import/import-timestamps.js";
 import { resolveVisibleGameStateAnchor } from "../../packages/server/src/routes/generate/generate-route-utils.js";
@@ -61,6 +62,44 @@ import {
   resolveGameStartWorldMapPatch,
   resolveInitialMapLocationName,
 } from "../../packages/server/src/services/game/world-map-mode.js";
+import { convertLegacyGameMapToSpatialDefinition } from "../../packages/shared/src/utils/legacy-game-map.js";
+
+const legacyConversionMap = {
+  id: "ashline-corridor",
+  type: "node" as const,
+  name: "Ashline Corridor",
+  description: "A preserved legacy map.",
+  nodes: [
+    { id: "earthside", emoji: "🏛️", label: "Night Desk", x: 50, y: 15, discovered: true, description: "Desk" },
+    { id: "marrowfen", emoji: "🏘️", label: "Marrowfen", x: 80, y: 33, discovered: true, description: "Village" },
+  ],
+  edges: [{ from: "earthside", to: "marrowfen", label: "crossing" }],
+  partyPosition: "marrowfen",
+};
+const convertedLegacyMap = convertLegacyGameMapToSpatialDefinition(legacyConversionMap);
+assert.ok(convertedLegacyMap, "legacy node maps convert to a world definition");
+assert.equal(convertedLegacyMap?.locations.length, 3, "conversion keeps the root plus every legacy node");
+assert.equal(convertedLegacyMap?.startingLocationId, "marrowfen", "party position becomes the current location");
+assert.deepEqual(convertedLegacyMap?.locations[1]?.placement, { x: 50, y: 15 });
+assert.deepEqual(convertedLegacyMap?.locations[1]?.links, [
+  { targetId: "marrowfen", label: "crossing", bidirectional: true, state: "available" },
+]);
+assert.equal(convertedLegacyMap?.locations[2]?.status, "active");
+assert.throws(
+  () => convertLegacyGameMapToSpatialDefinition({ ...legacyConversionMap, nodes: [...legacyConversionMap.nodes, legacyConversionMap.nodes[0]!] }),
+  /invalid or duplicate node id/u,
+  "conversion must reject duplicate node IDs instead of dropping one",
+);
+assert.throws(
+  () => convertLegacyGameMapToSpatialDefinition({ ...legacyConversionMap, edges: [{ from: "earthside", to: "missing" }] }),
+  /dangling or self-referencing edge/u,
+  "conversion must reject dangling edges instead of dropping one",
+);
+assert.strictEqual(
+  convertLegacyGameMapToSpatialDefinition(legacyConversionMap, convertedLegacyMap),
+  convertedLegacyMap,
+  "existing hierarchical state wins so conversion is idempotent and does not replace it",
+);
 
 assert.equal(ensureTimestampAfter("2026-07-16T07:47:03.766Z", "2026-07-16T07:47:03.765Z"), "2026-07-16T07:47:03.766Z");
 assert.equal(ensureTimestampAfter("2026-07-16T07:47:03.765Z", "2026-07-16T07:47:03.765Z"), "2026-07-16T07:47:03.766Z");
@@ -451,6 +490,39 @@ assert.deepEqual(
     description: "A bridge leading onward.",
   },
   "Direct-link discovery carries explicit direction relative to the current location",
+);
+assert.deepEqual(
+  extractAssistantSpatialDirective(
+    '[spatial_discover: name="Silver Hollow" relation="link" parent_id="root" direction="both"]',
+  ).directive,
+  {
+    type: "discover",
+    name: "Silver Hollow",
+    relation: "link",
+    parentId: null,
+    direction: "both",
+  },
+  "A remote discovery can explicitly remain at the map root",
+);
+assert.deepEqual(
+  extractAssistantSpatialDirective(
+    '[spatial_discover: name="Foreign Embassy" relation="link" parent_id="capital_region" direction="both"]',
+  ).directive,
+  {
+    type: "discover",
+    name: "Foreign Embassy",
+    relation: "link",
+    parentId: "capital_region",
+    direction: "both",
+  },
+  "A discovery can name an exact known container independently of its travel link",
+);
+assert.equal(
+  extractAssistantSpatialDirective(
+    '[spatial_discover: name="Unsafe Parent" relation="link" parent_id="../outside" direction="both"]',
+  ).directive,
+  null,
+  "Invalid parent IDs reject the discovery instead of falling back to current-location containment",
 );
 assert.equal(
   extractAssistantSpatialDirective(
@@ -970,7 +1042,7 @@ assert.equal(
       entry.id === "capital" ? { ...entry, placement: { x: 101, y: 50 } } : entry,
     ),
   }).success,
-  false,
+  true,
 );
 assert.equal(
   spatialContextDefinitionSchema.safeParse({
@@ -1028,6 +1100,56 @@ assert.equal(formatOwnerSpatialPrompt(fallbackProjection), "");
 assert.equal(injectOwnerSpatialPrompt(fallbackMessages, fallbackProjection), fallbackMessages);
 assert.equal(projectGameSnapshotLocation(fallbackSnapshot, fallbackProjection), fallbackSnapshot);
 assert.equal(omitAuthoritativeGameLocation(fallbackPatch, fallbackProjection), fallbackPatch);
+
+const autoTravelGameProjection: ResolvedOwnerSpatialProjection = {
+  ...fallbackProjection,
+  ownerMode: "game",
+  currentLocationId: "great_hall",
+  knownLocations: [
+    { id: "great_hall", path: "Williams Estate > Great Hall" },
+    { id: "roberts_chambers", path: "Williams Estate > Robert's Chambers" },
+  ],
+};
+const autoTravelMetadata = { spatialContextAutoTravelNowEnabled: true };
+assert.deepEqual(
+  resolveTrackerSpatialMoveDirective("Robert's Chambers", autoTravelGameProjection, autoTravelMetadata),
+  { type: "move", destinationId: "roberts_chambers" },
+  "an exact World State location may reconcile a narrated cross-tree move when travel-now is enabled",
+);
+assert.deepEqual(
+  resolveTrackerSpatialMoveDirective(
+    "Williams Estate > Robert's Chambers",
+    autoTravelGameProjection,
+    JSON.stringify(autoTravelMetadata),
+  ),
+  { type: "move", destinationId: "roberts_chambers" },
+  "a full known breadcrumb is accepted from serialized chat metadata",
+);
+assert.equal(
+  resolveTrackerSpatialMoveDirective("Robert's Chambers", autoTravelGameProjection, {}),
+  null,
+  "tracker guidance cannot bypass adjacency when automatic narrated travel is disabled",
+);
+assert.equal(
+  resolveTrackerSpatialMoveDirective(
+    "Robert's Chambers",
+    {
+      ...autoTravelGameProjection,
+      knownLocations: [
+        ...(autoTravelGameProjection.knownLocations ?? []),
+        { id: "other_chambers", path: "Frostkeep > Robert's Chambers" },
+      ],
+    },
+    autoTravelMetadata,
+  ),
+  null,
+  "ambiguous leaf names do not move the authoritative spatial state",
+);
+assert.equal(
+  resolveTrackerSpatialMoveDirective("Great Hall", autoTravelGameProjection, autoTravelMetadata),
+  null,
+  "a tracker result matching the current location is a no-op",
+);
 
 const delegatedProjection = { ...fallbackProjection, description: "Delegated package projection." };
 const delegatedMessages = [{ role: "system" as const, content: "<delegated />" }];

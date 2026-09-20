@@ -3,6 +3,7 @@
 // ──────────────────────────────────────────────
 import type { FastifyInstance } from "fastify";
 import { isOpenAIGptImageModel, isOpenAIGptImage2Model, supportsOpenAIImageCustomSize } from "@marinara-engine/shared";
+import type { FastifyReply } from "fastify";
 import AdmZip from "adm-zip";
 import { execFile } from "child_process";
 import { existsSync, mkdirSync, readdirSync, unlinkSync, statSync, readFileSync } from "fs";
@@ -74,8 +75,10 @@ import {
 import { loadImageGenerationUserSettings } from "../services/image/image-generation-settings.js";
 import { compileImagePrompt } from "../services/image/image-prompt-compiler.js";
 import { resolveImagePromptReviewSize } from "../services/image/image-prompt-review.js";
+import { dedupeImageReferences, imageReferencePayloadKey } from "../services/image/image-reference-utils.js";
 import {
   resolveImageConnectionFallback,
+  resolveImageReferenceCollectionLimit,
   resolveVideoConnectionFallback,
 } from "../services/generation/media-connection-fallback.js";
 import {
@@ -85,6 +88,7 @@ import {
 } from "../services/video/video-generation.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
+import { getGenerationJobs } from "../services/generation/generation-jobs.js";
 import { createPromptOverridesStorage } from "../services/storage/prompt-overrides.storage.js";
 import {
   loadPrompt,
@@ -101,6 +105,7 @@ import {
   normalizeVideoGenerationProfile,
   normalizeVideoGenerationUserSettings,
   normalizeSpriteExpressionLabel,
+  resolveImageReferenceLimits,
   VIDEO_ANIMATED_EXPRESSION_CLIP_DURATION_MAX,
   VIDEO_ANIMATED_EXPRESSION_CLIP_DURATION_MIN,
   VIDEO_DEFAULTS_STORAGE_KEY,
@@ -244,17 +249,41 @@ class SpriteGenerationTimeoutError extends Error {
   }
 }
 
-function withSpriteGenerationDeadline<T>(promise: Promise<T>): Promise<T> {
+function spriteGenerationAbortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error("Sprite generation cancelled");
+}
+
+function throwIfSpriteGenerationAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw spriteGenerationAbortError(signal);
+}
+
+export function withSpriteGenerationDeadline<T>(
+  reply: FastifyReply,
+  run: (signal: AbortSignal) => Promise<T>,
+  timeoutMs = SPRITE_GENERATION_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
   let timeout: ReturnType<typeof setTimeout> | null = null;
-  const deadline = new Promise<never>((_, reject) => {
-    timeout = setTimeout(
-      () => reject(new SpriteGenerationTimeoutError(SPRITE_GENERATION_TIMEOUT_MS)),
-      SPRITE_GENERATION_TIMEOUT_MS,
-    );
+  const onClose = () => {
+    if (!controller.signal.aborted) {
+      controller.abort(new Error("Sprite generation cancelled because the client disconnected"));
+    }
+  };
+  reply.raw.once("close", onClose);
+  let rejectOnAbort: (() => void) | null = null;
+  const cancelled = new Promise<never>((_, reject) => {
+    rejectOnAbort = () => reject(spriteGenerationAbortError(controller.signal));
+    controller.signal.addEventListener("abort", rejectOnAbort, { once: true });
+    timeout = setTimeout(() => {
+      const error = new SpriteGenerationTimeoutError(timeoutMs);
+      controller.abort(error);
+    }, timeoutMs);
     timeout.unref?.();
   });
 
-  return Promise.race([promise, deadline]).finally(() => {
+  return Promise.race([run(controller.signal), cancelled]).finally(() => {
+    reply.raw.off("close", onClose);
+    if (rejectOnAbort) controller.signal.removeEventListener("abort", rejectOnAbort);
     if (timeout) clearTimeout(timeout);
   });
 }
@@ -517,7 +546,7 @@ async function convertMp4ToGif(input: Buffer): Promise<Buffer> {
         `fps=${ANIMATED_EXPRESSION_GIF_FPS},scale=${ANIMATED_EXPRESSION_GIF_WIDTH}:-1:flags=lanczos,palettegen=max_colors=96`,
         palettePath,
       ],
-      { timeout: ANIMATED_EXPRESSION_FFMPEG_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024 },
+      { windowsHide: true, timeout: ANIMATED_EXPRESSION_FFMPEG_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024 },
     );
     await execFileAsync(
       ffmpeg,
@@ -533,7 +562,7 @@ async function convertMp4ToGif(input: Buffer): Promise<Buffer> {
         "0",
         outputPath,
       ],
-      { timeout: ANIMATED_EXPRESSION_FFMPEG_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024 },
+      { windowsHide: true, timeout: ANIMATED_EXPRESSION_FFMPEG_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024 },
     );
     return await readFile(outputPath);
   } finally {
@@ -1040,32 +1069,34 @@ export function buildFullBodyReferenceContract(roles: FullBodyReferenceRole[]): 
   const instructions = roles.map((role, index) => {
     const imageNumber = index + 1;
     if (role.kind === "neutral-full-body") {
-      return `Reference image ${imageNumber} is the user-approved neutral full-body design. Preserve its exact clothing, footwear, accessories, body proportions, colors, and art style.`;
+      return `If reference image ${imageNumber} is attached, it is the user-approved neutral full-body design. Preserve its exact clothing, footwear, accessories, body proportions, colors, and art style.`;
     }
     if (role.kind === "expression") {
-      return `Reference image ${imageNumber} is the saved portrait for the "${formatSpriteLabelForPrompt(role.expression)}" expression. Match its face, gaze, mouth, eyebrows, and emotional intensity while expanding the result into the required complete full body.`;
+      return `If reference image ${imageNumber} is attached, it is the saved portrait for the "${formatSpriteLabelForPrompt(role.expression)}" expression. Match its face, gaze, mouth, eyebrows, and emotional intensity while expanding the result into the required complete full body.`;
     }
-    return `Reference image ${imageNumber} is an additional identity reference. Preserve recognizable facial and design traits without copying its crop or pose.`;
+    return `If reference image ${imageNumber} is attached, it is an additional identity reference. Preserve recognizable facial and design traits without copying its crop or pose.`;
   });
 
   return [
-    "MANDATORY REFERENCE CONTRACT:",
+    "REFERENCE CONTRACT FOR ANY ATTACHED IMAGES:",
     ...instructions,
-    "The references are source material, not a requested collage or panel layout. Output one character only, in one uninterrupted head-to-toe sprite.",
+    "Any attached references are source material, not a requested collage or panel layout. Output one character only, in one uninterrupted head-to-toe sprite.",
   ].join(" ");
 }
 
-function resolveFullBodyExpressionReferences(
+export function resolveFullBodyExpressionReferences(
   body: SpriteGenerateSheetBody,
   expression: string,
+  maximum: number,
 ): { images: string[]; roles: FullBodyReferenceRole[] } {
   const images: string[] = [];
   const roles: FullBodyReferenceRole[] = [];
   const seen = new Set<string>();
   const addReference = (input: string | undefined, role: FullBodyReferenceRole) => {
     const resolved = resolveReferenceImageBase64(input);
-    if (!resolved || seen.has(resolved)) return;
-    seen.add(resolved);
+    const key = resolved ? imageReferencePayloadKey(resolved) : "";
+    if (!resolved || !key || seen.has(key)) return;
+    seen.add(key);
     images.push(resolved);
     roles.push(role);
   };
@@ -1090,7 +1121,8 @@ function resolveFullBodyExpressionReferences(
     addReference(reference, { kind: "identity" });
   }
 
-  return { images: images.slice(0, 16), roles: roles.slice(0, 16) };
+  const limit = Number.isFinite(maximum) ? Math.max(0, Math.trunc(maximum)) : 0;
+  return { images: images.slice(0, limit), roles: roles.slice(0, limit) };
 }
 
 async function resolveVideoReferenceImage(input?: string): Promise<VideoReferenceImage | null> {
@@ -1290,12 +1322,14 @@ async function buildIndividualFullBodyExpressionRequest({
   expression,
   styleProfiles,
   imageDefaults,
+  referenceImageLimit,
 }: {
   body: SpriteGenerateSheetBody;
   plan: SpritePromptPlan;
   expression: string;
   styleProfiles: ImageStyleProfileSettings;
   imageDefaults?: ImageGenerationDefaultsProfile | null;
+  referenceImageLimit: number;
 }): Promise<{ prompt: SpriteCompiledPrompt; references: string[] }> {
   const readableExpression = formatSpriteLabelForPrompt(expression);
   let sourcePrompt = await loadPrompt(plan.promptOverridesStorage, SPRITES_SINGLE_FULL_BODY, {
@@ -1319,7 +1353,7 @@ async function buildIndividualFullBodyExpressionRequest({
     plan.promptOverrides.get(spritePromptReviewId("expression", plan.spriteType, expression)),
     compiledPrompt,
   );
-  const references = resolveFullBodyExpressionReferences(body, expression);
+  const references = resolveFullBodyExpressionReferences(body, expression, referenceImageLimit);
   const referenceContract = buildFullBodyReferenceContract(references.roles);
   const fullBodyPrompt = withFullBodyCompositionContract(
     withSpriteBackgroundContract(reviewedPrompt.value, plan),
@@ -1336,6 +1370,7 @@ async function buildIndividualFullBodyExpressionRequest({
 }
 
 export async function spritesRoutes(app: FastifyInstance) {
+  const generationJobs = getGenerationJobs(app);
   app.get("/capabilities", async () => ({
     ...(await getSpriteCapabilities()),
     backgroundRemover: getBackgroundRemoverStatus(),
@@ -1858,8 +1893,21 @@ export async function spritesRoutes(app: FastifyInstance) {
     }
 
     const imgModel = conn.model || "";
+    const imgBaseUrl = conn.baseUrl || "https://image.pollinations.ai";
     const imageDefaults = resolveConnectionImageDefaults(conn);
     const imageSettings = await loadImageGenerationUserSettings(app.db);
+    const imageFallback = await resolveImageConnectionFallback(connections, conn.id);
+    const referenceImageLimit = resolveImageReferenceCollectionLimit(
+      resolveImageReferenceLimits({
+        imageGenerationSource: conn.imageGenerationSource,
+        imageService: conn.imageService,
+        model: imgModel,
+        baseUrl: imgBaseUrl,
+        comfyuiWorkflow: conn.comfyuiWorkflow,
+        maxImageReferences: conn.maxImageReferences,
+      }).effectiveLimit,
+      imageFallback,
+    );
     const plan = await buildSpritePromptPlan(app, body, imgModel);
     if (plan.expressions.length === 0) {
       return reply.status(400).send({ error: "No expressions remain after applying the requested grid size" });
@@ -1880,6 +1928,7 @@ export async function spritesRoutes(app: FastifyInstance) {
             expression,
             styleProfiles: imageSettings.styleProfiles,
             imageDefaults,
+            referenceImageLimit,
           });
           const previewSize = resolveImagePromptReviewSize({
             connection: conn,
@@ -2113,12 +2162,18 @@ export async function spritesRoutes(app: FastifyInstance) {
     const videoFallback = await resolveVideoConnectionFallback(connections, conn.id);
 
     try {
-      return await withSpriteGenerationDeadline(
-        (async () => {
+      return await generationJobs.run(
+        {
+          kind: "sprite-animated-expressions",
+          label: "Animated expression sprites",
+          timeoutMs: SPRITE_GENERATION_TIMEOUT_MS,
+        },
+        async (spriteSignal) => {
           const cells: Array<{ expression: string; base64: string; mimeType: "image/gif" }> = [];
           const failedExpressions: Array<{ expression: string; error: string }> = [];
 
           for (const expression of expressions) {
+            throwIfSpriteGenerationAborted(spriteSignal);
             try {
               const prompt = await buildAnimatedExpressionPrompt({
                 promptOverridesStorage,
@@ -2145,6 +2200,7 @@ export async function spritesRoutes(app: FastifyInstance) {
                   referenceImage,
                   publicReferenceUpload: resolved.publicReferenceUpload,
                   fallback: videoFallback,
+                  signal: spriteSignal,
                 },
               );
               const gif = await convertMp4ToGif(Buffer.from(video.base64, "base64"));
@@ -2154,6 +2210,7 @@ export async function spritesRoutes(app: FastifyInstance) {
                 mimeType: "image/gif",
               });
             } catch (expressionErr: any) {
+              throwIfSpriteGenerationAborted(spriteSignal);
               const msg = String(expressionErr?.message || "Generation failed")
                 .replace(/<[^>]*>/g, "")
                 .slice(0, 300);
@@ -2174,7 +2231,7 @@ export async function spritesRoutes(app: FastifyInstance) {
             cells,
             ...(failedExpressions.length > 0 ? { failedExpressions } : {}),
           };
-        })(),
+        },
       );
     } catch (err: any) {
       logger.error(err, "Animated expression generation failed");
@@ -2226,6 +2283,18 @@ export async function spritesRoutes(app: FastifyInstance) {
     const imgServiceHint = conn.imageService || imgSource;
     const imageDefaults = resolveConnectionImageDefaults(conn);
     const imageSettings = await loadImageGenerationUserSettings(app.db);
+    const imageFallback = await resolveImageConnectionFallback(connections, conn.id);
+    const referenceImageLimit = resolveImageReferenceCollectionLimit(
+      resolveImageReferenceLimits({
+        imageGenerationSource: conn.imageGenerationSource,
+        imageService: conn.imageService,
+        model: imgModel,
+        baseUrl: imgBaseUrl,
+        comfyuiWorkflow: conn.comfyuiWorkflow,
+        maxImageReferences: conn.maxImageReferences,
+      }).effectiveLimit,
+      imageFallback,
+    );
     const nativeTransparentPng = resolveSpriteNativeTransparency(imgModel, body.nativeTransparentPng === true);
     const shouldCleanBackground = body.noBackground === true || body.nativeTransparentPng === true;
     const plan = await buildSpritePromptPlan(app, body, imgModel);
@@ -2263,12 +2332,18 @@ export async function spritesRoutes(app: FastifyInstance) {
       : body.referenceImage
         ? [body.referenceImage]
         : [];
-    const resolvedRefs = rawRefs.map(resolveReferenceImageBase64).filter((r): r is string => !!r);
-    const imageFallback = await resolveImageConnectionFallback(connections, conn.id);
+    const resolvedRefs = dedupeImageReferences(
+      rawRefs.map(resolveReferenceImageBase64).filter((r): r is string => !!r),
+    ).slice(0, referenceImageLimit);
 
     try {
-      return await withSpriteGenerationDeadline(
-        (async () => {
+      return await generationJobs.run(
+        {
+          kind: "sprite-sheet",
+          label: "Sprite sheet",
+          timeoutMs: SPRITE_GENERATION_TIMEOUT_MS,
+        },
+        async (spriteSignal) => {
           if (plan.fullBodyExpressionMode) {
             const cells: Array<{ expression: string; base64: string }> = [];
             const failedExpressions: Array<{ expression: string; error: string }> = [];
@@ -2280,6 +2355,7 @@ export async function spritesRoutes(app: FastifyInstance) {
             });
 
             for (const expression of plan.expressions) {
+              throwIfSpriteGenerationAborted(spriteSignal);
               try {
                 const request = await buildIndividualFullBodyExpressionRequest({
                   body,
@@ -2287,8 +2363,9 @@ export async function spritesRoutes(app: FastifyInstance) {
                   expression,
                   styleProfiles: imageSettings.styleProfiles,
                   imageDefaults,
+                  referenceImageLimit,
                 });
-                const imageResult = await generateImage(imgModel, imgBaseUrl, imgApiKey, imgServiceHint, {
+                const imageResult = await generateImage(imgSource, imgBaseUrl, imgApiKey, imgServiceHint, {
                   prompt: request.prompt.prompt,
                   negativePrompt: request.prompt.negativePrompt || undefined,
                   model: imgModel,
@@ -2301,7 +2378,9 @@ export async function spritesRoutes(app: FastifyInstance) {
                   comfyWorkflow: conn.comfyuiWorkflow || undefined,
                   imageDefaults,
                   quality: resolveConnectionImageQuality(conn),
+                  maxImageReferences: conn.maxImageReferences ?? null,
                   fallback: imageFallback,
+                  signal: spriteSignal,
                 });
 
                 let spriteBuffer: Buffer = Buffer.from(imageResult.base64, "base64");
@@ -2335,6 +2414,7 @@ export async function spritesRoutes(app: FastifyInstance) {
 
                 cells.push({ expression, base64: spriteBuffer.toString("base64") });
               } catch (expressionErr: any) {
+                throwIfSpriteGenerationAborted(spriteSignal);
                 const message = String(expressionErr?.message || "Generation failed")
                   .replace(/<[^>]*>/g, "")
                   .slice(0, 300);
@@ -2362,6 +2442,7 @@ export async function spritesRoutes(app: FastifyInstance) {
             const failedExpressions: Array<{ expression: string; error: string }> = [];
 
             for (const expression of plan.expressions) {
+              throwIfSpriteGenerationAborted(spriteSignal);
               try {
                 let expressionPrompt = await loadPrompt(plan.promptOverridesStorage, SPRITES_SINGLE_PORTRAIT, {
                   appearance: body.appearance?.trim() || "",
@@ -2385,7 +2466,7 @@ export async function spritesRoutes(app: FastifyInstance) {
                 const finalExpressionPrompt = withSpriteBackgroundContract(reviewedExpressionPrompt.value, plan);
 
                 const targetSize = 1024;
-                const imageResult = await generateImage(imgModel, imgBaseUrl, imgApiKey, imgServiceHint, {
+                const imageResult = await generateImage(imgSource, imgBaseUrl, imgApiKey, imgServiceHint, {
                   prompt: finalExpressionPrompt.prompt,
                   negativePrompt: finalExpressionPrompt.negativePrompt || undefined,
                   model: imgModel,
@@ -2398,7 +2479,9 @@ export async function spritesRoutes(app: FastifyInstance) {
                   comfyWorkflow: conn.comfyuiWorkflow || undefined,
                   imageDefaults,
                   quality: resolveConnectionImageQuality(conn),
+                  maxImageReferences: conn.maxImageReferences ?? null,
                   fallback: imageFallback,
+                  signal: spriteSignal,
                 });
 
                 let spriteBuffer: Buffer = Buffer.from(imageResult.base64, "base64");
@@ -2431,6 +2514,7 @@ export async function spritesRoutes(app: FastifyInstance) {
                   base64: spriteBuffer.toString("base64"),
                 });
               } catch (expressionErr: any) {
+                throwIfSpriteGenerationAborted(spriteSignal);
                 const msg = String(expressionErr?.message || "Generation failed")
                   .replace(/<[^>]*>/g, "")
                   .slice(0, 300);
@@ -2453,7 +2537,7 @@ export async function spritesRoutes(app: FastifyInstance) {
             };
           }
 
-          const imageResult = await generateImage(imgModel, imgBaseUrl, imgApiKey, imgServiceHint, {
+          const imageResult = await generateImage(imgSource, imgBaseUrl, imgApiKey, imgServiceHint, {
             prompt: sheetPrompt.prompt,
             negativePrompt: sheetPrompt.negativePrompt || undefined,
             model: imgModel,
@@ -2466,7 +2550,9 @@ export async function spritesRoutes(app: FastifyInstance) {
             comfyWorkflow: conn.comfyuiWorkflow || undefined,
             imageDefaults,
             quality: resolveConnectionImageQuality(conn),
+            maxImageReferences: conn.maxImageReferences ?? null,
             fallback: imageFallback,
+            signal: spriteSignal,
           });
 
           // Decode the generated image
@@ -2533,7 +2619,7 @@ export async function spritesRoutes(app: FastifyInstance) {
             sheetBase64: sheetBuffer.toString("base64"),
             cells,
           };
-        })(),
+        },
       );
     } catch (err: any) {
       logger.error(err, "Sprite sheet generation failed");

@@ -22,6 +22,7 @@ import {
   parseCharacterScheduleImport,
 } from "../../lib/character-schedule-transfer";
 import { downloadJsonFile, sanitizeExportFilenamePart } from "../../lib/download-json";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 
 type CharacterScheduleEditorModalProps = {
   open: boolean;
@@ -654,15 +655,23 @@ export function CharacterScheduleEditorModal({
 
         <div className="rounded-xl bg-[var(--secondary)] p-4 ring-1 ring-[var(--border)]">
           <div className="flex min-w-0 gap-3 sm:gap-4">
-            <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-xl bg-[var(--background)] ring-1 ring-[var(--border)] sm:h-20 sm:w-20">
+            <div className="relative h-16 min-w-16 w-auto shrink-0 overflow-visible rounded-xl bg-[var(--background)] ring-1 ring-[var(--border)] sm:min-w-20 sm:h-20">
               {characterAvatarUrl ? (
-                <img
+                <CharacterPhoto
                   src={characterAvatarUrl}
-                  alt=""
-                  className="h-full w-full object-cover"
-                  style={getAvatarCropStyle(characterAvatarCrop)}
-                  draggable={false}
-                />
+                  name={characterName}
+                  className="block h-16 w-16 overflow-hidden rounded-xl object-cover sm:h-20 sm:w-20"
+                  wrapperClassName="relative inline-flex items-center gap-1"
+                  onUpdate={() => useUIStore.getState().openCharacterDetail(characterId)}
+                >
+                  <img
+                    src={characterAvatarUrl}
+                    alt={characterName}
+                    className="h-full w-full object-cover"
+                    style={getAvatarCropStyle(characterAvatarCrop)}
+                    draggable={false}
+                  />
+                </CharacterPhoto>
               ) : (
                 <div className="flex h-full w-full items-center justify-center text-2xl font-semibold text-[var(--muted-foreground)]">
                   {characterName.trim().charAt(0).toUpperCase() || "?"}

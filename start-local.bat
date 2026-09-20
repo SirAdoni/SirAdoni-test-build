@@ -87,6 +87,15 @@ if not defined CURRENT_PNPM_VERSION (
     )
 )
 
+if /I "!PNPM_RUNNER!"=="corepack" if not defined PNPM_NESTED_SHIM_READY (
+    set "PATH=%~dp0scripts;!PATH!"
+    set "PNPM_NESTED_SHIM_READY=1"
+)
+if /I "!PNPM_RUNNER!"=="npx" if not defined PNPM_NESTED_SHIM_READY (
+    set "PATH=%~dp0scripts;!PATH!"
+    set "PNPM_NESTED_SHIM_READY=1"
+)
+
 if not defined CURRENT_PNPM_VERSION (
     echo  [ERROR] Failed to make pnpm %PNPM_VERSION% available.
     echo          Node.js must provide Corepack or npx/npm.
@@ -177,7 +186,7 @@ echo  ==========================================
 echo.
 
 if defined AUTO_OPEN_BROWSER_ENABLED (
-    start "" cmd /c "timeout /t 4 /nobreak >nul && start %PROTOCOL%://%BROWSER_HOST%:%PORT% || explorer %PROTOCOL%://%BROWSER_HOST%:%PORT%"
+    start "" /min cmd /c ""%~dp0scripts\open-when-ready.cmd" "%PROTOCOL%://%BROWSER_HOST%:%PORT%""
 ) else (
     echo  [OK] Auto-open disabled ^(AUTO_OPEN_BROWSER=%AUTO_OPEN_BROWSER%^)
 )

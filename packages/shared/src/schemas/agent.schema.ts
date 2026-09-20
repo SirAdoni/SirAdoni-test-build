@@ -41,11 +41,12 @@ export const importAgentConfigSchema = z.object({
   acknowledgePermissions: z.literal(true),
 });
 
-/** AI-assisted rewrite of a fragment of stored agent data (Agent Suite). */
+/** AI-assisted rewrite of a text fragment used by Agent Suite and message editing. */
 export const agentSuiteRewriteSchema = z.object({
   connectionId: z.string().min(1),
   instruction: z.string().min(1).max(4000),
   selectedText: z.string().min(1).max(50000),
+  debugMode: z.boolean().optional(),
   /** Full document the excerpt was selected from — context only, never rewritten. */
   documentText: z.string().max(100000).optional(),
   agentName: z.string().max(200).optional(),

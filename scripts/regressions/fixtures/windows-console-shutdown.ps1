@@ -32,6 +32,11 @@ $env:AUTO_CREATE_DEFAULT_CONNECTION = 'false'
 $env:AUTO_OPEN_BROWSER = 'false'
 $outputFile = Join-Path $DataDir 'stdout.log'
 $errorFile = Join-Path $DataDir 'stderr.log'
+function Read-ServerOutput {
+  return (@($outputFile, $errorFile) | ForEach-Object {
+      if (Test-Path $_) { Get-Content $_ -Raw -ErrorAction SilentlyContinue }
+    }) -join "`n"
+}
 $nodeArgs = @((Join-Path $Root 'scripts/run-server.mjs'), '--import', $Loader, (Join-Path $Root 'packages/server/src/index.ts'))
 $arguments = ($nodeArgs | ForEach-Object { '"' + $_ + '"' }) -join ' '
 $server = $null
@@ -45,7 +50,7 @@ try {
   $deadline = [DateTime]::UtcNow.AddSeconds(25)
   do {
     Start-Sleep -Milliseconds 100
-    $output = Get-Content $outputFile -Raw -ErrorAction SilentlyContinue
+    $output = Read-ServerOutput
     if ($server.HasExited) { throw "Server exited before readiness: $output" }
   } until ($output -match 'Marinara Engine server listening' -or [DateTime]::UtcNow -gt $deadline)
   if ($output -notmatch 'Marinara Engine server listening') { throw "Server readiness timed out: $output" }
@@ -59,7 +64,7 @@ try {
   if (-not [ConsoleSignals]::GenerateConsoleCtrlEvent(0, 0)) { throw 'Native Ctrl+C delivery failed' }
   if (-not $server.WaitForExit(15000)) { throw 'Supervisor did not exit after Ctrl+C' }
   Write-Phase 'Supervisor exited after Ctrl+C'
-  $output = Get-Content $outputFile -Raw
+  $output = Read-ServerOutput
   if ($output -notmatch 'Received SIGINT; shutting down') { throw "No SIGINT reached production shutdown: $output" }
   if ($output -notmatch 'Shutdown complete') { throw "Graceful shutdown was interrupted: $output" }
   if ($output -match 'forcing exit now') { throw "Shutdown exceeded its deadline: $output" }

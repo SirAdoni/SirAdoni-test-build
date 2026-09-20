@@ -32,6 +32,7 @@ export function supportsXhighReasoningEffort(model: string): boolean {
     normalized.startsWith("gpt-5.6") ||
     normalized.startsWith("gpt-5.5") ||
     normalized.startsWith("gpt-5.4") ||
+    normalized.startsWith("gpt-6") ||
     normalized === "grok-4.20-multi-agent" ||
     isClaudeAdaptiveOnlyNoSamplingModel(normalized)
   );
@@ -264,6 +265,7 @@ export const ANTHROPIC_MODELS: KnownModel[] = [
 export const CLAUDE_SUBSCRIPTION_MODELS: KnownModel[] = [
   { id: "claude-opus-5", name: "Claude Opus 5", context: 1000000, maxOutput: 128000 },
   { id: "claude-sonnet-5", name: "Claude Sonnet 5", context: 1000000, maxOutput: 128000 },
+  { id: "claude-fable-5-1", name: "Claude Fable 5.1", context: 1000000, maxOutput: 128000 },
   { id: "claude-fable-5", name: "Claude Fable 5", context: 1000000, maxOutput: 128000 },
   { id: "claude-opus-4-8", name: "Claude Opus 4.8", context: 1000000, maxOutput: 128000 },
   { id: "claude-opus-4-7", name: "Claude Opus 4.7", context: 1000000, maxOutput: 128000 },
@@ -689,6 +691,13 @@ export const IMAGE_GENERATION_SOURCES: ImageGenSource[] = [
     requiresApiKey: true,
   },
   {
+    id: "openai_chatgpt",
+    name: "ChatGPT Subscription (Experimental)",
+    description: "Experimental image generation through your ChatGPT plan and local Codex sign-in.",
+    defaultBaseUrl: "",
+    requiresApiKey: false,
+  },
+  {
     id: "stability",
     name: "Stability AI",
     description: "Stable Diffusion 3, SDXL, and Stable Image via the Stability API.",
@@ -1004,6 +1013,7 @@ export function inferImageSource(model: string, baseUrl: string): string {
   }
   if (
     m === "openai" ||
+    m === "openai_chatgpt" ||
     m === "stability" ||
     m === "togetherai" ||
     m === "arli" ||
@@ -1027,6 +1037,9 @@ export function inferImageSource(model: string, baseUrl: string): string {
   }
   if (m === "drawthings") return "automatic1111";
   if (hostname === "fal.run") return "fal";
+  if (u.startsWith("openai-chatgpt:") || hostname === "chatgpt.com" || hostname.endsWith(".chatgpt.com")) {
+    return "openai_chatgpt";
+  }
   if (hostname === "nano-gpt.com" || hostname.endsWith(".nano-gpt.com")) return "nanogpt";
   if (u.includes("openrouter.ai")) return "openrouter";
   if (u.includes("api.x.ai") || u.includes("x.ai")) return "xai";

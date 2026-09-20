@@ -69,6 +69,9 @@ import { TouchDragHandle } from "../ui/TouchDragHandle";
 import { PanelLoadMoreBar } from "./PanelLoadMoreBar";
 import { clearActiveChatResourceDrag, writeChatResourceDragPayload } from "../../lib/chat-resource-drag";
 import { ChatResourceActionButton } from "../chat/ChatResourceActionButton";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
+import { CharacterCategoryFilter } from "../characters/CharacterCategoryFilter";
+import type { CharacterLibraryCategory } from "@marinara-engine/shared";
 
 type CharacterRow = CharacterCatalogEntry;
 type GroupRow = { id: string; name: string; description: string; characterIds: string; avatarPath: string | null };
@@ -189,7 +192,13 @@ export function CharactersPanel() {
   const deferredSearch = useDeferredValue(search);
   const serverSearch = useMemo(() => parseCardLibrarySearchQuery(deferredSearch).text, [deferredSearch]);
   const serverFavoriteFilter = favFilter === "favorites" || favFilter === "non-favorites" ? favFilter : "";
-  const characterPages = useCharacterPages({ search: serverSearch, sort, favoriteFilter: serverFavoriteFilter });
+  const [category, setCategory] = useState<CharacterLibraryCategory | "all">("characters");
+  const characterPages = useCharacterPages({
+    search: serverSearch,
+    sort,
+    favoriteFilter: serverFavoriteFilter,
+    category,
+  });
   const characters = useMemo(() => flattenCharacterPages(characterPages.data), [characterPages.data]);
   const isLoading = characterPages.isLoading;
 
@@ -468,7 +477,11 @@ export function CharactersPanel() {
     [sortedCharacters],
   );
   const folderFilterActive =
-    search.trim().length > 0 || includedTags.size > 0 || excludedTags.size > 0 || favFilter !== "all";
+    category !== "all" ||
+    search.trim().length > 0 ||
+    includedTags.size > 0 ||
+    excludedTags.size > 0 ||
+    favFilter !== "all";
 
   const visibleRootCharacters = useMemo(
     () => sortedCharacters.filter((char) => !folderedCharacterIds.has(char.id)),
@@ -799,6 +812,13 @@ export function CharactersPanel() {
       </div>
 
       {/* Actions */}
+      <CharacterCategoryFilter
+        value={category}
+        onChange={(next) => {
+          setCategory(next);
+          exitSelectionMode();
+        }}
+      />
       <div className="flex gap-2">
         <button
           onClick={() => openModal("create-character")}
@@ -1210,13 +1230,23 @@ export function CharactersPanel() {
                       <div className="mari-avatar-placeholder mari-avatar-placeholder--character relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg">
                         <div className="absolute inset-0 overflow-hidden rounded-lg">
                           {member.avatarPath ? (
-                            <img
-                              src={member.avatarPath}
-                              alt={memberName}
-                              loading="lazy"
-                              className="h-full w-full object-cover"
-                              style={getAvatarCropStyle(memberAvatarCrop)}
-                            />
+                            <div onClick={(event) => event.stopPropagation()}>
+                              <CharacterPhoto
+                                src={member.avatarPath}
+                                name={memberName}
+                                className="block h-full w-full"
+                                onUpdate={() => openCharacterDetailFromPanel(memberId)}
+                                updateLabel={localizeUi("ui.game.npcsview.openCharacterCard")}
+                              >
+                                <img
+                                  src={member.avatarPath}
+                                  alt={memberName}
+                                  loading="lazy"
+                                  className="h-full w-full object-cover"
+                                  style={getAvatarCropStyle(memberAvatarCrop)}
+                                />
+                              </CharacterPhoto>
+                            </div>
                           ) : (
                             <div className="flex h-full w-full items-center justify-center">
                               <User size="0.75rem" />
@@ -1547,12 +1577,22 @@ export function CharactersPanel() {
               <div className="mari-avatar-placeholder mari-avatar-placeholder--character relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm">
                 {avatarUrl ? (
                   <div className="absolute inset-0 overflow-hidden rounded-xl">
-                    <img
-                      src={avatarUrl}
-                      alt={charName}
-                      className="h-full w-full object-cover"
-                      style={getAvatarCropStyle(normalizeAvatarCrop(char.parsed.extensions?.avatarCrop))}
-                    />
+                    <div onClick={(event) => event.stopPropagation()}>
+                      <CharacterPhoto
+                        src={avatarUrl}
+                        name={charName}
+                        className="block h-full w-full"
+                        onUpdate={() => openCharacterDetailFromPanel(char.id)}
+                        updateLabel={localizeUi("ui.game.npcsview.openCharacterCard")}
+                      >
+                        <img
+                          src={avatarUrl}
+                          alt={charName}
+                          className="h-full w-full object-cover"
+                          style={getAvatarCropStyle(normalizeAvatarCrop(char.parsed.extensions?.avatarCrop))}
+                        />
+                      </CharacterPhoto>
+                    </div>
                   </div>
                 ) : (
                   <User size="1rem" />

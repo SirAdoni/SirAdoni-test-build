@@ -49,8 +49,18 @@ export function buildHierarchicalMapsSelectionCorrectionPatch(
   const activeAgentIds = Array.isArray(metadata.activeAgentIds)
     ? metadata.activeAgentIds.filter((id): id is string => typeof id === "string")
     : [];
+  const hasSpatialState = hasSpatialSnapshots || hasPersistedSpatialDefinition(metadata);
+  if (hasSpatialState) {
+    // A pre-package migration could retain the explicit Maps selection while
+    // leaving the umbrella agent switch off. Preserve the selection and the
+    // stored map; repair only the gate that prevents the hierarchical renderer
+    // and its routes from being activated.
+    if (activeAgentIds.includes(HIERARCHICAL_MAPS_ID) && metadata.enableAgents !== true) {
+      return { enableAgents: true };
+    }
+    return null;
+  }
   if (!activeAgentIds.includes(HIERARCHICAL_MAPS_ID)) return null;
-  if (hasSpatialSnapshots || hasPersistedSpatialDefinition(metadata)) return null;
   return { activeAgentIds: activeAgentIds.filter((id) => id !== HIERARCHICAL_MAPS_ID) };
 }
 

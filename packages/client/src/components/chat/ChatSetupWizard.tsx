@@ -27,7 +27,7 @@ import {
   Folder,
 } from "lucide-react";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
-import { useConnections } from "../../hooks/use-connections";
+import { useConnections, useModelParameterCapabilities } from "../../hooks/use-connections";
 import { usePresets, usePresetFull, useDefaultPreset } from "../../hooks/use-presets";
 import { useCharacterGroups, useCharacters, usePersonas } from "../../hooks/use-characters";
 import { useLorebooks } from "../../hooks/use-lorebooks";
@@ -109,6 +109,7 @@ import {
 import { ConversationTimeZoneSelect } from "./ConversationTimeZoneSelect";
 import { AdvancedMemorySettings } from "./AdvancedMemorySettings";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 
 // ─── Step definitions ─────────────────────────
 
@@ -577,16 +578,31 @@ function CroppedAvatarImage({
   alt,
   className,
   crop,
+  characterId,
+  personaId,
 }: {
   src: string;
   alt: string;
   className: string;
   crop: AvatarCrop | null;
+  characterId?: string;
+  personaId?: string;
 }) {
   return (
-    <span className={cn("relative block shrink-0 overflow-hidden", className)}>
+    <CharacterPhoto
+      src={src}
+      name={alt}
+      className={cn("relative block shrink-0 overflow-hidden", className)}
+      onUpdate={
+        characterId
+          ? () => useUIStore.getState().openCharacterDetail(characterId)
+          : personaId
+            ? () => useUIStore.getState().openPersonaDetail(personaId)
+            : undefined
+      }
+    >
       <img src={src} alt={alt} loading="lazy" className="h-full w-full object-cover" style={getAvatarCropStyle(crop)} />
-    </span>
+    </CharacterPhoto>
   );
 }
 
@@ -596,6 +612,7 @@ function PersonaAvatar({ persona }: { persona: Persona | null }) {
       <CroppedAvatarImage
         src={persona.avatarPath}
         alt={persona.name}
+        personaId={persona.id}
         className="h-7 w-7 rounded-full"
         crop={persona.avatarCrop ?? null}
       />
@@ -697,11 +714,19 @@ function PersonaPicker({
           const isSelected = selectedId === persona.id;
           const title = getPersonaTitle(persona);
           return (
-            <button
+            <div
               key={persona.id}
-              type="button"
+              role="button"
+              tabIndex={0}
               onClick={() => {
                 onChange(persona.id);
+              }}
+              onKeyDown={(event) => {
+                if (event.target !== event.currentTarget) return;
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onChange(persona.id);
+                }
               }}
               aria-pressed={isSelected}
               className={cn(
@@ -718,7 +743,7 @@ function PersonaPicker({
                 )}
               </div>
               {isSelected && <Check size="0.75rem" className="shrink-0 text-[var(--primary)]" />}
-            </button>
+            </div>
           );
         })}
         {filteredPersonas.length === 0 && (
@@ -780,10 +805,18 @@ function PersonaPicker({
                         const isSelected = selectedCharacterId === character.id;
                         const name = parseCharacterDisplayData(character).name;
                         return (
-                          <button
+                          <div
                             key={`character-${character.id}`}
-                            type="button"
+                            role="button"
+                            tabIndex={0}
                             onClick={() => onCharacterChange?.(character.id)}
+                            onKeyDown={(event) => {
+                              if (event.target !== event.currentTarget) return;
+                              if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                onCharacterChange?.(character.id);
+                              }
+                            }}
                             aria-pressed={isSelected}
                             className={cn(
                               "flex w-full items-center gap-2.5 py-2 pl-8 pr-3 text-left transition-all hover:bg-[var(--accent)]",
@@ -807,7 +840,7 @@ function PersonaPicker({
                               </span>
                             </div>
                             {isSelected && <Check size="0.75rem" className="shrink-0 text-[var(--primary)]" />}
-                          </button>
+                          </div>
                         );
                       })}
                   </div>
@@ -823,17 +856,19 @@ function PersonaPicker({
 function SetupGenerationParametersPanel({
   enabled,
   value,
-  showServiceTier,
+  connection,
   onEnabledChange,
   onChange,
 }: {
   enabled: boolean;
   value: EditableGenerationParameters;
-  showServiceTier: boolean;
+  /** The selected connection; its provider and model decide which settings are offered. */
+  connection: { id?: string | null; provider?: string | null; model?: string | null; baseUrl?: unknown } | null;
   onEnabledChange: (enabled: boolean) => void;
   onChange: (next: EditableGenerationParameters) => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
+  const modelCapabilities = useModelParameterCapabilities(enabled ? connection : null);
   return (
     <div className="rounded-lg border border-[var(--border)] bg-[var(--card)] p-3">
       <button
@@ -860,7 +895,14 @@ function SetupGenerationParametersPanel({
       </button>
       {enabled && (
         <div className="mt-3 border-t border-[var(--border)] pt-3">
-          <GenerationParametersFields value={value} showServiceTier={showServiceTier} onChange={onChange} />
+          <GenerationParametersFields
+            value={value}
+            provider={connection?.provider ?? null}
+            model={connection?.model ?? null}
+            baseUrl={typeof connection?.baseUrl === "string" ? connection.baseUrl : null}
+            modelCapabilities={modelCapabilities}
+            onChange={onChange}
+          />
         </div>
       )}
     </div>
@@ -1510,7 +1552,7 @@ function ConversationQuickSetup({ chat, onFinish, defaultsApplied, defaultsActio
         <SetupGenerationParametersPanel
           enabled={customizeParameters}
           value={generationParameters}
-          showServiceTier={selectedConnection?.provider === "openrouter" || selectedConnection?.provider === "nanogpt"}
+          connection={selectedConnection}
           onEnabledChange={setCustomizeParameters}
           onChange={setGenerationParameters}
         />
@@ -1649,9 +1691,18 @@ function ConversationQuickSetup({ chat, onFinish, defaultsApplied, defaultsActio
               const name = charName(character);
               const title = getCharacterTitle(getCharacterInfo(character));
               return (
-                <button
+                <div
                   key={cid}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => toggleCharacter(cid)}
+                  onKeyDown={(event) => {
+                    if (event.target !== event.currentTarget) return;
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      toggleCharacter(cid);
+                    }
+                  }}
                   className="group flex items-center gap-1.5 rounded-lg bg-[var(--primary)]/10 py-1 pl-1 pr-2.5 text-xs ring-1 ring-[var(--primary)]/25 transition-all hover:bg-[var(--destructive)]/15 hover:ring-[var(--destructive)]/30"
                   title={
                     title
@@ -1663,6 +1714,7 @@ function ConversationQuickSetup({ chat, onFinish, defaultsApplied, defaultsActio
                     <CroppedAvatarImage
                       src={character.avatarPath}
                       alt={name}
+                      characterId={character.id}
                       className="h-5 w-5 rounded-md"
                       crop={getCharacterInfo(character).avatarCrop ?? null}
                     />
@@ -1673,7 +1725,7 @@ function ConversationQuickSetup({ chat, onFinish, defaultsApplied, defaultsActio
                   )}
                   <span className="max-w-[7rem] truncate">{name}</span>
                   <X size="0.625rem" className="text-[var(--muted-foreground)] group-hover:text-[var(--destructive)]" />
-                </button>
+                </div>
               );
             })}
           </div>
@@ -1745,15 +1797,25 @@ function ConversationQuickSetup({ chat, onFinish, defaultsApplied, defaultsActio
               const info = getCharacterInfo(character);
               const title = getCharacterTitle(info);
               return (
-                <button
+                <div
                   key={character.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => toggleCharacter(character.id)}
+                  onKeyDown={(event) => {
+                    if (event.target !== event.currentTarget) return;
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      toggleCharacter(character.id);
+                    }
+                  }}
                   className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-all hover:bg-[var(--accent)]"
                 >
                   {character.avatarPath ? (
                     <CroppedAvatarImage
                       src={character.avatarPath}
                       alt={info.name}
+                      characterId={character.id}
                       className="h-7 w-7 rounded-md"
                       crop={info.avatarCrop ?? null}
                     />
@@ -1769,7 +1831,7 @@ function ConversationQuickSetup({ chat, onFinish, defaultsApplied, defaultsActio
                     )}
                   </div>
                   <Plus size="0.75rem" className="text-[var(--muted-foreground)]" />
-                </button>
+                </div>
               );
             })}
             {hasMoreAvailable && (
@@ -2770,7 +2832,7 @@ function RoleplaySetupWizard({ chat, onFinish, defaultsApplied, defaultsAction }
         <SetupGenerationParametersPanel
           enabled={customizeParameters}
           value={generationParameters}
-          showServiceTier={selectedConnection?.provider === "openrouter" || selectedConnection?.provider === "nanogpt"}
+          connection={selectedConnection}
           onEnabledChange={setCustomizeParameters}
           onChange={setGenerationParameters}
         />
@@ -2852,6 +2914,7 @@ function RoleplaySetupWizard({ chat, onFinish, defaultsApplied, defaultsAction }
                     <CroppedAvatarImage
                       src={c.avatarPath}
                       alt={name}
+                      characterId={c.id}
                       className="h-6 w-6 rounded-full"
                       crop={getCharacterInfo(c).avatarCrop ?? null}
                     />
@@ -2951,15 +3014,25 @@ function RoleplaySetupWizard({ chat, onFinish, defaultsApplied, defaultsAction }
               const name = charName(c);
               const title = charTitle(c);
               return (
-                <button
+                <div
                   key={c.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => toggleCharacter(c.id)}
+                  onKeyDown={(event) => {
+                    if (event.target !== event.currentTarget) return;
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      toggleCharacter(c.id);
+                    }
+                  }}
                   className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-all hover:bg-[var(--accent)]"
                 >
                   {c.avatarPath ? (
                     <CroppedAvatarImage
                       src={c.avatarPath}
                       alt={name}
+                      characterId={c.id}
                       className="h-6 w-6 rounded-full"
                       crop={getCharacterInfo(c).avatarCrop ?? null}
                     />
@@ -2977,7 +3050,7 @@ function RoleplaySetupWizard({ chat, onFinish, defaultsApplied, defaultsAction }
                     )}
                   </div>
                   <Plus size="0.75rem" className="text-[var(--muted-foreground)]" />
-                </button>
+                </div>
               );
             })}
             {hasMoreAvailable && (

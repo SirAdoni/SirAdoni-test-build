@@ -55,6 +55,8 @@ import {
 } from "../../packages/server/src/services/llm/connection-fallback-provider.js";
 import {
   BaseLLMProvider,
+  LLMHttpError,
+  isRateLimitError,
   resolveEmbeddingEndpointUrl,
   type ChatMessage,
   type ChatOptions,
@@ -1070,6 +1072,96 @@ assert.equal(
     await new Promise<void>((resolve, reject) =>
       responsesReasoningServer.close((error) => (error ? reject(error) : resolve())),
     );
+  }
+}
+
+// A Responses stream can report a transient overload inside an HTTP 200 SSE
+// response. Preserve the provider code so the shared bounded retry layer can
+// distinguish it from a permanent stream failure.
+{
+  const responsesOverloadSse = [
+    "event: response.failed",
+    'data: {"type":"response.failed","response":{"status":"failed","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded"}}}',
+    "",
+  ].join("\n");
+  const responsesOverloadServer = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end(responsesOverloadSse);
+  });
+  await new Promise<void>((resolve) => responsesOverloadServer.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = responsesOverloadServer.address();
+    assert.ok(address && typeof address === "object");
+    const provider = new OpenAIProvider(
+      `http://127.0.0.1:${address.port}/v1`,
+      "test",
+      undefined,
+      undefined,
+      undefined,
+      "openai",
+    );
+    await assert.rejects(
+      () => collectProviderOutput(provider, { model: "gpt-5.6-sol", stream: true }),
+      (error: unknown) => {
+        assert.ok(error instanceof LLMHttpError);
+        assert.equal(error.providerCode, "server_is_overloaded");
+        assert.equal(isRateLimitError(error), true);
+        return true;
+      },
+    );
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      responsesOverloadServer.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+}
+
+// ChatGPT subscription connections use the Responses API too. When the user
+// enables Verbosity, preserve it under text instead of silently dropping it.
+{
+  let chatGptRequestBody: Record<string, unknown> | null = null;
+  const chatGptSse = [
+    "event: response.output_text.delta",
+    'data: {"type":"response.output_text.delta","delta":"Visible reply"}',
+    "",
+    "event: response.completed",
+    'data: {"type":"response.completed","response":{"status":"completed","output":[{"id":"msg_1","type":"message","content":[{"type":"output_text","text":"Visible reply"}]}],"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}',
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+  const chatGptServer = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    chatGptRequestBody = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end(chatGptSse);
+  });
+  await new Promise<void>((resolve) => chatGptServer.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = chatGptServer.address();
+    assert.ok(address && typeof address === "object");
+    const provider = new OpenAIProvider(
+      `http://127.0.0.1:${address.port}/v1`,
+      "test",
+      undefined,
+      undefined,
+      undefined,
+      "openai-chatgpt",
+    );
+    assert.equal(
+      await collectProviderOutput(provider, {
+        model: "gpt-5.6-sol",
+        stream: true,
+        verbosity: "high",
+        enabledParameters: { verbosity: true },
+      }),
+      "Visible reply",
+    );
+    assert.ok(chatGptRequestBody);
+    assert.deepEqual(chatGptRequestBody.text, { verbosity: "high" });
+  } finally {
+    await new Promise<void>((resolve, reject) => chatGptServer.close((error) => (error ? reject(error) : resolve())));
   }
 }
 
@@ -2447,6 +2539,8 @@ try {
   assert.equal(imageResult.base64, onePixelPng, "the image fallback must supply the returned image");
   assert.equal(imageResult.effectiveConnection?.connectionId, "image-fallback-connection");
   assert.equal(imageResult.effectiveConnection?.provider, "arli");
+  assert.equal(imageResult.effectiveConnection?.source, "arli");
+  assert.equal(imageResult.effectiveConnection?.serviceHint, "arli");
   assert.equal(imageResult.effectivePrompt, "a provider-specific fallback laboratory");
   assert.equal(imageResult.effectiveNegativePrompt, "fallback blur");
   assert.equal(fallbackImageRequest?.prompt, "a provider-specific fallback laboratory");
@@ -3288,7 +3382,8 @@ try {
         });
         assert.equal(promptLogs.length, debug === "off" ? 0 : 1);
         if (debug !== "off") {
-          assert.deepEqual(promptLogs[0]![1], sentBody, "debug logs include final parameter/tool shaping");
+          // logDebugOverride supplies Pino fields first, then the format string, then the %j payload.
+          assert.deepEqual(promptLogs[0]![2], sentBody, "debug logs include final parameter/tool shaping");
           assert.ok(!JSON.stringify(promptLogs).includes("synthetic-auth-marker"), "auth headers are not prompt data");
         }
       }

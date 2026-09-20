@@ -298,9 +298,18 @@ const capabilityApiVersionSchema = z
 const capabilityPackageBuiltAgainstSchema = z
   .object({
     engineVersion: z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/),
-    engineCommit: z.string().regex(/^[a-f0-9]{40}$/),
+    engineCommit: z
+      .string()
+      .regex(/^[a-f0-9]{40}$/)
+      .optional(),
+    /** Source fingerprint for local archive builds without a Git checkout. */
+    localSourceHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
   })
-  .strict();
+  .strict()
+  .refine((value) => Boolean(value.engineCommit || value.localSourceHash), "Build provenance is required");
 
 export const capabilityPackageManifestV1Schema = capabilityPackageManifestBaseSchema
   .extend({

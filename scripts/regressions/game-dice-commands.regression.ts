@@ -103,19 +103,25 @@ const removeSpatial = registerCapabilityService("hierarchical-maps:state-resolut
     directive?: AssistantSpatialDirective | null;
   }) => {
     movements.push(input);
-    return null;
+    return input.directive
+      ? ({
+          currentLocationId: input.directive.destinationId,
+          transitionCommandId: "fixture-transition",
+        } as any)
+      : null;
   },
 });
 const original = ClaudeSubscriptionProvider.prototype.chat;
 let roll = false;
 let rejectMovement = false;
-let calls = 0;
+let generationCalls = 0;
 const commands = '[spatial_move: destination_id="crypt"] [weather:{"word":"rain"}]';
 ClaudeSubscriptionProvider.prototype.chat = async function* (
   messages: ChatMessage[],
   options: ChatOptions,
 ): AsyncGenerator<string, LLMUsage> {
-  calls++;
+  // Timeline/continuity workers share this provider stub; count only GM generations.
+  if (messages.some((message) => message.content.includes("<output_format>"))) generationCalls++;
   assert.equal(options.tools, undefined);
   const rewrite = messages.at(-1)?.content.includes("The engine has now rolled the requested dice:");
   if (rewrite) {
@@ -150,7 +156,7 @@ try {
   for (const scenario of ["no roll", "roll retains commands", "roll invalidates commands"] as const) {
     roll = scenario !== "no roll";
     rejectMovement = scenario === "roll invalidates commands";
-    calls = 0;
+    generationCalls = 0;
     movements.length = 0;
     const chat = await chats.create({
       name: scenario,
@@ -175,7 +181,7 @@ try {
     const response = await app.inject({ method: "POST", url: "/api/generate/", payload: { chatId: chat.id } });
     assert.equal(response.statusCode, 200, response.body);
     assert.ok(!response.body.includes('"type":"error"'), response.body);
-    assert.equal(calls, roll ? 2 : 1);
+    assert.equal(generationCalls, roll ? 2 : 1);
     const saved = (await chats.listMessages(chat.id)).at(-1)!;
     const metadata = JSON.parse((await chats.getById(chat.id))!.metadata);
     assert.deepEqual(metadata.pixelforgeWeather, { word: rejectMovement ? "fair" : "rain" });

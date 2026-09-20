@@ -1,24 +1,24 @@
 #!/usr/bin/env node
-import { spawn, spawnSync } from 'node:child_process';
-import fs from 'node:fs';
-import { createRequire } from 'node:module';
-import path from 'node:path';
-import readline from 'node:readline';
-import { fileURLToPath } from 'node:url';
+import { spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import { createRequire } from "node:module";
+import path from "node:path";
+import readline from "node:readline";
+import { fileURLToPath } from "node:url";
 
 const FILE_TIMEOUT_MS = 30_000; // Each regression has a fixed 30-second budget.
-const REGRESSION_SUFFIXES = ['.regression.ts', '.regression.mjs', '.regression.js'];
+const REGRESSION_SUFFIXES = [".regression.ts", ".regression.mjs", ".regression.js"];
 const SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143, SIGBREAK: 1 };
-const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const regressionsRoot = path.join(repositoryRoot, 'scripts', 'regressions');
-const serverRequire = createRequire(path.join(repositoryRoot, 'packages', 'server', 'package.json'));
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const regressionsRoot = path.join(repositoryRoot, "scripts", "regressions");
+const serverRequire = createRequire(path.join(repositoryRoot, "packages", "server", "package.json"));
 let activeChild;
 let activeTermination = false;
 let activeForceTimer;
 let interruption;
 
 function repositoryRelative(file) {
-  return path.relative(repositoryRoot, file).split(path.sep).join('/');
+  return path.relative(repositoryRoot, file).split(path.sep).join("/");
 }
 
 function discoverRegressions(directory = regressionsRoot) {
@@ -40,13 +40,13 @@ function parseArguments(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
-    if (argument === '--') {
+    if (argument === "--") {
       continue;
-    } else if (argument === '--list') {
+    } else if (argument === "--list") {
       list = true;
-    } else if (argument === '--filter') {
-      if (filter !== undefined || index + 1 === args.length || args[index + 1] === '') {
-        throw new Error('Usage: node scripts/run-regressions.mjs [--list] [--filter <text>]');
+    } else if (argument === "--filter") {
+      if (filter !== undefined || index + 1 === args.length || args[index + 1] === "") {
+        throw new Error("Usage: node scripts/run-regressions.mjs [--list] [--filter <text>]");
       }
       filter = args[index + 1];
       index += 1;
@@ -60,30 +60,30 @@ function parseArguments(args) {
 
 function pipeWithContext(stream, relativePath, label, destination) {
   const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
-  lines.on('line', (line) => destination.write(`[${relativePath}] ${label}: ${line}\n`));
+  lines.on("line", (line) => destination.write(`[${relativePath}] ${label}: ${line}\n`));
 }
 
 function terminateChild(child) {
   if (!child?.pid) return;
 
-  if (process.platform === 'win32') {
-    spawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true });
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
     return;
   }
 
   try {
-    process.kill(-child.pid, 'SIGTERM');
+    process.kill(-child.pid, "SIGTERM");
   } catch {
-    child.kill('SIGTERM');
+    child.kill("SIGTERM");
   }
 }
 
 function forceTerminateChild(child) {
-  if (!child?.pid || process.platform === 'win32') return;
+  if (!child?.pid || process.platform === "win32") return;
   try {
-    process.kill(-child.pid, 'SIGKILL');
+    process.kill(-child.pid, "SIGKILL");
   } catch {
-    child.kill('SIGKILL');
+    child.kill("SIGKILL");
   }
 }
 
@@ -110,16 +110,16 @@ function handleRunnerSignal(signal) {
   terminateActiveChild();
 }
 
-for (const signal of process.platform === 'win32' ? ['SIGINT', 'SIGTERM', 'SIGBREAK'] : ['SIGINT', 'SIGTERM']) {
+for (const signal of process.platform === "win32" ? ["SIGINT", "SIGTERM", "SIGBREAK"] : ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => handleRunnerSignal(signal));
 }
 
 function commandFor(relativePath) {
-  if (relativePath.endsWith('.regression.ts')) {
+  if (relativePath.endsWith(".regression.ts")) {
     return {
       command: process.execPath,
-      args: [serverRequire.resolve('tsx/cli'), path.join(repositoryRoot, relativePath)],
-      cwd: path.join(repositoryRoot, 'packages', 'server'),
+      args: [serverRequire.resolve("tsx/cli"), path.join(repositoryRoot, relativePath)],
+      cwd: path.join(repositoryRoot, "packages", "server"),
     };
   }
 
@@ -130,6 +130,27 @@ function commandFor(relativePath) {
   };
 }
 
+// The Engine loads the developer's .env through dotenv when a regression imports server modules, and dotenv
+// never overrides a variable that is already set. Pin the continuity worker knobs to their documented defaults
+// here, so an installation tuned for a large archive cannot change what the fixtures measure. A regression that
+// needs another value still sets process.env itself, which wins.
+const PINNED_REGRESSION_DEFAULTS = {
+  CONTINUITY_MAX_CONCURRENT: "2",
+  CONTINUITY_BACKFILL_CONCURRENCY: "1",
+  CONTINUITY_BACKFILL_TURNS_PER_RECEIPT: "1",
+  // "0" keeps a local .env timeout override out of regressions: dotenv never replaces a variable that is already
+  // set, and a non-positive timeout is ignored, so every stage falls back to its built-in default. (An empty value
+  // would not work on Windows, where empty variables are dropped from a child's environment.)
+  CONTINUITY_STAGE_TIMEOUT_MS: "0",
+  CONTINUITY_EXTRACT_TIMEOUT_MS: "0",
+  CONTINUITY_REVIEW_TIMEOUT_MS: "0",
+  CONTINUITY_REPAIR_TIMEOUT_MS: "0",
+};
+
+function regressionEnvironment() {
+  return { ...process.env, ...PINNED_REGRESSION_DEFAULTS };
+}
+
 function runRegression(relativePath) {
   const { args, command, cwd } = commandFor(relativePath);
   const startedAt = Date.now();
@@ -138,13 +159,14 @@ function runRegression(relativePath) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd,
-      detached: process.platform !== 'win32',
-      stdio: ['ignore', 'pipe', 'pipe'],
+      env: regressionEnvironment(),
+      detached: process.platform !== "win32",
+      stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
     activeChild = child;
-    pipeWithContext(child.stdout, relativePath, 'stdout', process.stdout);
-    pipeWithContext(child.stderr, relativePath, 'stderr', process.stderr);
+    pipeWithContext(child.stdout, relativePath, "stdout", process.stdout);
+    pipeWithContext(child.stderr, relativePath, "stderr", process.stderr);
 
     let settled = false;
     let timedOut = false;
@@ -162,14 +184,14 @@ function runRegression(relativePath) {
       resolve({ ...result, durationMs: Date.now() - startedAt });
     };
 
-    child.once('error', (error) => finish({ status: 'start-error', error }));
-    child.once('close', (code, signal) => {
+    child.once("error", (error) => finish({ status: "start-error", error }));
+    child.once("close", (code, signal) => {
       if (timedOut) {
-        finish({ status: 'timeout' });
+        finish({ status: "timeout" });
       } else if (code === 0) {
-        finish({ status: 'passed' });
+        finish({ status: "passed" });
       } else {
-        finish({ status: 'failed', code, signal });
+        finish({ status: "failed", code, signal });
       }
     });
   });
@@ -178,7 +200,7 @@ function runRegression(relativePath) {
 async function main() {
   const { filter, list } = parseArguments(process.argv.slice(2));
   const discovered = discoverRegressions();
-  if (discovered.length === 0) throw new Error('No regression files were discovered.');
+  if (discovered.length === 0) throw new Error("No regression files were discovered.");
 
   const selected = filter === undefined ? discovered : discovered.filter((file) => file.includes(filter));
   if (selected.length === 0) throw new Error(`No regression files matched filter: ${filter}`);
@@ -194,15 +216,16 @@ async function main() {
     const result = await runRegression(file);
     results.push({ file, ...result });
     if (interruption) return;
-    const detail = result.status === 'failed'
-      ? ` (exit ${result.code ?? 'unknown'}${result.signal ? `, ${result.signal}` : ''})`
-      : result.status === 'start-error'
-        ? ` (${result.error.message})`
-        : '';
+    const detail =
+      result.status === "failed"
+        ? ` (exit ${result.code ?? "unknown"}${result.signal ? `, ${result.signal}` : ""})`
+        : result.status === "start-error"
+          ? ` (${result.error.message})`
+          : "";
     process.stdout.write(`[${file}] ${result.status.toUpperCase()} (${result.durationMs}ms)${detail}\n`);
   }
 
-  const failed = results.filter((result) => result.status !== 'passed').length;
+  const failed = results.filter((result) => result.status !== "passed").length;
   process.stdout.write(`Regression summary: ${results.length - failed}/${results.length} passed; ${failed} failed.\n`);
   if (failed > 0) process.exitCode = 1;
 }

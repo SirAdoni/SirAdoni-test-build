@@ -12,7 +12,7 @@ import { useSpriteCapabilities } from "../../hooks/use-characters";
 import { useUIStore } from "../../stores/ui.store";
 import { api } from "../../lib/api-client";
 import { ImagePromptReviewModal, type ImagePromptOverride, type ImagePromptReviewItem } from "./ImagePromptReviewModal";
-import { normalizeSpriteExpressionLabel } from "@marinara-engine/shared";
+import { normalizeSpriteExpressionLabel, resolveImageReferenceLimits } from "@marinara-engine/shared";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
 // ── Types ──
@@ -81,9 +81,15 @@ interface FailedMatchedFullBodyBatch {
 type GenerationConnectionOption = {
   id: string;
   name: string;
+  baseUrl?: string;
   model?: string;
   provider?: string;
   defaultForAgents?: boolean | string;
+  fallbackForAgents?: boolean | string;
+  imageGenerationSource?: string | null;
+  imageService?: string | null;
+  comfyuiWorkflow?: string | null;
+  maxImageReferences?: number | null;
 };
 
 interface SliceAdjustments {
@@ -390,6 +396,10 @@ function isAbortError(err: unknown): boolean {
 
 function isDefaultGenerationConnection(connection: GenerationConnectionOption): boolean {
   return connection.defaultForAgents === true || connection.defaultForAgents === "true";
+}
+
+function isFallbackGenerationConnection(connection: GenerationConnectionOption): boolean {
+  return connection.fallbackForAgents === true || connection.fallbackForAgents === "true";
 }
 
 async function postSpriteGenerationRequest<T>(
@@ -703,14 +713,6 @@ export function SpriteGenerationModal({
   const canAdjustSlices = !animatedExpressionMode && cells.some((cell) => !!cell.sourceSheetDataUrl);
   const activeFrameCell = activeFrameIndex === null ? null : (cells[activeFrameIndex] ?? null);
   const hasCurrentAvatarReference = !!defaultAvatarUrl;
-  const maxUploadedReferenceImages = useCurrentAvatarReference && hasCurrentAvatarReference ? 3 : 4;
-  const effectiveReferenceImages = useMemo(
-    () =>
-      [useCurrentAvatarReference && defaultAvatarUrl ? defaultAvatarUrl : null, ...referenceImages]
-        .filter((img): img is string => !!img)
-        .slice(0, 4),
-    [defaultAvatarUrl, referenceImages, useCurrentAvatarReference],
-  );
 
   // Auto-select first image connection
   const defaultImageConnectionId = imageConnections.find(isDefaultGenerationConnection)?.id ?? null;
@@ -726,8 +728,56 @@ export function SpriteGenerationModal({
         : (imageConnections.find((connection) => connection.id === effectiveConnectionId) ?? null),
     [animatedExpressionMode, effectiveConnectionId, imageConnections],
   );
+  const fallbackImageConnection = useMemo(
+    () =>
+      animatedExpressionMode
+        ? null
+        : (imageConnections.find(
+            (connection) => connection.id !== effectiveConnectionId && isFallbackGenerationConnection(connection),
+          ) ?? null),
+    [animatedExpressionMode, effectiveConnectionId, imageConnections],
+  );
   const selectedImageModel = selectedImageConnection?.model?.trim().toLowerCase() ?? "";
   const selectedModelIsGptImage2 = /^gpt-image-2(?:$|-)/.test(selectedImageModel);
+  const primaryReferenceImageLimit = selectedImageConnection
+    ? resolveImageReferenceLimits({
+        imageGenerationSource: selectedImageConnection.imageGenerationSource,
+        imageService: selectedImageConnection.imageService,
+        model: selectedImageConnection.model,
+        baseUrl: selectedImageConnection.baseUrl,
+        comfyuiWorkflow: selectedImageConnection.comfyuiWorkflow,
+        maxImageReferences: selectedImageConnection.maxImageReferences,
+      }).effectiveLimit
+    : 0;
+  const fallbackReferenceImageLimit = fallbackImageConnection
+    ? resolveImageReferenceLimits({
+        imageGenerationSource: fallbackImageConnection.imageGenerationSource,
+        imageService: fallbackImageConnection.imageService,
+        model: fallbackImageConnection.model,
+        baseUrl: fallbackImageConnection.baseUrl,
+        comfyuiWorkflow: fallbackImageConnection.comfyuiWorkflow,
+        maxImageReferences: fallbackImageConnection.maxImageReferences,
+      }).effectiveLimit
+    : 0;
+  const referenceImageLimit = animatedExpressionMode
+    ? 4
+    : Math.max(primaryReferenceImageLimit, fallbackReferenceImageLimit);
+  const maxUploadedReferenceImages = Math.max(
+    0,
+    referenceImageLimit - (useCurrentAvatarReference && hasCurrentAvatarReference ? 1 : 0),
+  );
+  useEffect(() => {
+    setReferenceImages((current) =>
+      current.length > maxUploadedReferenceImages ? current.slice(0, maxUploadedReferenceImages) : current,
+    );
+  }, [maxUploadedReferenceImages]);
+  const effectiveReferenceImages = useMemo(
+    () =>
+      [useCurrentAvatarReference && defaultAvatarUrl ? defaultAvatarUrl : null, ...referenceImages]
+        .filter((img): img is string => !!img)
+        .slice(0, referenceImageLimit),
+    [defaultAvatarUrl, referenceImageLimit, referenceImages, useCurrentAvatarReference],
+  );
 
   const openPromptReview = useCallback((items: ImagePromptReviewItem[]) => {
     return new Promise<ImagePromptOverride[] | null>((resolve) => {
@@ -1960,19 +2010,29 @@ export function SpriteGenerationModal({
               <label className="mb-1.5 block text-xs font-medium text-[var(--foreground)]">
                 {localizeUi("ui.ui.spritegenerationmodal.referenceImages")}{" "}
                 <span className="text-[var(--muted-foreground)]">
-                  {localizeUi("ui.ui.spritegenerationmodal.optionalUpTo4")}
+                  {referenceImageLimit > 0
+                    ? localizeUi("ui.ui.spritegenerationmodal.optionalUpToValue1", {
+                        value1: referenceImageLimit,
+                      })
+                    : localizeUi("ui.ui.spritegenerationmodal.notSupportedBySelectedConnection")}
                 </span>
               </label>
               {hasCurrentAvatarReference && (
-                <label className="mb-2 flex items-center gap-3 rounded-lg bg-[var(--secondary)]/60 p-2.5 text-xs text-[var(--foreground)] ring-1 ring-[var(--border)]/60">
+                <label
+                  className={cn(
+                    "mb-2 flex items-center gap-3 rounded-lg bg-[var(--secondary)]/60 p-2.5 text-xs text-[var(--foreground)] ring-1 ring-[var(--border)]/60",
+                    referenceImageLimit === 0 && "opacity-50",
+                  )}
+                >
                   <input
                     type="checkbox"
-                    checked={useCurrentAvatarReference}
+                    checked={useCurrentAvatarReference && referenceImageLimit > 0}
+                    disabled={referenceImageLimit === 0}
                     onChange={(e) => {
                       const enabled = e.target.checked;
                       setUseCurrentAvatarReference(enabled);
                       if (enabled) {
-                        setReferenceImages((prev) => prev.slice(0, 3));
+                        setReferenceImages((prev) => prev.slice(0, Math.max(0, referenceImageLimit - 1)));
                       }
                     }}
                     className="accent-[var(--primary)]"
@@ -1989,7 +2049,7 @@ export function SpriteGenerationModal({
               )}
               <div className="flex items-start gap-3">
                 <div className="flex flex-wrap gap-2">
-                  {useCurrentAvatarReference && defaultAvatarUrl && (
+                  {useCurrentAvatarReference && referenceImageLimit > 0 && defaultAvatarUrl && (
                     <div className="relative">
                       <img
                         src={defaultAvatarUrl}
@@ -2030,6 +2090,14 @@ export function SpriteGenerationModal({
                   {animatedExpressionMode
                     ? localizeUi("ui.ui.spritegenerationmodal.videoProvidersUseTheFirstAvailableReferenceImageKeep")
                     : localizeUi("ui.ui.spritegenerationmodal.uploadReferenceImagesOfTheCharacterToImproveConsistency")}
+                  {!animatedExpressionMode && fallbackReferenceImageLimit > primaryReferenceImageLimit && (
+                    <span className="mt-1 block">
+                      {localizeUi("ui.ui.spritegenerationmodal.fallbackReferenceAllowance", {
+                        value1: primaryReferenceImageLimit,
+                        value2: fallbackReferenceImageLimit,
+                      })}
+                    </span>
+                  )}
                 </p>
               </div>
             </div>

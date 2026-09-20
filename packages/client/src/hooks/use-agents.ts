@@ -4,6 +4,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { AgentSuiteRewriteInput, CustomAgentImportPolicy, ImportAgentConfigInput } from "@marinara-engine/shared";
 import { ApiError, api } from "../lib/api-client";
+import { useUIStore } from "../stores/ui.store";
 
 export const agentKeys = {
   all: ["agents"] as const,
@@ -104,9 +105,7 @@ export function useUpdateAgent() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, ...data }: { id: string } & Record<string, unknown>) => api.patch(`/agents/${id}`, data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: agentKeys.all });
-    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: agentKeys.all }),
   });
 }
 
@@ -117,9 +116,7 @@ export function useUpdateAgentByType() {
   return useMutation({
     mutationFn: ({ agentType, ...data }: { agentType: string } & Record<string, unknown>) =>
       api.patch(`/agents/type/${encodeURIComponent(agentType)}`, data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: agentKeys.all });
-    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: agentKeys.all }),
   });
 }
 
@@ -190,7 +187,11 @@ export function useUpdateAgentMemory() {
 
 export function useAgentSuiteRewrite() {
   return useMutation({
-    mutationFn: (body: AgentSuiteRewriteInput) => api.post<{ rewrittenText: string }>("/agents/suite/rewrite", body),
+    mutationFn: (body: AgentSuiteRewriteInput) =>
+      api.post<{ rewrittenText: string }>("/agents/suite/rewrite", {
+        ...body,
+        debugMode: useUIStore.getState().debugMode,
+      }),
   });
 }
 

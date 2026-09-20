@@ -18,6 +18,8 @@ export * from "./spatial-context.js";
 export * from "./capability-documents.js";
 export * from "./game-engine-state.js";
 export * from "./checkpoints.js";
+export * from "./game-continuity.js";
+export * from "./campaign-memory.js";
 export * from "./game-scene-videos.js";
 export * from "./game-storyboards.js";
 export * from "./game-dice-pools.js";

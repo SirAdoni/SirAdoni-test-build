@@ -64,6 +64,7 @@ import type { ConversationStatusOverride } from "@marinara-engine/shared";
 import { resolveConversationTimeZone } from "../conversation/timezone.js";
 import { logger } from "../../lib/logger.js";
 import { galleryFileHasReferences, unlinkGalleryFileIfUnreferenced } from "../image/gallery-file-lifecycle.js";
+import { deletePrivateNotebookRowsForChat } from "../private-notebook.service.js";
 
 import { createAppSettingsStorage } from "./app-settings.storage.js";
 
@@ -1174,30 +1175,8 @@ export function createChatsStorage(db: DB) {
     return { schedules, overrides };
   }
 
-  async function cleanupChatGallery(chatId: string): Promise<void> {
-    const chatGalleryFiles = await db
-      .select({ filePath: chatImages.filePath })
-      .from(chatImages)
-      .where(eq(chatImages.chatId, chatId));
-
-    await db.delete(chatImages).where(eq(chatImages.chatId, chatId));
-    for (const image of chatGalleryFiles) {
-      await unlinkGalleryFileIfUnreferenced({ db, filePath: image.filePath });
-    }
-
-    const localPathPrefix = `${chatId}/`;
-    const hasSharedLocalFile = (
-      await Promise.all(
-        chatGalleryFiles
-          .filter((image) => image.filePath.replace(/\\/g, "/").startsWith(localPathPrefix))
-          .map((image) => galleryFileHasReferences(db, image.filePath)),
-      )
-    ).some(Boolean);
-    const galleryDir = join(GALLERY_DIR, chatId);
-    if (!hasSharedLocalFile && existsSync(galleryDir)) rmSync(galleryDir, { recursive: true, force: true });
-  }
-
   async function removeChatDatabaseRecords(database: DB, chatId: string): Promise<string[]> {
+    await deletePrivateNotebookRowsForChat(database, chatId);
     await database.delete(agentRuns).where(eq(agentRuns.chatId, chatId));
     await database.delete(agentMemory).where(eq(agentMemory.chatId, chatId));
     await database.delete(gameCheckpoints).where(eq(gameCheckpoints.chatId, chatId));
@@ -1815,35 +1794,18 @@ export function createChatsStorage(db: DB) {
 
     /** Delete all chats in a group (all branches). */
     async removeGroup(groupId: string) {
-      // Find all chat IDs in this group, then clean up their data
-      const groupChats = await db.select({ id: chats.id }).from(chats).where(eq(chats.groupId, groupId));
-      for (const chat of groupChats) {
-        await db.delete(agentRuns).where(eq(agentRuns.chatId, chat.id));
-        await db.delete(agentMemory).where(eq(agentMemory.chatId, chat.id));
-        await db.delete(gameCheckpoints).where(eq(gameCheckpoints.chatId, chat.id));
-        await db.delete(gameStateSnapshots).where(eq(gameStateSnapshots.chatId, chat.id));
-        await db.delete(spatialContextSnapshots).where(eq(spatialContextSnapshots.chatId, chat.id));
-        await db.delete(gameEngineState).where(eq(gameEngineState.chatId, chat.id));
-        await db.delete(conversationCallMessages).where(eq(conversationCallMessages.chatId, chat.id));
-        await db.delete(conversationCallSessions).where(eq(conversationCallSessions.chatId, chat.id));
-        const storyboards = await db
-          .select({ id: gameTurnStoryboards.id })
-          .from(gameTurnStoryboards)
-          .where(eq(gameTurnStoryboards.chatId, chat.id));
-        for (const storyboard of storyboards) {
-          await db
-            .delete(gameTurnStoryboardKeyframes)
-            .where(eq(gameTurnStoryboardKeyframes.storyboardId, storyboard.id));
+      const deletedChats = await db.transaction(async (tx) => {
+        const groupChats = await tx.select({ id: chats.id }).from(chats).where(eq(chats.groupId, groupId));
+        const removed: Array<{ id: string; galleryFilePaths: string[] }> = [];
+        for (const chat of groupChats) {
+          removed.push({ id: chat.id, galleryFilePaths: await removeChatDatabaseRecords(tx, chat.id) });
         }
-        await db.delete(gameTurnStoryboards).where(eq(gameTurnStoryboards.chatId, chat.id));
-        await db.delete(gameSceneVideos).where(eq(gameSceneVideos.chatId, chat.id));
-        await db.delete(gameDicePools).where(eq(gameDicePools.chatId, chat.id));
-        await cleanupChatGallery(chat.id);
-        const videoDir = join(GAME_SCENE_VIDEOS_DIR, chat.id);
-        if (existsSync(videoDir)) rmSync(videoDir, { recursive: true, force: true });
-      }
+        return removed;
+      });
 
-      await db.delete(chats).where(eq(chats.groupId, groupId));
+      for (const chat of deletedChats) {
+        await cleanupDeletedChatFiles(chat.id, chat.galleryFilePaths);
+      }
     },
 
     // ── Messages ──

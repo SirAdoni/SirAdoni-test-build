@@ -472,6 +472,7 @@ function buildCompatibleLorebookExport(lb: Record<string, any>) {
       content: String(entry.content ?? ""),
       disable: entry.enabled === false,
       constant: entry.constant === true,
+      alwaysLoaded: entry.alwaysLoaded === true,
       selective: entry.selective === true,
       selectiveLogic: stSelectiveLogic(entry.selectiveLogic),
       order: Number(entry.order ?? 100),

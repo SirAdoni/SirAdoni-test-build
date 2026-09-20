@@ -881,7 +881,7 @@ const SETTINGS_SEARCHABLE_CONTROLS: readonly SettingsSearchableControlMeta[] = [
     id: "queue-media-generation",
     sectionId: "overall-generations",
     label: "Queue media generation requests",
-    description: "Send image and video generation jobs one at a time per connection.",
+    description: "Queue non-ChatGPT image and video jobs one at a time per connection.",
     aliases: ["media", "image", "video", "queue", "generation"],
     kind: "Toggle",
   },
@@ -4067,8 +4067,8 @@ function OverallGenerationSettings() {
         <ToggleSetting
           anchorId={getSettingsControlAnchorId("image-prompt-review")}
           label={localizeUi("settings.controls.reviewMediaPrompts.label")}
-          checked={reviewImagePromptsBeforeSend}
-          onChange={setReviewImagePromptsBeforeSend}
+          checked={!reviewImagePromptsBeforeSend}
+          onChange={(automaticallyAccept) => setReviewImagePromptsBeforeSend(!automaticallyAccept)}
           help={localizeUi("settings.controls.reviewMediaPrompts.help")}
         />
       </div>
@@ -4640,6 +4640,8 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
   const setDefaultRoleplayBackground = useUIStore((s) => s.setDefaultRoleplayBackground);
   const chatBackgroundBlur = useUIStore((s) => s.chatBackgroundBlur);
   const setChatBackgroundBlur = useUIStore((s) => s.setChatBackgroundBlur);
+  const conversationBackgroundImageOpacity = useUIStore((s) => s.conversationBackgroundImageOpacity);
+  const setConversationBackgroundImageOpacity = useUIStore((s) => s.setConversationBackgroundImageOpacity);
   const resetAppearanceSettings = useUIStore((s) => s.resetAppearanceSettings);
   const activeChatId = useChatStore((s) => s.activeChatId);
   const { data: appearanceChat } = useChat(activeChatId);
@@ -5563,6 +5565,44 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                   )}
                 </div>
               </div>
+              <label className="flex flex-col gap-1 rounded-lg bg-[var(--secondary)]/45 p-3 ring-1 ring-[var(--border)]/70">
+                <span className="inline-flex items-center gap-1 text-[0.6875rem] font-medium">
+                  {localizeUi("settings.controls.conversationBackgroundImageOpacity.label")}
+                  <HelpTooltip text={localizeUi("settings.controls.conversationBackgroundImageOpacity.help")} />
+                </span>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range"
+                    aria-label={localizeUi("settings.controls.conversationBackgroundImageOpacity.label")}
+                    min={0}
+                    max={100}
+                    step={5}
+                    value={conversationBackgroundImageOpacity}
+                    onChange={(event) => setConversationBackgroundImageOpacity(Number(event.target.value))}
+                    className="min-w-0 flex-1 accent-[var(--primary)]"
+                  />
+                  <span className="w-12 text-right text-xs tabular-nums text-[var(--muted-foreground)]">
+                    {conversationBackgroundImageOpacity}%
+                  </span>
+                </div>
+              </label>
+              <label className="flex items-center gap-2">
+                <span className="inline-flex shrink-0 items-center gap-1 text-[0.6875rem] font-medium">
+                  {localizeUi("ui.panels.appearancesettings.chatListBackgrounds")}
+                  <HelpTooltip
+                    text={localizeUi("ui.panels.appearancesettings.showsEachChatsOwnBackgroundAsAMutedBanner")}
+                  />
+                </span>
+                <select
+                  id={getSettingsControlAnchorId("chat-list-backgrounds")}
+                  value={chatListBackgrounds}
+                  onChange={(e) => setChatListBackgrounds(e.target.value as ChatListBackgroundMode)}
+                  className="h-7 min-w-0 flex-1 scroll-mt-3 rounded-md border border-[var(--border)] bg-[var(--secondary)] px-2 text-xs"
+                >
+                  <option value="always">{localizeUi("ui.panels.appearancesettings.always")}</option>
+                  <option value="never">{localizeUi("ui.panels.appearancesettings.never")}</option>
+                </select>
+              </label>
               <div
                 id={getSettingsControlAnchorId("conversation-avatar-shape")}
                 className="flex scroll-mt-3 flex-col gap-2 rounded-lg border border-[var(--border)]/70 bg-[var(--secondary)]/25 p-3"

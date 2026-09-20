@@ -121,6 +121,8 @@ export interface AssemblerInput {
   characterIds: string[];
   /** Character IDs used only for lorebook matching, including a character-backed user identity. */
   lorebookCharacterIds?: string[];
+  /** Character IDs whose depth/post-history card instructions should be injected. */
+  characterAdvancedPromptIds?: string[];
   /** Full active roster when characterIds is narrowed to one generation target. */
   groupCharacterIds?: string[];
   personaId?: string | null;
@@ -162,6 +164,7 @@ export interface AssemblerInput {
   excludedLorebookSourceAgentIds?: string[];
   /** When true, lorebook markers expand to empty content without scanning global or scoped lorebooks. */
   disableLorebooks?: boolean;
+  fullLorebookContext?: boolean;
   /** Pre-computed embedding of chat context for semantic lorebook matching. */
   chatEmbedding?: number[] | null;
   /** Per-lorebook pre-computed embeddings for semantic lorebook matching. */
@@ -489,6 +492,7 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
     excludedLorebookIds: input.excludedLorebookIds ?? [],
     excludedLorebookSourceAgentIds: input.excludedLorebookSourceAgentIds ?? [],
     disableLorebooks: input.disableLorebooks === true,
+    fullLorebookContext: input.fullLorebookContext,
     chatEmbedding: input.chatEmbedding ?? null,
     semanticEmbeddingsByLorebookId: input.semanticEmbeddingsByLorebookId,
     semanticEmbeddingSpaceId: input.semanticEmbeddingSpaceId,
@@ -518,6 +522,8 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
   let outletScanAttempted = false;
   let idMacroCardMarkerSection: ResolvedSection | null = null;
   const runtimeAgentTypesUsed = new Set<string>();
+
+  if (input.fullLorebookContext) await ensureLorebookScan(markerCtx);
 
   for (const sectionId of sectionOrder) {
     const section = sectionMap.get(sectionId);
@@ -714,7 +720,7 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
 
   const characterAdvancedPromptEntries = await collectCharacterAdvancedPromptEntries(
     input.db,
-    input.characterIds,
+    input.characterAdvancedPromptIds ?? input.characterIds,
     macroCtx,
     wrapFormat,
   );
@@ -1040,16 +1046,24 @@ export function appendFallbackChatSummaryToSystemPrompt(
   }
 
   if (lastLeadingSystemIdx >= 0) {
-    const target = next[lastLeadingSystemIdx]!;
-    next[lastLeadingSystemIdx] = {
-      ...target,
-      content: `${target.content}\n\n${wrapped}`,
-      contextKind: target.contextKind ?? "prompt",
-    };
+    next.splice(lastLeadingSystemIdx + 1, 0, {
+      role: "system",
+      content: wrapped,
+      contextKind: "injection",
+      providerMetadata: { marinaraRuntimeContext: true },
+    });
     return next;
   }
 
-  return [{ role: "system", content: wrapped, contextKind: "prompt" }, ...next];
+  return [
+    {
+      role: "system",
+      content: wrapped,
+      contextKind: "injection",
+      providerMetadata: { marinaraRuntimeContext: true },
+    },
+    ...next,
+  ];
 }
 
 function enforceStrictRoles(messages: ChatMLMessage[]): ChatMLMessage[] {

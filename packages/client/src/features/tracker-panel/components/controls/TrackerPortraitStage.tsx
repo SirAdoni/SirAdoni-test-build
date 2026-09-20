@@ -1,5 +1,13 @@
 import { ImagePlus, RotateCcw, ZoomIn, ZoomOut } from "lucide-react";
-import { useRef, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import {
+  lazy,
+  Suspense,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import { cn } from "../../../../lib/utils";
 import {
   TRACKER_PORTRAIT_DEFAULT_FOCUS_X,
@@ -20,6 +28,11 @@ import {
 } from "../../lib/tracker-profile-layout";
 import { TrackerPortraitStageBackdrop } from "./TrackerProfileChrome";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import type { ChatImage } from "../../../../hooks/use-gallery";
+
+const LazyChatImageLightbox = lazy(() =>
+  import("../../../../components/chat/ChatImageLightbox").then((module) => ({ default: module.ChatImageLightbox })),
+);
 
 export type TrackerPortraitStageMediaKind = "expression" | "art";
 type TrackerPortraitStageFrameTone = "featured" | "persona";
@@ -158,6 +171,13 @@ export function TrackerPortraitStage({
 }) {
   const { t: localizeUi } = useUiTranslation();
   const dragStateRef = useRef<PortraitDragState | null>(null);
+  const dragMovedRef = useRef(false);
+  const mediaPreviewRef = useRef<HTMLDivElement>(null);
+  const [mediaOpen, setMediaOpen] = useState(false);
+  const closeMediaPreview = () => {
+    setMediaOpen(false);
+    requestAnimationFrame(() => mediaPreviewRef.current?.focus());
+  };
   const isArt = mediaKind === "art";
   const isExpression = mediaKind === "expression";
   const isEmptyAvatarPlaceholder = !media && placeholderVariant === "avatar";
@@ -202,12 +222,16 @@ export function TrackerPortraitStage({
       stageWidth: Math.max(1, rect.width),
       zoom,
     };
+    dragMovedRef.current = false;
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
   };
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const dragState = dragStateRef.current;
     if (!dragState || dragState.pointerId !== event.pointerId) return;
+    if (Math.abs(event.clientX - dragState.startClientX) > 2 || Math.abs(event.clientY - dragState.startClientY) > 2) {
+      dragMovedRef.current = true;
+    }
     const zoomWeight = Math.max(0.75, dragState.zoom);
     const nextFocusX =
       dragState.startFocusX + ((event.clientX - dragState.startClientX) / dragState.stageWidth) * (100 / zoomWeight);
@@ -242,11 +266,23 @@ export function TrackerPortraitStage({
       <div className={cn(PORTRAIT_TONE_OVERLAY_CLASS, isExpression ? "opacity-95" : "opacity-80")} />
       {media ? (
         <div
+          ref={mediaPreviewRef}
+          role="button"
+          tabIndex={0}
+          aria-label={accessibleLabel}
           className={PORTRAIT_MEDIA_DRAG_SURFACE_CLASS}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerCancel={endDrag}
           onPointerUp={endDrag}
+          onClick={() => {
+            if (!dragMovedRef.current) setMediaOpen(true);
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            setMediaOpen(true);
+          }}
           title={
             canAdjustView ? localizeUi("ui.trackerPanel.trackerportraitstage.dragToRepositionPortrait") : undefined
           }
@@ -357,6 +393,31 @@ export function TrackerPortraitStage({
         </button>
       )}
       <span className="sr-only">{accessibleLabel}</span>
+      {mediaOpen && media && (
+        <Suspense fallback={null}>
+          <LazyChatImageLightbox
+            image={
+              {
+                id: `tracker-portrait:${accessibleLabel}:${media}`,
+                chatId: "",
+                filePath: "",
+                prompt: "",
+                provider: "",
+                model: "",
+                width: null,
+                height: null,
+                createdAt: "",
+                url: media,
+              } satisfies ChatImage
+            }
+            alt={accessibleLabel}
+            fullViewport
+            pinEnabled={false}
+            downloadEnabled={false}
+            onClose={closeMediaPreview}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

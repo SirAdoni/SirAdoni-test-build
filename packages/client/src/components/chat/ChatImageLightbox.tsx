@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Download, Pin, X } from "lucide-react";
+import { Camera, ChevronLeft, ChevronRight, Download, Pin, X } from "lucide-react";
 import type { GeneratedSceneVideo } from "@marinara-engine/shared";
 import type { ChatImage } from "../../hooks/use-gallery";
 import { useGalleryStore } from "../../stores/gallery.store";
@@ -49,19 +49,33 @@ export function getSceneVideoDownloadName(video: Pick<GeneratedSceneVideo, "file
 }
 
 interface ChatImageLightboxProps {
+  fallbackSrc?: string;
+  fullViewport?: boolean;
+  onPrevious?: () => void;
+  onNext?: () => void;
   image: ChatImage;
   alt?: string;
   pinEnabled?: boolean;
   downloadEnabled?: boolean;
+  onUpdate?: () => void;
+  updateDisabled?: boolean;
+  updateLabel?: string;
   onPin?: (image: ChatImage) => void;
   onClose: () => void;
 }
 
 export function ChatImageLightbox({
+  fallbackSrc,
+  fullViewport = false,
+  onPrevious,
+  onNext,
   image,
   alt,
   pinEnabled = true,
   downloadEnabled = true,
+  onUpdate,
+  updateDisabled = false,
+  updateLabel,
   onPin,
   onClose,
 }: ChatImageLightboxProps) {
@@ -74,6 +88,7 @@ export function ChatImageLightbox({
   const downloadName = getChatImageDownloadName(image);
   const useIosShare = shouldUseIosImageShare();
   const [preparedImage, setPreparedImage] = useState<PreparedImageSave | null>(null);
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const currentPreparedImage =
     preparedImage?.url === image.url && preparedImage.filename === downloadName ? preparedImage : null;
 
@@ -115,10 +130,41 @@ export function ChatImageLightbox({
       aria-modal="true"
       aria-label={localizeUi("ui.chat.chatimagelightbox.imagePreview")}
       tabIndex={-1}
+      onPointerDown={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
       onKeyDown={(event) => {
+        if (event.key === "Tab") {
+          // A portrait viewer may sit above a modal with its own document-level focus trap.
+          event.stopPropagation();
+          const controls = Array.from(
+            event.currentTarget.querySelectorAll<HTMLElement>(
+              'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+            ),
+          ).filter((element) => element.getClientRects().length > 0 && element.getAttribute("aria-hidden") !== "true");
+          const first = controls[0];
+          const last = controls.at(-1);
+          if (!first || !last) {
+            event.preventDefault();
+            event.currentTarget.focus();
+          } else if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+          }
+          return;
+        }
+        if ((event.target as HTMLElement).closest("input, textarea, select, [contenteditable=true]")) return;
+        if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+          event.preventDefault();
+          event.stopPropagation();
+          if (event.key === "ArrowLeft") onPrevious?.();
+          else onNext?.();
+        }
         if (event.key === "Escape") {
           event.stopPropagation();
           onClose();
@@ -126,12 +172,15 @@ export function ChatImageLightbox({
       }}
     >
       <div
-        className="flex max-h-[90vh] w-[min(90vw,64rem)] max-w-[90vw] flex-col items-center gap-2"
+        className={`flex max-h-[90vh] ${fullViewport ? "w-[96vw] max-w-[96vw]" : "w-[min(90vw,64rem)] max-w-[90vw]"} flex-col items-center gap-2`}
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="relative flex min-h-0 max-w-full justify-center">
+        <div className="relative flex min-h-0 w-full max-w-full justify-center">
           <img
-            src={image.url}
+            src={failedSrc === image.url && fallbackSrc ? fallbackSrc : image.url}
+            onError={() => {
+              if (fallbackSrc && failedSrc !== image.url) setFailedSrc(image.url);
+            }}
             alt={alt || image.prompt || "Gallery image"}
             decoding="async"
             className={
@@ -140,6 +189,28 @@ export function ChatImageLightbox({
                 : "max-h-[85vh] max-w-full rounded-lg object-contain shadow-2xl"
             }
           />
+          {(onPrevious || onNext) && (
+            <div className="absolute bottom-2 left-1/2 flex -translate-x-1/2 gap-2">
+              <button
+                type="button"
+                aria-label={localizeUi("ui.chat.chatimagelightbox.previousImage")}
+                disabled={!onPrevious}
+                onClick={onPrevious}
+                className="rounded-full bg-[var(--background)] p-3 text-[var(--foreground)] shadow-lg disabled:opacity-40"
+              >
+                <ChevronLeft size={20} />
+              </button>
+              <button
+                type="button"
+                aria-label={localizeUi("ui.chat.chatimagelightbox.nextImage")}
+                disabled={!onNext}
+                onClick={onNext}
+                className="rounded-full bg-[var(--background)] p-3 text-[var(--foreground)] shadow-lg disabled:opacity-40"
+              >
+                <ChevronRight size={20} />
+              </button>
+            </div>
+          )}
           <div className="absolute right-2 top-2 flex gap-2">
             {pinEnabled && (
               <button
@@ -168,6 +239,23 @@ export function ChatImageLightbox({
                 className="rounded-lg bg-black/60 p-2 text-white transition-colors hover:bg-black/80 disabled:opacity-50"
               >
                 <Download size="0.875rem" />
+              </button>
+            )}
+            {onUpdate && (
+              <button
+                type="button"
+                disabled={updateDisabled}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onUpdate();
+                }}
+                aria-label={updateLabel}
+                title={updateLabel}
+                className="rounded-lg bg-black/60 p-2 text-white transition-colors hover:bg-black/80 disabled:opacity-50"
+              >
+                <Camera size="0.875rem" />
               </button>
             )}
             <button

@@ -77,7 +77,20 @@ export const UTILITY_SIDECAR_RATE_LIMIT = {
   timeWindow: 60_000,
 } as const satisfies MarinaraRouteRateLimit;
 
+export const GENERATE_STATUS_RATE_LIMIT = {
+  max: 600,
+  timeWindow: 60_000,
+} as const satisfies MarinaraRouteRateLimit;
+
 const ROUTE_RULES: Array<{ pattern: RegExp; rule: RateLimitRule }> = [
+  {
+    pattern: /^\/api\/generate\/status(?:\/|$)/,
+    rule: {
+      key: "generate-status",
+      limit: GENERATE_STATUS_RATE_LIMIT.max,
+      windowMs: GENERATE_STATUS_RATE_LIMIT.timeWindow,
+    },
+  },
   { pattern: /^\/api\/generate(?:\/|$)/, rule: { key: "generate", limit: 60, windowMs: 60_000 } },
   { pattern: /^\/api\/tts(?:\/|$)/, rule: { key: "tts", limit: 90, windowMs: 60_000 } },
   {

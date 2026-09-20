@@ -27,6 +27,7 @@ import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { parseCharacterDisplayData } from "../../lib/character-display";
 import { buildCharacterIdentityGroups, type CharacterIdentityChoice } from "../../lib/character-identity-groups";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 import type { CharacterGroup, Persona } from "@marinara-engine/shared";
 import type { ProfessorMariContextBudget } from "../../lib/professor-mari-context-budget";
 import { ContextBudgetGauge, ContextBudgetIndicator } from "./ContextBudgetIndicator";
@@ -292,9 +293,17 @@ export function QuickSwitcherMobile({ contextBudget }: { contextBudget?: Profess
   const renderPersonaRow = (persona: Persona, indented: boolean = false) => {
     const isActive = persona.id === activePersonaId;
     return (
-      <button
+      <div
+        role="button"
+        tabIndex={0}
         key={persona.id}
         onClick={() => handleSwitchPersona(persona.id)}
+        onKeyDown={(event) => {
+          if (event.target !== event.currentTarget) return;
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          handleSwitchPersona(persona.id);
+        }}
         className={cn(
           "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors",
           isActive ? "bg-foreground/10 text-foreground ring-1 ring-foreground/15" : "hover:bg-foreground/10",
@@ -302,14 +311,22 @@ export function QuickSwitcherMobile({ contextBudget }: { contextBudget?: Profess
         )}
       >
         {persona.avatarPath ? (
-          <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded-full border border-foreground/10">
-            <img
-              src={persona.avatarPath}
-              alt={persona.name}
-              className="h-full w-full object-cover"
-              style={getAvatarCropStyle(persona.avatarCrop)}
-            />
-          </div>
+          <CharacterPhoto
+            src={persona.avatarPath}
+            name={persona.name}
+            className="block h-9 w-9 shrink-0 rounded-full"
+            wrapperClassName="relative inline-flex shrink-0 items-center gap-1"
+            onUpdate={() => useUIStore.getState().openPersonaDetail(persona.id)}
+          >
+            <span className="absolute inset-0 overflow-hidden rounded-full border border-foreground/10">
+              <img
+                src={persona.avatarPath}
+                alt={persona.name}
+                className="h-full w-full object-cover"
+                style={getAvatarCropStyle(persona.avatarCrop)}
+              />
+            </span>
+          </CharacterPhoto>
         ) : (
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-foreground/10 bg-foreground/10 text-xs font-semibold text-foreground/45">
             {(persona.name || "?")[0].toUpperCase()}
@@ -326,7 +343,7 @@ export function QuickSwitcherMobile({ contextBudget }: { contextBudget?: Profess
           )}
         </div>
         {isActive && <span className="ml-auto shrink-0 text-[0.6875rem]">✓</span>}
-      </button>
+      </div>
     );
   };
   return (

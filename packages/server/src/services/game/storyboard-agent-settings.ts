@@ -2,6 +2,7 @@ import {
   mergeBuiltInAgentSettings,
   normalizeAgentPromptTemplateOptions,
   normalizeStoryboardAgentSettings,
+  normalizeStoryboardContinuity,
   STORYBOARD_AGENT_ID,
   type AgentPromptTemplateOption,
   type StoryboardAutoGenerateMode,
@@ -74,10 +75,22 @@ export async function applyStoryboardAgentSettings(
 
     const mergedSettings = mergeBuiltInAgentSettings(STORYBOARD_AGENT_ID, config.settings);
     const settings = normalizeStoryboardAgentSettings(mergedSettings);
+    meta = {
+      ...meta,
+      storyboardVisualContinuity: normalizeStoryboardContinuity(
+        meta.storyboardVisualContinuity,
+        settings.visualContinuity,
+      ),
+    };
     const active = hasActiveStoryboardAgent(meta);
     const defaultAutoIllustrations = settings.autoGenerateMode !== "manual";
     const defaultAutoAnimations = settings.autoGenerateMode === "animation";
     const runInterval = settings.runInterval;
+    meta = {
+      ...meta,
+      storyboardAgentAdaptiveKeyframeCount: settings.adaptiveKeyframeCount,
+      storyboardAgentMaxAutomaticKeyframes: settings.maxAutomaticKeyframes,
+    };
 
     if (ownerMode === "roleplay") {
       const autoGenerateMode = resolveRoleplayStoryboardAutoGenerateMode(meta, settings.autoGenerateMode);

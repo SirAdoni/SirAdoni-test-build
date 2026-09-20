@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { RULESET_RESOLUTION_KINDS, parseRulesetDefinition } from "../../packages/shared/src/index.js";
 
 const script = fileURLToPath(new URL("../generate-ruleset-schema.mjs", import.meta.url));
-const result = spawnSync(process.execPath, [script, "--check"], { encoding: "utf8" });
+const result = spawnSync(process.execPath, [script, "--check"], { encoding: "utf8", windowsHide: true });
 assert.equal(
   result.status,
   0,

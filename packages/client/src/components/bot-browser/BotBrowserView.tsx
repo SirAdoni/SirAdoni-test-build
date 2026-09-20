@@ -56,6 +56,7 @@ import {
 import { mergeChubDetailIntoCharacterJson } from "../../lib/chub-character-card";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { Modal } from "../ui/Modal";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 
 // ════════════════════════════════════════════════
 // Types
@@ -2832,7 +2833,14 @@ export function BotBrowserView() {
             <div className="flex items-center gap-3 rounded-xl border border-[var(--marinara-chat-chrome-panel-divider)] bg-[var(--marinara-chat-chrome-panel-bg)]/70 p-3">
               <div className="h-14 w-14 shrink-0 overflow-hidden rounded-xl border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--secondary)]">
                 {pendingImport.card.avatarUrl ? (
-                  <img src={pendingImport.card.avatarUrl} alt="" className="h-full w-full object-cover" />
+                  <CharacterPhoto
+                    src={pendingImport.card.avatarUrl}
+                    name={pendingImport.card.name}
+                    wrapperClassName="relative block h-full w-full"
+                    className="block h-full w-full"
+                  >
+                    <img src={pendingImport.card.avatarUrl} alt="" className="h-full w-full object-cover" />
+                  </CharacterPhoto>
                 ) : (
                   <div className="flex h-full items-center justify-center text-[var(--marinara-chat-chrome-panel-muted)]">
                     <Bot size="1.25rem" />
@@ -3287,8 +3295,16 @@ function CardTile({ card, onClick }: { card: BrowseCard; onClick: () => void }) 
   const Stat3Icon = STAT_ICONS[card.stat3Icon];
 
   return (
-    <button
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onClick();
+        }
+      }}
       className="group flex flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] text-left transition-all hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:shadow-lg hover:shadow-[var(--glow-primary)] active:scale-[0.98]"
     >
       <div className="relative aspect-square w-full overflow-hidden bg-[var(--secondary)]">
@@ -3297,13 +3313,20 @@ function CardTile({ card, onClick }: { card: BrowseCard; onClick: () => void }) 
             <Hash size="2rem" />
           </div>
         ) : (
-          <img
+          <CharacterPhoto
             src={card.avatarUrl}
-            alt={card.name}
-            loading="lazy"
-            className="h-full w-full object-cover transition-transform group-hover:scale-105"
-            onError={() => setImgError(true)}
-          />
+            name={card.name}
+            wrapperClassName="relative block h-full w-full"
+            className="block h-full w-full"
+          >
+            <img
+              src={card.avatarUrl}
+              alt={card.name}
+              loading="lazy"
+              className="h-full w-full object-cover transition-transform group-hover:scale-105"
+              onError={() => setImgError(true)}
+            />
+          </CharacterPhoto>
         )}
         {card.nsfw && (
           <span className="absolute left-1.5 top-1.5 rounded bg-red-500/80 px-1.5 py-0.5 text-[0.55rem] font-bold text-white">
@@ -3339,7 +3362,7 @@ function CardTile({ card, onClick }: { card: BrowseCard; onClick: () => void }) 
           )}
         </div>
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -3371,7 +3394,6 @@ function DetailView({
   onDetailUpdate?: (detail: CardDetail) => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
-  const [zoomed, setZoomed] = useState(false);
   const [imgError, setImgError] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const displayDetail = detail;
@@ -3459,12 +3481,12 @@ function DetailView({
                   <Hash size="2.5rem" />
                 </div>
               ) : (
-                <button
-                  type="button"
-                  onClick={() => setZoomed(true)}
+                <CharacterPhoto
+                  src={fullSizeAvatarUrl(card.avatarUrl)}
+                  fallbackSrc={card.avatarUrl}
+                  name={card.name}
+                  wrapperClassName="relative block h-full w-full"
                   className="block h-full w-full cursor-zoom-in focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-                  title={localizeUi("ui.botBrowser.detailview.enlargeImage")}
-                  aria-label={localizeUi("ui.botBrowser.detailview.enlargeImage")}
                 >
                   <img
                     src={card.avatarUrl}
@@ -3472,17 +3494,9 @@ function DetailView({
                     className="h-full w-full object-cover"
                     onError={() => setImgError(true)}
                   />
-                </button>
+                </CharacterPhoto>
               )}
             </div>
-            {zoomed && card.avatarUrl ? (
-              <AvatarZoomOverlay
-                src={fullSizeAvatarUrl(card.avatarUrl)}
-                fallbackSrc={card.avatarUrl}
-                alt={card.name}
-                onClose={() => setZoomed(false)}
-              />
-            ) : null}
             <div className="flex flex-col gap-2 max-md:flex-1">
               <div className="rounded-lg border border-[var(--border)] bg-[var(--secondary)]/60 p-2.5">
                 <p className="mb-2 text-[0.6875rem] font-semibold text-[var(--foreground)]">
@@ -3678,47 +3692,6 @@ function DetailView({
  */
 function fullSizeAvatarUrl(avatarUrl: string): string {
   return avatarUrl.startsWith("/api/bot-browser/chub/avatar/") ? `${avatarUrl}?full=1` : avatarUrl;
-}
-
-/** Full-screen, uncropped view of a browsed card's image. Escape or a backdrop click closes it. */
-function AvatarZoomOverlay({
-  src,
-  fallbackSrc,
-  alt,
-  onClose,
-}: {
-  src: string;
-  fallbackSrc: string;
-  alt: string;
-  onClose: () => void;
-}) {
-  const { t: localizeUi } = useUiTranslation();
-  const [resolvedSrc, setResolvedSrc] = useState(src);
-  useEffect(() => {
-    const handle = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", handle);
-    return () => document.removeEventListener("keydown", handle);
-  }, [onClose]);
-
-  return createPortal(
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={localizeUi("ui.botBrowser.detailview.imagePreview")}
-      className="fixed inset-0 z-[100] flex cursor-zoom-out items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      <img
-        src={resolvedSrc}
-        alt={alt}
-        onError={() => setResolvedSrc((current) => (current === fallbackSrc ? current : fallbackSrc))}
-        className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain shadow-2xl supports-[height:100dvh]:max-h-[90dvh]"
-      />
-    </div>,
-    document.body,
-  );
 }
 
 async function buildCharacterCardPng(avatarUrl: string, charData: Record<string, unknown>): Promise<Blob> {

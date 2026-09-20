@@ -16,6 +16,7 @@ import type {
   RoleplayDocument,
   RoleplayPrivateCommand,
 } from "./roleplay-command.js";
+import type { GameContinuityMetadata } from "./game-continuity.js";
 
 export type { SpotifySourceType } from "./spotify.js";
 
@@ -250,6 +251,34 @@ export function normalizeSummaryTailMessages(value: unknown): number {
 }
 export const CHAT_SUMMARY_OUTPUT_TOKENS = { MIN: 1, MAX: 32768, DEFAULT: 4096 } as const;
 
+export type CampaignMemoryBranchHeldRecordType =
+  | "entity"
+  | "fact"
+  | "knowledge"
+  | "event"
+  | "current-state"
+  | "relationship";
+
+export interface CampaignMemoryBranchHeldRecord {
+  recordType: CampaignMemoryBranchHeldRecordType;
+  recordId: string;
+  reason: string;
+}
+
+export interface CampaignMemoryBranchManifest {
+  sourceChatId: string;
+  operationId: string;
+  copied: {
+    entities: number;
+    facts: number;
+    knowledge: number;
+    events: number;
+    currentState: number;
+    relationships: number;
+  };
+  held: CampaignMemoryBranchHeldRecord[];
+}
+
 export type GameStoryboardViewerDisplayMode = "floating" | "background";
 
 /** Extra metadata stored on a chat. */
@@ -264,6 +293,10 @@ export interface ChatMetadata {
   };
   /** Roleplay presentation only; omitted chats use the Appearance default. */
   roleplayDisplayStyle?: "classic" | "visual-novel";
+  /** Branch-scoped campaign-memory copy manifest; held records remain absent and require review. */
+  campaignMemoryBranch?: CampaignMemoryBranchManifest;
+  /** Incremental Game Keeper configuration. Missing means continuity review is off. */
+  gameContinuity?: GameContinuityMetadata;
   /** Chat-local tracker icon overrides keyed by persona id, unique character id, or tracker character slot. */
   trackerStatIconOverrides?: Record<string, import("../constants/stat-icons.js").TrackerStatIconAssignment[]>;
   /** Compiled enabled rolling summary text for context injection. Derived from summaryEntries when present. */
@@ -590,6 +623,10 @@ export interface ChatMetadata {
   gameInitialMapFallback?: import("./game.js").GameMap | null;
   /** Summaries of all previous sessions */
   gamePreviousSessionSummaries?: import("./game.js").SessionSummary[];
+  /** Optional positive limit for previous session summaries sent to the GM prompt. */
+  gamePromptRecentSessionLimit?: number;
+  /** When enabled, include detailed party cards only for current/mentioned party members. */
+  gamePromptFocusedCharacterReferences?: boolean;
   /** GM-only: overarching story arc and plot (never sent to party agent) */
   gameStoryArc?: string;
   /** GM-only: planned plot twists (never sent to party agent) */
@@ -617,6 +654,12 @@ export interface ChatMetadata {
   gameWidgetState?: import("./game.js").HudWidget[];
   /** Tracked NPCs with reputation */
   gameNpcs?: import("./game.js").GameNpc[];
+  /** How separate NPC replies receive character-specific knowledge; absent keeps legacy shared GM dialogue. */
+  gameNpcKnowledgeMode?: "legacy" | "isolated";
+  /** Create a linked Character-library card when Game Mode confirms a named NPC. Defaults to true. */
+  gameAutoCreateNpcCharacters?: boolean;
+  /** NPC identities the user removed and does not want automatically re-created. */
+  gameIgnoredNpcIds?: string[];
   /** Current-session turn number when the last rare generated scene illustration was created. */
   gameLastIllustrationTurn?: number;
   /** Session number where the last rare generated scene illustration was created. */
@@ -729,9 +772,19 @@ export interface ChatMetadata {
   gameLorebookKeeperLastRun?: {
     sessionNumber: number;
     status: "running" | "success" | "failed";
+    runId?: string;
+    phase?: "extracting" | "saving" | "complete" | "incomplete" | "manual";
     updatedAt: string;
     lorebookId?: string | null;
     entryCount?: number;
+    totalBatches?: number;
+    completedBatches?: number;
+    totalMessages?: number;
+    processedMessages?: number;
+    sourceMessageIds?: string[];
+    sourceHash?: string;
+    coverageVerified?: false;
+    errorCode?: string;
     error?: string;
   } | null;
 

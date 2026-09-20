@@ -13,7 +13,7 @@
 //
 // Mirrors the ConnectionAdmissionProvider decorator shape and installs alongside it.
 import type { ChatCompletionResult, ChatMessage, ChatOptions, LLMUsage } from "./base-provider.js";
-import { BaseLLMProvider, isRateLimitError } from "./base-provider.js";
+import { BaseLLMProvider, isRateLimitError, withLlmResolvedAddressOffset } from "./base-provider.js";
 import { getConnectionRateLimit } from "./connection-rate-limit-registry.js";
 import { logger } from "../../lib/logger.js";
 
@@ -116,11 +116,11 @@ export class RateLimitAwareProvider extends BaseLLMProvider {
       let yieldedAny = false;
       const iterator = this.provider.chat(messages, options);
       try {
-        let step = await iterator.next();
+        let step = await withLlmResolvedAddressOffset(attempt, () => iterator.next());
         while (!step.done) {
           yieldedAny = true;
           yield step.value;
-          step = await iterator.next();
+          step = await withLlmResolvedAddressOffset(attempt, () => iterator.next());
         }
         return step.value;
       } catch (error) {
@@ -144,7 +144,7 @@ export class RateLimitAwareProvider extends BaseLLMProvider {
       const throttleWait = reserveThrottleSlot(this.connectionId, options);
       if (throttleWait) await throttleWait;
       try {
-        return await this.provider.chatComplete(messages, options);
+        return await withLlmResolvedAddressOffset(attempt, () => this.provider.chatComplete(messages, options));
       } catch (error) {
         if (!isRateLimitError(error) || attempt >= MAX_RATE_LIMIT_RETRIES || options.signal?.aborted) {
           throw error;
@@ -160,7 +160,7 @@ export class RateLimitAwareProvider extends BaseLLMProvider {
       const throttleWait = reserveThrottleSlot(this.connectionId, context);
       if (throttleWait) await throttleWait;
       try {
-        return await this.provider.embed(texts, model, signal);
+        return await withLlmResolvedAddressOffset(attempt, () => this.provider.embed(texts, model, signal));
       } catch (error) {
         if (!isRateLimitError(error) || attempt >= MAX_RATE_LIMIT_RETRIES || signal?.aborted) {
           throw error;

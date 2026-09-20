@@ -7,6 +7,7 @@ export async function updateJournal(
   db: DB,
   chatId: string,
   transform: (journal: Journal) => Journal | null,
+  options: { rethrowOnError?: boolean } = {},
 ): Promise<void> {
   try {
     const chatsStore = createChatsStorage(db);
@@ -17,6 +18,7 @@ export async function updateJournal(
     });
   } catch (error) {
     logger.warn(error, "[game] Journal auto-fill failed for chat %s", chatId);
+    if (options.rethrowOnError) throw error;
     // Non-critical; generation should not fail because journal auto-fill failed.
   }
 }

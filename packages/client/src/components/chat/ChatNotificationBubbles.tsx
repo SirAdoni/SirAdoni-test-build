@@ -18,6 +18,7 @@ import type { AvatarCrop } from "@marinara-engine/shared";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { AnimatePresence, motion } from "framer-motion";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 
 type ChatNotification = {
   chatId: string;
@@ -253,8 +254,16 @@ function NotificationBubble({
       </button>
 
       {/* Avatar bubble */}
-      <button
+      <div
+        role="button"
+        tabIndex={0}
         onClick={onNavigate}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onNavigate();
+          }
+        }}
         className={cn(
           "relative flex h-12 w-12 items-center justify-center overflow-hidden rounded-full",
           isCall
@@ -269,13 +278,15 @@ function NotificationBubble({
         }
       >
         {notif.avatarUrl ? (
-          <img
-            src={notif.avatarUrl}
-            alt={notif.characterName}
-            className="h-full w-full object-cover"
-            loading="lazy"
-            style={getAvatarCropStyle(notif.avatarCrop)}
-          />
+          <CharacterPhoto src={notif.avatarUrl} name={notif.characterName} className="h-full w-full object-cover">
+            <img
+              src={notif.avatarUrl}
+              alt={notif.characterName}
+              className="h-full w-full object-cover"
+              loading="lazy"
+              style={getAvatarCropStyle(notif.avatarCrop)}
+            />
+          </CharacterPhoto>
         ) : (
           <MessageCircle className={cn("h-5 w-5", isCall ? "text-emerald-400" : "text-[var(--accent)]")} />
         )}
@@ -284,7 +295,7 @@ function NotificationBubble({
             <PhoneIncoming size="0.6875rem" />
           </span>
         )}
-      </button>
+      </div>
 
       {isCall ? (
         <div className="absolute right-14 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded-full bg-[var(--popover)] px-1.5 py-1 shadow-lg ring-1 ring-[var(--border)]">

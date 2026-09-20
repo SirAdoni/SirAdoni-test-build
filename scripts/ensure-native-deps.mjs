@@ -8,7 +8,14 @@ import { basename, dirname, join } from "node:path";
 const rootRequire = createRequire(new URL("../package.json", import.meta.url));
 const serverRequire = createRequire(new URL("../packages/server/package.json", import.meta.url));
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-const supportedOnnxTuples = new Set(["darwin/arm64", "darwin/x64", "linux/arm64", "linux/x64", "win32/arm64", "win32/x64"]);
+const supportedOnnxTuples = new Set([
+  "darwin/arm64",
+  "darwin/x64",
+  "linux/arm64",
+  "linux/x64",
+  "win32/arm64",
+  "win32/x64",
+]);
 const tuple = `${process.platform}/${process.arch}`;
 
 function log(message) {
@@ -67,6 +74,7 @@ function resolvePnpmCommand() {
 }
 
 function spawnPnpm(runner, args, options) {
+  options = { windowsHide: true, ...options };
   if (process.platform !== "win32" || runner.command === process.execPath) {
     return spawnSync(runner.command, args, options);
   }

@@ -1,7 +1,9 @@
 import {
+  IMAGE_GENERATION_QUALITIES,
+  MAX_IMAGE_REFERENCES_PER_REQUEST,
   normalizeImagePromptInstructions,
-  resolveOpenAIImageQuality,
   PROVIDERS,
+  resolveImageReferenceLimits,
   type APIProvider,
   type ImageGenerationQuality,
 } from "@marinara-engine/shared";
@@ -42,6 +44,7 @@ export type ConnectionTransferRow = {
   imageEndpointId?: unknown;
   imagePromptInstructions?: unknown;
   imageGenerationQuality?: unknown;
+  maxImageReferences?: unknown;
   comfyuiWorkflow?: unknown;
   treatAsLocalEndpoint?: unknown;
   claudeFastMode?: unknown;
@@ -81,6 +84,7 @@ export type SafeConnectionExport = {
   imageEndpointId: string | null;
   imagePromptInstructions: string | null;
   imageGenerationQuality: ImageGenerationQuality;
+  maxImageReferences: number | null;
   comfyuiWorkflow: string | null;
   treatAsLocalEndpoint: boolean;
   claudeFastMode: boolean;
@@ -124,7 +128,17 @@ export function normalizeImportedConnectionEntry(value: unknown): ConnectionImpo
   if (!provider || !name) return null;
 
   const defaultParameters = parseDefaultParameters(value.defaultParameters);
-  const imageService = asNullableString(value.imageService ?? value.service);
+  const baseUrl = asString(value.baseUrl);
+  const model = asString(value.model);
+  const imageService =
+    provider === "image_generation"
+      ? resolveImageReferenceLimits({
+          imageGenerationSource: asNullableString(value.imageGenerationSource),
+          imageService: asNullableString(value.imageService) ?? asNullableString(value.service),
+          model,
+          baseUrl,
+        }).source
+      : null;
   const videoService = provider === "video_generation" ? asNullableString(value.videoService ?? value.service) : null;
 
   return {
@@ -132,8 +146,8 @@ export function normalizeImportedConnectionEntry(value: unknown): ConnectionImpo
       name,
       provider,
       apiKey: "",
-      baseUrl: asString(value.baseUrl),
-      model: asString(value.model),
+      baseUrl,
+      model,
       maxContext: asPositiveInteger(value.maxContext, 128000),
       isDefault: false,
       fallbackForMain: false,
@@ -147,12 +161,13 @@ export function normalizeImportedConnectionEntry(value: unknown): ConnectionImpo
       embeddingBaseUrl: asString(value.embeddingBaseUrl),
       embeddingConnectionId: null,
       openrouterProvider: asNullableString(value.openrouterProvider),
-      imageGenerationSource: asNullableString(value.imageGenerationSource),
+      imageGenerationSource: imageService,
       comfyuiWorkflow: asNullableString(value.comfyuiWorkflow),
       imageService,
       imageEndpointId: asNullableString(value.imageEndpointId),
       imagePromptInstructions: normalizeImagePromptInstructions(value.imagePromptInstructions),
-      imageGenerationQuality: resolveOpenAIImageQuality(value.imageGenerationQuality, asString(value.model)),
+      imageGenerationQuality: parseImageGenerationQuality(value.imageGenerationQuality),
+      maxImageReferences: asNullableBoundedPositiveInteger(value.maxImageReferences, MAX_IMAGE_REFERENCES_PER_REQUEST),
       videoGenerationSource: provider === "video_generation" ? asNullableString(value.videoGenerationSource) : null,
       videoService,
       audioSource: provider === "audio" ? asAudioGenerationSource(value.audioSource ?? value.service) : null,
@@ -173,13 +188,24 @@ export function normalizeImportedConnectionEntry(value: unknown): ConnectionImpo
 
 function serializeConnectionForExport(connection: ConnectionTransferRow): SafeConnectionExport {
   const provider = asProvider(connection.provider) ?? "custom";
+  const isImageProvider = provider === "image_generation";
   const isVideoProvider = provider === "video_generation";
   const isAudioProvider = provider === "audio";
+  const baseUrl = asString(connection.baseUrl);
+  const model = asString(connection.model);
+  const imageService = isImageProvider
+    ? resolveImageReferenceLimits({
+        imageGenerationSource: asNullableString(connection.imageGenerationSource),
+        imageService: asNullableString(connection.imageService) ?? asNullableString(connection.service),
+        model,
+        baseUrl,
+      }).source
+    : null;
   return {
     name: asString(connection.name) || "Unnamed Connection",
     provider,
-    baseUrl: asString(connection.baseUrl),
-    model: asString(connection.model),
+    baseUrl,
+    model,
     maxContext: asPositiveInteger(connection.maxContext, 128000),
     maxTokensOverride: asNullablePositiveInteger(connection.maxTokensOverride),
     maxParallelJobs: asPositiveInteger(connection.maxParallelJobs, 1),
@@ -198,8 +224,8 @@ function serializeConnectionForExport(connection: ConnectionTransferRow): SafeCo
     embeddingBaseUrl: asString(connection.embeddingBaseUrl),
     embeddingConnectionId: asNullableString(connection.embeddingConnectionId),
     openrouterProvider: asNullableString(connection.openrouterProvider),
-    imageGenerationSource: asNullableString(connection.imageGenerationSource),
-    imageService: asNullableString(connection.imageService ?? connection.service),
+    imageGenerationSource: imageService,
+    imageService,
     videoGenerationSource: isVideoProvider ? asNullableString(connection.videoGenerationSource) : null,
     videoService: isVideoProvider ? asNullableString(connection.videoService ?? connection.service) : null,
     audioSource: isAudioProvider ? asNullableString(connection.audioSource ?? connection.service) : null,
@@ -208,7 +234,11 @@ function serializeConnectionForExport(connection: ConnectionTransferRow): SafeCo
     audioMusic: isAudioProvider && asBoolean(connection.audioMusic),
     imageEndpointId: asNullableString(connection.imageEndpointId),
     imagePromptInstructions: normalizeImagePromptInstructions(connection.imagePromptInstructions),
-    imageGenerationQuality: resolveOpenAIImageQuality(connection.imageGenerationQuality, asString(connection.model)),
+    imageGenerationQuality: parseImageGenerationQuality(connection.imageGenerationQuality),
+    maxImageReferences: asNullableBoundedPositiveInteger(
+      connection.maxImageReferences,
+      MAX_IMAGE_REFERENCES_PER_REQUEST,
+    ),
     comfyuiWorkflow: asNullableString(connection.comfyuiWorkflow),
     treatAsLocalEndpoint: asBoolean(connection.treatAsLocalEndpoint),
     claudeFastMode: asBoolean(connection.claudeFastMode),
@@ -219,6 +249,12 @@ function serializeConnectionForExport(connection: ConnectionTransferRow): SafeCo
 function asAudioGenerationSource(value: unknown): string | null {
   const text = asNullableString(value);
   return text === "openai" || text === "elevenlabs" || text === "pockettts" || text === "xai" ? text : null;
+}
+
+function parseImageGenerationQuality(value: unknown): ImageGenerationQuality {
+  return typeof value === "string" && (IMAGE_GENERATION_QUALITIES as readonly string[]).includes(value)
+    ? (value as ImageGenerationQuality)
+    : "auto";
 }
 
 function parseDefaultParameters(value: unknown): Record<string, unknown> | null {

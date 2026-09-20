@@ -20,6 +20,7 @@ export const gameTurnStoryboards = fileTable("game_turn_storyboards", {
   provider: text("provider").notNull().default(""),
   model: text("model").notNull().default(""),
   directorPrompt: text("director_prompt").notNull().default(""),
+  visualSceneState: text("visual_scene_state").notNull().default(""),
   error: text("error"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),

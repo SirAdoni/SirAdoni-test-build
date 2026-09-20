@@ -26,6 +26,7 @@ export type LorebookActivationSource =
   | "keyword"
   | "semantic"
   | "constant"
+  | "always_loaded"
   | "sticky"
   | "recursive";
 
@@ -162,6 +163,8 @@ export interface LorebookEntry {
   // ── Activation settings ──
   enabled: boolean;
   constant: boolean;
+  /** Marinara-only override: activate whenever the enabled lorebook is in scope. */
+  alwaysLoaded?: boolean;
   selective: boolean;
   selectiveLogic: SelectiveLogic;
   probability: number | null;

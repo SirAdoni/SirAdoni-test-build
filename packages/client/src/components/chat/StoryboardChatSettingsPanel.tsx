@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Settings2 } from "lucide-react";
+import { StoryboardContinuitySettings } from "../agents/StoryboardContinuitySettings";
+import { normalizeStoryboardContinuity } from "@marinara-engine/shared";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import {
   GAME_STORYBOARD_ANIMATION_DURATION_SECONDS_MAX,
@@ -417,10 +419,16 @@ export function StoryboardChatSettingsPanel({
 
           <div className="grid gap-2 md:grid-cols-2">
             <StoryboardSlider
-              label={localizeUi("ui.chat.chatsettingsdrawer.keyframesPerTurn")}
-              description={localizeUi(
-                "ui.chat.chatsettingsdrawer.controlsHowManyStoryboardIllustrationsArePlannedForEach",
+              label={localizeUi(
+                settings.adaptiveKeyframeCount
+                  ? "game.storyboard.baseFrameCount"
+                  : "ui.chat.chatsettingsdrawer.keyframesPerTurn",
               )}
+              description={
+                settings.adaptiveKeyframeCount
+                  ? localizeUi("game.storyboard.adaptiveChatHelp", { count: settings.maxAutomaticKeyframes })
+                  : localizeUi("ui.chat.chatsettingsdrawer.controlsHowManyStoryboardIllustrationsArePlannedForEach")
+              }
               value={keyframeCount}
               min={GAME_STORYBOARD_KEYFRAME_COUNT_MIN}
               max={GAME_STORYBOARD_KEYFRAME_COUNT_MAX}
@@ -582,6 +590,11 @@ export function StoryboardChatSettingsPanel({
               <span>{localizeUi("ui.chat.chatsettingsdrawer.openSetup")}</span>
             </AgentSettingsActionButton>
           </div>
+          <StoryboardContinuitySettings
+            value={normalizeStoryboardContinuity(metadata.storyboardVisualContinuity, settings.visualContinuity)}
+            override={metadata.storyboardVisualContinuity != null}
+            onChange={(value) => onUpdate({ storyboardVisualContinuity: value })}
+          />
         </AgentSettingsSubsection>
       ) : null}
     </>
@@ -767,8 +780,16 @@ function RoleplayStoryboardChatSettingsPanel({
               onReset={() => onUpdate({ roleplayStoryboardRunInterval: null })}
             />
             <StoryboardSlider
-              label={localizeUi("ui.agents.storyboard.keyframesPerEpisode")}
-              description={localizeUi("ui.agents.storyboard.keyframesPerEpisodeDescription")}
+              label={localizeUi(
+                settings.adaptiveKeyframeCount
+                  ? "game.storyboard.baseFrameCount"
+                  : "ui.agents.storyboard.keyframesPerEpisode",
+              )}
+              description={
+                settings.adaptiveKeyframeCount
+                  ? localizeUi("game.storyboard.adaptiveChatHelp", { count: settings.maxAutomaticKeyframes })
+                  : localizeUi("ui.agents.storyboard.keyframesPerEpisodeDescription")
+              }
               value={keyframeCount}
               min={GAME_STORYBOARD_KEYFRAME_COUNT_MIN}
               max={GAME_STORYBOARD_KEYFRAME_COUNT_MAX}
@@ -945,6 +966,11 @@ function RoleplayStoryboardChatSettingsPanel({
               <span>{localizeUi("ui.chat.chatsettingsdrawer.openSetup")}</span>
             </AgentSettingsActionButton>
           </div>
+          <StoryboardContinuitySettings
+            value={normalizeStoryboardContinuity(metadata.storyboardVisualContinuity, settings.visualContinuity)}
+            override={metadata.storyboardVisualContinuity != null}
+            onChange={(value) => onUpdate({ storyboardVisualContinuity: value })}
+          />
         </AgentSettingsSubsection>
       ) : null}
     </>

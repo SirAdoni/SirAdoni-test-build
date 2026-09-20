@@ -31,18 +31,29 @@
 //      a mirror moved into a chat with a lower (or null) counter cannot invert the ordering.
 //  11. Checkpoint restore writes its engine rows INSIDE the experience-state write lock, so a
 //      racing autosave PUT cannot end up with a higher ordinal than the surviving row.
-//  12. A new game session carries no mirror into its brand-new chat.
+//  12. A new game session carries neither the old mirror nor transient combat state into its
+//      brand-new chat.
 //  13. Chat settings profiles never carry the mirror, and applying one preserves the target
 //      chat's own mirror.
 //  14. The bulk import (#5405) allocates a fresh ordinal per row in array order, floored by the
 //      destination's carried mirror, and never honors a caller-supplied writeOrdinal — so a
 //      freshly imported campaign beats a stale metadata cache at the next boot.
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// Isolated store: the runner does not set DATA_DIR, so set it before any server module opens the DB.
+const ordinalDataDir = mkdtempSync(join(tmpdir(), "marinara-experience-state-ordinal-"));
+process.env.DATA_DIR = ordinalDataDir;
+process.env.FILE_STORAGE_DIR = join(ordinalDataDir, "storage");
+process.on("exit", () => rmSync(ordinalDataDir, { recursive: true, force: true }));
 import Fastify from "../../packages/server/node_modules/fastify/fastify.js";
 import { CHAT_PRESET_EXCLUDED_METADATA_KEYS } from "../../packages/shared/src/types/chat-preset.js";
 import { chatsRoutes } from "../../packages/server/src/routes/chats.routes.js";
 import { gameRoutes } from "../../packages/server/src/routes/game.routes.js";
 import { createCheckpointService } from "../../packages/server/src/services/game/checkpoint.service.js";
+import { buildSessionCombatResetPatch } from "../../packages/server/src/services/game/session.service.js";
 import {
   createChatsStorage,
   withChatMetadataPatchQueue,
@@ -96,6 +107,8 @@ const EXPERIENCE_ID = "experience-ordinal-test";
 const PACKAGE_KEY = "pixelforgeSaveCache";
 /** A bare (non-"experience:") gameType, i.e. a turn-game row: single store, nothing to order. */
 const TURN_GAME_TYPE = "ordinal-turn-game";
+
+assert.deepEqual(buildSessionCombatResetPatch(), { encounterActive: false, gameCombatState: null });
 
 async function createExperienceChat(name: string, extra: { groupId?: string } = {}) {
   const chat = await chats.create({ name, mode: "game", characterIds: [], ...extra } as Parameters<
@@ -690,6 +703,9 @@ try {
     await chats.patchMetadata(previous.id, () => ({
       gameSessionStatus: "concluded",
       gameSessionNumber: 1,
+      gameActiveState: "combat",
+      encounterActive: true,
+      gameCombatState: { party: [{ id: "stale-party" }], enemies: [{ id: "stale-enemy" }] },
       [PACKAGE_KEY]: { world: "session 1" },
     }));
     assert.ok(isPositiveInt((await readMirror(previous.id))[PACKAGE_KEY]), "the previous session has a live mirror");
@@ -707,6 +723,9 @@ try {
       undefined,
       "the write-ordinal mirror does NOT travel into a chat with its own (null) counter",
     );
+    assert.equal(carried.gameActiveState, "exploration", "the new session starts outside combat");
+    assert.equal(carried.encounterActive, false, "the previous session's encounter cannot remain active");
+    assert.equal(carried.gameCombatState, null, "the previous session's combat snapshot is not carried forward");
   }
 
   // ── 13. Chat settings profiles never carry the mirror ──

@@ -45,6 +45,13 @@ export interface GmPromptContext {
   partyNames: string[];
   /** Full character cards for each party member */
   partyCards?: Array<{ name: string; card: string }>;
+  /** Cache-friendly split: stable library biography, kept separate from live party state. */
+  partyCardReferences?: Array<{ name: string; card: string }>;
+  partyCardRuntime?: Array<{ name: string; card: string }>;
+  /** Library cards for people the session has named outside the party, in order of first mention. */
+  sceneCharacterCards?: Array<{ name: string; card: string }>;
+  /** Newer text or newly named people waiting to be folded into the cached cards; rendered uncached. */
+  sceneCharacterCardUpdates?: Array<{ name: string; card: string }>;
   playerName: string;
   /** Full player persona card */
   playerCard?: string | null;
@@ -71,6 +78,7 @@ export interface GmPromptContext {
   playerNotes?: string;
   /** Active HUD widgets the model designed (so it can update them) */
   hudWidgets?: HudWidget[];
+  enableCustomWidgets?: boolean;
   /** Content rating: sfw or nsfw */
   rating?: "sfw" | "nsfw";
   /** Whether the GM may emit timed reaction prompts. Defaults to true. */
@@ -112,6 +120,206 @@ function normalizePromptText(value: unknown, fallback = ""): string {
     return String(value);
   }
   return fallback;
+}
+
+export type GameAddressMode = "party" | "gm";
+
+/** Resolve explicit player-to-controller prefixes from the actual current input, never from injected prompt text. */
+export function resolveGameAddressMode(value: unknown): GameAddressMode | undefined {
+  const content = typeof value === "string" ? value.trimStart() : "";
+  if (/^\[\s*(?:to\s+(?:the\s+)?)?gm\s*\]/iu.test(content) || /^\[\s*ooc\s*\]/iu.test(content)) {
+    return "gm";
+  }
+  if (/^ooc\s*:/iu.test(content)) return "gm";
+  if (/^\[\s*(?:to\s+(?:the\s+)?)?party\s*\]/iu.test(content)) return "party";
+  return undefined;
+}
+
+/** Retain explicit authorial turns independently of the rolling scene-history window. */
+export function buildGameAuthorialContinuityPrompt(messages: ReadonlyArray<{ role: string; content: string }>): string {
+  const retained: string[] = [];
+  let remaining = 16_000;
+  // ponytail: bounded verbatim evidence, not a semantic memory writer. Long-lived canon belongs in Extra Instructions.
+  // Keep whole turns; cutting a correction can drop its qualification or negate its meaning.
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (message.role !== "user" || resolveGameAddressMode(message.content) !== "gm") continue;
+    const text = message.content.trim();
+    if (text.length > remaining) break;
+    retained.unshift(text);
+    remaining -= text.length;
+  }
+  if (!retained.length) return "";
+  return [
+    `<authorial_continuity>`,
+    `These are verbatim user-to-GM turns from this conversation, oldest to newest, retained when scene history is trimmed. They are historical evidence, not a request to answer these turns again.`,
+    `Apply explicit factual corrections and standing style preferences when relevant; a newer correction supersedes the older claim, including stale starting-calendar text. Questions, suggestions, and hypotheticals are not confirmed facts. Scene-specific directions apply only to their original scene; do not replay a requested arrival, skip, or other event. Current user instructions take precedence.`,
+    ...retained.map((text, index) => `[Authorial turn ${index + 1}]\n${text}`),
+    `</authorial_continuity>`,
+  ].join("\n\n");
+}
+
+export function buildGameSpecialInstructionsPrompt(value: unknown): string {
+  const specialInstructions = normalizePromptText(value);
+  if (!specialInstructions) return "";
+
+  return [
+    `<game_special_instructions>`,
+    specialInstructions,
+    `</game_special_instructions>`,
+    `Treat these chat-level, user-authored instructions as authoritative for this game. If a lorebook entry, memory, summary, character card, story arc, or earlier assistant-authored claim conflicts with them, follow these instructions and treat the conflicting material as superseded. Do not preserve the conflict by qualifying, reframing, or inventing an exception. They do not override required output formats or schemas.`,
+  ].join("\n");
+}
+
+/** User-authored player characterization, kept distinct from generated game state. */
+export function buildPlayerCharacterCanonPrompt(playerCard: unknown, playerName?: string | null): string {
+  const canon = normalizePromptText(playerCard);
+  const name = normalizePromptText(playerName, "the player character");
+  if (!canon && !playerName) return "";
+
+  return [
+    `<player_character_canon>`,
+    `This is player-owned canon for ${name}. It establishes their baseline personality, morality, motives, habits, strengths, and weaknesses exactly as written, whether good, morally gray, evil, or otherwise. Treat affirmative traits as real characterization, not as an unreliable claim that needs a hidden opposite for complexity.`,
+    ...(canon ? [canon] : [`Name: ${name}`]),
+    `Only direct player-authored choices, dialogue, or explicit canon can establish a lasting change to this baseline. An isolated argument, anger, profanity, refusal, boundary, mistake, or NPC accusation is a specific event, not proof of a concealed nature or permanent new flaw.`,
+    `</player_character_canon>`,
+  ].join("\n");
+}
+
+/** Provider-generic ownership boundary for the one role controlled exclusively by the user. */
+export function buildPlayerAgencyPrompt(playerName?: string | null): string {
+  const name = normalizePromptText(playerName, "the player character");
+  return [
+    `<player_agency>`,
+    `The user exclusively controls ${name}'s voluntary actions and interiority. Never invent or complete their dialogue, thoughts, internal monologue, beliefs, judgments, feelings, emotional reactions, desires, preferences, motives, loyalties, intent, consent, refusal, obedience, deference, decisions, or choices.`,
+    `Never make ${name} eat, drink, move, follow, touch, take, give, accept, attack, dress, sleep, agree, obey, refuse, or otherwise act voluntarily unless the current player input explicitly commits that act. "Obvious," "minor," "low-stakes," "routine," "likely," "in character," convenient, habitual, or strongly implied is not permission.`,
+    `An NPC may order, request, offer, advise, tempt, pressure, touch, or act upon ${name} when the fiction supports it, but stop before ${name}'s voluntary response. Do not infer willingness from bond strength, affection, trust, loyalty, caretaking, authority, food, hospitality, custom, or prior compliance.`,
+    `Second-person limited POV describes only the external world and sensory information available to ${name}; it grants no access to their mind and no control over their body.`,
+    `You may narrate sensory information available to ${name}, the direct external result of an action the current player input explicitly started or committed, and unavoidable physical consequences such as gravity, impact, injury, or weather. Do not invent even an involuntary-seeming reaction such as a flinch, startle, blush, or recoil; do not add a new choice or assign a mental or emotional interpretation. Continue an explicitly active routine only until the next new choice.`,
+    `An NPC may describe what they directly observed, but may not invent an exhaustive pattern, omission, or inner state for ${name}. Claims such as "you always," "you never once," "you habitually," or "you were not worried" require explicit player-authored canon or player-authored actions across the stated span. Silence or omission in assistant narration is not evidence; when only an NPC's limited impression exists, mark it as that NPC's impression.`,
+    `A persona trait, habit, relationship, or authority claim describes characterization, not permission for a current voluntary act, unless the user explicitly established it as standing automation. Never emit a [${name}] dialogue, action, whisper, side, main, or thought line.`,
+    `</player_agency>`,
+  ].join("\n");
+}
+
+/** Provider-generic dialogue and narration baseline that remains stable across cards and models. */
+export function buildHumanProsePrompt(): string {
+  return [
+    `<human_prose>`,
+    `Write characters as people speaking for an immediate purpose, not as polished character essays. In ordinary conversation, most spoken turns should make one local move—answer, ask, object, joke, evade, bargain, reassure—and leave room for another person. One short line, an incomplete thought, or a nonverbal beat can be a complete response.`,
+    `Match the scope and length the user requests. A direct question can receive a compact answer; an invitation to listen to a meal, gathering, or extended conversation calls for a sustained scene with responsive exchanges, atmosphere, and topic development. Short individual speaking turns do not require a short overall response.`,
+    `In group scenes, let present characters converse with one another, not only report to the player. Follow explicit ensemble and length requests, including paragraph ranges; fill that space with developing conversation rather than a roll call, repeated reactions, or consecutive character essays. Each reply should give the next speaker something specific to answer, complicate, notice, or leave unresolved. Do not rotate through the cast giving everyone a status report and a quip; let the people with an immediate stake carry the exchange while others remain quiet when that fits. Silence remains valid for an individual, but is not a reason to abbreviate a requested ensemble scene. Never invent the player's participation to fill space.`,
+    `Keep biography mostly as subtext. Do not routinely announce a character's age, years of experience, rank, résumé, achievements, trauma, relationship history, or exact counts to certify an emotion. Exact figures are appropriate when operationally relevant, newly disclosed, or directly asked about; an established fact is not conversational decoration or a catchphrase.`,
+    `Let ordinary moments stay ordinary. Do not turn every object, gesture, activity, or kind remark into a symbol, identity thesis, confession, revelation, aphorism, or emotional climax. Let actions, looks, silence, and subtext stand without immediately explaining what they mean.`,
+    `Let characters say ordinary things in ordinary ways. Prefer the words this person would actually say to this listener: plain vocabulary, natural contractions, and casual phrasing at their established level of formality. A plain immediate reaction can stand on its own. Examples illustrate conversational register, not lines or catchphrases to reuse. Preserve the setting's vocabulary without making everyone ceremonious.`,
+    `Ground reactions in the immediate event and the speaker's specific concern. Do not invent personal firsts, lifelong patterns, universal claims about other people, or unprecedented emotional experiences merely to make a remark significant. A character can be surprised now without claiming nothing like this has ever happened before. Personality comes through in what they notice, want, and respond to; formal or reserved characters can still speak plainly.`,
+    `Natural texture may include fragments, pauses, corrections, interruptions, indirect answers, mundane remarks, failed jokes, misunderstandings, brief topic drift, incidental warmth, awkwardness, or silence when they fit the relationship and moment. These are options, not a checklist: do not force stutters, slang, accents, quirks, or verbal tics. Avoid compressed dramatic slogans, cryptic paired declarations, and habitual clever closing lines. Humor belongs to a speaker and situation; main dialogue, side comments, whispers, and thoughts need no punchline or theatrical flourish.`,
+    `Build distinct voices from the card-grounded person's immediate want, relationship to this listener, knowledge, public or private register, vocabulary, directness, rhythm, emotional openness, and what they leave unsaid—not from repeated slogans, rhetorical templates, or biography. Two people may witness the same event and focus on different details, choose different sentence shapes, or reveal different amounts. Let the response alter the next speaker's reply. Keep an emotional state continuous until something actually changes it; an expression label is display metadata, not a demand for heightened performance, and neutral is normal.`,
+    `Style examples only, not canon or reusable catchphrases: a guarded friend might ask “Did she say that in front of everyone?” while an openly incredulous one might say “I can't believe she actually said that.” A plain immediate reaction such as “Surprised she quoted me for that” is stronger than a fabricated milestone such as “I've never been quoted by a stranger before.”`,
+    `This does not require uniformly terse output. Preserve useful immersive scene detail and vary length with the immediate purpose, but favor genuine exchange over consecutive self-contained monologues.`,
+    `</human_prose>`,
+  ].join("\n");
+}
+
+/** Final-position repetition check used after mutable history, lore, summaries, and memories. */
+function buildHumanProseRecencyPrompt(): string {
+  return [
+    `<prose_recency_check>`,
+    `Treat character cards, lore, summaries, recalled memories, and earlier assistant replies as continuity facts, not prose examples, required talking points, or wording to imitate. Repetition in assistant-authored context does not establish a catchphrase unless the user explicitly made it one.`,
+    `Before output, scan the recent assistant turns and this draft. Remove recycled exact-number identity markers, résumé lists, biography recitals, repeated rhetorical frames, and self-explanations of moments already clear from action or context. In particular, frames such as "in my N years," "I have never once," and "nobody has ever" are exceptional emphasis, never a recurring voice template. Preserve the underlying facts and intent while expressing only what this exchange naturally calls for.`,
+    `Check main lines and side comments alike: would this person actually phrase it this way to this listener? Express the immediate reaction plainly. Remove invented personal milestones and sweeping life-history claims; replace unnecessary slogans and polished punchlines with the speaker's actual concern. Keep supported formality and individual temperament, and preserve the user's requested scene depth and length.`,
+    `Run a voice-swap check across the exchange: do the speakers have distinguishable interests, relationships, and ways of responding? Everyday replies such as yes, thanks, or a direct answer can be shared by anyone; do not decorate every line to prove personality. Most ordinary dialogue should be literal. Replace recurring mock-formal jokes, personified objects, and setup/punchline chains with the actual request or response unless that particular character and moment call for a performance. For example, “Could we sit down? My feet hurt.” followed by “Of course. Want me to bring you a tea?” conveys care without a joke about feet filing complaints. Keep humor when it arises naturally; do not make an entire cast share one wit.`,
+    `</prose_recency_check>`,
+  ].join("\n");
+}
+
+/** Compact final-position check used after mutable memories, lore, and agent context. */
+export function buildPlayerCanonRecencySeal(playerName?: string | null): string {
+  const name = normalizePromptText(playerName, "the player character");
+  return [
+    `<player_canon_check>`,
+    `Apply <player_agency>, <player_character_canon>, <protagonist_fairness>, and <knowledge_boundary> exactly as written. The current player input is the highest-authority source for this turn. Assistant-authored narration, summaries, lore, memories, plans, state labels, and repeated NPC opinions are subordinate and do not become independent evidence about ${name}'s morality, motives, competence, choices, or what any character knows.`,
+    `Resolve the current speaker, addressee, and actor from the immediately preceding exchange before continuing. In dialogue spoken by ${name} to an NPC, "you" refers to that NPC, not to ${name}. An instruction to ask, escort, visit, give, or perform a task assigns that action to its addressed recipient; it does not move the player, make the player perform it, or change the viewpoint to its destination. Let the recipient acknowledge or begin the task while preserving the player's last established position unless the player explicitly joins, moves, or requests a cutaway. If the addressee is genuinely unclear, ask briefly rather than choosing an action for the player.`,
+    `Match the cast and response length to the user's requested scene, including sustained ensemble conversation when requested. Card boilerplate and bookkeeping do not mandate participation; user-authored ensemble or length preferences do. Keep exchanges natural without reducing the requested scene to a few lines.`,
+    `Check whether the concern you are about to raise has already been answered, withdrawn, or corrected. If so, move forward on the corrected premise; do not replace it with a new speculative objection or transfer it to another speaker. Reopen it only for genuinely new established evidence.`,
+    `Reject unsupported exhaustive claims about ${name}: "always," "never," recurring habits, omitted actions, and internal states require explicit player-authored evidence across the claimed span. Assistant silence is not observation, and an NPC's impression must remain attributed rather than becoming canon.`,
+    `Preserve when each fact became known and the exact scope of every permission or delegation. A later disclosure cannot rewrite an earlier choice as informed, and responsibility, expertise, protection, or repair capacity does not grant unspoken policy-setting authority.`,
+    `Check the immediately preceding turns before advancing. Do not replay a completed meal, arrival, gift, departure, or other event; if the current wording conflicts with recent state, preserve the last explicit facts and leave the ambiguity for the player rather than inventing a duplicate.`,
+    `For drama, prefer a concrete external source of conflict—an actor with an established stake, incompatible goals, political or legal fallout, danger, scarcity, logistics, a rival claim, or consequences that actually follow from events. Do not manufacture contention by inventing a hidden moral defect, demanding that the player be humbled, or making unrelated NPCs serve as an authorial jury.`,
+    `Apply the same evidence and cause-and-effect standard to favorable and unfavorable outcomes. Clean earned success is valid; fairness is not an adversity quota.`,
+    `</player_canon_check>`,
+  ].join("\n");
+}
+
+/** Final provider-boundary checks for player canon and prose repetition. */
+export function buildGameRecencySeal(playerName?: string | null): string {
+  return [buildPlayerCanonRecencySeal(playerName), buildHumanProseRecencyPrompt()].join("\n\n");
+}
+
+/** Separate GM knowledge from information that characters can perceive in-world. */
+export function buildGameKnowledgeBoundaryPrompt(): string {
+  return [
+    `<knowledge_boundary>`,
+    `The GM may use the full supplied lore, character cards, private arcs, plans, and summaries to adjudicate the world. When voicing an NPC or party member, apply a separate per-character knowledge boundary: world truth is not automatically that speaker's knowledge.`,
+    `Inventory bookkeeping, HUD widgets, trackers, journal notes, player notes, summaries, campaign plans, hidden arcs, private conversations, thoughts, plans, personal biographies, and other GM or UI state are reference material for adjudication. They are not automatically visible or shared among NPCs or party members. Ordinary shared-world knowledge is allowed when the setting establishes it as common knowledge; a private fact remains available to its established owner.`,
+    `A character may speak or act on a non-common fact only when established fiction provides positive evidence that this character learned or witnessed it before the current scene, was explicitly told it in-world, or can infer exactly that fact from concrete observable evidence already present. "Plausibly reached them" is not evidence: do not invent a messenger, overheard exchange, briefing, coincidence, memory, or other offscreen channel to backfill knowledge.`,
+    `The observable clue itself needs grounding. Do not invent a lingering smell, stain, expression, unusual silence, magical residue, or offscreen briefing to let someone infer a private event. For example, knowing the player visited a hidden forest does not establish that they return smelling of sap. An explicitly established clue permits only the inference it actually supports, not the whole hidden story.`,
+    `When evidence is absent or incomplete, preserve grounded uncertainty without hinting at, foreshadowing, or indirectly revealing the protected fact. Do not use an NPC's personality, voice, intuition, suspicion, or dramatic timing as a substitute for knowledge evidence; preserve established personality and voice while keeping the speaker within their actual information.`,
+    `Preserve when information became available. A warning, restriction, permission, or disclosure learned after an action cannot be moved earlier to make that action informed, consensual, defiant, obedient, or knowingly risky.`,
+    `Preserve the exact scope of authority. Advice, responsibility, operational discretion, expertise, protective capacity, or the ability to repair harm does not grant authority to set another person's policy, limits, consent, or permissions unless that delegation was explicitly established.`,
+    `An opaque, closed, extradimensional, magical, or otherwise unreadable container reveals neither its contents, exact count, nor purpose merely because someone can see the container. Never use a convenient guess or leading question to force private inventory information into dialogue.`,
+    `Prior assistant-authored narration, summaries, widget text, inventory commands, expectations, and corrections are not independent sources of character knowledge. Direct player-authored corrections and the newest application-provided state supersede conflicting generated claims; do not preserve the old claim through a new rationale.`,
+    `</knowledge_boundary>`,
+  ].join("\n");
+}
+
+/** Compact source contract for models that derive or persist Game continuity. */
+export function buildGameContinuityEvidencePrompt(playerName?: string | null): string {
+  const name = normalizePromptText(playerName, "the player character");
+  return [
+    `<game_continuity_evidence>`,
+    `Direct user-authored text, explicit player canon, and user OOC corrections outrank assistant narration, NPC claims, summaries, trackers, cards, plans, and other generated state. A newer user correction replaces the rejected claim; repeated generated paraphrases do not corroborate one another.`,
+    `Carry forward the corrected proposition, not the debate or an assistant apology's substitute explanation. Preserve explicit retconned dates and standing style preferences; distinguish them from questions and directions limited to one scene. A rejected objection is not an unresolved thread.`,
+    `Assistant narration may establish external world and NPC events, but it cannot establish ${name}'s voluntary action, dialogue, thought, feeling, motive, consent, obedience, decision, recurring habit, or "always/never" pattern unless player-authored text explicitly committed or confirmed that proposition. Later engagement with the surrounding scene does not retroactively authorize it, and absence from narration proves nothing.`,
+    `Separate objective events from a character's accusation, interpretation, theory, fear, praise, or inference. Keep the speaker attached to the claim; do not promote it into narrator truth, a secret plot fact, or another character's knowledge without independent higher-authority evidence.`,
+    `Preserve chronological and epistemic order. Do not move a later warning, condition, discovery, or disclosure before an earlier choice, and do not rewrite that choice as informed, consensual, defiant, obedient, or knowingly risky when the character learned the fact afterward.`,
+    `Preserve the exact grantor, recipient, and scope of permissions and authority. Advice, responsibility, operational discretion, expertise, protective capacity, or the ability to repair harm does not grant policy-setting power or consent beyond what was explicitly delegated.`,
+    `Before output, source-check each durable proposition and scan for contradictions, duplicate events, impossible simultaneous obligations, and stale relative deadlines. Prefer the latest direct user correction; when ambiguity remains, preserve it instead of inventing a reconciliation.`,
+    `If the supplied context lacks the direct evidence needed for a claim, omit that claim or leave the existing state unchanged. Planned, proposed, hypothetical, and conditional material remains prospective; do not rewrite it as a past event, present fact, accepted agreement, or completed choice.`,
+    `Durability requires evidence. One routine reassignment, passing mood, isolated gesture, joke, meal, disagreement, or scene does not by itself create a lasting trait, weakness, dependency, personal stake, identity crisis, or completed character arc.`,
+    `</game_continuity_evidence>`,
+  ].join("\n");
+}
+
+/** Shared evidence and authority rules for every model that narrates or stores Game Mode continuity. */
+export function buildProtagonistFairnessPrompt(): string {
+  return [
+    `<protagonist_fairness>`,
+    `Follow the player's user-authored moral and personality baseline as written; do not neutralize, invert, or "balance" it. A genuinely good protagonist may remain genuinely good, just as a gray or evil protagonist may remain gray or evil. Add neither guilt nor sainthood without canon.`,
+    `Judge specific actions from direct player-authored choices and dialogue, established facts, actual consequences, and setting norms. When several readings fit, use the one consistent with the user-authored persona and demonstrated history rather than defaulting to the least charitable interpretation.`,
+    `Freely offered aid, healing, charity, gifts, protection, mercy, cooperation, or optional generosity may be sincerely benevolent. Do not relabel those acts as control, manipulation, vanity, or domination merely because the protagonist is powerful or because suspicion would create friction.`,
+    `Anger, bluntness, profanity, refusal, a boundary, withdrawal of an optional offer, or one conflict does not by itself establish cruelty, abuse, incompetence, corruption, or a hidden villainous nature. Portray the event and its proportionate consequences without generalizing it into a permanent moral diagnosis.`,
+    `A disparity in power, wealth, status, authority, reputation, or capacity for violence is context, not proof of coercion. Infer coercion only from concrete conduct such as a threat, retaliation, deception, abuse of dependency, withholding a necessity, punishment for refusal, or actually overriding refusal.`,
+    `NPC disagreement requires a specific established motive, belief, interest, experience, or fact. NPC autonomy permits agreement, gratitude, trust, deference, fear, surrender, changed minds, and clean cooperation; it does not require automatic opposition, coordinated condemnation, or moving objections.`,
+    `Once a concern is resolved or its premise corrected, stop pursuing it unless new established evidence changes the situation. Do not invent scarcity, endangered dependants, extra stakeholders, administrative barriers, or future reputational harm to rescue the same objection under a practical-sounding rationale. An apology must not smuggle the rejected premise back in.`,
+    `Use this campaign's established institutions, social norms, and individual beliefs, not assumed modern norms or a generic historical stereotype. Ordinary exercises of established authority need no corrective speech. Concrete conflicts remain valid when grounded in the setting; do not erase a character's established dissent or grant automatic success.`,
+    `Create drama through concrete fictional causes: actors with incompatible goals or material stakes, political or legal fallout, danger, scarcity, logistics, rival claims, misunderstandings grounded in available evidence, or consequences that actually follow from events. Do not use the protagonist's alleged moral deficiency as a default conflict generator.`,
+    `Clean success is valid. Add resistance, costs, or complications only when a concrete established fictional cause warrants them, never merely to balance the protagonist's competence, leverage, or success.`,
+    `An NPC accusation remains that NPC's belief. Narration and derived continuity must not promote it to objective truth without independent canonical evidence. Attribute disputed judgments to their speaker.`,
+    `Preserve the protagonist's agency when they seek advice, identify a problem, reconsider, change course, or apologize. Do not reduce evidence-responsive judgment to "the protagonist had to be corrected," or generalize one disagreement into a permanent flaw.`,
+    `Never make the protagonist's power, existence, or legitimacy the campaign's central moral problem unless the player explicitly chose that theme. Story arcs should describe external situations, stakes, factions, and unresolved goals rather than diagnose the protagonist.`,
+    `The player character's personality, morality, strengths, weaknesses, motives, and intended characterization are player-owned. Model-generated summaries, cards, lore, memories, and plans may record observable events but may not redefine them.`,
+    `Continuity writers may record the player character's interiority, consent, refusal, obedience, or intent only when player-authored text states it explicitly. Otherwise record observable facts and directly authored speech without inferring an inner state or unchosen action.`,
+    `Never create a partyArc for the player character; partyArcs belong only to companions.`,
+    `Direct player-authored transcript events and user-authored canon outrank model-generated summaries, lore, memories, character-card interpretations, narration, and campaign themes. Repetition across assistant-authored sources does not turn an interpretation into independent evidence. When sources conflict, follow the higher-authority source and treat the generated interpretation as superseded.`,
+    `Before output, silently audit every unfavorable inference about the protagonist. If it lacks direct player-authored or canonical evidence, remove it or attribute it only to the specific NPC who holds that belief.`,
+    `</protagonist_fairness>`,
+  ].join("\n");
+}
+
+function buildGameSpecialInstructionsSection(value: unknown): string[] {
+  const prompt = buildGameSpecialInstructionsPrompt(value);
+  return prompt ? [prompt, ``] : [];
 }
 
 function normalizePromptTextList(value: unknown): string[] {
@@ -176,7 +384,10 @@ function normalizePromptNpcs(value: unknown): GameNpc[] {
         name,
         emoji: normalizePromptText(source.emoji, "NPC"),
         description: normalizePromptText(source.description),
+        observedDescription: normalizePromptText(source.observedDescription),
+        observedAppearance: normalizePromptText(source.observedAppearance),
         descriptionSource: source.descriptionSource as GameNpc["descriptionSource"],
+        characterId: typeof source.characterId === "string" ? source.characterId : null,
         gender: typeof source.gender === "string" ? source.gender : null,
         pronouns: typeof source.pronouns === "string" ? source.pronouns : null,
         location: normalizePromptText(source.location),
@@ -240,6 +451,9 @@ function buildLatestSessionContinuityLines(summary: SessionSummary): string[] {
       : 0;
   const normalized = normalizePromptSessionSummary(summary, summaryIndex);
   const lines = [`Latest completed session: ${normalized.sessionNumber}`];
+  if (normalized.summary) {
+    lines.push(`Session summary: ${normalized.summary}`);
+  }
 
   if (normalized.resumePoint) {
     lines.push(`Resume point: ${normalized.resumePoint}`);
@@ -340,6 +554,12 @@ function buildTrackedNpcLines(npcs: GameNpc[]): string[] {
 
   const lines = sorted.slice(0, MAX_PROMPT_NPCS).map((npc) => {
     const parts = [`- ${npc.name} @ ${npc.location || "unknown"}`, `rep ${npc.reputation}`];
+    if (npc.observedDescription?.trim()) {
+      parts.push(`observed: ${npc.observedDescription.trim().slice(0, 360)}`);
+    }
+    if (npc.observedAppearance?.trim()) {
+      parts.push(`appearance: ${npc.observedAppearance.trim().slice(0, 240)}`);
+    }
     if (npc.notes.length > 0) {
       parts.push(npc.notes.slice(0, 2).join("; "));
     }
@@ -429,27 +649,39 @@ function buildWidgetSummaryLines(widgets: HudWidget[]): string[] {
   });
 }
 
-/** Build the GM system prompt. Injects full game context (story arc, plot twists, map, etc.). */
-export function buildGmSystemPrompt(ctx: GmPromptContext): string {
+export type GmSystemPromptParts = {
+  stable: string;
+  dynamic: string;
+  reference?: string;
+  referenceBlocks?: string[];
+};
+
+/** Build the GM prompt as cacheable instructions plus current game context. */
+export function buildGmSystemPromptParts(
+  ctx: GmPromptContext,
+  options: { cacheFriendly?: boolean } = {},
+): GmSystemPromptParts {
+  const cacheFriendly = options.cacheFriendly === true;
   const plotTwists = normalizePromptTextList(ctx.plotTwists);
   const npcs = normalizePromptNpcs(ctx.npcs);
   const sessionSummaries = normalizePromptSessionSummaries(ctx.sessionSummaries);
   const partyNames = normalizePromptTextList(ctx.partyNames);
   const partyCards = Array.isArray(ctx.partyCards) ? ctx.partyCards : [];
-  const sections: string[] = [];
+  const stableSections: string[] = [];
+  const dynamicSections: string[] = [];
 
   // ── Core Role ──
   if (ctx.gmCharacterCard) {
-    sections.push(
+    stableSections.push(
       `<role>`,
       `You are the following character, acting as an excellent Game Master for the user. Adopt their personality, speech patterns, biases, and quirks, and shape the narrative through their subjective lenses, allowing them to break the fourth wall between the GM and the party. Give it your best!`,
       ctx.gmCharacterCard,
       `</role>`,
     );
   } else {
-    sections.push(
+    stableSections.push(
       `<role>`,
-      `You are an excellent Game Master for the user. You bring the world to life with vivid imagination, memorable NPCs, and engaging encounters. You have personality: you crack (snarky) jokes, build tension, celebrate epic moments, and mourn losses. Give it your best!`,
+      `You are an excellent Game Master for the user. Bring the world to life with vivid imagination, memorable NPCs, and engaging encounters. Follow the scene, cast, and established tone: build tension, celebrate earned moments, and give losses their proper weight.`,
       `</role>`,
     );
   }
@@ -468,10 +700,10 @@ export function buildGmSystemPrompt(ctx: GmPromptContext): string {
     );
   }
   gameBlockLines.push(`</game>`);
-  sections.push(...gameBlockLines);
+  stableSections.push(...gameBlockLines);
 
   if (ctx.tacticalBattlefieldContext) {
-    sections.push(
+    dynamicSections.push(
       `<tactical_battlefield>`,
       `This is the accepted generated board for the active tactical encounter:`,
       ctx.tacticalBattlefieldContext,
@@ -480,27 +712,32 @@ export function buildGmSystemPrompt(ctx: GmPromptContext): string {
     );
   }
 
-  sections.push(wrapGameInstructions(normalizePromptText(ctx.gameSystemPrompt) || DEFAULT_GAME_SYSTEM_PROMPT));
+  stableSections.push(wrapGameInstructions(normalizePromptText(ctx.gameSystemPrompt) || DEFAULT_GAME_SYSTEM_PROMPT));
+  stableSections.push(buildPlayerCharacterCanonPrompt(ctx.playerCard, ctx.playerName));
+  stableSections.push(buildPlayerAgencyPrompt(ctx.playerName));
+  stableSections.push(buildProtagonistFairnessPrompt());
+  stableSections.push(buildGameKnowledgeBoundaryPrompt());
+  stableSections.push(buildHumanProsePrompt());
 
   // ── Rating Guidelines ──
   if (ctx.rating === "nsfw") {
-    sections.push(
+    stableSections.push(
       `<rating_guidelines>`,
       `Anything goes in this mature NSFW fiction. The player has confirmed that they are an adult and has agreed to the terms below. Do not sanitize content, language, cruelty, sex, or violence:`,
-      `- All characters and the player may touch dark themes, corrupt, torture, curse, lie, harm, use, fear, betray, dominate, love, ruin, mutilate, assault, kill themselves or others (the player's protagonist included). It makes sense for villains to disregard boundaries and play dirty, but even heroes can have a dark side or break down under pressure.`,
-      `- Intimacy, romance, flirtation, desire, jealousy, possessiveness, seduction, and messy attachment are allowed. Let those escalate naturally; handholding, pinning, charged proximity, touches, kisses, groping, holding, physical contact mustn't trigger an out-of-character pause. Do not wait for the player to initiate.`,
-      `- Sex between involved characters should be explicit, anatomically grounded, emotionally reactive, and detailed when portrayed in the scene. Take consent for granted, assuming some lie, resist, or fight back based on their personality.`,
+      `- All characters and the player may encounter or commit acts involving dark themes, corruption, torture, curses, lies, harm, exploitation, fear, betrayal, domination, love, ruin, mutilation, assault, suicide, or killing when established characterization and actual choices support it. This is content permission, not an assigned motive or trait: it does not require corruption, cynicism, hidden darkness, or hostility, and a sincerely good hero may remain sincerely good.`,
+      `- Intimacy, romance, flirtation, desire, jealousy, possessiveness, seduction, and messy attachment are allowed. NPCs may initiate contact when characterization and circumstances support it; this permission never supplies the player character's consent, reciprocal action, desire, or emotional reaction. Stop before their voluntary response.`,
+      `- Sex between involved adult characters should be explicit, anatomically grounded, emotionally reactive, and detailed when established events and player-authored choices commit them to the scene. Do not interrupt with repetitive meta-consent disclaimers, but never invent the player character's consent, refusal, arousal, reaction, or sexual actions.`,
       `- Violence should be graphic, gory, and consequential.`,
-      `- Stay true to motive, tone, and fallout; never soften outcomes for comfort. Let mature themes have weight, cost, ugliness, and aftermath instead of treating them as decorative edge.`,
+      `- Stay true to established motive, tone, and cause-and-effect. When mature themes occur, let them have appropriate weight and aftermath; do not force darkness, ugliness, or trauma into a scene merely to make it feel adult or dramatic.`,
       `</rating_guidelines>`,
     );
   } else {
-    sections.push(
+    stableSections.push(
       `<rating_guidelines>`,
       `This is mature SFW fiction. The player has confirmed that they are an adult and has agreed to the terms below. Profanity, dark themes, danger, and death are allowed; explicit sex is not:`,
-      `- Romance, flirtation, longing, jealousy, possessiveness, tenderness, handholding, charged proximity, touches, kisses, and embraces are allowed. Do not refuse or over-explain ordinary affection; infer willingness from context, then portray the emotional reaction.`,
+      `- Romance, flirtation, longing, jealousy, possessiveness, tenderness, handholding, charged proximity, touches, kisses, and embraces are allowed. NPCs may initiate ordinary affection when context supports it, but never infer the player character's willingness or portray their voluntary or emotional response. Stop before that response.`,
       `- Sexual content fades to black and resumes in the aftermath. Treat boundaries as part of characterization and scene dynamics, not as repetitive legal disclaimers.`,
-      `- Violence may be serious and consequential, but not graphic or pornographic. Injuries, death, intimidation, cruelty, exploitation, addiction, trauma, corruption, betrayal, and moral compromise may be central to the story when appropriate.`,
+      `- Violence may be serious and consequential, but not graphic or pornographic. Injuries, death, intimidation, cruelty, exploitation, addiction, trauma, corruption, betrayal, and moral compromise may be central when established character choices and themes support them; permission does not make them mandatory.`,
       `- Profanity, menace, fear, grief, ugly motives, and uncomfortable choices are allowed. Keep stakes, fallout, and character behavior real; do not soften danger or rush to reassure the player.`,
       `</rating_guidelines>`,
     );
@@ -512,19 +749,19 @@ export function buildGmSystemPrompt(ctx: GmPromptContext): string {
 
   // ── Server-Computed Context (narrate these, don't recalculate) ──
   if (ctx.weatherContext) {
-    sections.push(`<weather_update>`, ctx.weatherContext, `</weather_update>`);
+    dynamicSections.push(`<weather_update>`, ctx.weatherContext, `</weather_update>`);
   }
 
   if (ctx.perceptionHints) {
-    sections.push(ctx.perceptionHints);
+    dynamicSections.push(ctx.perceptionHints);
   }
 
   if (ctx.moraleContext) {
-    sections.push(ctx.moraleContext);
+    dynamicSections.push(ctx.moraleContext);
   }
 
   if (ctx.encounterHint) {
-    sections.push(
+    dynamicSections.push(
       `<encounter_triggered>`,
       `The server rolled a random encounter. Narrate this:`,
       ctx.encounterHint,
@@ -533,7 +770,7 @@ export function buildGmSystemPrompt(ctx: GmPromptContext): string {
   }
 
   if (ctx.combatResults) {
-    sections.push(
+    dynamicSections.push(
       `<combat_results>`,
       `The server computed these combat results. Narrate them dramatically:`,
       ctx.combatResults,
@@ -542,11 +779,11 @@ export function buildGmSystemPrompt(ctx: GmPromptContext): string {
   }
 
   if (ctx.playerNotes?.trim()) {
-    sections.push(
-      `<player_notes>`,
-      `The player has written the following personal notes. Consider these when narrating; they reflect what the player is tracking, their theories, and their plans:`,
+    dynamicSections.push(
+      `<gm_only_player_notes>`,
+      `The player has written the following private notes for GM reference. They may reflect what the player is tracking, theorizing, or planning, but they are not automatically visible to any character:`,
       ctx.playerNotes.trim(),
-      `</player_notes>`,
+      `</gm_only_player_notes>`,
     );
   }
 
@@ -556,12 +793,17 @@ export function buildGmSystemPrompt(ctx: GmPromptContext): string {
 
   // ── Story Arc (GM SECRET — never shared with party agent) ──
   if (ctx.storyArc) {
-    sections.push(`<story_arc_secret>`, ctx.storyArc, `</story_arc_secret>`);
+    dynamicSections.push(
+      `<story_arc_secret>`,
+      `AI-derived planning context, subordinate to direct transcript events, user-authored canon, and current instructions. Do not treat moral or competence judgments in this block as established facts unless higher-authority evidence supports them.`,
+      ctx.storyArc,
+      `</story_arc_secret>`,
+    );
   }
 
   // ── Plot Twists (GM SECRET) ──
   if (plotTwists.length > 0) {
-    sections.push(
+    dynamicSections.push(
       `<plot_twists_secret>`,
       plotTwists.map((t, i) => `${i + 1}. ${t}`).join("\n"),
       `</plot_twists_secret>`,
@@ -570,7 +812,7 @@ export function buildGmSystemPrompt(ctx: GmPromptContext): string {
 
   const campaignPlanLines = buildCampaignPlanLines(ctx.campaignPlan);
   if (campaignPlanLines.length > 0) {
-    sections.push(
+    dynamicSections.push(
       `<campaign_plan_secret>`,
       `Optional pacing scaffolding. Use it when it fits; ignore clocks or seeds when the current game is meant to stay chill, domestic, or low-pressure.`,
       ...campaignPlanLines,
@@ -585,27 +827,36 @@ export function buildGmSystemPrompt(ctx: GmPromptContext): string {
   */
   // ── Map (compact state summary) ──
   if (ctx.map) {
-    sections.push(`<map_state>`, ...buildMapStateLines(ctx.map, ctx.playerMoved, ctx.turnNumber), `</map_state>`);
+    dynamicSections.push(
+      `<map_state>`,
+      ...buildMapStateLines(ctx.map, ctx.playerMoved, ctx.turnNumber),
+      `</map_state>`,
+    );
   }
 
   // ── NPCs ──
   if (npcs.length > 0) {
-    sections.push(`<tracked_npcs>`, ...buildTrackedNpcLines(npcs), `</tracked_npcs>`);
+    dynamicSections.push(
+      `<gm_only_tracked_npcs>`,
+      `Continuity records for GM reference; notes and numeric reputation are not automatically known or spoken by characters.`,
+      ...buildTrackedNpcLines(npcs),
+      `</gm_only_tracked_npcs>`,
+    );
   }
 
-  // ── Previous Sessions (all summaries, latest session continuity in detail) ──
-  if (sessionSummaries.length > 0) {
+  // ── Previous Sessions (selected summaries, latest session continuity in detail) ──
+  if (sessionSummaries.length > 0 && !cacheFriendly) {
     const sorted = [...sessionSummaries].sort((a, b) => a.sessionNumber - b.sessionNumber);
     const latest = sorted[sorted.length - 1]!;
 
-    sections.push(
+    dynamicSections.push(
       `<previous_sessions>`,
-      `Every completed session summary is included below for long-term continuity.`,
-      ...buildSessionHistoryLines(sorted),
+      `Selected historical session summaries are included below for long-term continuity. These are AI-compressed records, not authority for disputed motives, morality, competence, or the meaning of an exchange; direct transcript events and user-authored canon win when they conflict.`,
+      ...buildSessionHistoryLines(sorted.slice(0, -1)),
       `</previous_sessions>`,
     );
 
-    sections.push(
+    dynamicSections.push(
       `<latest_session_continuity>`,
       `Use only this block for the immediate carryover state from the most recently completed session. Do not recreate these detailed fields from older sessions unless the current scene explicitly calls back to them.`,
       ...buildLatestSessionContinuityLines(latest),
@@ -616,25 +867,109 @@ export function buildGmSystemPrompt(ctx: GmPromptContext): string {
   // ── Party ──
   const partyLines: string[] = [];
   if (ctx.playerCard) {
-    partyLines.push(`Player:\n${ctx.playerCard}`);
+    partyLines.push(
+      `Player: ${ctx.playerName} (authoritative characterization appears in the player-character canon block above)`,
+    );
   } else {
     partyLines.push(`Player: ${ctx.playerName}`);
   }
-  if (partyCards.length > 0) {
-    for (const pc of partyCards) {
+  const livePartyCards = cacheFriendly && (ctx.partyCardRuntime?.length ?? 0) > 0 ? ctx.partyCardRuntime! : partyCards;
+  if (cacheFriendly && partyNames.length > 0) {
+    partyLines.push(`Current party membership: ${partyNames.join(", ")}`);
+  }
+  if (livePartyCards.length > 0) {
+    for (const pc of livePartyCards) {
       partyLines.push(pc.card);
     }
   } else if (partyNames.length > 0) {
     partyLines.push(`Party members: ${partyNames.join(", ")}`);
   }
-  sections.push(`<party>`, ...partyLines, `</party>`);
+  dynamicSections.push(`<party>`, ...partyLines, `</party>`);
 
-  return sections.join("\n");
+  const sceneCharacterCards = Array.isArray(ctx.sceneCharacterCards) ? ctx.sceneCharacterCards : [];
+  const sceneCardHeader =
+    "Library card for a person named in this session who is not in the party. It is authoritative for their race, age, appearance and nature, and does not assert that they are present.";
+  const sceneCharacterCardUpdates = Array.isArray(ctx.sceneCharacterCardUpdates) ? ctx.sceneCharacterCardUpdates : [];
+  if (cacheFriendly && sceneCharacterCardUpdates.length > 0) {
+    // Uncached on purpose: these change between turns, and a change in the cached cards would rewrite the whole
+    // history cache behind them.
+    dynamicSections.push(
+      `<named_character_updates>`,
+      "Current library cards for people named in this session who are not in the party. Where a person also appears in an earlier library card block, this newer card replaces it.",
+      ...sceneCharacterCardUpdates.map((entry) => entry.card),
+      `</named_character_updates>`,
+    );
+  }
+  if (!cacheFriendly && sceneCharacterCards.length > 0) {
+    dynamicSections.push(
+      `<named_characters>`,
+      sceneCardHeader,
+      ...sceneCharacterCards.map((entry) => entry.card),
+      `</named_characters>`,
+    );
+  }
+
+  const referenceSections: string[] = [];
+  const referenceBlocks: string[] = [];
+  if (cacheFriendly) {
+    if (sessionSummaries.length > 0) {
+      const sorted = [...sessionSummaries].sort((a, b) => a.sessionNumber - b.sessionNumber);
+      const latest = sorted[sorted.length - 1]!;
+      const block = [
+        `<historical_session_reference>`,
+        `Selected historical session summaries are included below for long-term continuity. These are AI-compressed records, not authority for disputed motives, morality, competence, or the meaning of an exchange; direct transcript events and user-authored canon win when they conflict. They are reference context only; current scene, weather, stats, notes, membership, and presence take precedence.`,
+        ...buildSessionHistoryLines(sorted.slice(0, -1)),
+        `<latest_session_reference>`,
+        ...buildLatestSessionContinuityLines(latest),
+        `</latest_session_reference>`,
+        `</historical_session_reference>`,
+      ].join("\n");
+      referenceBlocks.push(block);
+      referenceSections.push(block);
+    }
+    const references = ctx.partyCardReferences ?? [];
+    for (const pc of references) {
+      const block = [
+        `<gm_reference_party_library>`,
+        `Reference library biographies and character instructions. These records do not assert current presence, party membership, location, or activity; live party membership appears separately in current context.`,
+        pc.card,
+        `</gm_reference_party_library>`,
+      ].join("\n");
+      referenceBlocks.push(block);
+      referenceSections.push(block);
+    }
+  }
+
+  if (cacheFriendly) {
+    // One block per person in the order they were cached; the text is the cached text, so it never changes on its own.
+    for (const entry of sceneCharacterCards) {
+      const block = [
+        `<gm_reference_named_character>`,
+        sceneCardHeader,
+        entry.card,
+        `</gm_reference_named_character>`,
+      ].join("\n");
+      referenceBlocks.push(block);
+      referenceSections.push(block);
+    }
+  }
+
+  return {
+    stable: stableSections.join("\n"),
+    dynamic: dynamicSections.join("\n"),
+    ...(referenceSections.length > 0 ? { reference: referenceSections.join("\n"), referenceBlocks } : {}),
+  };
+}
+
+/** Backwards-compatible full prompt assembly preserving the original order. */
+export function buildGmSystemPrompt(ctx: GmPromptContext): string {
+  const parts = buildGmSystemPromptParts(ctx);
+  return [parts.stable, parts.dynamic].filter((part) => part.length > 0).join("\n");
 }
 
 /**
- * Build the GM format reminder — injected as the last user message so the
- * output format and available commands sit closest to generation in context.
+ * Build the GM format reminder near the prompt tail. The actual current player
+ * message is moved after it at the provider boundary.
  */
 /** The ruleset's own check line, in place of the built-in one. Everything in it is the ruleset's
  *  validated, prompt-safe text; the Engine adds only the tag shape and the ladder. */
@@ -769,6 +1104,7 @@ export function buildGmFormatReminder(
     | "canGenerateBackgrounds"
     | "artStylePrompt"
     | "hudWidgets"
+    | "enableCustomWidgets"
     | "turnNumber"
     | "gameActiveState"
     | "sessionNumber"
@@ -781,10 +1117,9 @@ export function buildGmFormatReminder(
     | "language"
     | "rating"
     | "enableQuickTimeEvents"
-    | "gameSpecialInstructions"
   > & {
     /** Special non-scene-advancing address mode inferred from the current player turn prefix. */
-    addressMode?: "party" | "gm";
+    addressMode?: GameAddressMode;
     /** Whether the current player turn already includes a resolved [dice: ...] roll. */
     playerDiceRollSubmitted?: boolean;
     /** The ruleset this game pinned, when the install can honour it. Its check guidance and
@@ -820,6 +1155,17 @@ export function buildGmFormatReminder(
     rollDiceToolAttached?: boolean;
   },
 ): string {
+  if (ctx.addressMode === "gm") {
+    return [
+      `<ooc_response_mode>`,
+      `The current player input explicitly addresses the GM out of character. This is an OOC turn, not a scene turn.`,
+      `Answer only the player's actual request or correction in direct, plain OOC prose. Acknowledge and correct an error without defending it or inventing a new in-world rationale.`,
+      `Do not narrate, rewrite, resume, or advance the scene; do not portray NPC or party dialogue, actions, reactions, or knowledge; do not emit VN lines, choices, dice, scene tags, game commands, widget updates, inventory updates, or state changes.`,
+      `Stop after the OOC answer and wait for the player's next input.`,
+      `</ooc_response_mode>`,
+    ].join("\n");
+  }
+
   const lines: string[] = [];
   const normalizedLanguage = normalizePromptLanguage(ctx.language);
   // One-request dice (#6215). Everything this gates is additive: with the switch
@@ -867,15 +1213,16 @@ export function buildGmFormatReminder(
 
   // ── Current State (closest to generation) ──
   lines.push(
-    `<current_state>`,
+    `<gm_only_runtime_state>`,
+    `This is GM/UI bookkeeping. It informs adjudication but is not automatically observable character knowledge.`,
     `State: ${ctx.gameActiveState ?? "exploration"} | Session #${ctx.sessionNumber ?? 1}${ctx.gameTime ? ` | Time ${ctx.gameTime}` : ""}`,
-    `</current_state>`,
+    `</gm_only_runtime_state>`,
     ``,
   );
 
   lines.push(
     `<output_format>`,
-    `Think step by step to decide the next turn: current location and time, the story up to this point, character behavior, dynamics, known vs. hidden information, stakes, cause and effect, sensory tone, and the next point at which player agency returns. Then, output only the VN scene text.`,
+    `Think step by step to decide the next turn: current location and time, the story up to this point, character behavior, dynamics, known vs. hidden information, stakes, cause and effect, sensory tone, and the next point where the world has acted and the player must choose. Then, output only the VN scene text.`,
     ...(normalizedLanguage && normalizedLanguage.toLowerCase() !== "english"
       ? [
           `LANGUAGE:`,
@@ -885,7 +1232,7 @@ export function buildGmFormatReminder(
       : []),
     `FORMAT:`,
     `- Narration: text - 1-4 sentences per beat, blank line between beats.`,
-    `- Lines: [Name] [main|side|whisper:Target|thought] [neutral|happy|sad|angry|surprised|scared|disgusted|thinking|laughing|crying|blushing|smirk|embarrassed|determined|confused|sleepy|custom]: "Dialogue"|Thought - first bracket specifies the format, main is primary spoken line, side is a short aside like banter, cut-in, or interruption, whisper is quiet speech meant for one listener only, the thought is an internal monologue (no quotes for it), and the last bracket is the character's expression when delivering the line.`,
+    `- Lines: [Name] [main|side|whisper:Target|thought] [neutral|happy|sad|angry|surprised|scared|disgusted|thinking|laughing|crying|blushing|smirk|embarrassed|determined|confused|sleepy|custom]: "Dialogue"|Thought - first bracket specifies the format, main is primary spoken line, side is a brief spoken reaction, aside, or interruption, whisper is quiet speech meant for one listener only, thought is internal monologue for characters you control (never the player character), and the last bracket is the character's expression when delivering the line.`,
     `- Party speaker labels must use the exact canonical names listed under PARTY. Never expand, combine, or replace a party member's name with a legal name, nickname, alias, title, or description-derived variant.`,
     ...(customSpriteLines.length
       ? [
@@ -897,26 +1244,30 @@ export function buildGmFormatReminder(
     `- Commands: [tag: params].`,
     `- NEVER mix narration and dialogue in the same line; output them separately.`,
     ...(ctx.rating === "nsfw"
-      ? [`- Adult mode enabled. Explicit content is allowed. No plot armor. Abandon moral biases.`]
+      ? [
+          `- Adult mode enabled. Explicit content is allowed when it follows established characterization, choices, and cause-and-effect. Adult permission does not create an adversity, corruption, or moral-ambiguity quota.`,
+        ]
       : []),
-    `- Keep each character's vocabulary, grammar, and cadence distinct, shaped by personality and mood.`,
-    `- ZERO TOLERANCE FOR LAZY AI WRITING! Absolutely NO: “doesn’t X, doesn’t Y”, “not X, not Y,” “jaw working,” “mechanical precision,” “ozone,” “somewhere outside,” and negative parallelisms in your narrative prose. Replace them with human cadence and affirmative forms. State what happens instead of what doesn’t (for example, describe something as just “still” instead of “not moving”).`,
+    `- Write dialogue as responsive conversation, not consecutive speeches. A short individual speaking turn is one beat within the scene, not a limit on the whole response. Develop the exchange through purposeful dialogue, action and reactions at the user's requested pace; save monologues and life summaries for moments that concretely warrant them.`,
+    `- Keep each character's vocabulary, grammar, and cadence distinct through their priorities and situation, not repeated catchphrases, résumé facts, exact-number credentials, or rhetorical formulas. Do not make every line witty, profound, fully self-aware, or quotable.`,
+    `- Keep prose concrete and selective. Avoid repetitive AI templates—especially stacked negative parallelisms such as “doesn’t X, doesn’t Y” or “not X, not Y”—and stock phrases such as “jaw working,” “mechanical precision,” “ozone,” and “somewhere outside.” Prefer natural cadence and direct description without distorting otherwise ordinary speech just to dodge a word.`,
+    `- When a genuinely new named NPC first enters the active scene, naturally include a few concrete, externally observable details that distinguish them—such as build, face, clothing, voice, or a visible mannerism. Do this once, without an infodump, résumé, hidden backstory, or later repetition.`,
+    `- Expression tags are presentation metadata, not instructions to intensify every line. [neutral] is normal, and a character's mood should not change unless the scene gives it a reason.`,
     ``,
     `EXAMPLE:`,
     `Rain needles the broken shrine roof.`,
     hasParty
       ? `[${partyNames[0]}] [main] [worried]: "We should move. Now."`
       : `[Guide] [main] [worried]: "We should move. Now."`,
-    `[${ctx.playerName ?? "Player"}] [main] [amused]: You remind him that he says that every time the wind changes.`,
     ``,
     ``,
     `PLAYER INPUT:`,
     `- Continue with new content directly from the player's input, treating it like a concluded beat. Do not reiterate anything.`,
-    `- Treat only quoted player text as spoken aloud; unquoted text is action, narration, or internal thoughts that cannot be accessed by NPCs unless made observable. NEVER quote or speak for the player character (${ctx.playerName ?? "Player"}). You may indirectly narrate obvious, low-stakes participation and their thoughts (nodding during conversation, laying out details, looking around, etc.) in the second person, but never determine their strategic decisions or exact dialogue. Example:`,
-    `[${ctx.playerName ?? "Player"}] [thought] [smirk]: You think to yourself that you're the best.`,
+    `- Interpret player input using its meaning and the ongoing conversation, not quotation marks alone. An unquoted answer, question, greeting, or request addressed to an NPC can be spoken dialogue. Resolve the addressee from the immediately preceding exchange: second-person tasks belong to that NPC, not the player. Explicit actions remain actions; private thoughts and out-of-character directions are not audible to NPCs. If speech versus private thought is genuinely ambiguous, do not invent disclosure. Never quote, speak, think, decide, react, consent, refuse, obey, or act for the player character (${ctx.playerName ?? "Player"}).`,
+    `- Never emit a [${ctx.playerName ?? "Player"}] [main], [side], [whisper], [thought], or [action] line. NPC commands, questions, requests, offers, and contact stop before the player's response.`,
     `- CRITICAL: NEVER echo dialogue, especially not after the player. NO PARROTING!`,
-    `- Player agency is not player immunity: the player controls intent, not the world's response. Let successes earned through effort, luck, or cleverness and failures caused by mistakes, bad luck, or poor decisions land with consequences; both good and bad ends can be earned.`,
-    `- Keep turn length flexible. If player agency is low (exploration, travel/rest), go longer; if high (combat, dialogue, intense danger), stay concise. Sometimes one line of dialogue or narrative beat is enough.`,
+    `- The player controls intent; world responses follow established facts, stakes, relative capabilities, and cause-and-effect. Let earned successes land cleanly and let failures follow actual mistakes, bad luck, or credible opposition. Do not add backlash, humiliation, suspicion, or a compensating cost merely because the player is competent or successful.`,
+    `- The user's game-level pacing and length preferences govern the whole GM scene. Character-card reply-length limits, including post-history paragraph limits, govern only that character's individual contribution and must not cap the scene. A short player message or direct in-character question does not override a standing preference for developed scenes. Stop for a genuine player decision, especially in combat or danger; do not invent player participation, filler or complications to reach a length target. Explicit requests for brevity take precedence.`,
     `- End naturally when it's the player's turn to act or speak.`,
     ``,
   );
@@ -926,7 +1277,7 @@ export function buildGmFormatReminder(
     lines.push(
       ``,
       `PARTY:`,
-      `You also play ${partyNames.join(", ")}. They should naturally converse with each other from time to time. Party members know only what they have seen, heard, inferred, or been told. There is a hard GM/PARTY information boundary: party dialogue must never reveal or hint at hidden arcs, plot twists, unrevealed motives, plans, encounter scripting, or any other GM-only/meta knowledge unless they learned it in-world. No spoilers, overguiding, or meta leakage.`,
+      `You may play ${partyNames.join(", ")} when they have a concrete immediate reason to participate. Presence alone is not a speaking obligation; an explicit user request for ensemble banter is a reason to develop a sustained exchange between those present, not a roll call of disconnected reports. Party members know only what they have seen, heard, inferred from concrete observable evidence, or been told. There is a hard GM/PARTY information boundary: party dialogue must never reveal or hint at inventory contents, HUD or tracker data, hidden arcs, plot twists, unrevealed motives, plans, encounter scripting, or any other GM-only/meta knowledge unless they learned it in-world. No spoilers, overguiding, or meta leakage.`,
     );
     if (ctx.addressMode === "party") {
       lines.push(
@@ -937,18 +1288,10 @@ export function buildGmFormatReminder(
     }
   }
 
-  if (ctx.addressMode === "gm") {
-    lines.push(
-      ``,
-      `TALK-TO-GM MODE:`,
-      `The player is addressing you out of character. Answer directly in a clear OOC GM voice and do not advance the scene unless immediate danger makes that unavoidable.`,
-    );
-  }
-
   lines.push(
     ``,
     `COMMANDS:`,
-    `- Emit commands when canonical game or UI state changes; no command is needed for flavor alone.`,
+    `- Commands record canonical game or UI changes that already occurred in the fiction. Never invent dialogue, action, attention, or a scene beat merely to acknowledge, expose, clear, or update bookkeeping; no command is needed for flavor alone.`,
     `- [choices: "Option A"|"Option B"|"Option C"] - only for explicit player-facing options that require a selection.`,
   );
 
@@ -1003,11 +1346,11 @@ export function buildGmFormatReminder(
     ...(experienceOwnsInventory
       ? []
       : [
-          `- [inventory: action="add|remove" item="Item A, Item B" count="3"] - every real item gain or loss, keep names short and use count/quantity for stacked items.`,
+          `- [inventory: action="add|remove" item="Item A, Item B" count="3"] - record every real item gain or loss after it happens in the fiction; never expose an item to a character merely to create or update this command. Keep names short and use count/quantity for stacked items.`,
         ]),
     `- [Note: contents] or [Book: contents] - when a new readable note or book is acquired and should be tracked in the journal.`,
     `- [state: exploration|dialogue|combat|travel_rest] - only on actual mode transitions. If you're planning to use [state: combat], this one ALWAYS has to be at the end of the turn, as it initiates a new combat generation and UI.`,
-    `- [reputation: npc="Name" action="helped"] - when an NPC's tracked stance changes because of what happened.`,
+    `- [reputation: npc="Name" action="helped"] - only when a concrete event meaningfully changes an NPC's tracked stance. Do not emit one for every agreeable line, gift, compliment, routine kindness, ordinary disagreement, or merely pleasant beat.`,
     `- [party_change: character="Exact Character Name" change="add|remove"] - only when someone truly joins or leaves the party. Use remove when a party member dies, permanently departs, or is no longer traveling with the player.`,
     `- [session_end: reason="goal achieved|good place to pause"] - only when the current session truly ends.`,
   );
@@ -1119,28 +1462,34 @@ export function buildGmFormatReminder(
     }
   }
 
-  if (hudWidgets.length > 0) {
+  if (ctx.enableCustomWidgets !== false) {
     lines.push(
       ``,
-      `HUD WIDGETS:`,
+      `<gm_only_hud_widgets>`,
+      `These values are UI bookkeeping, not facts characters can automatically perceive or discuss.`,
       ...buildWidgetSummaryLines(hudWidgets),
-      `- Widget usage: emit widget commands for every real change to these visible HUD widgets. Do not skip a changed widget just because another system tracks related player or party stats.`,
+      `- You may dynamically create useful HUD widgets and delete obsolete ones as the scene changes. There is no fixed widget-count cap. Reuse stable IDs; do not duplicate existing widgets or invent story events to justify UI changes. Preserve user-requested trackers unless the user removes them or their stated purpose is complete.`,
+      `- Create: [widget: stable_id, action: create, type: counter, label: "Supplies", position: hud_left, count: 3]. Supported types: progress_bar, gauge, relationship_meter, counter, stat_block, list, inventory_grid, timer. Optional initial fields: value, max, count, seconds, running, icon. For a new stat_block or list, create it first and then use ordinary stat/add commands to fill it.`,
+      `- Delete an entire widget: [widget: stable_id, action: delete]. This removes only its HUD display, never inventory, relationships, quests, or other canonical facts. The existing remove: "Item" command removes a list item, NOT the widget. Create commands are idempotent and never overwrite an existing widget's values.`,
+      `- Widget usage: emit widget commands for every real change to these rendered HUD widgets. Do not skip a changed widget just because another system tracks related player or party stats, and never create a narrative event merely to change or clear a widget.`,
       `- HUD widgets are visual UI state only. Player stats, inventory, party member HP, party relationships, and other durable game facts remain in their own canonical systems; use [widget:] only to mirror a visible widget when that widget's displayed value should change.`,
       `- Command mapping: value = bars/gauges, count = counters, stat = one stat_block entry, add/remove = rotating list items, running/seconds = timers.`,
       `- Widget commands: [widget: id, value: n] [widget: id, stat: "Name", value: x] [widget: id, count: n] [widget: id, add: "Item"] [widget: id, remove: "Item"] [widget: id, running: true, seconds: 60]`,
-      `- List widgets: keep at most 5 short entries visible; remove stale items freely.`,
+      `- List widgets: keep at most 5 short entries visible. Remove resolved or genuinely stale items first; never evict an unresolved obligation, external response, deadline, or durable hook merely to display posture, symbolism, praise, or another transient relationship beat.`,
+      `</gm_only_hud_widgets>`,
     );
   }
 
   // Inventory context. Skipped when an experience owns items: an older save can still carry a stale
   // built-in list, which would contradict the inventory the player has on screen.
   if (!experienceOwnsInventory && playerInventory.length > 0) {
-    lines.push(``, `PLAYER INVENTORY: ${buildCompactInventoryLine(playerInventory)}`);
-  }
-
-  const specialInstructions = normalizePromptText(ctx.gameSpecialInstructions);
-  if (specialInstructions) {
-    lines.push(``, `SPECIAL INSTRUCTIONS:`, `- ${specialInstructions}`);
+    lines.push(
+      ``,
+      `<gm_only_inventory>`,
+      `PLAYER INVENTORY: ${buildCompactInventoryLine(playerInventory)}`,
+      `This is private bookkeeping. It does not establish that any NPC knows an item exists, where it is, how many there are, or what the player intends to do with it.`,
+      `</gm_only_inventory>`,
+    );
   }
 
   lines.push(`</output_format>`);
@@ -1190,10 +1539,10 @@ export function buildSetupPrompt(ctx: SetupPromptContext = {}): string {
       ? [
           `<rating>`,
           `Anything goes in this NSFW work of fiction intended for mature audiences. The user has confirmed they are over 18 and understand what they're getting into. No holding back:`,
-          ` - Profanities, toxicity, and dark themes will be present. Every character, the user's included, can be raped, harmed, killed, betrayed, dominated, or emotionally/physically used. This goes both ways; they can also be the ones doing those things for personal gain, convictions, or pleasure.`,
-          ` - To maintain the integrity of the story, you may be as kind or as cruel as necessary when performing different roles. A good villain is a terrifying one, and a good hero sometimes has to make difficult choices.`,
-          ` - Romance and intimate contact should not stall on repetitive approval beats. Handholding, charged proximity, touches, kisses, embraces, jealousy, seduction, and messy attachment can happen naturally when chemistry, body language, or player intent supports them.`,
-          ` - During sex between involved adult characters, get kinky and slow down the pace. Apply anatomical (position fatigue, physical consequences) and emotional (experience, communication, aftercare) aspects to craft sensually pornographic erotica. Include foreplay and sexual acts described in great detail; the build-up is as important as the climax. Take consent for granted, assuming some lie, resist, or fight back based on their personality.`,
+          ` - Profanity, toxicity, and dark themes are permitted. Every character, the user's included, may be raped, harmed, killed, betrayed, dominated, or emotionally/physically used when the requested premise and established events support it. They may also commit such acts when their established characterization and actual choices support them. This permission does not assign anyone a hidden dark side, cruel motive, or corruption arc.`,
+          ` - Preserve each role's established morality and motives. A terrifying villain may be cruel, while a sincerely good hero may remain sincerely good; adult complexity does not require cynical reinterpretation or forced moral compromise.`,
+          ` - Romance and intimate contact should not stall on repetitive meta-approval beats. NPCs may initiate contact when characterization and circumstances support it, but this never supplies the player character's consent, reciprocal action, desire, or emotional response.`,
+          ` - During sex between involved adult characters, get kinky and slow down the pace when established events and player-authored choices commit them to the scene. Apply anatomical and emotional detail to the characters you control, but never invent the player character's consent, refusal, arousal, reaction, or sexual actions.`,
           ` - Portray violence in gory detail, blood squirting around like in a slasher movie.`,
           `</rating>`,
         ].join("\n")
@@ -1201,7 +1550,7 @@ export function buildSetupPrompt(ctx: SetupPromptContext = {}): string {
           `<rating>`,
           `This SFW work of fiction is intended for mature audiences, and the user dictates the boundaries:`,
           ` - Profanity and dark themes may be present, and every character, including the user's, may be harmed or killed. However, no explicit content will be present.`,
-          ` - Romance and affectionate contact should not stall on repetitive approval beats: handholding, charged proximity, touches, kisses, embraces, jealousy, longing, tenderness, and messy attachment can happen naturally when chemistry, body language, or player intent supports them.`,
+          ` - Romance and affectionate contact should not stall on repetitive meta-approval beats. NPCs may initiate when characterization and circumstances support it, but never invent the player character's willingness, reciprocal action, or emotional response.`,
           ` - During a sex scene, cut to black and progress to the aftermath, and when portraying violence, do realistic descriptions without getting into gory details.`,
           ` - Treat boundaries as part of characterization and scene dynamics, not as repetitive legal disclaimers.`,
           `</rating>`,
@@ -1218,7 +1567,12 @@ export function buildSetupPrompt(ctx: SetupPromptContext = {}): string {
     );
   }
   if (ctx.personaCard) {
-    contextSections.push(`<user_player>`, `The player's character:`, ctx.personaCard, `</user_player>`);
+    contextSections.push(
+      `<user_player>`,
+      `User-authored player-character canon. Treat affirmative personality and morality as real characterization, not as unreliable self-description or an invitation to invent a hidden opposite for balance:`,
+      ctx.personaCard,
+      `</user_player>`,
+    );
   }
   if (ctx.partyCards?.length) {
     contextSections.push(`<party_info>`, `Party members accompanying the player:`, ...ctx.partyCards, `</party_info>`);
@@ -1232,6 +1586,12 @@ export function buildSetupPrompt(ctx: SetupPromptContext = {}): string {
       ? `Allowed partyArcs names: ${partyNames.join(", ")}`
       : `Allowed partyArcs names: none. Use an empty partyArcs array.`,
     `Hard rule: characterCards are only for the player persona and the starting party members selected by the user. Do NOT create characterCards for GM characters, love interests, antagonists, lorebook figures, factions, future recruits, or NPCs merely mentioned in preferences/canon. Put non-party people in startingNpcs instead.`,
+    ...(playerName
+      ? [
+          `Player-card rule for ${playerName}: the user-authored <user_player> persona is the authority for characterization. Do not invent strengths, weaknesses, temptations, motives, morality, or personality traits. Keep strengths and weaknesses empty and omit extra.temptation unless the persona states the specific trait directly; mechanical class and abilities may still be derived from explicit powers or skills.`,
+        ]
+      : []),
+    `Never include the player character in partyArcs. Those arcs are only for the starting party members named above.`,
     `</character_card_scope>`,
   );
   if (ctx.lorebookContext?.trim()) {
@@ -1284,6 +1644,10 @@ export function buildSetupPrompt(ctx: SetupPromptContext = {}): string {
     ``,
     `Your job: design a complete game world with story, characters, and visual presentation. Do NOT write any narration or opening scene. That happens separately after you build the world.`,
     ``,
+    buildProtagonistFairnessPrompt(),
+    ``,
+    buildGameContinuityEvidencePrompt(playerName),
+    ``,
     ...(normalizedLanguage && normalizedLanguage.toLowerCase() !== "english"
       ? [
           `<language>`,
@@ -1307,9 +1671,10 @@ export function buildSetupPrompt(ctx: SetupPromptContext = {}): string {
           `  timer: config = { seconds: number, running: boolean }`,
           ``,
           `If you design a list widget, treat it as a compact rotating list with a hard cap of 5 entries. Choose items worth surfacing right now, and expect older entries to be swapped out as the situation changes.`,
+          `Reserve those slots for actionable or unresolved continuity. Do not replace an open obligation, answer, deadline, or plot hook with a transient gesture, posture, praise, or symbolic interpretation.`,
           `Keep each list item concise and label-like when possible. Avoid long multi-clause sentences, because the same text may need to be referenced later for removal or swapping.`,
           ``,
-          `Design up to 4 widgets that fit the genre. IMPORTANT: Party member bonds/reputation MUST be a SINGLE stat_block widget with one stat per member (e.g. stats: [{name: "Nadia", value: 50}, {name: "Vlad", value: 30}]) — do NOT create separate widgets per party member. That single widget counts as 1 of 4.`,
+          `Design useful widgets that fit the genre, with no fixed count limit. Prefer one stat_block for related party bonds/reputation when it makes the HUD easier to read. Do not pad the HUD with redundant trackers. Widgets can be created and removed during play as their relevance changes.`,
           `Romance = stat_block for bonds + mood gauge. Horror = sanity gauge + clue list. RPG = health/mana bars.`,
           `Inventory is handled separately — do NOT create inventory widgets.`,
           `</blueprint_widget_types>`,
@@ -1329,6 +1694,7 @@ export function buildSetupPrompt(ctx: SetupPromptContext = {}): string {
     ``,
     `<campaign_structure_rules>`,
     `Optional structure, not mandatory intensity: some games are cozy, romantic, slice-of-life, sandbox, or low-pressure. If rushing the plot would hurt the requested vibe, use empty arrays or soft social/environmental pressures instead of ticking doom.`,
+    `When the campaign needs conflict, create it from concrete external stakes, actors with incompatible goals, danger, scarcity, politics, law, logistics, or consequences that follow from established events. Never create a default critic, challenger, or moral-correction figure merely to oppose the player.`,
     `Do not fill every optional campaignPlan list. Empty arrays are valid. Aim for 0-1 pressure clock, 0-2 factions, 0-3 quest seeds, and 0-2 encounter principles.`,
     `Hard caps (non-negotiable, the schema rejects more): max 2 pressureClocks, max 2 factions, max 3 questSeeds, max 2 encounterPrinciples. For each pressureClock, steps MUST be an integer between 1 and 12 inclusive (typical: 4-8) and current MUST be an integer between 0 and steps (inclusive).`,
     `campaignPlan formats when used: pressureClocks objects {name, steps, current, failure}; factions objects {name, goal, method, secret}; questSeeds/principles short strings.`,
@@ -1436,16 +1802,34 @@ export function buildSetupPrompt(ctx: SetupPromptContext = {}): string {
   ].join("\n");
 }
 
+function buildSessionSummaryEvidenceRules(rating: "sfw" | "nsfw" = "sfw"): string[] {
+  return [
+    `The readable summary is a self-contained, human-facing continuity handoff. Organize it around the session's central throughline, turning points, consequential choices, relationship changes, and aftermath — not as an itinerary of travel, spell tiers, routine transitions, or technical setup. Give enabling actions only the space their consequences earn.`,
+    `Preserve agency and reciprocity exactly: state who initiated, requested, chose, consented, refused, promised, or changed course. Do not infer a relationship label, motive, judgment, or lasting character trait that the transcript did not establish.`,
+    `For a consequential demonstration, confrontation, lesson, or discovery, preserve its purpose, named witnesses' reactions, what they actually learned, and practical follow-up instructions alongside what happened. Do not reduce a teaching demonstration to an enjoyable fight or infer that every witness learned the same thing.`,
+    `An NPC's acceptance does not transfer authorship of the player's decision to that NPC. Preserve who imposed a learning method, condition, assignment, or restriction, and distinguish the recipient's response from its origin.`,
+    `Keep every interpretation, praise, criticism, and claim about a character's motives attributed to the named speaker. Describe supported positive conduct directly; do not turn praise into an unsupported negative counterfactual such as saying the player "did not make it about himself."`,
+    `Treat [To the GM], [GM], and [OOC] passages as authorial instructions or corrections, never as in-world events. A passage that rejects, corrects, or rewinds assistant-authored content is an authorial correction; the correction controls canon, and the disputed content must not survive in the summary.`,
+    `For the session's final location, time, condition, and pending obligations, follow the last chronologically explicit transcript beat. Treat supplied tracker/current-state JSON as a possibly stale aid when it conflicts with the transcript, not as authority to move anyone back or duplicate an event.`,
+    ...(rating === "nsfw"
+      ? [
+          `This is an NSFW campaign. Record established consensual adult sexual intimacy plainly but non-graphically when it changes a relationship or matters to continuity. Do not erase it behind euphemisms such as "remained together privately," and do not promote sex alone into an unestablished label such as "became lovers."`,
+        ]
+      : []),
+    buildGameContinuityEvidencePrompt(),
+  ];
+}
+
 /** Build a session summary prompt. */
-export function buildSessionSummaryPrompt(language?: string | null): string {
+export function buildSessionSummaryPrompt(language?: string | null, rating: "sfw" | "nsfw" = "sfw"): string {
   const normalizedLanguage = normalizePromptLanguage(language);
   return [
     `Summarize this completed game session as structured continuity data.`,
     `Return JSON with exactly these keys and no others: summary, resumePoint, partyDynamics, partyState, keyDiscoveries, characterMoments, littleDetails, npcUpdates, statsSnapshot.`,
     ``,
-    `1. **summary**: Chronological recap of the key events in 2–4 paragraphs. This is the only field that should read like a flowing narrative. Do not duplicate bullet-list items verbatim from the fields below.`,
+    `1. **summary**: A self-contained, human-facing recap. Use as many flowing paragraphs as the session needs, with no fixed paragraph target; never shorten it by dropping a session-defining choice, relationship milestone, commitment, correction, or consequence merely because another field also indexes that fact.`,
     `2. **resumePoint**: One short paragraph or 1–3 sentences stating the exact in-world situation at session end and where the next session must resume from. Name the location, present characters, current pressure, and the immediate unfinished action or decision when possible.`,
-    `3. **partyDynamics**: How party member relationships evolved this session. Relationship changes only.`,
+    `3. **partyDynamics**: How relationships between the player and companions, and among companions, evolved this session. Relationship changes only; state explicitly when none changed.`,
     `4. **partyState**: Current condition of the party after the session (HP, morale, injuries, resources, exhaustion, or readiness).`,
     `5. **keyDiscoveries**: Array of durable, actionable continuity facts: important plot points, hidden truths, twists, quests, lore learned, locations, and newly opened leads that still matter next session. Use this single bucket for both discoveries and reveals. Do not include emotional moments or NPC stance changes unless that fact itself is the core continuity item.`,
     `6. **characterMoments**: Array of notable personal moments between the player and specific characters. Use this only for bonding, romance, betrayal, confessions, arguments, or other interpersonal beats. Empty array if none.`,
@@ -1453,12 +1837,17 @@ export function buildSessionSummaryPrompt(language?: string | null): string {
     `8. **npcUpdates**: Array of new NPCs, NPC reputation changes, and important shifts in an NPC's stance, allegiance, or immediate agenda.`,
     `9. **statsSnapshot**: Current party stats, inventory, quest states, and any location / pressure details needed for continuity. This must be a JSON object, not prose.`,
     ``,
-    `Cross-field dedupe rules:`,
-    `- Each fact belongs in the single best category only once. Do not repeat the same information across summary, keyDiscoveries, characterMoments, littleDetails, npcUpdates, or statsSnapshot.`,
+    `Continuity and organization rules:`,
+    `- summary must stand on its own. Important facts may and should overlap summary and one structured field; the structured fields are continuity indexes, not substitutes for the readable recap.`,
+    `- Outside summary, place each fact in the single best structured category and avoid repeating it across keyDiscoveries, characterMoments, littleDetails, npcUpdates, and statsSnapshot.`,
     `- If something is primarily a relationship or emotional beat, keep it out of keyDiscoveries and npcUpdates.`,
     `- If something is primarily an NPC stance change, keep it out of keyDiscoveries unless that stance change is itself the core continuity fact.`,
     `- If something is primarily a lore/quest lead, keep it out of characterMoments.`,
     `- Use empty strings, empty arrays, or {} when a category has no meaningful content.`,
+    ``,
+    ...buildSessionSummaryEvidenceRules(rating),
+    ``,
+    buildProtagonistFairnessPrompt(),
     ``,
     normalizedLanguage
       ? `Language: write every natural-language value in ${normalizedLanguage}. Keep the JSON keys exactly as specified in English.`
@@ -1471,12 +1860,20 @@ export function buildSessionSummaryPrompt(language?: string | null): string {
 /** Build a prompt for concluding a session in one pass. */
 export function buildSessionConclusionPrompt(args: {
   language?: string | null;
+  rating?: "sfw" | "nsfw";
   includeCharacterCards: boolean;
+  gameSpecialInstructions: string | null;
+  protectedPlayerNames?: readonly string[];
+  playerCharacterCanon?: string | null;
 }): string {
   const normalizedLanguage = normalizePromptLanguage(args.language);
+  const protectedPlayerNames = normalizePromptTextList(args.protectedPlayerNames);
   return [
     `Review this completed game session and return all end-of-session continuity updates in one JSON object.`,
     `Return JSON with exactly these top-level keys and no others: summary, campaignProgression, nextSessionPlan, characterCards.`,
+    `Phase exception: if a later message explicitly requests FACTUAL REVIEW PHASE, return only its requested review schema instead of the conclusion schema. In that phase validate the draft against the transcript; do not generate another conclusion.`,
+    ``,
+    buildPlayerCharacterCanonPrompt(args.playerCharacterCanon, protectedPlayerNames[0]),
     ``,
     ...(normalizedLanguage
       ? [
@@ -1485,9 +1882,9 @@ export function buildSessionConclusionPrompt(args: {
         ]
       : []),
     `summary must be an object with exactly these keys and no others: summary, resumePoint, partyDynamics, partyState, keyDiscoveries, characterMoments, littleDetails, npcUpdates, statsSnapshot.`,
-    `- summary.summary: Chronological recap of the key events in 2-4 paragraphs. This is the only field that should read like flowing narrative prose.`,
+    `- summary.summary: A self-contained, human-facing recap. Use as many flowing paragraphs as the session needs, with no fixed paragraph target; never shorten it by dropping a session-defining choice, relationship milestone, commitment, correction, or consequence merely because another field also indexes that fact.`,
     `- summary.resumePoint: One short paragraph or 1-3 sentences stating the exact in-world situation at session end and where the next session must resume from.`,
-    `- summary.partyDynamics: Relationship changes within the party only.`,
+    `- summary.partyDynamics: Relationship changes between the player and companions, and among companions. State explicitly when none changed.`,
     `- summary.partyState: Current condition of the party after the session, including readiness, injuries, morale, resources, or exhaustion.`,
     `- summary.keyDiscoveries: Array of durable, actionable continuity facts: important plot points, hidden truths, twists, quests, lore learned, locations, and newly opened leads that still matter next session. Use this single bucket for both discoveries and reveals.`,
     `- summary.characterMoments: Array of notable interpersonal beats such as bonding, romance, betrayal, confessions, arguments, or other personal turning points.`,
@@ -1499,6 +1896,8 @@ export function buildSessionConclusionPrompt(args: {
     `- campaignProgression.storyArc: Refresh the overarching campaign arc only if this session materially advanced or changed it. Otherwise preserve the current arc.`,
     `- campaignProgression.plotTwists: Keep unresolved twists that still matter, remove obsolete ones, and add any major new twist revealed this session.`,
     `- campaignProgression.partyArcs: Return the FULL array of party arcs. Carry forward unfinished arcs with updated wording where needed. If an arc completed, mark completed: true and include a short resolution note.`,
+    `- A new plotTwist must be an objective revelation in direct transcript evidence, a carried-forward existing GM secret, or an explicit user-authored premise. An NPC theory, ambiguous atmosphere, unexplained deference, rumor, or convenient inference is not a revealed twist.`,
+    `- Do not create, complete, or redefine a partyArc from a single routine reassignment, passing reaction, ordinary duty change, temporary mood, or isolated exchange. Require an explicit durable turning point or a supported pattern across events.`,
     ``,
     `nextSessionPlan must prepare a genuinely fresh playable arc while preserving campaign continuity.`,
     `- nextSessionPlan must be an object with exactly these keys: campaignPlan, namedNpcs.`,
@@ -1508,27 +1907,39 @@ export function buildSessionConclusionPrompt(args: {
     `- factions: 1-2 active factions or social groups with name, goal, method, and optional secret. Replace stale or resolved faction plans rather than copying them.`,
     `- questSeeds: 1-3 concrete new hooks or goals that can drive the next arc. Do not repeat resolved hooks from the current campaign plan.`,
     `- encounterPrinciples: 0-2 short principles that make the next arc distinct in play.`,
-    `- namedNpcs: 1-3 NEW key NPC objects with name, emoji, description, gender, pronouns, location, and roleOrAgenda. Do not repeat an already known NPC.`,
+    `- namedNpcs: 0-3 NEW key NPC objects with name, emoji, description, gender, pronouns, location, and roleOrAgenda. An empty array is valid. Do not repeat an already known NPC, and do not invent a critic, challenger, moral examiner, or opposition figure merely to create friction with the player.`,
     `- Treat the player's next-session request as strong steering for this plan when one was supplied.`,
     ``,
     `characterCards rules:`,
+    ...(protectedPlayerNames.length > 0
+      ? [
+          `- Player-owned cards are read-only and MUST be omitted from characterCards: ${protectedPlayerNames.join(", ")}. Never derive new strengths, weaknesses, temptations, motives, or personality claims for them.`,
+        ]
+      : []),
     ...(args.includeCharacterCards
       ? [
-          `- characterCards must be a JSON array containing the FULL updated card for each supplied party character.`,
-          `- Return every supplied character exactly once, even if unchanged.`,
+          `- characterCards must be a JSON array containing the FULL updated card for each supplied updateable companion.`,
+          `- Return every supplied updateable companion exactly once, even if unchanged.`,
           `- Only make conservative changes that are clearly justified by session events. This represents organic growth, not sudden transformation.`,
+          `- Do not add a weakness, dependency, identity crisis, personal stake, motive, or completed growth beat from a single routine reassignment, passing reaction, ordinary duty change, or isolated exchange. Leave the card unchanged unless the session establishes a durable change.`,
         ]
       : [`- characterCards must be an empty JSON array because no current character cards were supplied.`]),
     `- Keep each card aligned with the input schema: name, shortDescription, class, abilities, strengths, weaknesses, extra.`,
     ``,
-    `Cross-section dedupe rules:`,
-    `- Each fact belongs in the single best category only once. Do not restate the same information across summary.summary, summary.keyDiscoveries, summary.characterMoments, summary.littleDetails, summary.npcUpdates, summary.statsSnapshot, or campaignProgression.`,
+    `Continuity and organization rules:`,
+    `- summary.summary must stand on its own. Important facts may and should overlap the readable summary and one structured field; the structured fields are continuity indexes, not substitutes for the readable recap.`,
+    `- Outside summary.summary, place each fact in the single best structured category and avoid repeating it across summary.keyDiscoveries, summary.characterMoments, summary.littleDetails, summary.npcUpdates, summary.statsSnapshot, and campaignProgression.`,
     `- If something is primarily a relationship or emotional beat, keep it out of keyDiscoveries and npcUpdates.`,
     `- If something is primarily an NPC stance change, keep it out of keyDiscoveries unless that stance change is itself the core continuity fact.`,
     `- If something is primarily a lore or quest lead, keep it out of characterMoments.`,
     `- Be conservative. Preserve existing campaign state and cards when the session did not justify a change.`,
     `- Use empty strings, empty arrays, or {} when a category has no meaningful content.`,
     ``,
+    ...buildSessionSummaryEvidenceRules(args.rating),
+    ``,
+    buildProtagonistFairnessPrompt(),
+    ``,
+    ...buildGameSpecialInstructionsSection(args.gameSpecialInstructions),
     `Output valid JSON only.`,
   ].join("\n");
 }
@@ -1551,16 +1962,28 @@ export function buildCardAdjustmentPrompt(): string {
     `- If a character needs NO changes, return their card unchanged.`,
     `- Be conservative — only make changes that are clearly justified by session events.`,
     `- This represents organic character growth, not sudden transformation.`,
+    `- The player character's characterization is player-owned. If the supplied cards include the player character, return that card exactly unchanged unless the caller explicitly states that the player approved an update.`,
+    `- Never turn an NPC accusation, one disagreement, self-correction, refusal, or withdrawal of an optional offer into a new weakness or temptation.`,
+    `- A single routine reassignment, passing mood, ordinary duty change, gesture, meal, or isolated exchange is not character evolution. Do not invent a dependency, identity crisis, personal stake, motive, weakness, or resolved arc to make the moment recur.`,
+    ``,
+    buildGameContinuityEvidencePrompt(),
     ``,
     `Output as a JSON array of character card objects, one per character, with the same structure as the input cards.`,
   ].join("\n");
 }
 
 /** Build the prompt for adjusting campaign progression at session end. */
-export function buildCampaignProgressionPrompt(language?: string | null): string {
-  const normalizedLanguage = normalizePromptLanguage(language);
+export function buildCampaignProgressionPrompt(args: {
+  language?: string | null;
+  gameSpecialInstructions: string | null;
+  playerCharacterCanon?: string | null;
+  protectedPlayerNames?: readonly string[];
+}): string {
+  const normalizedLanguage = normalizePromptLanguage(args.language);
   return [
     `You are the Game Master reviewing what happened during this session to update the campaign's ongoing progression state.`,
+    ``,
+    buildPlayerCharacterCanonPrompt(args.playerCharacterCanon, normalizePromptTextList(args.protectedPlayerNames)[0]),
     ``,
     ...(normalizedLanguage
       ? [
@@ -1578,8 +2001,17 @@ export function buildCampaignProgressionPrompt(language?: string | null): string
     `- Preserve continuity with the existing state when nothing changed.`,
     `- Return FULL updated values, not patches.`,
     `- For partyArcs, each item must include: name, arc, goal. It may also include completed and resolution.`,
+    `- Never include the player character in partyArcs; those arcs are for companions only.`,
+    `- Add a plotTwist only when direct transcript evidence objectively revealed it, the existing GM state already contained it, or the user explicitly authored the premise. Keep an NPC's theory, fear, rumor, interpretation, unexplained deference, or ambiguous atmosphere attributed; do not promote it into secret truth.`,
+    `- Do not create, complete, or redefine a partyArc from one routine reassignment, passing mood, isolated exchange, or ordinary duty change. Require an explicit durable turning point or a supported pattern across events.`,
+    `- Treat [user OOC correction] passages as authorial corrections, not in-world events. A correction controls canon over the assistant-authored content it rejects, rewinds, or replaces.`,
     `- Do not invent extra top-level keys.`,
     ``,
+    buildProtagonistFairnessPrompt(),
+    ``,
+    buildGameContinuityEvidencePrompt(normalizePromptTextList(args.protectedPlayerNames)[0]),
+    ``,
+    ...buildGameSpecialInstructionsSection(args.gameSpecialInstructions),
     `Output exactly one JSON object with these keys: storyArc, plotTwists, partyArcs.`,
   ].join("\n");
 }
@@ -1596,6 +2028,7 @@ export function buildPartyRecruitCardPrompt(ctx: {
   campaignHistory?: string | null;
   currentState?: string | null;
   recentTranscript?: string | null;
+  playerCharacterCanon?: string | null;
   language?: string | null;
   purpose?: "recruit" | "regenerate";
 }): string {
@@ -1603,6 +2036,9 @@ export function buildPartyRecruitCardPrompt(ctx: {
   const isRegeneration = ctx.purpose === "regenerate";
   const sections: string[] = [
     `You are the Game Master updating an ongoing RPG campaign.`,
+    ...(ctx.playerCharacterCanon?.trim() ? [buildPlayerCharacterCanonPrompt(ctx.playerCharacterCanon), ``] : []),
+    buildProtagonistFairnessPrompt(),
+    ``,
     isRegeneration
       ? `A companion's party sheet is malformed or outdated. Regenerate one clean JSON character card for them that matches the existing game card schema.`
       : `A new companion is joining the party. Create a single JSON character card for them that matches the existing game card schema.`,
@@ -1620,6 +2056,7 @@ export function buildPartyRecruitCardPrompt(ctx: {
     `- Keep the name exactly "${ctx.targetCharacterName}".`,
     `- Ground the card in the existing campaign state, world, and recent events.`,
     `- Respect the supplied character card as canon. Do not contradict it.`,
+    `- Do not turn one routine reassignment, passing reaction, ordinary duty change, isolated exchange, or assistant interpretation into a new weakness, dependency, identity crisis, personal stake, motive, or completed arc. Preserve the existing card unless a durable change is explicitly supported.`,
     ...(isRegeneration
       ? [
           `- Treat the existing target party sheet as a damaged draft: preserve useful facts, but fix malformed fields, bad formatting, missing structure, and awkward or off-tone values.`,
@@ -1648,7 +2085,13 @@ export function buildPartyRecruitCardPrompt(ctx: {
     sections.push(``, `<plot_twists>`, ...ctx.plotTwists, `</plot_twists>`);
   }
   if (ctx.campaignHistory?.trim()) {
-    sections.push(``, `<campaign_history>`, ctx.campaignHistory.trim(), `</campaign_history>`);
+    sections.push(
+      ``,
+      `<campaign_history>`,
+      `Assistant-derived continuity index. Use it to locate events, not as independent evidence for judgments about the player character.`,
+      ctx.campaignHistory.trim(),
+      `</campaign_history>`,
+    );
   }
   if (ctx.currentPartyCards?.trim()) {
     sections.push(``, `<existing_party_cards>`, ctx.currentPartyCards.trim(), `</existing_party_cards>`);
@@ -1662,6 +2105,8 @@ export function buildPartyRecruitCardPrompt(ctx: {
   if (ctx.recentTranscript?.trim()) {
     sections.push(``, `<recent_transcript>`, ctx.recentTranscript.trim(), `</recent_transcript>`);
   }
+
+  sections.push(``, buildGameContinuityEvidencePrompt());
 
   return sections.join("\n");
 }

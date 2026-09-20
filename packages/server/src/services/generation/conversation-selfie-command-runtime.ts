@@ -1,4 +1,5 @@
 import type { DB } from "../../db/connection.js";
+import { resolveImageReferenceLimits } from "@marinara-engine/shared";
 import { isDebugAgentsEnabled } from "../../config/runtime-config.js";
 import { logger, logDebugOverride } from "../../lib/logger.js";
 import {
@@ -27,7 +28,7 @@ import {
   type IllustratorPromptConnection,
   type IllustratorPromptConnectionsStore,
 } from "./illustrator-prompt-runtime.js";
-import { resolveImageConnectionFallback } from "./media-connection-fallback.js";
+import { resolveImageConnectionFallback, resolveImageReferenceCollectionLimit } from "./media-connection-fallback.js";
 import { resolveBaseUrl } from "./connection-base-url.js";
 
 type CharactersStore = {
@@ -240,6 +241,15 @@ async function generateSelfie(
   if (!imagePrompt) return;
 
   const imageFallback = await resolveImageConnectionFallback(args.connections, imgConnFull.id);
+  const primarySelfieReferenceLimit = resolveImageReferenceLimits({
+    imageGenerationSource: imgConnFull.imageGenerationSource,
+    imageService: imgConnFull.imageService,
+    model: imgConnFull.model,
+    baseUrl: imgConnFull.baseUrl,
+    comfyuiWorkflow: imgConnFull.comfyuiWorkflow,
+    maxImageReferences: imgConnFull.maxImageReferences,
+  }).effectiveLimit;
+  const selfieReferenceLimit = resolveImageReferenceCollectionLimit(primarySelfieReferenceLimit, imageFallback);
   const suppressReferencePromptLine = suppressesReferencePromptLine(
     {
       model: imgConnFull.model,
@@ -275,7 +285,7 @@ async function generateSelfie(
       requestedNames,
       promptText: [args.charName, args.command.context ?? "", imagePrompt].join("\n"),
       fallbackToChatCharacters: false,
-      maxReferences: 6,
+      maxReferences: selfieReferenceLimit,
     });
     selfieResolvedCharacterIds = Array.from(
       new Set([...selfieResolvedCharacterIds, ...referenceResolution.characterIds]),
@@ -315,7 +325,7 @@ async function generateSelfie(
   const imageResults = await generateIllustratorImageVariants({
     count: args.chatMeta.illustratorImagesPerGeneration,
     generate: () =>
-      generateImage(imgModel, imgBaseUrl, imgApiKey, serviceHint || imgSource, {
+      generateImage(imgSource, imgBaseUrl, imgApiKey, serviceHint || imgSource, {
         prompt: compiledSelfiePrompt.prompt,
         negativePrompt: compiledSelfiePrompt.negativePrompt || undefined,
         model: imgModel,
@@ -325,6 +335,7 @@ async function generateSelfie(
         comfyWorkflow: imgConnFull.comfyuiWorkflow || undefined,
         imageDefaults,
         quality: resolveConnectionImageQuality(imgConnFull),
+        maxImageReferences: imgConnFull.maxImageReferences ?? null,
         referenceImages: selfieReferenceImages,
         fallback: imageFallback,
         onFallback: reportFallback,
@@ -335,13 +346,14 @@ async function generateSelfie(
 
   for (const [variantIndex, imageResult] of imageResults.entries()) {
     const filePath = saveImageToDisk(args.chatId, imageResult.base64, imageResult.ext, { shared: true });
+    const renderedPrompt = imageResult.effectivePrompt ?? compiledSelfiePrompt.prompt;
     const effectiveImageProvider =
       imageResult.effectiveConnection?.provider ?? imgConnFull.provider ?? "image_generation";
     const effectiveImageModel = imageResult.effectiveConnection?.model || imgModel || "unknown";
     const galleryEntry = await galleryStore.create({
       chatId: args.chatId,
       filePath,
-      prompt: compiledSelfiePrompt.prompt,
+      prompt: renderedPrompt,
       provider: effectiveImageProvider,
       model: effectiveImageModel,
       width: selfieW || imageSettings.selfie.width,
@@ -353,7 +365,7 @@ async function generateSelfie(
       characterIds: selfieResolvedCharacterIds,
       characterGallery: createCharacterGalleryStorage(args.db),
       personaGallery: createPersonaGalleryStorage(args.db),
-      prompt: compiledSelfiePrompt.prompt,
+      prompt: renderedPrompt,
       provider: effectiveImageProvider,
       model: effectiveImageModel,
       width: selfieW || imageSettings.selfie.width,
@@ -368,7 +380,7 @@ async function generateSelfie(
         type: "image",
         url: imageUrl,
         filename: `selfie_${args.charName.toLowerCase().replace(/\s+/g, "_")}_${variantIndex + 1}.${imageResult.ext}`,
-        prompt: compiledSelfiePrompt.prompt,
+        prompt: renderedPrompt,
         galleryId: galleryEntry?.id,
       };
       await args.chats.appendSwipeAttachment(args.messageId, generationSwipeIndex, attachment);
@@ -386,7 +398,7 @@ async function generateSelfie(
         characterName: args.charName,
         messageId: args.messageId,
         imageUrl,
-        prompt: compiledSelfiePrompt.prompt,
+        prompt: renderedPrompt,
         galleryId: galleryEntry?.id,
       },
     });

@@ -34,6 +34,7 @@ import {
   publicAgentOutput,
   getDefaultAgentPrompt,
   flattenAgentConditionalMacros,
+  normalizeRpgStatAttributes,
   normalizeRpgStatPools,
   resolveMacros,
   extractLeadingThinkingBlocks,
@@ -51,6 +52,7 @@ import { settleAgentJobsWithConcurrencyLimit } from "./agent-concurrency.js";
 import { completeAgentCall } from "./agent-progress.js";
 import { normalizeCyoaChoiceOutput } from "./cyoa-choice-normalization.js";
 import { getAssetManifest } from "../game/asset-manifest.service.js";
+import { buildGameContinuityEvidencePrompt, buildPlayerAgencyPrompt } from "../game/gm-prompts.js";
 import { normalizeBeholderProse } from "./beholder-normalizer.js";
 import {
   beholderDeltaLacksRemoval,
@@ -1677,6 +1679,9 @@ function buildBatchSystemPrompt(
     parts.push(``);
     parts.push(extras);
   }
+  if (context.chatMode === "game") {
+    parts.push(``, buildGameContinuityEvidencePrompt(context.persona?.name));
+  }
 
   return parts.join("\n");
 }
@@ -2155,6 +2160,7 @@ function buildBeholderMessages(
 function buildStandardAgentMessages(config: AgentExecConfig, template: string, context: AgentContext): ChatMessage[] {
   // Build the agent's system prompt with <role> + <lore> + <agents> + extras
   const systemParts: string[] = [];
+  const resultType = resolveAgentResultType(config);
   systemParts.push(`<role>`);
   systemParts.push(`You are a specialized agent. Fulfill your task and return the requested output.`);
   systemParts.push(`</role>`);
@@ -2189,10 +2195,21 @@ function buildStandardAgentMessages(config: AgentExecConfig, template: string, c
   if (contextSources.previousOutput && context.previousOutput?.text) {
     systemParts.push(wrapContent(context.previousOutput.text, "Previous Agent Output", context.wrapFormat ?? "xml"));
   }
+  if (resultType === "text_rewrite" && context.chatMode === "game") {
+    systemParts.push(
+      ``,
+      `<game_rewrite_constraints>`,
+      buildPlayerAgencyPrompt(context.persona?.name),
+      `A rewrite may remove an existing player-agency violation, but it must never introduce a new player action, dialogue, thought, feeling, judgment, intent, decision, consent, refusal, loyalty, obedience, or voluntary reaction. Preserve or reduce the propositions in <assistant_response>; do not add a story beat.`,
+      `</game_rewrite_constraints>`,
+    );
+  }
+  if (context.chatMode === "game") {
+    systemParts.push(``, buildGameContinuityEvidencePrompt(context.persona?.name));
+  }
 
   // Build multi-turn message array for this agent (sliced to its own contextSize)
   const agentContextSize = contextSources.chatHistory ? normalizeAgentContextSize(config.settings.contextSize) : 0;
-  const resultType = resolveAgentResultType(config);
   const renderedTemplates = new Map([[config.type, template]]);
   return buildAgentMessages(systemParts.join("\n"), context, config.type, agentContextSize, [config.type], {
     includeMessageIds: normalizeCustomAgentCapabilities(config.settings).edit_messages === true,
@@ -2231,6 +2248,9 @@ function buildKnowledgeRetrievalAgentMessages(
   if (extras) {
     systemParts.push(``);
     systemParts.push(extras);
+  }
+  if (context.chatMode === "game") {
+    systemParts.push(``, buildGameContinuityEvidencePrompt(context.persona?.name));
   }
 
   const agentContextSize = normalizeAgentContextSize(config.settings.contextSize);
@@ -2520,17 +2540,25 @@ function buildExpressionAgentMessages(config: AgentExecConfig, template: string,
   systemParts.push(
     `Return exactly one expression for every owner in <available_sprites>. Use <latest_user_message> for the active user persona, and still include the persona when listed even if <assistant_response> does not describe their face. Use <assistant_response> for assistant or character expressions.`,
   );
+  if (context.chatMode === "game") {
+    systemParts.push(
+      `For the active user persona, an expression is presentation metadata, not permission to invent interiority. Use only an expression or visible reaction explicitly conveyed by <latest_user_message>; otherwise choose neutral when available, or the least emotionally specific listed option. Never derive the player's expression from <assistant_response>, NPC interpretation, relationship state, or dramatic convenience.`,
+    );
+  }
   systemParts.push(`</role>`);
   systemParts.push(``);
   systemParts.push(`<agents>`);
   systemParts.push(`Fulfill the requested task here and return the output in the format specified:`);
   systemParts.push(template);
   systemParts.push(`</agents>`);
-
   const spritesBlock = buildAvailableSpritesBlock(context);
   if (spritesBlock) {
     systemParts.push(``);
     systemParts.push(spritesBlock);
+  }
+  if (context.chatMode === "game") {
+    systemParts.push(``);
+    systemParts.push(buildGameContinuityEvidencePrompt(context.persona?.name));
   }
 
   const latestAssistant = findLatestAssistantMessage(context);
@@ -2858,9 +2886,10 @@ function buildLoreBlock(context: AgentContext, sources: CustomAgentContextSource
             `Configured RPG pools: ${pools.map((pool) => `${pool.name}: ${pool.value}/${pool.max}`).join(", ")}`,
           );
         }
-        if (Array.isArray(char.rpgStats.attributes) && char.rpgStats.attributes.length > 0) {
+        const rpgAttributes = normalizeRpgStatAttributes(char.rpgStats.attributes);
+        if (rpgAttributes.length > 0) {
           parts.push(
-            `Configured RPG attributes: ${char.rpgStats.attributes
+            `Configured RPG attributes: ${rpgAttributes
               .map((attribute) => `${attribute.name}: ${attribute.value}`)
               .join(", ")}`,
           );

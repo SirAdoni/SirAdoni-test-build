@@ -128,6 +128,7 @@ function pickMusicFolder(): Promise<string | null> {
       execFile(
         "osascript",
         ["-e", 'POSIX path of (choose folder with prompt "Select your music folder")'],
+        { windowsHide: true },
         (err, stdout) => {
           cleanup();
           if (err) return done(null);
@@ -152,25 +153,35 @@ function pickMusicFolder(): Promise<string | null> {
           `if ($d.ShowDialog($f) -eq 'OK') { $d.SelectedPath } else { '' };` +
           `$f.Dispose()`,
       ];
-      execFile("powershell.exe", ps, (err, stdout) => {
+      execFile("powershell.exe", ps, { windowsHide: true }, (err, stdout) => {
         cleanup();
         if (err) return done(null);
         const p = stdout.trim();
         done(p || null);
       });
     } else {
-      execFile("zenity", ["--file-selection", "--directory", "--title=Select your music folder"], (err, stdout) => {
-        if (!err && stdout.trim()) {
-          cleanup();
-          return done(stdout.trim());
-        }
-        execFile("kdialog", ["--getexistingdirectory", ".", "--title", "Select your music folder"], (err2, stdout2) => {
-          cleanup();
-          if (err2) return done(null);
-          const p = stdout2.trim();
-          done(p || null);
-        });
-      });
+      execFile(
+        "zenity",
+        ["--file-selection", "--directory", "--title=Select your music folder"],
+        { windowsHide: true },
+        (err, stdout) => {
+          if (!err && stdout.trim()) {
+            cleanup();
+            return done(stdout.trim());
+          }
+          execFile(
+            "kdialog",
+            ["--getexistingdirectory", ".", "--title", "Select your music folder"],
+            { windowsHide: true },
+            (err2, stdout2) => {
+              cleanup();
+              if (err2) return done(null);
+              const p = stdout2.trim();
+              done(p || null);
+            },
+          );
+        },
+      );
     }
   });
 }

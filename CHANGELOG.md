@@ -4,6 +4,37 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Current-turn dialogue speakers can resolve a unique library portrait and saved crop even when the scene timeline has not recorded them yet; ambiguous names remain unresolved.
+
+- Widget layouts, edge bookmarks, collapsed state, stacks and pinning follow a campaign across sessions. Existing session layouts migrate once without overwriting saved campaign preferences or undoing layout resets.
+
+- Cache warnings now cover ChatGPT full-lore prompt prefixes and isolated planners, keep separate connection/model/request baselines, and avoid stopping after tool-planner work has already begun.
+
+- Game narration now honors the token-usage display setting for current and historical turns, including reported cache usage. Terminal storyboard preparation failures no longer remain labeled as rendering.
+
+- Storyboard continuity retains the original location source across scene transitions and tolerates an added terminal period only when the remaining quote exactly matches the cited source.
+
+- Storyboard continuity requests distinguish canonical location citations from narrated scene transitions, and preparation failures no longer display an image-generation failure label.
+
+- Side-tucked widget icons stay at their collapsed edge position while panels expand, including bottom-edge clamping and larger interface fonts.
+
+- Expanded side-tucked widgets reserve space for their bookmark so it no longer covers widget content, including at larger font sizes and narrow window widths.
+
+- Dialogue thumbnails retain saved avatar crops, and Contact Book portraits use matching library photos and their crops while fullscreen previews keep the original image.
+
+- Currently present includes recorded party members and resolves saved portraits and profiles for scene occupants outside the party. Opening a character sheet enriches sparse game cards with their matching library profile without changing the gameplay roster.
+
+- Character and persona portraits throughout Game Mode, chat, selectors, Contact Book, the library and trackers open a full-screen preview; camera controls inside the full-screen viewer open the existing photo editor or upload action. Read-only browser portraits can also be previewed. Previews retain keyboard focus above dialogs and menus, and support SVG portraits.
+
+- Continuity processing releases its shutdown timer once work has drained, avoiding an unnecessary delay when closing the engine.
+- Isolated Game Mode can let a library-backed NPC respond when the completed scene timeline places them in the scene, before background NPC synchronization finishes. Historical mentions and absent characters remain outside the trusted roster.
+- Known character names in narration and Contact Book entries open their profiles even when the character is outside the current scene.
+- Layout editing blocks widget collisions instead of pushing neighbors, supports vertical widget stacks, and makes edge-collapse controls easier to find.
+- Added a full-screen game Contact Book with a phone-book icon, recorded numeric opinions, separate relationship statuses, and locally persisted nested Staff/Friends/Enemies-style categories.
+- Reserved narration controls stay reachable above same-layer HUD widgets when panels reflow or saved positions collide.
+- Tucked Game Mode status and widget panels preserve their edge anchor while revealing, including during resize and value-change updates.
+- Custom HUD widget bookmarks show their widget icon and can be moved along the selected edge while layout editing is active.
+
 - The Roleplay swipe media regression follows the continuation behavior shipped in #6396, so the node regression lane passes again on `staging`.
 
 - Roleplay `/continue` and `/cont` display their streamed text inside the original reply, preserving its existing content and newline preference; an empty send still creates a separate reply (#6394).
@@ -29,6 +60,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - A Game Mode fight can now be resolved by the ruleset's own rules on the server. When a game is on a ruleset that describes how it resolves combat, the battle is fought with that ruleset's dice against its own numbers: each party member's health, resources, conditions and concentration are read off their own character sheet and written back to it after every action, so closing the tab in the middle of a fight loses nothing and there is no end-of-battle tally that could disagree with the sheet. Opponents come from the ruleset's bestiary by name, or, for something the Game Master invents, from a stat block pulled onto the ruleset's own threat scale, or last from the plain numbers of the threat rung it belongs to, and the battle records in plain words every change it had to make. Opponents nobody plays choose from the same list of legal actions a player would see, and a boss the Game Master controls is asked to pick one of them and nothing else. The encounter the Game Master writes now describes each enemy in the ruleset's own terms as well. The battle screen that plays it is the entry above, and games with no ruleset are unchanged.
 - Rulesets can ship a bestiary: a catalog that holds creatures instead of character-sheet rows, each written in the ruleset's own numbers, with health that can be dice rolled when a fight starts, resistances and immunities, the threat tier it belongs to, short traits the Game Master is shown, and actions that can hit, force a save, apply a condition, run out of uses, come back on a recharge roll, strike several times for one action, or be spent from the creature's own pool of points. An opponent the Game Master invents instead is pulled onto the ruleset's own threat scale before anything is rolled, and says in plain words what it changed. This part is the shared rules engine and the file format; the saved battle and the screen that use it are the two entries above. Both example rulesets in the authoring guide now ship a small bestiary of their own creatures. Ruleset packages with a bestiary need Capability API 1.27, and games with no ruleset are unchanged.
 - Groundwork for Game Mode battles that follow a ruleset's own rules: a ruleset can now describe how it resolves a fight, with an optional `combat` block naming what is rolled and against what, the actions a turn may hold, which sheet lists are weapons and which are abilities, what its conditions do, concentration, what happens to a character at zero, its damage types and the scale an opponent is picked from. Its ready-made catalog entries can say how many targets something takes, whether it always lands, what conditions it applies, what temporary points it grants, how it grows with the character and which action it spends. This part is the shared rules engine and the file format; the saved battle and the screen that play it are the entries above, and a game on a ruleset without the block fights exactly as it did. The 5e example and Ember Roads both ship a combat block in the authoring guide, which also lists in plain words what is not modelled yet. Ruleset packages that ship the block need Capability API 1.26, and games with no ruleset are unchanged.
+
 - AI translations use the selected connection's output-token budget and cap instead of always defaulting to 4,096; the existing Max Tokens setting also controls the translation fallback (#6366).
 - Advanced Settings now groups text, agent, image, video, ComfyUI and embedding timeout controls for slow backends. Saved limits persist across restarts; media and installed-package changes identify when a restart is needed (#6363).
 - Built-in agents can select which context sources they receive, and preserve those selections on save, export and reload. Grouped agents retain the union of their selected sources (#6356).
@@ -47,6 +79,59 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Game Mode rulesets can keep some sheet numbers themselves, and the Game Master can use an ability by name. A ruleset's ready-made entries may say that a number column follows the character, such as uses equal to an ability score or a class resource that grows with a level, and the sheet editor keeps that cell right instead of leaving it to you. The Game Master can also say that a character uses something they picked from a catalog, and the Engine pays the whole price: whatever the ruleset says it costs, plus one use of each counter that came with it. A spell paid with a slot comes out of the slot level the ruleset names for it, and the Game Master can ask for a higher one instead. If any part cannot be paid, the whole thing is refused and nothing is spent, and something that costs nothing is simply narrated. Ruleset packages that ship these values need Capability API 1.23.
 
 - Game Mode rulesets can lend their character sheets to battles with a new optional `battle` block. A fight starts on the sheet's health, energy and spell slots, and the health lost or regained and the resources spent are written back when it ends. The block names which sheet lists supply skills: a row picked from a catalog becomes a usable skill when its catalog entry describes what it does, and rows in other lists, typed by hand, or without that description are left out. Health is carried as a share of the maximum both ways, because the numbers in battle are Marinara's: a character at half health on the sheet starts at half the battle's health bar. Battles still use Marinara's own combat math, attack rolls, saving throws and concentration are not applied, an abandoned fight writes nothing back, and a ruleset without the block leaves combat unchanged. Ruleset packages that ship the block need Capability API 1.22.
+
+### Fixed
+
+- Preserve native SwarmUI reference images when no custom workflow is selected, while keeping ComfyUI and RunPod references limited to declared workflow slots.
+- Keep storyboard failure labels and captions consistent while preserving progress for active sibling frames.
+- Keep generation status polling separate from the request allowance for sending messages.
+- Preserve inherited scene facts when their original transcript is unavailable for review in the current session.
+- Complete requested NPC introductions using bounded public scene facts and record rejected actor-output diagnostics.
+- Detect named role-list introductions and admit NPC profiles after saved game turns without relying on an open game view.
+
+- Contact Book now lists only encountered character cards or NPC records, excluding unlinked names and groups.
+
+- Isolated character dialogue uses the current, verified scene roster when an older game snapshot has stale presence, while respecting regeneration and active-swipe boundaries.
+- The optional Status panel uses existing Persona Stats and custom RPG fields; the Contact Book gathers recorded encounters with sourced opinions and relationships, search, and personal grouping.
+- Game help includes a chaptered guide to layouts, tucked widgets, maps, campaign memory, Status, and the Contact Book.
+- Game widgets and the map grow to fit their content by default; fixed height requires an explicit choice. Edit layout offers a saved toolbar pin that stays at the top center across resolution changes.
+- Widgets can tuck into edge tabs, reveal on hover or click, and briefly reveal changed values. Character links recognize unambiguous shortened honorific names without renaming cards.
+- The ongoing and end-session Lorebook Keepers reuse one campaign book. Existing session books can consolidate transactionally while preserving entries and their source sessions.
+
+- Campaign Wiki renders structured facts as readable text with original records behind a disclosure, and keeps long values within the reader. Edit layout uses a pencil icon with a tooltip and active state.
+- Session popovers stay above the game HUD after clicking their contents. Campaign Wiki has a dedicated toolbar shortcut, a browsable overview, wrapping category filters, and separate directory and article scrolling.
+- Update notifications dismiss when Refresh is clicked and recover from stalled updates. Local builds without Git metadata no longer repeatedly report a same-version update.
+- Game panels adapt their preferred positions to resolution changes and snap to a 16-pixel grid after dragging. Edit layout offers a saved option to lock chat to the bottom while other panels arrange around it.
+- Game Mode's action toolbar can be moved in Edit layout. Floating panels retain stable positions after refresh and avoid repeated rearrangement in crowded layouts; the desktop World Map opens in its focused nearby view.
+- NPC Biographer can recover missing characters from current and earlier session transcripts, with background batches, source checks, and review reporting for incomplete appearances.
+- Game HUD panels separate when they collide and keep the game viewport fixed. Crowded panels scroll internally instead of pushing panel headers and the toolbar off-screen. The Currently Present panel starts wide enough for its content and wraps its controls instead of clipping them.
+- Side dialogue, choices, and other narration companions now move and resize with the narration panel instead of being covered by it.
+
+- A missing continuity connection now pauses queued background work without crashing the server or consuming a retry attempt. Legacy node maps automatically convert to World Maps at startup when the package is available, preserving original maps, current locations, and two-way links without replacing existing World Maps. Undiscovered locations remain archived.
+
+- Migrated chats retain explicitly selected World Maps when hierarchical map data already exists, even if an older migration left agents disabled. Campaign Wiki browser fixtures now serve public assets consistently with the application.
+
+- Scene presence controls keep a readable width, remain available on phones, and open sheets for characters outside the active party. Automatic storyboards ignore unavailable source turns instead of failing when an old session is opened.
+
+- Windows launchers keep the pinned package manager available to nested build commands when pnpm is provided through Corepack or npx.
+
+- Compact Game layouts keep dialogue and historical prompt controls clear of the HUD, bound storyboard previews on short screens, and retain desktop narration spacing when panels float.
+
+- Game Mode adds a full-screen campaign wiki with source-linked facts, character knowledge, review history, and resumable historical indexing.
+- Scene timelines retain location changes and participants; the presence bar distinguishes character cards from background extras and opens the linked character sheet.
+- Storyboards support adaptive frame counts, concurrent image requests, per-stage timing, pending-frame navigation, full-screen images, and recoverable background work.
+- Image request inspection preserves the submitted scene and reference details with credential redaction; ordinary scene prompts exclude unrelated intimate profile material.
+- Prompt cache diagnostics and an optional pre-send warning expose reuse estimates while preserving provider-reported token usage, upstream Claude cache duration settings, and explicit lorebook placement.
+- Game widgets retain individual sizing and placement, and character sheets preserve library portraits and draft edits until saved.
+- Generation parameter panels now follow the selected provider and model capabilities, including reasoning effort and verbosity controls for Claude, ChatGPT and OpenRouter models.
+- ChatGPT Subscription image generation supports the local Codex sign-in, provider-selected quality, up to 20 references, canvas containment, and an isolated concurrency pool.
+- Completed image, sprite, character-art and audio jobs remain recoverable after the tab closes, with progress and cancellation controls in the generation-jobs view.
+- Empty streamed and non-streamed provider responses now retain bounded, privacy-safe diagnostics instead of failing without useful evidence.
+- Narrated location synchronization retries one timed-out provider call with a fresh deadline while preserving cancellation, map conflict checks and the original diagnostic reference.
+- Location extraction reports the rejected answer and validation failure so malformed teleport evidence can be corrected without weakening arrival or player-authorization checks.
+- NPC profile and portrait handling now preserves canonical character-card identity, avoids duplicate scene records, and keeps generated profile data aligned with visible character references.
+- Agent routing is available in a central view with package-aware capability context and clearer provider/model diagnostics.
+
 - Returning to a chat while a background translation is being saved now replaces the old translation correctly when Show Only Translation is enabled (#6337).
 - Game Features switches share consistent track sizing and thumb spacing, including custom HUD widgets and narrow mobile layouts (#6339).
 - Custom Tracker accepts top-level incremental updates as well as updates nested under `fields`, using the existing row merge and lock handling (#6340).

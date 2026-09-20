@@ -25,9 +25,8 @@ import { fileURLToPath } from "node:url";
 const fixtureRoot = mkdtempSync(join(tmpdir(), "marinara-docs-pack-regression-"));
 process.env.DATA_DIR = fixtureRoot;
 
-const { normalizeDocsLanguage, DEFAULT_DOCS_LANGUAGE, DOCS_LANGUAGE_LABELS, docsLanguageDirection } = await import(
-  "../../packages/shared/src/constants/docs-languages.ts"
-);
+const { normalizeDocsLanguage, DEFAULT_DOCS_LANGUAGE, DOCS_LANGUAGE_LABELS, docsLanguageDirection } =
+  await import("../../packages/shared/src/constants/docs-languages.ts");
 const { resolvePhysical, supportedDocLanguages } = await import("../../packages/server/src/routes/docs.routes.ts");
 const {
   checkDocsPackConsistency,
@@ -167,7 +166,10 @@ try {
     "a changed hash must trigger a refresh",
   );
   assert.equal(
-    docsPackManifestsMatch(manifestA, { language: "es", files: [...manifestA.files, { path: "new.md", sha256: sha256("c"), bytes: 1 }] }),
+    docsPackManifestsMatch(manifestA, {
+      language: "es",
+      files: [...manifestA.files, { path: "new.md", sha256: sha256("c"), bytes: 1 }],
+    }),
     false,
     "an added file must trigger a refresh",
   );
@@ -186,9 +188,15 @@ try {
   writeFileSync(join(buildFixture, "FAQ.md"), faqContent);
   writeFileSync(join(buildFixture, "home", "welcome.md"), welcomeContent);
   const builder = join(repoRoot, "scripts", "docs-i18n", "build-manifest.mjs");
-  execFileSync(process.execPath, [builder, buildFixture, "--source-commit", "deadbeef"], { stdio: "pipe" });
+  execFileSync(process.execPath, [builder, buildFixture, "--source-commit", "deadbeef"], {
+    windowsHide: true,
+    stdio: "pipe",
+  });
   const first = readFileSync(join(buildFixture, "manifest.json"), "utf8");
-  execFileSync(process.execPath, [builder, buildFixture, "--source-commit", "deadbeef"], { stdio: "pipe" });
+  execFileSync(process.execPath, [builder, buildFixture, "--source-commit", "deadbeef"], {
+    windowsHide: true,
+    stdio: "pipe",
+  });
   const second = readFileSync(join(buildFixture, "manifest.json"), "utf8");
   assert.equal(first, second, "build-manifest.mjs must be deterministic");
   const built = validateDocsPackManifest(JSON.parse(first), "es");

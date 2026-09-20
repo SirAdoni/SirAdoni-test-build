@@ -1,6 +1,7 @@
 import {
   formatRpgStatsForPrompt,
   nameToXmlTag,
+  normalizeRpgStatAttributes,
   normalizeRpgStatPools,
   resolveMacros,
   templateReferencesAnyMacro,
@@ -53,19 +54,8 @@ export function normalizeCharacterRpgStats(value: unknown): RPGStatsConfig | und
   const raw = value as Partial<RPGStatsConfig>;
   if (raw.enabled !== true) return undefined;
   const pools = normalizeRpgStatPools(raw as RPGStatsConfig);
-  const attributes = Array.isArray(raw.attributes)
-    ? raw.attributes
-        .filter(
-          (attribute): attribute is { name: string; value: number } =>
-            typeof attribute === "object" &&
-            attribute !== null &&
-            typeof attribute.name === "string" &&
-            !!attribute.name.trim() &&
-            typeof attribute.value === "number" &&
-            Number.isFinite(attribute.value),
-        )
-        .map((attribute) => ({ name: attribute.name.trim(), value: attribute.value }))
-    : [];
+  // Accepts the canonical array and the { STR: 18 } map shape imported cards carry.
+  const attributes = normalizeRpgStatAttributes(raw.attributes);
   const hpPool = pools[0] ?? { value: 100, max: 100 };
   return {
     enabled: true,

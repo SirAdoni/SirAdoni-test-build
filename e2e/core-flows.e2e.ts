@@ -3026,6 +3026,69 @@ test("connection test-message errors inherit the configured editor accent", asyn
   }
 });
 
+test("image reference allowance persists from the connection editor", async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name.includes("mobile"), "Desktop connection editing is covered here.");
+
+  const connectionName = `ChatGPT Image References ${Date.now().toString(36)}`;
+  let connectionId: string | null = null;
+
+  try {
+    const connectionResponse = await request.post("/api/connections", {
+      data: {
+        name: connectionName,
+        provider: "image_generation",
+        imageGenerationSource: "openai_chatgpt",
+        imageService: "openai_chatgpt",
+        model: "",
+      },
+    });
+    expect(connectionResponse.ok()).toBeTruthy();
+    connectionId = ((await connectionResponse.json()) as { id: string }).id;
+
+    await page.goto("/");
+    await page.locator('[data-tour="panel-connections"]').click();
+    const rightPanel = page.locator('[data-component="RightPanelDesktop"]');
+    await rightPanel
+      .getByText(connectionName, { exact: true })
+      .first()
+      .evaluate((element) => (element as HTMLElement).click());
+
+    const editor = page.locator(".mari-editor-shell");
+    await expect(editor).toBeVisible();
+    const referenceLimit = editor.getByRole("combobox", { name: "Reference images per request" });
+    await expect(referenceLimit).toHaveValue("automatic");
+    await expect(referenceLimit.locator('option[value="automatic"]')).toHaveText("Automatic (up to 20)");
+    await expect(referenceLimit.locator('option[value="20"]')).toBeEnabled();
+
+    await editor.getByText("Automatic (prefers an available Mini model)", { exact: true }).first().click();
+    await editor.getByText("GPT Image 2.5 Sunburst", { exact: true }).click();
+
+    await referenceLimit.selectOption("7");
+    await expect(editor.getByText("Up to 7 reference images will be sent per request.", { exact: true })).toBeVisible();
+    await editor.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(editor.getByText("Saved", { exact: true })).toBeVisible();
+
+    await expect
+      .poll(async () => {
+        const response = await request.get(`/api/connections/${connectionId}`);
+        const stored = (await response.json()) as { maxImageReferences?: number | null };
+        expect((stored as { model?: string }).model).toBe("gpt-image-2.5-sunburst");
+        return stored.maxImageReferences;
+      })
+      .toBe(7);
+
+    await page.locator('[data-tour="panel-personas"]').click();
+    await page.locator('[data-tour="panel-connections"]').click();
+    await rightPanel
+      .getByText(connectionName, { exact: true })
+      .first()
+      .evaluate((element) => (element as HTMLElement).click());
+    await expect(editor.getByRole("combobox", { name: "Reference images per request" })).toHaveValue("7");
+  } finally {
+    if (connectionId) await request.delete(`/api/connections/${connectionId}`).catch(() => undefined);
+  }
+});
+
 test("NovelAI style plate upload keeps the connection editor mounted", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name.includes("mobile"), "Desktop connection editor behavior is covered here.");
 
@@ -3116,6 +3179,7 @@ test("NovelAI generation defaults survive save and editor navigation", async ({ 
         imageGenerationSource: "novelai",
         imageService: "novelai",
         model: "nai-diffusion-4-5-full",
+        maxImageReferences: 9,
       },
     });
     expect(connectionResponse.ok()).toBeTruthy();
@@ -3161,9 +3225,13 @@ test("NovelAI generation defaults survive save and editor navigation", async ({ 
     const downloadPath = await download.path();
     expect(downloadPath).not.toBeNull();
     const exported = JSON.parse(readFileSync(downloadPath!, "utf8")) as {
-      connections?: Array<{ defaultParameters?: { imageGeneration?: { seed?: number } } }>;
+      connections?: Array<{
+        defaultParameters?: { imageGeneration?: { seed?: number } };
+        maxImageReferences?: number | null;
+      }>;
     };
     expect(exported.connections?.[0]?.defaultParameters?.imageGeneration?.seed).toBe(50);
+    expect(exported.connections?.[0]?.maxImageReferences).toBe(9);
 
     await page.locator('[data-tour="panel-personas"]').click();
     await rightPanel
@@ -3224,6 +3292,7 @@ test("NovelAI generation defaults survive connection import", async ({ page, req
               model: "nai-diffusion-4-5-full",
               imageGenerationSource: "novelai",
               imageService: "novelai",
+              maxImageReferences: 8,
               defaultParameters: {
                 imageGeneration: {
                   version: 1,
@@ -3244,6 +3313,7 @@ test("NovelAI generation defaults survive connection import", async ({ page, req
       id: string;
       name: string;
       defaultParameters?: string | null;
+      maxImageReferences?: number | null;
     }>;
     const imported = connections.find((connection) => connection.name === connectionName);
     expect(imported).toBeTruthy();
@@ -3252,6 +3322,7 @@ test("NovelAI generation defaults survive connection import", async ({ page, req
       imageGeneration?: { seed?: number };
     };
     expect(params.imageGeneration?.seed).toBe(73);
+    expect(imported?.maxImageReferences).toBe(8);
 
     await importDialog.getByRole("button", { name: "Close Import Connections" }).click();
     await expect(importDialog).toHaveCount(0);
@@ -3266,6 +3337,7 @@ test("NovelAI generation defaults survive connection import", async ({ page, req
       await editor.getByRole("button", { name: /NovelAI generation setup/iu }).click();
     }
     await expect(seedInput).toHaveValue("73");
+    await expect(editor.getByRole("combobox", { name: "Reference images per request" })).toHaveValue("8");
   } finally {
     if (importedConnectionId) {
       await request.delete(`/api/connections/${importedConnectionId}`).catch(() => undefined);
@@ -10586,11 +10658,38 @@ test("Game widget editing and log deletion follow Chroma while weather effects r
     position: "hud_left",
     config: { count: 3 },
   };
+  const neighborWidget = {
+    id: "neighbor-proof",
+    type: "list",
+    label: "Neighbor proof",
+    position: "hud_left",
+    config: {
+      items: [
+        "A letter from the observatory requests a careful review of the new star charts before the household leaves for the northern tower.",
+        "Bring the notebook and return the library keys.",
+      ],
+    },
+  };
 
   try {
     const metadataResponse = await page.request.patch(`/api/chats/${chat.id}/metadata`, {
       data: {
         gameId: "game-chroma-controls-smoke",
+        gameMap: {
+          id: "resize-proof",
+          type: "node",
+          name: "Observatory",
+          partyPosition: "hall",
+          nodes: [
+            { id: "hall", label: "Hall", x: 0, y: 0, discovered: true },
+            { id: "library", label: "Library", x: 100, y: 0, discovered: true },
+            { id: "tower", label: "Tower", x: 100, y: 100, discovered: true },
+          ],
+          edges: [
+            { from: "hall", to: "library" },
+            { from: "library", to: "tower" },
+          ],
+        },
         gameSessionStatus: "active",
         gameSessionNumber: 1,
         gameIntroPresented: true,
@@ -10605,6 +10704,7 @@ test("Game widget editing and log deletion follow Chroma while weather effects r
           introSequence: [],
           visualTheme: {},
         },
+        campaignIndexPrompt: { dismissedAt: "2026-01-01T00:00:00.000Z" },
       },
     });
     expect(metadataResponse.ok()).toBeTruthy();
@@ -10652,6 +10752,236 @@ test("Game widget editing and log deletion follow Chroma while weather effects r
     await expect(editWidgetButton).toBeVisible();
     await expect(editWidgetButton.locator("svg")).toHaveCSS("color", chromeTextColor);
 
+    if (testInfo.project.name.includes("desktop")) {
+      const frame = page.locator('[data-game-floating-widget="chroma-clock"]');
+      await page.getByRole("button", { name: "Edit layout", exact: true }).click();
+      await page.mouse.move(5, 5);
+      await page.evaluate(() => (document.activeElement as HTMLElement)?.blur());
+      await expect(frame.locator("[data-panel-layout-controls]")).toHaveCSS("opacity", "0");
+      await frame.hover();
+      await expect(frame.locator("[data-panel-layout-controls]")).toHaveCSS("opacity", "1");
+      const original = await frame.boundingBox();
+      expect(original).not.toBeNull();
+      await page.evaluate(async (newWidget) => {
+        const { useGameModeStore } = (await import("/src/stores/game-mode.store.ts" as string)) as {
+          useGameModeStore: {
+            getState: () => {
+              hudWidgets: Array<{ id: string; [key: string]: unknown }>;
+              setHudWidgets: (widgets: Array<{ id: string; [key: string]: unknown }>) => void;
+            };
+          };
+        };
+        const widgets = useGameModeStore.getState().hudWidgets;
+        useGameModeStore.getState().setHudWidgets([...widgets, newWidget]);
+      }, neighborWidget);
+      const neighborWidgetsResponse = await page.request.put(`/api/game/${chat.id}/widgets`, {
+        data: { widgets: [widget, neighborWidget] },
+      });
+      expect(neighborWidgetsResponse.ok()).toBeTruthy();
+      await expect(page.locator('[data-game-floating-widget="neighbor-proof"]')).toBeVisible();
+      expect(await frame.boundingBox()).toEqual(original);
+      const neighbor = page.locator('[data-game-floating-widget="neighbor-proof"]');
+      await neighbor.getByRole("button", { name: "Unlock panel", exact: true }).click();
+      const paragraph = neighbor.getByText(
+        "A letter from the observatory requests a careful review of the new star charts before the household leaves for the northern tower.",
+        { exact: true },
+      );
+      await expect(paragraph).toBeVisible();
+      const paragraphHeight = () =>
+        paragraph.evaluate((element) => {
+          // Linked character text can use display: contents; measure the rendered text.
+          const range = document.createRange();
+          range.selectNodeContents(element);
+          return range.getBoundingClientRect().height;
+        });
+      const narrowHeight = await paragraphHeight();
+      expect(narrowHeight).toBeGreaterThan(0);
+      const font = await paragraph.evaluate((el) => getComputedStyle(el).fontSize);
+      const neighborResize = neighbor.getByRole("button", { name: "Resize panel (arrow keys to resize)", exact: true });
+      for (let i = 0; i < 5; i++) await neighborResize.press("Shift+ArrowRight");
+      await expect.poll(paragraphHeight).toBeLessThan(narrowHeight);
+      expect(await paragraph.evaluate((el) => getComputedStyle(el).fontSize)).toBe(font);
+      expect(await frame.boundingBox()).toEqual(original);
+      await page.evaluate(async () => {
+        const { useGameModeStore } = (await import("/src/stores/game-mode.store.ts" as string)) as {
+          useGameModeStore: {
+            getState: () => {
+              hudWidgets: Array<{ id: string; [key: string]: unknown }>;
+              setHudWidgets: (widgets: Array<{ id: string; [key: string]: unknown }>) => void;
+            };
+          };
+        };
+        useGameModeStore
+          .getState()
+          .setHudWidgets(useGameModeStore.getState().hudWidgets.filter((w) => w.id !== "neighbor-proof"));
+      });
+      const restoredWidgetsResponse = await page.request.put(`/api/game/${chat.id}/widgets`, {
+        data: { widgets: [widget] },
+      });
+      expect(restoredWidgetsResponse.ok()).toBeTruthy();
+      await expect(page.locator('[data-game-floating-widget="neighbor-proof"]')).toHaveCount(0);
+      expect(await frame.boundingBox()).toEqual(original);
+      await frame.getByRole("button", { name: "Unlock panel", exact: true }).click();
+      const header = await frame
+        .getByRole("button", { name: "Move panel (arrow keys to move)", exact: true })
+        .first()
+        .boundingBox();
+      expect(header).not.toBeNull();
+      await page.mouse.move(header!.x + header!.width / 2, header!.y + header!.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(2, 2, { steps: 15 });
+      await page.mouse.up();
+      const assertInside = async () => {
+        await expect
+          .poll(() =>
+            frame.evaluate((el) => {
+              const box = el.getBoundingClientRect();
+              const parent = el.parentElement;
+              if (!parent) return false;
+              const surface = parent.getBoundingClientRect();
+              return (
+                box.left >= surface.left - 1 &&
+                box.top >= surface.top - 1 &&
+                box.right <= surface.right + 1 &&
+                box.bottom <= surface.bottom + 1
+              );
+            }),
+          )
+          .toBe(true);
+      };
+      await assertInside();
+      const resizeHandle = frame.getByRole("button", { name: "Resize panel (arrow keys to resize)", exact: true });
+      await resizeHandle.focus();
+      const beforeResize = await frame.boundingBox();
+      const originalFont = await frame.getByText("3", { exact: true }).evaluate((el) => getComputedStyle(el).fontSize);
+      await resizeHandle.press("ArrowRight");
+      await expect.poll(async () => (await frame.boundingBox())!.width).toBeGreaterThan(beforeResize!.width);
+      await resizeHandle.press("ArrowLeft");
+      await expect.poll(async () => Math.abs((await frame.boundingBox())!.width - beforeResize!.width)).toBeLessThan(1);
+      await assertInside();
+      await resizeHandle.press("ArrowDown");
+      await expect.poll(async () => (await frame.boundingBox())!.height).toBeGreaterThan(beforeResize!.height);
+      expect((await frame.boundingBox())!.width).toBeCloseTo(beforeResize!.width, 0);
+      expect(await frame.getByText("3", { exact: true }).evaluate((el) => getComputedStyle(el).fontSize)).toBe(
+        originalFont,
+      );
+      const mapFrame = page.locator('[data-game-floating-panel="map"]');
+      const narrationFrame = page.locator('[data-game-floating-panel="narration"]');
+      await expect(mapFrame).toBeVisible();
+      await expect(narrationFrame).toBeVisible();
+      await narrationFrame.getByRole("button", { name: "Unlock panel", exact: true }).click();
+      const narrationResize = narrationFrame.getByRole("button", {
+        name: "Resize panel (arrow keys to resize)",
+        exact: true,
+      });
+      await narrationResize.press("ArrowUp");
+      const shortNarrationHeight = (await narrationFrame.boundingBox())!.height;
+      const initialNarration = (await narrationFrame.boundingBox())!;
+      const anchoredBottom = initialNarration.y + initialNarration.height;
+      await expect(narrationFrame.getByRole("combobox", { name: "Panel growth", exact: true })).toHaveValue("bottom");
+      const draftInput = narrationFrame.locator("textarea").first();
+      await draftInput.fill(
+        Array.from({ length: 7 }, (_, i) => `Draft line ${i + 1}: I examine the observatory notes.`).join("\n"),
+      );
+      await expect
+        .poll(async () => (await narrationFrame.boundingBox())!.height)
+        .toBeGreaterThan(shortNarrationHeight + 30);
+      await expect
+        .poll(() =>
+          narrationFrame.evaluate((el) => {
+            const box = el.getBoundingClientRect();
+            const host = el.parentElement!.getBoundingClientRect();
+            const body = el.querySelector('[data-component="GameNarration.ActivePanel"]')!.getBoundingClientRect();
+            return box.bottom <= host.bottom + 1 && body.bottom <= box.bottom + 1;
+          }),
+        )
+        .toBe(true);
+      await draftInput.fill("");
+      await expect
+        .poll(async () => {
+          const box = (await narrationFrame.boundingBox())!;
+          return Math.abs(box.y + box.height - anchoredBottom);
+        })
+        .toBeLessThan(2);
+      await expect
+        .poll(async () => (await narrationFrame.boundingBox())!.height)
+        .toBeLessThanOrEqual(shortNarrationHeight + 1);
+      await expect
+        .poll(() =>
+          mapFrame.evaluate((el) => {
+            const frame = el.getBoundingClientRect();
+            const map = el.querySelector('[data-tour="game-map"]')!.getBoundingClientRect();
+            return map.right <= frame.right + 1 && map.bottom <= frame.bottom + 1;
+          }),
+        )
+        .toBe(true);
+      const narrationBefore = await narrationFrame.boundingBox();
+      await mapFrame.getByRole("button", { name: "Unlock panel", exact: true }).click();
+      await mapFrame.getByRole("button", { name: "Move panel (arrow keys to move)", exact: true }).press("ArrowRight");
+      expect(await narrationFrame.boundingBox()).toEqual(narrationBefore);
+      const current = await frame
+        .getByRole("button", { name: "Move panel (arrow keys to move)", exact: true })
+        .boundingBox();
+      const beforeMove = await frame.boundingBox();
+      await page.mouse.move(current!.x + current!.width / 2, current!.y + current!.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(1390, 880, { steps: 15 });
+      await page.mouse.up();
+      await expect.poll(async () => (await frame.boundingBox())!.x).toBeGreaterThan(beforeMove!.x + 100);
+      await assertInside();
+      // Keep the desktop rail active while reducing its vertical space. At 1100px
+      // staging intentionally switches to compact widgets to avoid dialogue overlap.
+      await page.setViewportSize({ width: 1400, height: 650 });
+      await expect
+        .poll(() =>
+          frame.evaluate((el) => {
+            const parent = el.parentElement;
+            if (!parent) return false;
+            return el.getBoundingClientRect().bottom <= parent.getBoundingClientRect().bottom + 1;
+          }),
+        )
+        .toBe(true);
+      await assertInside();
+    }
+
+    if (testInfo.project.name.includes("desktop")) {
+      const frame = page.locator('[data-game-floating-widget="chroma-clock"]');
+      const resize = frame.getByRole("button", { name: "Resize panel (arrow keys to resize)", exact: true });
+      await resize.focus();
+      await resize.press("ArrowRight");
+      const saved = await frame.boundingBox();
+      const corner = await resize.boundingBox();
+      await page.mouse.move(corner!.x + 12, corner!.y + 12);
+      await page.mouse.down();
+      await page.mouse.move(corner!.x - 20, corner!.y - 20, { steps: 5 });
+      await page.mouse.up();
+      await expect.poll(async () => (await frame.boundingBox())!.width).toBeLessThan(saved!.width);
+      const afterPointerResize = await frame.boundingBox();
+      await page
+        .locator('[data-game-floating-panel="map"]')
+        .getByRole("combobox", { name: "Panel growth", exact: true })
+        .selectOption("top");
+      await expect(
+        page
+          .locator('[data-game-floating-panel="narration"]')
+          .getByRole("combobox", { name: "Panel growth", exact: true }),
+      ).toHaveValue("bottom");
+      await page.reload();
+      await expect(frame).toBeVisible();
+      await page.getByRole("button", { name: "Edit layout", exact: true }).click();
+      await expect(
+        page.locator('[data-game-floating-panel="map"]').getByRole("combobox", { name: "Panel growth", exact: true }),
+      ).toHaveValue("top");
+      await expect(frame.getByRole("combobox", { name: "Panel growth", exact: true })).toHaveValue("fixed");
+      await expect
+        .poll(async () => Math.abs((await frame.boundingBox())!.width - afterPointerResize!.width))
+        .toBeLessThan(1);
+      await expect.poll(async () => Math.abs((await frame.boundingBox())!.x - afterPointerResize!.x)).toBeLessThan(1);
+      await page.mouse.move(500, 80);
+      await page.evaluate(() => (document.activeElement as HTMLElement)?.blur());
+      await expect(frame.locator("[data-panel-layout-controls]")).toHaveCSS("opacity", "0");
+      await page.screenshot({ path: testInfo.outputPath("floating-panels.png") });
+    }
     await expect(page.locator('canvas[class*="contain:strict"]')).toBeVisible();
 
     const logsButton = page
@@ -10784,6 +11114,7 @@ test("Game character sheet Retry remains a draft until Save", async ({ page, req
     rpgStats: { hp: { value: 1, max: 1 } },
   };
   const providerRequests: Array<Record<string, unknown>> = [];
+  const characterSheetRetryRequests = () => providerRequests.filter((request) => request.max_tokens === 1200);
   const providerServer = createServer((incoming, response) => {
     const chunks: Buffer[] = [];
     incoming.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
@@ -10898,6 +11229,7 @@ test("Game character sheet Retry remains a draft until Save", async ({ page, req
           partyCharacterIds: [character.id],
           language: "English",
         },
+        campaignIndexPrompt: { dismissedAt: "2026-01-01T00:00:00.000Z" },
       },
     });
     expect(metadataResponse.ok()).toBeTruthy();
@@ -10968,8 +11300,8 @@ test("Game character sheet Retry remains a draft until Save", async ({ page, req
     };
     expect(personaRetry.gameCard.rpgStats).toEqual(personaRpgStats);
 
-    expect(providerRequests).toHaveLength(3);
-    for (const providerRequest of providerRequests.slice(0, 2)) {
+    expect(characterSheetRetryRequests()).toHaveLength(3);
+    for (const providerRequest of characterSheetRetryRequests().slice(0, 2)) {
       expect(providerRequest).toMatchObject({
         model: "character-sheet-retry-model",
         stream: false,
@@ -10980,7 +11312,7 @@ test("Game character sheet Retry remains a draft until Save", async ({ page, req
       expect(prompt).toContain("The party opened the first lock and found a broken tide compass.");
       expect(prompt).toContain(`Regenerate only ${characterName}'s character sheet now.`);
     }
-    const personaPrompt = JSON.stringify(providerRequests[2]?.messages);
+    const personaPrompt = JSON.stringify(characterSheetRetryRequests()[2]?.messages);
     expect(personaPrompt).toContain("A memory-weaver who maps the drowned city's forgotten roads.");
     expect(personaPrompt).toContain(`Regenerate only ${personaName}'s character sheet now.`);
   } finally {
@@ -11522,7 +11854,7 @@ test("failed Game Lorebook Keeper run exposes a retry action", async ({ page }, 
     await page.goto("/");
     await page.getByRole("button", { name: "Session" }).click();
     const failure = page.locator('[data-component="GameSessionHistory.LorebookKeeperFailure"]');
-    await expect(failure).toContainText("Lorebook Keeper failed");
+    await expect(failure).toContainText("Structured lorebook output was invalid.");
     await expect(failure.getByRole("button", { name: "Retry Lorebook Keeper" })).toBeVisible();
   } finally {
     await page.request.delete(`/api/chats/${chat.id}`);
@@ -11540,7 +11872,12 @@ test("Game history above the dialogue box opens a historical Peek Prompt", async
 
   try {
     await page.request.patch(`/api/chats/${chat.id}/metadata`, {
-      data: { gameId: "prompt-history-smoke-game", gameSessionStatus: "active", gameSessionNumber: 1 },
+      data: {
+        gameId: "prompt-history-smoke-game",
+        gameSessionStatus: "active",
+        gameSessionNumber: 1,
+        campaignIndexPrompt: { dismissedAt: "2026-01-01T00:00:00.000Z" },
+      },
     });
     await page.request.post(`/api/chats/${chat.id}/messages`, {
       data: { role: "user", content: "Open the old gate." },
@@ -12703,6 +13040,32 @@ test("Storyboard Agent settings stay organized and contained at phone widths", a
     const gameTab = workflow.getByRole("tab", { name: "Game Mode", exact: true });
 
     await expect(settingsPanel).toBeVisible();
+    const continuity = settingsPanel.locator("[data-storyboard-continuity-settings]");
+    await continuity.locator("summary").first().click();
+    await expect(continuity.getByLabel("Extract ongoing scene context")).toBeChecked();
+    await continuity.getByText("Scene analyst prompt", { exact: true }).click();
+    await continuity.getByRole("textbox", { name: "Scene analyst prompt" }).fill("Custom campaign-agnostic analyst.");
+    const savedContinuity = page.waitForResponse(
+      (response) =>
+        /\/api\/agents(?:\/[^/]+)?$/.test(response.url()) && ["POST", "PATCH"].includes(response.request().method()),
+    );
+    await editor.getByRole("button", { name: "Save", exact: true }).click();
+    const savedContinuityResponse = await savedContinuity;
+    expect(savedContinuityResponse.ok()).toBeTruthy();
+    const savedContinuityAgent = await savedContinuityResponse.json();
+    const storedContinuitySettings =
+      typeof savedContinuityAgent.settings === "string"
+        ? JSON.parse(savedContinuityAgent.settings)
+        : savedContinuityAgent.settings;
+    expect(storedContinuitySettings.visualContinuity.analystPrompt).toBe("Custom campaign-agnostic analyst.");
+    await expect(continuity.getByRole("textbox", { name: "Scene analyst prompt" })).toHaveValue(
+      "Custom campaign-agnostic analyst.",
+    );
+    await continuity.screenshot({ path: testInfo.outputPath("continuity-settings-desktop.png") });
+    await continuity.getByRole("button", { name: "Reset continuity defaults" }).click();
+    await expect(continuity.getByRole("textbox", { name: "Scene analyst prompt" })).not.toHaveValue(
+      "Custom campaign-agnostic analyst.",
+    );
     await expect(setup).toBeVisible();
     await expect(workflow).toHaveAttribute("data-storyboard-active-workflow", "roleplay");
     await expect(roleplayTab).toHaveAttribute("aria-selected", "true");
@@ -12731,6 +13094,7 @@ test("Storyboard Agent settings stay organized and contained at phone widths", a
 
     for (const width of [320, 360, 390]) {
       await page.setViewportSize({ width, height: 844 });
+      if (width === 390) await continuity.screenshot({ path: testInfo.outputPath("continuity-settings-mobile.png") });
       await expect
         .poll(() =>
           settingsPanel.evaluate((panel) => {
@@ -16518,6 +16882,18 @@ test("Illustrator and Storyboard keep separate visual settings cards while agent
     await expect(storyboardsToggle).toBeChecked();
     await expect(gameIllustratorCard.locator('[data-agent-settings-subsection="scene-videos"]')).toHaveCount(0);
     const storyboardsSubsection = gameStoryboardCard.locator('[data-agent-settings-subsection="storyboards"]');
+    const continuity = gameStoryboardCard.locator("[data-storyboard-continuity-settings]");
+    await continuity.locator("summary").first().click();
+    await continuity.getByLabel("Review planned shots before generating images").uncheck();
+    await expect
+      .poll(async () => {
+        const saved = await (await request.get(`/api/chats/${gameChat.id}`)).json();
+        const meta = typeof saved.metadata === "string" ? JSON.parse(saved.metadata) : saved.metadata;
+        return meta.storyboardVisualContinuity?.reviewEnabled;
+      })
+      .toBe(false);
+    await continuity.getByRole("button", { name: "Use agent defaults", exact: true }).click();
+    await expect(continuity.getByLabel("Review planned shots before generating images")).toBeChecked();
     await expect(storyboardsSubsection).toBeVisible();
     await expect(storyboardsSubsection.getByRole("heading", { name: "Storyboards" })).toBeVisible();
     await expect(
@@ -18179,7 +18555,8 @@ test("Lorebook entry type descriptions inherit editor chrome text", async ({ pag
     const editorMutedColor = await readCssVariableColor(page, "--marinara-editor-muted");
     for (const description of [
       "Triggers when primary keys match the scanned text.",
-      "Injects every time this lorebook is active.",
+      "This entry is Always Loaded and bypasses every entry-level activation gate.",
+      "This entry is Constant and bypasses keyword matching while retaining its other activation controls.",
       "Primary keys must match with the secondary-key logic.",
     ]) {
       await expect(menu.getByText(description, { exact: true })).toHaveCSS("color", editorMutedColor);
@@ -21051,8 +21428,22 @@ test("mobile chat composer follows the visual viewport above the software keyboa
     await page.waitForTimeout(350);
 
     await textarea.focus();
+    const expectedInitialOffsetTop = await page.evaluate(() =>
+      /iP(?:ad|hone|od)/i.test(navigator.userAgent) ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+        ? 0
+        : 72,
+    );
 
     const expectedOffsetTop = 72;
+
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          getComputedStyle(document.documentElement).getPropertyValue("--mari-visual-viewport-offset-top").trim(),
+        ),
+      )
+      .toBe(`${expectedInitialOffsetTop}px`);
 
     await page.evaluate(() => {
       (
@@ -21595,6 +21986,12 @@ test("mobile composers preserve history position and restore focus in Conversati
       // anchor the first pointerdown captured, and the app re-captures on
       // every composer press (matching a real re-tap before the keyboard
       // finishes opening).
+      await textarea.dispatchEvent("pointerdown", { pointerType: "touch" });
+
+      // Let AppShell's delayed focus samples settle before forcing the
+      // synthetic keyboard transition. WebKit otherwise publishes its pending
+      // unchanged viewport sample after this event and cancels the restore.
+      await page.waitForTimeout(350);
       await textarea.dispatchEvent("pointerdown", { pointerType: "touch" });
 
       // Firefox may scroll an overlaid Roleplay transcript during the focus /
@@ -23363,5 +23760,158 @@ test("background prompt review preserves edits through rerenders and resumes the
   } finally {
     releaseRetry.resolve();
     await request.delete(`/api/chats/${chat.id}`).catch(() => undefined);
+  }
+});
+
+test("scene timeline portraits follow presence and retain departed participants", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.skip(!testInfo.project.name.includes("desktop"), "Desktop scene HUD regression.");
+  const response = await request.post("/api/chats", {
+    data: { name: "Scene presence proof", mode: "game", characterIds: [] },
+  });
+  expect(response.ok()).toBeTruthy();
+  const chat = await response.json();
+  let departed = false;
+  let trackingFailed = false;
+  try {
+    await request.patch(`/api/chats/${chat.id}/metadata`, {
+      data: {
+        gameId: "scene-proof",
+        gameNpcs: [
+          { id: "npc:scout", name: "Scout" },
+          { id: "npc:archivist", name: "Archivist" },
+        ],
+        gameSessionStatus: "active",
+        gameSessionNumber: 1,
+        gameIntroPresented: true,
+        gameActiveState: "dialogue",
+        enableAgents: false,
+        gameBlueprint: { campaignPlan: {}, hudWidgets: [], introSequence: [], visualTheme: {} },
+      },
+    });
+    await request.post(`/api/chats/${chat.id}/messages`, {
+      data: { role: "assistant", content: "Player and Scout stand at the gate." },
+    });
+    await page.route(`**/api/game/${chat.id}/scene-timeline`, (route) =>
+      route.fulfill({
+        json: {
+          pending: false,
+          error: null,
+          remaining: 0,
+          scenes: [
+            {
+              id: "first",
+              location: "Gate",
+              participants: ["Player", "Scout"],
+              present: departed ? ["Player"] : ["Player", "Scout", "Wool merchants"],
+              summary: "Player chose the route; Scout agreed.",
+              closed: departed,
+              reviewed: true,
+              messageIds: ["one"],
+            },
+            ...(departed
+              ? [
+                  {
+                    id: "second",
+                    location: "Hall",
+                    participants: ["Player", "Archivist"],
+                    present: ["Player", "Archivist"],
+                    summary: "",
+                    closed: false,
+                    messageIds: ["two"],
+                  },
+                ]
+              : []),
+          ],
+        },
+      }),
+    );
+    await page.addInitScript((id) => {
+      localStorage.setItem("marinara-active-chat-id", id);
+      const stored = JSON.parse(localStorage.getItem("marinara-engine-ui") || '{"state":{}}');
+      stored.state = { ...stored.state, gameTutorialDisabled: true, gameTextSpeed: 100 };
+      localStorage.setItem("marinara-engine-ui", JSON.stringify(stored));
+    }, chat.id);
+    await page.goto("/");
+    const bar = page.locator('[data-tour="game-party"]');
+    await expect(bar).toBeVisible();
+    await expect(bar.getByRole("button", { name: /Scout/ })).toBeVisible();
+    await expect(bar.getByLabel("Background extras").getByText("Wool merchants")).toBeVisible();
+    await expect(bar.getByRole("button", { name: /Wool merchants/ })).toHaveCount(0);
+    await bar.screenshot({ path: testInfo.outputPath("scene-portraits-and-extras.png") });
+    departed = true;
+    await expect(bar.getByRole("button", { name: /Archivist/ })).toBeVisible({ timeout: 20000 });
+    await expect(bar.getByRole("button", { name: /Scout/ })).toHaveCount(0);
+    await expect(bar.getByText("Wool merchants")).toHaveCount(0);
+    const timelineButton = page.getByRole("button", { name: "Scene timeline", exact: true });
+    await expect(timelineButton).toBeVisible();
+    expect(await timelineButton.evaluate((button) => button.scrollWidth <= button.clientWidth)).toBe(true);
+    await timelineButton.click();
+    const timeline = page.getByRole("region", { name: "Scene timeline", exact: true });
+    await expect(timeline).toBeVisible();
+    await expect(timeline.getByText("Player chose the route; Scout agreed.", { exact: true })).toBeVisible();
+    await expect(timeline.getByText("Appeared in this scene: Player, Scout", { exact: true })).toBeVisible();
+    trackingFailed = true;
+    await page.route(`**/api/game/${chat.id}/scene-timeline`, (route) =>
+      route.fulfill({
+        json: {
+          scenes: [],
+          pending: false,
+          remaining: 23,
+          error: trackingFailed ? "visits[0].facts[1].quote has no exact supporting transcript quote" : null,
+        },
+      }),
+    );
+    await expect(timeline.getByText("23 turns still need tracking.")).toBeVisible({ timeout: 20000 });
+    await timeline.getByText("Why tracking stopped", { exact: true }).click();
+    await expect(timeline.getByText(/visits\[0\].facts\[1\].quote/)).toBeVisible();
+    await expect(timeline.getByRole("button", { name: "Retry scene tracking" })).toBeEnabled();
+    await timeline.screenshot({ path: testInfo.outputPath("scene-tracking-error.png") });
+  } finally {
+    await request.delete(`/api/chats/${chat.id}`);
+  }
+});
+
+test("open gallery catches an image after its original stream is gone", async ({ page, request }, testInfo) => {
+  test.skip(!testInfo.project.name.includes("desktop"), "Desktop gallery polling regression.");
+  const response = await request.post("/api/chats", {
+    data: { name: "Late gallery proof", mode: "roleplay", characterIds: [] },
+  });
+  expect(response.ok()).toBeTruthy();
+  const chat = await response.json();
+  let ready = false;
+  try {
+    await page.route(`**/api/gallery/${chat.id}`, (route) =>
+      route.fulfill({
+        json: ready
+          ? [
+              {
+                id: "late",
+                chatId: chat.id,
+                filePath: "late.gif",
+                prompt: "Late scene portrait proof",
+                provider: "fixture",
+                model: "fixture",
+                width: 1,
+                height: 1,
+                createdAt: new Date().toISOString(),
+                url: `data:image/gif;base64,${TRANSPARENT_GIF_BASE64}`,
+              },
+            ]
+          : [],
+      }),
+    );
+    await page.addInitScript((id) => localStorage.setItem("marinara-active-chat-id", id), chat.id);
+    await page.goto("/");
+    await page.getByRole("button", { name: "Gallery", exact: true }).filter({ visible: true }).click();
+    const gallery = page.locator(".mari-chat-gallery-drawer");
+    await expect(gallery).toBeVisible();
+    await expect(gallery.getByAltText("Late scene portrait proof")).toHaveCount(0);
+    ready = true;
+    await expect(gallery.getByAltText("Late scene portrait proof")).toBeVisible({ timeout: 12000 });
+  } finally {
+    await request.delete(`/api/chats/${chat.id}`);
   }
 });

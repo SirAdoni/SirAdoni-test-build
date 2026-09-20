@@ -24,6 +24,7 @@ import {
   MESSAGE_SELECTION_SURFACE_CLASS,
 } from "./message-selection-styles";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 
 export function ConversationMessageGrouped({
   ctx,
@@ -37,6 +38,7 @@ export function ConversationMessageGrouped({
   const { t: localizeUi } = useUiTranslation();
   const {
     message,
+    isUser,
     extra,
     isGrouped,
     noHoverGroup,
@@ -95,6 +97,7 @@ export function ConversationMessageGrouped({
     onRemoveCharacterReaction,
     onToggleSelect,
     isBubbleStyle,
+    onUpdateCharacter,
   } = ctx;
 
   // Per-segment add-reaction affordance: always visible on compact/mobile
@@ -251,13 +254,31 @@ export function ConversationMessageGrouped({
                   <div className="flex items-end gap-2">
                     <div className="relative h-8 w-8 shrink-0 overflow-hidden rounded-full bg-[var(--accent)]">
                       {segAvatar ? (
-                        <img
-                          src={segAvatar}
-                          alt={segName}
-                          loading="lazy"
-                          className="h-full w-full object-cover"
-                          style={segAvatarCropStyle}
-                        />
+                        !isUser && segSelfId ? (
+                          <CharacterPhoto
+                            src={segAvatar}
+                            name={segName}
+                            className="h-full w-full object-cover"
+                            wrapperClassName="relative inline-flex items-center gap-1"
+                            onUpdate={onUpdateCharacter ? () => onUpdateCharacter(segSelfId) : undefined}
+                          >
+                            <img
+                              src={segAvatar}
+                              alt={segName}
+                              loading="lazy"
+                              className="h-full w-full object-cover"
+                              style={segAvatarCropStyle}
+                            />
+                          </CharacterPhoto>
+                        ) : (
+                          <img
+                            src={segAvatar}
+                            alt={segName}
+                            loading="lazy"
+                            className="h-full w-full object-cover"
+                            style={segAvatarCropStyle}
+                          />
+                        )
                       ) : (
                         <div className="flex h-full w-full items-center justify-center text-xs font-bold text-[var(--muted-foreground)]">
                           {segName[0]?.toUpperCase()}
@@ -320,13 +341,31 @@ export function ConversationMessageGrouped({
                   <div className="w-10 flex-shrink-0">
                     <div className="relative h-10 w-10 overflow-hidden rounded-full bg-[var(--accent)]">
                       {segAvatar ? (
-                        <img
-                          src={segAvatar}
-                          alt={segName}
-                          loading="lazy"
-                          className="h-full w-full object-cover"
-                          style={segAvatarCropStyle}
-                        />
+                        !isUser && segSelfId ? (
+                          <CharacterPhoto
+                            src={segAvatar}
+                            name={segName}
+                            className="h-full w-full object-cover"
+                            wrapperClassName="relative inline-flex items-center gap-1"
+                            onUpdate={onUpdateCharacter ? () => onUpdateCharacter(segSelfId) : undefined}
+                          >
+                            <img
+                              src={segAvatar}
+                              alt={segName}
+                              loading="lazy"
+                              className="h-full w-full object-cover"
+                              style={segAvatarCropStyle}
+                            />
+                          </CharacterPhoto>
+                        ) : (
+                          <img
+                            src={segAvatar}
+                            alt={segName}
+                            loading="lazy"
+                            className="h-full w-full object-cover"
+                            style={segAvatarCropStyle}
+                          />
+                        )
                       ) : (
                         <div className="flex h-full w-full items-center justify-center text-sm font-bold text-[var(--muted-foreground)]">
                           {segName[0]?.toUpperCase()}

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from "react";
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import type { ChatMode } from "@marinara-engine/shared";
 import {
+  BookOpen,
   Brain,
   ChevronsLeftRight,
   CircleHelp,
@@ -42,6 +43,7 @@ type HelpTargetId =
   | "agent-controls"
   | "summary"
   | "context"
+  | "private-notebook"
   | "author-notes"
   | "gallery"
   | "connected-chat"
@@ -92,6 +94,10 @@ const HELP_TARGET: HelpTargetDefinition = {
   bodyKey: "chat.help.targets.help.body",
 };
 
+const GameFeaturesGuide = lazy(() =>
+  import("../game/GameFeaturesGuide").then((module) => ({ default: module.GameFeaturesGuide })),
+);
+
 const COMMON_TOOLBAR_TARGETS: HelpTargetDefinition[] = [
   {
     id: "branches",
@@ -110,6 +116,12 @@ const COMMON_TOOLBAR_TARGETS: HelpTargetDefinition[] = [
     selector: '[data-chat-help="context"]',
     titleKey: "chat.help.targets.context.title",
     bodyKey: "chat.help.targets.context.body",
+  },
+  {
+    id: "private-notebook",
+    selector: '[data-chat-help="private-notebook"]',
+    titleKey: "chat.help.targets.privateNotebook.title",
+    bodyKey: "chat.help.targets.privateNotebook.body",
   },
   {
     id: "gallery",
@@ -189,7 +201,7 @@ const TARGETS_BY_MODE: Record<ChatMode, HelpTargetDefinition[]> = {
       titleKey: "chat.help.targets.summary.title",
       bodyKey: "chat.help.targets.summary.body",
     },
-    ...commonToolbarTargets("context"),
+    ...commonToolbarTargets("context", "private-notebook"),
     {
       id: "author-notes",
       selector: '[data-chat-help="author-notes"]',
@@ -255,7 +267,7 @@ const TARGETS_BY_MODE: Record<ChatMode, HelpTargetDefinition[]> = {
       titleKey: "chat.help.targets.assets.title",
       bodyKey: "chat.help.targets.assets.body",
     },
-    ...commonToolbarTargets("context", "gallery", "connected-chat", "settings"),
+    ...commonToolbarTargets("context", "private-notebook", "gallery", "connected-chat", "settings"),
     {
       id: "widgets",
       selector: "[data-game-widget-rail]",
@@ -690,6 +702,7 @@ export function ChatHelpOverlay({
   const [selectedTargetId, setSelectedTargetId] = useState<HelpTargetId | null>(null);
   const [hoveredTargetId, setHoveredTargetId] = useState<HelpTargetId | null>(null);
   const [hoverPoint, setHoverPoint] = useState<{ x: number; y: number } | null>(null);
+  const [gameGuideOpen, setGameGuideOpen] = useState(false);
   const overlayRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const measurementSignatureRef = useRef("");
@@ -770,6 +783,7 @@ export function ChatHelpOverlay({
     previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     overlayRef.current?.focus({ preventScroll: true });
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (gameGuideOpen) return;
       if (event.key === "Escape") {
         markChatHelpSeen(mode);
         closeChatHelp(mode);
@@ -799,7 +813,7 @@ export function ChatHelpOverlay({
       document.removeEventListener("keydown", handleKeyDown);
       previousFocusRef.current?.focus({ preventScroll: true });
     };
-  }, [markChatHelpSeen, mode, open]);
+  }, [gameGuideOpen, markChatHelpSeen, mode, open]);
 
   const dismiss = useCallback(() => {
     markChatHelpSeen(mode);
@@ -821,6 +835,7 @@ export function ChatHelpOverlay({
     setSelectedTargetId(null);
     setHoveredTargetId(null);
     setHoverPoint(null);
+    setGameGuideOpen(false);
   }, [open]);
 
   if (!open || !rootRect || typeof document === "undefined") return null;
@@ -977,9 +992,19 @@ export function ChatHelpOverlay({
         >
           <div className="flex items-center gap-2 border-b border-[var(--marinara-chat-chrome-panel-divider)] px-3 py-2.5">
             <CircleHelp size="0.875rem" className="shrink-0 text-[var(--marinara-chat-chrome-button-text-active)]" />
-            <h2 className="text-sm font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
+            <h2 className="min-w-0 flex-1 text-sm font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
               {t(`chat.help.mode.${mode}`)}
             </h2>
+            {mode === "game" && (
+              <button
+                type="button"
+                className="mari-chrome-control shrink-0 px-2 py-1 text-[0.625rem]"
+                onClick={() => setGameGuideOpen(true)}
+              >
+                <BookOpen size="0.6875rem" aria-hidden="true" />
+                {t("gameGuide.open")}
+              </button>
+            )}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             <ol className="space-y-2 px-3 py-2.5">
@@ -1022,6 +1047,11 @@ export function ChatHelpOverlay({
           </div>
           {targetIncludesActionLegend(mode, selectedTarget.id) && <MessageActionLegend mode={mode} />}
         </div>
+      )}
+      {gameGuideOpen && mode === "game" && (
+        <Suspense fallback={null}>
+          <GameFeaturesGuide onClose={() => setGameGuideOpen(false)} />
+        </Suspense>
       )}
     </div>,
     document.body,

@@ -177,6 +177,29 @@ export function ensureGameMapId(map: GameMap, existingMaps: readonly GameMap[] =
   return { ...map, id };
 }
 
+/** Model output cannot choose persistent IDs or bindings; reuse the current place's map on regeneration. */
+export function identifyGeneratedGameMap(
+  map: GameMap,
+  existingMaps: readonly GameMap[],
+  activeMapId: string | null,
+  spatialLocationId?: string,
+): GameMap {
+  const matching = existingMaps.filter((entry) =>
+    spatialLocationId && entry.spatialLocationId
+      ? entry.spatialLocationId === spatialLocationId
+      : normalizeLocationValue(entry.name) === normalizeLocationValue(map.name) && !entry.spatialLocationId,
+  );
+  const existing = matching.find((entry) => getGameMapId(entry) === activeMapId) ?? matching.at(-1);
+  return ensureGameMapId(
+    {
+      ...map,
+      id: existing ? (getGameMapId(existing) ?? undefined) : undefined,
+      spatialLocationId,
+    },
+    existingMaps,
+  );
+}
+
 export function upsertGameMap(maps: readonly GameMap[], map: GameMap): GameMap[] {
   const explicitId = map.id?.trim();
   const normalizedName = normalizeLocationValue(map.name || "");

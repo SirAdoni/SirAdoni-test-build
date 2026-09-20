@@ -14,6 +14,7 @@ import { logger } from "../../lib/logger.js";
 import { basename, join } from "path";
 import { DATA_DIR } from "../../utils/data-dir.js";
 import { generateImage, type ImageGenRequest, type ImageGenResult } from "../image/image-generation.js";
+import { OPENAI_CHATGPT_IMAGE_GENERATION_CONCURRENCY } from "../image/image-generation-queue.js";
 import { buildAssetManifest, GAME_ASSETS_DIR } from "./asset-manifest.service.js";
 import type { PromptOverridesStorage } from "../storage/prompt-overrides.storage.js";
 import {
@@ -24,7 +25,7 @@ import {
   GAME_SCENE_ILLUSTRATION,
 } from "../prompt-overrides/index.js";
 import {
-  inferImageSource,
+  resolveImageReferenceLimits,
   type ImageGenerationDefaultsProfile,
   type ImageGenerationQuality,
   type ImageStyleProfileSettings,
@@ -33,8 +34,15 @@ import {
 import type { ImageGenerationSize } from "../image/image-generation-settings.js";
 import { compileImagePrompt } from "../image/image-prompt-compiler.js";
 import { loadGameStoryboardImagePrompt } from "../image/game-storyboard-image-prompt.js";
+import { chatGPTImagePromptText } from "../image/openai-chatgpt-image.js";
+import {
+  illustratorPromptRequestsRenderedText,
+  illustratorPromptTemplateOwnsComposition,
+} from "../image/illustrator-references.js";
 import { SPATIAL_LOCATION_REFERENCE_PROMPT_LINE } from "../image/spatial-location-reference.js";
 import { compactImagePromptInstructions } from "../sidecar/scene-analyzer.js";
+import { resolveImageReferenceCollectionLimit } from "../generation/media-connection-fallback.js";
+import { compactStoryboardCharacterIdentity } from "./storyboard-character-identity.js";
 
 const NPC_AVATAR_DIR = join(DATA_DIR, "avatars", "npc");
 const CHAT_BACKGROUND_DIR = join(DATA_DIR, "backgrounds");
@@ -45,33 +53,13 @@ export const GENERATED_GAME_BACKGROUND_EXTS = ["png", "jpg", "jpeg", "webp", "av
 const GAME_BACKGROUND_EXT_SET = new Set<string>(GENERATED_GAME_BACKGROUND_EXTS);
 const GENERATED_BACKGROUND_MAX_INPUT_PIXELS = 32_000_000;
 const GAME_PORTRAIT_NEGATIVE_PROMPT =
-  "text, letters, captions, subtitles, UI, watermark, logo, signature, speech bubble, split screen, panel, collage, contact sheet, grid, four portraits, multiple portraits, duplicated face, extra head, extra person, bad anatomy, low quality";
+  "text, letters, captions, subtitles, UI, watermark, logo, signature, speech bubble, split screen, panel, collage, contact sheet, grid, four portraits, multiple portraits, duplicated face, extra head, extra person, cropped-off head, cropped face, out of frame, bad anatomy, low quality";
 const GAME_BACKGROUND_NEGATIVE_PROMPT =
   "text, letters, captions, subtitles, UI, watermark, logo, signature, foreground character, main character, named character, portrait, close-up person, posed subject, split screen, panel, collage, contact sheet, grid, multiple frames, low quality";
 const GAME_ILLUSTRATION_NEGATIVE_PROMPT =
   "text, letters, captions, subtitles, UI, watermark, logo, signature, speech bubble, split screen, panel, collage, contact sheet, character sheet, grid, four images, duplicated face, extra head, unrelated character, bad anatomy, low quality";
 const MAX_SCENE_ILLUSTRATION_APPEARANCE_NOTES_CHARS = 4800;
 const MAX_GENERATED_ASSET_SLUG_BYTES = 180;
-const DEFAULT_SCENE_ILLUSTRATION_REFERENCE_IMAGE_LIMIT = 4;
-const OPENAI_COMPAT_SCENE_ILLUSTRATION_REFERENCE_IMAGE_LIMIT = 16;
-const NARROW_SCENE_ILLUSTRATION_REFERENCE_IMAGE_LIMIT = 3;
-const SINGLE_SCENE_ILLUSTRATION_REFERENCE_IMAGE_LIMIT = 1;
-const SCENE_ILLUSTRATION_IMAGE_BACKENDS = new Set([
-  "openai",
-  "nanogpt",
-  "openrouter",
-  "pollinations",
-  "stability",
-  "togetherai",
-  "novelai",
-  "horde",
-  "xai",
-  "comfyui",
-  "automatic1111",
-  "runpod_comfyui",
-  "gemini_image",
-]);
-
 // sharp is optional in the server package. Generated game backgrounds should be
 // stored at the VN canvas ratio when possible, but generation must still work on
 // platforms where sharp is unavailable.
@@ -121,66 +109,65 @@ function atomicWriteText(filePath: string, value: string): void {
   atomicWriteBuffer(filePath, Buffer.from(value, "utf-8"));
 }
 
-function normalizeSceneIllustrationImageSource(value: string | null | undefined): string {
-  const normalized = (value ?? "").trim().toLowerCase();
-  if (normalized === "drawthings") return "automatic1111";
-  return SCENE_ILLUSTRATION_IMAGE_BACKENDS.has(normalized) ? normalized : "";
+export function resolveGameImageServiceHint(req: { imgService?: string | null; imgSource?: string | null }): string {
+  return req.imgService?.trim() || req.imgSource?.trim() || "";
 }
 
-function resolveSceneIllustrationImageBackend(
+export function resolveSceneIllustrationImageBackend(
   req: Pick<SceneIllustrationGenRequest, "imgSource" | "imgModel" | "imgBaseUrl" | "imgService">,
 ): string {
-  const inferred = inferImageSource(req.imgModel || req.imgSource || "", req.imgBaseUrl || "");
-  const explicit = normalizeSceneIllustrationImageSource(req.imgService || req.imgSource);
-  if (!explicit) return inferred;
-  if (explicit === "openai" && inferred === "gemini_image") return inferred;
-  return explicit;
+  return resolveImageReferenceLimits({
+    imageGenerationSource: req.imgSource,
+    imageService: req.imgService,
+    model: req.imgModel,
+    baseUrl: req.imgBaseUrl,
+  }).source;
 }
 
-export function resolveSceneIllustrationGenerationConcurrency(
+export function resolveGameImageGenerationConcurrency(
   req: Pick<SceneIllustrationGenRequest, "imgSource" | "imgModel" | "imgBaseUrl" | "imgService">,
   requestedConcurrency: number,
+  allowChatGptBurst = true,
 ): number {
   const concurrency = Math.max(1, Math.trunc(requestedConcurrency));
-  return resolveSceneIllustrationImageBackend(req) === "novelai" ? 1 : concurrency;
+  const backend = resolveSceneIllustrationImageBackend(req);
+  if (backend === "novelai") return 1;
+  if (allowChatGptBurst && backend === "openai_chatgpt") {
+    return OPENAI_CHATGPT_IMAGE_GENERATION_CONCURRENCY;
+  }
+  return concurrency;
 }
 
 export function supportsSceneIllustrationStructuredCharacterPrompts(
   req: Pick<SceneIllustrationGenRequest, "imgSource" | "imgModel" | "imgBaseUrl" | "imgService">,
 ): boolean {
-  return (
-    resolveSceneIllustrationImageBackend(req) === "novelai" &&
-    supportsNovelAiCharacterPrompts({ baseUrl: req.imgBaseUrl, model: req.imgModel })
-  );
+  if (resolveSceneIllustrationImageBackend(req) !== "novelai") return false;
+  return supportsNovelAiCharacterPrompts({ baseUrl: req.imgBaseUrl, model: req.imgModel });
 }
 
 export function resolveSceneIllustrationReferenceImageLimit(
-  req: Pick<SceneIllustrationGenRequest, "imgSource" | "imgModel" | "imgBaseUrl" | "imgService">,
+  req: Pick<
+    SceneIllustrationGenRequest,
+    "imgSource" | "imgModel" | "imgBaseUrl" | "imgService" | "imgComfyWorkflow" | "imgMaxImageReferences"
+  >,
 ): number {
-  const backend = resolveSceneIllustrationImageBackend(req);
-  const model = [req.imgModel, req.imgSource, req.imgService].filter(Boolean).join(" ").toLowerCase();
-  const isGeminiImageModel = model.includes("gemini") && model.includes("image");
-
-  if (backend === "openrouter" && (model.includes("nano-banana") || isGeminiImageModel)) return 14;
-  if (backend === "gemini_image" || isGeminiImageModel) {
-    if (model.includes("gemini-3-pro-image")) return 5;
-    return DEFAULT_SCENE_ILLUSTRATION_REFERENCE_IMAGE_LIMIT;
-  }
-
-  if (backend === "nanogpt" || backend === "xai") return NARROW_SCENE_ILLUSTRATION_REFERENCE_IMAGE_LIMIT;
-  if (backend === "automatic1111" || backend === "stability" || backend === "pollinations") {
-    return SINGLE_SCENE_ILLUSTRATION_REFERENCE_IMAGE_LIMIT;
-  }
-  if (backend === "openai" || backend === "openrouter" || backend === "novelai") {
-    return OPENAI_COMPAT_SCENE_ILLUSTRATION_REFERENCE_IMAGE_LIMIT;
-  }
-  return DEFAULT_SCENE_ILLUSTRATION_REFERENCE_IMAGE_LIMIT;
+  return resolveImageReferenceLimits({
+    imageGenerationSource: req.imgSource,
+    imageService: req.imgService,
+    model: req.imgModel,
+    baseUrl: req.imgBaseUrl,
+    comfyuiWorkflow: req.imgComfyWorkflow,
+    maxImageReferences: req.imgMaxImageReferences,
+  }).effectiveLimit;
 }
 
 function sceneIllustrationReferenceImagesForProvider(req: SceneIllustrationGenRequest): string[] {
   const references = req.referenceImages?.map((reference) => reference.trim()).filter(Boolean) ?? [];
   if (references.length === 0) return [];
-  return references.slice(0, resolveSceneIllustrationReferenceImageLimit(req));
+  return references.slice(
+    0,
+    resolveImageReferenceCollectionLimit(resolveSceneIllustrationReferenceImageLimit(req), req.imgFallback),
+  );
 }
 
 /** Return the extension implied by known image file signatures. */
@@ -363,9 +350,9 @@ export function safeGeneratedAssetSlug(name: string, opts: { maxBytes?: number; 
   return `${prefix}-${tail}`;
 }
 
-function npcPortraitSlug(req: NpcPortraitRequest): string {
+export function npcPortraitSlug(req: NpcPortraitRequest): string {
   const identityHash = createHash("sha256")
-    .update([req.npcName, req.appearance, req.gender ?? "", req.pronouns ?? ""].join("\n"))
+    .update([req.npcId ?? "", req.npcName, req.appearance, req.gender ?? "", req.pronouns ?? ""].join("\n"))
     .digest("hex")
     .slice(0, 8);
   return safeGeneratedAssetSlug(req.npcName, {
@@ -488,7 +475,7 @@ function npcPortraitVariables(req: NpcPortraitRequest) {
     artStyleLine: req.artStyle ? `Art style: ${req.artStyle}.` : "",
     compositionRule: nonHumanCue
       ? "Use a centered avatar composition appropriate to the subject, including a creature portrait or full head-and-body crop only when that best preserves the described non-human form."
-      : "Use a centered human/humanoid avatar composition: face and shoulders, readable expression, clear outfit cues.",
+      : "Use a centered human/humanoid avatar composition: face and shoulders, readable expression, clear outfit cues, with a comfortable safe margin around the full head.",
   };
 }
 
@@ -503,12 +490,18 @@ function resolvedSize(size: ImageGenerationSize | undefined, fallback: ImageGene
 
 export interface NpcPortraitRequest {
   chatId: string;
+  /** Stable Game NPC identity; distinguishes separate people sharing a name. */
+  npcId?: string | null;
   npcName: string;
   appearance: string;
   gender?: string | null;
   pronouns?: string | null;
   /** Unified art style prompt for visual consistency. */
   artStyle?: string;
+  /** Explicitly approved campaign portrait, used only as a visual style reference. */
+  styleReferenceImage?: string;
+  /** Host acceptance gate: candidate bytes must pass before any avatar file is published. */
+  reviewPortrait?: (image: string) => Promise<{ accepted: boolean; feedback: string }>;
   /** Connection credentials — already resolved & decrypted. */
   imgSource?: string | null;
   imgModel: string;
@@ -519,6 +512,7 @@ export interface NpcPortraitRequest {
   imgComfyWorkflow?: string | undefined;
   imgDefaults?: ImageGenerationDefaultsProfile | null;
   imgQuality?: ImageGenerationQuality;
+  imgMaxImageReferences?: number | null;
   imgFallback?: ImageGenRequest["fallback"];
   styleProfiles?: ImageStyleProfileSettings;
   styleProfileId?: string | null;
@@ -534,6 +528,10 @@ export interface NpcPortraitRequest {
   force?: boolean;
   /** Optional request-scoped abort signal. */
   signal?: AbortSignal;
+  /** Apply the compatibility FIFO to non-ChatGPT provider attempts. */
+  queueProviderRequests?: boolean;
+  /** Background admission keeps automatic portraits from occupying the last interactive media slot. */
+  admissionMode?: ImageGenRequest["admissionMode"];
 }
 
 export type CompiledGameImagePrompt = {
@@ -562,6 +560,14 @@ async function buildNpcPortraitRawPrompt(req: NpcPortraitRequest): Promise<strin
     : GAME_NPC_PORTRAIT.defaultBuilder(vars);
 }
 
+export function applyNpcPortraitStyleReference(prompt: string, referenceImage?: string): string {
+  if (!referenceImage) return prompt;
+  return (
+    "ART STYLE REFERENCE: The attached image is a style sample only. Match its painting medium, brushwork, linework, shading, detail and finish so this portrait belongs to the same illustrated series. Do not copy the sample person's face, age, complexion, body, clothing, pose or background. The requested character's canonical appearance controls identity, including facial softness or angularity, feminine or masculine presentation, age, beauty, hairstyle and clothing. Preserve those specified traits rather than substituting a generic fantasy protagonist. Scene lighting may vary while the rendering style stays consistent.\n\n" +
+    prompt
+  );
+}
+
 export async function buildNpcPortraitProviderPrompt(req: NpcPortraitRequest): Promise<CompiledGameImagePrompt> {
   if (req.promptOverride?.trim()) {
     return {
@@ -584,7 +590,7 @@ export async function buildNpcPortraitProviderPrompt(req: NpcPortraitRequest): P
     ],
   });
   return compileGameImagePrompt(
-    req.dynamicPromptGenerator ? { ...req, appearance: null, preserveFullSourcePrompt: true } : req,
+    req.dynamicPromptGenerator ? { ...req, preserveFullSourcePrompt: true } : req,
     "portrait",
     prompt,
     1400,
@@ -766,54 +772,80 @@ export async function generateNpcPortrait(req: NpcPortraitRequest): Promise<stri
   }
 
   const compiled = await buildNpcPortraitProviderPrompt(req);
-  const prompt = compiled.prompt;
+  const prompt = applyNpcPortraitStyleReference(compiled.prompt, req.styleReferenceImage);
   const size = resolvedSize(req.size, DEFAULT_GAME_PORTRAIT_SIZE);
   req.debugLog?.(
     "[debug/game/image-generation] NPC portrait request name=%s model=%s source=%s size=%dx%d prompt:\n%s",
     req.npcName,
     req.imgModel,
-    req.imgSource || req.imgService || "",
+    resolveGameImageServiceHint(req),
     size.width,
     size.height,
     prompt,
   );
 
   try {
-    const result = await generateImage(
-      req.imgModel,
-      req.imgBaseUrl,
-      req.imgApiKey,
-      req.imgSource || req.imgService || "",
-      {
-        prompt,
-        negativePrompt: compiled.negativePrompt || undefined,
-        model: req.imgModel,
-        width: size.width,
-        height: size.height,
-        imageEndpointId: req.imgEndpointId || undefined,
-        comfyWorkflow: req.imgComfyWorkflow || undefined,
-        imageDefaults: req.imgDefaults ?? undefined,
-        quality: req.imgQuality,
-        fallback: req.imgFallback,
-        signal: req.signal,
-      },
-    );
+    let correction = "";
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (correction)
+        req.debugLog?.(
+          "[debug/game/image-generation] NPC portrait retry name=%s prompt:\n%s",
+          req.npcName,
+          `${prompt}\n\nRequired correction to the rejected candidate: ${correction}`,
+        );
+      const result = await generateImage(
+        req.imgSource || "",
+        req.imgBaseUrl,
+        req.imgApiKey,
+        resolveGameImageServiceHint(req),
+        {
+          prompt: correction ? `${prompt}\n\nRequired correction to the rejected candidate: ${correction}` : prompt,
+          referenceImages: req.styleReferenceImage ? [req.styleReferenceImage] : undefined,
+          negativePrompt: compiled.negativePrompt || undefined,
+          model: req.imgModel,
+          width: size.width,
+          height: size.height,
+          imageEndpointId: req.imgEndpointId || undefined,
+          comfyWorkflow: req.imgComfyWorkflow || undefined,
+          imageDefaults: req.imgDefaults ?? undefined,
+          quality: req.imgQuality,
+          maxImageReferences: req.imgMaxImageReferences,
+          fallback: req.imgFallback,
+          signal: req.signal,
+          admissionMode: req.admissionMode,
+          queueProviderRequests: req.queueProviderRequests,
+        },
+      );
 
-    if (!existsSync(avatarDir)) mkdirSync(avatarDir, { recursive: true });
-    const avatarBuffer = Buffer.from(result.base64, "base64");
-    const ext = normalizeGeneratedImageExt(result, avatarBuffer);
-    const avatarPath = join(avatarDir, `${slug}.${ext}`);
-    atomicWriteBuffer(avatarPath, avatarBuffer);
+      if (req.reviewPortrait) {
+        const bytes = Buffer.from(result.base64, "base64");
+        const ext = normalizeGeneratedImageExt(result, bytes);
+        const review = await req.reviewPortrait(`data:image/${ext === "jpg" ? "jpeg" : ext};base64,${result.base64}`);
+        if (!review.accepted) {
+          req.debugLog?.("[npc-portrait-review] rejected %s attempt=%d: %s", req.npcName, attempt + 1, review.feedback);
+          if (attempt === 1) throw new Error(`NPC portrait needs review: ${review.feedback}`);
+          correction = review.feedback;
+          continue;
+        }
+      }
 
-    const url = `/api/avatars/npc/${req.chatId}/${slug}.${ext}`;
-    req.debugLog?.(
-      "[debug/game/image-generation] NPC portrait result name=%s bytes=%d url=%s",
-      req.npcName,
-      avatarBuffer.byteLength,
-      url,
-    );
-    logger.info('[game-asset-gen] Generated NPC portrait for "%s" -> %s', req.npcName, url);
-    return url;
+      if (!existsSync(avatarDir)) mkdirSync(avatarDir, { recursive: true });
+      const avatarBuffer = Buffer.from(result.base64, "base64");
+      const ext = normalizeGeneratedImageExt(result, avatarBuffer);
+      const avatarPath = join(avatarDir, `${slug}.${ext}`);
+      atomicWriteBuffer(avatarPath, avatarBuffer);
+
+      const url = `/api/avatars/npc/${req.chatId}/${slug}.${ext}`;
+      req.debugLog?.(
+        "[debug/game/image-generation] NPC portrait result name=%s bytes=%d url=%s",
+        req.npcName,
+        avatarBuffer.byteLength,
+        url,
+      );
+      logger.info('[game-asset-gen] Generated NPC portrait for "%s" -> %s', req.npcName, url);
+      return url;
+    }
+    return null;
   } catch (err) {
     logger.warn(err, '[game-asset-gen] Failed to generate portrait for "%s"', req.npcName);
     return null;
@@ -861,6 +893,7 @@ export interface BackgroundGenRequest {
   imgComfyWorkflow?: string | undefined;
   imgDefaults?: ImageGenerationDefaultsProfile | null;
   imgQuality?: ImageGenerationQuality;
+  imgMaxImageReferences?: number | null;
   imgFallback?: ImageGenRequest["fallback"];
   styleProfiles?: ImageStyleProfileSettings;
   styleProfileId?: string | null;
@@ -886,6 +919,10 @@ export interface BackgroundGenRequest {
   force?: boolean;
   /** Optional request-scoped abort signal. */
   signal?: AbortSignal;
+  /** Apply the compatibility FIFO to non-ChatGPT provider attempts. */
+  queueProviderRequests?: boolean;
+  /** Automatic/batch work stays behind interactive media requests. */
+  admissionMode?: ImageGenRequest["admissionMode"];
 }
 
 export interface MapsLocationArtworkContext {
@@ -909,13 +946,26 @@ export interface ChatBackgroundGenRequest extends BackgroundGenRequest {
   sourceMode?: "roleplay" | "game";
 }
 
+export interface SceneIllustrationPromptBudgetRepairRequest {
+  prompt: string;
+  maxWords: number;
+  maxCharacters: number;
+  signal?: AbortSignal;
+}
+
+export type SceneIllustrationPromptBudgetRepair = (args: SceneIllustrationPromptBudgetRepairRequest) => Promise<string>;
+
 export interface SceneIllustrationGenRequest {
+  /** Storyboards persist the actual failure; legacy best-effort callers still receive null. */
+  throwOnError?: boolean;
   chatId: string;
   title?: string;
   prompt: string;
   reason?: string;
   characters?: string[];
   characterDescriptions?: string[];
+  /** Names in the exact order of attached character references, excluding the location. */
+  characterReferenceNames?: string[];
   /** Ensure requested appearance notes survive a selected formatter that omits the appearance variable. */
   ensureCharacterAppearance?: boolean;
   slug?: string;
@@ -929,6 +979,11 @@ export interface SceneIllustrationGenRequest {
   referenceImages?: string[];
   /** The first attached reference image depicts the current Maps location. */
   locationReferenceImageAttached?: boolean;
+  /** Stable location description supplied before character identity and scene instructions. */
+  locationVisualContext?: string;
+  /** Final text budget, including location, negative instructions and orientation. */
+  maxPromptCharacters?: number;
+  maxPromptWords?: number;
   /** Structured named-character prompts for providers with native multi-character controls. */
   characterPrompts?: SceneIllustrationCharacterPrompt[];
   imgSource?: string | null;
@@ -940,6 +995,7 @@ export interface SceneIllustrationGenRequest {
   imgComfyWorkflow?: string | undefined;
   imgDefaults?: ImageGenerationDefaultsProfile | null;
   imgQuality?: ImageGenerationQuality;
+  imgMaxImageReferences?: number | null;
   imgFallback?: ImageGenRequest["fallback"];
   styleProfiles?: ImageStyleProfileSettings;
   styleProfileId?: string | null;
@@ -961,6 +1017,12 @@ export interface SceneIllustrationGenRequest {
   preserveFullScenePrompt?: boolean;
   /** Optional request-scoped abort signal. */
   signal?: AbortSignal;
+  /** Optional callback to repair over-budget generated scenes before final provider prompt compile. */
+  repairPromptBudget?: SceneIllustrationPromptBudgetRepair;
+  /** Apply the compatibility FIFO to non-ChatGPT provider attempts. */
+  queueProviderRequests?: boolean;
+  /** Automatic/batch work stays behind interactive media requests. */
+  admissionMode?: ImageGenRequest["admissionMode"];
 }
 
 async function buildBackgroundRawPrompt(req: BackgroundGenRequest): Promise<string> {
@@ -1098,7 +1160,13 @@ function buildSceneIllustrationAppearanceNotes(characterDescriptions: string[] |
   const header = "Character appearance notes:\n";
   const lines = Array.from(
     new Set(
-      (characterDescriptions ?? []).map((description) => description.trim().replace(/\s+/g, " ")).filter(Boolean),
+      (characterDescriptions ?? [])
+        .map((description) => {
+          const compact = compactStoryboardCharacterIdentity(description, 600);
+          if (!compact) return "";
+          return compact;
+        })
+        .filter(Boolean),
     ),
   ).slice(0, 16);
   if (!lines.length) return "";
@@ -1151,7 +1219,14 @@ async function buildSceneIllustrationRawPrompt(req: SceneIllustrationGenRequest)
     narrativePurposeLine: meaningfulNarrativePurpose ? `Narrative purpose: ${meaningfulNarrativePurpose}.` : "",
     charactersLine: req.characters?.length ? `Characters: ${req.characters.join(", ")}.` : "",
     referenceHandlingLine: characterReferenceImagesAttached
-      ? "Reference handling: attached character reference images are available. Use them to match faces, hair, build, colors, and distinctive features for the referenced characters."
+      ? [
+          "Use the attached character photos as identity references: match their faces, hair, body materials, build and distinctive features. The current scene determines clothing and actions.",
+          ...(req.characterReferenceNames ?? [])
+            .slice(0, referenceImages.length - (req.locationReferenceImageAttached ? 1 : 0))
+            .map(
+              (name, index) => `Reference image ${index + (req.locationReferenceImageAttached ? 2 : 1)} is ${name}.`,
+            ),
+        ].join(" ")
       : "",
     locationHandlingLine: req.locationReferenceImageAttached ? SPATIAL_LOCATION_REFERENCE_PROMPT_LINE : "",
     appearanceNotesBlock: buildSceneIllustrationAppearanceNotes(req.characterDescriptions),
@@ -1188,7 +1263,18 @@ async function buildSceneIllustrationRawPrompt(req: SceneIllustrationGenRequest)
     imagePromptInstructionsLine && !rawPromptWithRequiredAppearance.includes(imagePromptInstructionsLine)
       ? `${rawPromptWithRequiredAppearance}\n${imagePromptInstructionsLine}`
       : rawPromptWithRequiredAppearance;
-  return finalPrompt;
+  const clothingRuleLine =
+    "Use clothing established in the current scene; if the scene says nothing about clothing, keep characters fully clothed. Portrait or card appearance alone never implies undressing.";
+  const withClothingRule = `${finalPrompt}\n${clothingRuleLine}`;
+  const withReferenceIdentity =
+    sceneIllustrationVars.referenceHandlingLine && !finalPrompt.includes(sceneIllustrationVars.referenceHandlingLine)
+      ? `${withClothingRule}\n${sceneIllustrationVars.referenceHandlingLine}`
+      : withClothingRule;
+  // Custom formatters may omit artDirectionLine, including when templates are disabled.
+  return sceneIllustrationVars.artDirectionLine &&
+    !withReferenceIdentity.includes(sceneIllustrationVars.artDirectionLine)
+    ? `${sceneIllustrationVars.artDirectionLine}\n${withReferenceIdentity}`
+    : withReferenceIdentity;
 }
 
 function sceneIllustrationContextTitle(req: SceneIllustrationGenRequest): string {
@@ -1226,13 +1312,169 @@ function isGenericSceneMomentLabel(value: string): boolean {
   );
 }
 
+class SceneIllustrationPromptBudgetError extends Error {}
+
+const imagePromptWordCount = (value: string | undefined) => (value?.trim() ? value.trim().split(/\s+/u).length : 0);
+
+function withSceneLocationContext(
+  req: SceneIllustrationGenRequest,
+  compiled: CompiledGameImagePrompt,
+): CompiledGameImagePrompt {
+  const result = {
+    ...compiled,
+    prompt: [
+      req.locationVisualContext,
+      req.locationReferenceImageAttached && !compiled.prompt.includes(SPATIAL_LOCATION_REFERENCE_PROMPT_LINE)
+        ? SPATIAL_LOCATION_REFERENCE_PROMPT_LINE
+        : "",
+      req.locationVisualContext ? "CURRENT SCENE:" : "",
+      compiled.prompt,
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
+  };
+  // Check after every host addition, not just the intermediate scene prompt.
+  // Reject rather than silently cutting dialogue, cast or user instructions.
+  if (req.maxPromptCharacters || req.maxPromptWords) {
+    const size = resolvedSize(req.size, DEFAULT_GAME_BACKGROUND_SIZE);
+    const finalText = chatGPTImagePromptText({ ...result, ...size, model: req.imgModel });
+    const length = finalText.length;
+    if (req.maxPromptCharacters && length > req.maxPromptCharacters) {
+      throw new SceneIllustrationPromptBudgetError(
+        `Storyboard image prompt is too long (${length} characters; budget ${req.maxPromptCharacters}). Shorten the image formatter or image instructions. No image request was sent.`,
+      );
+    }
+    const wordCount = imagePromptWordCount;
+    if (req.maxPromptWords && wordCount(finalText) > req.maxPromptWords) {
+      throw new SceneIllustrationPromptBudgetError(
+        `Storyboard image prompt exceeds ${req.maxPromptWords} words (${wordCount(finalText)} total; scene ${wordCount(req.prompt)}, location ${wordCount(req.locationVisualContext)}, user instructions ${wordCount(req.imagePromptInstructions)}, appearance ${wordCount(req.characterDescriptions?.join(" "))}). Shorten the image instructions or scene prompt. No image request was sent.`,
+      );
+    }
+  }
+  return result;
+}
+
 export async function buildSceneIllustrationProviderPrompt(
   req: SceneIllustrationGenRequest,
 ): Promise<CompiledGameImagePrompt> {
+  req.signal?.throwIfAborted();
+  try {
+    return await compileSceneIllustrationProviderPrompt(req);
+  } catch (error) {
+    if (
+      !(error instanceof SceneIllustrationPromptBudgetError) ||
+      !req.repairPromptBudget ||
+      req.promptOverride?.trim() ||
+      req.dynamicPromptGenerator
+    )
+      throw error;
+    req.signal?.throwIfAborted();
+
+    // Only generated scene prose is replaceable. Measure the actual formatter and
+    // provider suffix with the visibility rule and a minimum identity allowance.
+    const visibility = req.prompt.match(/(?:^|\s+)(Final visibility rule:[\s\S]*)$/iu);
+    const scene = visibility ? req.prompt.slice(0, visibility.index).trim() : req.prompt.trim();
+    const visibilityRule = visibility?.[1] ?? "";
+    const fixed = await compileSceneIllustrationProviderPrompt({
+      ...req,
+      prompt: visibilityRule,
+      characterDescriptions: req.characterDescriptions?.map((line) => line.trim().split(/\s+/u).slice(0, 12).join(" ")),
+    });
+    const fixedText = chatGPTImagePromptText({
+      ...fixed,
+      ...resolvedSize(req.size, DEFAULT_GAME_BACKGROUND_SIZE),
+      model: req.imgModel,
+    });
+    const maxWords = Math.min(220, (req.maxPromptWords ?? 1000) - imagePromptWordCount(fixedText) - 16);
+    const maxCharacters = Math.min(1800, (req.maxPromptCharacters ?? 8000) - fixedText.length - 128);
+    if (maxWords < 20 || maxCharacters < 120) throw error;
+    req.debugLog?.(
+      "[debug/game/storyboard-prompt-repair] scene budget=%d words/%d characters",
+      maxWords,
+      maxCharacters,
+    );
+    const repaired = (
+      await req.repairPromptBudget({ prompt: scene, maxWords, maxCharacters, signal: req.signal })
+    ).trim();
+    req.signal?.throwIfAborted();
+    if (
+      !repaired ||
+      imagePromptWordCount(repaired) > maxWords ||
+      repaired.length > maxCharacters ||
+      /Final visibility rule:/iu.test(repaired)
+    ) {
+      throw new SceneIllustrationPromptBudgetError(
+        "Storyboard image prompt repair did not fit the available budget. No image request was sent.",
+      );
+    }
+    // A compressor may shorten narration, but never silently rewrite quoted speech.
+    for (const quote of scene.matchAll(/"([^"\n]+)"|“([^”\n]+)”/gu)) {
+      if (!repaired.includes(quote[1] ?? quote[2]!)) {
+        throw new Error("Storyboard prompt repair omitted quoted dialogue. No image request was sent.");
+      }
+    }
+    // The private compiler cannot re-enter recovery: one repair call per frame.
+    const result = await compileSceneIllustrationProviderPrompt({
+      ...req,
+      prompt: [repaired, visibilityRule].filter(Boolean).join(" "),
+    });
+    req.debugLog?.("[debug/game/storyboard-prompt-repair] repaired provider prompt:\n%s", result.prompt);
+    return result;
+  }
+}
+
+async function compileSceneIllustrationProviderPrompt(
+  req: SceneIllustrationGenRequest,
+): Promise<CompiledGameImagePrompt> {
+  req = {
+    ...req,
+    characterDescriptions: req.characterDescriptions
+      ?.map((description) => compactStoryboardCharacterIdentity(description, 600))
+      .filter(Boolean),
+  };
   if (req.promptOverride?.trim()) {
-    return {
+    return withSceneLocationContext(req, {
       prompt: req.promptOverride.trim(),
       negativePrompt: req.negativePromptOverride?.trim() || "",
+    });
+  }
+  if (req.maxPromptWords && req.characterDescriptions?.length && !req.dynamicPromptGenerator) {
+    // Budget the assembled request first. Appearance notes share the remaining space;
+    // scene actions, named photo references, user rules and location evidence stay intact.
+    const fixed = await compileSceneIllustrationProviderPrompt({
+      ...req,
+      characterDescriptions: undefined,
+      ensureCharacterAppearance: false,
+    });
+    const fixedText = chatGPTImagePromptText({
+      ...fixed,
+      ...resolvedSize(req.size, DEFAULT_GAME_BACKGROUND_SIZE),
+      model: req.imgModel,
+    });
+    const lines = req.characterDescriptions.slice(0, 16).map((line) => line.trim().split(/\s+/u));
+    const counts = lines.map(() => 0);
+    let wordsLeft = Math.max(0, req.maxPromptWords - fixedText.trim().split(/\s+/u).length - 8);
+    let charsLeft = Math.max(0, (req.maxPromptCharacters ?? Infinity) - fixedText.length - 64 - lines.length * 2);
+    while (wordsLeft > 0 && charsLeft > 0) {
+      let added = false;
+      for (let index = 0; index < lines.length && wordsLeft > 0; index++) {
+        const word = lines[index]![counts[index]!];
+        if (word === undefined || word.length + 1 > charsLeft) continue;
+        counts[index]!++;
+        wordsLeft--;
+        charsLeft -= word.length + 1;
+        added = true;
+      }
+      if (!added) break;
+    }
+    req = {
+      ...req,
+      characterDescriptions: lines
+        .map((words, index) => {
+          const count = counts[index]!;
+          return count ? words.slice(0, count).join(" ") + (count < words.length ? "…" : "") : "";
+        })
+        .filter(Boolean),
     };
   }
   const sourcePrompt = await buildSceneIllustrationRawPrompt(req);
@@ -1257,21 +1499,41 @@ export async function buildSceneIllustrationProviderPrompt(
           req.artStyle ? `Art style: ${req.artStyle}` : "",
           req.imagePromptInstructions ? `User image instructions: ${req.imagePromptInstructions}` : "",
           req.locationReferenceImageAttached ? SPATIAL_LOCATION_REFERENCE_PROMPT_LINE : "",
-          referenceImages.length ? `Reference images attached: ${referenceImages.length}` : "",
+          referenceImages.length
+            ? "Reference images may be attached. Use any attached images as visual identity or location context."
+            : "",
         ]
       : [],
   });
-  return compileGameImagePrompt(
-    req.dynamicPromptGenerator ? { ...req, preserveFullSourcePrompt: true } : req,
+  const compiled = compileGameImagePrompt(
+    {
+      ...req,
+      preserveFullSourcePrompt: !!req.dynamicPromptGenerator,
+      omitProfileSubjectTags: illustratorPromptTemplateOwnsComposition(prompt),
+    },
     "illustration",
     prompt,
-    7000,
-    GAME_ILLUSTRATION_NEGATIVE_PROMPT,
+    req.maxPromptCharacters ? Number.MAX_SAFE_INTEGER : 7000,
+    sceneIllustrationBuiltInNegativePrompt(prompt),
   );
+  return withSceneLocationContext(req, compiled);
 }
 
 export async function buildSceneIllustrationImagePrompt(req: SceneIllustrationGenRequest): Promise<string> {
   return (await buildSceneIllustrationProviderPrompt(req)).prompt;
+}
+
+/** Remove only host-authored prohibitions that contradict an explicitly requested layout/text. */
+export function sceneIllustrationBuiltInNegativePrompt(prompt: string): string {
+  const ownsComposition = illustratorPromptTemplateOwnsComposition(prompt);
+  const requestsText = illustratorPromptRequestsRenderedText(prompt);
+  return GAME_ILLUSTRATION_NEGATIVE_PROMPT.split(", ")
+    .filter(
+      (item) =>
+        !(ownsComposition && /^(split screen|panel|collage|contact sheet|grid|four images)$/.test(item)) &&
+        !(requestsText && /^(text|letters|captions|subtitles|speech bubble)$/.test(item)),
+    )
+    .join(", ");
 }
 
 /**
@@ -1300,7 +1562,7 @@ export async function generateBackground(req: BackgroundGenRequest): Promise<str
     "[debug/game/image-generation] background request slug=%s model=%s source=%s targetSize=%dx%d prompt:\n%s",
     slug,
     req.imgModel,
-    req.imgSource || req.imgService || "",
+    resolveGameImageServiceHint(req),
     size.width,
     size.height,
     prompt,
@@ -1308,10 +1570,10 @@ export async function generateBackground(req: BackgroundGenRequest): Promise<str
 
   try {
     const result = await generateImage(
-      req.imgModel,
+      req.imgSource || "",
       req.imgBaseUrl,
       req.imgApiKey,
-      req.imgSource || req.imgService || "",
+      resolveGameImageServiceHint(req),
       {
         prompt,
         negativePrompt: compiled.negativePrompt || undefined,
@@ -1322,8 +1584,11 @@ export async function generateBackground(req: BackgroundGenRequest): Promise<str
         comfyWorkflow: req.imgComfyWorkflow || undefined,
         imageDefaults: req.imgDefaults ?? undefined,
         quality: req.imgQuality,
+        maxImageReferences: req.imgMaxImageReferences,
         fallback: req.imgFallback,
         signal: req.signal,
+        admissionMode: req.admissionMode,
+        queueProviderRequests: req.queueProviderRequests,
       },
     );
 
@@ -1371,7 +1636,7 @@ export async function generateChatBackground(req: ChatBackgroundGenRequest): Pro
     "[debug/background-agent/image-generation] request slug=%s model=%s source=%s targetSize=%dx%d prompt:\n%s",
     slug,
     req.imgModel,
-    req.imgSource || req.imgService || "",
+    resolveGameImageServiceHint(req),
     size.width,
     size.height,
     prompt,
@@ -1379,10 +1644,10 @@ export async function generateChatBackground(req: ChatBackgroundGenRequest): Pro
 
   try {
     const result = await generateImage(
-      req.imgModel,
+      req.imgSource || "",
       req.imgBaseUrl,
       req.imgApiKey,
-      req.imgSource || req.imgService || "",
+      resolveGameImageServiceHint(req),
       {
         prompt,
         negativePrompt: compiled.negativePrompt || undefined,
@@ -1393,8 +1658,11 @@ export async function generateChatBackground(req: ChatBackgroundGenRequest): Pro
         comfyWorkflow: req.imgComfyWorkflow || undefined,
         imageDefaults: req.imgDefaults ?? undefined,
         quality: req.imgQuality,
+        maxImageReferences: req.imgMaxImageReferences,
         fallback: req.imgFallback,
         signal: req.signal,
+        admissionMode: req.admissionMode,
+        queueProviderRequests: req.queueProviderRequests,
       },
     );
 
@@ -1439,7 +1707,7 @@ export async function generateSceneIllustration(req: SceneIllustrationGenRequest
     "[debug/game/image-generation] scene illustration request slug=%s model=%s source=%s targetSize=%dx%d refs=%d prompt:\n%s",
     slug,
     req.imgModel,
-    req.imgSource || req.imgService || "",
+    resolveGameImageServiceHint(req),
     size.width,
     size.height,
     referenceImages.length,
@@ -1448,10 +1716,10 @@ export async function generateSceneIllustration(req: SceneIllustrationGenRequest
 
   try {
     const result = await generateImage(
-      req.imgModel,
+      req.imgSource || "",
       req.imgBaseUrl,
       req.imgApiKey,
-      req.imgSource || req.imgService || "",
+      resolveGameImageServiceHint(req),
       {
         prompt,
         negativePrompt: compiled.negativePrompt || undefined,
@@ -1462,10 +1730,14 @@ export async function generateSceneIllustration(req: SceneIllustrationGenRequest
         comfyWorkflow: req.imgComfyWorkflow || undefined,
         imageDefaults: req.imgDefaults ?? undefined,
         quality: req.imgQuality,
+        maxImageReferences: req.imgMaxImageReferences,
         fallback: req.imgFallback,
         signal: req.signal,
+        admissionMode: req.admissionMode,
+        queueProviderRequests: req.queueProviderRequests,
         referenceImages: referenceImages.length ? referenceImages : undefined,
         characterPrompts: req.characterPrompts,
+        captureInputForInspection: true,
       },
     );
 
@@ -1485,6 +1757,7 @@ export async function generateSceneIllustration(req: SceneIllustrationGenRequest
     return tag;
   } catch (err) {
     logger.warn(err, '[game-asset-gen] Failed to generate scene illustration "%s"', slug);
+    if (req.throwOnError) throw err;
     return null;
   }
 }

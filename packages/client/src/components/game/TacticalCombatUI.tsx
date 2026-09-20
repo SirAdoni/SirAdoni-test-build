@@ -21,6 +21,7 @@ import { CombatAiControls } from "./CombatAiControls";
 // ──────────────────────────────────────────────
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { AnimatePresence, motion, useMotionValue } from "framer-motion";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 import {
   Sword,
   Sparkles,
@@ -1963,10 +1964,16 @@ function UnitToken({
   };
 
   return (
-    <motion.button
-      type="button"
+    <motion.div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
       aria-label={ariaLabel}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onClick();
+      }}
       initial={false}
       // Opacity lives HERE (inline) — framer would override a Tailwind opacity
       // class anyway. Exit is opacity-only: a scale would drop the centering
@@ -2000,7 +2007,16 @@ function UnitToken({
         }}
       >
         {sprite.kind === "url" ? (
-          <img src={sprite.value} alt={unit.name} className="h-full w-full rounded-full object-cover" />
+          <div className="relative inline-flex h-full w-full items-center" onClick={(event) => event.stopPropagation()}>
+            <CharacterPhoto
+              src={sprite.value}
+              name={unit.name}
+              wrapperClassName="relative inline-flex h-full w-full"
+              className="block h-full w-full"
+            >
+              <img src={sprite.value} alt={unit.name} className="h-full w-full rounded-full object-cover" />
+            </CharacterPhoto>
+          </div>
         ) : sprite.kind === "emoji" ? (
           <span className="text-[min(4vw,1.5rem)] leading-none">{sprite.value}</span>
         ) : (
@@ -2032,7 +2048,7 @@ function UnitToken({
           <div className="h-full bg-sky-400 transition-all duration-300" style={{ width: `${mpPct}%` }} />
         </div>
       )}
-    </motion.button>
+    </motion.div>
   );
 }
 

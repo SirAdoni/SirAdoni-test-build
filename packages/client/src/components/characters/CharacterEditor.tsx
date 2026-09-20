@@ -14,9 +14,12 @@ import {
   type SyntheticEvent,
 } from "react";
 import { toast } from "sonner";
+import { getCharacterLibraryCategory } from "@marinara-engine/shared";
+import { NpcProfileButton } from "./NpcProfileButton";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useCharacter,
+  useBuildNpcProfile,
   useUpdateCharacter,
   useGenerateCharacterSummary,
   useGenerateCharacterConvoProfile,
@@ -76,6 +79,7 @@ import { AvatarReplaceActions } from "../ui/AvatarReplaceActions";
 import { EditorAvatarTileActions } from "../ui/EditorAvatarTileActions";
 import { CallClipGenerationModal } from "../ui/CallClipGenerationModal";
 import { ImageUploadDropzone } from "../ui/ImageUploadDropzone";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 import { CustomEmojiTagButton } from "../ui/CustomEmojiTagButton";
 import { CharacterRegexSection } from "./CharacterRegexSection";
 import { NameAliasesSection } from "../ui/NameAliasesSection";
@@ -143,6 +147,7 @@ import { SettingsSwitch } from "../panels/settings/SettingControls";
 import {
   createDefaultRpgStatPools,
   normalizeSpriteExpressionLabel,
+  normalizeRpgStatAttributes,
   normalizeRpgStatPools,
   syncRpgHpFromPools,
   type CharacterCardVersion,
@@ -304,6 +309,7 @@ export function CharacterEditor() {
   const closeDetail = useUIStore((s) => s.closeCharacterDetail);
   const { data: rawCharacter, isLoading } = useCharacter(characterId);
   const updateCharacter = useUpdateCharacter();
+  const buildNpcProfile = useBuildNpcProfile();
   const uploadAvatar = useUploadAvatar();
   const removeAvatar = useRemoveAvatar();
   const deleteCharacter = useDeleteCharacter();
@@ -1043,6 +1049,40 @@ export function CharacterEditor() {
         onUseAvatar={handleGeneratedCharacterSheet}
       />
 
+      <div className="flex flex-wrap items-center gap-2 border-b border-[var(--border)] px-4 py-2">
+        <label className="flex items-center gap-2 text-xs" title={localizeUi("characters.organization.hint")}>
+          {localizeUi("characters.organization.label")}
+          <select
+            className="mari-chrome-field min-h-9 px-2"
+            value={getCharacterLibraryCategory(formData)}
+            onChange={(event) => {
+              setExtensionValue("libraryCategory", event.target.value);
+              markDirty();
+            }}
+          >
+            <option value="characters">{localizeUi("characters.organization.characters")}</option>
+            <option value="npcs">{localizeUi("characters.organization.npcs")}</option>
+          </select>
+        </label>
+        <NpcProfileButton
+          data={formData}
+          dirty={dirty}
+          pending={buildNpcProfile.isPending}
+          onBuild={async (chatId, npcId) => {
+            try {
+              await buildNpcProfile.mutateAsync({ chatId, npcId });
+              toast.success(localizeUi("characters.npcProfile.success"));
+            } catch (error) {
+              toast.error(
+                localizeUi("characters.npcProfile.failed", {
+                  reason: error instanceof Error ? error.message : String(error),
+                }),
+              );
+            }
+          }}
+        />
+      </div>
+
       {/* ── Header ── */}
       <div className="mari-editor-header mari-editor-header--with-nav">
         <div className="mari-editor-header-main mari-editor-header-main--identity">
@@ -1058,20 +1098,37 @@ export function CharacterEditor() {
           {/* Avatar */}
           <div
             className={cn(
-              "mari-editor-avatar-tile group relative",
+              "mari-editor-avatar-tile group relative h-8 w-auto gap-1 overflow-visible md:h-9",
               !avatarPreview && "mari-avatar-placeholder mari-avatar-placeholder--character",
             )}
-            onClick={() => fileInputRef.current?.click()}
+            style={{ width: "auto", overflow: "visible" }}
           >
             {avatarPreview ? (
-              <img
+              <CharacterPhoto
                 src={avatarPreview}
-                alt={formData.name}
-                className="pointer-events-none h-full w-full object-cover"
-                style={getAvatarCropStyle(normalizeAvatarCrop(formData.extensions.avatarCrop))}
-              />
+                name={formData.name}
+                className="block h-8 w-8 shrink-0 rounded-[inherit] md:h-9 md:w-9"
+                onUpdate={() => fileInputRef.current?.click()}
+                updateLabel={localizeUi("editor.avatar.upload")}
+              >
+                <span className="absolute inset-0 overflow-hidden rounded-[inherit]">
+                  <img
+                    src={avatarPreview}
+                    alt={formData.name}
+                    className="pointer-events-none h-full w-full object-cover"
+                    style={getAvatarCropStyle(normalizeAvatarCrop(formData.extensions.avatarCrop))}
+                  />
+                </span>
+              </CharacterPhoto>
             ) : (
-              <User size="1.375rem" className="text-white" />
+              <button
+                type="button"
+                className="flex h-8 w-8 items-center justify-center md:h-9 md:w-9"
+                onClick={() => fileInputRef.current?.click()}
+                aria-label={localizeUi("editor.avatar.upload")}
+              >
+                <User size="1.375rem" className="text-white" />
+              </button>
             )}
             <EditorAvatarTileActions
               generationAvailable={imageGenerationAvailable}
@@ -5026,7 +5083,19 @@ function StatsTab({
   updateExtension: (key: string, value: unknown) => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
-  const stats: RPGStatsConfig = (formData.extensions.rpgStats as RPGStatsConfig) ?? DEFAULT_RPG_STATS;
+  // Imported cards can carry attributes as a { STR: 18 } map (and odd hp shapes);
+  // normalize before the tab spreads/maps them so the Stats tab never crashes.
+  const rawStats = formData.extensions.rpgStats as RPGStatsConfig | undefined;
+  const stats: RPGStatsConfig = rawStats
+    ? {
+        ...rawStats,
+        attributes: normalizeRpgStatAttributes(rawStats.attributes),
+        hp: {
+          value: Math.max(0, Number(rawStats.hp?.value) || 0),
+          max: Math.max(1, Number(rawStats.hp?.max) || 100),
+        },
+      }
+    : DEFAULT_RPG_STATS;
   const pools = normalizeRpgStatPools(stats);
   const trackerCustomFieldDefaults = Array.isArray(formData.extensions.trackerCustomFieldDefaults)
     ? (formData.extensions.trackerCustomFieldDefaults as CharacterTrackerCustomFieldDefault[])

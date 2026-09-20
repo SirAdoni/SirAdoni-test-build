@@ -1,7 +1,8 @@
 // ──────────────────────────────────────────────
 // Fastify App Factory
 // ──────────────────────────────────────────────
-import Fastify, { LogController } from "fastify";
+import { structurePublishedContinuity } from "./services/game/continuity-structure.js";
+import Fastify, { LogController, type FastifyBaseLogger, type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
@@ -30,7 +31,6 @@ import { join, resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { getBuildCommit, getBuildLabel } from "./config/build-info.js";
 import {
-  getLogLevel,
   getNodeEnv,
   isRequestLoggingDisabled,
   isAutoCreateDefaultConnectionDisabled,
@@ -47,6 +47,7 @@ import { initializeCapabilityAgentRegistry } from "./services/capability-package
 import { capabilityPackageManager } from "./services/capability-packages/package-manager.service.js";
 import { capabilityModuleRuntime } from "./services/capability-packages/capability-module-runtime.service.js";
 import { migrateLegacyCapabilities } from "./services/capability-packages/legacy-capability-migration.js";
+import { migrateLegacyGameMapsAtBoot } from "./services/capability-packages/automatic-legacy-game-map-migration.js";
 import { createClientNotFoundHandler, createClientStaticOptions } from "./config/client-static-config.js";
 import { hostValidationHook } from "./middleware/host-validation.js";
 import { androidLocalAuthHook, androidLocalLoginRoute } from "./middleware/android-local-auth.js";
@@ -57,6 +58,16 @@ import { getLastFreeze } from "./lib/freeze-detector.js";
 import { getPreviousSessionStatus, getUncleanExitHistory } from "./lib/session-postmortem.js";
 import { protectTerminalLogger } from "./lib/logger.js";
 import { openCodeSessionHook } from "./utils/opencode-session.js";
+import { logger } from "./lib/logger.js";
+import { withDiagnosticContext } from "./lib/diagnostics.js";
+import { sanitizeDiagnosticText } from "./lib/diagnostics.js";
+import { createGameContinuityRuntime, type ContinuityRuntime } from "./services/game/continuity-runtime.js";
+
+type SessionSummaryRefreshRuntime = {
+  start(): Promise<void>;
+  onDependencyChanged(chatId: string): Promise<void>;
+  stop(): Promise<void>;
+};
 
 const isLite = process.env.MARINARA_LITE === "true" || process.env.MARINARA_LITE === "1";
 const MAX_UPLOAD_BYTES = 256 * 1024 * 1024;
@@ -87,20 +98,65 @@ function resolveServerOs(): string {
 
 const SERVER_OS = resolveServerOs();
 
+/** Shared request correlation and response normalization hooks for HTTP tests and the live app. */
+export function registerDiagnosticHttpHooks(app: FastifyInstance): void {
+  app.addHook("onRequest", (request, _reply, done) => {
+    const requestPath = request.url.split(/[?#]/, 1)[0] ?? request.url;
+    withDiagnosticContext({ requestId: request.id, operation: request.routeOptions.url ?? requestPath }, () => done());
+  });
+  app.addHook("onSend", async (req, reply, payload) => {
+    if (req.url.startsWith("/api/") && !reply.hasHeader("Cache-Control")) {
+      reply.header("Cache-Control", "no-store");
+    }
+    if (reply.statusCode >= 400 && reply.getHeader("content-type")?.toString().includes("application/json")) {
+      try {
+        const parsed = typeof payload === "string" ? JSON.parse(payload) : payload;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && "error" in parsed) {
+          const record = parsed as Record<string, unknown>;
+          if (!record.code || !record.errorId) {
+            const { reportDiagnosticError } = await import("./lib/diagnostic-operation.js");
+            const reference = reportDiagnosticError(
+              Object.assign(new Error(typeof record.error === "string" ? record.error : `HTTP ${reply.statusCode}`), {
+                statusCode: reply.statusCode,
+              }),
+              {
+                requestId: req.id,
+                operation: req.routeOptions.url ?? req.url.split(/[?#]/, 1)[0] ?? req.url,
+                stage: "http",
+              },
+            );
+            const normalized = {
+              ...record,
+              error: typeof record.error === "string" ? sanitizeDiagnosticText(record.error) : record.error,
+              ...reference,
+              ...(record.code ? { code: record.code, diagnosticCode: reference.code } : {}),
+            };
+            return typeof payload === "string" ? JSON.stringify(normalized) : normalized;
+          }
+        }
+      } catch {
+        // Preserve the original payload when a directly-sent error is not JSON.
+      }
+    }
+    return payload;
+  });
+}
+
 export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
   const hadUserStateBeforeStartup = existsSync(join(getFileStorageDir(), "manifest.json"));
   const app = Fastify({
     // Restart has its own bounded fallback; normal shutdown must not interrupt active generations.
     forceCloseConnections: false,
-    logger: {
-      level: getLogLevel(),
-      transport: getNodeEnv() !== "production" ? { target: "pino-pretty", options: { colorize: true } } : undefined,
-    },
+    // Keep Fastify and application records on the same Pino instance so
+    // request context, sinks, and runtime level changes stay correlated.
+    loggerInstance: logger as FastifyBaseLogger,
     logController: new LogController({ disableRequestLogging: isRequestLoggingDisabled() }),
     bodyLimit: MAX_UPLOAD_BYTES, // General-route default; transfer routes opt into streamed or unbounded imports.
     ...(https && { https }),
   });
   protectTerminalLogger(app.log, getNodeEnv() !== "production");
+
+  registerDiagnosticHttpHooks(app);
 
   // Reject attacker-controlled DNS names before CORS or loopback trust can
   // treat a rebound browser request as same-origin local traffic.
@@ -124,9 +180,33 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
   // ── Storage ──
   const db = await getDB();
   app.decorate("db", db);
+  // Accessor decoration: game routes assign the service from an encapsulated
+  // child context, and a plain property would only shadow on that child. The
+  // setter routes the assignment to shared state so the root (start/stop,
+  // onPublished) and sibling route contexts (chat message mutations) see it.
+  let sessionSummaryRefresh: SessionSummaryRefreshRuntime | null = null;
+  app.decorate("sessionSummaryRefresh", {
+    getter: () => sessionSummaryRefresh,
+    setter: (value: SessionSummaryRefreshRuntime | null) => {
+      sessionSummaryRefresh = value;
+    },
+  });
+  const gameContinuity = createGameContinuityRuntime(db, {
+    onPublished: async (receipt) => {
+      // Movements and relationships are read from the newly published records in the background; a failure
+      // leaves the receipt unmarked so the structure backfill picks it up later.
+      void structurePublishedContinuity(db, receipt.chatId, { receiptIds: [receipt.id] }).catch((error) =>
+        logger.warn({ err: error, receiptId: receipt.id }, "[game-continuity] structure pass failed"),
+      );
+      await app.sessionSummaryRefresh?.onDependencyChanged(receipt.chatId);
+    },
+  });
+  app.decorate("gameContinuity", gameContinuity);
   app.addHook("onClose", async () => {
     try {
       const stopResults = await Promise.allSettled([
+        app.sessionSummaryRefresh?.stop(),
+        gameContinuity.stop(),
         capabilityModuleRuntime.stop(),
         personalServerExtensionRuntime.stop(),
         sidecarProcessService.stop(),
@@ -239,13 +319,6 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
   // can return stale data when React Query refetches after mutations.
   // This caused messages to vanish after generation because the refetch
   // returned a cached response without the newly saved message.
-  app.addHook("onSend", async (req, reply, payload) => {
-    if (req.url.startsWith("/api/") && !reply.hasHeader("Cache-Control")) {
-      reply.header("Cache-Control", "no-store");
-    }
-    return payload;
-  });
-
   // ── Error Handler ──
   app.setErrorHandler(errorHandler);
 
@@ -255,10 +328,17 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
 
   // ── Routes ──
   await registerRoutes(app);
+  await Promise.all([app.sessionSummaryRefresh?.start(), gameContinuity.start()]);
   await androidLocalLoginRoute(app);
 
   // Trusted downloaded server capabilities register while Fastify is still mutable.
   await capabilityModuleRuntime.start(app);
+  try {
+    await migrateLegacyGameMapsAtBoot(db);
+  } catch (error) {
+    // A single malformed legacy chat must never prevent the host from booting.
+    app.log.warn({ err: error }, "[migration] Legacy game map conversion did not complete");
+  }
   // A package can install its own art during activate(), which runs AFTER the boot-time scan above, so
   // without this its assets stay invisible to everything reading the manifest until the NEXT restart.
   // Idempotent — the same scan the upload routes already re-run. Guarded because it walks files a package
@@ -349,5 +429,7 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
 declare module "fastify" {
   interface FastifyInstance {
     db: DB;
+    gameContinuity: ContinuityRuntime;
+    sessionSummaryRefresh: SessionSummaryRefreshRuntime | null;
   }
 }

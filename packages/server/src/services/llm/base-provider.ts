@@ -2,6 +2,8 @@
 // LLM Provider — Abstract Base
 // ──────────────────────────────────────────────
 import { logger } from "../../lib/logger.js";
+import { reportDiagnosticError } from "../../lib/diagnostic-operation.js";
+import { diagnosticDetails, getDiagnosticContext } from "../../lib/diagnostics.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
   getChatGenerationTimeoutMs,
@@ -25,10 +27,16 @@ import {
 const LLM_BODY_TIMEOUT = 120 * 1000; // 2 minutes between body chunks
 const llmAgentOptions = () => ({ bodyTimeout: LLM_BODY_TIMEOUT, headersTimeout: getChatGenerationTimeoutMs() });
 const llmRequestTimeout = new AsyncLocalStorage<number>();
+const llmResolvedAddressOffset = new AsyncLocalStorage<number>();
 
 /** Scope a provider request timeout without changing background/agent generation behavior. */
 export function withLlmRequestTimeout<T>(timeoutMs: number, operation: () => Promise<T>): Promise<T> {
   return llmRequestTimeout.run(timeoutMs, operation);
+}
+
+/** Route a bounded retry through the next validated DNS answer without changing provider APIs. */
+export function withLlmResolvedAddressOffset<T>(offset: number, operation: () => T): T {
+  return llmResolvedAddressOffset.run(offset, operation);
 }
 
 /**
@@ -37,7 +45,8 @@ export function withLlmRequestTimeout<T>(timeoutMs: number, operation: () => Pro
  */
 export function llmFetch(
   url: string | URL,
-  init?: RequestInit & Pick<SafeFetchOptions, "agentOptions" | "bufferResponse" | "decodeCompressedResponse">,
+  init?: RequestInit &
+    Pick<SafeFetchOptions, "agentOptions" | "bufferResponse" | "decodeCompressedResponse" | "resolvedAddressOffset">,
 ): Promise<Response> {
   const bufferResponse = init?.bufferResponse ?? false;
   const requestTimeoutMs = llmRequestTimeout.getStore();
@@ -57,6 +66,7 @@ export function llmFetch(
       (requestTimeoutMs ? { bodyTimeout: requestTimeoutMs, headersTimeout: requestTimeoutMs } : llmAgentOptions()),
     bufferResponse,
     decodeCompressedResponse: init?.decodeCompressedResponse ?? bufferResponse,
+    resolvedAddressOffset: init?.resolvedAddressOffset ?? llmResolvedAddressOffset.getStore() ?? 0,
   });
 }
 
@@ -73,11 +83,13 @@ export function yieldToEventLoop(): Promise<void> {
 export class LLMHttpError extends Error {
   readonly status: number;
   readonly retryAfterMs?: number;
-  constructor(message: string, options: { status: number; retryAfterMs?: number }) {
+  readonly providerCode?: string;
+  constructor(message: string, options: { status: number; retryAfterMs?: number; providerCode?: string }) {
     super(message);
     this.name = "LLMHttpError";
     this.status = options.status;
     this.retryAfterMs = options.retryAfterMs;
+    this.providerCode = options.providerCode;
   }
 }
 
@@ -121,6 +133,7 @@ export function resolveEmbeddingEndpointUrl(baseUrl: string): string {
  */
 export function isRateLimitError(error: unknown): error is LLMHttpError {
   if (!(error instanceof LLMHttpError)) return false;
+  if (error.providerCode === "server_is_overloaded") return true;
   // 429 (rate limited) and 529 (Anthropic "overloaded") are always retryable. Some gateways signal
   // intentional throttling with 503 plus a Retry-After; treat that as retryable too, but let a bare
   // 503 (likely a real outage, not throttling) propagate.
@@ -424,12 +437,21 @@ function truncateContent(content: string, targetTokens: number, preserveStartOnl
   return head + TRUNCATION_MARKER + tail;
 }
 
+/** Both static and freshly resolved full-lore entries are required context. */
+function isProtectedFullLore(message: ChatMessage | undefined): boolean {
+  return (
+    message?.providerMetadata?.marinaraFullLoreContext === true ||
+    message?.providerMetadata?.marinaraDynamicLoreContext === true
+  );
+}
+
 function findOldestRemovableConversationBlock(
   messages: ChatMessage[],
   preferredKind?: ChatMessage["contextKind"],
 ): { start: number; deleteCount: number } | null {
   for (let index = 0; index < messages.length - 1; index++) {
     const message = messages[index]!;
+    if (isProtectedFullLore(message)) continue;
     if (preferredKind) {
       if (message.contextKind !== preferredKind) continue;
     } else if (message.role === "system") {
@@ -452,7 +474,7 @@ function findOldestRemovableConversationBlock(
 
 function findOldestRemovableSystemMessage(messages: ChatMessage[]): number {
   for (let index = 1; index < messages.length - 1; index++) {
-    if (messages[index]?.role === "system") return index;
+    if (messages[index]?.role === "system" && !isProtectedFullLore(messages[index])) return index;
   }
   return -1;
 }
@@ -466,6 +488,7 @@ function findLargestMessageIndex(
 
   for (let index = 0; index < messages.length; index++) {
     const message = messages[index]!;
+    if (isProtectedFullLore(message)) continue;
     if (!predicate(message, index) || !message.content) continue;
     const tokenEstimate = estimateMessageTokens(message);
     if (tokenEstimate > selectedTokens) {
@@ -602,6 +625,12 @@ export function fitMessagesToContext(
     }
   }
 
+  if (estimatedTokensAfter > inputBudget && fittedMessages.some(isProtectedFullLore)) {
+    throw new Error(
+      "Full lore exceeds the available context budget with the required prompt. Increase the context limit or disable fullLorebookContext for this chat; lore and instructions were not truncated.",
+    );
+  }
+
   while (estimatedTokensAfter > inputBudget && fittedMessages.length > 1) {
     const block = findOldestRemovableConversationBlock(fittedMessages);
     if (!block) break;
@@ -659,7 +688,7 @@ export function fitMessagesToContext(
     }
 
     const lastIndex = fittedMessages.length - 1;
-    if (lastIndex >= 0) {
+    if (lastIndex >= 0 && !isProtectedFullLore(fittedMessages[lastIndex])) {
       const message = fittedMessages[lastIndex]!;
       const nonContentTokens = estimateMessageTokens({ ...message, content: "" });
       const excessTokens = estimatedTokensAfter - inputBudget;
@@ -804,12 +833,48 @@ export abstract class BaseLLMProvider {
    * If onToken is provided, streams text chunks in real time.
    */
   async chatComplete(messages: ChatMessage[], options: ChatOptions): Promise<ChatCompletionResult> {
+    const startedAt = Date.now();
+    const context = {
+      ...getDiagnosticContext(),
+      operation: "llm.completion",
+      stage: "completion",
+      provider: this.constructor.name,
+      model: options.model,
+    };
     let content = "";
     const useStream = options.stream ?? !!options.onToken;
     const gen = this.chat(messages, { ...options, stream: useStream });
     const returnPartialOnStreamFailure = (error: unknown): ChatCompletionResult => {
-      if (!content) throw error;
-      logger.warn(error, "LLM stream failed after partial content; returning partial completion");
+      if (!content) {
+        const diagnostic = reportDiagnosticError(error, context);
+        logger.error(
+          {
+            ...diagnostic,
+            diagnostic,
+            operation: context.operation,
+            stage: "completion",
+            provider: context.provider,
+            model: context.model,
+            elapsedMs: Date.now() - startedAt,
+            error: diagnosticDetails(error),
+          },
+          "LLM completion failed",
+        );
+        throw error;
+      }
+      const diagnostic = reportDiagnosticError(error, { ...context, stage: "partial-stream" });
+      logger.warn(
+        {
+          diagnostic,
+          operation: context.operation,
+          stage: "partial-stream",
+          provider: context.provider,
+          model: context.model,
+          elapsedMs: Date.now() - startedAt,
+          error: diagnosticDetails(error),
+        },
+        "LLM stream failed after partial content; returning partial completion",
+      );
       return { content, toolCalls: [], finishReason: options.signal?.aborted ? "abort" : "error", usage: undefined };
     };
 
@@ -823,7 +888,12 @@ export abstract class BaseLLMProvider {
       while (!result.done) {
         content += result.value;
         if (options.onToken) {
-          await options.onToken(result.value);
+          try {
+            await options.onToken(result.value);
+          } catch (error) {
+            reportDiagnosticError(error, { ...context, stage: "partial-stream" });
+            throw error;
+          }
         }
         try {
           result = await gen.next();

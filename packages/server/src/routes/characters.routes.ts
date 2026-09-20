@@ -15,6 +15,7 @@ import {
   personaLocalPaintSchema,
   personaUpdateInputSchema,
   normalizeTrackerCardColorConfig,
+  resolveImageReferenceLimits,
   trackerCardColorConfigSchema,
   PROFESSOR_MARI_ID,
   CONVERSATION_CALL_CHARACTER_VIDEO_CLIP_KINDS,
@@ -41,10 +42,15 @@ import {
   resolveConnectionImageQuality,
 } from "../services/image/image-generation-defaults.js";
 import { loadImageGenerationUserSettings } from "../services/image/image-generation-settings.js";
+import { getGenerationJobs } from "../services/generation/generation-jobs.js";
 import { compileImagePrompt } from "../services/image/image-prompt-compiler.js";
 import { resolveImagePromptReviewSize } from "../services/image/image-prompt-review.js";
-import { resolveImageConnectionFallback } from "../services/generation/media-connection-fallback.js";
 import { buildAvatarPortraitLeadPrompt } from "../services/image/avatar-generation-prompt.js";
+import { dedupeImageReferences } from "../services/image/image-reference-utils.js";
+import {
+  resolveImageConnectionFallback,
+  resolveImageReferenceCollectionLimit,
+} from "../services/generation/media-connection-fallback.js";
 import {
   ConversationCallVideoClipAvatarMismatchError,
   ConversationCallVideoClipNotFoundError,
@@ -89,7 +95,6 @@ import AdmZip from "adm-zip";
 import { extname } from "path";
 import { pipeline } from "stream/promises";
 import { newId } from "../utils/id-generator.js";
-import { createReplyFallbackNotifier } from "./generate/fallback-notification.js";
 import {
   findGalleryRowByFilename,
   galleryFileHasReferences,
@@ -884,6 +889,7 @@ export async function validateCharacterGalleryReferences<T extends Record<string
 }
 
 export async function charactersRoutes(app: FastifyInstance) {
+  const generationJobs = getGenerationJobs(app);
   const storage = createCharactersStorage(app.db);
   const catalog = createCharacterCatalog(app.db);
   const characterGallery = createCharacterGalleryStorage(app.db);
@@ -916,6 +922,7 @@ export async function charactersRoutes(app: FastifyInstance) {
       search?: string;
       sort?: string;
       favoriteFilter?: string;
+      category?: string;
     };
   }>("/", async (req) => {
     const includeBuiltIn = req.query.includeBuiltIn === "true";
@@ -928,6 +935,7 @@ export async function charactersRoutes(app: FastifyInstance) {
         search: page.search,
         sort: page.sort,
         favoriteFilter: page.favoriteFilter,
+        category: req.query.category,
       });
     }
     const characters = await storage.list();
@@ -943,6 +951,7 @@ export async function charactersRoutes(app: FastifyInstance) {
       search?: string;
       sort?: string;
       favoriteFilter?: string;
+      category?: string;
     };
   }>("/catalog", async (req) => {
     const page = parseLibraryPageQuery(req.query);
@@ -953,6 +962,7 @@ export async function charactersRoutes(app: FastifyInstance) {
       search: page.search,
       sort: page.sort,
       favoriteFilter: page.favoriteFilter,
+      category: req.query.category === "characters" || req.query.category === "npcs" ? req.query.category : undefined,
     });
   });
 
@@ -1216,11 +1226,6 @@ export async function charactersRoutes(app: FastifyInstance) {
       }),
     );
     const promptOverride = promptOverrideById.get(avatarGenerationPromptId(body.name ?? "character", body.purpose));
-    const referenceImages = (body.referenceImages ?? [])
-      .map((image) => image.trim())
-      .filter((image) => image.startsWith("data:image/") || /^[A-Za-z0-9+/=\s]+$/.test(image))
-      .slice(0, 4);
-
     const imgModel = conn.model || "";
     const imgBaseUrl = conn.baseUrl || "https://image.pollinations.ai";
     const imgApiKey = conn.apiKey || "";
@@ -1232,6 +1237,22 @@ export async function charactersRoutes(app: FastifyInstance) {
       body.styleProfileId || imageDefaults?.styleProfileId || imageSettings.styleProfiles.defaultProfileId,
     );
     const imageFallback = await resolveImageConnectionFallback(connections, conn.id);
+    const referenceImageLimit = resolveImageReferenceCollectionLimit(
+      resolveImageReferenceLimits({
+        imageGenerationSource: conn.imageGenerationSource,
+        imageService: conn.imageService,
+        model: imgModel,
+        baseUrl: imgBaseUrl,
+        comfyuiWorkflow: conn.comfyuiWorkflow,
+        maxImageReferences: conn.maxImageReferences,
+      }).effectiveLimit,
+      imageFallback,
+    );
+    const referenceImages = dedupeImageReferences(
+      (body.referenceImages ?? [])
+        .map((image) => image.trim())
+        .filter((image) => image.startsWith("data:image/") || /^[A-Za-z0-9+/=\s]+$/.test(image)),
+    ).slice(0, referenceImageLimit);
     const compiled = promptOverride
       ? {
           prompt: promptOverride.prompt,
@@ -1266,25 +1287,35 @@ export async function charactersRoutes(app: FastifyInstance) {
     }
 
     try {
-      const result = await generateImage(imgModel, imgBaseUrl, imgApiKey, imgServiceHint, {
-        prompt: compiled.prompt,
-        negativePrompt: compiled.negativePrompt || undefined,
-        model: imgModel || undefined,
-        width,
-        height,
-        referenceImage: referenceImages[0],
-        referenceImages: referenceImages.length > 1 ? referenceImages : undefined,
-        imageEndpointId: conn.imageEndpointId || undefined,
-        comfyWorkflow: conn.comfyuiWorkflow || undefined,
-        imageDefaults,
-        quality: resolveConnectionImageQuality(conn),
-        fallback: imageFallback,
-        onFallback: createReplyFallbackNotifier(reply),
-      });
-      return {
-        image: `data:${result.mimeType};base64,${result.base64}`,
-        prompt: compiled.prompt,
-      };
+      return await generationJobs.run(
+        {
+          kind: isCharacterSheet ? "character-sheet-draft" : "character-avatar-draft",
+          label: isCharacterSheet ? "Character sheet draft" : "Character avatar draft",
+          timeoutMs: 1_800_000,
+        },
+        async (signal) => {
+          const result = await generateImage(imgSource, imgBaseUrl, imgApiKey, imgServiceHint, {
+            prompt: compiled.prompt,
+            negativePrompt: compiled.negativePrompt || undefined,
+            model: imgModel || undefined,
+            width,
+            height,
+            referenceImage: referenceImages[0],
+            referenceImages: referenceImages.length > 1 ? referenceImages : undefined,
+            imageEndpointId: conn.imageEndpointId || undefined,
+            comfyWorkflow: conn.comfyuiWorkflow || undefined,
+            imageDefaults,
+            quality: resolveConnectionImageQuality(conn),
+            maxImageReferences: conn.maxImageReferences ?? null,
+            fallback: imageFallback,
+            signal,
+          });
+          return {
+            image: `data:${result.mimeType};base64,${result.base64}`,
+            prompt: compiled.prompt,
+          };
+        },
+      );
     } catch (err) {
       logger.error(err, "%s generation failed", isCharacterSheet ? "Character sheet" : "Avatar");
       return reply.status(500).send({

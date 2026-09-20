@@ -52,6 +52,9 @@ export const characterExtensionsSchema = z
     depth_prompt: depthPromptSchema.default({}),
     backstory: z.string().default(""),
     appearance: z.string().default(""),
+    libraryCategory: z.enum(["characters", "npcs"]).optional(),
+    /** Previous names retained for UI references, not replacement of historical prose. */
+    referenceNames: z.array(z.string().min(1).max(500)).max(100).optional(),
     /** Marinara Engine: retain card revisions and advance the visible version on edits. */
     versioningEnabled: z.boolean().default(true),
     // Conversation-mode-only fields (optional — absent on non-convo cards).

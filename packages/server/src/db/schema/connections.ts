@@ -71,6 +71,8 @@ export const apiConnections = fileTable("api_connections", {
   imagePromptInstructions: text("image_prompt_instructions"),
   /** OpenAI GPT Image quality for this connection. */
   imageGenerationQuality: text("image_generation_quality").notNull().default("auto"),
+  /** User cap on reference images per generation; null uses the provider-aware automatic limit. */
+  maxImageReferences: integer("max_image_references"),
   /** Explicit video backend selection for video-generation connections. */
   videoGenerationSource: text("video_generation_source"),
   /** Video generation: explicitly selected service ID. */

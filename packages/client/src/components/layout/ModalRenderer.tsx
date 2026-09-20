@@ -68,6 +68,9 @@ const StartCharacterChatModal = lazy(() =>
     default: module.StartCharacterChatModal,
   })),
 );
+const GenerationJobsModal = lazy(() =>
+  import("../modals/GenerationJobsModal").then((module) => ({ default: module.GenerationJobsModal })),
+);
 
 export function ModalRenderer() {
   const modal = useUIStore((s) => s.modal);
@@ -188,6 +191,9 @@ export function ModalRenderer() {
           characterName={(modal?.props?.characterName as string) ?? ""}
         />
       );
+      break;
+    case "generation-jobs":
+      content = <GenerationJobsModal open onClose={closeModal} />;
       break;
     default:
       content = null;

@@ -7,7 +7,6 @@
 // ──────────────────────────────────────────────
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { motion } from "framer-motion";
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import type { HudWidget } from "@marinara-engine/shared";
@@ -17,8 +16,9 @@ import { cn } from "../../lib/utils";
 import { useGameModeStore } from "../../stores/game-mode.store";
 import { useRenderTimer } from "../../lib/perf-diagnostics";
 import { Modal } from "../ui/Modal";
-import { PanelLockButton, useDraggablePanel } from "./DraggablePanel";
+import { FloatingGamePanel } from "./FloatingGamePanel";
 import { GameWidgetSetupEditor } from "./GameWidgetSetupEditor";
+import { CharacterLinkedContent } from "../characters/CharacterReferences";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
 // ── Public API ──
@@ -36,6 +36,8 @@ interface MobileWidgetPanelProps {
   widgets: HudWidget[];
   position: "hud_left" | "hud_right";
   chatId: string;
+  /** Horizontal tray for the main mobile HUD; choice rails stay vertical by default. */
+  layout?: "vertical" | "horizontal";
 }
 
 interface WidgetEditorDraft {
@@ -47,9 +49,6 @@ interface WidgetEditorDraft {
   stats: Array<{ name: string; value: string }>;
   items: string;
 }
-
-/** Maximum number of custom HUD widgets displayed. */
-const MAX_WIDGETS = 4;
 
 const GAME_WIDGET_SHELL_CLASS =
   "marinara-chat-popover overflow-hidden rounded-lg border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-panel-bg)] text-[var(--marinara-chat-chrome-panel-text)] shadow-[0_10px_28px_rgba(0,0,0,0.24)] backdrop-blur-md transition-colors";
@@ -86,7 +85,7 @@ function getNumericWidgetValue(widget: HudWidget) {
 }
 
 function getVisibleWidgets(widgets: HudWidget[], position: "hud_left" | "hud_right") {
-  return widgets.filter((w) => w.position === position).slice(0, MAX_WIDGETS);
+  return widgets.filter((w) => w.position === position);
 }
 
 function formatWidgetTypeLabel(type: HudWidget["type"]) {
@@ -291,24 +290,37 @@ function useWidgetEditor(widgets: HudWidget[], chatId: string) {
 /** Renders a panel of model-defined widgets for a given position. */
 export function GameWidgetPanel({ widgets, position, chatId, constraintsRef }: GameWidgetPanelProps) {
   useRenderTimer("game-hud"); // [#3104 diagnostic]
+  const [desktop, setDesktop] = useState(() => window.matchMedia("(min-width: 1024px)").matches);
+  useEffect(() => {
+    const query = window.matchMedia("(min-width: 1024px)");
+    const update = () => setDesktop(query.matches);
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
   const filtered = getVisibleWidgets(widgets, position);
   const { editingWidget, openEditor, closeEditor, saveWidget, isSaving } = useWidgetEditor(widgets, chatId);
 
-  if (filtered.length === 0) return null;
+  // Portals escape the desktop-only rail's CSS visibility, so gate their mount too.
+  if (!desktop || filtered.length === 0) return null;
 
   return (
     <>
-      <div className="pointer-events-auto flex flex-col gap-2">
-        {filtered.map((w) => (
-          <WidgetCard
-            key={`${chatId}:${w.id}`}
-            widget={w}
-            chatId={chatId}
-            constraintsRef={constraintsRef}
-            onEdit={openEditor}
-          />
-        ))}
-      </div>
+      {constraintsRef?.current &&
+        createPortal(
+          <>
+            {filtered.map((w, index) => (
+              <WidgetCard
+                key={`${chatId}:${w.id}`}
+                widget={w}
+                chatId={chatId}
+                constraintsRef={constraintsRef}
+                onEdit={openEditor}
+                slot={index}
+              />
+            ))}
+          </>,
+          constraintsRef.current,
+        )}
       <WidgetEditorModal
         widget={editingWidget}
         open={!!editingWidget}
@@ -321,7 +333,7 @@ export function GameWidgetPanel({ widgets, position, chatId, constraintsRef }: G
 }
 
 /** Mobile: collapsed emoji pills that expand into full widget on tap. */
-export function MobileWidgetPanel({ widgets, position, chatId }: MobileWidgetPanelProps) {
+export function MobileWidgetPanel({ widgets, position, chatId, layout = "vertical" }: MobileWidgetPanelProps) {
   const { t: localizeUi } = useUiTranslation();
   const filtered = getVisibleWidgets(widgets, position);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -331,7 +343,13 @@ export function MobileWidgetPanel({ widgets, position, chatId }: MobileWidgetPan
 
   return (
     <>
-      <div className={cn("pointer-events-auto flex flex-col gap-1.5", position === "hud_right" && "items-end")}>
+      <div
+        className={cn(
+          "pointer-events-auto flex gap-1.5",
+          layout === "horizontal" ? "min-w-0 flex-1 flex-wrap" : "flex-col",
+          position === "hud_right" && "items-end",
+        )}
+      >
         {filtered.map((w) => {
           const isExpanded = expandedId === w.id;
 
@@ -339,18 +357,23 @@ export function MobileWidgetPanel({ widgets, position, chatId }: MobileWidgetPan
             return (
               <div
                 key={w.id}
-                className={cn(GAME_WIDGET_SHELL_CLASS, "w-40 transition-all")}
+                className={cn(
+                  GAME_WIDGET_SHELL_CLASS,
+                  layout === "horizontal" ? "w-full basis-full" : "w-40",
+                  "transition-all",
+                )}
                 data-game-skip-bg-nav="true"
               >
                 <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-left">
                   {w.icon && <span className="text-xs">{w.icon}</span>}
                   <span className="flex-1 truncate text-[0.6875rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
-                    {w.label}
+                    <CharacterLinkedContent currentNames>{w.label}</CharacterLinkedContent>
                   </span>
                   <button
                     type="button"
                     onClick={() => openEditor(w)}
                     className={GAME_WIDGET_ICON_BUTTON_CLASS}
+                    aria-label={localizeUi("ui.game.mobilewidgetpanel.editValue1", { value1: w.label })}
                     title={localizeUi("ui.game.mobilewidgetpanel.editValue1", { value1: w.label })}
                   >
                     <Pencil size={10} className="text-[var(--marinara-chat-chrome-text)]" />
@@ -359,6 +382,7 @@ export function MobileWidgetPanel({ widgets, position, chatId }: MobileWidgetPan
                     type="button"
                     onClick={() => setExpandedId(null)}
                     className={cn(GAME_WIDGET_ICON_BUTTON_CLASS, "text-xs font-medium")}
+                    aria-label={localizeUi("ui.game.mobilewidgetpanel.collapseWidget")}
                     title={localizeUi("ui.game.mobilewidgetpanel.collapseWidget")}
                   >
                     ×
@@ -375,7 +399,8 @@ export function MobileWidgetPanel({ widgets, position, chatId }: MobileWidgetPan
             <button
               key={w.id}
               onClick={() => setExpandedId(w.id)}
-              className="marinara-chat-toolbar-button flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-base text-[var(--marinara-chat-chrome-button-text)] backdrop-blur-md transition-all hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] active:scale-95"
+              className="marinara-chat-toolbar-button flex h-11 w-11 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-base text-[var(--marinara-chat-chrome-button-text)] backdrop-blur-md transition-all hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] active:scale-95"
+              aria-label={w.label}
               title={w.label}
             >
               {w.icon || "📊"}
@@ -398,71 +423,93 @@ export function MobileWidgetPanel({ widgets, position, chatId }: MobileWidgetPan
 
 function WidgetCard({
   widget,
-  chatId,
-  constraintsRef,
   onEdit,
+  slot,
 }: {
   widget: HudWidget;
   chatId: string;
   constraintsRef?: RefObject<HTMLElement | null>;
   onEdit: (widget: HudWidget) => void;
+  slot: number;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const [collapsed, setCollapsed] = useState(false);
-  const { locked, toggleLocked, resetPosition, x, y, handleDragEnd } = useDraggablePanel(chatId, `widget:${widget.id}`);
-
+  const naturalWidth = useMemo(() => {
+    if (widget.config.autoSize === false) return 176;
+    const labels = [
+      widget.label,
+      ...(widget.config.stats ?? []).flatMap((stat) => [stat.name, String(stat.value)]),
+      ...(widget.config.items ?? []),
+      ...(widget.config.contents ?? []).map((item) => item.name),
+    ];
+    const longest = labels.reduce((length, label) => Math.max(length, Array.from(label).length), 0);
+    if (widget.type === "stat_block") {
+      const columnWidths = [0, 0];
+      for (const [index, stat] of (widget.config.stats ?? []).entries()) {
+        columnWidths[index % 2] = Math.max(
+          columnWidths[index % 2],
+          Array.from(stat.name).length * 6.2 + String(stat.value).length * 6.2 + 32,
+        );
+      }
+      return Math.max(176, Math.ceil(columnWidths[0] + columnWidths[1] + 36), widget.label.length * 6.2 + 64);
+    }
+    return Math.max(176, Math.min(384, Math.ceil(longest * 6.2 + 64)));
+  }, [widget]);
   return (
-    <motion.div
-      drag={!locked}
-      dragMomentum={false}
-      dragElastic={0}
-      dragConstraints={constraintsRef as RefObject<Element>}
-      onDragEnd={handleDragEnd}
-      style={{ x, y }}
-      data-game-skip-bg-nav="true"
-      className={cn(
-        GAME_WIDGET_SHELL_CLASS,
-        "w-full",
-        !locked && "cursor-grab ring-1 ring-[var(--marinara-chat-chrome-focus-ring)] active:cursor-grabbing",
-      )}
+    <FloatingGamePanel
+      id={`widget:${widget.id}`}
+      widgetId={widget.id}
+      width={naturalWidth}
+      autoWidth={widget.config.autoSize !== false}
+      autoGrow
+      allowTuck
+      tuckIcon={widget.icon || "📊"}
+      tuckLabel={widget.label}
+      revealOnValueChangeKey={JSON.stringify(widget.config)}
+      side={widget.position}
+      slot={slot + 8}
+      collapsed={collapsed}
     >
-      {/* Header */}
-      <div
-        role="button"
-        tabIndex={0}
-        onClick={() => setCollapsed((c) => !c)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            setCollapsed((c) => !c);
-          }
-        }}
-        className={GAME_WIDGET_HEADER_CLASS}
-      >
-        {widget.icon && <span className="text-xs">{widget.icon}</span>}
-        <span className={GAME_WIDGET_TITLE_CLASS}>{widget.label}</span>
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            onEdit(widget);
+      <div data-game-skip-bg-nav="true" className={cn(GAME_WIDGET_SHELL_CLASS, "w-full")}>
+        {/* Header */}
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => setCollapsed((c) => !c)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setCollapsed((c) => !c);
+            }
           }}
-          className={GAME_WIDGET_ICON_BUTTON_CLASS}
-          title={localizeUi("ui.game.mobilewidgetpanel.editValue1", { value1: widget.label })}
+          className={GAME_WIDGET_HEADER_CLASS}
         >
-          <Pencil size={10} className="text-[var(--marinara-chat-chrome-text)]" />
-        </button>
-        <PanelLockButton locked={locked} onToggle={toggleLocked} onReset={resetPosition} size={10} />
-        <span className={cn("text-[0.5rem]", GAME_WIDGET_MUTED_CLASS)}>{collapsed ? "+" : "-"}</span>
-      </div>
-
-      {/* Body */}
-      {!collapsed && (
-        <div className={cn(GAME_WIDGET_BODY_DIVIDER_CLASS, "px-2.5 py-2")}>
-          <WidgetBody widget={widget} />
+          {widget.icon && <span className="text-xs">{widget.icon}</span>}
+          <span className={GAME_WIDGET_TITLE_CLASS}>
+            <CharacterLinkedContent currentNames>{widget.label}</CharacterLinkedContent>
+          </span>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onEdit(widget);
+            }}
+            className={GAME_WIDGET_ICON_BUTTON_CLASS}
+            title={localizeUi("ui.game.mobilewidgetpanel.editValue1", { value1: widget.label })}
+          >
+            <Pencil size={10} className="text-[var(--marinara-chat-chrome-text)]" />
+          </button>
+          <span className={cn("text-[0.5rem]", GAME_WIDGET_MUTED_CLASS)}>{collapsed ? "+" : "-"}</span>
         </div>
-      )}
-    </motion.div>
+
+        {/* Body */}
+        {!collapsed && (
+          <div className={cn(GAME_WIDGET_BODY_DIVIDER_CLASS, "px-2.5 py-2")}>
+            <WidgetBody widget={widget} />
+          </div>
+        )}
+      </div>
+    </FloatingGamePanel>
   );
 }
 
@@ -1076,7 +1123,7 @@ function RelationshipMeterWidget({ widget }: { widget: HudWidget }) {
     <div>
       {currentMilestone && (
         <p className="mb-1.5 text-center text-[0.5625rem] font-medium" style={{ color: accent }}>
-          {currentMilestone.label}
+          <CharacterLinkedContent currentNames>{currentMilestone.label}</CharacterLinkedContent>
         </p>
       )}
       <div className={cn("relative h-2 overflow-hidden rounded-full", GAME_WIDGET_TRACK_CLASS)}>
@@ -1127,9 +1174,13 @@ function StatBlockWidget({ widget }: { widget: HudWidget }) {
     <div className="grid grid-cols-2 gap-x-3 gap-y-1">
       {stats.map((s, i) => (
         <div key={s.name ?? i} className="flex items-center justify-between text-[0.5625rem]">
-          <span className={GAME_WIDGET_MUTED_CLASS}>{s.name}</span>
-          <span className="font-mono font-bold" style={{ color: accent }}>
-            {s.value}
+          <span className={GAME_WIDGET_MUTED_CLASS}>
+            <CharacterLinkedContent currentNames showAvatar>
+              {s.name}
+            </CharacterLinkedContent>
+          </span>
+          <span className="shrink-0 whitespace-nowrap font-mono font-bold" style={{ color: accent }}>
+            <CharacterLinkedContent currentNames>{s.value}</CharacterLinkedContent>
           </span>
         </div>
       ))}
@@ -1152,7 +1203,9 @@ function ListWidget({ widget }: { widget: HudWidget }) {
         items.slice(0, 8).map((item, i) => (
           <div key={i} className="flex items-center gap-1.5 text-[0.5625rem]">
             <span className="text-[var(--marinara-chat-chrome-panel-muted)]/55">*</span>
-            <span className="text-[var(--marinara-chat-chrome-panel-text)]">{item}</span>
+            <span className="text-[var(--marinara-chat-chrome-panel-text)]">
+              <CharacterLinkedContent currentNames>{item}</CharacterLinkedContent>
+            </span>
           </div>
         ))
       )}

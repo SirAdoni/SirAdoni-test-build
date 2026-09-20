@@ -200,6 +200,7 @@ function parseEntryRow(row: Record<string, unknown>) {
     ...row,
     enabled: row.enabled === "true",
     constant: row.constant === "true",
+    alwaysLoaded: row.alwaysLoaded === "true",
     selective: row.selective === "true",
     matchWholeWords: row.matchWholeWords === "true",
     caseSensitive: row.caseSensitive === "true",
@@ -869,6 +870,7 @@ export function createLorebooksStorage(db: DB) {
         secondaryKeys: JSON.stringify(input.secondaryKeys ?? []),
         enabled: String(input.enabled ?? true),
         constant: String(input.constant ?? false),
+        alwaysLoaded: String(input.alwaysLoaded ?? false),
         selective: String(input.selective ?? false),
         selectiveLogic: input.selectiveLogic ?? "and",
         probability: input.probability ?? null,
@@ -964,6 +966,7 @@ export function createLorebooksStorage(db: DB) {
       if (input.secondaryKeys !== undefined) updates.secondaryKeys = JSON.stringify(input.secondaryKeys);
       if (input.enabled !== undefined) updates.enabled = String(input.enabled);
       if (input.constant !== undefined) updates.constant = String(input.constant);
+      if (input.alwaysLoaded !== undefined) updates.alwaysLoaded = String(input.alwaysLoaded);
       if (input.selective !== undefined) updates.selective = String(input.selective);
       if (input.selectiveLogic !== undefined) updates.selectiveLogic = input.selectiveLogic;
       if (input.probability !== undefined) updates.probability = input.probability;
@@ -1080,6 +1083,7 @@ export function createLorebooksStorage(db: DB) {
       const updates: Record<string, unknown> = { updatedAt: now() };
       if (changes.enabled !== undefined) updates.enabled = String(changes.enabled);
       if (changes.constant !== undefined) updates.constant = String(changes.constant);
+      if (changes.alwaysLoaded !== undefined) updates.alwaysLoaded = String(changes.alwaysLoaded);
       if (changes.selective !== undefined) updates.selective = String(changes.selective);
       if (changes.selectiveLogic !== undefined) updates.selectiveLogic = changes.selectiveLogic;
       if (changes.probability !== undefined) updates.probability = changes.probability;

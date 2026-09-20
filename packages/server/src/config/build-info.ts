@@ -88,6 +88,7 @@ export function getBuildCommit() {
 
   try {
     const commit = execFileSync("git", ["rev-parse", `--short=${COMMIT_LENGTH}`, "HEAD"], {
+      windowsHide: true,
       cwd: MONOREPO_ROOT,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -137,6 +138,7 @@ export function getBuildBranch() {
       undefined,
       undefined,
       execFileSync("git", ["branch", "--show-current"], {
+        windowsHide: true,
         cwd: MONOREPO_ROOT,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],

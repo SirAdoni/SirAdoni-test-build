@@ -7,6 +7,7 @@ import { useCreateCharacter, useUploadAvatar } from "../../hooks/use-characters"
 import { useUIStore } from "../../stores/ui.store";
 import { Loader2, Sparkles, User, Camera } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 
 interface Props {
   open: boolean;
@@ -94,20 +95,35 @@ export function CreateCharacterModal({ open, onClose }: Props) {
     >
       <div className="flex flex-col items-center gap-4">
         {/* Avatar picker */}
-        <button
-          type="button"
+        <div
+          role="button"
+          tabIndex={0}
           onClick={() => fileInputRef.current?.click()}
-          className="mari-chrome-accent-tile mari-accent-animated group relative flex h-24 w-24 items-center justify-center overflow-hidden rounded-full transition-transform hover:scale-105"
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              fileInputRef.current?.click();
+            }
+          }}
+          className="mari-chrome-accent-tile mari-accent-animated group relative flex h-24 min-w-24 w-auto items-center justify-start overflow-visible rounded-full transition-transform hover:scale-105"
         >
           {avatarDataUrl ? (
-            <img src={avatarDataUrl} alt={localizeUi("editor.avatar.label")} className="h-full w-full object-cover" />
+            <CharacterPhoto
+              src={avatarDataUrl}
+              name={name || localizeUi("editor.avatar.label")}
+              wrapperClassName="relative inline-flex items-center gap-1"
+              className="block h-24 w-24 overflow-hidden rounded-full"
+              onUpdate={() => fileInputRef.current?.click()}
+            >
+              <img src={avatarDataUrl} alt={localizeUi("editor.avatar.label")} className="h-full w-full object-cover" />
+            </CharacterPhoto>
           ) : (
             <User size="2.25rem" className="text-current" />
           )}
-          <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
+          <div className="pointer-events-none absolute left-0 top-0 flex h-24 w-24 items-center justify-center rounded-full bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
             <Camera size="1.25rem" className="text-white" />
           </div>
-        </button>
+        </div>
         <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleAvatarPick} />
 
         {/* Name */}

@@ -1,6 +1,8 @@
 // ──────────────────────────────────────────────
 // React Query: Generation (streaming + agent pipeline)
 // ──────────────────────────────────────────────
+import { cacheGuardWarningMessage, isCacheGuardWarning } from "../lib/cache-guard-warning";
+import { showConfirmDialog } from "../lib/app-dialogs";
 import { useCallback, useRef } from "react";
 import { audioManager } from "../lib/game-audio";
 import { normalizeEchoChamberMessages } from "../lib/echo-chamber-queue";
@@ -1241,6 +1243,8 @@ export function useGenerate() {
       turnGameBots?: boolean;
       /** Structured Roleplay/Game movement committed atomically with this owner turn. */
       pendingSpatialTransition?: PendingSpatialTransition;
+      /** The player saw the low prompt-cache warning and chose to send anyway. */
+      cacheGuardAcknowledged?: boolean;
     }) => {
       // Prevent concurrent generations for the same chat. Different chats may
       // keep generating in the background while the user navigates elsewhere.
@@ -3071,6 +3075,35 @@ export function useGenerate() {
                   useUIStore.getState().setSettingsTab(tab as any);
                 }
               }
+              break;
+            }
+
+            case "cache_warning": {
+              // Nothing reached the model. Ask once the stream has released this chat, then resend the saved
+              // message with the acknowledgement if the player chooses to.
+              const warning = event.data;
+              if (!isCacheGuardWarning(warning)) break;
+              const chatId = params.chatId;
+              const resend = {
+                chatId,
+                connectionId: params.connectionId,
+                ...(params.presetId ? { presetId: params.presetId } : {}),
+                ...(params.lorebookIds ? { lorebookIds: params.lorebookIds } : {}),
+                cacheGuardAcknowledged: true,
+              };
+              void (async () => {
+                for (let wait = 0; wait < 100 && useChatStore.getState().abortControllers.has(chatId); wait += 1) {
+                  await new Promise((resolve) => setTimeout(resolve, 100));
+                }
+                const sendAnyway = await showConfirmDialog({
+                  title: "Prompt cache warning",
+                  message: cacheGuardWarningMessage(warning),
+                  confirmLabel: "Send anyway",
+                  cancelLabel: "Cancel",
+                  tone: "destructive",
+                });
+                if (sendAnyway) await generate(resend);
+              })();
               break;
             }
 

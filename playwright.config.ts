@@ -1,6 +1,15 @@
 import { defineConfig, devices } from "@playwright/test";
 import { fileURLToPath } from "node:url";
+import "./e2e/hide-windows-cleanup.cjs";
 import { forceColorValueEnablesColor } from "./e2e/playwright-color-environment.js";
+
+if (process.platform === "win32") {
+  const cleanupPreload = `--require=${JSON.stringify(fileURLToPath(new URL("./e2e/hide-windows-cleanup.cjs", import.meta.url)))}`;
+  const nodeOptions = process.env.NODE_OPTIONS?.trim();
+  if (!nodeOptions?.includes(cleanupPreload)) {
+    process.env.NODE_OPTIONS = nodeOptions ? `${nodeOptions} ${cleanupPreload}` : cleanupPreload;
+  }
+}
 
 const callerDisabledColors = process.env.NO_COLOR !== undefined && process.env.NO_COLOR !== "";
 const shouldPreventPlaywrightColorOverride =

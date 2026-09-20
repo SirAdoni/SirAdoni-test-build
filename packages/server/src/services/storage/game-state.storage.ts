@@ -1,11 +1,12 @@
 // ──────────────────────────────────────────────
 // Storage: Game State Snapshots
 // ──────────────────────────────────────────────
-import { eq, and, ne, desc, inArray, lte } from "../../db/file-query.js";
+import { eq, and, ne, desc, inArray, lte, lt, or } from "../../db/file-query.js";
 import type { DB } from "../../db/connection.js";
-import { gameStateSnapshots } from "../../db/schema/index.js";
+import { gameStateSnapshots, messages } from "../../db/schema/index.js";
 import { newId, now } from "../../utils/id-generator.js";
 import { ensureTimestampAfter } from "../import/import-timestamps.js";
+import { parseStoredPlayerStats, reconcileInventoryItemIdentities } from "./inventory-item-identity.js";
 import {
   coerceGameStateTextValue,
   applyTrackerFieldLocksToGameStatePatch,
@@ -25,6 +26,9 @@ import {
 } from "@marinara-engine/shared";
 
 export type GameStateVisibleAnchor = { messageId: string; swipeIndex: number };
+
+export type TrustedInventoryIdentitySource = { snapshotId: string; chatId: string };
+export type GameStateSnapshotWritePrecondition = { playerStats: string | null; fieldLocks: string | null };
 
 const MANUAL_OVERRIDE_FIELDS = ["date", "time", "location", "weather", "temperature"] as const;
 
@@ -292,6 +296,29 @@ export function createGameStateStorage(db: DB) {
       return rows[0] ?? null;
     },
 
+    /**
+     * Compatibility lookup for services that already hold a globally unique
+     * message id. The swipe remains part of the key; callers with a chat id
+     * should prefer getByChatAndMessage so lazy storage loads only that chat.
+     */
+    async getByMessage(messageId: string, swipeIndex: number = 0, chatId?: string) {
+      if (!messageId) return null;
+      const condition = chatId
+        ? and(
+            eq(gameStateSnapshots.chatId, chatId),
+            eq(gameStateSnapshots.messageId, messageId),
+            eq(gameStateSnapshots.swipeIndex, swipeIndex),
+          )
+        : and(eq(gameStateSnapshots.messageId, messageId), eq(gameStateSnapshots.swipeIndex, swipeIndex));
+      const rows = await db
+        .select()
+        .from(gameStateSnapshots)
+        .where(condition)
+        .orderBy(desc(gameStateSnapshots.createdAt))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
     /** Chat-scoped message lookup (the chatId also keeps the lazy store from loading other chats' shards). */
     async getByChatAndMessage(chatId: string, messageId: string, swipeIndex: number = 0) {
       const rows = await db
@@ -351,15 +378,107 @@ export function createGameStateStorage(db: DB) {
       await db.update(gameStateSnapshots).set({ committed: 1 }).where(condition);
     },
 
-    async create(state: Omit<GameState, "id" | "createdAt">, manualOverrides?: Record<string, string> | null) {
-      const latestBeforeInsert = await this.getLatest(state.chatId);
-      // Most callers rebuild a snapshot from the fields they know and have never heard of ruleset
+    async create(
+      state: Omit<GameState, "id" | "createdAt">,
+      manualOverrides?: Record<string, string> | null,
+      options?: { trustedInventoryIdentitySource?: TrustedInventoryIdentitySource },
+    ) {
+      const latestOverall = state.messageId ? await this.getLatest(state.chatId) : null;
+      const existingAnchorRows = await db
+        .select()
+        .from(gameStateSnapshots)
+        .where(
+          and(
+            eq(gameStateSnapshots.chatId, state.chatId),
+            eq(gameStateSnapshots.messageId, state.messageId),
+            eq(gameStateSnapshots.swipeIndex, state.swipeIndex),
+            eq(gameStateSnapshots.committed, 1),
+          ),
+        )
+        .orderBy(desc(gameStateSnapshots.createdAt))
+        .limit(1);
+      const existingAnchor = existingAnchorRows[0] ?? null;
+      let latestBeforeInsert = existingAnchor;
+      if (!latestBeforeInsert && state.messageId) {
+        const targetRows = await db
+          .select({ createdAt: messages.createdAt })
+          .from(messages)
+          .where(and(eq(messages.chatId, state.chatId), eq(messages.id, state.messageId)))
+          .limit(1);
+        const target = targetRows[0];
+        if (target) {
+          const predecessorRows = await db
+            .select({ id: messages.id, activeSwipeIndex: messages.activeSwipeIndex })
+            .from(messages)
+            .where(
+              and(
+                eq(messages.chatId, state.chatId),
+                or(
+                  lt(messages.createdAt, target.createdAt),
+                  and(eq(messages.createdAt, target.createdAt), lt(messages.id, state.messageId)),
+                ),
+              ),
+            )
+            .orderBy(desc(messages.createdAt), desc(messages.id));
+          for (const predecessor of predecessorRows) {
+            const rows = await db
+              .select()
+              .from(gameStateSnapshots)
+              .where(
+                and(
+                  eq(gameStateSnapshots.chatId, state.chatId),
+                  eq(gameStateSnapshots.messageId, predecessor.id),
+                  eq(gameStateSnapshots.swipeIndex, predecessor.activeSwipeIndex),
+                  eq(gameStateSnapshots.committed, 1),
+                ),
+              )
+              .orderBy(desc(gameStateSnapshots.createdAt))
+              .limit(1);
+            latestBeforeInsert = rows[0] ?? null;
+            if (latestBeforeInsert) break;
+          }
+        }
+      }
+      // A message-less snapshot is a bootstrap boundary, so it must not inherit
+      // the chat's latest anchored state (which may belong to a future message).
+      // Anchored snapshots still use their predecessor or latest chat state.
+      if (state.messageId) latestBeforeInsert ??= latestOverall;
+      // Most callers rebuild a snapshot from fields they know and have never heard of ruleset
       // live state. When such a caller replaces the row of a message + swipe, the live state that
       // row already carried (written right after the message was saved) stays with it.
       const replaced =
         state.messageId && state.rulesetLive === undefined
           ? await this.getByChatAndMessage(state.chatId, state.messageId, state.swipeIndex)
           : null;
+      let trustedIncomingIds: Set<string> | undefined;
+      const trustedSource = options?.trustedInventoryIdentitySource;
+      if (trustedSource) {
+        const sourceRows = await db
+          .select()
+          .from(gameStateSnapshots)
+          .where(
+            and(
+              eq(gameStateSnapshots.id, trustedSource.snapshotId),
+              eq(gameStateSnapshots.chatId, trustedSource.chatId),
+            ),
+          )
+          .limit(1);
+        const source = sourceRows[0];
+        if (!source) throw new Error("GAME_STATE_TRUSTED_INVENTORY_SOURCE_NOT_FOUND");
+        const sourceStats = parseStoredPlayerStats(source.playerStats);
+        trustedIncomingIds = new Set<string>();
+        for (const row of [
+          ...(Array.isArray(sourceStats?.inventory) ? sourceStats.inventory : []),
+          ...(Array.isArray(sourceStats?.inventoryTrackerCurrencies) ? sourceStats.inventoryTrackerCurrencies : []),
+          ...(Array.isArray(sourceStats?.inventoryTrackerEquipped) ? sourceStats.inventoryTrackerEquipped : []),
+          ...(Array.isArray(sourceStats?.inventoryTrackerInventory) ? sourceStats.inventoryTrackerInventory : []),
+        ]) {
+          if (row && typeof row === "object" && typeof (row as { itemId?: unknown }).itemId === "string") {
+            const itemId = (row as { itemId: string }).itemId.trim();
+            if (itemId) trustedIncomingIds.add(itemId);
+          }
+        }
+      }
       // Remove any prior snapshot for the same message + swipe so duplicates don't accumulate
       if (state.messageId) {
         await db
@@ -373,6 +492,11 @@ export function createGameStateStorage(db: DB) {
           );
       }
       const id = newId();
+      const playerStats = state.playerStats
+        ? reconcileInventoryItemIdentities(parseStoredPlayerStats(latestBeforeInsert?.playerStats), state.playerStats, {
+            trustedIncomingIds,
+          })
+        : state.playerStats;
       await db.insert(gameStateSnapshots).values({
         id,
         chatId: state.chatId,
@@ -382,7 +506,7 @@ export function createGameStateStorage(db: DB) {
         worldCustomFields: JSON.stringify(normalizeWorldCustomFields(state.worldCustomFields)),
         presentCharacters: JSON.stringify(state.presentCharacters),
         recentEvents: JSON.stringify(state.recentEvents),
-        playerStats: state.playerStats ? JSON.stringify(state.playerStats) : null,
+        playerStats: playerStats ? JSON.stringify(playerStats) : null,
         personaStats: state.personaStats ? JSON.stringify(state.personaStats) : null,
         manualOverrides: serializeManualOverrides(manualOverrides),
         fieldLocks: serializeFieldLocks(state.fieldLocks),
@@ -558,6 +682,10 @@ export function createGameStateStorage(db: DB) {
     async _applyUpdate(row: typeof gameStateSnapshots.$inferSelect, fields: GameStateUpdateFields, manual?: boolean) {
       const updates: Record<string, unknown> = {};
       const existingLockMigrationState = buildLockMigrationState(row);
+      const reconciledPlayerStats =
+        fields.playerStats !== undefined
+          ? reconcileInventoryItemIdentities(parseStoredPlayerStats(row.playerStats), fields.playerStats)
+          : undefined;
       if (fields.date !== undefined) updates.date = coerceGameStateTextValue(fields.date);
       if (fields.time !== undefined) updates.time = coerceGameStateTextValue(fields.time);
       if (fields.location !== undefined) updates.location = coerceGameStateTextValue(fields.location);
@@ -567,7 +695,7 @@ export function createGameStateStorage(db: DB) {
         updates.worldCustomFields = JSON.stringify(normalizeWorldCustomFields(fields.worldCustomFields));
       if (fields.presentCharacters !== undefined) updates.presentCharacters = JSON.stringify(fields.presentCharacters);
       if (fields.playerStats !== undefined)
-        updates.playerStats = fields.playerStats ? JSON.stringify(fields.playerStats) : null;
+        updates.playerStats = reconciledPlayerStats ? JSON.stringify(reconciledPlayerStats) : null;
       if (fields.personaStats !== undefined)
         updates.personaStats = fields.personaStats ? JSON.stringify(fields.personaStats) : null;
       if (fields.hiddenTrackerFields !== undefined)
@@ -599,7 +727,7 @@ export function createGameStateStorage(db: DB) {
             ? { worldCustomFields: normalizeWorldCustomFields(fields.worldCustomFields) }
             : {}),
           ...(fields.presentCharacters !== undefined ? { presentCharacters: fields.presentCharacters } : {}),
-          ...(fields.playerStats !== undefined ? { playerStats: fields.playerStats } : {}),
+          ...(fields.playerStats !== undefined ? { playerStats: reconciledPlayerStats } : {}),
           ...(fields.personaStats !== undefined ? { personaStats: fields.personaStats } : {}),
         });
         updates.fieldLocks = serializeFieldLocks(
@@ -618,6 +746,47 @@ export function createGameStateStorage(db: DB) {
         .set(updates)
         .where(and(eq(gameStateSnapshots.chatId, row.chatId), eq(gameStateSnapshots.id, row.id)));
       return { ...row, ...updates };
+    },
+
+    /** Apply a lock-filtered player-stats patch at one chat-scoped snapshot. */
+    async updatePlayerStatsAtSnapshot(
+      snapshotId: string,
+      chatId: string,
+      playerStats: unknown,
+      fieldLocks?: TrackerFieldLocks | null,
+      expected?: GameStateSnapshotWritePrecondition,
+    ) {
+      return db.transaction(
+        async (tx) => {
+          const rows = await tx
+            .select()
+            .from(gameStateSnapshots)
+            .where(and(eq(gameStateSnapshots.id, snapshotId), eq(gameStateSnapshots.chatId, chatId)))
+            .limit(1);
+          const row = rows[0];
+          if (!row) return null;
+          if (expected && (row.playerStats !== expected.playerStats || row.fieldLocks !== expected.fieldLocks)) {
+            throw new Error("GAME_STATE_INVENTORY_CONFLICT");
+          }
+          const reconciledPlayerStats = reconcileInventoryItemIdentities(
+            parseStoredPlayerStats(row.playerStats),
+            playerStats,
+          );
+          const updates: Record<string, unknown> = {
+            playerStats: reconciledPlayerStats ? JSON.stringify(reconciledPlayerStats) : null,
+          };
+          if (fieldLocks !== undefined) {
+            const lockState = buildLockMigrationState({ ...row, playerStats: reconciledPlayerStats });
+            updates.fieldLocks = serializeFieldLocks(normalizeTrackerFieldLocksForState(fieldLocks, lockState));
+          }
+          await tx
+            .update(gameStateSnapshots)
+            .set(updates)
+            .where(and(eq(gameStateSnapshots.id, snapshotId), eq(gameStateSnapshots.chatId, chatId)));
+          return { ...row, ...updates };
+        },
+        { durable: true },
+      );
     },
 
     async deleteForChat(chatId: string) {

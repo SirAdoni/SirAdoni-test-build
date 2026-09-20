@@ -10,6 +10,7 @@ import type { LorebookEntry } from "../../packages/shared/src/types/lorebook.js"
 import { errorHandler } from "../../packages/server/src/middleware/error-handler.js";
 import { gameRoutes } from "../../packages/server/src/routes/game.routes.js";
 import { processLorebooks } from "../../packages/server/src/services/lorebook/index.js";
+import { buildGameContinuityEvidencePrompt } from "../../packages/server/src/services/game/gm-prompts.js";
 import {
   passesForcedEntryActivationGates,
   scanForActivatedEntries,
@@ -178,6 +179,8 @@ await app.register(gameRoutes, { prefix: "/api/game" });
 
 const EXPERIENCE_ID = "experience-lore-entries-test";
 const INSTRUCTIONS = "You produce a world brief. Reply with ONLY a JSON object.";
+const HOST_POLICY = buildGameContinuityEvidencePrompt();
+const EFFECTIVE_INSTRUCTIONS = `${INSTRUCTIONS}\n\n${HOST_POLICY}`;
 const BASE_BODY = {
   instructions: INSTRUCTIONS,
   userContent: "A quiet valley, three days' walk from the sea.",
@@ -360,7 +363,11 @@ try {
       baselineMessages,
       "An empty selection sends byte-identical messages — this is what lets the route ship default-off",
     );
-    assert.equal(systemPromptOf(), INSTRUCTIONS, "The system turn is the package's instructions, untouched");
+    assert.equal(
+      systemPromptOf(),
+      EFFECTIVE_INSTRUCTIONS,
+      "The system turn preserves package instructions and appends the host continuity policy",
+    );
     assert.equal(
       Object.prototype.hasOwnProperty.call(baseline.json(), "lorebook"),
       false,
@@ -793,7 +800,9 @@ try {
       assert.equal(upstreamBodies.length, 0, "Oversized selections and instructions must never reach the provider");
       if (lorebookEntryIds) assert.match(rejected.json().error, /lore/);
     }
-    await connections.update(conn.id, { maxContext: 2_048 });
+    // The host continuity policy is part of every default-off request, so leave enough
+    // room for the first provider call before proving the repair-history preflight.
+    await connections.update(conn.id, { maxContext: 2_560 });
     upstreamBodies = [];
     providerContent = "invalid response ".repeat(300);
     const repair = await post(chat.id, BASE_BODY);
@@ -834,7 +843,11 @@ try {
     });
     assert.equal(res.statusCode, 200, res.body);
 
-    assert.equal(systemPromptOf(), INSTRUCTIONS, "Nothing survived, so nothing is appended to the instructions");
+    assert.equal(
+      systemPromptOf(),
+      EFFECTIVE_INSTRUCTIONS,
+      "Nothing survived, so only the host continuity policy is appended to the package instructions",
+    );
     assert.equal(
       Object.prototype.hasOwnProperty.call(res.json(), "lorebook"),
       true,

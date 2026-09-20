@@ -317,6 +317,13 @@ interface ParsedSegment {
   readableType?: "note" | "book";
 }
 
+export type StoryboardSourceSection = {
+  index: number;
+  kind: "narration" | "dialogue" | "readable" | "system" | "user" | "assistant";
+  speaker?: string | null;
+  content: string;
+};
+
 interface SegmentEditValue {
   content?: string;
   speaker?: string;
@@ -500,6 +507,90 @@ function parseSegments(stripped: string): ParsedSegment[] {
 
   flushFallback();
   return segments;
+}
+
+function stripDialogueQuotes(value: string): string {
+  const text = value.trim();
+  if (text.length < 2) return text;
+  const pairs: ReadonlyArray<[string, string]> = [
+    ['"', '"'],
+    ["“", "”"],
+    ["«", "»"],
+  ];
+  for (const [open, close] of pairs) {
+    if (text.startsWith(open) && text.endsWith(close)) return text.slice(open.length, -close.length).trim();
+  }
+  return text;
+}
+
+function humanizeStoryboardSpeaker(value: string): string {
+  if (value.includes(" ") || value.includes("_")) return value;
+  return value.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2");
+}
+
+/**
+ * Build the server-owned storyboard source with the same segment indexes used by
+ * the Game narration editor. This keeps automatic jobs independent of the tab
+ * while preserving segment edits and deletions already stored in chat metadata.
+ */
+export function buildStoryboardSourceSections(
+  content: string,
+  chatMeta: Record<string, unknown>,
+  messageId: string,
+): StoryboardSourceSection[] {
+  const { editsByMessage, deletesByMessage } = collectSegmentOverlays(chatMeta);
+  const edits = editsByMessage.get(messageId) ?? {};
+  const deleted = deletesByMessage.get(messageId) ?? new Set<number>();
+  const segments = parseSegments(stripGmCommandTags(content));
+  const sections: StoryboardSourceSection[] = [];
+
+  for (let index = 0; index < segments.length; index++) {
+    if (deleted.has(index)) continue;
+    const segment = segments[index]!;
+    const edit = edits[index];
+    let kind: StoryboardSourceSection["kind"] = "narration";
+    let speaker: string | null = null;
+    let text = segment.originalText;
+
+    if (segment.readableType) {
+      kind = "readable";
+      const readable = edit?.readableContent ?? edit?.content ?? segment.originalText;
+      text = readable
+        .replace(/^\[(?:book|note):\s*/i, "")
+        .replace(/\]$/, "")
+        .trim();
+      const readableType = edit?.readableType ?? segment.readableType;
+      text = `${readableType === "book" ? "Book" : "Note"}: ${text}`;
+    } else if (segment.dialoguePrefix) {
+      const partyMatch = segment.dialoguePrefix.match(
+        /^\[([^\]]+)\]\s*\[(main|side|extra|action|thought|whisper)(?::[^\]]+)?\]/i,
+      );
+      const speakerMatch = segment.dialoguePrefix.match(/^\s*(?:Dialogue\s*)?\[([^\]]+)\]/i);
+      const partyType = partyMatch?.[2]?.toLowerCase() ?? null;
+      kind = partyType === "action" ? "narration" : "dialogue";
+      // Keep the parsed speaker metadata stable when an edit changes the
+      // displayed speaker prefix; this mirrors the client segment model.
+      speaker =
+        (partyType === "action" ? "" : humanizeStoryboardSpeaker(partyMatch?.[1] ?? speakerMatch?.[1] ?? "")).trim() ||
+        null;
+      const editedContent = edit?.content;
+      const rawContent = editedContent ?? segment.dialogueContentRaw ?? "";
+      text =
+        editedContent !== undefined || partyType === "thought"
+          ? rawContent.trim()
+          : kind === "dialogue"
+            ? stripDialogueQuotes(rawContent)
+            : rawContent;
+      if (kind === "dialogue" && edit?.speaker?.trim()) text = `${edit.speaker.trim()}: ${text}`;
+      else if (kind === "dialogue" && speaker) text = `${speaker}: ${text}`;
+    } else {
+      text = (edit?.content ?? text).trim();
+    }
+
+    text = text.trim().slice(0, 6000);
+    if (text) sections.push({ index, kind, speaker, content: text });
+  }
+  return sections;
 }
 
 /**

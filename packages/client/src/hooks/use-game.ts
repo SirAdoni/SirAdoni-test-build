@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { ApiError, api, isJsonRepairApiError } from "../lib/api-client";
 import { captureChatMetadataVersion, chatKeys, guardServerChatSnapshot } from "./use-chats";
+import { characterKeys } from "./use-characters";
 import { lorebookKeys } from "./use-lorebooks";
 import {
   clearPendingHudWidgetPersist,
@@ -19,6 +20,14 @@ import { useGameAssetStore } from "../stores/game-asset.store";
 import { useGameStateStore } from "../stores/game-state.store";
 import { useChatStore } from "../stores/chat.store";
 import { useUIStore } from "../stores/ui.store";
+import {
+  GAME_NPC_CHARACTER_SYNC_MAX_REQUEST_RETRIES,
+  gameNpcCharacterSyncRetryDelay,
+  gameNpcCharacterSyncInvalidation,
+  isRetryableGameNpcCharacterSyncError,
+} from "../lib/game-npc-character-sync-policy";
+import type { Journal } from "../components/game/GameJournal";
+import { resolveEffectiveGameId } from "@marinara-engine/shared";
 import type {
   GameActiveState,
   GameMap,
@@ -60,6 +69,23 @@ interface SetupResponse {
   setup: Record<string, unknown>;
   worldOverview: string | null;
   gameNpcs?: GameNpc[];
+}
+
+export interface GameNpcCharacterSyncResponse {
+  created: Array<{ characterId: string; npcId: string; name: string }>;
+  updated: Array<{ characterId: string; npcId: string; name: string }>;
+  links: Array<{ characterId: string; npcId: string; name: string }>;
+  retracted: Array<{ characterId: string; npcId: string; name: string; cardRemoved: boolean }>;
+  portraitCopiesPending?: Array<{ npcId: string; name: string }>;
+  gameNpcs: GameNpc[];
+  jobId?: string | null;
+  status?: string;
+}
+
+interface RemoveGameNpcResponse {
+  npcs: GameNpc[];
+  journal: Journal;
+  ignoredNpcIds: string[];
 }
 
 interface StartGameResponse {
@@ -287,6 +313,60 @@ export function useGameSetup() {
         return;
       }
       toast.error(err.message || "Game setup failed. Try again or use a different model.", { duration: 10000 });
+    },
+  });
+}
+
+/** Materialize newly introduced NPCs as linked Character-library cards. */
+export function useSyncGameNpcCharacters() {
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: string | { chatId: string; backfill?: boolean }) => {
+      const payload = typeof input === "string" ? { chatId: input } : input;
+      return api.post<GameNpcCharacterSyncResponse>("/game/npc-characters/sync", payload);
+    },
+    retry: (failureCount, error) =>
+      failureCount < GAME_NPC_CHARACTER_SYNC_MAX_REQUEST_RETRIES && isRetryableGameNpcCharacterSyncError(error),
+    retryDelay: gameNpcCharacterSyncRetryDelay,
+    onSuccess: (res, input) => {
+      const chatId = typeof input === "string" ? input : input.chatId;
+      if (useGameModeStore.getState().activeSessionChatId === chatId && Array.isArray(res.gameNpcs)) {
+        useGameModeStore.getState().setNpcs(res.gameNpcs);
+      }
+      const cachedChat = qc.getQueryData<Chat>(chatKeys.detail(chatId));
+      const invalidation = gameNpcCharacterSyncInvalidation(cachedChat?.metadata, res);
+      if (invalidation.refreshChat) qc.invalidateQueries({ queryKey: chatKeys.detail(chatId) });
+      if (invalidation.refreshCharacters) qc.invalidateQueries({ queryKey: characterKeys.all });
+    },
+  });
+}
+
+/** Atomically remove one exact NPC identity from the roster and journal metadata. */
+export function useRemoveGameNpc() {
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ chatId, npcId }: { chatId: string; npcId: string; npcName: string }) =>
+      api.post<RemoveGameNpcResponse>(`/game/${chatId}/npcs/remove`, { npcId }),
+    onSuccess: (res, variables) => {
+      if (useGameModeStore.getState().activeSessionChatId === variables.chatId) {
+        useGameModeStore.getState().setNpcs(res.npcs);
+      }
+      const queryKey = chatKeys.detail(variables.chatId);
+      const patched = patchChatMetadata(qc.getQueryData<Chat>(queryKey), {
+        gameNpcs: res.npcs,
+        gameJournal: res.journal,
+        gameIgnoredNpcIds: res.ignoredNpcIds,
+      });
+      if (patched) {
+        qc.setQueryData(queryKey, patched);
+        if (useChatStore.getState().activeChatId === variables.chatId) {
+          useChatStore.getState().setActiveChat(patched);
+        }
+      }
+      qc.invalidateQueries({ queryKey });
+      qc.invalidateQueries({ queryKey: [...gameKeys.all, "journal", variables.chatId] });
     },
   });
 }
@@ -771,8 +851,9 @@ function normalizeHudWidgets(widgets: readonly HudWidget[]): HudWidget[] {
   });
 }
 
-export function useSyncGameState(activeChatId: string, chatMeta: Record<string, unknown>) {
+export function useSyncGameState(activeChatId: string, chatMeta: Record<string, unknown>, groupId?: string | null) {
   const prevChatIdRef = useRef<string | null>(null);
+  const effectiveGameId = resolveEffectiveGameId(chatMeta.gameId, groupId, activeChatId);
 
   // Reset game store only when the active chat changes, not on every metadata refetch
   useEffect(() => {
@@ -787,15 +868,14 @@ export function useSyncGameState(activeChatId: string, chatMeta: Record<string, 
 
   // Sync metadata into the game store
   useEffect(() => {
-    if (!chatMeta.gameId) return;
     const state = useGameModeStore.getState();
-    const activeGameChanged = chatMeta.gameId !== state.activeGameId;
+    const activeGameChanged = effectiveGameId !== state.activeGameId;
     const activeSessionChanged = activeChatId !== state.activeSessionChatId;
 
     if (activeGameChanged || activeSessionChanged) {
       useGameModeStore
         .getState()
-        .setActiveGame(chatMeta.gameId as string, activeChatId, chatMeta.gamePartyChatId as string | undefined);
+        .setActiveGame(effectiveGameId, activeChatId, chatMeta.gamePartyChatId as string | undefined);
       // Auto-collapse the chat sidebar when entering a game to maximize game area
       useUIStore.getState().setSidebarOpen(false);
     }
@@ -848,7 +928,7 @@ export function useSyncGameState(activeChatId: string, chatMeta: Record<string, 
         }
       }
     }
-  }, [activeChatId, chatMeta]);
+  }, [activeChatId, chatMeta, effectiveGameId]);
 }
 
 // ── New Game Mechanics Hooks ──

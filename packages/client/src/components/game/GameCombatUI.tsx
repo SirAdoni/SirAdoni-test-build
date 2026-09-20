@@ -1,4 +1,5 @@
 import { CombatAiControls } from "./CombatAiControls";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 // ──────────────────────────────────────────────
 // Game: Turn-Based Combat UI
 //
@@ -3199,6 +3200,7 @@ function CombatantCard({
   onDismissDialogue?: (line: PartyDialogueLine) => void;
   compact?: boolean;
 }) {
+  const spriteKind = resolveSpriteKind(combatant.sprite);
   const { t: localizeUi } = useUiTranslation();
   const hpPercent = combatant.maxHp > 0 ? (combatant.hp / combatant.maxHp) * 100 : 0;
   const mpPercent = combatant.maxMp && combatant.maxMp > 0 ? ((combatant.mp ?? 0) / combatant.maxMp) * 100 : null;
@@ -3338,15 +3340,36 @@ function CombatantCard({
           impactTone === "miss" && "game-combatant-impact--miss",
         )}
       >
-        <CombatantSpriteVisual
-          combatant={combatant}
-          imageClassName="h-full w-full rounded-lg object-cover"
-          textClassName={cn(
-            compact ? "text-lg font-bold" : "text-xl font-bold sm:text-2xl xl:text-3xl",
-            side === "enemy" ? "text-red-300/60" : "text-blue-300/60",
-          )}
-          emojiClassName={compact ? "text-2xl leading-none" : "text-2xl leading-none sm:text-3xl xl:text-4xl"}
-        />
+        {spriteKind.kind === "url" ? (
+          <div className="relative inline-flex h-full w-full items-center" onClick={(event) => event.stopPropagation()}>
+            <CharacterPhoto
+              src={spriteKind.value}
+              name={combatant.name}
+              wrapperClassName="relative inline-flex h-full w-full"
+              className="block h-full w-full"
+            >
+              <CombatantSpriteVisual
+                combatant={combatant}
+                imageClassName="h-full w-full rounded-lg object-cover"
+                textClassName={cn(
+                  compact ? "text-lg font-bold" : "text-xl font-bold sm:text-2xl xl:text-3xl",
+                  side === "enemy" ? "text-red-300/60" : "text-blue-300/60",
+                )}
+                emojiClassName={compact ? "text-2xl leading-none" : "text-2xl leading-none sm:text-3xl xl:text-4xl"}
+              />
+            </CharacterPhoto>
+          </div>
+        ) : (
+          <CombatantSpriteVisual
+            combatant={combatant}
+            imageClassName="h-full w-full rounded-lg object-cover"
+            textClassName={cn(
+              compact ? "text-lg font-bold" : "text-xl font-bold sm:text-2xl xl:text-3xl",
+              side === "enemy" ? "text-red-300/60" : "text-blue-300/60",
+            )}
+            emojiClassName={compact ? "text-2xl leading-none" : "text-2xl leading-none sm:text-3xl xl:text-4xl"}
+          />
+        )}
 
         {combatant.statusEffects && combatant.statusEffects.length > 0 && (
           <div className="pointer-events-none absolute -right-1.5 -top-1.5 z-10 flex max-w-[calc(100%+0.75rem)] flex-wrap justify-end gap-0.5">

@@ -37,7 +37,10 @@ function runChild(body: string, timeoutMs: number) {
     env: { ...process.env, LOG_LEVEL: "warn", NODE_ENV: "production" },
   });
   rmSync(dir, { recursive: true, force: true });
-  return { ...result, elapsedMs: Date.now() - startedAt };
+  // The shared logger writes structured diagnostics to stderr, including the
+  // force-exit announcement. Keep the child streams separate for spawn
+  // diagnostics, but assert against the actual combined log below.
+  return { ...result, output: `${result.stdout ?? ""}${result.stderr ?? ""}`, elapsedMs: Date.now() - startedAt };
 }
 
 // Budget arithmetic: the lane runner gives this whole file 30 s. Each child
@@ -61,7 +64,7 @@ setTimeout(() => process.exit(7), 8_000);
   );
   assert.equal(child.status, 0, `stage-2 force exit must exit 0 (got ${child.status}; stderr: ${child.stderr})`);
   assert.ok(child.elapsedMs < 7_500, `force exit must beat the 8 s hang sentinel (took ${child.elapsedMs} ms)`);
-  assert.match(child.stdout, /forcing exit now/u, "the force exit is announced in the log");
+  assert.match(child.output, /forcing exit now/u, "the force exit is announced in the log");
 }
 
 // ── Stage 1 fires first and actually severs connections ─────────────────────
@@ -85,7 +88,7 @@ setTimeout(() => process.exit(7), 8_000);
     3,
     `stage 1 must sever connections before stage 2 (got ${child.status}; stderr: ${child.stderr})`,
   );
-  assert.match(child.stdout, /severing open connections/u);
+  assert.match(child.output, /severing open connections/u);
 }
 
 // ── An explicit exit preempts the armed watchdogs without delay ─────────────

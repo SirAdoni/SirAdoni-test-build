@@ -4,9 +4,9 @@
 // Chunks conversation messages into groups, embeds them, and provides
 // semantic recall: given a query, find the most relevant past
 // conversation fragments from specified chats.
-import { eq, desc, and, gt, inArray, isNotNull, isNull, lt } from "../db/file-query.js";
+import { eq, desc, and, gt, inArray, isNotNull, isNull, jsonFlagsNotTrue, lt } from "../db/file-query.js";
 import type { DB } from "../db/connection.js";
-import { messages, memoryChunks } from "../db/schema/index.js";
+import { chats, messages, memoryChunks } from "../db/schema/index.js";
 import { newId, now } from "../utils/id-generator.js";
 import { localEmbed } from "./local-embedder.js";
 import { logger } from "../lib/logger.js";
@@ -25,6 +25,7 @@ const SIMILARITY_THRESHOLD = 0.25;
 /** Maximum number of recalled memories per generation. */
 const DEFAULT_TOP_K = 8;
 export const DEFAULT_LOCAL_MEMORY_EMBEDDING_SPACE_ID = "local:Xenova/all-MiniLM-L6-v2:plain-v1";
+export const GAME_MEMORY_TRANSCRIPT_PREFIX = "[Historical Game transcript v1]\n";
 const memoryMutationTails = new Map<string, Promise<void>>();
 
 async function serializeMemoryMutation<T>(chatId: string, task: () => Promise<T>): Promise<T> {
@@ -82,6 +83,8 @@ function parseStoredEmbedding(value: string | Float64Array | null): number[] | F
 
 export interface RecalledMemory {
   chatId: string;
+  chunkId?: string;
+  sourceChatId?: string | null;
   content: string;
   similarity: number;
   firstMessageAt: string;
@@ -106,7 +109,9 @@ export interface MemoryRecallEmbeddingOptions {
 }
 
 export interface RecallMemoriesOptions extends MemoryRecallEmbeddingOptions {
-  topK?: number;
+  topK?: number | null;
+  /** Skip unmarked native chunks while a legacy Game memory index is rebuilding. */
+  gameMode?: boolean;
   /** Exclude chunks covering this message timestamp or anything newer. */
   excludeFromMessageAt?: string | null;
 }
@@ -307,14 +312,28 @@ async function chunkAndEmbedMessagesUnlocked(
   }
 
   const existingEmbeddingSpaces = await db
-    .select({ embeddingSpaceId: memoryChunks.embeddingSpaceId })
+    .select({
+      embeddingSpaceId: memoryChunks.embeddingSpaceId,
+      content: memoryChunks.content,
+      embedding: memoryChunks.embedding,
+    })
     .from(memoryChunks)
-    .where(and(eq(memoryChunks.chatId, chatId), isNull(memoryChunks.sourceChatId), isNotNull(memoryChunks.embedding)));
-  if (existingEmbeddingSpaces.some((chunk) => chunk.embeddingSpaceId !== embeddingSpaceId)) {
+    .where(and(eq(memoryChunks.chatId, chatId), isNull(memoryChunks.sourceChatId)));
+  const chatRows = await db.select({ mode: chats.mode }).from(chats).where(eq(chats.id, chatId));
+  const isGameChat = chatRows[0]?.mode === "game";
+  const hasLegacyGameChunks =
+    isGameChat && existingEmbeddingSpaces.some((chunk) => !chunk.content.startsWith(GAME_MEMORY_TRANSCRIPT_PREFIX));
+  const hasEmbeddingSpaceMismatch = existingEmbeddingSpaces.some(
+    (chunk) => chunk.embedding !== null && chunk.embeddingSpaceId !== embeddingSpaceId,
+  );
+  if (hasEmbeddingSpaceMismatch || hasLegacyGameChunks) {
     await db.delete(memoryChunks).where(and(eq(memoryChunks.chatId, chatId), isNull(memoryChunks.sourceChatId)));
     logger.warn(
-      "[memory-recall] Rebuilding native memory chunks for chat %s because the embedding provider, model, or input profile changed",
+      "[memory-recall] Rebuilding native memory chunks for chat %s because %s",
       chatId,
+      hasLegacyGameChunks
+        ? "the Game transcript index uses a legacy speaker format"
+        : "the embedding provider, model, or input profile changed",
     );
   }
 
@@ -327,7 +346,7 @@ async function chunkAndEmbedMessagesUnlocked(
       createdAt: messages.createdAt,
     })
     .from(messages)
-    .where(eq(messages.chatId, chatId))
+    .where(and(eq(messages.chatId, chatId), jsonFlagsNotTrue(messages.extra, ["hiddenFromAI"])))
     .orderBy(messages.createdAt);
 
   await pruneStaleNativeMemoryChunks(db, chatId, allMessages);
@@ -375,7 +394,9 @@ async function chunkAndEmbedMessagesUnlocked(
           ? nameMap.userName
           : m.role === "narrator" || m.role === "system"
             ? "Narrator"
-            : ((m.characterId && nameMap.characterNames[m.characterId]) ?? "Character");
+            : isGameChat
+              ? "Game Master"
+              : ((m.characterId && nameMap.characterNames[m.characterId]) ?? "Character");
       return `${name}: ${m.content}`;
     });
     chunksToCreate.push({
@@ -387,7 +408,9 @@ async function chunkAndEmbedMessagesUnlocked(
   }
 
   if (chunksToCreate.length === 0) return;
-  const embeddableChunks = splitMemoryChunksForEmbedding(chunksToCreate);
+  const embeddableChunks = splitMemoryChunksForEmbedding(chunksToCreate).map((chunk) =>
+    isGameChat ? { ...chunk, content: `${GAME_MEMORY_TRANSCRIPT_PREFIX}${chunk.content}` } : chunk,
+  );
   if (embeddableChunks.length === 0) return;
 
   // Embed all chunks using local model
@@ -510,6 +533,7 @@ export async function recallMemories(
     .select({
       id: memoryChunks.id,
       chatId: memoryChunks.chatId,
+      sourceChatId: memoryChunks.sourceChatId,
       content: memoryChunks.content,
       embedding: memoryChunks.embedding,
       embeddingSpaceId: memoryChunks.embeddingSpaceId,
@@ -533,6 +557,9 @@ export async function recallMemories(
   // Score each chunk by cosine similarity
   const scored = chunks
     .map((chunk): RecalledMemory | null => {
+      if (options.gameMode && !chunk.sourceChatId && !chunk.content.startsWith(GAME_MEMORY_TRANSCRIPT_PREFIX)) {
+        return null;
+      }
       if (chunk.embeddingSpaceId !== embeddingSpaceId) {
         if (!sourceMismatchLogged) {
           sourceMismatchLogged = true;
@@ -554,6 +581,8 @@ export async function recallMemories(
       }
       return {
         chatId: chunk.chatId,
+        chunkId: chunk.id,
+        sourceChatId: chunk.sourceChatId,
         content: chunk.content,
         similarity: cosineSimilarity(queryEmbedding, embedding),
         firstMessageAt: chunk.firstMessageAt,
@@ -562,7 +591,7 @@ export async function recallMemories(
     })
     .filter((s): s is RecalledMemory => s !== null && s.similarity >= SIMILARITY_THRESHOLD)
     .sort((a, b) => b.similarity - a.similarity)
-    .slice(0, options.topK ?? DEFAULT_TOP_K);
+    .slice(0, options.topK === null ? undefined : (options.topK ?? DEFAULT_TOP_K));
 
   return scored;
 }

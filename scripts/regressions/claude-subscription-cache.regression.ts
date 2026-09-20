@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
-import { logger } from "../../packages/server/src/lib/logger.js";
 import {
+  __setDebugLoggerForTesting,
   __setSdkForTesting,
   ClaudeSubscriptionProvider,
 } from "../../packages/server/src/services/llm/providers/claude-subscription.provider.js";
 
-const originalDebug = logger.debug;
 let logged: Record<string, unknown> | undefined;
 let sdkOptions: Record<string, unknown> = {};
 let usage: Record<string, unknown> = {};
-logger.debug = ((data: Record<string, unknown>, message: string) => {
+const debugSpy = ((data: Record<string, unknown>, message: string) => {
   if (message === "[claude-subscription] prompt-cache usage") logged = data;
-}) as typeof logger.debug;
+}) as NonNullable<Parameters<typeof __setDebugLoggerForTesting>[0]>;
+__setDebugLoggerForTesting(debugSpy);
 __setSdkForTesting({
   query: ((args: { options: Record<string, unknown> }) => {
     sdkOptions = args.options;
@@ -60,7 +60,7 @@ try {
   await provider.chatComplete([{ role: "user", content: "Hello" }], { model: "claude-opus-5" });
   assert.deepEqual(sdkOptions.settings, { fastMode: false }, "off preserves Claude's account-dependent default TTL");
 } finally {
-  logger.debug = originalDebug;
+  __setDebugLoggerForTesting(null);
   __setSdkForTesting(null);
 }
 console.log("Claude subscription cache regression passed");

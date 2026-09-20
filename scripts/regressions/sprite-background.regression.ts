@@ -7,6 +7,7 @@ import {
 } from "../../packages/server/src/services/image/sprite-background.service.js";
 import {
   buildFullBodyReferenceContract,
+  resolveFullBodyExpressionReferences,
   resolveSpriteNativeTransparency,
   resolveSpriteSheetCanvas,
 } from "../../packages/server/src/routes/sprites.routes.js";
@@ -45,36 +46,51 @@ assert.equal(resolveSpriteNativeTransparency("gpt-image-1.5", true), true);
 assert.equal(resolveSpriteNativeTransparency("sdxl", true), true);
 assert.equal(resolveSpriteNativeTransparency("gpt-image-2", false), false);
 
-assert.deepEqual(
-  resolveSpriteSheetCanvas({ cols: 1, rows: 1, spriteType: "full-body", model: "gpt-image-2" }),
-  {
-    sheetWidth: 1024,
-    sheetHeight: 1536,
-    cellWidth: 1024,
-    cellHeight: 1536,
-  },
-);
-assert.deepEqual(
-  resolveSpriteSheetCanvas({ cols: 1, rows: 1, spriteType: "full-body", model: "sdxl" }),
-  {
-    sheetWidth: 1024,
-    sheetHeight: 1536,
-    cellWidth: 1024,
-    cellHeight: 1536,
-  },
-);
+assert.deepEqual(resolveSpriteSheetCanvas({ cols: 1, rows: 1, spriteType: "full-body", model: "gpt-image-2" }), {
+  sheetWidth: 1024,
+  sheetHeight: 1536,
+  cellWidth: 1024,
+  cellHeight: 1536,
+});
+assert.deepEqual(resolveSpriteSheetCanvas({ cols: 1, rows: 1, spriteType: "full-body", model: "sdxl" }), {
+  sheetWidth: 1024,
+  sheetHeight: 1536,
+  cellWidth: 1024,
+  cellHeight: 1536,
+});
 
 const fullBodyReferenceContract = buildFullBodyReferenceContract([
   { kind: "neutral-full-body" },
   { kind: "expression", expression: "happy" },
   { kind: "identity" },
 ]);
-assert.match(fullBodyReferenceContract, /Reference image 1 is the user-approved neutral full-body design/iu);
+assert.match(
+  fullBodyReferenceContract,
+  /If reference image 1 is attached, it is the user-approved neutral full-body design/iu,
+);
 assert.match(fullBodyReferenceContract, /Preserve its exact clothing, footwear, accessories/iu);
-assert.match(fullBodyReferenceContract, /Reference image 2 is the saved portrait for the "happy" expression/iu);
+assert.match(
+  fullBodyReferenceContract,
+  /If reference image 2 is attached, it is the saved portrait for the "happy" expression/iu,
+);
 assert.match(fullBodyReferenceContract, /Match its face, gaze, mouth, eyebrows, and emotional intensity/iu);
-assert.match(fullBodyReferenceContract, /Reference image 3 is an additional identity reference/iu);
+assert.match(fullBodyReferenceContract, /If reference image 3 is attached, it is an additional identity reference/iu);
 assert.match(fullBodyReferenceContract, /one uninterrupted head-to-toe sprite/iu);
+
+const spriteReference = (index: number) => Buffer.alloc(32, index + 1).toString("base64");
+const fullBodyReferenceInput = {
+  neutralFullBodyReference: spriteReference(0),
+  expressionReferences: [{ expression: "happy", image: spriteReference(1) }],
+  referenceImages: Array.from({ length: 18 }, (_, index) => spriteReference(index + 2)),
+};
+assert.equal(resolveFullBodyExpressionReferences(fullBodyReferenceInput, "happy", 20).images.length, 20);
+assert.deepEqual(resolveFullBodyExpressionReferences(fullBodyReferenceInput, "happy", 1).roles, [
+  { kind: "neutral-full-body" },
+]);
+assert.deepEqual(resolveFullBodyExpressionReferences(fullBodyReferenceInput, "happy", 0), {
+  images: [],
+  roles: [],
+});
 
 function solidImage(width: number, height: number, color: [number, number, number, number]) {
   return Buffer.alloc(width * height * 4).fill(Buffer.from(color));
@@ -217,9 +233,8 @@ console.info("Sprite background regression passed.");
 // same way the gallery path does (findImageStyleProfile falls back gracefully).
 {
   const { compileSpritePrompt } = await import("../../packages/server/src/routes/sprites.routes.js");
-  const { normalizeImageStyleProfileSettings, findImageStyleProfile } = await import(
-    "../../packages/shared/src/constants/image-style-profiles.js"
-  );
+  const { normalizeImageStyleProfileSettings, findImageStyleProfile } =
+    await import("../../packages/shared/src/constants/image-style-profiles.js");
   const settings = normalizeImageStyleProfileSettings(null);
   const nonDefault = settings.profiles.find((profile) => profile.id !== settings.defaultProfileId);
   assert.ok(nonDefault, "built-in profiles must include a non-default profile for this regression");
@@ -255,7 +270,10 @@ console.info("Sprite background regression passed.");
     seed: 0,
     styleProfileId: nonDefault.id,
   };
-  const viaConnectionDefault = compileSpritePrompt("sprite of the subject", { ...base, imageDefaults: connectionDefault });
+  const viaConnectionDefault = compileSpritePrompt("sprite of the subject", {
+    ...base,
+    imageDefaults: connectionDefault,
+  });
   assert.deepEqual(
     viaConnectionDefault,
     overridden,

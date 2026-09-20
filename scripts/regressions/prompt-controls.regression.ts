@@ -29,6 +29,28 @@ assert.deepEqual(
   ["system", "user", "user", "assistant", "assistant"],
 );
 assert.equal(separate[0]?.content, "Rules\n\nWorld");
+
+const cacheBoundaryMessages: ChatMessage[] = [
+  { role: "system", content: "Stable lore", providerMetadata: { marinaraFullLoreContext: true } },
+  { role: "system", content: "Runtime lore", providerMetadata: { marinaraRuntimeContext: true } },
+  { role: "user", content: "Current turn" },
+];
+const boundaryFormatted = postProcessMessages(cacheBoundaryMessages);
+assert.deepEqual(
+  boundaryFormatted.map((message) => message.role),
+  ["system", "system", "user"],
+  "cache-boundary system messages retain their provider roles",
+);
+assert.equal(boundaryFormatted[0]?.providerMetadata?.marinaraFullLoreContext, true);
+assert.equal(boundaryFormatted[1]?.providerMetadata?.marinaraRuntimeContext, true);
+const boundaryAuthorRoles = postProcessMessages(cacheBoundaryMessages, { strictRoleFormatting: false });
+assert.deepEqual(
+  boundaryAuthorRoles.map((message) => message.role),
+  ["system", "system", "user"],
+  "non-strict formatting preserves author roles around cache boundaries",
+);
+assert.equal(boundaryAuthorRoles[0]?.content, "Stable lore");
+assert.equal(boundaryAuthorRoles[1]?.content, "Runtime lore");
 const single = postProcessMessages(messages, { singleUserMessage: true });
 assert.deepEqual(
   single.map((m) => m.role),

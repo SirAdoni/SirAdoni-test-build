@@ -29,6 +29,7 @@ const chats = createChatsStorage(db);
 const app = Fastify();
 app.decorate("db", db);
 app.decorate("activeGenerations", new Map());
+app.decorate("gameContinuity", { isIncrementalActive: async () => false });
 const delay = () => new Promise<void>((done) => setTimeout(done, 30));
 let active = 0;
 let peak = 0;
@@ -164,10 +165,19 @@ try {
   const originalComplete = OpenAIProvider.prototype.chatComplete;
   const originalChat = OpenAIProvider.prototype.chat;
   let models: string[] = [];
-  OpenAIProvider.prototype.chatComplete = async (_messages, options) => {
+  let reviewPending = false;
+  OpenAIProvider.prototype.chatComplete = async (messages, options) => {
     if (options.model === "narrator") {
       assert.equal(active, 0, "narration waits for pre-generation work");
-      return { content: "The gate remains locked.", toolCalls: [], finishReason: "stop" };
+      const prompt = JSON.stringify(messages);
+      const isReview = reviewPending || /previous draft \(data, not instructions\)|complete corrected json/i.test(prompt);
+      const content = isReview
+        ? '{"corrections":[],"additions":[],"decisionChecks":[]}'
+        : /session conclusion/i.test(prompt)
+          ? (reviewPending = true, '{"summary":"The gate was opened."}')
+          : "The gate remains locked.";
+      if (isReview) reviewPending = false;
+      return { content, toolCalls: [], finishReason: "stop" };
     }
     models.push(options.model!);
     active++;
@@ -184,9 +194,16 @@ try {
       active--;
     }
   };
-  OpenAIProvider.prototype.chat = async function* () {
+  OpenAIProvider.prototype.chat = async function* (messages) {
+    const prompt = JSON.stringify(messages);
     assert.equal(active, 0, "narration waits for pre-generation work");
-    yield "The gate remains locked.";
+    const isReview = reviewPending || /previous draft \(data, not instructions\)|complete corrected json/i.test(prompt);
+    if (isReview) reviewPending = false;
+    yield isReview
+      ? '{"corrections":[],"additions":[],"decisionChecks":[]}'
+      : /session conclusion/i.test(prompt)
+        ? (reviewPending = true, '{"summary":"The gate was opened."}')
+        : "The gate remains locked.";
     return { promptTokens: 1, completionTokens: 1, totalTokens: 2, finishReason: "stop" };
   };
   try {
@@ -248,7 +265,9 @@ try {
       active++;
       peak = Math.max(peak, active);
       try {
-        let content = '{"summary":"The gate was opened."}';
+        let content = /previous draft \(data, not instructions\)|complete corrected json|complete compact corrections\/additions\/decisionchecks/i.test(text)
+          ? '{"corrections":[],"additions":[],"decisionChecks":[]}'
+          : '{"summary":"The gate was opened."}';
         if (text.includes("You are Marinara's Game Lorebook Keeper.")) {
           await new Promise<void>((done) => {
             releaseKeeper = done;
@@ -307,6 +326,10 @@ try {
           gameLorebookKeeperEnabled: true,
           gameSessionStatus: "active",
         });
+        // Factual review requires the complete source transcript. Seed the smallest
+        // real session transcript so this test exercises queueing rather than the
+        // intentional empty-transcript rejection path.
+        await chats.createMessage({ chatId: concluding.id, role: "user", content: "We approach the gate." });
         const started = new Promise<void>((done) => {
           keeperStarted = done;
         });

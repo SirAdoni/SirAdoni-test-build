@@ -1468,26 +1468,41 @@ async function generateAtlasCloudVideo(
   return downloadAtlasCloudVideo(outputUrl, baseUrl, apiKey, request.signal);
 }
 
-function withVideoGenerationDeadline<T>(
+export async function withVideoGenerationDeadline<T>(
   externalSignal: AbortSignal | undefined,
   timeoutMs: number,
   run: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
   const controller = new AbortController();
   const onAbort = () => controller.abort(externalSignal?.reason);
-  if (externalSignal?.aborted) {
-    controller.abort(externalSignal.reason);
-  }
   const timeout = setTimeout(() => controller.abort(new VideoGenerationDeadlineError(timeoutMs)), timeoutMs);
   if (externalSignal?.aborted) {
     controller.abort(externalSignal.reason);
   } else {
     externalSignal?.addEventListener("abort", onAbort, { once: true });
   }
-  return run(controller.signal).finally(() => {
+  let rejectOnAbort: (() => void) | null = null;
+  // Providers should honor the signal, but the lifecycle boundary must still settle so a
+  // broken adapter cannot retain its global media permit indefinitely.
+  const cancelled = new Promise<never>((_, reject) => {
+    rejectOnAbort = () => {
+      reject(
+        controller.signal.reason instanceof Error
+          ? controller.signal.reason
+          : new Error("Video generation request aborted"),
+      );
+    };
+    if (controller.signal.aborted) rejectOnAbort();
+    else controller.signal.addEventListener("abort", rejectOnAbort, { once: true });
+  });
+  try {
+    const operation = controller.signal.aborted ? cancelled : run(controller.signal);
+    return await Promise.race([operation, cancelled]);
+  } finally {
     clearTimeout(timeout);
     externalSignal?.removeEventListener("abort", onAbort);
-  });
+    if (rejectOnAbort) controller.signal.removeEventListener("abort", rejectOnAbort);
+  }
 }
 
 function buildGeminiInteractionsUrl(baseUrl: string): string {

@@ -519,12 +519,15 @@ export interface ActiveLorebookEntry {
   keys: string[];
   lorebookId: string;
   lorebookName: string;
-  activationSources: Array<"current_location" | "keyword" | "semantic" | "constant" | "sticky" | "recursive">;
+  activationSources: Array<
+    "current_location" | "keyword" | "semantic" | "constant" | "always_loaded" | "sticky" | "recursive"
+  >;
   order: number;
   constant: boolean;
+  alwaysLoaded: boolean;
   selective: boolean;
   matchedKeys?: string[];
-  matchType?: "keyword" | "semantic" | "constant" | "sticky";
+  matchType?: "keyword" | "semantic" | "constant" | "always_loaded" | "sticky";
   semanticScore?: number;
 }
 
@@ -534,8 +537,10 @@ export interface BudgetSkippedLorebookEntry {
   lorebookId: string;
   lorebookName: string;
   matchedKeys: string[];
-  activationSources: Array<"current_location" | "keyword" | "semantic" | "constant" | "sticky" | "recursive">;
-  matchType?: "keyword" | "semantic" | "constant" | "sticky";
+  activationSources: Array<
+    "current_location" | "keyword" | "semantic" | "constant" | "always_loaded" | "sticky" | "recursive"
+  >;
+  matchType?: "keyword" | "semantic" | "constant" | "always_loaded" | "sticky";
   semanticScore?: number;
   estimatedTokens: number;
   lorebookBudget: number;

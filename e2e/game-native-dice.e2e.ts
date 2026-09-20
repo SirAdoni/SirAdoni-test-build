@@ -5,6 +5,22 @@ import { seedUIState } from "./ui-state-fixture.js";
 
 const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
+function isBackgroundGameRequest(messages: unknown): boolean {
+  if (!Array.isArray(messages)) return false;
+  const firstMessage = messages[0];
+  const first =
+    firstMessage && typeof firstMessage === "object" && "content" in firstMessage
+      ? String((firstMessage as { content?: unknown }).content ?? "")
+      : "";
+  return (
+    first.startsWith("You maintain an evidence-based scene timeline") ||
+    (messages.length === 1 &&
+      /^(?:Extract durable continuity records|Review continuity source-first|Repair only the reviewed continuity findings)/u.test(
+        first,
+      ))
+  );
+}
+
 for (const theme of ["dark", "light"] as const) {
   test(`Game queues every native roll and skill check and retains their history (${theme})`, async ({
     page,
@@ -27,10 +43,17 @@ for (const theme of ["dark", "light"] as const) {
       const chunks: Buffer[] = [];
       for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      providerRequests.push(body);
+      const background = isBackgroundGameRequest(body.messages);
+      if (!background) providerRequests.push(body);
       response.writeHead(200, { "content-type": "text/event-stream", connection: "close" });
       const write = (delta: unknown, finishReason: string | null = null) =>
         response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finishReason }] })}\n\n`);
+      if (background) {
+        write({ content: '{"visits":[],"records":[],"dispositions":[],"recordChecks":[],"findings":[]}' });
+        write({}, "stop");
+        response.end("data: [DONE]\n\n");
+        return;
+      }
       if (textOnly) {
         write({ content: "The path continues." });
         write({}, "stop");
@@ -144,12 +167,14 @@ for (const theme of ["dark", "light"] as const) {
           await request.patch(`/api/chats/${chatId}/metadata`, {
             data: {
               gameId: chatId,
+              campaignIndexPrompt: { dismissedAt: "2026-09-19T00:00:00.000Z" },
               gameSessionStatus: "active",
               gameIntroPresented: true,
               gameImageAutoGenerationEnabled: false,
               enableAgents: false,
               enableTools: false,
               forceToolCall: true,
+              cacheSendGuard: { enabled: false },
             },
           })
         ).ok(),

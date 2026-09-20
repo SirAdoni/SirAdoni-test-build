@@ -14,6 +14,7 @@ import { showConfirmDialog } from "../../lib/app-dialogs";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { ChatModeIcon } from "../chat/ChatModeIcon";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 
 type CharacterRow = { id: string; data: string; avatarPath: string | null; createdAt: string; updatedAt: string };
 
@@ -198,26 +199,40 @@ export function BotBrowserPanel() {
               }}
               className="group flex items-center gap-1 rounded-xl transition-all hover:bg-[var(--sidebar-accent)]"
             >
-              <button
-                type="button"
+              <div
+                role="button"
+                tabIndex={0}
                 onClick={() => openCharacterDetail(char.id)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    openCharacterDetail(char.id);
+                  }
+                }}
                 className="flex min-w-0 flex-1 items-center gap-2.5 rounded-xl p-2 text-left"
               >
                 <div className="mari-panel-gradient-surface mari-panel-gradient--browser relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl shadow-sm">
                   {char.avatarPath ? (
-                    <img
+                    <CharacterPhoto
                       src={char.avatarPath}
-                      alt={char.name}
-                      loading="lazy"
-                      className="h-full w-full object-cover"
-                      style={getAvatarCropStyle()}
-                    />
+                      name={char.name}
+                      wrapperClassName="relative block h-full w-full"
+                      className="block h-full w-full"
+                    >
+                      <img
+                        src={char.avatarPath}
+                        alt={char.name}
+                        loading="lazy"
+                        className="h-full w-full object-cover"
+                        style={getAvatarCropStyle()}
+                      />
+                    </CharacterPhoto>
                   ) : (
                     <User size="0.875rem" />
                   )}
                 </div>
                 <span className="min-w-0 flex-1 truncate text-xs font-medium">{char.name}</span>
-              </button>
+              </div>
               <button
                 type="button"
                 onClick={(event) => {

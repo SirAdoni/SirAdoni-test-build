@@ -16,7 +16,16 @@
 //     monolith+shards state without deleting anything.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -95,12 +104,14 @@ const heapSetupEnd = termuxLauncherSource.indexOf("\nload_launcher_setting()", h
 assert.ok(heapSetupStart >= 0 && heapSetupEnd >= 0, "the Termux heap helpers must be present");
 const heapHelpersSource = termuxLauncherSource.slice(heapSetupStart, heapSetupEnd);
 const probeHeapHelpers = (script, nodeOptions = "") => {
-  const probe = spawnSync("bash", ["-c", `${heapHelpersSource}\n${script}`], {
+  const probeSource = `NODE_OPTIONS="$1"\nexport NODE_OPTIONS\n${heapHelpersSource}\n${script}`;
+  const probe = spawnSync("bash", ["-s", "--", nodeOptions], {
+    windowsHide: true,
     cwd: repositoryRoot,
     encoding: "utf8",
-    env: { ...process.env, NODE_OPTIONS: nodeOptions },
+    input: probeSource,
   });
-  assert.equal(probe.status, 0, probe.stderr);
+  assert.equal(probe.status, 0, probe.error?.message || probe.stderr || probe.stdout);
   return probe.stdout;
 };
 probeHeapHelpers("has_explicit_node_heap_limit", "--max-old-space-size=512");
@@ -125,11 +136,15 @@ const probeBuildHeap = (runtimeHeap, deviceMemory, expectedBuildHeap) => {
     "--max-old-space-size=1024 --trace-warnings",
   );
   const lines = output.trim().split("\n").filter(Boolean);
-  const expected = spawnSync(
-    process.execPath,
-    [`--max-old-space-size=${expectedBuildHeap}`, "-p", 'require("node:v8").getHeapStatistics().heap_size_limit'],
-    { encoding: "utf8" },
-  );
+  // The helper runs through Bash's `node` lookup. On Windows that can resolve
+  // to the MSYS Node binary rather than process.execPath, so measure the
+  // expected limit through the same shell/runtime pair.
+  const expected = spawnSync("bash", ["-s"], {
+    encoding: "utf8",
+    windowsHide: true,
+    input: `NODE_OPTIONS= node --max-old-space-size=${expectedBuildHeap} -p 'require("node:v8").getHeapStatistics().heap_size_limit'`,
+  });
+  assert.equal(expected.status, 0, expected.error?.message || expected.stderr || expected.stdout);
   assert.equal(lines.at(-2), expected.stdout.trim());
   assert.equal(lines.at(-1), "--max-old-space-size=1024 --trace-warnings", "build allowance must not leak to server");
 };
@@ -286,7 +301,7 @@ assert.ok(
 function gitFixtureRepo() {
   const repo = mkdtempSync(join(tmpdir(), "marinara-format-guard-"));
   const git = (...args) =>
-    execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    execFileSync("git", args, { windowsHide: true, cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   git("init", "--quiet");
   git("config", "user.email", "regression@example.invalid");
   git("config", "user.name", "Format Guard Regression");
@@ -388,6 +403,7 @@ function storageFixture(manifestVersion) {
     // object) is a read failure, not an absence: unverified, never format 2.
     // Run last — it corrupts the fixture repo's blob on purpose.
     const blobSha = execFileSync("git", ["rev-parse", `${shardedRef}:storage-format.json`], {
+      windowsHide: true,
       cwd: repo,
       encoding: "utf8",
     }).trim();
@@ -410,22 +426,29 @@ function storageFixture(manifestVersion) {
 // ── The check-target CLI: exit 2 + [BLOCK] on incompatible, exit 0 otherwise ──
 
 {
-  const guardScript = join(repositoryRoot, "scripts", "protect-launcher-data.mjs");
+  const { repo, preShardingRef, shardedRef } = gitFixtureRepo();
+  const fixtureScriptsDir = join(repo, "scripts");
+  mkdirSync(fixtureScriptsDir, { recursive: true });
+  const guardScript = join(fixtureScriptsDir, "protect-launcher-data.mjs");
+  copyFileSync(join(repositoryRoot, "scripts", "protect-launcher-data.mjs"), guardScript);
   const newerData = storageFixture(99);
   const currentData = storageFixture(2);
   try {
-    const blocked = spawnSync(process.execPath, [guardScript, "check-target", "HEAD"], {
+    const blocked = spawnSync(process.execPath, [guardScript, "check-target", preShardingRef], {
+      windowsHide: true,
       encoding: "utf8",
       env: { ...process.env, FILE_STORAGE_DIR: newerData },
     });
     assert.equal(blocked.status, 2, "check-target must exit 2 when the target cannot read the data");
     assert.match(blocked.stderr, /\[BLOCK\]/, "the refusal must print a [BLOCK] line for the launcher log");
-    const allowed = spawnSync(process.execPath, [guardScript, "check-target", "HEAD"], {
+    const allowed = spawnSync(process.execPath, [guardScript, "check-target", shardedRef], {
+      windowsHide: true,
       encoding: "utf8",
       env: { ...process.env, FILE_STORAGE_DIR: currentData },
     });
     assert.equal(allowed.status, 0, "check-target must exit 0 for a compatible target");
     const broken = spawnSync(process.execPath, [guardScript, "check-target"], {
+      windowsHide: true,
       encoding: "utf8",
       env: { ...process.env, FILE_STORAGE_DIR: currentData },
     });
@@ -433,12 +456,12 @@ function storageFixture(manifestVersion) {
     const unverifiable = spawnSync(
       process.execPath,
       [guardScript, "check-target", "0000000000000000000000000000000000000000"],
-      { encoding: "utf8", env: { ...process.env, FILE_STORAGE_DIR: newerData } },
+      { windowsHide: true, encoding: "utf8", env: { ...process.env, FILE_STORAGE_DIR: newerData } },
     );
     assert.equal(unverifiable.status, 1, "an unverifiable target exits 1 (verification failure), never 2 (block)");
     assert.match(unverifiable.stderr, /NOT a downgrade block/, "the unverified message says it is not a downgrade");
   } finally {
-    for (const dir of [newerData, currentData]) rmSync(dir, { recursive: true, force: true });
+    for (const dir of [repo, newerData, currentData]) rmSync(dir, { recursive: true, force: true });
   }
 }
 

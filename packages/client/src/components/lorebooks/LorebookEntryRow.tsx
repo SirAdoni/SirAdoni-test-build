@@ -92,10 +92,10 @@ interface Props {
    * When the editor's "Keyword test" panel has text in it, the editor
    * computes which entries that text would activate and passes the verdict
    * down per-row. `"matched"` = the entry's keys would trigger; `"constant"`
-   * = the entry activates regardless (no keys required). `undefined` = no
+   * bypasses keys; `"always_loaded"` bypasses every activation gate. `undefined` = no
    * preview active. Adds a side accent + chip; does not change behavior.
    */
-  previewMatch?: "matched" | "constant";
+  previewMatch?: "matched" | "constant" | "always_loaded";
   mapBacklinks?: Array<{ chatId: string; locationId: string; locationName: string }>;
   onUpdateEntry?: LorebookEntryUpdateHandler;
   /** Override only this row's enabled control; content edits keep their existing scope. */
@@ -108,34 +108,43 @@ type LorebookEntryUpdateHandler = (
   changedFields: Partial<LorebookEntry>,
 ) => Promise<unknown>;
 
-/** Maps the (constant, selective) boolean pair into a single status enum for the inline select. */
-type EntryStatus = "constant" | "selective" | "normal";
+/** Maps the activation flags into a single status enum for the inline selector. */
+export type EntryStatus = "always_loaded" | "constant" | "selective" | "normal";
 
-function deriveStatus(entry: LorebookEntry): EntryStatus {
+export function deriveEntryStatus(entry: Pick<LorebookEntry, "alwaysLoaded" | "constant" | "selective">): EntryStatus {
+  if (entry.alwaysLoaded) return "always_loaded";
   if (entry.constant) return "constant";
   if (entry.selective) return "selective";
   return "normal";
 }
 
-function statusToFlags(status: EntryStatus): { constant: boolean; selective: boolean } {
+export function entryStatusToFlags(status: EntryStatus): {
+  alwaysLoaded: boolean;
+  constant: boolean;
+  selective: boolean;
+} {
   switch (status) {
+    case "always_loaded":
+      return { alwaysLoaded: true, constant: false, selective: false };
     case "constant":
-      return { constant: true, selective: false };
+      return { alwaysLoaded: false, constant: true, selective: false };
     case "selective":
-      return { constant: false, selective: true };
+      return { alwaysLoaded: false, constant: false, selective: true };
     case "normal":
     default:
-      return { constant: false, selective: false };
+      return { alwaysLoaded: false, constant: false, selective: false };
   }
 }
 
-const STATUS_LABEL: Record<EntryStatus, string> = {
-  constant: "Constant",
-  selective: "Selective",
-  normal: "Normal",
+const STATUS_LABEL_KEY: Record<EntryStatus, string> = {
+  always_loaded: "ui.lorebooks.lorebookentryrow.alwaysLoaded",
+  constant: "ui.lorebooks.lorebookentryrow.constant",
+  selective: "ui.lorebooks.lorebookentryrow.selective",
+  normal: "ui.lorebooks.lorebookentryrow.normal",
 };
 
 const STATUS_DOT_COLOR: Record<EntryStatus, string> = {
+  always_loaded: "bg-[var(--primary)]",
   constant: "bg-yellow-300",
   selective: "bg-red-400",
   normal: "bg-emerald-400",
@@ -155,11 +164,14 @@ const SELECTIVE_LOGIC_OPTIONS: Array<{ value: SelectiveLogic; label: string }> =
   { value: "not_all", label: "NOT All" },
 ];
 
-const STATUS_GUIDE: Array<{ status: EntryStatus; description: string }> = [
-  { status: "normal", description: "Triggers when primary keys match the scanned text." },
-  { status: "constant", description: "Injects every time this lorebook is active." },
-  { status: "selective", description: "Primary keys must match with the secondary-key logic." },
-];
+const STATUS_DESCRIPTION_KEY: Record<EntryStatus, string> = {
+  always_loaded: "ui.lorebooks.lorebookentryrow.thisEntryIsAlwaysLoaded",
+  constant: "ui.lorebooks.lorebookentryrow.thisEntryIsConstantAndBypassesKeywords",
+  selective: "ui.lorebooks.lorebookentryrow.selectiveDescription",
+  normal: "ui.lorebooks.lorebookentryrow.normalDescription",
+};
+
+const STATUS_GUIDE: EntryStatus[] = ["normal", "always_loaded", "constant", "selective"];
 
 const ENTRY_AUTOSAVE_DELAY_MS = 850;
 const ENTRY_STATUS_MENU_WIDTH = 224;
@@ -238,7 +250,7 @@ export function LorebookEntryRow({
   // We keep a local mirror of the entry's fields so the inputs feel snappy
   // while the mutation flushes. React Query invalidation will reconcile.
   const [localEnabled, setLocalEnabled] = useState(entry.enabled && (chatEnabled?.enabled ?? true));
-  const [localStatus, setLocalStatus] = useState<EntryStatus>(deriveStatus(entry));
+  const [localStatus, setLocalStatus] = useState<EntryStatus>(deriveEntryStatus(entry));
   const [localPosition, setLocalPosition] = useState(entry.position);
   const [localDepth, setLocalDepth] = useState(entry.depth);
   const [localOrder, setLocalOrder] = useState(entry.order);
@@ -267,7 +279,7 @@ export function LorebookEntryRow({
     if (pendingOutletNameRef.current === previousOutletName) {
       pendingOutletNameRef.current = entry.outletName;
     }
-    setLocalStatus(deriveStatus(entry));
+    setLocalStatus(deriveEntryStatus(entry));
     setLocalPosition(entry.position);
     setLocalDepth(entry.depth);
     setLocalOrder(entry.order);
@@ -375,7 +387,7 @@ export function LorebookEntryRow({
       const previous = localStatus;
       setLocalStatus(next);
       setShowStatusMenu(false);
-      patch(statusToFlags(next), { onError: () => setLocalStatus(previous) });
+      patch(entryStatusToFlags(next), { onError: () => setLocalStatus(previous) });
     },
     [localStatus, patch],
   );
@@ -461,7 +473,7 @@ export function LorebookEntryRow({
       if (duplicateDisabled) return;
       // Clone from the row's current inline state (not the prop snapshot) so an edit made
       // just before duplicating isn't dropped while its update/refetch is still in flight.
-      const { constant, selective } = statusToFlags(localStatus);
+      const statusFlags = entryStatusToFlags(localStatus);
       duplicateEntry.mutate({
         lorebookId,
         entry: {
@@ -469,8 +481,7 @@ export function LorebookEntryRow({
           name: localName.trim() || entry.name,
           // Keep pending shared edits, but do not copy this chat's override into the shared book.
           enabled: chatEnabled ? entry.enabled : localEnabled,
-          constant,
-          selective,
+          ...statusFlags,
           position: localPosition,
           depth: localDepth,
           order: localOrder,
@@ -688,7 +699,7 @@ export function LorebookEntryRow({
             showStatusMenu && "bg-[var(--accent)]",
           )}
           aria-label={localizeUi("ui.lorebooks.lorebookentryrow.entryTypeValue1ChooseEntryType", {
-            value1: STATUS_LABEL[localStatus],
+            value1: localizeUi(STATUS_LABEL_KEY[localStatus]),
           })}
           aria-haspopup="menu"
           aria-expanded={showStatusMenu}
@@ -710,7 +721,7 @@ export function LorebookEntryRow({
               onClick={(e) => e.stopPropagation()}
               onPointerDown={(e) => e.stopPropagation()}
             >
-              {STATUS_GUIDE.map(({ status, description }) => {
+              {STATUS_GUIDE.map((status) => {
                 const selected = localStatus === status;
                 return (
                   <button
@@ -731,9 +742,11 @@ export function LorebookEntryRow({
                   >
                     <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", STATUS_DOT_COLOR[status])} />
                     <span className="min-w-0">
-                      <span className="block text-[0.6875rem] font-semibold leading-tight">{STATUS_LABEL[status]}</span>
+                      <span className="block text-[0.6875rem] font-semibold leading-tight">
+                        {localizeUi(STATUS_LABEL_KEY[status])}
+                      </span>
                       <span className="mt-0.5 block text-[0.625rem] leading-snug text-[var(--marinara-editor-muted)]">
-                        {description}
+                        {localizeUi(STATUS_DESCRIPTION_KEY[status])}
                       </span>
                     </span>
                   </button>
@@ -753,13 +766,17 @@ export function LorebookEntryRow({
             title={
               previewMatch === "matched"
                 ? localizeUi("ui.lorebooks.lorebookentryrow.thisEntrySKeysMatchTheKeywordTestText")
-                : localizeUi("ui.lorebooks.lorebookentryrow.thisEntryIsConstantAndWouldActivateRegardlessOf")
+                : previewMatch === "always_loaded"
+                  ? localizeUi("ui.lorebooks.lorebookentryrow.thisEntryIsAlwaysLoaded")
+                  : localizeUi("ui.lorebooks.lorebookentryrow.thisEntryIsConstantAndBypassesKeywords")
             }
           >
             <Sparkles size="0.625rem" />
             {previewMatch === "matched"
               ? localizeUi("ui.lorebooks.lorebookentryrow.wouldActivate")
-              : localizeUi("ui.lorebooks.lorebookentryrow.alwaysActive")}
+              : previewMatch === "always_loaded"
+                ? localizeUi("ui.lorebooks.lorebookentryrow.alwaysLoaded")
+                : localizeUi("ui.lorebooks.lorebookentryrow.constant")}
           </span>
         )}
         <input
@@ -1753,7 +1770,13 @@ function ExpandedDrawer({
 
       {/* Toggles row — note: enable / regex / trigger mode are now on the row header,
           so they are intentionally omitted from this block to avoid duplication. */}
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+        <ToggleButton
+          label={localizeUi("ui.lorebooks.expandeddrawer.alwaysLoaded")}
+          value={form.alwaysLoaded ?? false}
+          onChange={(v) => update({ alwaysLoaded: v })}
+          tooltip={localizeUi("ui.lorebooks.expandeddrawer.alwaysLoadedHelp")}
+        />
         <ToggleButton
           label={localizeUi("ui.lorebooks.expandeddrawer.wholeWords")}
           value={form.matchWholeWords ?? false}

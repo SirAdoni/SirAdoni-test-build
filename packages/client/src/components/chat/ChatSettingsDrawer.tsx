@@ -4,6 +4,7 @@
 import { Fragment, lazy, Suspense, useState, useRef, useEffect, useMemo, useCallback, type CSSProperties } from "react";
 import { useQuery, useQueryClient, useQueries } from "@tanstack/react-query";
 import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 import { toast } from "sonner";
 import { RoleplayCommandsSettings } from "./RoleplayCommandsSettings";
 import {
@@ -682,7 +683,11 @@ function DrawerPersonaAvatar({ persona, size = "sm" }: { persona: DrawerPersona;
   }
 
   return (
-    <span className={cn("relative block shrink-0 overflow-hidden rounded-full", sizeClass)}>
+    <CharacterPhoto
+      src={persona.avatarPath}
+      name={persona.name}
+      className={cn("relative block shrink-0 overflow-hidden rounded-full", sizeClass)}
+    >
       <img
         src={persona.avatarPath}
         alt={persona.name}
@@ -690,7 +695,7 @@ function DrawerPersonaAvatar({ persona, size = "sm" }: { persona: DrawerPersona;
         className="h-full w-full object-cover"
         style={getAvatarCropStyle(persona.avatarCrop)}
       />
-    </span>
+    </CharacterPhoto>
   );
 }
 
@@ -968,6 +973,7 @@ export function ChatSettingsDrawer({
   );
   const noodleTimelineContextEnabled = metadata.noodleTimelineContextEnabled === true;
   const slurp2ActivityContextEnabled = metadata.slurp2ActivityContextEnabled === true;
+  const gameNpcKnowledgeMode = metadata.gameNpcKnowledgeMode === "isolated" ? "isolated" : "legacy";
   const renderPackageContextToggles = () => (
     <>
       {noodleInstalled && (
@@ -1882,6 +1888,7 @@ export function ChatSettingsDrawer({
   const gameImageIncludeCharacterAppearance = metadata.gameImageIncludeCharacterAppearance !== false;
   const gameImageAutoGenerationEnabled = metadata.gameImageAutoGenerationEnabled !== false;
   const gameImageDynamicPromptEnabled = metadata.gameImageDynamicPromptEnabled === true;
+  const gameAutoCreateNpcCharacters = metadata.gameAutoCreateNpcCharacters !== false;
   const effectiveCombatStyle: GameCombatStyle =
     (metadata.gameCombatStyle as GameCombatStyle | undefined) ??
     (metadata.gameSetupConfig?.combatStyle as GameCombatStyle | undefined) ??
@@ -2388,6 +2395,7 @@ export function ChatSettingsDrawer({
     (metadata.enableAgents ? 1 : 0) +
     (gameLorebookKeeperEnabled ? 1 : 0) +
     (gameMusicDjEnabled ? 1 : 0) +
+    (gameAutoCreateNpcCharacters ? 1 : 0) +
     activeCustomAgents.length;
   const lorebookKeeperTargetLorebookId =
     typeof metadata.lorebookKeeperTargetLorebookId === "string" ? metadata.lorebookKeeperTargetLorebookId : "";
@@ -5251,11 +5259,20 @@ export function ChatSettingsDrawer({
                           includesTextForMatch(p.comment ?? "", personaSearch),
                       )
                       .map((p) => (
-                        <button
+                        <div
                           key={p.id}
+                          role="button"
+                          tabIndex={0}
                           onClick={() => {
                             updateChat.mutate({ id: chat.id, personaId: p.id });
                             setShowPersonaPicker(false);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              updateChat.mutate({ id: chat.id, personaId: p.id });
+                              setShowPersonaPicker(false);
+                            }
                           }}
                           className={cn(
                             "flex items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-all hover:bg-[var(--accent)]",
@@ -5274,7 +5291,7 @@ export function ChatSettingsDrawer({
                           {chat.personaId === p.id && (
                             <Check size="0.625rem" className="ml-auto shrink-0 text-[var(--primary)]" />
                           )}
-                        </button>
+                        </div>
                       ))}
                     {personas.filter(
                       (p) =>
@@ -5309,7 +5326,28 @@ export function ChatSettingsDrawer({
                       return (
                         <Fragment key={c.id}>
                           <div className="flex items-center gap-2.5 rounded-lg bg-[var(--primary)]/10 px-3 py-2 ring-1 ring-[var(--primary)]/30">
+                            {c.avatarPath ? (
+                              <CharacterPhoto
+                                src={c.avatarPath}
+                                name={name}
+                                className="relative block h-7 w-7 shrink-0 overflow-hidden rounded-full"
+                                onUpdate={() => useUIStore.getState().openCharacterDetail(c.id, { initialTab: "card" })}
+                              >
+                                <img
+                                  src={c.avatarPath}
+                                  alt={name}
+                                  loading="lazy"
+                                  className="h-full w-full object-cover"
+                                  style={getAvatarCropStyle(getCharacterInfo(c).avatarCrop)}
+                                />
+                              </CharacterPhoto>
+                            ) : (
+                              <div className="mari-avatar-placeholder mari-avatar-placeholder--character flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[0.625rem] font-bold">
+                                {name[0]}
+                              </div>
+                            )}
                             <button
+                              type="button"
                               onClick={() => {
                                 onClose();
                                 useUIStore.getState().openCharacterDetail(c.id, { initialTab: "card" });
@@ -5317,21 +5355,6 @@ export function ChatSettingsDrawer({
                               className="flex min-w-0 flex-1 items-center gap-2.5 text-left transition-colors hover:opacity-80"
                               title={localizeUi("ui.chat.chatsettingsdrawer.openCharacterCard")}
                             >
-                              {c.avatarPath ? (
-                                <span className="relative block h-7 w-7 shrink-0 overflow-hidden rounded-full">
-                                  <img
-                                    src={c.avatarPath}
-                                    alt={name}
-                                    loading="lazy"
-                                    className="h-full w-full object-cover"
-                                    style={getAvatarCropStyle(getCharacterInfo(c).avatarCrop)}
-                                  />
-                                </span>
-                              ) : (
-                                <div className="mari-avatar-placeholder mari-avatar-placeholder--character flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[0.625rem] font-bold">
-                                  {name[0]}
-                                </div>
-                              )}
                               <div className="min-w-0 flex-1">
                                 <span className="block truncate text-xs">{name}</span>
                                 {title && (
@@ -5437,18 +5460,27 @@ export function ChatSettingsDrawer({
                       if (character) {
                         return (
                           <>
-                            <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--accent)] text-xs font-semibold">
-                              {character.avatarPath ? (
+                            {character.avatarPath ? (
+                              <CharacterPhoto
+                                src={character.avatarPath}
+                                name={charName(character)}
+                                className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--accent)] text-xs font-semibold"
+                                onUpdate={() =>
+                                  useUIStore.getState().openCharacterDetail(character.id, { initialTab: "card" })
+                                }
+                              >
                                 <img
                                   src={character.avatarPath}
-                                  alt=""
+                                  alt={charName(character)}
                                   className="h-full w-full object-cover"
                                   style={getAvatarCropStyle(getCharacterInfo(character).avatarCrop)}
                                 />
-                              ) : (
-                                charName(character)[0]
-                              )}
-                            </div>
+                              </CharacterPhoto>
+                            ) : (
+                              <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--accent)] text-xs font-semibold">
+                                {charName(character)[0]}
+                              </div>
+                            )}
                             <div className="min-w-0 flex-1">
                               <span className="block truncate text-xs">{charName(character)}</span>
                               <span className="block text-[0.625rem] text-[var(--muted-foreground)]">
@@ -5567,11 +5599,20 @@ export function ChatSettingsDrawer({
                         includesTextForMatch(p.comment ?? "", personaSearch),
                     )
                     .map((p) => (
-                      <button
+                      <div
                         key={p.id}
+                        role="button"
+                        tabIndex={0}
                         onClick={() => {
                           updateChat.mutate({ id: chat.id, personaId: p.id, personaCharacterId: null });
                           setShowPersonaPicker(false);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            updateChat.mutate({ id: chat.id, personaId: p.id, personaCharacterId: null });
+                            setShowPersonaPicker(false);
+                          }
                         }}
                         className={cn(
                           "flex items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-all hover:bg-[var(--accent)]",
@@ -5590,7 +5631,7 @@ export function ChatSettingsDrawer({
                         {chat.personaId === p.id && (
                           <Check size="0.625rem" className="ml-auto shrink-0 text-[var(--primary)]" />
                         )}
-                      </button>
+                      </div>
                     ))}
                   {(showCharacterIdentities || !!chat.personaCharacterId) && (
                     <button
@@ -5650,8 +5691,10 @@ export function ChatSettingsDrawer({
                           </button>
                           {expanded &&
                             visibleMembers.map((character) => (
-                              <button
+                              <div
                                 key={`persona-character-${character.id}`}
+                                role="button"
+                                tabIndex={0}
                                 onClick={() => {
                                   updateChat.mutate({
                                     id: chat.id,
@@ -5660,23 +5703,43 @@ export function ChatSettingsDrawer({
                                   });
                                   setShowPersonaPicker(false);
                                 }}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter" || event.key === " ") {
+                                    event.preventDefault();
+                                    updateChat.mutate({
+                                      id: chat.id,
+                                      personaId: null,
+                                      personaCharacterId: character.id,
+                                    });
+                                    setShowPersonaPicker(false);
+                                  }
+                                }}
                                 className={cn(
                                   "flex items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-all hover:bg-[var(--accent)]",
                                   chat.personaCharacterId === character.id && "bg-[var(--primary)]/10",
                                 )}
                               >
-                                <div className="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--accent)] text-[0.625rem] font-semibold">
-                                  {character.avatarPath ? (
+                                {character.avatarPath ? (
+                                  <CharacterPhoto
+                                    src={character.avatarPath}
+                                    name={charName(character)}
+                                    className="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--accent)] text-[0.625rem] font-semibold"
+                                    onUpdate={() =>
+                                      useUIStore.getState().openCharacterDetail(character.id, { initialTab: "card" })
+                                    }
+                                  >
                                     <img
                                       src={character.avatarPath}
-                                      alt=""
+                                      alt={charName(character)}
                                       className="h-full w-full object-cover"
                                       style={getAvatarCropStyle(getCharacterInfo(character).avatarCrop)}
                                     />
-                                  ) : (
-                                    charName(character)[0]
-                                  )}
-                                </div>
+                                  </CharacterPhoto>
+                                ) : (
+                                  <div className="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--accent)] text-[0.625rem] font-semibold">
+                                    {charName(character)[0]}
+                                  </div>
+                                )}
                                 <div className="min-w-0 flex-1">
                                   <span className="block truncate text-xs">{charName(character)}</span>
                                   <span className="block text-[0.625rem] text-[var(--muted-foreground)]">
@@ -5686,7 +5749,7 @@ export function ChatSettingsDrawer({
                                 {chat.personaCharacterId === character.id && (
                                   <Check size="0.625rem" className="ml-auto shrink-0 text-[var(--primary)]" />
                                 )}
-                              </button>
+                              </div>
                             ))}
                         </div>
                       );
@@ -5794,7 +5857,28 @@ export function ChatSettingsDrawer({
                           >
                             <GripVertical size="0.75rem" />
                           </div>
+                          {c.avatarPath ? (
+                            <CharacterPhoto
+                              src={c.avatarPath}
+                              name={name}
+                              className="relative block h-7 w-7 shrink-0 overflow-hidden rounded-full"
+                              onUpdate={() => useUIStore.getState().openCharacterDetail(c.id, { initialTab: "card" })}
+                            >
+                              <img
+                                src={c.avatarPath}
+                                alt={name}
+                                loading="lazy"
+                                className="h-full w-full object-cover"
+                                style={getAvatarCropStyle(getCharacterInfo(c).avatarCrop)}
+                              />
+                            </CharacterPhoto>
+                          ) : (
+                            <div className="mari-avatar-placeholder mari-avatar-placeholder--character flex h-7 w-7 items-center justify-center rounded-full text-[0.625rem] font-bold">
+                              {name[0]}
+                            </div>
+                          )}
                           <button
+                            type="button"
                             onClick={() => {
                               onClose();
                               useUIStore.getState().openCharacterDetail(c.id, { initialTab: "card" });
@@ -5802,21 +5886,6 @@ export function ChatSettingsDrawer({
                             className="flex items-center gap-2.5 min-w-0 flex-1 text-left transition-colors hover:opacity-80"
                             title={localizeUi("ui.chat.chatsettingsdrawer.openCharacterCard")}
                           >
-                            {c.avatarPath ? (
-                              <span className="relative block h-7 w-7 shrink-0 overflow-hidden rounded-full">
-                                <img
-                                  src={c.avatarPath}
-                                  alt={name}
-                                  loading="lazy"
-                                  className="h-full w-full object-cover"
-                                  style={getAvatarCropStyle(getCharacterInfo(c).avatarCrop)}
-                                />
-                              </span>
-                            ) : (
-                              <div className="mari-avatar-placeholder mari-avatar-placeholder--character flex h-7 w-7 items-center justify-center rounded-full text-[0.625rem] font-bold">
-                                {name[0]}
-                              </div>
-                            )}
                             <div className="min-w-0 flex-1">
                               <span className="block truncate text-xs">{name}</span>
                               {title && (
@@ -5899,16 +5968,30 @@ export function ChatSettingsDrawer({
                       const name = charName(c);
                       const title = charTitle(c);
                       return (
-                        <button
+                        <div
                           key={c.id}
+                          role="button"
+                          tabIndex={0}
                           onClick={() => {
                             toggleCharacter(c.id);
                             setShowCharPicker(false);
                           }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              toggleCharacter(c.id);
+                              setShowCharPicker(false);
+                            }
+                          }}
                           className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-all hover:bg-[var(--accent)]"
                         >
                           {c.avatarPath ? (
-                            <span className="relative block h-6 w-6 shrink-0 overflow-hidden rounded-full">
+                            <CharacterPhoto
+                              src={c.avatarPath}
+                              name={name}
+                              className="relative block h-6 w-6 shrink-0 overflow-hidden rounded-full"
+                              onUpdate={() => useUIStore.getState().openCharacterDetail(c.id, { initialTab: "card" })}
+                            >
                               <img
                                 src={c.avatarPath}
                                 alt={name}
@@ -5916,7 +5999,7 @@ export function ChatSettingsDrawer({
                                 className="h-full w-full object-cover"
                                 style={getAvatarCropStyle(getCharacterInfo(c).avatarCrop)}
                               />
-                            </span>
+                            </CharacterPhoto>
                           ) : (
                             <div className="mari-avatar-placeholder mari-avatar-placeholder--character flex h-6 w-6 items-center justify-center rounded-full text-[0.5625rem] font-bold">
                               {name[0]}
@@ -5931,7 +6014,7 @@ export function ChatSettingsDrawer({
                             )}
                           </div>
                           <Plus size="0.75rem" className="text-[var(--muted-foreground)]" />
-                        </button>
+                        </div>
                       );
                     })}
                   {selectableCharacters
@@ -7344,6 +7427,35 @@ export function ChatSettingsDrawer({
                   labelClassName="text-xs font-medium"
                 />
               )}
+              {isGame && (
+                <div className="mb-3 rounded-lg bg-[var(--background)]/55 px-3 py-2.5 ring-1 ring-[var(--border)]">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+                      {localizeUi("ui.chat.chatsettingsdrawer.characterKnowledge")}
+                    </span>
+                    <select
+                      value={gameNpcKnowledgeMode}
+                      onChange={(event) =>
+                        updateMeta.mutate({
+                          id: chat.id,
+                          gameNpcKnowledgeMode: event.target.value === "isolated" ? "isolated" : "legacy",
+                        })
+                      }
+                      className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2.5 py-2 text-xs text-[var(--foreground)] outline-none transition-colors focus:border-[var(--primary)]/50"
+                    >
+                      <option value="legacy">
+                        {localizeUi("ui.chat.chatsettingsdrawer.characterKnowledgeSharedGmDialogue")}
+                      </option>
+                      <option value="isolated">
+                        {localizeUi("ui.chat.chatsettingsdrawer.characterKnowledgeSeparateCharacterReplies")}
+                      </option>
+                    </select>
+                    <span className="text-[0.5625rem] leading-snug text-[var(--muted-foreground)]">
+                      {localizeUi("ui.chat.chatsettingsdrawer.characterKnowledgeSeparateCharacterRepliesHelp")}
+                    </span>
+                  </label>
+                </div>
+              )}
               {availableAgents.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-[var(--border)] bg-[var(--secondary)]/35 px-4 py-5 text-center">
                   <p className="text-xs font-medium text-[var(--foreground)]">
@@ -8553,6 +8665,35 @@ export function ChatSettingsDrawer({
 
                   {/* Haptic Feedback */}
                   {renderHapticSettingsCard()}
+
+                  {/* NPC Character Creator — game mode only */}
+                  {isGame && (
+                    <AgentSettingsCard
+                      id={getAgentSettingsMenuId(chat.id, "npc-character-creator")}
+                      icon={<Users size="0.75rem" className="mt-0.5 text-[var(--primary)]" />}
+                      title={localizeUi("ui.chat.chatsettingsdrawer.npcCharacterCreator")}
+                      description={localizeUi(
+                        "ui.chat.chatsettingsdrawer.turnsIntroducedNpcsIntoEditableCharacterCards",
+                      )}
+                    >
+                      <AgentSettingsToggle
+                        label={localizeUi("ui.chat.chatsettingsdrawer.createIntroducedNpcs")}
+                        description={localizeUi(
+                          "ui.chat.chatsettingsdrawer.createALinkedCharacterLibraryCardFromObservedDetails",
+                        )}
+                        enabled={gameAutoCreateNpcCharacters}
+                        onToggle={() =>
+                          updateMeta.mutate({
+                            id: chat.id,
+                            gameAutoCreateNpcCharacters: !gameAutoCreateNpcCharacters,
+                          })
+                        }
+                      />
+                      <p className="rounded-lg bg-[var(--background)]/55 px-3 py-2 text-[0.625rem] leading-relaxed text-[var(--muted-foreground)] ring-1 ring-[var(--border)]">
+                        {localizeUi("ui.chat.chatsettingsdrawer.npcPortraitsUseAutomaticGameVisualsWhenAvailable")}
+                      </p>
+                    </AgentSettingsCard>
+                  )}
 
                   {/* Illustrator — game mode only */}
                   {isGame && (

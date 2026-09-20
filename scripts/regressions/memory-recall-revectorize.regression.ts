@@ -15,12 +15,13 @@ const db = await createFileNativeDB();
 
 try {
   await db.insert(chats).values({ id: "chat-memory", name: "Memory", mode: "conversation" });
-  for (let index = 0; index < 5; index += 1) {
+  for (let index = 0; index < 6; index += 1) {
     await db.insert(messages).values({
       id: `message-${index}`,
       chatId: "chat-memory",
       role: index % 2 === 0 ? "user" : "assistant",
       content: `Memory turn ${index}`,
+      ...(index === 2 ? { extra: JSON.stringify({ hiddenFromAI: true }) } : {}),
       createdAt: `2026-08-10T10:00:0${index}.000Z`,
     });
   }
@@ -76,6 +77,8 @@ try {
 
   const stored = await db.select().from(memoryChunks).where(eq(memoryChunks.chatId, "chat-memory"));
   assert.equal(stored.length, 1, "re-vectorization replaces the prior native chunk exactly once");
+  assert.doesNotMatch(stored[0]!.content, /Memory turn 2/u, "AI-hidden messages never enter native memory chunks");
+  assert.match(stored[0]!.content, /Memory turn 5/u, "visible messages still enter native memory chunks");
   assert.equal(JSON.parse(stored[0]!.embedding ?? "[]").length, 768, "only vectors from the new model remain");
   assert.equal(
     stored[0]!.embeddingSpaceId,

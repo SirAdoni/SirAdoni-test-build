@@ -20,6 +20,10 @@ import {
   type AgentToolContext,
 } from "./agent-executor.js";
 import { logger } from "../../lib/logger.js";
+import {
+  prepareCapabilityAgentContexts,
+  finalizeCapabilityAgentResults,
+} from "../capability-packages/capability-agent-runtime.service.js";
 import { createAgentConcurrencyLimiter, settleAgentJobsWithConcurrencyLimit } from "./agent-concurrency.js";
 import { getCustomLorebookReadBehindMessages } from "../../routes/generate/lorebook-keeper-utils.js";
 export { settleAgentJobsWithConcurrencyLimit } from "./agent-concurrency.js";
@@ -53,7 +57,7 @@ export type AgentPhaseContextPreparer = (
 ) => AgentContext | Promise<AgentContext>;
 
 /** Callback fired whenever an agent produces a result. */
-export type AgentResultCallback = (result: AgentResult) => void;
+export type AgentResultCallback = (result: AgentResult, options?: { finalized?: boolean }) => void;
 
 // ──────────────────────────────────────────────
 // Grouping — batch agents by (provider instance, model)
@@ -386,7 +390,18 @@ export async function runPreGenerationAgents(
   resolveAgentContext?: AgentContextResolver,
 ): Promise<AgentInjection[]> {
   const filtered = agentTypeFilter ? agents.filter((a) => agentTypeFilter(a.type)) : agents;
-  const results = await executePhase(filtered, "pre_generation", context, onResult, resolveAgentContext);
+  const phaseAgents = filtered.filter((agent) => agent.phase === "pre_generation");
+  const preparedContext = await prepareCapabilityAgentContexts(phaseAgents, context);
+  // Package validation must finish before either injection or SSE publication.
+  const rawResults = await executePhase(phaseAgents, "pre_generation", preparedContext, undefined, resolveAgentContext);
+  const results = await finalizeCapabilityAgentResults(rawResults, phaseAgents, preparedContext);
+  for (const result of results) {
+    try {
+      onResult?.(result, { finalized: true });
+    } catch {
+      // A closed SSE stream must not discard validated agent results.
+    }
+  }
 
   const injections: AgentInjection[] = [];
   for (const result of results) {
@@ -473,9 +488,9 @@ export function createAgentPipeline(
   const preGenerationInjections: AgentInjection[] = [];
   const parallelPhaseResults: AgentResult[] = [];
 
-  const wrappedOnResult: AgentResultCallback = (result) => {
+  const wrappedOnResult: AgentResultCallback = (result, options) => {
     allResults.push(result);
-    onResult?.(result);
+    onResult?.(result, options);
   };
 
   return {

@@ -111,6 +111,8 @@ export interface CustomTrackerField {
 
 /** A concise row maintained by the dedicated roleplay Inventory Tracker. */
 export interface InventoryTrackerRow {
+  /** Host-assigned identity. Legacy rows may omit this until an unambiguous write reconciles them. */
+  itemId?: string;
   name: string;
   /** Omitted when the quantity is one. */
   qty?: number;
@@ -155,6 +157,8 @@ export interface RPGAttributes {
 
 /** An item in the player's inventory. */
 export interface InventoryItem {
+  /** Host-assigned identity. Legacy rows may omit this until an unambiguous write reconciles them. */
+  itemId?: string;
   name: string;
   description: string;
   quantity: number;

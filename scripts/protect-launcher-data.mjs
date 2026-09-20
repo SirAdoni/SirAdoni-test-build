@@ -72,11 +72,7 @@ export async function resolveLauncherStorageDir({ root = repositoryRoot, env = p
  * written by a newer format — it would silently see empty chat history and
  * could write a conflicting old-format file.
  */
-export async function checkTargetStorageFormat({
-  root = repositoryRoot,
-  env = process.env,
-  targetRef,
-} = {}) {
+export async function checkTargetStorageFormat({ root = repositoryRoot, env = process.env, targetRef } = {}) {
   if (!targetRef) throw new Error("checkTargetStorageFormat requires a targetRef");
 
   // A crash can leave only manifest.json.bak — the on-disk format must not
@@ -106,6 +102,7 @@ export async function checkTargetStorageFormat({
   let raw = null;
   try {
     const listed = execFileSync("git", ["ls-tree", "--name-only", targetRef, "--", "storage-format.json"], {
+      windowsHide: true,
       cwd: root,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -115,6 +112,7 @@ export async function checkTargetStorageFormat({
       targetFormat = 2;
     } else {
       raw = execFileSync("git", ["show", `${targetRef}:storage-format.json`], {
+        windowsHide: true,
         cwd: root,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
@@ -197,6 +195,14 @@ const SHARDED_TABLES = [
   "capability_documents",
   "game_engine_state",
   "game_checkpoints",
+  "game_continuity_batches",
+  "campaign_memory_entities",
+  "campaign_memory_facts",
+  "campaign_memory_knowledge",
+  "campaign_memory_events",
+  "campaign_memory_current_state",
+  "campaign_memory_relationships",
+  "campaign_memory_mutation_journal",
   "game_scene_videos",
   "game_turn_storyboards",
   "game_turn_storyboard_keyframes",
@@ -226,7 +232,17 @@ const SHARDED_TABLES = [
   "mari_instructions",
   "mari_workspace_context",
 ];
-const PRIMARY_KEY_COLUMNS = { app_settings: "key", prompt_overrides: "key" };
+const PRIMARY_KEY_COLUMNS = {
+  campaign_memory_current_state: "stateId",
+  campaign_memory_entities: "entityId",
+  campaign_memory_events: "eventId",
+  campaign_memory_facts: "factId",
+  campaign_memory_knowledge: "knowledgeId",
+  campaign_memory_mutation_journal: "journalId",
+  campaign_memory_relationships: "relationshipId",
+  app_settings: "key",
+  prompt_overrides: "key",
+};
 const UNSHARD_SENTINEL = ".unshard-in-progress";
 
 async function pathExists(path) {
@@ -483,10 +499,7 @@ export async function unshardLauncherStorage({
   return { storageDir, results, warnings, manifestRewritten };
 }
 
-export async function resolveLauncherDataDir({
-  root = repositoryRoot,
-  env = process.env,
-} = {}) {
+export async function resolveLauncherDataDir({ root = repositoryRoot, env = process.env } = {}) {
   const pick = await readLauncherEnv(root, env);
   const configured = pick("DATA_DIR");
   if (!configured) return resolve(root, "packages/server/data");
@@ -671,15 +684,21 @@ async function main() {
     for (const warning of result.warnings) console.warn(`  [WARN] ${warning}`);
     for (const line of result.results) console.log(`  [OK] ${line}`);
     if (result.manifestRewritten) {
-      console.log(`  [OK] Storage at ${result.storageDir} is back on the monolith layout (format 2); older versions can read it again.`);
+      console.log(
+        `  [OK] Storage at ${result.storageDir} is back on the monolith layout (format 2); older versions can read it again.`,
+      );
     } else {
-      console.warn(`  [WARN] Storage at ${result.storageDir} is on the monolith layout, but the manifest still reports the newer format — see the warning above.`);
+      console.warn(
+        `  [WARN] Storage at ${result.storageDir} is on the monolith layout, but the manifest still reports the newer format — see the warning above.`,
+      );
       process.exitCode = 1;
     }
     return;
   }
 
-  throw new Error("Usage: node scripts/protect-launcher-data.mjs <snapshot|restore-if-missing|check-target <ref>|unshard>");
+  throw new Error(
+    "Usage: node scripts/protect-launcher-data.mjs <snapshot|restore-if-missing|check-target <ref>|unshard>",
+  );
 }
 
 // pathToFileURL handles Windows drive letters; new URL(path, "file:") parses

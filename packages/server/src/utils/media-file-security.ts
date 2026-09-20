@@ -1,4 +1,5 @@
 import { open, realpath, type FileHandle } from "node:fs/promises";
+import { Readable } from "node:stream";
 import { basename, extname, join, posix, resolve, win32 } from "node:path";
 import type { FastifyReply } from "fastify";
 import { getDataDir, getFileStorageDir } from "../config/runtime-config.js";
@@ -80,6 +81,13 @@ export async function sendValidatedMediaFile(
   const contentLength = media.size === 0 ? 0 : end - start + 1;
   reply.header("Content-Length", String(contentLength));
   if (range) reply.status(206).header("Content-Range", `bytes ${start}-${end}/${media.size}`);
+
+  if (options.method?.toUpperCase() === "HEAD") {
+    await media.handle.close().catch(() => undefined);
+    // Keep the explicitly calculated Content-Length while giving Fastify a body stream it can
+    // suppress for HEAD without opening or reading the media file.
+    return reply.send(Readable.from([]));
+  }
 
   if (media.size === 0) {
     await media.handle.close().catch(() => undefined);

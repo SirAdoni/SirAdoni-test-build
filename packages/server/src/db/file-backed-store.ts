@@ -32,6 +32,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { STORAGE_MIGRATION_NOTICE_SETTINGS_KEY, type StorageMigrationNotice } from "@marinara-engine/shared";
 import { logger } from "../lib/logger.js";
 import { getFileStorageDir, getMaxResidentChatUnits } from "../config/runtime-config.js";
+import { persistentWriterHostId } from "./writer-host-identity.js";
 import * as schema from "./schema/index.js";
 import { inArray, isFileCondition, isFileOrdering, type FileCondition, type FileOrdering } from "./file-query.js";
 import { migrateLegacyNoodleAccountRow } from "./noodle-platform-migration.js";
@@ -130,6 +131,7 @@ type FileTransactionContext = {
   loadHealDirtyShards: Map<string, Set<string>>;
   loadHealDirtyTables: Set<string>;
   flushed: boolean;
+  durable: boolean;
 };
 
 const PRIVATE_DIRECTORY_MODE = 0o700;
@@ -253,7 +255,7 @@ export type FileNativeDB = {
   insert: (table: Table) => InsertBuilder;
   update: (table: Table) => UpdateSetBuilder;
   delete: (table: Table) => DeleteBuilder;
-  transaction: <T>(fn: (tx: FileNativeDB) => Promise<T> | T) => Promise<T>;
+  transaction: <T>(fn: (tx: FileNativeDB) => Promise<T> | T, options?: { durable?: boolean }) => Promise<T>;
   _fileStore: FileNativeStoreController;
 };
 
@@ -383,6 +385,14 @@ const BUILT_IN_FILE_BACKED_TABLES = [
   "capability_documents",
   "game_engine_state",
   "game_checkpoints",
+  "game_continuity_batches",
+  "campaign_memory_entities",
+  "campaign_memory_facts",
+  "campaign_memory_knowledge",
+  "campaign_memory_events",
+  "campaign_memory_current_state",
+  "campaign_memory_relationships",
+  "campaign_memory_mutation_journal",
   "game_scene_videos",
   "game_turn_storyboards",
   "game_turn_storyboard_keyframes",
@@ -471,6 +481,14 @@ const SHARD_KEY_COLUMNS: Record<string, string> = {
   spatial_context_snapshots: "chatId",
   game_engine_state: "chatId",
   game_checkpoints: "chatId",
+  game_continuity_batches: "chatId",
+  campaign_memory_entities: "chatId",
+  campaign_memory_facts: "chatId",
+  campaign_memory_knowledge: "chatId",
+  campaign_memory_events: "chatId",
+  campaign_memory_current_state: "chatId",
+  campaign_memory_relationships: "chatId",
+  campaign_memory_mutation_journal: "chatId",
   game_scene_videos: "chatId",
   game_turn_storyboards: "chatId",
   game_turn_storyboard_keyframes: "storyboardId",
@@ -807,6 +825,13 @@ export const CASCADES: Array<{ parent: FileBackedTable; child: FileBackedTable; 
     { parent: "chats", child: "spatial_context_snapshots", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "game_engine_state", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "game_checkpoints", parentKey: "id", childKey: "chatId" },
+    { parent: "chats", child: "campaign_memory_entities", parentKey: "id", childKey: "chatId" },
+    { parent: "chats", child: "campaign_memory_facts", parentKey: "id", childKey: "chatId" },
+    { parent: "chats", child: "campaign_memory_knowledge", parentKey: "id", childKey: "chatId" },
+    { parent: "chats", child: "campaign_memory_events", parentKey: "id", childKey: "chatId" },
+    { parent: "chats", child: "campaign_memory_current_state", parentKey: "id", childKey: "chatId" },
+    { parent: "chats", child: "campaign_memory_relationships", parentKey: "id", childKey: "chatId" },
+    { parent: "chats", child: "campaign_memory_mutation_journal", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "game_scene_videos", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "game_turn_storyboards", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "game_dice_pools", parentKey: "id", childKey: "chatId" },
@@ -1043,6 +1068,38 @@ function looksNulFilled(path: string): boolean {
   }
 }
 
+const WINDOWS_RENAME_RETRY_DELAYS_MS = [50, 100, 200, 400, 800] as const;
+type RenameOperation = (from: string, to: string) => Promise<void>;
+
+function isTransientWindowsRenameError(error: unknown): boolean {
+  const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+  return code === "EPERM" || code === "EACCES" || code === "EBUSY";
+}
+
+export async function renameWithTransientRetry(
+  from: string,
+  to: string,
+  renameOperation: RenameOperation = rename,
+  platform = process.platform,
+  sleep: (milliseconds: number) => Promise<void> = (milliseconds) =>
+    new Promise((resolve) => setTimeout(resolve, milliseconds)),
+): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await renameOperation(from, to);
+      return;
+    } catch (error) {
+      if (
+        platform !== "win32" ||
+        !isTransientWindowsRenameError(error) ||
+        attempt >= WINDOWS_RENAME_RETRY_DELAYS_MS.length
+      )
+        throw error;
+      await sleep(WINDOWS_RENAME_RETRY_DELAYS_MS[attempt]!);
+    }
+  }
+}
+
 async function atomicWriteFile(path: string, content: string, options: { refreshBackup?: boolean } = {}) {
   mkdirSync(dirname(path), { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
   const tmpPath = `${path}.tmp-${process.pid}-${Date.now()}`;
@@ -1065,7 +1122,7 @@ async function atomicWriteFile(path: string, content: string, options: { refresh
         await copyFile(path, bakTmpPath);
         if (process.platform !== "win32") await chmod(bakTmpPath, PRIVATE_FILE_MODE);
         await flushFile(bakTmpPath);
-        await rename(bakTmpPath, bakPath);
+        await renameWithTransientRetry(bakTmpPath, bakPath);
         await flushDirectory(dirname(bakPath));
       } catch (err) {
         try {
@@ -1082,7 +1139,7 @@ async function atomicWriteFile(path: string, content: string, options: { refresh
     }
     await writeFile(tmpPath, content, { mode: PRIVATE_FILE_MODE });
     await flushFile(tmpPath);
-    await rename(tmpPath, path);
+    await renameWithTransientRetry(tmpPath, path);
     await flushDirectory(dirname(path));
   } catch (err) {
     try {
@@ -1432,6 +1489,7 @@ function readStableMachineId() {
   if (process.platform === "darwin") {
     try {
       const output = execFileSync("/usr/sbin/ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"], {
+        windowsHide: true,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
         timeout: 1_000,
@@ -1450,9 +1508,10 @@ function readStableMachineId() {
         executable,
         ["query", "HKLM\\SOFTWARE\\Microsoft\\Cryptography", "/v", "MachineGuid"],
         {
+          windowsHide: true,
           encoding: "utf8",
           stdio: ["ignore", "pipe", "ignore"],
-          timeout: 1_000,
+          timeout: 5_000,
           maxBuffer: 64 * 1024,
         },
       );
@@ -1494,7 +1553,13 @@ function readBootId() {
           "-Command",
           "(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o')",
         ],
-        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2_000, maxBuffer: 8 * 1024 },
+        {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+          timeout: 2_000,
+          maxBuffer: 8 * 1024,
+          windowsHide: true,
+        },
       );
       return output.trim() || null;
     } catch {
@@ -1505,6 +1570,12 @@ function readBootId() {
 }
 
 const CURRENT_HOST_ID = (() => {
+  if (process.platform === "win32" && process.env.LOCALAPPDATA) {
+    return persistentWriterHostId(
+      join(process.env.LOCALAPPDATA, "MarinaraEngine", "writer-host-id"),
+      readStableMachineId,
+    );
+  }
   const machineId = readStableMachineId();
   if (!machineId) return null;
   return createHash("sha256")
@@ -1530,7 +1601,9 @@ const CURRENT_PID_NAMESPACE = (() => {
 const CURRENT_CLOCK_TICKS_PER_SECOND = (() => {
   if (process.platform !== "linux" && process.platform !== "android") return null;
   try {
-    const ticks = Number(execFileSync("getconf", ["CLK_TCK"], { encoding: "utf8", timeout: 1_000 }).trim());
+    const ticks = Number(
+      execFileSync("getconf", ["CLK_TCK"], { encoding: "utf8", timeout: 1_000, windowsHide: true }).trim(),
+    );
     return Number.isSafeInteger(ticks) && ticks > 0 ? ticks : null;
   } catch {
     return null;
@@ -1721,7 +1794,13 @@ function pidWasReused(record: StorageWriterLeaseRecord) {
           "-Command",
           `(Get-Process -Id ${record.pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`,
         ],
-        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2_000, maxBuffer: 8 * 1024 },
+        {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+          timeout: 2_000,
+          maxBuffer: 8 * 1024,
+          windowsHide: true,
+        },
       );
       const processTime = Date.parse(output.trim());
       return Number.isFinite(processTime) && processTime > leaseTime + 1_000;
@@ -2464,7 +2543,11 @@ class FileTableStore {
           staleReason = "liveness";
         }
       } else if (sameHost && pidProofUsable) {
-        if (pidDefinitelyExited(existing.record.pid)) staleReason = "pid";
+        const startedAt = Date.now() - Math.round(process.uptime() * 1000);
+        const acquiredAt = Date.parse(existing.record.acquiredAt ?? "");
+        if (existing.record.pid === process.pid && Number.isFinite(acquiredAt) && acquiredAt < startedAt)
+          staleReason = "pid";
+        else if (pidDefinitelyExited(existing.record.pid)) staleReason = "pid";
         else if (pidWasReused(existing.record)) staleReason = "pid-reused";
       }
       if (!staleReason) {
@@ -2906,7 +2989,11 @@ class FileTableStore {
     );
   }
 
-  async transaction<T>(fn: (tx: FileNativeDB) => Promise<T> | T, tx: FileNativeDB): Promise<T> {
+  async transaction<T>(
+    fn: (tx: FileNativeDB) => Promise<T> | T,
+    tx: FileNativeDB,
+    options: { durable?: boolean } = {},
+  ): Promise<T> {
     // Copy-on-write rollback, isolated to this transaction's async context:
     // instead of cloning every table up front (O(total rows) per call, on the
     // per-turn setMemories hot path), snapshot each table only on its first
@@ -2915,6 +3002,7 @@ class FileTableStore {
     if (this.txContext.getStore()) {
       // Nested call: run inside the outer transaction's context so the whole
       // nest rolls back together; the outermost owns snapshot/restore.
+      if (options.durable) this.txContext.getStore()!.durable = true;
       return await fn(tx);
     }
     this.assertWritable();
@@ -2952,6 +3040,7 @@ class FileTableStore {
         loadHealDirtyShards: new Map<string, Set<string>>(),
         loadHealDirtyTables: new Set<string>(),
         flushed: false,
+        durable: options.durable === true,
       };
       dirtySnapshot = this.dirty;
       dirtyTablesSnapshot = new Set(this.dirtyTables);
@@ -2975,7 +3064,7 @@ class FileTableStore {
       // Flush on commit only for tables whose durability the caller reasons about across a
       // crash (attempt claims must never be replayed as free budget). Everything else keeps
       // the batched flush: this runs on hot per-turn paths like setMemories.
-      if ([...ctx.dirtyTables].some((table) => DURABLE_ON_COMMIT_TABLES.has(table))) {
+      if (ctx.durable || [...ctx.dirtyTables].some((table) => DURABLE_ON_COMMIT_TABLES.has(table))) {
         await this.txContext.run(ctx, () => this.flush(true, true));
       }
       return result;
@@ -5384,7 +5473,7 @@ export async function createFileNativeDB(testHooks?: FileNativeStoreTestHooks): 
     insert: (table) => store.insert(table),
     update: (table) => store.update(table),
     delete: (table) => store.delete(table),
-    transaction: (fn) => store.transaction(fn, db),
+    transaction: (fn, options) => store.transaction(fn, db, options),
     _fileStore: controller,
   };
   return db;

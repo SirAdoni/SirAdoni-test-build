@@ -9,7 +9,11 @@ export function isOpenAIGptImage2Model(model?: string | null): boolean {
 }
 
 export function isOpenAIGptImageModel(model?: string | null): boolean {
-  return isOpenAIGptImage25Model(model) || /^gpt-image-(?:1|1\.5|2)(?:$|-)/i.test(model?.trim() ?? "");
+  return (
+    isOpenAIGptImage25Model(model) ||
+    /^gpt-image-(?:1|1\.5|2)(?:$|-)/i.test(model?.trim() ?? "") ||
+    /^chatgpt-image-latest$/i.test(model?.trim() ?? "")
+  );
 }
 
 export function supportsOpenAIImageCustomSize(model?: string | null): boolean {

@@ -1,6 +1,6 @@
 # Image Generation Providers and Setup
 
-This guide explains how to connect an image generation service to Marinara Engine. It also covers what each service needs. Image generation powers scene illustrations, selfies, scene backgrounds, and generated avatars, portraits, and sprites.
+This guide explains how to connect an image generation service to Marinara Engine. It also covers what each of the 19 services needs. Image generation powers scene illustrations, selfies, scene backgrounds, and generated avatars, portraits, and sprites.
 
 You set up image generation as a special kind of connection. Once one image connection works, every image feature in the app can use it.
 
@@ -16,20 +16,22 @@ Follow these steps to add an image connection.
 4. In the connection editor, choose a **Service** from the grid.
 5. Paste your **API Key** if that service needs one. Free and local services do not.
 6. Pick a **Model** from the list, or type a model ID. Some services offer **Fetch Models from API** to load the current list.
-7. Click **Save**.
-8. Click **Test Image** to confirm it works. Marinara generates a small test image.
+7. Choose **Reference images per request**. **Automatic** follows the selected provider, model, and workflow; a number sets a lower ceiling.
+8. Click **Save**.
+9. Click **Test Image** to confirm it works. Marinara generates a small test image.
 
 If **Test Image** returns a picture, your connection is ready. If it fails, check the API key and Base URL.
 
 ## Choosing a service
 
-The services fall into three groups. Cloud services need an API key and an account. Free services need no key. Local services run image software on your own computer.
+The services fall into three groups. Cloud services need an API key and an account, except **ChatGPT Subscription**, which signs in through your ChatGPT account instead. Free services need no key. Local services run image software on your own computer.
 
 The table below shows each service at a glance. Details and quirks follow in the per-service sections.
 
 | Service | API key | Where it runs |
 | --- | --- | --- |
 | OpenAI (DALL-E) | Yes | Cloud |
+| ChatGPT Subscription | No, uses your ChatGPT sign-in | Cloud |
 | Stability AI | Yes | Cloud |
 | Together AI | Yes | Cloud |
 | NovelAI | Yes | Cloud |
@@ -51,6 +53,14 @@ The table below shows each service at a glance. Details and quirks follow in the
 ## OpenAI (DALL-E)
 
 Cloud service with the default Base URL `https://api.openai.com/v1`. It needs an API key from your OpenAI account. It offers DALL-E and GPT Image models. It accepts up to 16 reference images.
+
+## ChatGPT Subscription
+
+Cloud service that uses your ChatGPT subscription instead of an API key. It signs in through the same local Codex CLI login as the **OpenAI (ChatGPT)** chat provider: run `codex login` once on the computer that hosts the Marinara server, then pick this service. The **API Key** and **Base URL** fields are hidden. See [Claude, ChatGPT, and Grok Subscription Connections](../connections/subscription-clis.md) for the sign-in steps.
+
+The **Image Model** field is optional and defaults to **Automatic**, which lets Marinara pick a suitable model from your ChatGPT account. It selects the ChatGPT model that drives generation, not an image model — the picture itself is always produced by ChatGPT's built-in image tool. Use **Fetch Models from API** if you want to pin a specific one. A **GPT Image Quality** selector controls the quality level; **Low** is roughly twice as fast and is a good default for scene art.
+
+ChatGPT's image tool decides the exact canvas on its own, so Marinara steers the orientation through the prompt and then contains the complete result inside your requested canvas without cropping its edges. Marinara can attach up to 20 reference images to this connection; choose a lower limit when faster uploads or a smaller reference set matters more. Usage counts against your ChatGPT plan's limits.
 
 ## Stability AI
 
@@ -179,6 +189,7 @@ A **reference image** is an existing picture you send along with your prompt. It
 | Provider | Reference images |
 | --- | --- |
 | OpenAI (DALL-E) | Up to 16 |
+| ChatGPT Subscription | Up to 20 |
 | NovelAI | Up to 16, V4.5 model only |
 | xAI / Grok Imagine | Up to 3 |
 | Venice.ai | Not supported for text-to-image generation |

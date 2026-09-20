@@ -6,7 +6,10 @@ import type {
   SpatialContextSnapshot,
   SpatialTransitionErrorCode,
 } from "@marinara-engine/shared";
+import { getDB, type DB } from "../../db/connection.js";
+import { logger } from "../../lib/logger.js";
 import { getCapabilityService } from "../capability-packages/capability-service-registry.service.js";
+import { recordLegacyMovement } from "../game/campaign-memory-legacy-writers.js";
 
 export type SpatialOwnerTurnErrorCode =
   | SpatialTransitionErrorCode
@@ -83,8 +86,26 @@ export async function findAppliedSpatialOwnerTurn(
 
 export async function commitSpatialOwnerTurn(
   input: CommitSpatialOwnerTurnInput,
+  options: { db?: DB } = {},
 ): Promise<CommitSpatialOwnerTurnResult> {
   const provider = getCapabilityService<OwnerTurnService>("hierarchical-maps:owner-turn");
   if (!provider) throw new SpatialOwnerTurnError("spatial_feature_unavailable", "World Maps is not active.", 409);
-  return provider.commitSpatialOwnerTurn(input);
+  const committed = await provider.commitSpatialOwnerTurn(input);
+  // Pulse 4: the spatial snapshot stays the location owner; the accepted move is
+  // projected into campaign memory as a movement transition after the durable
+  // commit, best-effort, keyed by the committed message so a retry replays.
+  const toLocationId = committed.snapshot.currentLocationId;
+  if (toLocationId && committed.message?.id) {
+    try {
+      await recordLegacyMovement(options.db ?? (await getDB()), {
+        chatId: input.chatId,
+        messageId: committed.message.id,
+        toLocationId,
+        fromLocationId: committed.travel?.fromLocationId ?? input.transition.expectedCurrentLocationId,
+      });
+    } catch (error) {
+      logger.warn({ err: error, chatId: input.chatId }, "[spatial] Movement transition was not recorded");
+    }
+  }
+  return committed;
 }

@@ -170,7 +170,21 @@ assert.equal(fallbackOnly.changed, false);
 // ── The route, on both sides of the switch ──
 const calls: ChatMessage[][] = [];
 const draft = 'He does not see you. [skill_check: skill="Stealth" dc="40" rolls="2"] You escape unseen. [dice: 3d1+2]';
+const isBackgroundGameRequest = (messages: ChatMessage[]): boolean => {
+  const first = messages[0]?.content ?? "";
+  return (
+    first.startsWith("You maintain an evidence-based scene timeline") ||
+    (messages.length === 1 &&
+      /^(?:Extract durable continuity records|Review continuity source-first|Repair only the reviewed continuity findings)/u.test(
+        first,
+      ))
+  );
+};
 async function* scriptedChat(messages: ChatMessage[], options: ChatOptions): AsyncGenerator<string, LLMUsage> {
+  if (isBackgroundGameRequest(messages)) {
+    yield '{"visits":[],"records":[],"dispositions":[],"recordChecks":[],"findings":[]}';
+    return { promptTokens: 1, completionTokens: 1, totalTokens: 2, finishReason: "stop" };
+  }
   calls.push(structuredClone(messages));
   assert.equal(options.tools, undefined, "subscription transports never receive native tool schemas");
   if (messages.at(-1)?.content.includes("The engine has now rolled the requested dice:")) {
@@ -203,7 +217,11 @@ try {
     promptPresetId: null,
   });
   assert.ok(chat);
-  await chats.patchMetadata(chat.id, { enableAgents: false, enableTools: false });
+  await chats.patchMetadata(chat.id, {
+    enableAgents: false,
+    enableTools: false,
+    cacheSendGuard: { enabled: false },
+  });
 
   // Switch off: today's behaviour, byte for byte. A rolled turn still pays for the rewrite.
   await chats.createMessage({ chatId: chat.id, role: "user", content: "Sneak past the guard." });

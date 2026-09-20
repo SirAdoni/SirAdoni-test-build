@@ -408,6 +408,7 @@ interface DocsPackSettingsStore {
 async function currentBuildKey(): Promise<string> {
   try {
     const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], {
+      windowsHide: true,
       cwd: getMonorepoRoot(),
       timeout: 5_000,
     });

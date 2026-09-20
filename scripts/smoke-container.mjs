@@ -15,7 +15,7 @@ const marker = `platform-proof-${randomUUID()}`;
 const runtimeUser = variant === "lite" ? "nonroot" : "node";
 
 function docker(args, options = {}) {
-  return execFileSync("docker", args, { encoding: "utf8", timeout: 90_000, ...options });
+  return execFileSync("docker", args, { encoding: "utf8", timeout: 90_000, windowsHide: true, ...options });
 }
 
 // This runs inside the actual image, so API calls remain loopback-only even

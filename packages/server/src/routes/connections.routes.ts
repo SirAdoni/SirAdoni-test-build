@@ -17,12 +17,14 @@ import {
   createConnectionSchema,
   createDefaultVideoGenerationProfile,
   generationParametersSchema,
-  inferImageSource,
   inferVideoSource,
   isLocalAuthProvider,
   isOpenAIGpt6AstraModel,
   localAuthProviderBaseUrl,
   normalizeVideoGenerationProfile,
+  resolveImageReferenceLimits,
+  type GenerationParameterKey,
+  type ModelParameterCapabilities,
 } from "@marinara-engine/shared";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import {
@@ -169,12 +171,17 @@ function describeTestMessageTarget(provider: string, baseUrl: string, model: str
   return baseUrl;
 }
 
-function resolveImageGenerationSource(conn: Record<string, unknown>, baseUrl: string): string {
+export function resolveImageGenerationSource(conn: Record<string, unknown>, baseUrl: string): string {
   const explicitSource = typeof conn.imageGenerationSource === "string" ? conn.imageGenerationSource : "";
   // Older connections identify their backend only through imageService.
   const serviceHint = typeof conn.imageService === "string" ? conn.imageService : "";
   const model = typeof conn.model === "string" ? conn.model : "";
-  return inferImageSource(explicitSource || serviceHint || model, baseUrl);
+  return resolveImageReferenceLimits({
+    imageGenerationSource: explicitSource,
+    imageService: serviceHint,
+    model,
+    baseUrl,
+  }).source;
 }
 
 function resolveVideoGenerationSource(conn: Record<string, unknown>, baseUrl: string): string {
@@ -648,6 +655,23 @@ export async function connectionsRoutes(app: FastifyInstance) {
         };
       }
 
+      // ChatGPT-subscription image connections carry no base URL or API key, so
+      // the generic models-fetch below cannot verify them. Check the same local
+      // Codex sign-in the openai_chatgpt text provider uses.
+      if (
+        conn.provider === "image_generation" &&
+        resolveImageGenerationSource(conn as any, conn.baseUrl || "") === "openai_chatgpt"
+      ) {
+        const auth = await getOpenAIChatGPTAuth();
+        const detail = auth.planType ? ` (${auth.planType})` : "";
+        return {
+          success: true,
+          message: `ChatGPT login found via Codex auth${detail}. Image generation will use the local ChatGPT session.`,
+          latencyMs: Date.now() - start,
+          modelName: conn.model || "Automatic",
+        };
+      }
+
       // Simple models list fetch to verify the key works
       const { PROVIDERS } = await import("@marinara-engine/shared");
       const provider = PROVIDERS[conn.provider as keyof typeof PROVIDERS];
@@ -806,8 +830,19 @@ export async function connectionsRoutes(app: FastifyInstance) {
       // curated static list for the subscription path.
       if (conn.provider === "claude_subscription") {
         const { MODEL_LISTS } = await import("@marinara-engine/shared");
-        const models = MODEL_LISTS.claude_subscription.map((m) => ({ id: m.id, name: m.name }));
-        return { models };
+        const builtIn = MODEL_LISTS.claude_subscription.map((m) => ({ id: m.id, name: m.name }));
+        try {
+          // Ask the signed-in account which models it offers and what each accepts; the built-in list only fills
+          // in models the live answer does not name.
+          const { fetchClaudeSubscriptionModels } =
+            await import("../services/llm/providers/claude-subscription/live-models.js");
+          const refresh = (req.query as { refresh?: string } | undefined)?.refresh === "true";
+          const live = await fetchClaudeSubscriptionModels({ refresh });
+          const liveIds = new Set(live.map((model) => model.id));
+          return { models: [...live, ...builtIn.filter((model) => !liveIds.has(model.id))], live: true };
+        } catch {
+          return { models: builtIn, live: false };
+        }
       }
 
       if (conn.provider === "openai_chatgpt") {
@@ -848,6 +883,22 @@ export async function connectionsRoutes(app: FastifyInstance) {
       const { PROVIDERS } = await import("@marinara-engine/shared");
       const provider = PROVIDERS[conn.provider as keyof typeof PROVIDERS];
       let baseUrl = conn.baseUrl || provider?.defaultBaseUrl || "";
+
+      // ChatGPT-subscription image connections have no base URL or key — the
+      // catalog comes from the local Codex sign-in, like the text provider above.
+      if (
+        conn.provider === "image_generation" &&
+        resolveImageGenerationSource(conn as any, baseUrl) === "openai_chatgpt"
+      ) {
+        try {
+          const models = await fetchOpenAIChatGPTModels();
+          if (models.length > 0) return { models };
+        } catch {
+          // Fall through to the curated list so the selector remains usable
+          // before the host has run `codex login`.
+        }
+        return { models: MODEL_LISTS.openai_chatgpt.map((m) => ({ id: m.id, name: m.name })) };
+      }
 
       if (!baseUrl) {
         return reply.status(400).send({ error: "No base URL configured" });
@@ -1277,6 +1328,7 @@ export async function connectionsRoutes(app: FastifyInstance) {
         comfyWorkflow: conn.comfyuiWorkflow || undefined,
         imageDefaults,
         quality: resolveConnectionImageQuality(conn),
+        maxImageReferences: conn.maxImageReferences ?? null,
         debugMode: readDebugMode(req.body),
       });
       return {
@@ -1636,6 +1688,34 @@ interface RemoteModel {
   name: string;
   context?: number;
   maxOutput?: number;
+  capabilities?: ModelParameterCapabilities;
+}
+
+/** OpenRouter names each model's accepted request fields; map the ones the parameter panel controls. */
+const OPENROUTER_PARAMETER_FIELDS: Record<string, GenerationParameterKey> = {
+  temperature: "temperature",
+  top_p: "topP",
+  top_k: "topK",
+  frequency_penalty: "frequencyPenalty",
+  presence_penalty: "presencePenalty",
+  max_tokens: "maxTokens",
+  max_completion_tokens: "maxTokens",
+  reasoning: "reasoningEffort",
+  reasoning_effort: "reasoningEffort",
+  verbosity: "verbosity",
+};
+
+export function readOpenRouterModelCapabilities(
+  model: Record<string, unknown>,
+): ModelParameterCapabilities | undefined {
+  const fields = Array.isArray(model.supported_parameters) ? model.supported_parameters : [];
+  const keys = new Set<GenerationParameterKey>();
+  for (const field of fields) {
+    const key = typeof field === "string" ? OPENROUTER_PARAMETER_FIELDS[field] : undefined;
+    if (key) keys.add(key);
+  }
+  // An empty or missing list says nothing; it must not hide every control.
+  return keys.size > 0 ? { supportedParameters: [...keys] } : undefined;
 }
 
 function readProviderMetadataRecord(value: unknown): Record<string, unknown> | null {
@@ -1780,11 +1860,15 @@ function normalizeModelsResponse(provider: string, json: Record<string, unknown>
       // This covers openai, mistral, openrouter, custom
       const data = (json.data ?? []) as Array<Record<string, unknown> & { id?: string; name?: string }>;
       return data
-        .map((m) => ({
-          id: m.id ?? "",
-          name: m.name ?? m.id ?? "",
-          ...readOpenAICompatibleModelLimits(m),
-        }))
+        .map((m) => {
+          const capabilities = provider === "openrouter" ? readOpenRouterModelCapabilities(m) : undefined;
+          return {
+            id: m.id ?? "",
+            name: m.name ?? m.id ?? "",
+            ...readOpenAICompatibleModelLimits(m),
+            ...(capabilities ? { capabilities } : {}),
+          };
+        })
         .filter((m) => m.id);
     }
   }

@@ -32,9 +32,19 @@ import {
   currentToSdkUserMessage,
   SDK_VERSION,
   splitHistoryForResume,
+  selectHistoryBreakpointIndex,
   type SdkUserMessageForPrompt,
 } from "./claude-subscription/jsonl-entries.js";
 import { ResumeSessionStore, resumeScratchCwd } from "./claude-subscription/session-store.js";
+import {
+  beginClaudeCacheDiagnostic,
+  claudeSdkResultError,
+  logClaudeCacheInit,
+  logClaudeCacheFailure,
+  CLAUDE_SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+  logClaudeCacheResult,
+  type ClaudeCacheDiagnosticAttempt,
+} from "./claude-cache-diagnostics.js";
 
 /**
  * Standard API cost equivalents, not subscription billing. Claude chooses its
@@ -66,6 +76,7 @@ const CUSTOMIZABLE_SDK_OPTION_KEYS = [
  */
 type SdkModule = typeof import("@anthropic-ai/claude-agent-sdk");
 let cachedSdk: Promise<SdkModule> | null = null;
+let debugLoggerOverride: typeof logger.debug | null = null;
 function loadSdk(): Promise<SdkModule> {
   if (!cachedSdk) {
     cachedSdk = import("@anthropic-ai/claude-agent-sdk").catch((err) => {
@@ -131,6 +142,11 @@ export function __setSdkForTesting(mod: Pick<SdkModule, "query"> | null): void {
   cachedSdk = mod ? (Promise.resolve(mod as SdkModule) as Promise<SdkModule>) : null;
 }
 
+/** @internal Test-only seam for observing cache usage across Pino level refreshes. */
+export function __setDebugLoggerForTesting(fn: typeof logger.debug | null): void {
+  debugLoggerOverride = fn;
+}
+
 /**
  * Wrap a single SDK-shaped user message in an AsyncIterable suitable for the
  * SDK's `prompt: AsyncIterable<SDKUserMessage>` form. We yield once and
@@ -143,21 +159,6 @@ export function __setSdkForTesting(mod: Pick<SdkModule, "query"> | null): void {
  */
 async function* singleMessageIterable(msg: SdkUserMessageForPrompt): AsyncIterable<unknown> {
   yield msg;
-}
-
-/**
- * Extract system-role messages into a single concatenated string for the
- * SDK's `systemPrompt` option, used by both the fold path and the resume
- * path. System messages never ride in the JSONL.
- */
-function extractSystemPrompt(messages: ChatMessage[]): string | undefined {
-  const blocks: string[] = [];
-  for (const m of messages) {
-    if (m.role !== "system") continue;
-    const text = m.content?.trim();
-    if (text) blocks.push(text);
-  }
-  return blocks.length > 0 ? blocks.join("\n\n") : undefined;
 }
 
 /**
@@ -218,10 +219,73 @@ function renderTranscript(messages: ChatMessage[]): { systemPrompt: string | und
  */
 interface PromptSelection {
   promptArg: string | AsyncIterable<unknown>;
-  systemPrompt: string | undefined;
+  systemPrompt: string | string[] | undefined;
   resumeSessionId: string | null;
   resumeCwd: string | null;
   sessionStore: ResumeSessionStore | null;
+}
+
+const SYSTEM_PROMPT_DYNAMIC_BOUNDARY = CLAUDE_SYSTEM_PROMPT_DYNAMIC_BOUNDARY;
+
+/**
+ * Keep explicitly marked lore in the cross-session cacheable prefix. Typed
+ * injection blocks are request-specific and must stay after the SDK boundary;
+ * ordinary unmarked system messages retain their existing ordering/authority.
+ */
+function buildSystemPrompt(messages: ChatMessage[]): string | string[] | undefined {
+  const systemMessages = messages.filter((message) => message.role === "system" && message.content?.trim());
+  if (systemMessages.length === 0) return undefined;
+
+  const hasTypedDynamicBlock = systemMessages.some(
+    (message) =>
+      message.providerMetadata?.marinaraRuntimeContext === true ||
+      message.providerMetadata?.marinaraDynamicLoreContext === true,
+  );
+  const hasMarkedStaticLore = systemMessages.some(
+    (message) => message.providerMetadata?.marinaraFullLoreContext === true,
+  );
+  if (!hasTypedDynamicBlock && !hasMarkedStaticLore) {
+    return systemMessages.map((message) => message.content!.trim()).join("\n\n");
+  }
+
+  const isDynamicBlock = (message: ChatMessage) =>
+    message.providerMetadata?.marinaraRuntimeContext === true ||
+    message.providerMetadata?.marinaraDynamicLoreContext === true;
+  const firstDynamicIndex = systemMessages.findIndex(isDynamicBlock);
+  const leadingStatic = systemMessages.filter((message, index) => {
+    if (message.providerMetadata?.marinaraFullLoreContext === true) return false;
+    return firstDynamicIndex < 0 ? true : index < firstDynamicIndex;
+  });
+  const staticLore = systemMessages.filter((message) => message.providerMetadata?.marinaraFullLoreContext === true);
+  const dynamic = systemMessages.filter(
+    (message) =>
+      message.providerMetadata?.marinaraFullLoreContext !== true &&
+      (isDynamicBlock(message) || !leadingStatic.includes(message)),
+  );
+
+  return [
+    ...staticLore.map((message) => message.content!.trim()),
+    ...leadingStatic.map((message) => message.content!.trim()),
+    SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+    ...dynamic.map((message) => message.content!.trim()),
+  ];
+}
+
+function normalizeMarkedRuntimeSystemMessages(messages: ChatMessage[]): ChatMessage[] {
+  const firstNonSystemIndex = messages.findIndex((message) => message.role !== "system");
+  if (firstNonSystemIndex < 0) return messages;
+
+  return messages.map((message, index) => {
+    if (
+      index <= firstNonSystemIndex ||
+      message.role !== "system" ||
+      (message.providerMetadata?.marinaraRuntimeContext !== true &&
+        message.providerMetadata?.marinaraDynamicLoreContext !== true)
+    ) {
+      return message;
+    }
+    return { ...message, role: "user" as const };
+  });
 }
 
 /**
@@ -229,10 +293,15 @@ interface PromptSelection {
  * everything the SDK call needs. Resolved per-call so env-var changes take
  * effect on the next request without a restart.
  */
-function selectPromptPath(messages: ChatMessage[], model: string): PromptSelection {
+function selectPromptPath(
+  messages: ChatMessage[],
+  model: string,
+  historyBreakpointTtl?: "5m" | "1h",
+  historyBreakpointIndex?: number | null,
+): PromptSelection {
   if (isClaudeSubscriptionResumeEnabled()) {
     try {
-      return buildResumeSelection(messages, model);
+      return buildResumeSelection(messages, model, historyBreakpointTtl, historyBreakpointIndex);
     } catch (err) {
       // The only realistic failure is creating the scratch working directory
       // on a read-only / permission-locked data dir. Degrade to the fold path
@@ -243,9 +312,18 @@ function selectPromptPath(messages: ChatMessage[], model: string): PromptSelecti
   return buildFoldSelection(messages);
 }
 
-function buildResumeSelection(messages: ChatMessage[], model: string): PromptSelection {
+function buildResumeSelection(
+  messages: ChatMessage[],
+  model: string,
+  historyBreakpointTtl?: "5m" | "1h",
+  selectedHistoryBreakpointIndex?: number | null,
+): PromptSelection {
   const split = splitHistoryForResume(messages);
-  const systemPrompt = extractSystemPrompt(messages);
+  const systemPrompt = buildSystemPrompt(messages);
+  const historyBreakpointIndex =
+    selectedHistoryBreakpointIndex === undefined
+      ? selectHistoryBreakpointIndex(messages)
+      : selectedHistoryBreakpointIndex;
   if (split.shape === "trailing-assistant-continue") {
     logger.warn(
       "[claude-subscription] assistant prefill routed through synthetic continuation prompt because SDK prompts are user-only (prefillChars=%d)",
@@ -280,12 +358,14 @@ function buildResumeSelection(messages: ChatMessage[], model: string): PromptSel
     split.history,
     { sessionId, cwd, version: SDK_VERSION, gitBranch: "main", permissionMode: "bypassPermissions" },
     model,
+    { historyBreakpointIndex, historyBreakpointTtl },
   );
   logger.debug(
-    "[claude-subscription] resume path: shape=%s sessionId=%s historyLen=%d",
+    "[claude-subscription] resume path: shape=%s sessionId=%s historyLen=%d historyBreakpointIndex=%s",
     split.shape,
     sessionId,
     split.history.length,
+    historyBreakpointIndex ?? "none",
   );
   return {
     promptArg: singleMessageIterable(currentToSdkUserMessage(split.current)),
@@ -301,7 +381,7 @@ function buildFoldSelection(messages: ChatMessage[]): PromptSelection {
   const folded = renderTranscript(messages);
   return {
     promptArg: folded.prompt,
-    systemPrompt: folded.systemPrompt,
+    systemPrompt: buildSystemPrompt(messages),
     resumeSessionId: null,
     resumeCwd: null,
     sessionStore: null,
@@ -346,9 +426,15 @@ export class ClaudeSubscriptionProvider extends BaseLLMProvider {
     const contextFit = this.fitMessagesToContext(messages, { ...options, maxTokens: configuredMaxTokens });
     this.logContextTrim(contextFit, options.model);
 
+    const providerMessages = normalizeMarkedRuntimeSystemMessages(contextFit.messages);
+    const hasApiKey = Boolean(this.apiKey || process.env.ANTHROPIC_API_KEY);
+    const historyBreakpointIndex = !hasApiKey ? selectHistoryBreakpointIndex(providerMessages) : null;
+    const historyBreakpointTtl = !hasApiKey ? (process.env.FORCE_PROMPT_CACHING_5M === "1" ? "5m" : "1h") : undefined;
     const { promptArg, systemPrompt, resumeSessionId, resumeCwd, sessionStore } = selectPromptPath(
-      contextFit.messages,
+      providerMessages,
       options.model,
+      historyBreakpointTtl,
+      historyBreakpointIndex,
     );
 
     const { query } = await loadSdk();
@@ -373,7 +459,7 @@ export class ClaudeSubscriptionProvider extends BaseLLMProvider {
     // posture leaks several things the user never asked for into every
     // request, so we override each one explicitly:
     //
-    //   • Use a plain-string `systemPrompt` (the caller's content as-is)
+    //   • Use caller-owned system content (string or cache-boundary array)
     //     instead of wrapping it under the `claude_code` preset. The preset
     //     injects ~thousands of tokens of Claude-Code-agent framing
     //     ("You are Claude Code, Anthropic's CLI...") which is wrong for
@@ -456,6 +542,13 @@ export class ClaudeSubscriptionProvider extends BaseLLMProvider {
       ...process.env,
       ENABLE_CLAUDEAI_MCP_SERVERS: "false",
       ...(this.apiKey ? { ANTHROPIC_API_KEY: this.apiKey } : {}),
+      ...(resumeSessionId &&
+      sessionStore &&
+      historyBreakpointIndex !== null &&
+      historyBreakpointIndex !== undefined &&
+      historyBreakpointTtl === "1h"
+        ? { ENABLE_PROMPT_CACHING_1H: "1" }
+        : {}),
     };
 
     const sdkOptionRecord = sdkOptions as Record<string, unknown>;
@@ -479,15 +572,28 @@ export class ClaudeSubscriptionProvider extends BaseLLMProvider {
       sdkOptionRecord["cwd"] = resumeCwd;
       sdkOptionRecord["sessionStore"] = sessionStore;
     }
+    const diagnosticAttempt: ClaudeCacheDiagnosticAttempt = beginClaudeCacheDiagnostic(
+      providerMessages,
+      sdkOptionRecord,
+      {
+        requestedModel: options.model,
+        path: resumeSessionId ? "resume" : typeof promptArg === "string" ? "fold" : "direct",
+        sessionHash: resumeSessionId,
+        systemPrompt,
+      },
+    );
 
     let inputTokens = 0;
     let outputTokens = 0;
     let cachedTokens = 0;
     let cacheWriteTokens = 0;
+    let hasCachedTokens = false;
+    let hasCacheWriteTokens = false;
     let emittedText = false;
     let sawSuccessResult = false;
     let finalFastModeState: string | null = null;
     let finalUsedModels: string[] = [];
+    let assistantErrorCode: string | null = null;
 
     try {
       // Cast on `prompt` is needed because we type `promptArg` locally as
@@ -514,6 +620,7 @@ export class ClaudeSubscriptionProvider extends BaseLLMProvider {
             }
           }
         } else if (message.type === "system" && message.subtype === "init") {
+          logClaudeCacheInit(diagnosticAttempt, message as unknown as Record<string, unknown>);
           // Isolation guard — the SDK's `init` message enumerates every tool,
           // MCP server, and skill it is exposing to the model. This provider is
           // a zero-tool, text-only surface, so any non-empty set here means
@@ -543,7 +650,12 @@ export class ClaudeSubscriptionProvider extends BaseLLMProvider {
               "[claude-subscription] SDK exposed MCP servers/tools to the model despite zero-tool config — likely account-level claude.ai connectors",
             );
           }
-        } else if (message.type === "assistant" && !(options.stream ?? true)) {
+        } else if (message.type === "assistant") {
+          if (typeof message.error === "string") {
+            assistantErrorCode = message.error;
+            continue;
+          }
+          if (options.stream ?? true) continue;
           // Non-streaming path: the SDK still yields the full assistant
           // message at the end; emit the text blocks once.
           const blocks = (message.message?.content ?? []) as Array<{ type: string; text?: string; thinking?: string }>;
@@ -556,14 +668,27 @@ export class ClaudeSubscriptionProvider extends BaseLLMProvider {
             }
           }
         } else if (message.type === "result") {
+          const resultRecord = message as unknown as Record<string, unknown>;
+          if (assistantErrorCode && !resultRecord.error) resultRecord.error = assistantErrorCode;
+          logClaudeCacheResult(diagnosticAttempt, resultRecord);
+
+          if (assistantErrorCode || (message.subtype === "success" && message.is_error === true)) {
+            throw claudeSdkResultError(resultRecord);
+          }
           if (message.subtype === "success") {
             sawSuccessResult = true;
             const usage = message.usage ?? null;
             if (usage) {
               inputTokens = usage.input_tokens ?? 0;
               outputTokens = usage.output_tokens ?? 0;
-              cachedTokens = usage.cache_read_input_tokens ?? 0;
-              cacheWriteTokens = usage.cache_creation_input_tokens ?? 0;
+              if (typeof usage.cache_read_input_tokens === "number") {
+                cachedTokens = usage.cache_read_input_tokens;
+                hasCachedTokens = true;
+              }
+              if (typeof usage.cache_creation_input_tokens === "number") {
+                cacheWriteTokens = usage.cache_creation_input_tokens;
+                hasCacheWriteTokens = true;
+              }
             }
             // Never infer write TTL from our requested setting: account defaults
             // and CLI environment overrides can differ from the connection.
@@ -579,7 +704,7 @@ export class ClaudeSubscriptionProvider extends BaseLLMProvider {
                   cachedTokens * CACHE_READ_COST_MULTIPLIER
                 : null;
               const savedTokenEquiv = effectiveInputCost === null ? null : totalInputTokens - effectiveInputCost;
-              logger.debug(
+              (debugLoggerOverride ?? logger.debug.bind(logger))(
                 {
                   session: resumeSessionId ?? "fold-path",
                   model: options.model,
@@ -602,6 +727,8 @@ export class ClaudeSubscriptionProvider extends BaseLLMProvider {
                       : savedTokenEquiv > 0
                         ? "cache-saving"
                         : "cache-cost",
+                  totalInputTokens,
+                  cacheCreation: (usage as Record<string, unknown>).cache_creation ?? null,
                 },
                 "[claude-subscription] prompt-cache usage",
               );
@@ -638,12 +765,15 @@ export class ClaudeSubscriptionProvider extends BaseLLMProvider {
               emittedText = true;
             }
           } else {
-            const detail = message.errors?.length ? ` — ${message.errors.join("; ")}` : "";
-            throw new Error(`Claude (Subscription) request failed (${message.subtype})${detail}`);
+            throw claudeSdkResultError(resultRecord);
           }
         }
       }
+      if (assistantErrorCode) {
+        throw claudeSdkResultError({ subtype: "assistant_error", error: assistantErrorCode });
+      }
     } catch (err) {
+      logClaudeCacheFailure(diagnosticAttempt, err);
       logger.error(
         err,
         "Claude Agent SDK query failed for model %s (session=%s)",
@@ -651,7 +781,9 @@ export class ClaudeSubscriptionProvider extends BaseLLMProvider {
         resumeSessionId ?? "fold-path",
       );
       const friendly = formatClaudeSdkError(err);
-      throw new Error(`Claude (Subscription) request failed: ${friendly}`);
+      const wrapped = new Error(`Claude (Subscription) request failed: ${friendly}`);
+      Object.assign(wrapped, { cause: err });
+      throw wrapped;
     } finally {
       if (options.signal) options.signal.removeEventListener("abort", onUpstreamAbort);
       // No session-file cleanup: the SDK owns the temp JSONL it materializes
@@ -680,8 +812,8 @@ export class ClaudeSubscriptionProvider extends BaseLLMProvider {
         promptTokens: inputTokens,
         completionTokens: outputTokens,
         totalTokens: inputTokens + outputTokens,
-        ...(cachedTokens ? { cachedPromptTokens: cachedTokens } : {}),
-        ...(cacheWriteTokens ? { cacheWritePromptTokens: cacheWriteTokens } : {}),
+        ...(hasCachedTokens ? { cachedPromptTokens: cachedTokens } : {}),
+        ...(hasCacheWriteTokens ? { cacheWritePromptTokens: cacheWriteTokens } : {}),
       };
     }
   }

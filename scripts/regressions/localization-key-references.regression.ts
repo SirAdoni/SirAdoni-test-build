@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 // Every localizeUi("…") reference must resolve to a key in en.json.
 //
@@ -14,19 +14,46 @@ import { join } from "node:path";
 // which is how ten Noodle keys broke during the platform rename.
 
 const repoRoot = join(import.meta.dirname, "..", "..");
-const en = JSON.parse(readFileSync(join(repoRoot, "packages/client/src/localization/locales/en.json"), "utf8")) as Record<
-  string,
-  unknown
->;
+const en = JSON.parse(
+  readFileSync(join(repoRoot, "packages/client/src/localization/locales/en.json"), "utf8"),
+) as Record<string, unknown>;
 
 // i18next resolves a plural call to suffixed catalog entries, so the base key itself is
 // never present. Treat any key with a plural family as resolved.
 const PLURAL_SUFFIX = /_(zero|one|two|few|many|other)$/;
-const pluralBases = new Set(Object.keys(en).flatMap((key) => (PLURAL_SUFFIX.test(key) ? [key.replace(PLURAL_SUFFIX, "")] : [])));
+const pluralBases = new Set(
+  Object.keys(en).flatMap((key) => (PLURAL_SUFFIX.test(key) ? [key.replace(PLURAL_SUFFIX, "")] : [])),
+);
 
-const files = execFileSync("git", ["ls-files", "packages/client/src"], { cwd: repoRoot, encoding: "utf8" })
-  .split("\n")
-  .filter((f) => f.endsWith(".ts") || f.endsWith(".tsx"));
+function listClientSourceFiles() {
+  try {
+    return execFileSync("git", ["ls-files", "packages/client/src"], {
+      windowsHide: true,
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .split("\n")
+      .filter((file) => file.endsWith(".ts") || file.endsWith(".tsx"));
+  } catch {
+    const sourceRoot = join(repoRoot, "packages/client/src");
+    const files: string[] = [];
+    const visit = (directory: string) => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        if (entry.isDirectory() && (entry.name === "dist" || entry.name === "node_modules")) continue;
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) visit(path);
+        else if (entry.isFile() && (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx"))) {
+          files.push(relative(repoRoot, path).replaceAll("\\", "/"));
+        }
+      }
+    };
+    visit(sourceRoot);
+    return files.sort();
+  }
+}
+
+const files = listClientSourceFiles();
 
 const missing = new Map<string, string>(); // key -> "key  (file)" for the failure message
 for (const file of files) {
@@ -59,10 +86,6 @@ assert.equal(
 );
 
 const fixed = [...KNOWN_MISSING].filter((key) => !missing.has(key));
-assert.equal(
-  fixed.length,
-  0,
-  `These keys resolve now — remove them from KNOWN_MISSING:\n${fixed.join("\n")}`,
-);
+assert.equal(fixed.length, 0, `These keys resolve now — remove them from KNOWN_MISSING:\n${fixed.join("\n")}`);
 
 process.stdout.write(`Localization key-reference regression passed (${missing.size} known-missing, none new).\n`);

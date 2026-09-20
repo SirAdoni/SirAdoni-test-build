@@ -11,6 +11,7 @@ import {
   Sparkles,
   FileText,
   VenetianMask,
+  Clock3,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
@@ -180,6 +181,10 @@ export function TopBar({ mobileTopbarNavigation }: { mobileTopbarNavigation: boo
     setSidebarOpen(false);
     closeRightPanel();
   }, [closeAllDetails, closeRightPanel, mobileTopbarNavigation, setActiveChatId, setSidebarOpen]);
+
+  const handleGenerationJobsClick = useCallback(() => {
+    useUIStore.getState().openModal("generation-jobs");
+  }, []);
 
   const handleTopbarPointerOver = (event: ReactPointerEvent<HTMLElement>) => {
     if (event.pointerType !== "mouse") return;
@@ -430,6 +435,22 @@ export function TopBar({ mobileTopbarNavigation }: { mobileTopbarNavigation: boo
           {rightPanelOpen && rightPanel === "settings" && (
             <span className="absolute -bottom-0.5 left-1/2 h-0.5 w-3 -translate-x-1/2 rounded-full bg-gradient-to-r from-gray-400 to-gray-500" />
           )}
+        </button>
+
+        <button
+          onClick={handleGenerationJobsClick}
+          data-tour="generation-jobs"
+          data-topbar-hover-key="generation-jobs"
+          className={cn(
+            TOPBAR_PANEL_BUTTON_CLASS,
+            "text-[var(--muted-foreground)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]",
+            isTopbarHovered("generation-jobs") &&
+              cn(TOPBAR_FORCE_HOVER_CLASS, "text-[var(--marinara-chat-chrome-button-text-hover)]"),
+          )}
+          title={localize("Generation jobs")}
+          aria-label={localize("Generation jobs")}
+        >
+          <Clock3 size={15} className={TOPBAR_ACCENT_ICON_CLASS} />
         </button>
 
         <PersonalExtensionTopbarButtons />

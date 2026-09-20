@@ -1,4 +1,5 @@
 import { CardLibraryPreview } from "./CardLibraryPreview";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 import {
   Fragment,
   useCallback,
@@ -33,6 +34,8 @@ import { applyInlineMarkdown, renderMarkdownBlocks } from "../../lib/markdown";
 import { normalizeAvatarCrop, type AvatarCrop } from "@marinara-engine/shared";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
+import { CharacterCategoryFilter } from "./CharacterCategoryFilter";
+import type { CharacterLibraryCategory } from "@marinara-engine/shared";
 import {
   useUIStore,
   type CardLibraryKind,
@@ -233,14 +236,24 @@ function CardLibraryDetailCard({
   return (
     <div className="space-y-4">
       <div className="overflow-hidden rounded-[1.5rem] border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--background)]/70 shadow-[0_24px_70px_-40px_rgba(15,23,42,0.95)] sm:rounded-[2rem]">
-        <div className={cn("mari-avatar-placeholder relative aspect-square overflow-hidden", placeholderClass)}>
+        <div className={cn("mari-avatar-placeholder relative aspect-square overflow-visible", placeholderClass)}>
           {card.avatarPath ? (
-            <img
+            <CharacterPhoto
               src={card.avatarPath}
-              alt={card.name}
-              className="h-full w-full object-cover"
-              style={getAvatarCropStyle(card.avatarCrop)}
-            />
+              name={card.name}
+              className="h-full w-full"
+              onUpdate={() => onEdit(card.id)}
+              updateLabel={localizeUi("ui.noodle.noodlepostcard.edit")}
+            >
+              <span className="absolute inset-0 overflow-hidden rounded-[inherit]">
+                <img
+                  src={card.avatarPath}
+                  alt={card.name}
+                  className="h-full w-full object-cover"
+                  style={getAvatarCropStyle(card.avatarCrop)}
+                />
+              </span>
+            </CharacterPhoto>
           ) : (
             <div className="flex h-full w-full items-center justify-center text-[var(--marinara-chat-chrome-panel-title)]">
               <User size="2.5rem" />
@@ -387,7 +400,13 @@ export function CharacterLibraryView() {
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
   const serverSearch = useMemo(() => parseCardLibrarySearchQuery(deferredSearch).text, [deferredSearch]);
-  const characterPages = useCharacterPages({ enabled: !isPersonaLibrary, search: serverSearch, sort: characterSort });
+  const [category, setCategory] = useState<CharacterLibraryCategory | "all">("characters");
+  const characterPages = useCharacterPages({
+    enabled: !isPersonaLibrary,
+    search: serverSearch,
+    sort: characterSort,
+    category,
+  });
   const personaPages = usePersonaPages({ enabled: isPersonaLibrary, search: serverSearch, sort: personaSort });
   const characters = useMemo(() => flattenCharacterPages(characterPages.data), [characterPages.data]);
   const personas = useMemo(() => flattenPersonaPages(personaPages.data), [personaPages.data]);
@@ -576,6 +595,7 @@ export function CharacterLibraryView() {
       className="mari-chrome-token-scope flex h-full min-h-0 flex-col overflow-y-auto overflow-x-hidden bg-[radial-gradient(circle_at_top_left,_color-mix(in_srgb,var(--marinara-chat-chrome-accent)_14%,transparent),_transparent_30%),radial-gradient(circle_at_top_right,_color-mix(in_srgb,var(--marinara-chat-chrome-text)_10%,transparent),_transparent_26%),var(--background)] text-[var(--marinara-chat-chrome-panel-text)] lg:overflow-hidden"
     >
       <div className="sticky top-0 z-10 border-b border-[var(--marinara-chat-chrome-panel-divider)] bg-[var(--card)]/85 backdrop-blur-xl">
+        {!isPersonaLibrary && <CharacterCategoryFilter value={category} onChange={setCategory} />}
         <div className="flex flex-col gap-2 px-3 py-2 md:px-6 md:py-3 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex min-w-0 items-center gap-3">
             <button

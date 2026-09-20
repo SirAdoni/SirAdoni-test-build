@@ -15,6 +15,7 @@ export type IllustratorPromptConnection = FallbackConnection & {
   imageService?: string | null;
   imageEndpointId?: string | null;
   imagePromptInstructions?: string | null;
+  maxImageReferences?: number | null;
   comfyuiWorkflow?: string | null;
 };
 

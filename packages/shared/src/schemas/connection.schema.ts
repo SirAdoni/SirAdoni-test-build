@@ -2,7 +2,7 @@
 // Connection Zod Schemas
 // ──────────────────────────────────────────────
 import { z } from "zod";
-import { IMAGE_GENERATION_QUALITIES } from "../types/connection.js";
+import { IMAGE_GENERATION_QUALITIES, MAX_IMAGE_REFERENCES_PER_REQUEST } from "../types/connection.js";
 import { MAX_IMAGE_PROMPT_INSTRUCTIONS_LENGTH } from "../constants/defaults.js";
 
 export const apiProviderSchema = z.enum([
@@ -76,6 +76,7 @@ export const createConnectionSchema = z.object({
   imageEndpointId: z.string().nullable().default(null),
   imagePromptInstructions: z.string().trim().max(MAX_IMAGE_PROMPT_INSTRUCTIONS_LENGTH).nullable().default(null),
   imageGenerationQuality: imageGenerationQualitySchema.default("auto"),
+  maxImageReferences: z.number().int().min(1).max(MAX_IMAGE_REFERENCES_PER_REQUEST).nullable().default(null),
   videoGenerationSource: z.string().nullable().default(null),
   videoService: z.string().nullable().default(null),
   audioSource: audioGenerationSourceSchema.nullable().default(null),

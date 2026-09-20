@@ -90,6 +90,20 @@ await assert.rejects(
   /no usable keyframes/,
 );
 assert.equal(calls, 1);
+calls = 0;
+const noVisualBeatsPlan = { keyframes: [] };
+assert.deepEqual(
+  await completeStoryboardPlan({
+    retryWithoutReasoning: true,
+    generate: async () => {
+      calls++;
+      return { content: JSON.stringify(noVisualBeatsPlan) };
+    },
+  }),
+  noVisualBeatsPlan,
+  "an explicit empty storyboard plan is a valid no-visual-beats decision",
+);
+assert.equal(calls, 1, "a valid no-visual-beats decision must not trigger the fallback retry");
 await assert.rejects(
   completeStoryboardPlan({
     retryWithoutReasoning: false,

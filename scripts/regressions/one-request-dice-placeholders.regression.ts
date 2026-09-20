@@ -461,9 +461,23 @@ assert.doesNotMatch(afterVerbs.content, /weather/i);
 // ── The route, on both sides of the switch ──────────────────────────────────
 const calls: ChatMessage[][] = [];
 const draft = "The axe bites deep for [[roll: 2d6+3]] damage, and the wound burns for [[roll: 1d4]] rounds.";
+const isBackgroundGameRequest = (messages: ChatMessage[]): boolean => {
+  const first = messages[0]?.content ?? "";
+  return (
+    first.startsWith("You maintain an evidence-based scene timeline") ||
+    (messages.length === 1 &&
+      /^(?:Extract durable continuity records|Review continuity source-first|Repair only the reviewed continuity findings)/u.test(
+        first,
+      ))
+  );
+};
 /** What the next scripted turn writes. A continuation needs a SECOND segment of its own. */
 let scriptedDraft = draft;
 async function* scriptedChat(messages: ChatMessage[], options: ChatOptions): AsyncGenerator<string, LLMUsage> {
+  if (isBackgroundGameRequest(messages)) {
+    yield '{"visits":[],"records":[],"dispositions":[],"recordChecks":[],"findings":[]}';
+    return { promptTokens: 1, completionTokens: 1, totalTokens: 2, finishReason: "stop" };
+  }
   calls.push(structuredClone(messages));
   assert.equal(options.tools, undefined, "subscription transports never receive native tool schemas");
   yield scriptedDraft;
@@ -494,7 +508,12 @@ try {
   assert.ok(chat);
   // The configuration the repo's own dice lane runs in: no agents, no tools, and so no
   // game-state snapshot at all.
-  await chats.patchMetadata(chat.id, { enableAgents: false, enableTools: false, gameOneRequestDice: true });
+  await chats.patchMetadata(chat.id, {
+    enableAgents: false,
+    enableTools: false,
+    gameOneRequestDice: true,
+    cacheSendGuard: { enabled: false },
+  });
 
   await chats.createMessage({ chatId: chat.id, role: "user", content: "Swing the axe." });
   calls.length = 0;

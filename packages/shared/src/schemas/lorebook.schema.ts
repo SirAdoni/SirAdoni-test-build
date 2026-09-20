@@ -163,6 +163,7 @@ export const createLorebookEntrySchema = z.object({
   secondaryKeys: z.array(z.string()).default([]),
   enabled: z.boolean().default(true),
   constant: z.boolean().default(false),
+  alwaysLoaded: z.boolean().default(false),
   selective: z.boolean().default(false),
   selectiveLogic: selectiveLogicSchema.default("and"),
   probability: z.number().nullable().default(null),
@@ -214,6 +215,7 @@ const bulkUpdateLorebookEntryChangesSchema = updateLorebookEntrySchema
   .pick({
     enabled: true,
     constant: true,
+    alwaysLoaded: true,
     selective: true,
     selectiveLogic: true,
     probability: true,

@@ -80,6 +80,7 @@ import { ColorPicker } from "../ui/ColorPicker";
 import { StatIconPicker } from "../ui/StatIconPicker";
 import { MacroTextarea } from "../ui/MacroTextarea";
 import { ImageUploadDropzone } from "../ui/ImageUploadDropzone";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 import { CustomEmojiTagButton } from "../ui/CustomEmojiTagButton";
 import { CallClipGenerationModal } from "../ui/CallClipGenerationModal";
 import { api, formatFirstApiValidationIssue } from "../../lib/api-client";
@@ -124,6 +125,7 @@ import { SettingsSwitch } from "../panels/settings/SettingControls";
 import {
   createDefaultRpgStatPools,
   normalizeSpriteExpressionLabel,
+  normalizeRpgStatAttributes,
   normalizeRpgStatPools,
   syncRpgHpFromPools,
   type CharacterData,
@@ -1967,23 +1969,43 @@ export function PersonaEditor() {
           {/* Avatar */}
           <div
             className={cn(
-              "mari-editor-avatar-tile group relative",
+              "mari-editor-avatar-tile group relative h-8 w-auto gap-1 overflow-visible md:h-9",
               !avatarPreview && "mari-avatar-placeholder mari-avatar-placeholder--persona",
               mutationBusy && "pointer-events-none opacity-60",
             )}
-            onClick={() => {
-              if (!mutationBusy) fileInputRef.current?.click();
-            }}
+            style={{ width: "auto", overflow: "visible" }}
           >
             {avatarPreview ? (
-              <img
+              <CharacterPhoto
                 src={avatarPreview}
-                alt={formData.name}
-                className="pointer-events-none h-full w-full object-cover"
-                style={getAvatarCropStyle(formData.avatarCrop)}
-              />
+                name={formData.name}
+                className="block h-8 w-8 shrink-0 md:h-9 md:w-9"
+                onUpdate={() => {
+                  if (!mutationBusy) fileInputRef.current?.click();
+                }}
+                updateDisabled={mutationBusy}
+                updateLabel={localizeUi("editor.avatar.upload")}
+              >
+                <span className="absolute inset-0 overflow-hidden rounded-[inherit]">
+                  <img
+                    src={avatarPreview}
+                    alt={formData.name}
+                    className="pointer-events-none h-full w-full object-cover"
+                    style={getAvatarCropStyle(formData.avatarCrop)}
+                  />
+                </span>
+              </CharacterPhoto>
             ) : (
-              <User size="1.375rem" className="text-white" />
+              <button
+                type="button"
+                className="flex h-8 w-8 items-center justify-center md:h-9 md:w-9"
+                onClick={() => {
+                  if (!mutationBusy) fileInputRef.current?.click();
+                }}
+                aria-label={localizeUi("editor.avatar.upload")}
+              >
+                <User size="1.375rem" className="text-white" />
+              </button>
             )}
             <EditorAvatarTileActions
               generationAvailable={imageGenerationAvailable}
@@ -3194,7 +3216,11 @@ function PersonaStatsTab({
   };
 
   // RPG Attributes helpers
-  const rpgStats: RPGStatsConfig = parsed.rpgStats ?? DEFAULT_RPG_STATS;
+  // Persona stats are normally normalized on hydration, but imported profiles can
+  // carry attributes as a { STR: 18 } map; guard before the helpers spread them.
+  const rpgStats: RPGStatsConfig = parsed.rpgStats
+    ? { ...parsed.rpgStats, attributes: normalizeRpgStatAttributes(parsed.rpgStats.attributes) }
+    : DEFAULT_RPG_STATS;
   const rpgPools = normalizeRpgStatPools(rpgStats);
 
   const updateRpg = (patch: Partial<RPGStatsConfig>) => {

@@ -1,3 +1,5 @@
+> **Combined suite preview:** Start with [tester setup and verification](TESTING-SUITE.md). The [detailed contribution inventory](docs/contribution-suite.html) explains scope and known limitations. This is a personal fork snapshot.
+
 # 🍝 Marinara Engine
 
 <h3 align="center"><b>Fun. Intuitive. Plug-And-Play.</b></h3>

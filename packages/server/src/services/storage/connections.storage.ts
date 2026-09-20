@@ -233,6 +233,7 @@ export function createConnectionsStorage(db: DB) {
         imageEndpointId: input.imageEndpointId ?? null,
         imagePromptInstructions: input.imagePromptInstructions ?? null,
         imageGenerationQuality: input.imageGenerationQuality ?? "auto",
+        maxImageReferences: input.maxImageReferences ?? null,
         videoGenerationSource: input.videoGenerationSource ?? null,
         videoService: input.videoService ?? null,
         audioSource: input.audioSource ?? null,
@@ -412,6 +413,9 @@ export function createConnectionsStorage(db: DB) {
       if (data.imageGenerationQuality !== undefined) {
         updateFields.imageGenerationQuality = data.imageGenerationQuality;
       }
+      if (data.maxImageReferences !== undefined) {
+        updateFields.maxImageReferences = data.maxImageReferences;
+      }
       if (data.videoGenerationSource !== undefined) {
         updateFields.videoGenerationSource = data.videoGenerationSource;
       }
@@ -567,6 +571,7 @@ export function createConnectionsStorage(db: DB) {
         imageEndpointId: source.imageEndpointId,
         imagePromptInstructions: source.imagePromptInstructions,
         imageGenerationQuality: source.imageGenerationQuality,
+        maxImageReferences: source.maxImageReferences,
         videoGenerationSource: source.videoGenerationSource,
         videoService: source.videoService,
         audioSource: source.audioSource,

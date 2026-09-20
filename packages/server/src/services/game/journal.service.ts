@@ -5,7 +5,7 @@
 // state snapshots — no LLM summarization needed.
 // ──────────────────────────────────────────────
 
-import type { GameNpc } from "@marinara-engine/shared";
+import { normalizeGameNpcIdentityName, type GameNpc } from "@marinara-engine/shared";
 
 // ── Types ──
 
@@ -72,6 +72,118 @@ export function createJournal(): Journal {
     locations: [],
     npcLog: [],
     inventoryLog: [],
+  };
+}
+
+/** Remove name-keyed journal history only when no same-named NPC identity remains tracked. */
+export function pruneGameNpcJournal(journal: Journal, npcName: string): Journal {
+  const target = normalizeGameNpcIdentityName(npcName);
+  if (!target) return journal;
+
+  return {
+    ...journal,
+    npcLog: journal.npcLog.filter((entry) => normalizeGameNpcIdentityName(entry.npcName) !== target),
+    entries: journal.entries.filter(
+      (entry) => entry.type !== "npc" || normalizeGameNpcIdentityName(entry.title) !== target,
+    ),
+  };
+}
+
+function gameNpcJournalEntryKey(entry: JournalEntry): string {
+  return JSON.stringify([
+    entry.timestamp,
+    entry.type,
+    entry.title,
+    entry.content,
+    entry.readableType ?? null,
+    entry.sourceMessageId ?? null,
+    entry.sourceSegmentIndex ?? null,
+  ]);
+}
+
+/** Restore only NPC history removed by a sync result that became stale after persistence. */
+export function restorePrunedGameNpcJournal(current: Journal, previous: Journal, npcNames: readonly string[]): Journal {
+  const targets = new Set(npcNames.map(normalizeGameNpcIdentityName).filter(Boolean));
+  if (targets.size === 0) return current;
+
+  let changed = false;
+  const npcLog = current.npcLog.map((entry) => ({ ...entry, interactions: [...entry.interactions] }));
+  for (const previousEntry of previous.npcLog) {
+    const normalizedName = normalizeGameNpcIdentityName(previousEntry.npcName);
+    if (!targets.has(normalizedName)) continue;
+    const currentIndex = npcLog.findIndex((entry) => normalizeGameNpcIdentityName(entry.npcName) === normalizedName);
+    if (currentIndex < 0) {
+      npcLog.push({ ...previousEntry, interactions: [...previousEntry.interactions] });
+      changed = true;
+      continue;
+    }
+    const currentEntry = npcLog[currentIndex]!;
+    const interactions = [...previousEntry.interactions];
+    for (const interaction of currentEntry.interactions) {
+      if (!interactions.includes(interaction)) interactions.push(interaction);
+    }
+    if (interactions.length !== currentEntry.interactions.length) {
+      npcLog[currentIndex] = { ...currentEntry, interactions };
+      changed = true;
+    }
+  }
+
+  const entryKeys = new Set(current.entries.map(gameNpcJournalEntryKey));
+  const entries = [...current.entries];
+  for (const previousEntry of previous.entries) {
+    if (
+      previousEntry.type !== "npc" ||
+      !targets.has(normalizeGameNpcIdentityName(previousEntry.title)) ||
+      entryKeys.has(gameNpcJournalEntryKey(previousEntry))
+    ) {
+      continue;
+    }
+    entries.push(previousEntry);
+    entryKeys.add(gameNpcJournalEntryKey(previousEntry));
+    changed = true;
+  }
+  if (!changed) return current;
+  entries.sort((left, right) => {
+    const leftTime = Date.parse(left.timestamp);
+    const rightTime = Date.parse(right.timestamp);
+    return Number.isFinite(leftTime) && Number.isFinite(rightTime) ? leftTime - rightTime : 0;
+  });
+  return { ...current, entries, npcLog };
+}
+
+export interface GameNpcJournalRemovalPatch extends Record<string, unknown> {
+  gameNpcs: GameNpc[];
+  gameJournal: Journal;
+  gameIgnoredNpcIds: string[];
+}
+
+/** Build an exact-identity NPC removal against metadata read inside the storage write queue. */
+export function buildGameNpcJournalRemovalPatch(
+  metadata: Record<string, unknown>,
+  npcId: string,
+): GameNpcJournalRemovalPatch {
+  const normalizedNpcId = npcId.trim();
+  const currentNpcs = Array.isArray(metadata.gameNpcs) ? (metadata.gameNpcs as GameNpc[]) : [];
+  const removedNpc = currentNpcs.find((npc) => npc.id === normalizedNpcId);
+  const gameNpcs = currentNpcs.filter((npc) => npc.id !== normalizedNpcId);
+  const currentJournal = (metadata.gameJournal as Journal | null) ?? createJournal();
+  const removedName = normalizeGameNpcIdentityName(removedNpc?.name);
+  const sameNameStillTracked =
+    !!removedName && gameNpcs.some((npc) => normalizeGameNpcIdentityName(npc.name) === removedName);
+  const gameIgnoredNpcIds = new Set(
+    Array.isArray(metadata.gameIgnoredNpcIds)
+      ? (metadata.gameIgnoredNpcIds as unknown[]).filter(
+          (value): value is string => typeof value === "string" && value.trim().length > 0,
+        )
+      : [],
+  );
+  gameIgnoredNpcIds.add(normalizedNpcId);
+
+  return {
+    gameNpcs,
+    gameJournal:
+      removedNpc && !sameNameStillTracked ? pruneGameNpcJournal(currentJournal, removedNpc.name) : currentJournal,
+    gameIgnoredNpcIds: [...gameIgnoredNpcIds],
   };
 }
 

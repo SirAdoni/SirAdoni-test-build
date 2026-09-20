@@ -394,6 +394,11 @@ export function appendRoleplayPromptTail(
     const contextPattern = format === "markdown" ? /^#{1,2}[ \t]*Context[ \t]*$/mu : /^Context:[ \t]*$/mu;
     const contextMessage = [...messages].reverse().find((candidate) => {
       if (candidate.role !== "user" || candidate.contextKind === "history") return false;
+      if (format === "none")
+        return (
+          candidate.contextKind === "injection" &&
+          candidate.content.startsWith("Tracker state is reference material for continuity,")
+        );
       if (format !== "xml") return contextPattern.test(candidate.content);
       const start = candidate.content.indexOf("<context>");
       return start >= 0 && candidate.content.indexOf("</context>", start + "<context>".length) >= 0;

@@ -13,8 +13,9 @@ import {
 import { Check, ChevronLeft, ChevronRight, Minus, Package, Plus, Wand2, X } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import type { InventoryIdentity } from "./game-inventory-identity";
 
-export interface InventoryItem {
+export interface InventoryItem extends InventoryIdentity {
   name: string;
   quantity: number;
 }
@@ -26,13 +27,13 @@ interface GameInventoryProps {
   /** Called when the user wants to add a new item */
   onAddItem?: () => Promise<string | null> | string | null;
   /** Called when the user wants to use an item during input phase */
-  onUseItem?: (itemName: string) => void;
+  onUseItem?: (item: InventoryItem) => void;
   /** Called when the user wants to rename an item */
-  onRenameItem?: (currentName: string, nextName: string) => Promise<string | null> | string | null;
+  onRenameItem?: (item: InventoryItem, nextName: string) => Promise<string | null> | string | null;
   /** Called when the user wants to manually remove one unit of an item */
-  onRemoveItem?: (itemName: string) => void | Promise<void>;
+  onRemoveItem?: (item: InventoryItem) => void | Promise<void>;
   /** Called when the user wants to manually add one unit of an item */
-  onIncrementItem?: (itemName: string) => void | Promise<void>;
+  onIncrementItem?: (item: InventoryItem) => void | Promise<void>;
   /** Called when the user drags one item onto another to swap their positions */
   onReorderItem?: (fromIndex: number, toIndex: number) => void | Promise<void>;
   /** Whether the player can interact (input phase) */
@@ -54,7 +55,7 @@ export function GameInventory({
   canInteract,
 }: GameInventoryProps) {
   const { t: localizeUi } = useUiTranslation();
-  const [selectedItem, setSelectedItem] = useState<string | null>(null);
+  const [selectedItem, setSelectedItem] = useState<InventoryIdentity | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [renamePending, setRenamePending] = useState(false);
   const [addPending, setAddPending] = useState(false);
@@ -72,17 +73,21 @@ export function GameInventory({
     (item: InventoryItem) => {
       if (!canInteract) {
         // Just toggle inspect
-        setSelectedItem((prev) => (prev === item.name ? null : item.name));
+        setSelectedItem((prev) =>
+          (prev?.itemId ? prev.itemId === item.itemId : prev?.name === item.name) ? null : item,
+        );
         return;
       }
-      setSelectedItem((prev) => (prev === item.name ? null : item.name));
+      setSelectedItem((prev) =>
+        (prev?.itemId ? prev.itemId === item.itemId : prev?.name === item.name) ? null : item,
+      );
     },
     [canInteract],
   );
 
   const handleUse = useCallback(
-    (itemName: string) => {
-      onUseItem?.(itemName);
+    (item: InventoryItem) => {
+      onUseItem?.(item);
       setSelectedItem(null);
     },
     [onUseItem],
@@ -90,12 +95,19 @@ export function GameInventory({
 
   // Clear selection if the selected item was removed
   useEffect(() => {
-    if (selectedItem && !items.some((i) => i.name === selectedItem)) {
+    if (
+      selectedItem &&
+      !items.some((i) => (selectedItem.itemId ? i.itemId === selectedItem.itemId : i.name === selectedItem.name))
+    ) {
       setSelectedItem(null);
     }
   }, [items, selectedItem]);
 
-  const selectedInventoryItem = selectedItem ? (items.find((item) => item.name === selectedItem) ?? null) : null;
+  const selectedInventoryItem = selectedItem
+    ? (items.find((item) =>
+        selectedItem.itemId ? item.itemId === selectedItem.itemId : item.name === selectedItem.name,
+      ) ?? null)
+    : null;
   const pageCount = Math.max(1, Math.ceil(items.length / ITEMS_PER_PAGE));
   const pageStart = pageIndex * ITEMS_PER_PAGE;
   const pageItems = items.slice(pageStart, pageStart + ITEMS_PER_PAGE);
@@ -110,24 +122,26 @@ export function GameInventory({
 
   useEffect(() => {
     if (!selectedItem) return;
-    const selectedIndex = items.findIndex((item) => item.name === selectedItem);
+    const selectedIndex = items.findIndex((item) =>
+      selectedItem.itemId ? item.itemId === selectedItem.itemId : item.name === selectedItem.name,
+    );
     if (selectedIndex >= 0) {
       setPageIndex(Math.floor(selectedIndex / ITEMS_PER_PAGE));
     }
   }, [items, selectedItem]);
 
   const handleRename = useCallback(
-    async (itemName: string) => {
+    async (item: InventoryItem) => {
       if (!onRenameItem) return;
 
       const nextName = renameDraft.trim().replace(/\s+/g, " ");
-      if (!nextName || nextName === itemName.trim()) return;
+      if (!nextName || nextName === item.name.trim()) return;
 
       setRenamePending(true);
       try {
-        const resolvedName = await onRenameItem(itemName, nextName);
+        const resolvedName = await onRenameItem(item, nextName);
         if (resolvedName) {
-          setSelectedItem(resolvedName);
+          setSelectedItem({ ...item, name: resolvedName });
         }
       } finally {
         setRenamePending(false);
@@ -143,7 +157,7 @@ export function GameInventory({
     try {
       const addedItemName = await onAddItem();
       if (addedItemName) {
-        setSelectedItem(addedItemName);
+        setSelectedItem({ name: addedItemName });
         setPageIndex(Math.floor(items.length / ITEMS_PER_PAGE));
       }
     } finally {
@@ -152,12 +166,12 @@ export function GameInventory({
   }, [items.length, onAddItem]);
 
   const handleIncrement = useCallback(
-    async (itemName: string) => {
+    async (item: InventoryItem) => {
       if (!onIncrementItem) return;
 
       setAmountPending("increment");
       try {
-        await onIncrementItem(itemName);
+        await onIncrementItem(item);
       } finally {
         setAmountPending(null);
       }
@@ -166,12 +180,12 @@ export function GameInventory({
   );
 
   const handleDecrement = useCallback(
-    async (itemName: string) => {
+    async (item: InventoryItem) => {
       if (!onRemoveItem) return;
 
       setAmountPending("decrement");
       try {
-        await onRemoveItem(itemName);
+        await onRemoveItem(item);
       } finally {
         setAmountPending(null);
       }
@@ -265,7 +279,11 @@ export function GameInventory({
                         key={`slot-${globalIndex}`}
                         item={item}
                         globalIndex={globalIndex}
-                        selected={Boolean(item && selectedItem === item.name)}
+                        selected={Boolean(
+                          item &&
+                          selectedItem &&
+                          (selectedItem.itemId ? selectedItem.itemId === item.itemId : selectedItem.name === item.name),
+                        )}
                         reorderEnabled={Boolean(onReorderItem)}
                         onClick={() => item && handleItemClick(item)}
                       />
@@ -292,7 +310,7 @@ export function GameInventory({
           <div className="border-t border-white/8 bg-white/[0.02] px-4 py-2.5">
             {selectedItem ? (
               <div className="mb-2 whitespace-normal break-words text-[0.7rem] font-medium text-white/60 [overflow-wrap:anywhere]">
-                {selectedItem}
+                {selectedInventoryItem?.name ?? selectedItem?.name}
               </div>
             ) : (
               <div className="mb-2 text-[0.7rem] font-medium text-white/45">
@@ -310,7 +328,7 @@ export function GameInventory({
                     }
                     if (e.key === "Enter") {
                       e.preventDefault();
-                      void handleRename(selectedInventoryItem.name);
+                      void handleRename(selectedInventoryItem);
                     }
                   }}
                   disabled={renamePending}
@@ -318,7 +336,7 @@ export function GameInventory({
                   placeholder={localizeUi("ui.game.gameinventory.itemName")}
                 />
                 <button
-                  onClick={() => void handleRename(selectedInventoryItem.name)}
+                  onClick={() => void handleRename(selectedInventoryItem)}
                   disabled={
                     renamePending || !renameDraft.trim() || renameDraft.trim() === selectedInventoryItem.name.trim()
                   }
@@ -350,7 +368,7 @@ export function GameInventory({
                   {onRemoveItem && (
                     <button
                       type="button"
-                      onClick={() => void handleDecrement(selectedInventoryItem.name)}
+                      onClick={() => void handleDecrement(selectedInventoryItem)}
                       disabled={amountPending !== null}
                       className="flex h-full w-7 items-center justify-center text-white/65 transition-colors hover:bg-white/[0.07] hover:text-white/90 disabled:cursor-not-allowed disabled:opacity-40"
                       aria-label={
@@ -375,7 +393,7 @@ export function GameInventory({
                   {onIncrementItem && (
                     <button
                       type="button"
-                      onClick={() => void handleIncrement(selectedInventoryItem.name)}
+                      onClick={() => void handleIncrement(selectedInventoryItem)}
                       disabled={amountPending !== null}
                       className="flex h-full w-7 items-center justify-center text-white/65 transition-colors hover:bg-white/[0.07] hover:text-white/90 disabled:cursor-not-allowed disabled:opacity-40"
                       aria-label={localizeUi("ui.game.gameinventory.increaseValue1Amount", {
@@ -390,7 +408,7 @@ export function GameInventory({
               )}
               {selectedItem && canInteract && onUseItem && (
                 <button
-                  onClick={() => handleUse(selectedItem)}
+                  onClick={() => selectedInventoryItem && handleUse(selectedInventoryItem)}
                   className="flex flex-1 items-center justify-center gap-1 rounded border border-amber-500/20 bg-amber-500/10 py-1.5 text-[0.7rem] font-semibold text-amber-400 transition-colors hover:bg-amber-500/15"
                 >
                   <Wand2 size={12} />

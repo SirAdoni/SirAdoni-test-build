@@ -57,6 +57,7 @@ import { installLongTaskWarner } from "./lib/perf-diagnostics";
 import { getStoreBackLayers } from "./lib/back-layers";
 import { initBackNavigation, syncBackNavigation } from "./lib/back-navigation";
 import { setCustomNotificationSoundUrl } from "./lib/notification-sound";
+import { reportReactRecovery } from "./lib/client-diagnostics";
 
 const VERSION_CHECK_INTERVAL_MS = 5 * 60_000;
 // Against a frozen host the connection opens but is never answered; without a
@@ -154,6 +155,7 @@ export class AppRecoveryBoundary extends Component<{ children: ReactNode }, { er
   componentDidCatch(error: unknown, info: ErrorInfo) {
     recordClientError("render-error", error);
     console.error("[AppRecoveryBoundary] Unhandled render error", error, info.componentStack);
+    void reportReactRecovery(error, info.componentStack ?? undefined);
   }
 
   private resetLocalUiState = () => {

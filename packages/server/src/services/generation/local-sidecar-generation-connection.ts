@@ -30,6 +30,7 @@ export type LocalSidecarGenerationConnection = {
   imageService: null;
   imageEndpointId: null;
   imageGenerationQuality: "auto";
+  maxImageReferences: null;
   defaultParameters: null;
   promptPresetId: null;
   maxTokensOverride: null;
@@ -71,6 +72,7 @@ export function createLocalSidecarGenerationConnection(): LocalSidecarGeneration
     imageService: null,
     imageEndpointId: null,
     imageGenerationQuality: "auto",
+    maxImageReferences: null,
     defaultParameters: null,
     promptPresetId: null,
     maxTokensOverride: null,

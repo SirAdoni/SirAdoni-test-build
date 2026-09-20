@@ -3,6 +3,7 @@
 // ──────────────────────────────────────────────
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
+import { execFileSync } from "node:child_process";
 import { buildApp } from "./app.js";
 import { StorageWriterLeaseError } from "./db/file-backed-store.js";
 import { logger } from "./lib/logger.js";
@@ -15,6 +16,7 @@ import { startEnvWatcher } from "./config/env-watcher.js";
 import { migrateTaskbarShortcuts } from "./services/setup/taskbar-shortcut-migration.js";
 import { sidecarProcessService } from "./services/sidecar/sidecar-process.service.js";
 import { startRuntimeMemoryMonitor } from "./utils/runtime-memory.js";
+import { reportDiagnosticError } from "./lib/diagnostic-operation.js";
 
 function isAddressInUseError(err: unknown): err is NodeJS.ErrnoException {
   return err instanceof Error && "code" in err && err.code === "EADDRINUSE";
@@ -31,17 +33,32 @@ function scheduleTaskbarShortcutMigration() {
 }
 
 function logFatalProcessError(reason: unknown, message: string): void {
+  const reference = reportDiagnosticError(reason, { operation: "process", stage: "fatal" });
   if (reason instanceof Error) {
-    logger.error(reason, message);
+    logger.error(reason, "%s [%s %s]", message, reference.code, reference.errorId);
     return;
   }
 
-  logger.error({ reason }, message);
+  logger.error({ reason, ...reference }, message);
 }
 
 function stopDevelopmentWatcherAfterLeaseConflict(error: unknown): void {
   if (!(error instanceof StorageWriterLeaseError) || !process.argv.includes("--marinara-dev-watch")) return;
   if (process.ppid <= 1) return;
+  if (process.platform === "win32") {
+    // Windows does not deliver POSIX SIGTERM to the tsx watcher reliably.
+    // Terminate the owning watcher tree explicitly after a lease conflict so
+    // it cannot keep restarting a server against the live writer.
+    try {
+      execFileSync("taskkill.exe", ["/PID", String(process.ppid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      return;
+    } catch {
+      // Fall through to the portable signal path if taskkill is unavailable.
+    }
+  }
   try {
     process.kill(process.ppid, "SIGTERM");
   } catch (signalError) {
@@ -108,7 +125,8 @@ async function main() {
       logger.info("Shutdown complete");
       process.exit(0);
     } catch (err) {
-      logger.error(err, "Shutdown failed");
+      const reference = reportDiagnosticError(err, { operation: "shutdown", stage: "shutdown" });
+      logger.error(err, "Shutdown failed [%s %s]", reference.code, reference.errorId);
       process.exit(1);
     }
   };
@@ -146,14 +164,16 @@ async function main() {
         port,
       );
     } else {
-      logger.error(err);
+      const reference = reportDiagnosticError(err, { operation: "startup", stage: "listen" });
+      logger.error(err, "Startup listen failed [%s %s]", reference.code, reference.errorId);
     }
     process.exit(1);
   }
 }
 
 main().catch((err) => {
-  logger.error(err, "[startup] Unhandled error during server bootstrap");
+  const reference = reportDiagnosticError(err, { operation: "startup", stage: "bootstrap" });
+  logger.error(err, "[startup] Unhandled error during server bootstrap [%s %s]", reference.code, reference.errorId);
   stopDevelopmentWatcherAfterLeaseConflict(err);
   process.exit(1);
 });

@@ -40,6 +40,7 @@ function resolveBuildCommit() {
 const BUILD_COMMIT = resolveBuildCommit();
 
 function manualChunks(id: string) {
+  if (id.endsWith("/components/game/FloatingGamePanel.tsx")) return "game-floating-panels";
   if (id.endsWith("/components/game/game-narration-format.ts")) return "game-narration-format";
   if (id.endsWith("/components/game/GameNarrationVisuals.tsx")) return "game-narration-visuals";
   if (id.endsWith("/lib/game-tag-parser.ts")) return "game-tag-parser";

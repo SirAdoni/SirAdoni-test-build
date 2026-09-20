@@ -17,6 +17,7 @@ interface GameNodeMapProps {
   topLeftAction?: ReactNode;
   topRightAction?: ReactNode;
   compactFit?: boolean;
+  fillPanel?: boolean;
 }
 
 export function GameNodeMap({
@@ -29,6 +30,7 @@ export function GameNodeMap({
   topLeftAction,
   topRightAction,
   compactFit,
+  fillPanel,
 }: GameNodeMapProps) {
   const { t: localizeUi } = useUiTranslation();
   const nodes = map.nodes || [];
@@ -98,19 +100,20 @@ export function GameNodeMap({
   const tooltipFontSize = 7 * visualScale;
 
   return (
-    <div className="relative" onMouseLeave={() => setHoveredNodeId(null)}>
+    <div className={cn("relative", fillPanel && "min-h-0 flex-1")} onMouseLeave={() => setHoveredNodeId(null)}>
       <div
         className={cn(
           "relative w-full rounded-lg",
           compactFit && zoom <= 1 ? "flex justify-center overflow-hidden" : "overflow-auto",
         )}
         style={{
-          aspectRatio: `${viewWidth} / ${viewHeight}`,
-          maxHeight: mapViewportMaxHeight,
+          aspectRatio: fillPanel ? undefined : `${viewWidth} / ${viewHeight}`,
+          height: fillPanel ? "100%" : undefined,
+          maxHeight: fillPanel ? undefined : mapViewportMaxHeight,
         }}
       >
         <div
-          className="relative"
+          className={cn("relative", fillPanel && "h-full")}
           style={{
             width: mapWidth,
             marginInline: compactFit || zoom < 1 ? "auto" : undefined,
@@ -120,7 +123,10 @@ export function GameNodeMap({
           {topRightAction}
           <svg
             viewBox={`${visibleMinX} ${visibleMinY} ${visibleViewWidth} ${visibleViewHeight}`}
-            className="block w-full rounded-lg border border-[var(--marinara-chat-chrome-input-border)] bg-[var(--marinara-chat-chrome-input-bg)]"
+            className={cn(
+              "block w-full rounded-lg border border-[var(--marinara-chat-chrome-input-border)] bg-[var(--marinara-chat-chrome-input-bg)]",
+              fillPanel && "h-full",
+            )}
           >
             {/* Edges */}
             {edges.map((edge) => {

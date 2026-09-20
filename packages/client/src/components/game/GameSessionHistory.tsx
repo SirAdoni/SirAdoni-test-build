@@ -25,6 +25,12 @@ import { toast } from "sonner";
 import { AnimatedText } from "./AnimatedText";
 import { GameSetupSummary } from "./GameSetupSummary";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import {
+  GameContinuityPanel,
+  SessionSummaryRefreshBadge,
+  summaryRefreshStatesFromMetadata,
+} from "./GameContinuityPanel";
+import type { ChatMetadata } from "@marinara-engine/shared";
 
 function normalizeText(value: unknown, fallback = ""): string {
   if (typeof value === "string") {
@@ -35,6 +41,11 @@ function normalizeText(value: unknown, fallback = ""): string {
     return String(value);
   }
   return fallback;
+}
+
+function formatKeeperUpdatedAt(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
 function normalizeTextList(value: unknown): string[] {
@@ -105,12 +116,24 @@ interface CurrentSessionSecretDraft {
 }
 
 type LorebookKeeperRunStatus = "running" | "success" | "failed";
+type LorebookKeeperRunPhase = "extracting" | "saving" | "complete" | "incomplete" | "manual";
 
 interface LorebookKeeperLastRun {
   sessionNumber: number;
   status: LorebookKeeperRunStatus;
+  runId?: string;
+  phase?: LorebookKeeperRunPhase;
   updatedAt: string;
+  lorebookId?: string | null;
   entryCount?: number;
+  totalBatches?: number;
+  completedBatches?: number;
+  totalMessages?: number;
+  processedMessages?: number;
+  sourceMessageIds?: string[];
+  sourceHash?: string;
+  coverageVerified?: false;
+  errorCode?: string;
   error?: string;
 }
 
@@ -185,6 +208,8 @@ function SpoilerJsonSection({ label, value }: { label: string; value: unknown[] 
 }
 
 interface GameSessionHistoryProps {
+  chatId?: string;
+  chatMetadata?: ChatMetadata | null;
   summaries: SessionSummary[];
   currentSessionNumber: number;
   currentSessionDate?: string | null;
@@ -213,6 +238,8 @@ interface GameSessionHistoryProps {
 }
 
 export function GameSessionHistory({
+  chatId,
+  chatMetadata,
   summaries,
   currentSessionNumber,
   currentSessionDate = null,
@@ -273,6 +300,10 @@ export function GameSessionHistory({
     return normalized.sort((a, b) => b.sessionNumber - a.sessionNumber);
   }, [summaries]);
   const latestCompletedSessionNumber = sorted[0]?.sessionNumber ?? 0;
+  const summaryRefreshBySession = useMemo(
+    () => new Map(summaryRefreshStatesFromMetadata(chatMetadata).map((item) => [item.sessionNumber, item])),
+    [chatMetadata],
+  );
 
   useEffect(() => {
     if (!editingSecrets) {
@@ -419,6 +450,7 @@ export function GameSessionHistory({
 
       <div className={embedded ? "px-1 py-2" : "flex-1 overflow-y-auto px-4 py-3"}>
         <div className="flex flex-col gap-2">
+          {chatId && <GameContinuityPanel chatId={chatId} metadata={chatMetadata} />}
           <div className="rounded-lg border border-[var(--border)] bg-[var(--secondary)]/45">
             <div className="flex flex-wrap items-center gap-3 px-4 py-3">
               <span className="text-sm font-semibold text-[var(--foreground)]">
@@ -690,6 +722,7 @@ export function GameSessionHistory({
                 lorebookKeeperEnabled && isLatestCompletedSession && typeof onRegenerateLorebook === "function";
               const lorebookRun =
                 lorebookKeeperLastRun?.sessionNumber === session.sessionNumber ? lorebookKeeperLastRun : null;
+              const summaryRefresh = summaryRefreshBySession.get(session.sessionNumber) ?? null;
               const date = new Date(session.timestamp);
               const dateStr = date.toLocaleDateString(undefined, {
                 month: "short",
@@ -701,7 +734,7 @@ export function GameSessionHistory({
                 <div key={session.sessionNumber} className="rounded-lg border border-[var(--border)] bg-[var(--card)]">
                   <button
                     onClick={() => setExpandedSession(isExpanded ? null : session.sessionNumber)}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-[var(--accent)]"
+                    className="flex w-full flex-wrap items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-[var(--accent)]"
                   >
                     {isExpanded ? (
                       <ChevronDown size={14} className="text-[var(--muted-foreground)]" />
@@ -715,28 +748,90 @@ export function GameSessionHistory({
                     <span className="ml-auto text-xs text-[var(--muted-foreground)]">
                       {session.keyDiscoveries.length} {localizeUi("ui.game.gamesessionhistory.discoveries")}
                     </span>
+                    {summaryRefresh && <SessionSummaryRefreshBadge state={summaryRefresh} />}
+                    {lorebookRun && (
+                      <span
+                        className={
+                          lorebookRun.status === "failed" || lorebookRun.phase === "incomplete"
+                            ? "inline-flex items-center gap-1 rounded-md bg-[var(--destructive)]/10 px-2 py-1 text-[0.6875rem] font-medium text-[var(--destructive)]"
+                            : "inline-flex items-center gap-1 rounded-md bg-[var(--secondary)] px-2 py-1 text-[0.6875rem] font-medium text-[var(--muted-foreground)] ring-1 ring-[var(--border)]"
+                        }
+                        title={lorebookRun.error}
+                      >
+                        {lorebookRun.status === "running" ? (
+                          <RefreshCw size={11} />
+                        ) : lorebookRun.status === "failed" || lorebookRun.phase === "incomplete" ? (
+                          <AlertTriangle size={11} />
+                        ) : (
+                          <CheckCircle2 size={11} className="text-emerald-500" />
+                        )}
+                        {lorebookRun.status === "running"
+                          ? localizeUi("ui.game.gamesessionhistory.lorebookLastRecordedProcessing")
+                          : lorebookRun.status === "failed" || lorebookRun.phase === "incomplete"
+                            ? localizeUi("ui.game.gamesessionhistory.lorebookIncomplete")
+                            : lorebookRun.phase === "manual"
+                              ? localizeUi("ui.game.gamesessionhistory.lorebookManualSaved")
+                              : localizeUi("ui.game.gamesessionhistory.lorebookSavedCoverageUnverified")}
+                      </span>
+                    )}
+                    {lorebookRun && (
+                      <span className="basis-full flex min-w-0 flex-wrap justify-end gap-x-2 gap-y-1 text-[0.6875rem] text-[var(--muted-foreground)]">
+                        {lorebookRun.status === "running" && (
+                          <span>
+                            {localizeUi("ui.game.gamesessionhistory.lorebookLastRecordedAt", {
+                              value1: formatKeeperUpdatedAt(lorebookRun.updatedAt),
+                            })}
+                          </span>
+                        )}
+                        {typeof lorebookRun.completedBatches === "number" &&
+                          typeof lorebookRun.totalBatches === "number" && (
+                            <span>
+                              {localizeUi("ui.game.gamesessionhistory.lorebookBatchesProcessed", {
+                                completed: lorebookRun.completedBatches,
+                                total: lorebookRun.totalBatches,
+                              })}
+                            </span>
+                          )}
+                        {typeof lorebookRun.processedMessages === "number" &&
+                          typeof lorebookRun.totalMessages === "number" && (
+                            <span>
+                              {localizeUi("ui.game.gamesessionhistory.lorebookMessagesProcessed", {
+                                processed: lorebookRun.processedMessages,
+                                total: lorebookRun.totalMessages,
+                              })}
+                            </span>
+                          )}
+                      </span>
+                    )}
                   </button>
 
-                  {canRegenerateLorebook && lorebookRun?.status === "failed" && (
+                  {lorebookRun && (lorebookRun.status === "failed" || lorebookRun.phase === "incomplete") && (
                     <div
                       data-component="GameSessionHistory.LorebookKeeperFailure"
                       className="flex items-center gap-2 border-t border-[var(--border)] px-4 py-2"
                     >
                       <AlertTriangle size={14} className="shrink-0 text-[var(--destructive)]" />
-                      <span className="mr-auto text-xs font-semibold text-[var(--foreground)]">
-                        {localizeUi("ui.game.gamesessionhistory.lorebookKeeperFailed")}
+                      <span className="mr-auto min-w-0 break-words text-xs font-semibold text-[var(--foreground)]">
+                        {lorebookRun.error ||
+                          localizeUi(
+                            lorebookRun.status === "failed"
+                              ? "ui.game.gamesessionhistory.lorebookKeeperFailed"
+                              : "ui.game.gamesessionhistory.lorebookIncomplete",
+                          )}
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => void onRegenerateLorebook?.(session.sessionNumber)}
-                        disabled={isRegeneratingLorebook}
-                        className="inline-flex items-center gap-1.5 rounded-md bg-[var(--primary)]/14 px-2 py-1 text-xs font-semibold text-[var(--primary)] hover:bg-[var(--primary)]/22 disabled:opacity-50"
-                      >
-                        <RefreshCw size={12} className={isRegeneratingLorebook ? "animate-spin" : undefined} />
-                        {isRegeneratingLorebook
-                          ? localizeUi("ui.game.gamesessionhistory.retrying")
-                          : localizeUi("ui.game.gamesessionhistory.retryLorebookKeeper")}
-                      </button>
+                      {canRegenerateLorebook && (
+                        <button
+                          type="button"
+                          onClick={() => void onRegenerateLorebook?.(session.sessionNumber)}
+                          disabled={isRegeneratingLorebook}
+                          className="inline-flex items-center gap-1.5 rounded-md bg-[var(--primary)]/14 px-2 py-1 text-xs font-semibold text-[var(--primary)] hover:bg-[var(--primary)]/22 disabled:opacity-50"
+                        >
+                          <RefreshCw size={12} className={isRegeneratingLorebook ? "animate-spin" : undefined} />
+                          {isRegeneratingLorebook
+                            ? localizeUi("ui.game.gamesessionhistory.retrying")
+                            : localizeUi("ui.game.gamesessionhistory.retryLorebookKeeper")}
+                        </button>
+                      )}
                     </div>
                   )}
 
@@ -763,41 +858,66 @@ export function GameSessionHistory({
                                   {localizeUi("ui.game.gamesessionhistory.replaySession")}
                                 </button>
                               )}
-                              {canRegenerateLorebook && lorebookRun && lorebookRun.status !== "failed" && (
-                                <span
-                                  title={lorebookRun.error}
-                                  className="inline-flex items-center gap-1 rounded-md bg-[var(--secondary)] px-2 py-1 text-[0.6875rem] font-medium text-[var(--muted-foreground)] ring-1 ring-[var(--border)]"
-                                >
-                                  {lorebookRun.status === "success" ? (
-                                    <CheckCircle2 size={11} className="text-emerald-500" />
-                                  ) : (
-                                    <RefreshCw size={11} className="animate-spin" />
-                                  )}
-                                  {lorebookRun.status === "success"
-                                    ? localizeUi("ui.game.gamesessionhistory.lorebookValue1", {
-                                        value1: lorebookRun.entryCount ?? 0,
-                                      })
-                                    : localizeUi("ui.game.gamesessionhistory.lorebookRunning")}
-                                </span>
-                              )}
-                              {canRegenerateLorebook && lorebookRun?.status !== "failed" && (
-                                <button
-                                  onClick={() => void onRegenerateLorebook?.(session.sessionNumber)}
-                                  disabled={isRegeneratingLorebook}
-                                  title={localizeUi(
-                                    "ui.game.gamesessionhistory.regenerateTheGameLorebookKeeperEntriesForThisLatest",
-                                  )}
-                                  className="inline-flex items-center gap-1 rounded-md bg-[var(--secondary)] px-2 py-1 text-[0.6875rem] font-medium text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  <BookOpen
-                                    size={11}
-                                    className={isRegeneratingLorebook ? "animate-pulse" : undefined}
-                                  />
-                                  {isRegeneratingLorebook
-                                    ? localizeUi("ui.game.gamesessionhistory.regeneratingLorebook")
-                                    : localizeUi("ui.game.gamesessionhistory.regenerateLorebook")}
-                                </button>
-                              )}
+                              {canRegenerateLorebook &&
+                                lorebookRun &&
+                                lorebookRun.status !== "failed" &&
+                                lorebookRun.phase !== "incomplete" && (
+                                  <span
+                                    title={lorebookRun.error}
+                                    className="inline-flex items-center gap-1 rounded-md bg-[var(--secondary)] px-2 py-1 text-[0.6875rem] font-medium text-[var(--muted-foreground)] ring-1 ring-[var(--border)]"
+                                  >
+                                    {lorebookRun.status === "success" && lorebookRun.phase !== "manual" ? (
+                                      <CheckCircle2 size={11} className="text-emerald-500" />
+                                    ) : lorebookRun.phase === "manual" ? (
+                                      <AlertTriangle size={11} className="text-amber-500" />
+                                    ) : (
+                                      <RefreshCw size={11} />
+                                    )}
+                                    {lorebookRun.status === "success"
+                                      ? lorebookRun.phase === "manual"
+                                        ? localizeUi("ui.game.gamesessionhistory.lorebookManualSaved")
+                                        : localizeUi("ui.game.gamesessionhistory.lorebookSavedCoverageUnverified")
+                                      : localizeUi("ui.game.gamesessionhistory.lorebookLastRecordedProcessing")}
+                                    {typeof lorebookRun.completedBatches === "number" &&
+                                      typeof lorebookRun.totalBatches === "number" && (
+                                        <span>
+                                          {localizeUi("ui.game.gamesessionhistory.lorebookBatchesProcessed", {
+                                            completed: lorebookRun.completedBatches,
+                                            total: lorebookRun.totalBatches,
+                                          })}
+                                        </span>
+                                      )}
+                                    {typeof lorebookRun.processedMessages === "number" &&
+                                      typeof lorebookRun.totalMessages === "number" && (
+                                        <span>
+                                          {localizeUi("ui.game.gamesessionhistory.lorebookMessagesProcessed", {
+                                            processed: lorebookRun.processedMessages,
+                                            total: lorebookRun.totalMessages,
+                                          })}
+                                        </span>
+                                      )}
+                                  </span>
+                                )}
+                              {canRegenerateLorebook &&
+                                lorebookRun?.status !== "failed" &&
+                                lorebookRun?.phase !== "incomplete" && (
+                                  <button
+                                    onClick={() => void onRegenerateLorebook?.(session.sessionNumber)}
+                                    disabled={isRegeneratingLorebook}
+                                    title={localizeUi(
+                                      "ui.game.gamesessionhistory.regenerateTheGameLorebookKeeperEntriesForThisLatest",
+                                    )}
+                                    className="inline-flex items-center gap-1 rounded-md bg-[var(--secondary)] px-2 py-1 text-[0.6875rem] font-medium text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    <BookOpen
+                                      size={11}
+                                      className={isRegeneratingLorebook ? "animate-pulse" : undefined}
+                                    />
+                                    {isRegeneratingLorebook
+                                      ? localizeUi("ui.game.gamesessionhistory.regeneratingLorebook")
+                                      : localizeUi("ui.game.gamesessionhistory.regenerateLorebook")}
+                                  </button>
+                                )}
                               {onUpdatePlotArcs && (
                                 <button
                                   onClick={() => void onUpdatePlotArcs(session.sessionNumber)}

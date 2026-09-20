@@ -1,10 +1,11 @@
-import { stripMacroComments } from "@marinara-engine/shared";
+import { MAX_IMAGE_REFERENCES_PER_REQUEST, stripMacroComments } from "@marinara-engine/shared";
 import { readPreferredFullBodySpriteBase64 } from "../game/sprite.service.js";
 import { readAvatarBase64 } from "../game/game-asset-generation.js";
 import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
 import { resolveStoredGalleryFile } from "./gallery-file-lifecycle.js";
 import { isAllowedImageBuffer } from "../../utils/security.js";
+import { imageReferencePayloadKey } from "./image-reference-utils.js";
 
 type CharacterRowLike = {
   id: string;
@@ -463,7 +464,10 @@ export async function resolveIllustratorCharacterReferences(args: {
   characterGallery?: CharacterGalleryReferenceStore;
   personaGallery?: PersonaGalleryReferenceStore;
 }): Promise<IllustratorReferenceResolution> {
-  const maxReferences = Math.max(1, Math.min(args.maxReferences ?? MAX_ILLUSTRATOR_REFERENCE_IMAGES, 12));
+  const maxReferences = Math.max(
+    0,
+    Math.min(args.maxReferences ?? MAX_ILLUSTRATOR_REFERENCE_IMAGES, MAX_IMAGE_REFERENCES_PER_REQUEST),
+  );
   const allRows = await args.charactersStore.list().catch(() => []);
   const allSources = allRows
     .map((row, index) => characterRowToSource(row, index + args.chatCharacters.length))
@@ -548,10 +552,11 @@ export async function resolveIllustratorCharacterReferences(args: {
   }
 
   const orderedSelectedSources = [...selected.values()].sort((a, b) => a.sourceOrder - b.sourceOrder);
-  const orderedSources = orderedSelectedSources.slice(0, maxReferences);
+  const orderedSources = orderedSelectedSources.slice(0, Math.max(MAX_ILLUSTRATOR_REFERENCE_IMAGES, maxReferences));
   const referenceImages: string[] = [];
   const referenceNames: string[] = [];
   const appearanceSources: IllustratorReferenceResolution["appearanceSources"] = [];
+  const seenReferenceImages = new Set<string>();
   const appearanceNames: string[] = [];
 
   const pushAppearanceLine = (name: string, appearance: string | null | undefined) => {
@@ -565,10 +570,13 @@ export async function resolveIllustratorCharacterReferences(args: {
     pushAppearanceLine(source.name, source.appearance);
   }
 
-  for (const source of orderedSources) {
-    if (args.includeReferenceImages === false) continue;
+  for (const source of orderedSelectedSources) {
+    if (args.includeReferenceImages === false || referenceImages.length >= maxReferences) break;
     const b64 = await readBestReferenceImage(source, args.characterGallery);
     if (!b64) continue;
+    const referenceKey = imageReferencePayloadKey(b64);
+    if (!referenceKey || seenReferenceImages.has(referenceKey)) continue;
+    seenReferenceImages.add(referenceKey);
     referenceImages.push(b64);
     referenceNames.push(source.name);
   }
@@ -590,8 +598,13 @@ export async function resolveIllustratorCharacterReferences(args: {
       : null;
     const fallbackAvatar = preferred ? null : readAvatarBase64(args.persona.avatarPath ?? null);
     if (preferred?.base64 || fallbackAvatar) {
-      referenceImages.push(preferred?.base64 ?? fallbackAvatar!);
-      referenceNames.push(args.persona.name);
+      const referenceImage = preferred?.base64 ?? fallbackAvatar!;
+      const referenceKey = imageReferencePayloadKey(referenceImage);
+      if (referenceKey && !seenReferenceImages.has(referenceKey)) {
+        seenReferenceImages.add(referenceKey);
+        referenceImages.push(referenceImage);
+        referenceNames.push(args.persona.name);
+      }
     }
   }
   if (args.persona && personaRequested) {
@@ -608,7 +621,7 @@ export async function resolveIllustratorCharacterReferences(args: {
     referenceNames,
     referenceLine:
       referenceNames.length > 0
-        ? `Attached are reference images of ${referenceNames.join(", ")}. Use them only to preserve character likeness and visual identity; the written scene prompt is authoritative for composition, setting, action, mood, framing, and whether any text appears.`
+        ? `Reference images, when attached, show one or more of these characters: ${referenceNames.join(", ")}. Use any attached images only to preserve character likeness and visual identity; the written scene prompt is authoritative for composition, setting, action, mood, framing, and whether any text appears.`
         : null,
     appearanceNames,
     appearanceSources,

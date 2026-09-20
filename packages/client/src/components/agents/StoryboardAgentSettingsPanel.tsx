@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { StoryboardContinuitySettings } from "./StoryboardContinuitySettings";
 import { ChevronDown, ImageIcon, PanelsTopLeft, Plus, RotateCcw, Trash2, Video } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import {
@@ -701,6 +702,11 @@ export function StoryboardAgentSettingsPanel({
 
   return (
     <div className="min-w-0 max-w-full space-y-4 overflow-hidden [&_button]:max-w-full [&_input]:min-w-0 [&_input]:max-w-full [&_label]:min-w-0 [&_section]:min-w-0 [&_select]:min-w-0 [&_select]:max-w-full [&_textarea]:min-w-0 [&_textarea]:max-w-full">
+      <StoryboardContinuitySettings
+        value={settings.visualContinuity}
+        defaults={defaults.visualContinuity}
+        onChange={(value) => value && update({ visualContinuity: value })}
+      />
       <StoryboardSetupSection
         title={localizeUi("ui.agents.storyboard.setup")}
         description={localizeUi("ui.agents.storyboard.setupDescription")}
@@ -762,7 +768,11 @@ export function StoryboardAgentSettingsPanel({
             </select>
           </label>
           <label className="space-y-1.5">
-            <span className="text-[0.6875rem] font-medium">{localizeUi("ui.agents.storyboard.keyframes")}</span>
+            <span className="text-[0.6875rem] font-medium">
+              {localizeUi(
+                settings.adaptiveKeyframeCount ? "game.storyboard.baseFrameCount" : "ui.agents.storyboard.keyframes",
+              )}
+            </span>
             <input
               type="number"
               min={GAME_STORYBOARD_KEYFRAME_COUNT_MIN}
@@ -782,6 +792,43 @@ export function StoryboardAgentSettingsPanel({
               className="w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm ring-1 ring-[var(--border)]"
             />
           </label>
+          <label className="space-y-1.5">
+            <span className="text-[0.6875rem] font-medium">{localizeUi("game.storyboard.frameCountMode")}</span>
+            <select
+              value={settings.adaptiveKeyframeCount ? "adaptive" : "fixed"}
+              onChange={(event) => update({ adaptiveKeyframeCount: event.target.value === "adaptive" })}
+              className="w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm ring-1 ring-[var(--border)]"
+            >
+              <option value="fixed">{localizeUi("game.storyboard.fixedFrameCount")}</option>
+              <option value="adaptive">{localizeUi("game.storyboard.adaptiveFrameCount")}</option>
+            </select>
+            <p className="text-[0.6875rem] text-[var(--muted-foreground)]">
+              {localizeUi("game.storyboard.adaptiveFrameCountHelp")}
+            </p>
+          </label>
+          {settings.adaptiveKeyframeCount && (
+            <label className="space-y-1.5">
+              <span className="text-[0.6875rem] font-medium">{localizeUi("game.storyboard.maxAutomaticFrames")}</span>
+              <input
+                type="number"
+                min={GAME_STORYBOARD_KEYFRAME_COUNT_MIN}
+                max={GAME_STORYBOARD_KEYFRAME_COUNT_MAX}
+                value={settings.maxAutomaticKeyframes}
+                onChange={(event) =>
+                  update({
+                    maxAutomaticKeyframes: Math.min(
+                      GAME_STORYBOARD_KEYFRAME_COUNT_MAX,
+                      Math.max(
+                        GAME_STORYBOARD_KEYFRAME_COUNT_MIN,
+                        Number(event.target.value) || GAME_STORYBOARD_KEYFRAME_COUNT_MIN,
+                      ),
+                    ),
+                  })
+                }
+                className="w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm ring-1 ring-[var(--border)]"
+              />
+            </label>
+          )}
           {showAnimationStages ? (
             <label className="space-y-1.5" data-storyboard-animation-only>
               <span className="text-[0.6875rem] font-medium">{localizeUi("ui.agents.storyboard.duration")}</span>

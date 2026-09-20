@@ -118,3 +118,58 @@ export function findNamedMapValue<T>(map: Map<string, T>, targetName: string): T
   const entry = findNamedEntry(map.entries(), targetName, ([name]) => name);
   return entry?.[1];
 }
+
+/**
+ * Resolve a display name without guessing between equally plausible identities.
+ * Exact names win; otherwise prefer the complete queried name inside a longer
+ * canonical title (for example, "Honoria Stell" -> "Dame Honoria Stell") over
+ * a shorter alias ("Honoria").
+ */
+export function findBestNamedEntry<T>(
+  entries: Iterable<T>,
+  targetName: string,
+  getName: (entry: T) => string | null | undefined,
+  getIdentity: (entry: T) => string | null | undefined = () => null,
+): T | undefined {
+  const target = normalizeCharacterName(targetName);
+  const targetTokens = target.split(/\s+/).filter(Boolean);
+  if (!target || targetTokens.length === 0) return undefined;
+
+  const scored = [...entries]
+    .map((entry) => {
+      const name = normalizeCharacterName(getName(entry) ?? "");
+      const tokens = name.split(/\s+/).filter(Boolean);
+      if (!name || tokens.length === 0) return null;
+      if (name === target) return { entry, score: [3, tokens.length, name.length] as const };
+
+      const targetInsideCandidate =
+        name.includes(` ${target} `) || name.startsWith(`${target} `) || name.endsWith(` ${target}`);
+      if (targetInsideCandidate) {
+        return { entry, score: [2, targetTokens.length, target.length] as const };
+      }
+
+      const candidateInsideTarget =
+        target.includes(` ${name} `) || target.startsWith(`${name} `) || target.endsWith(` ${name}`);
+      if (candidateInsideTarget) {
+        return { entry, score: [1, tokens.length, name.length] as const };
+      }
+      return null;
+    })
+    .filter((item) => item !== null);
+
+  if (scored.length === 0) return undefined;
+  scored.sort((left, right) => {
+    for (let index = 0; index < left.score.length; index += 1) {
+      const difference = right.score[index] - left.score[index];
+      if (difference !== 0) return difference;
+    }
+    return 0;
+  });
+
+  const best = scored[0]!;
+  const ties = scored.filter((item) => item.score.every((value, index) => value === best.score[index]));
+  if (ties.length === 1) return best.entry;
+
+  const identities = ties.map((item) => getIdentity(item.entry)?.trim() ?? "");
+  return identities.every((identity) => identity && identity === identities[0]) ? ties[0]!.entry : undefined;
+}

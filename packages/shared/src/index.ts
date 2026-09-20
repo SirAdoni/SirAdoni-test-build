@@ -41,6 +41,7 @@ export * from "./types/capability-runtime.js";
 export * from "./types/localization.js";
 export * from "./types/personal-extension.js";
 export * from "./types/home-feed.js";
+export * from "./types/diagnostics.js";
 
 // Schemas
 export * from "./schemas/chat.schema.js";
@@ -70,12 +71,14 @@ export * from "./schemas/folder.schema.js";
 export * from "./schemas/scene-analysis.schema.js";
 export * from "./schemas/library-folder.schema.js";
 export * from "./schemas/home-widget.schema.js";
+export * from "./schemas/private-notebook.schema.js";
 
 // Constants
 export * from "./constants/providers.js";
 export * from "./constants/defaults.js";
 export * from "./constants/chat-mode-agent-policy.js";
 export * from "./constants/model-lists.js"; // also exports IMAGE_GENERATION_SOURCES
+export * from "./constants/generation-parameter-relevance.js";
 export * from "./constants/agent-prompts.js";
 export * from "./constants/agent-activation.js";
 export * from "./constants/impersonate.js";
@@ -100,6 +103,7 @@ export * from "./constants/mari-permissions-mode.js";
 // Feature registries
 export * from "./features/agents/agent-manifest.types.js";
 export * from "./features/agents/storyboard-agent-settings.js";
+export * from "./features/agents/storyboard-continuity-settings.js";
 export {
   BUILT_IN_AGENT_MANIFESTS,
   isBuiltInAgentHostManaged,
@@ -122,6 +126,8 @@ export {
 export * from "./features/tactical-combat/index.js";
 
 // Utils
+export * from "./utils/game-npc-id.js";
+export * from "./utils/game-npc-narration.js";
 export * from "./utils/macro-engine.js";
 export * from "./utils/ui-locales.js";
 export * from "./utils/xml-wrapper.js";
@@ -151,6 +157,7 @@ export * from "./utils/message-continuation.js";
 export * from "./utils/quest-state.js";
 export * from "./utils/quote-format.js";
 export * from "./utils/image-prompt-compiler.js";
+export * from "./utils/image-reference-limits.js";
 export * from "./utils/game-art-style.js";
 export * from "./utils/thinking-tags.js";
 export * from "./utils/rpg-stats.js";
@@ -170,6 +177,7 @@ export * from "./utils/noodler-onboarding.js";
 export * from "./utils/noodle-interactions.js";
 export * from "./utils/noodle-unseen.js";
 export * from "./utils/spatial-context.js";
+export * from "./utils/legacy-game-map.js";
 export * from "./utils/inventory-tracker-rows.js";
 export * from "./utils/tracker-updates.js";
 export * from "./utils/dice-branch.js";
@@ -193,3 +201,10 @@ export * from "./features/rulesets/layers.js";
 export * from "./features/ruleset-combat/index.js";
 
 export * from "./constants/request-timeouts.js";
+export * from "./utils/character-library-category.js";
+export { applyHudWidgetLifecycle } from "./utils/hud-widget-lifecycle.js";
+export * from "./types/game-scene-timeline.js";
+export * from "./types/storyboard-progress.js";
+export * from "./types/game-continuity.js";
+export * from "./types/campaign-memory.js";
+export * from "./types/campaign-memory-api.js";

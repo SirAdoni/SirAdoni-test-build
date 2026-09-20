@@ -56,6 +56,7 @@ import {
 import { getCharacterTitle } from "../../lib/character-display";
 import { api } from "../../lib/api-client";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 import {
   GenerationParametersFields,
   getEditableGenerationParameters,
@@ -76,7 +77,7 @@ import {
   GameWidgetSetupEditor,
   normalizeGameHudWidgets,
 } from "./GameWidgetSetupEditor";
-import { useConnections } from "../../hooks/use-connections";
+import { useConnections, useModelParameterCapabilities } from "../../hooks/use-connections";
 import { useDefaultPreset, usePresets } from "../../hooks/use-presets";
 import { useCharacterGroups, usePersonas } from "../../hooks/use-characters";
 import { GameSetupRulesChooser, GameSetupRulesetSheetStatus } from "./GameSetupRulesChooser";
@@ -187,13 +188,16 @@ interface WizardConnection {
 function CharacterAvatar({
   character,
   className = "h-6 w-6 rounded-full",
+  onUpdate,
 }: {
   character: {
+    id: string;
     name: string;
     avatarUrl?: string | null;
     avatarCrop?: AvatarCrop | null;
   };
   className?: string;
+  onUpdate?: () => void;
 }) {
   if (!character.avatarUrl) {
     return (
@@ -203,7 +207,13 @@ function CharacterAvatar({
     );
   }
   return (
-    <span className={cn("relative block shrink-0 overflow-hidden", className)}>
+    <CharacterPhoto
+      src={character.avatarUrl}
+      name={character.name}
+      className={cn("relative block shrink-0 overflow-hidden", className)}
+      wrapperClassName="relative inline-flex shrink-0"
+      onUpdate={onUpdate ?? (() => useUIStore.getState().openCharacterDetail(character.id))}
+    >
       <img
         src={character.avatarUrl}
         alt={character.name}
@@ -211,7 +221,7 @@ function CharacterAvatar({
         className="h-full w-full object-cover"
         style={getAvatarCropStyle(character.avatarCrop)}
       />
-    </span>
+    </CharacterPhoto>
   );
 }
 
@@ -745,6 +755,7 @@ export function GameSetupWizard({
     () => connections.find((connection) => connection.id === gmConnectionId) ?? null,
     [connections, gmConnectionId],
   );
+  const gmModelCapabilities = useModelParameterCapabilities(customizeParameters ? selectedGmConnection : null);
   const gmParameterDefaults = useMemo(
     () => getEditableGenerationParameters(ROLEPLAY_PARAMETER_DEFAULTS, selectedGmConnection?.defaultParameters),
     [selectedGmConnection?.defaultParameters],
@@ -1719,10 +1730,9 @@ export function GameSetupWizard({
                           <div className="mt-3 border-t border-[var(--border)] pt-3">
                             <GenerationParametersFields
                               value={generationParameters}
-                              showServiceTier={
-                                selectedGmConnection?.provider === "openrouter" ||
-                                selectedGmConnection?.provider === "nanogpt"
-                              }
+                              provider={selectedGmConnection?.provider ?? null}
+                              model={selectedGmConnection?.model ?? null}
+                              modelCapabilities={gmModelCapabilities}
                               onChange={setGenerationParameters}
                             />
                           </div>
@@ -2250,9 +2260,18 @@ export function GameSetupWizard({
                           </div>
                           <div className="max-h-32 overflow-y-auto">
                             {filteredGmCharacters.map((c) => (
-                              <button
+                              <div
                                 key={c.id}
+                                role="button"
+                                tabIndex={0}
                                 onClick={() => setGmCharacterId(c.id === gmCharacterId ? null : c.id)}
+                                onKeyDown={(event) => {
+                                  if (event.target !== event.currentTarget) return;
+                                  if (event.key === "Enter" || event.key === " ") {
+                                    event.preventDefault();
+                                    setGmCharacterId(c.id === gmCharacterId ? null : c.id);
+                                  }
+                                }}
                                 className={cn(
                                   "flex w-full items-center gap-2.5 px-3 py-2 text-left transition-all hover:bg-[var(--accent)]",
                                   c.id === gmCharacterId && "bg-[var(--primary)]/5",
@@ -2272,7 +2291,7 @@ export function GameSetupWizard({
                                     {localizeUi("ui.game.gamesetupwizard.selected_9a976fc")}
                                   </span>
                                 )}
-                              </button>
+                              </div>
                             ))}
                             {filteredGmCharacters.length === 0 && (
                               <p className="px-3 py-2 text-[0.6875rem] text-[var(--muted-foreground)]">
@@ -2377,9 +2396,18 @@ export function GameSetupWizard({
                           {filteredPartyCharacters.map((c) => {
                             const isSelected = partyCharacterIds.includes(c.id);
                             return (
-                              <button
+                              <div
                                 key={c.id}
+                                role="button"
+                                tabIndex={0}
                                 onClick={() => togglePartyMember(c.id)}
+                                onKeyDown={(event) => {
+                                  if (event.target !== event.currentTarget) return;
+                                  if (event.key === "Enter" || event.key === " ") {
+                                    event.preventDefault();
+                                    togglePartyMember(c.id);
+                                  }
+                                }}
                                 className={cn(
                                   "flex w-full items-center gap-2.5 px-3 py-2 text-left transition-all hover:bg-[var(--accent)]",
                                   isSelected && "bg-[var(--primary)]/5",
@@ -2401,7 +2429,7 @@ export function GameSetupWizard({
                                 ) : (
                                   <Plus size="0.75rem" className="text-[var(--muted-foreground)]" />
                                 )}
-                              </button>
+                              </div>
                             );
                           })}
                           {filteredPartyCharacters.length === 0 && (
@@ -2430,10 +2458,12 @@ export function GameSetupWizard({
                             <div className="mb-2 flex items-center gap-2.5 rounded-lg bg-[var(--primary)]/10 px-3 py-2 ring-1 ring-[var(--primary)]/30">
                               <CharacterAvatar
                                 character={{
+                                  id: p.id,
                                   name: p.name,
                                   avatarUrl: p.avatarPath ?? null,
                                   avatarCrop: p.avatarCrop,
                                 }}
+                                onUpdate={() => useUIStore.getState().openPersonaDetail(p.id)}
                               />
                               <div className="min-w-0 flex-1">
                                 <span className="block truncate text-xs">{p.name}</span>
@@ -2467,9 +2497,18 @@ export function GameSetupWizard({
                           {filteredPersonas.map((p) => {
                             const title = getPersonaTitle(p);
                             return (
-                              <button
+                              <div
                                 key={p.id}
+                                role="button"
+                                tabIndex={0}
                                 onClick={() => setPersonaId(p.id === personaId ? null : p.id)}
+                                onKeyDown={(event) => {
+                                  if (event.target !== event.currentTarget) return;
+                                  if (event.key === "Enter" || event.key === " ") {
+                                    event.preventDefault();
+                                    setPersonaId(p.id === personaId ? null : p.id);
+                                  }
+                                }}
                                 className={cn(
                                   "flex w-full items-center gap-2.5 px-3 py-2 text-left transition-all hover:bg-[var(--accent)]",
                                   p.id === personaId && "bg-[var(--primary)]/5",
@@ -2477,10 +2516,12 @@ export function GameSetupWizard({
                               >
                                 <CharacterAvatar
                                   character={{
+                                    id: p.id,
                                     name: p.name,
                                     avatarUrl: p.avatarPath ?? null,
                                     avatarCrop: p.avatarCrop,
                                   }}
+                                  onUpdate={() => useUIStore.getState().openPersonaDetail(p.id)}
                                 />
                                 <div className="min-w-0 flex-1">
                                   <span className="block truncate text-xs">{p.name}</span>
@@ -2495,7 +2536,7 @@ export function GameSetupWizard({
                                     {localizeUi("ui.game.gamesetupwizard.selected_9a976fc")}
                                   </span>
                                 )}
-                              </button>
+                              </div>
                             );
                           })}
                           {filteredPersonas.length === 0 && (

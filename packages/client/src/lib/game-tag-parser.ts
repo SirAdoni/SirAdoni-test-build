@@ -820,7 +820,13 @@ export function parseGmTags(content: string): ParsedGmTags {
         const k = pair.slice(0, colonIdx).trim();
         const v = pair.slice(colonIdx + 1).trim();
         const stripped = v.replace(/^["']|["']$/g, "");
-        if (k === "value") {
+        if (k === "action" && (stripped === "create" || stripped === "delete")) changes.action = stripped;
+        else if (k === "type") changes.type = stripped as NonNullable<WidgetUpdate["changes"]["type"]>;
+        else if (k === "label") changes.label = stripped;
+        else if (k === "icon") changes.icon = stripped;
+        else if (k === "position") changes.position = stripped as NonNullable<WidgetUpdate["changes"]["position"]>;
+        else if (k === "max") changes.max = Number(stripped);
+        else if (k === "value") {
           const parsed = parseFloat(stripped);
           changes.value = isNaN(parsed) ? stripped : parsed;
         } else if (k === "stat") changes.statName = stripped;

@@ -20,6 +20,7 @@ import { renderInlineWithCustomEmojis } from "../../lib/custom-emoji-render";
 import { EmojiPicker } from "../ui/EmojiPicker";
 import { CustomEmojiTab } from "../chat/CustomEmojiTab";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 
 interface AnchorRect {
   top: number;
@@ -379,12 +380,14 @@ export function AboutMeViewerModal({
             <div className="mari-about-me-avatar relative">
               <div className="relative h-[4.5rem] w-[4.5rem] overflow-hidden rounded-full border-4 border-[var(--card)] bg-[var(--accent)]">
                 {avatarUrl ? (
-                  <img
-                    src={avatarUrl}
-                    alt={displayName}
-                    className="h-full w-full object-cover"
-                    style={getAvatarCropStyle(avatarCrop)}
-                  />
+                  <CharacterPhoto src={avatarUrl} name={displayName} className="h-full w-full object-cover">
+                    <img
+                      src={avatarUrl}
+                      alt={displayName}
+                      className="h-full w-full object-cover"
+                      style={getAvatarCropStyle(avatarCrop)}
+                    />
+                  </CharacterPhoto>
                 ) : (
                   <div className="flex h-full w-full items-center justify-center text-xl font-bold text-[var(--muted-foreground)]">
                     {kind === "persona" ? <User size="1.5rem" /> : displayName[0]?.toUpperCase()}

@@ -297,9 +297,8 @@ export async function prepareKnowledgeRouterCandidates(
  *   4. Look up the selected entries and return their content verbatim,
  *      joined into a single context_injection text block.
  *
- * The route layer is responsible for pre-filtering entries (e.g. dropping
- * `constant: true` entries — those are already injected unconditionally
- * by the standard activation pipeline, so routing them would duplicate).
+ * The route layer is responsible for pre-filtering entries already activated
+ * by the standard pipeline so routing them would duplicate their content.
  */
 export async function executeKnowledgeRouter(
   config: AgentExecConfig,

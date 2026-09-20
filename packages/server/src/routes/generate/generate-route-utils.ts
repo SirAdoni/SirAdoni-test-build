@@ -35,6 +35,7 @@ import {
   type WrapFormat,
 } from "@marinara-engine/shared";
 import { wrapContent } from "../../services/prompt/format-engine.js";
+import { isPromptCacheBoundary } from "../../services/prompt/merger.js";
 import { parseStoredRulesetLive } from "../../services/storage/game-state.storage.js";
 import {
   appendReadableAttachmentsToContent,
@@ -449,7 +450,11 @@ export function parseSnapshotPlayerStats(snapshot: { playerStats?: unknown } | n
 }
 
 export function shouldAbortOnPassiveGenerationDisconnect(args: { impersonate?: boolean }): boolean {
-  return args.impersonate === true;
+  // Once admitted, every generation path persists its accepted result on the
+  // server. A lost SSE consumer is passive; only the explicit abort route may
+  // cancel the provider work, including impersonation turns.
+  void args;
+  return false;
 }
 
 export function resolveProviderTopK(topK: number): number | undefined {
@@ -644,6 +649,7 @@ export function findTrackerContextInsertIndex(
 }
 
 type PromptRoleMessage = ChatMessage & {
+  id?: string | null;
   characterId?: string | null;
 };
 
@@ -703,7 +709,7 @@ export function appendNonLeadingSystemMessagesToLastUser<T extends PromptRoleMes
       continue;
     }
 
-    if (cloned.role === "system") {
+    if (cloned.role === "system" && !isPromptCacheBoundary(cloned)) {
       const converted = { ...cloned, role: "user" as const };
       if (cloned.contextKind === "history" || cloned.contextKind === "injection") {
         result.push(converted as T);
@@ -753,6 +759,8 @@ export function postProcessMessages(
       previous.role === message.role &&
       !protocolMessage &&
       !previous.tool_calls?.length &&
+      !isPromptCacheBoundary(previous) &&
+      !isPromptCacheBoundary(message) &&
       !(message.role === "assistant" && (previous.providerMetadata || message.providerMetadata));
     if (canMerge && (leadingSystem || apply || single)) {
       appendPromptMessageContent(previous, message);
@@ -761,6 +769,34 @@ export function postProcessMessages(
     }
   }
   return result;
+}
+/**
+ * Put the exact current history-user turn after injected Game guidance while
+ * preserving an optional trailing assistant prefill.
+ *
+ * The message id is required deliberately: depth-zero card/lore injections can
+ * also use the user role, so a generic "last user" move can select prompt text
+ * instead of the player's real turn.
+ */
+export function moveUserHistoryMessageToPromptTail<T extends PromptRoleMessage>(
+  messages: T[],
+  messageId: string,
+  options: { beforeTrailingAssistant?: boolean } = {},
+): boolean {
+  const sourceIndex = messages.findIndex(
+    (message) => message.id === messageId && message.role === "user" && message.contextKind === "history",
+  );
+  if (sourceIndex < 0) return false;
+
+  const [currentUserMessage] = messages.splice(sourceIndex, 1);
+  if (!currentUserMessage) return false;
+
+  let targetIndex = messages.length;
+  if (options.beforeTrailingAssistant && messages[targetIndex - 1]?.role === "assistant") {
+    targetIndex -= 1;
+  }
+  messages.splice(targetIndex, 0, currentUserMessage);
+  return true;
 }
 
 export function isMessageHiddenFromAI(message: { extra?: unknown }): boolean {

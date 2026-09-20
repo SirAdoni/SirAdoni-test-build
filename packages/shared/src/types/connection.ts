@@ -30,6 +30,9 @@ export type AudioGenerationSource = (typeof AUDIO_GENERATION_SOURCES)[number];
 export const IMAGE_GENERATION_QUALITIES = ["auto", "low", "medium", "high", "xhigh", "max"] as const;
 export type ImageGenerationQuality = (typeof IMAGE_GENERATION_QUALITIES)[number];
 
+/** Highest user-configurable reference-image budget for one image-generation request. */
+export const MAX_IMAGE_REFERENCES_PER_REQUEST = 20;
+
 /** An API connection configuration. */
 export interface APIConnection {
   id: string;
@@ -79,6 +82,8 @@ export interface APIConnection {
   imagePromptInstructions: string | null;
   /** OpenAI GPT Image quality saved for this connection. */
   imageGenerationQuality: ImageGenerationQuality;
+  /** Maximum reference images Marinara may attach, or null for the provider-aware automatic limit. */
+  maxImageReferences: number | null;
   /** Explicit video backend selection for video-generation connections (e.g. Gemini Omni). */
   videoGenerationSource: string | null;
   /** Explicitly selected video generation service ID. Overrides URL/model inference when set. */

@@ -37,6 +37,7 @@ const child = spawn(
       AUTO_CREATE_DEFAULT_CONNECTION: "false",
     },
     stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
   },
 );
 let output = "";
@@ -101,7 +102,11 @@ try {
   // Also stop a server that timed out before reporting its PID. Otherwise its
   // open storage files hide the original failure behind an EPERM during cleanup.
   if (process.platform === "win32" && child.pid)
-    spawnSync("taskkill.exe", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", timeout: 5_000 });
+    spawnSync("taskkill.exe", ["/pid", String(child.pid), "/T", "/F"], {
+      stdio: "ignore",
+      timeout: 5_000,
+      windowsHide: true,
+    });
   else child.kill("SIGTERM");
   await exited;
   rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

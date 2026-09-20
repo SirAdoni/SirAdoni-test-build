@@ -105,9 +105,23 @@ const calls: ChatMessage[][] = [];
 let failContinuation = false;
 let roleplay = false;
 let unsupportedOnly = false;
+const isBackgroundGameRequest = (messages: ChatMessage[]): boolean => {
+  const first = messages[0]?.content ?? "";
+  return (
+    first.startsWith("You maintain an evidence-based scene timeline") ||
+    (messages.length === 1 &&
+      /^(?:Extract durable continuity records|Review continuity source-first|Repair only the reviewed continuity findings)/u.test(
+        first,
+      ))
+  );
+};
 const raw =
   'He does not see you. [skill_check: skill="Stealth" dc="40" rolls="2"] You escape unseen. [dice: 3d1+2] [skill_check: skill="Pool" dc="6" dice="6d1" resolution="successes" threshold="1"]';
 async function* scriptedChat(messages: ChatMessage[], options: ChatOptions): AsyncGenerator<string, LLMUsage> {
+  if (isBackgroundGameRequest(messages)) {
+    yield '{"visits":[],"records":[],"dispositions":[],"recordChecks":[],"findings":[]}';
+    return { promptTokens: 1, completionTokens: 1, totalTokens: 2, finishReason: "stop" };
+  }
   calls.push(structuredClone(messages));
   assert.equal(options.tools, undefined, "subscription transports never receive native tool schemas");
   if (roleplay) {
@@ -162,7 +176,11 @@ try {
       promptPresetId: null,
     });
     assert.ok(chat);
-    await chats.patchMetadata(chat.id, { enableAgents: false, enableTools: false });
+    await chats.patchMetadata(chat.id, {
+      enableAgents: false,
+      enableTools: false,
+      cacheSendGuard: { enabled: false },
+    });
     for (const failure of [false, true]) {
       calls.length = 0;
       failContinuation = failure;

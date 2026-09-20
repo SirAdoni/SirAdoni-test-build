@@ -23,7 +23,7 @@ export const sceneAnalysisContextSchema = z.object({
   turnNumber: z.number().int().positive().optional(),
   availableBackgrounds: z.array(z.string()).max(2_000),
   availableSfx: z.array(z.string()).max(2_000),
-  activeWidgets: z.array(z.custom<HudWidget>()).max(100),
+  activeWidgets: z.array(z.custom<HudWidget>()),
   trackedNpcs: z.array(z.custom<GameNpc>()).max(200),
   characterNames: z.array(z.string().max(200)).max(100),
   currentBackground: z.string().nullable(),

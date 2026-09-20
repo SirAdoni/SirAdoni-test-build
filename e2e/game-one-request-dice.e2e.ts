@@ -5,6 +5,22 @@ import { seedUIState } from "./ui-state-fixture.js";
 
 const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
+function isBackgroundGameRequest(messages: unknown): boolean {
+  if (!Array.isArray(messages)) return false;
+  const firstMessage = messages[0];
+  const first =
+    firstMessage && typeof firstMessage === "object" && "content" in firstMessage
+      ? String((firstMessage as { content?: unknown }).content ?? "")
+      : "";
+  return (
+    first.startsWith("You maintain an evidence-based scene timeline") ||
+    (messages.length === 1 &&
+      /^(?:Extract durable continuity records|Review continuity source-first|Repair only the reviewed continuity findings)/u.test(
+        first,
+      ))
+  );
+}
+
 // The two halves of the branch block. Exactly one of them survives the turn, and which
 // one is genuinely random, so every assertion below is written about "one and not the
 // other" rather than about a fixed outcome. Pinning a winner would mean pinning a die.
@@ -63,10 +79,17 @@ test("Game finishes a rolled turn in one request, and leaves the shipped two-req
     for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     const rewrite = Boolean(body.messages?.at(-1)?.content?.includes(REWRITE_INSTRUCTION));
-    providerRequests.push({ rewrite });
+    const background = isBackgroundGameRequest(body.messages);
+    if (!background) providerRequests.push({ rewrite });
     response.writeHead(200, { "content-type": "text/event-stream", connection: "close" });
     const write = (delta: unknown, finishReason: string | null = null) =>
       response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finishReason }] })}\n\n`);
+    if (background) {
+      write({ content: '{"visits":[],"records":[],"dispositions":[],"recordChecks":[],"findings":[]}' });
+      write({}, "stop");
+      response.end("data: [DONE]\n\n");
+      return;
+    }
     write({ content: rewrite ? "The guard walks on, and you are past him." : draft });
     write({}, "stop");
     response.end("data: [DONE]\n\n");
@@ -100,11 +123,13 @@ test("Game finishes a rolled turn in one request, and leaves the shipped two-req
         await request.patch(`/api/chats/${chatId}/metadata`, {
           data: {
             gameId: chatId,
+            campaignIndexPrompt: { dismissedAt: "2026-09-19T00:00:00.000Z" },
             gameSessionStatus: "active",
             gameIntroPresented: true,
             gameImageAutoGenerationEnabled: false,
             enableAgents: false,
             enableTools: false,
+            cacheSendGuard: { enabled: false },
           },
         })
       ).ok(),
@@ -373,10 +398,17 @@ test("Game spends the sighted pool in order and leaves an overflowed check for t
     const chunks: Buffer[] = [];
     for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    providerRequests.push(JSON.stringify(body.messages ?? []));
+    const background = isBackgroundGameRequest(body.messages);
+    if (!background) providerRequests.push(JSON.stringify(body.messages ?? []));
     response.writeHead(200, { "content-type": "text/event-stream", connection: "close" });
     const write = (delta: unknown, finishReason: string | null = null) =>
       response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finishReason }] })}\n\n`);
+    if (background) {
+      write({ content: '{"visits":[],"records":[],"dispositions":[],"recordChecks":[],"findings":[]}' });
+      write({}, "stop");
+      response.end("data: [DONE]\n\n");
+      return;
+    }
     write({ content: POOL_DRAFT });
     write({}, "stop");
     response.end("data: [DONE]\n\n");
@@ -416,6 +448,8 @@ test("Game spends the sighted pool in order and leaves an overflowed check for t
             enableAgents: false,
             enableTools: false,
             gameOneRequestDice: true,
+            cacheSendGuard: { enabled: false },
+            campaignIndexPrompt: { dismissedAt: "2026-09-19T00:00:00.000Z" },
           },
         })
       ).ok(),

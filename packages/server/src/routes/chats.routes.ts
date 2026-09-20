@@ -70,6 +70,7 @@ import {
   withChatMetadataPatchQueue,
 } from "../services/storage/chats.storage.js";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
+import { createContinuityChangeNotifier } from "../services/game/continuity-change-notifier.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
 import { resolveChatUserIdentity } from "../services/chat-user-identity.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
@@ -88,6 +89,9 @@ import {
 } from "../services/spatial-context/projection.js";
 import { createSpatialContextStorage } from "../services/storage/spatial-context.storage.js";
 import { restoreBranchHudLists, trimJournalForBranch } from "../services/game/branch-state.js";
+import { projectCampaignMemoryBranch } from "../services/game/campaign-memory-branch.js";
+import { formatCampaignMemoryMessageOrder } from "../services/game/campaign-memory-order.js";
+import { recordLegacyPresence, resolveLegacySourceMessageId } from "../services/game/campaign-memory-legacy-writers.js";
 import { applyAllSegmentEdits, applyMessageSegmentEdits } from "../services/game/segment-edits.js";
 import type { Journal } from "../services/game/journal.service.js";
 import { createRegexScriptsStorage } from "../services/storage/regex-scripts.storage.js";
@@ -143,7 +147,11 @@ import {
   resolveMemoryRecallEmbeddingSource,
 } from "../services/memory-recall-embedding.js";
 import { applyRegexScriptsToPromptMessages } from "../services/regex/regex-application.js";
-import { npcAvatarSlug, sanitizeGameNpcAvatarUrls } from "../services/game/npc-avatar-utils.js";
+import {
+  gameNpcSanitizationOptionsFromMetadata,
+  npcAvatarSlug,
+  sanitizeGameNpcAvatarUrls,
+} from "../services/game/npc-avatar-utils.js";
 import { buildCommittedTrackerContextBlock } from "../services/generation/committed-tracker-context.js";
 import { normalizeBeholderState } from "../services/agents/beholder-state.js";
 import { parseLorebookWriteApprovalText } from "./generate/agent-write-approval.js";
@@ -250,6 +258,136 @@ async function isValidCharacterIdentity(db: Parameters<typeof createCharactersSt
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseIsolatedMemoryProjection(value: unknown): {
+  includedCount: number;
+  excludedCount: number;
+  degraded: boolean;
+  exclusions: Array<{ reason: string; count: number }>;
+} | null {
+  if (!isRecord(value)) return null;
+  const includedCount = typeof value.includedCount === "number" ? value.includedCount : NaN;
+  const excludedCount = typeof value.excludedCount === "number" ? value.excludedCount : NaN;
+  const degraded = value.degraded;
+  if (
+    !Number.isSafeInteger(includedCount) ||
+    includedCount < 0 ||
+    !Number.isSafeInteger(excludedCount) ||
+    excludedCount < 0 ||
+    typeof degraded !== "boolean" ||
+    !Array.isArray(value.exclusions) ||
+    value.exclusions.length > 32
+  )
+    return null;
+  const exclusions = value.exclusions.map((entry) => {
+    if (
+      !isRecord(entry) ||
+      typeof entry.reason !== "string" ||
+      entry.reason.length > 200 ||
+      typeof entry.count !== "number" ||
+      !Number.isSafeInteger(entry.count) ||
+      entry.count < 0
+    )
+      return null;
+    return { reason: entry.reason, count: entry.count };
+  });
+  return exclusions.every((entry) => entry !== null)
+    ? { includedCount, excludedCount, degraded, exclusions: exclusions as Array<{ reason: string; count: number }> }
+    : null;
+}
+
+type PeekPromptMessageMetadata = {
+  campaignMemory?: {
+    audience: string;
+    includedIds: string[];
+    exclusions: Array<{ id: string; reason: string }>;
+    degraded: boolean;
+    cutoffOrder: string | null;
+    characterBoundaries: Array<{ entityId: string; kind: string; aliases: string[]; mayUseIds: string[] }> | null;
+    omissions: { budgetOmitted: number; duplicatesMerged: number; mergedIds: string[] } | null;
+  };
+  continuity?: {
+    mode: string;
+    includedReceiptIds: string[];
+    omittedRecordCount: number;
+    pendingSourceMessageIds: string[];
+    unresolvedSourceMessageIds: string[];
+    unreviewedSourceMessageIds: string[];
+    unreviewedCodepoints: number;
+    omittedSourceCount: number;
+    clippedCodepoints: number;
+  };
+};
+
+type PeekPromptMessage = { role: string; content: string; metadata?: PeekPromptMessageMetadata };
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+function nonNegativeInteger(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+/**
+ * Project only the documented inspector keys from a captured message's
+ * providerMetadata. Provider auth, cache markers and any unknown key stay out.
+ */
+function parsePeekPromptMessageMetadata(providerMetadata: unknown): PeekPromptMessageMetadata | undefined {
+  if (!isRecord(providerMetadata)) return undefined;
+  const metadata: PeekPromptMessageMetadata = {};
+  const memory = providerMetadata.marinaraCampaignMemory;
+  if (isRecord(memory) && Array.isArray(memory.includedIds)) {
+    const omissions = isRecord(memory.omissions) ? memory.omissions : null;
+    metadata.campaignMemory = {
+      audience: typeof memory.audience === "string" ? memory.audience : "gm",
+      includedIds: stringList(memory.includedIds),
+      exclusions: (Array.isArray(memory.exclusions) ? memory.exclusions : []).flatMap((entry) =>
+        isRecord(entry) && typeof entry.id === "string" && typeof entry.reason === "string"
+          ? [{ id: entry.id, reason: entry.reason }]
+          : [],
+      ),
+      degraded: memory.degraded === true,
+      cutoffOrder: typeof memory.cutoffOrder === "string" ? memory.cutoffOrder : null,
+      characterBoundaries: Array.isArray(memory.characterBoundaries)
+        ? memory.characterBoundaries.flatMap((entry) =>
+            isRecord(entry) && typeof entry.entityId === "string"
+              ? [
+                  {
+                    entityId: entry.entityId,
+                    kind: typeof entry.kind === "string" ? entry.kind : "character",
+                    aliases: stringList(entry.aliases),
+                    mayUseIds: stringList(entry.mayUseIds),
+                  },
+                ]
+              : [],
+          )
+        : null,
+      omissions: omissions
+        ? {
+            budgetOmitted: nonNegativeInteger(omissions.budgetOmitted),
+            duplicatesMerged: nonNegativeInteger(omissions.duplicatesMerged),
+            mergedIds: stringList(omissions.mergedIds),
+          }
+        : null,
+    };
+  }
+  const continuity = providerMetadata.continuity;
+  if (isRecord(continuity) && typeof continuity.mode === "string") {
+    metadata.continuity = {
+      mode: continuity.mode,
+      includedReceiptIds: stringList(continuity.includedReceiptIds),
+      omittedRecordCount: nonNegativeInteger(continuity.omittedRecordCount),
+      pendingSourceMessageIds: stringList(continuity.pendingSourceMessageIds),
+      unresolvedSourceMessageIds: stringList(continuity.unresolvedSourceMessageIds),
+      unreviewedSourceMessageIds: stringList(continuity.unreviewedSourceMessageIds),
+      unreviewedCodepoints: nonNegativeInteger(continuity.unreviewedCodepoints),
+      omittedSourceCount: nonNegativeInteger(continuity.omittedSourceCount),
+      clippedCodepoints: nonNegativeInteger(continuity.clippedCodepoints),
+    };
+  }
+  return metadata.campaignMemory || metadata.continuity ? metadata : undefined;
 }
 
 function parseChatMetadata(raw: unknown): Record<string, unknown> {
@@ -382,13 +520,12 @@ function readMemoryRecallImportPayload(
 function sanitizeChatGameNpcAvatars<T extends { metadata?: unknown }>(chat: T): T {
   const metadata = typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : (chat.metadata ?? {});
   if (!metadata || typeof metadata !== "object") return chat;
-  const gameNpcs = Array.isArray((metadata as Record<string, unknown>).gameNpcs)
-    ? ((metadata as Record<string, unknown>).gameNpcs as GameNpc[])
-    : null;
+  const metadataRecord = metadata as Record<string, unknown>;
+  const gameNpcs = Array.isArray(metadataRecord.gameNpcs) ? (metadataRecord.gameNpcs as GameNpc[]) : null;
   if (!gameNpcs) return chat;
-  const sanitizedNpcs = sanitizeGameNpcAvatarUrls(gameNpcs);
+  const sanitizedNpcs = sanitizeGameNpcAvatarUrls(gameNpcs, gameNpcSanitizationOptionsFromMetadata(metadataRecord));
   if (sanitizedNpcs === gameNpcs) return chat;
-  const sanitizedMetadata = { ...(metadata as Record<string, unknown>), gameNpcs: sanitizedNpcs };
+  const sanitizedMetadata = { ...metadataRecord, gameNpcs: sanitizedNpcs };
   return {
     ...chat,
     metadata: typeof chat.metadata === "string" ? JSON.stringify(sanitizedMetadata) : sanitizedMetadata,
@@ -403,6 +540,36 @@ export function normalizeChatForResponse<T extends { metadata?: unknown; charact
     personaCharacterId: (chat as T & { personaCharacterId?: string | null }).personaCharacterId ?? null,
     metadata: parseChatMetadata(chat.metadata),
   });
+}
+
+/** Resolve the human-readable speaker envelope used by text and JSONL transcript exports. */
+export function resolveTranscriptExportDisplayName(args: {
+  mode: unknown;
+  role: string;
+  characterId?: string | null;
+  characterNamesById: ReadonlyMap<string, string>;
+  primaryCharacterName: string;
+}): string {
+  if (args.role === "user") return "User";
+  if (args.role === "system") return "System";
+  if (args.role === "narrator") return "Narrator";
+  // A Game assistant turn is a composite GM/narrator envelope and may contain several
+  // explicitly tagged speakers. Its storage character is only the chat's generation
+  // target, not proof that one party member spoke the whole exported turn.
+  if (args.mode === "game" && args.role === "assistant") return "Narrator";
+  if (args.characterId && args.characterNamesById.has(args.characterId)) {
+    return args.characterNamesById.get(args.characterId)!;
+  }
+  return args.primaryCharacterName;
+}
+
+/** Do not serialize Game's internal GM generation target as the speaker of a composite turn. */
+export function resolveTranscriptExportCharacterId(args: {
+  mode: unknown;
+  role: string;
+  characterId?: string | null;
+}): string | null | undefined {
+  return args.mode === "game" && args.role === "assistant" ? null : args.characterId;
 }
 type SummaryEntriesPatchBody =
   | { operation: "replace"; entry: Partial<ChatSummaryEntry> & { id: string; content: string } }
@@ -457,12 +624,13 @@ function toPeekPromptMessages(
     role: "system" | "user" | "assistant";
     content: string;
     contextKind?: "prompt" | "history" | "injection";
+    providerMetadata?: Record<string, unknown>;
   }>,
-): Array<{ role: string; content: string }> {
-  return appendNonLeadingSystemMessagesToLastUser(messages).map((message) => ({
-    role: message.role,
-    content: message.content,
-  }));
+): PeekPromptMessage[] {
+  return appendNonLeadingSystemMessagesToLastUser(messages).map((message) => {
+    const metadata = parsePeekPromptMessageMetadata(message.providerMetadata);
+    return { role: message.role, content: message.content, ...(metadata ? { metadata } : {}) };
+  });
 }
 
 async function buildPersonaSnapshotForChat(
@@ -668,6 +836,10 @@ function resolveEntryStateOverrides(value: unknown): EntryStateOverrides | undef
 
 export async function chatsRoutes(app: FastifyInstance) {
   const storage = createChatsStorage(app.db);
+  // Message edits, deletes, swipes and AI-visibility changes alter continuity
+  // sources; schedule a debounced reconcile + summary re-evaluation off the
+  // request path so game chats mark stale work without waiting for a generation.
+  const continuityChanges = createContinuityChangeNotifier(app);
   const appSettings = createAppSettingsStorage(app.db);
 
   const cleanupEmptyRoleplayDmChats = async () => {
@@ -2225,6 +2397,7 @@ export async function chatsRoutes(app: FastifyInstance) {
   // Delete message
   app.delete<{ Params: { chatId: string; messageId: string } }>("/:chatId/messages/:messageId", async (req, reply) => {
     await storage.removeMessage(req.params.messageId);
+    continuityChanges.notify(req.params.chatId, [req.params.messageId]);
     return reply.status(204).send();
   });
 
@@ -2235,6 +2408,7 @@ export async function chatsRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "messageIds array is required" });
     }
     await storage.removeMessages(messageIds, req.params.chatId);
+    continuityChanges.notify(req.params.chatId, messageIds);
     return reply.status(204).send();
   });
 
@@ -2244,6 +2418,7 @@ export async function chatsRoutes(app: FastifyInstance) {
     if (typeof content !== "string") return reply.status(400).send({ error: "content is required" });
     const updated = await storage.updateMessageContent(req.params.messageId, content);
     if (!updated) return reply.status(404).send({ error: "Message not found" });
+    continuityChanges.notify(req.params.chatId, [req.params.messageId]);
     return updated;
   });
 
@@ -2335,6 +2510,9 @@ export async function chatsRoutes(app: FastifyInstance) {
           await storage.updateSwipeExtra(req.params.messageId, swipe.index, syncAllSwipeExtra);
         }
       }
+      if ("hiddenFromAI" in syncAllSwipeExtra || "hiddenFromAICharacterIds" in syncAllSwipeExtra) {
+        continuityChanges.notify(req.params.chatId, [req.params.messageId]);
+      }
 
       return updated;
     },
@@ -2352,6 +2530,7 @@ export async function chatsRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "hidden must be a boolean" });
       }
       const updated = (await storage.bulkSetHiddenFromAI(req.params.chatId, messageIds, hidden)).length;
+      continuityChanges.notify(req.params.chatId, messageIds);
       return { updated };
     },
   );
@@ -2488,7 +2667,10 @@ export async function chatsRoutes(app: FastifyInstance) {
     if (!chat) return reply.status(404).send({ error: "Chat not found" });
     const ownerSpatialProjection = await resolveOwnerSpatialProjection(
       req.params.id,
-      rawRow.messageId ? { exactAnchor: { messageId: rawRow.messageId, swipeIndex: rawRow.swipeIndex } } : {},
+      // This endpoint serves the current HUD. A tracker snapshot can predate
+      // narrated travel when World State is disabled; use the visible spatial
+      // timeline, not the older tracker's message anchor.
+      {},
       chat.metadata,
     );
     const row = projectGameSnapshotLocation(rawRow, ownerSpatialProjection)!;
@@ -2661,6 +2843,15 @@ export async function chatsRoutes(app: FastifyInstance) {
       if (live && !live.success) return reply.status(400).send({ error: "rulesetLive is not valid live sheet state" });
       fields.rulesetLive = live ? live.data : null;
     }
+    // Pulse 4: the snapshot stays the presence owner; the diff is projected into
+    // campaign memory as presence transitions after the write (best-effort).
+    const priorPresence =
+      fields.presentCharacters !== undefined && chat.mode === "game"
+        ? ((hasExplicitTarget
+            ? await gameStateStore.getByMessage(targetMessageId, targetSwipeIndex)
+            : await gameStateStore.getLatest(req.params.id)
+          )?.presentCharacters ?? [])
+        : undefined;
     // Target the same snapshot the GET endpoint returns — the one for the last
     // assistant message's active swipe — so edits persist to the row the user
     // actually sees. Falls back to updateLatest when no messages exist yet.
@@ -2743,6 +2934,15 @@ export async function chatsRoutes(app: FastifyInstance) {
     }
     if (!updated) return reply.status(404).send({ error: "No game state found" });
     // The row stores live sheet state as JSON text; callers get the same object the GET returns.
+    if (priorPresence !== undefined) {
+      await recordLegacyPresence(app.db, {
+        chatId: req.params.id,
+        messageId: await resolveLegacySourceMessageId(app.db, req.params.id, updated.messageId || null),
+        before: priorPresence,
+        after: updated.presentCharacters,
+        locationId: ownerSpatialProjection?.currentLocationId ?? null,
+      });
+    }
     return projectGameSnapshotLocation(
       { ...updated, rulesetLive: parseStoredRulesetLive(updated.rulesetLive) },
       ownerSpatialProjection,
@@ -2777,7 +2977,7 @@ export async function chatsRoutes(app: FastifyInstance) {
       chatMode === "roleplay" && normalizeAdvancedMemorySettings(chatMeta.advancedMemory).enabled;
     const chatSummaryFingerprint = fingerprintChatSummary(chatMeta.summary);
     const visibleGameStateAnchor = resolveVisibleGameStateAnchor(chatMessages);
-    const supportsHiddenFromAI = chatMode === "conversation" || chatMode === "roleplay";
+    const supportsHiddenFromAI = chatMode === "conversation" || chatMode === "roleplay" || chatMode === "game";
 
     const readCachedPrompt = async (
       extra: Record<string, unknown>,
@@ -2786,6 +2986,19 @@ export async function chatsRoutes(app: FastifyInstance) {
       messages: Array<{ role: string; content: string }>;
       generationInfo?: Record<string, unknown>;
       gameToolPlanning?: GameToolPlanningInfo;
+      promptRequests?: Array<{
+        kind: "planner" | "actor";
+        actorId?: string;
+        actorName?: string;
+        messages: Array<{ role: string; content: string }>;
+        memoryProjection?: {
+          includedCount: number;
+          excludedCount: number;
+          degraded: boolean;
+          exclusions: Array<{ reason: string; count: number }>;
+        };
+      }>;
+      isolatedPromptCapture?: boolean;
     } | null> => {
       const cachedPrompt = Array.isArray(extra.cachedPrompt)
         ? extra.cachedPrompt
@@ -2793,9 +3006,10 @@ export async function chatsRoutes(app: FastifyInstance) {
               if (!isRecord(entry) || typeof entry.role !== "string" || typeof entry.content !== "string") {
                 return null;
               }
-              return { role: entry.role, content: entry.content };
+              const metadata = parsePeekPromptMessageMetadata(entry.providerMetadata);
+              return { role: entry.role, content: entry.content, ...(metadata ? { metadata } : {}) };
             })
-            .filter((entry): entry is { role: string; content: string } => entry !== null)
+            .filter((entry): entry is PeekPromptMessage => entry !== null)
         : [];
       if (cachedPrompt.length === 0) return null;
       if (advancedMemoryEnabled) {
@@ -2834,6 +3048,44 @@ export async function chatsRoutes(app: FastifyInstance) {
         const value = plannerUsage?.[key];
         return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
       };
+      const isolatedTurn = isRecord(extra.isolatedGameTurn) ? extra.isolatedGameTurn : null;
+      const rawPromptRequests =
+        isolatedTurn && Array.isArray(isolatedTurn.promptRequests) ? isolatedTurn.promptRequests : [];
+      const promptRequests = rawPromptRequests
+        .map((request) => {
+          if (
+            !isRecord(request) ||
+            (request.kind !== "planner" && request.kind !== "actor") ||
+            !Array.isArray(request.messages)
+          )
+            return null;
+          const messages = request.messages
+            .map((entry) => {
+              if (!isRecord(entry) || typeof entry.role !== "string" || typeof entry.content !== "string") return null;
+              return { role: entry.role, content: entry.content };
+            })
+            .filter((entry): entry is { role: string; content: string } => entry !== null);
+          if (messages.length !== request.messages.length) return null;
+          const kind: "planner" | "actor" = request.kind;
+          return {
+            kind,
+            ...(typeof request.actorId === "string" ? { actorId: request.actorId } : {}),
+            ...(typeof request.actorName === "string" ? { actorName: request.actorName } : {}),
+            ...(kind === "actor"
+              ? (() => {
+                  const memoryProjection = parseIsolatedMemoryProjection(request.memoryProjection);
+                  return memoryProjection ? { memoryProjection } : {};
+                })()
+              : {}),
+            messages,
+          };
+        })
+        .filter((request): request is NonNullable<typeof request> => request !== null);
+      const hasActualIsolatedCapture =
+        isolatedTurn?.mode === "isolated" &&
+        promptRequests.length === rawPromptRequests.length &&
+        promptRequests.length > 0 &&
+        promptRequests.some((request) => request.kind === "planner");
       return {
         messages: cachedPrompt,
         generationInfo: isRecord(extra.generationInfo) ? extra.generationInfo : undefined,
@@ -2850,6 +3102,8 @@ export async function chatsRoutes(app: FastifyInstance) {
                   : null,
               }
             : undefined,
+        ...(promptRequests.length === rawPromptRequests.length && promptRequests.length > 0 ? { promptRequests } : {}),
+        ...(isolatedTurn?.mode === "isolated" ? { isolatedPromptCapture: hasActualIsolatedCapture } : {}),
       };
     };
 
@@ -2874,13 +3128,16 @@ export async function chatsRoutes(app: FastifyInstance) {
       if (!cached && promptSourceMessage.id) {
         const swipes = await storage.getSwipes(promptSourceMessage.id);
         const activeSwipe = swipes.find((s: any) => s.index === promptSourceMessage.activeSwipeIndex);
+        const messageIsolated = isRecord(extra.isolatedGameTurn) && extra.isolatedGameTurn.mode === "isolated";
+        const activeSwipeExtra = activeSwipe ? (parseExtra(activeSwipe.extra) as Record<string, unknown>) : null;
+        const activeSwipeIsolated =
+          activeSwipeExtra &&
+          isRecord(activeSwipeExtra.isolatedGameTurn) &&
+          activeSwipeExtra.isolatedGameTurn.mode === "isolated";
         if (activeSwipe) {
-          cached = await readCachedPrompt(
-            parseExtra(activeSwipe.extra) as Record<string, unknown>,
-            Boolean(requestedMessage),
-          );
+          cached = await readCachedPrompt(activeSwipeExtra ?? {}, Boolean(requestedMessage));
         }
-        if (!cached) {
+        if (!cached && !messageIsolated && !activeSwipeIsolated) {
           for (const sw of swipes) {
             cached = await readCachedPrompt(parseExtra(sw.extra) as Record<string, unknown>, Boolean(requestedMessage));
             if (cached) break;
@@ -2889,17 +3146,22 @@ export async function chatsRoutes(app: FastifyInstance) {
       }
 
       if (cached) {
+        const exact = cached.isolatedPromptCapture === undefined ? true : cached.isolatedPromptCapture;
         return {
           messages: cached.messages,
           chatMode,
           parameters: null,
           source: "cached",
-          exact: true,
+          exact,
           generationInfo: cached.generationInfo ?? null,
           gameToolPlanning: cached.gameToolPlanning ?? null,
-          agentNote: requestedMessage
-            ? "This is the exact cached text prompt sent for the selected turn."
-            : "This is the cached text prompt saved after provider preparation for the active assistant swipe.",
+          ...(cached.promptRequests ? { promptRequests: cached.promptRequests } : {}),
+          agentNote:
+            cached.isolatedPromptCapture === false
+              ? "Legacy isolated metadata is available, but this turn has no captured planner and actor requests; the cached prompt is only partial GM input."
+              : requestedMessage
+                ? "This is the exact cached text prompt sent for the selected turn."
+                : "This is the cached text prompt saved after provider preparation for the active assistant swipe.",
         };
       }
     }
@@ -2938,8 +3200,13 @@ export async function chatsRoutes(app: FastifyInstance) {
       try {
         const { createPromptsStorage } = await import("../services/storage/prompts.storage.js");
         const { createCharactersStorage } = await import("../services/storage/characters.storage.js");
-        const { assemblePrompt, buildPromptMacroContext, resolvePromptIdleDuration, setLorebookEntryCounts } =
-          await import("../services/prompt/index.js");
+        const {
+          assemblePrompt,
+          buildPromptMacroContext,
+          resolveCharacterAdvancedPromptIds,
+          resolvePromptIdleDuration,
+          setLorebookEntryCounts,
+        } = await import("../services/prompt/index.js");
         const presetStore = createPromptsStorage(app.db);
         const charStore = createCharactersStorage(app.db);
 
@@ -3256,6 +3523,7 @@ export async function chatsRoutes(app: FastifyInstance) {
             characterIds: assistantCharacterIds,
             lorebookCharacterIds,
             groupCharacterIds: assistantCharacterIds,
+            characterAdvancedPromptIds: resolveCharacterAdvancedPromptIds(assistantCharacterIds, chatMode, chatMeta),
             personaId,
             personaName,
             personaDescription,
@@ -3558,7 +3826,9 @@ export async function chatsRoutes(app: FastifyInstance) {
   // Add a swipe
   app.post<{ Params: { chatId: string; messageId: string } }>("/:chatId/messages/:messageId/swipes", async (req) => {
     const { content, silent } = req.body as { content: string; silent?: boolean };
-    return storage.addSwipe(req.params.messageId, content, silent);
+    const swipe = await storage.addSwipe(req.params.messageId, content, silent);
+    continuityChanges.notify(req.params.chatId, [req.params.messageId]);
+    return swipe;
   });
 
   // Add multiple swipes in one round trip. Used for alternate greetings during chat setup.
@@ -3583,6 +3853,7 @@ export async function chatsRoutes(app: FastifyInstance) {
       for (const content of normalized) {
         created.push(await storage.addSwipe(req.params.messageId, content, silent ?? true));
       }
+      continuityChanges.notify(req.params.chatId, [req.params.messageId]);
       return { swipes: created };
     },
   );
@@ -3610,6 +3881,7 @@ export async function chatsRoutes(app: FastifyInstance) {
       if (!updated) {
         return reply.status(404).send({ error: "Message not found" });
       }
+      continuityChanges.notify(req.params.chatId, [req.params.messageId]);
 
       return updated;
     },
@@ -3638,6 +3910,7 @@ export async function chatsRoutes(app: FastifyInstance) {
       for (const swipe of [...swipes].sort((a: any, b: any) => b.index - a.index)) {
         if (swipe.index !== keepIndex) await storage.removeSwipe(req.params.messageId, swipe.index);
       }
+      continuityChanges.notify(req.params.chatId, [req.params.messageId]);
       return storage.getMessage(req.params.messageId);
     },
   );
@@ -3647,7 +3920,9 @@ export async function chatsRoutes(app: FastifyInstance) {
     "/:chatId/messages/:messageId/active-swipe",
     async (req) => {
       const { index } = req.body as { index: number };
-      return storage.setActiveSwipe(req.params.messageId, index);
+      const message = await storage.setActiveSwipe(req.params.messageId, index);
+      continuityChanges.notify(req.params.chatId, [req.params.messageId]);
+      return message;
     },
   );
 
@@ -3718,6 +3993,7 @@ export async function chatsRoutes(app: FastifyInstance) {
     "geminiParts",
     "generationInfo",
     "generationReplay",
+    "isolatedGameTurn",
     "lorebookScan",
   ]);
 
@@ -3892,9 +4168,18 @@ export async function chatsRoutes(app: FastifyInstance) {
       }
     }
     const primaryCharName = (charIds[0] && charNameMap.get(charIds[0])) ?? chat.name;
+    const exportMetadata = Array.isArray(metadata.gameNpcs)
+      ? {
+          ...metadata,
+          gameNpcs: sanitizeGameNpcAvatarUrls(
+            metadata.gameNpcs as GameNpc[],
+            gameNpcSanitizationOptionsFromMetadata(metadata, [...charNameMap.values()]),
+          ),
+        }
+      : metadata;
     const jsonlMetadata = sanitizeChatMetadataForJsonlExport(
-      metadata,
-      collectExportJournalNpcNames(metadata, charNameMap),
+      exportMetadata,
+      collectExportJournalNpcNames(exportMetadata, charNameMap),
     );
     const persona = await buildPersonaSnapshotForChat(app, chat);
     const { buildPromptMacroContext, resolvePromptMessageMacros } = await import("../services/prompt/index.js");
@@ -3923,13 +4208,14 @@ export async function chatsRoutes(app: FastifyInstance) {
       macroSources: msgs.map((message) => message.content),
     });
 
-    const getDisplayName = (msg: { role: string; characterId?: string | null }) => {
-      if (msg.role === "user") return "User";
-      if (msg.role === "system") return "System";
-      if (msg.role === "narrator") return "Narrator";
-      if (msg.characterId && charNameMap.has(msg.characterId)) return charNameMap.get(msg.characterId)!;
-      return primaryCharName;
-    };
+    const getDisplayName = (msg: { role: string; characterId?: string | null }) =>
+      resolveTranscriptExportDisplayName({
+        mode: chat.mode,
+        role: msg.role,
+        characterId: msg.characterId,
+        characterNamesById: charNameMap,
+        primaryCharacterName: primaryCharName,
+      });
     const resolveExportMessageContent = (msg: { content: string; characterId?: string | null }) =>
       resolvePromptMessageMacros([{ content: msg.content, characterId: msg.characterId }], promptMacroContext)[0]!
         .content;
@@ -3988,6 +4274,11 @@ export async function chatsRoutes(app: FastifyInstance) {
         );
       const messageExtra = await normalizeInterruptionExtra(sanitizeJsonlMessageExtra(rawMessageExtra));
       const thinking = includeReasoning ? getExportThinking(rawMessageExtra) : null;
+      const exportCharacterId = resolveTranscriptExportCharacterId({
+        mode: chat.mode,
+        role: msg.role,
+        characterId: msg.characterId,
+      });
       const swipes = await storage.getSwipes(msg.id);
       const activeContent = msg.content;
       const exportSwipes =
@@ -4026,7 +4317,7 @@ export async function chatsRoutes(app: FastifyInstance) {
           is_user: msg.role === "user",
           is_system: msg.role === "system",
           role: msg.role,
-          character_id: msg.characterId,
+          character_id: exportCharacterId,
           marinara_message_id: msg.id,
           mes: activeContent,
           ...(thinking
@@ -4040,7 +4331,7 @@ export async function chatsRoutes(app: FastifyInstance) {
           extra: {
             ...messageExtra,
             marinara_role: msg.role,
-            marinara_character_id: msg.characterId,
+            marinara_character_id: exportCharacterId,
             marinara_swipes: exportSwipes.map((swipe) => ({
               index: swipe.index,
               extra: swipe.extra,
@@ -4359,6 +4650,26 @@ export async function chatsRoutes(app: FastifyInstance) {
     await storage.remapRoleplayInterruptionTargets(newChat.id, sourceToBranchedMessageId);
     const forkSourceMessage = copiedSourceMessages.at(-1);
 
+    // Continuity receipts belong to one transcript lineage. Rebuild them against
+    // copied message IDs instead of inheriting a source-chat activation anchor.
+    if (sourceChat.mode === "game" && settingsToKeep.gameContinuity) {
+      const continuity = { ...settingsToKeep.gameContinuity };
+      const mappedBoundary =
+        typeof continuity.activationMessageId === "string"
+          ? sourceToBranchedMessageId.get(continuity.activationMessageId)
+          : undefined;
+      if (mappedBoundary) continuity.activationMessageId = mappedBoundary;
+      else {
+        const latestAssistant = [...copiedSourceMessages].reverse().find((message) => message.role === "assistant");
+        continuity.activationMessageId = latestAssistant
+          ? sourceToBranchedMessageId.get(latestAssistant.id)
+          : undefined;
+        continuity.activationAt = new Date().toISOString();
+      }
+      settingsToKeep.gameContinuity = continuity;
+      delete settingsToKeep.gameLorebookKeeperLorebookId;
+    }
+
     if (sourceChat.mode === "game" && settingsToKeep.gameJournal) {
       const journal = settingsToKeep.gameJournal as Journal;
       settingsToKeep.gameJournal = {
@@ -4503,6 +4814,12 @@ export async function chatsRoutes(app: FastifyInstance) {
               committed: (snapshot.committed as any) === 1,
             } as any,
             overrides,
+            {
+              trustedInventoryIdentitySource: {
+                snapshotId: snapshot.id,
+                chatId: req.params.id,
+              },
+            },
           );
         } catch (err) {
           logger.error(err, "Failed to copy tracker snapshot while branching chat");
@@ -4595,6 +4912,48 @@ export async function chatsRoutes(app: FastifyInstance) {
       // the branch's first allocation can collide with a row copied after the earlier snapshot
       // was taken, handing the same ordinal to two rows in one counter space.
       await storage.raiseWriteOrdinalFloor(newChat.id, maxCopiedWriteOrdinal);
+
+      const operationId = `campaign-memory-branch:${newChat.id}`;
+      const branchProjection =
+        forkSourceMessage && sourceChat.mode === "game"
+          ? await projectCampaignMemoryBranch(app.db, {
+              sourceChatId: sourceChat.id,
+              targetChatId: newChat.id,
+              cutoffOrder: formatCampaignMemoryMessageOrder(
+                forkSourceMessage.id,
+                forkSourceMessage.createdAt as string,
+              ),
+              messageIdMap: sourceToBranchedMessageId,
+              operationId,
+            })
+          : {
+              sourceChatId: sourceChat.id,
+              targetChatId: newChat.id,
+              operationId,
+              copied: {
+                entities: 0,
+                facts: 0,
+                knowledge: 0,
+                events: 0,
+                currentState: 0,
+                relationships: 0,
+              },
+              held: [],
+            };
+      const latestBranchChat = await storage.getById(newChat.id);
+      const latestBranchMetadata =
+        typeof latestBranchChat?.metadata === "string"
+          ? JSON.parse(latestBranchChat.metadata)
+          : (latestBranchChat?.metadata ?? {});
+      await storage.updateMetadata(newChat.id, {
+        ...latestBranchMetadata,
+        campaignMemoryBranch: {
+          sourceChatId: branchProjection.sourceChatId,
+          operationId: branchProjection.operationId,
+          copied: branchProjection.copied,
+          held: branchProjection.held,
+        },
+      });
     } catch (err) {
       try {
         await storage.remove(newChat.id);

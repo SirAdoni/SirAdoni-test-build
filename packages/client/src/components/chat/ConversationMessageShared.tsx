@@ -16,9 +16,9 @@ import { applyInlineMarkdown, renderMarkdownBlocks } from "../../lib/markdown";
 import { resolveSelfCardAssets, type ChatGalleryIndex } from "../../lib/card-asset-links";
 import { renderInlineWithCustomEmojis } from "../../lib/custom-emoji-render";
 import { renderWithStickerBlocks } from "../../lib/sticker-render";
-import { applyTextareaQuoteFormat } from "../../lib/textarea-quotes";
 import { ImagePromptPanel } from "./ImagePromptPanel";
 import { ChatImagePreview } from "./ChatImagePreview";
+import { MessageEditTextarea } from "./MessageEditTextarea";
 import { MessageActionButton } from "./MessageActionButton";
 import { SwipeJumpControl } from "./SwipeJumpControl";
 import { useUIStore } from "../../stores/ui.store";
@@ -93,6 +93,8 @@ export interface MessageRenderContext {
   isGrouped: boolean;
   // identity
   displayName: string;
+  characterId: string | null;
+  onUpdateCharacter?: (characterId: string) => void;
   avatarUrl: string | null;
   avatarCropStyle: CSSProperties;
   avatarCornerClass: string;
@@ -124,7 +126,7 @@ export interface MessageRenderContext {
   editValue: string;
   editRef: RefObject<HTMLTextAreaElement | null>;
   onEditValueChange: (v: string) => void;
-  onSaveEdit: () => void;
+  onSaveEdit: (content?: string) => void;
   onCancelEdit: () => void;
   // hidden-from-AI
   isHiddenFromAI: boolean;
@@ -495,6 +497,7 @@ export function MsgAction({
 export function ConversationMessageEditForm({
   editRef,
   editValue,
+  messageRole,
   onValueChange,
   onSave,
   onCancel,
@@ -503,46 +506,25 @@ export function ConversationMessageEditForm({
 }: {
   editRef: RefObject<HTMLTextAreaElement | null>;
   editValue: string;
+  messageRole: MessageData["role"];
   onValueChange: (v: string) => void;
-  onSave: () => void;
+  onSave: (content?: string) => void;
   onCancel: () => void;
   messageTextStyle: CSSProperties;
   quoteFormat: QuoteFormat;
 }) {
-  const { t: localizeUi } = useUiTranslation();
   return (
-    <div className="space-y-2">
-      <textarea
-        ref={editRef}
-        data-chat-message-editor="true"
-        value={editValue}
-        onChange={(e) => {
-          const nextValue = applyTextareaQuoteFormat(e.currentTarget, quoteFormat, e.nativeEvent as InputEvent);
-          onValueChange(nextValue);
-          const el = e.target;
-          el.style.height = "auto";
-          el.style.height = `${Math.min(el.scrollHeight, 300)}px`;
-        }}
-        className="w-full resize-none rounded-lg border border-[var(--border)] bg-[var(--secondary)] p-2.5 text-[0.9375rem] leading-relaxed outline-none"
-        rows={1}
-        style={{ overflow: "auto", ...messageTextStyle }}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            e.preventDefault();
-            onCancel();
-          }
-        }}
-      />
-      <div className="flex items-center gap-2 text-[0.6875rem] text-[var(--muted-foreground)]">
-        <button onClick={onCancel} className="text-foreground/70 hover:underline hover:text-foreground">
-          {localizeUi("ui.chat.conversationmessageeditform.cancel")}
-        </button>
-        <span>·</span>
-        <button onClick={onSave} className="text-foreground/70 hover:underline hover:text-foreground">
-          {localizeUi("ui.chat.conversationmessageeditform.save")}
-        </button>
-      </div>
-    </div>
+    <MessageEditTextarea
+      initialContent={editValue}
+      messageRole={messageRole}
+      quoteFormat={quoteFormat}
+      textareaRef={editRef}
+      textareaStyle={{ overflow: "auto", ...messageTextStyle }}
+      variant="conversation"
+      onDraftChange={onValueChange}
+      onSave={onSave}
+      onCancel={onCancel}
+    />
   );
 }
 

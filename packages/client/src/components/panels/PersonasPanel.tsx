@@ -22,7 +22,6 @@ import {
   Trash2,
   User,
   VenetianMask,
-  Camera,
   ArrowUpDown,
   Download,
   Search,
@@ -55,6 +54,7 @@ import {
 } from "../../lib/card-library-search";
 import { clearActiveChatResourceDrag, writeChatResourceDragPayload } from "../../lib/chat-resource-drag";
 import { ChatResourceActionButton } from "../chat/ChatResourceActionButton";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 import { estimateTextTokens, type Persona } from "@marinara-engine/shared";
 
 type PersonaGroupRow = { id: string; name: string; description: string; personaIds: string };
@@ -961,14 +961,25 @@ export function PersonasPanel() {
                               });
                             }}
                           />
-                          <div className="mari-avatar-placeholder mari-avatar-placeholder--persona relative flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-lg">
+                          <div className="mari-avatar-placeholder mari-avatar-placeholder--persona relative flex h-7 w-auto shrink-0 items-center justify-center gap-1 overflow-visible rounded-lg">
                             {p.avatarPath ? (
-                              <img
+                              <CharacterPhoto
                                 src={p.avatarPath}
-                                alt=""
-                                className="h-full w-full rounded-lg object-cover"
-                                style={getAvatarCropStyle(p.avatarCrop)}
-                              />
+                                name={p.name}
+                                className="block h-7 w-7 shrink-0 rounded-lg"
+                                wrapperClassName="relative inline-flex shrink-0 items-center gap-1"
+                                onUpdate={() => openPersonaDetail(pid)}
+                                updateLabel={localizeUi("ui.panels.personaspanel.changeAvatar")}
+                              >
+                                <span className="absolute inset-0 overflow-hidden rounded-lg">
+                                  <img
+                                    src={p.avatarPath}
+                                    alt=""
+                                    className="h-full w-full object-cover"
+                                    style={getAvatarCropStyle(p.avatarCrop)}
+                                  />
+                                </span>
+                              </CharacterPhoto>
                             ) : (
                               <User size="0.625rem" />
                             )}
@@ -1149,34 +1160,38 @@ export function PersonasPanel() {
                 }}
               />
               {/* Avatar */}
-              <button
-                onClick={(e) => handleAvatarClick(e, persona.id)}
-                className="mari-avatar-placeholder mari-avatar-placeholder--persona relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm group/avatar"
-                title={localizeUi("ui.panels.personaspanel.changeAvatar")}
-              >
-                {/* Inner clip wrapper — needed because new-format avatarCrop renders the
-                    <img> with position:absolute and dimensions larger than the container.
-                    The wrapper provides both `position:relative` (so the absolute img
-                    resolves here) and `overflow:hidden` (so the oversized img is clipped
-                    to the rounded-xl shape). The wrapper can't be the button itself
-                    so the camera-hover overlay stays above the cropped image. */}
-                <div className="relative flex h-full w-full items-center justify-center overflow-hidden rounded-xl">
-                  {persona.avatarPath ? (
+              {persona.avatarPath ? (
+                <CharacterPhoto
+                  src={persona.avatarPath}
+                  name={persona.name}
+                  className="block h-10 w-10 shrink-0 rounded-xl"
+                  wrapperClassName="relative inline-flex shrink-0 items-center gap-1"
+                  onUpdate={() => {
+                    setAvatarTargetId(persona.id);
+                    fileRef.current?.click();
+                  }}
+                  updateLabel={localizeUi("ui.panels.personaspanel.changeAvatar")}
+                >
+                  <span className="absolute inset-0 overflow-hidden rounded-xl">
                     <img
                       src={persona.avatarPath}
                       alt=""
                       loading="lazy"
-                      className="h-full w-full rounded-xl object-cover"
+                      className="h-full w-full object-cover"
                       style={getAvatarCropStyle(persona.avatarCrop)}
                     />
-                  ) : (
-                    <User size="1rem" />
-                  )}
-                </div>
-                <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-black/40 opacity-0 transition-opacity group-hover/avatar:opacity-100">
-                  <Camera size="0.75rem" className="text-white" />
-                </div>
-              </button>
+                  </span>
+                </CharacterPhoto>
+              ) : (
+                <button
+                  type="button"
+                  onClick={(e) => handleAvatarClick(e, persona.id)}
+                  className="mari-avatar-placeholder mari-avatar-placeholder--persona relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm"
+                  title={localizeUi("ui.panels.personaspanel.changeAvatar")}
+                >
+                  <User size="1rem" />
+                </button>
+              )}
 
               {/* Info */}
               <div

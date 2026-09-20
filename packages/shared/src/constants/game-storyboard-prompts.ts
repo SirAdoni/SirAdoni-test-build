@@ -35,6 +35,22 @@ export function normalizeGameStoryboardKeyframeCount(
     : normalizedFallback;
 }
 
+/** Grow coverage without another model call. The configured count remains the baseline. */
+export function resolveAdaptiveStoryboardKeyframeCount(args: {
+  baseCount: number;
+  enabled: boolean;
+  maximum: number;
+  sourceText: string;
+  sectionCount: number;
+}): number {
+  const base = normalizeGameStoryboardKeyframeCount(args.baseCount);
+  if (!args.enabled) return base;
+  const ceiling = normalizeGameStoryboardKeyframeCount(args.maximum, GAME_STORYBOARD_KEYFRAME_COUNT_MAX);
+  const words = args.sourceText.match(/\S+/gu)?.length ?? 0;
+  const sectionCount = Number.isFinite(args.sectionCount) ? Math.max(0, args.sectionCount) : 0;
+  return Math.min(ceiling, Math.max(base, Math.ceil(words / 1000), Math.ceil(sectionCount / 40)));
+}
+
 // Host-side contract only. Prompt bodies and selectable presets are owned by the
 // installable Storyboard Agent package.
 export const GAME_STORYBOARD_PROMPT_TEMPLATE_VARIABLES = [

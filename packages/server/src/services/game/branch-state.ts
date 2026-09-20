@@ -1,4 +1,4 @@
-import type { HudWidget } from "@marinara-engine/shared";
+import { applyHudWidgetLifecycle, type HudWidget, type WidgetUpdate } from "@marinara-engine/shared";
 import type { Journal, JournalEntry } from "./journal.service.js";
 
 function normalizeListItem(value: string): string {
@@ -10,7 +10,7 @@ function normalizeListItem(value: string): string {
     .toLowerCase();
 }
 
-function readWidgetParam(body: string, name: "add" | "remove"): string | null {
+function readWidgetParam(body: string, name: string): string | null {
   const match = body.match(new RegExp(`(?:^|,)\\s*${name}:\\s*(?:"([^"]*)"|'([^']*)'|([^,]*))`, "i"));
   const value = (match?.[1] ?? match?.[2] ?? match?.[3] ?? "").trim();
   return value || null;
@@ -42,10 +42,53 @@ export function restoreBranchHudLists(
   for (const message of copiedMessages) {
     for (const match of (message.content ?? "").matchAll(/\[widget:\s*([^,\]]+),([^\]]*)\]/gi)) {
       const widgetId = match[1]!.trim();
+      const body = match[2] ?? "";
+      const action = readWidgetParam(body, "action");
+      if (action === "create" || action === "delete") {
+        const changes: WidgetUpdate["changes"] = {
+          action,
+          type: readWidgetParam(body, "type") as WidgetUpdate["changes"]["type"],
+          label: readWidgetParam(body, "label") ?? undefined,
+          icon: readWidgetParam(body, "icon") ?? undefined,
+          position: readWidgetParam(body, "position") as WidgetUpdate["changes"]["position"],
+        };
+        for (const key of ["value", "max", "count", "seconds"] as const) {
+          const value = readWidgetParam(body, key);
+          if (value !== null) changes[key] = Number(value);
+        }
+        changes.running = readWidgetParam(body, "running") === "true";
+        widgets = applyHudWidgetLifecycle(widgets, { widgetId, changes });
+        continue;
+      }
       const add = readWidgetParam(match[2] ?? "", "add");
       const remove = readWidgetParam(match[2] ?? "", "remove");
       widgets = widgets.map((widget) => {
-        if (widget.id !== widgetId || widget.type !== "list") return widget;
+        if (widget.id !== widgetId) return widget;
+        if (widget.type !== "list") {
+          const config = { ...widget.config };
+          const stat = readWidgetParam(body, "stat");
+          const rawValue = readWidgetParam(body, "value");
+          if (stat && widget.type === "stat_block" && rawValue !== null) {
+            const value = Number.isFinite(Number(rawValue)) ? Number(rawValue) : rawValue;
+            const stats = [...(config.stats ?? [])];
+            const index = stats.findIndex((s) => s.name.toLowerCase() === stat.toLowerCase());
+            if (index < 0) stats.push({ name: stat, value });
+            else stats[index] = { ...stats[index]!, value };
+            config.stats = stats;
+          } else {
+            for (const key of ["value", "count", "seconds"] as const) {
+              const value = readWidgetParam(body, key);
+              if (value !== null && Number.isFinite(Number(value))) config[key] = Number(value);
+            }
+            const running = readWidgetParam(body, "running");
+            if (running !== null) config.running = running === "true";
+          }
+          if (widget.type === "inventory_grid") {
+            if (remove) config.contents = (config.contents ?? []).filter((c) => c.name !== remove);
+            if (add) config.contents = [...(config.contents ?? []), { name: add, quantity: 1 }];
+          }
+          return { ...widget, config };
+        }
         let items = [...(widget.config.items ?? [])];
         if (remove) {
           const target = normalizeListItem(remove);

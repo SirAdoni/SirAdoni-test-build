@@ -2,6 +2,7 @@ import type { CSSProperties, ReactNode } from "react";
 import type { AvatarCrop, PartyDialogueLine } from "@marinara-engine/shared";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { formatNarration } from "./game-narration-format";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 
 /** Build inline style for a color that may be a plain color or a CSS gradient. */
 export function nameColorStyle(color?: string): CSSProperties | undefined {
@@ -47,7 +48,15 @@ export function CroppedAvatar({
         src={src}
         alt={alt}
         className="h-full w-full object-cover"
-        style={getAvatarCropStyle(crop)}
+        style={{
+          position: "absolute",
+          left: 0,
+          top: 0,
+          width: "100%",
+          height: "100%",
+          objectFit: "cover",
+          ...getAvatarCropStyle(crop),
+        }}
         onError={onLoadError}
       />
     </div>
@@ -93,12 +102,14 @@ export function PartyOverlayBox({
       data-line-type={line.type}
     >
       {avatar ? (
-        <CroppedAvatar
-          src={avatar.url}
-          alt={line.character}
-          crop={avatar.crop}
-          className="mt-0.5 h-7 w-7 shrink-0 rounded-full border border-white/15"
-        />
+        <CharacterPhoto src={avatar.url} name={line.character} className="mt-0.5 h-7 w-7 shrink-0 rounded-full">
+          <CroppedAvatar
+            src={avatar.url}
+            alt={line.character}
+            crop={avatar.crop}
+            className="h-full w-full rounded-full border border-white/15"
+          />
+        </CharacterPhoto>
       ) : (
         <img
           src="/npc-silhouette.svg"

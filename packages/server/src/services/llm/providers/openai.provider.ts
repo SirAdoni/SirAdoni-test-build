@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import {
   BaseLLMProvider,
+  LLMHttpError,
   llmFetch,
   llmHttpErrorFromResponse,
   sanitizeApiError,
@@ -26,12 +27,19 @@ import {
   shouldSuppressUnknownModelParameters,
 } from "@marinara-engine/shared";
 import { logger } from "../../../lib/logger.js";
-import { isLocalInferenceBaseUrl } from "../../../middleware/ip-allowlist.js";
+import { isLoopbackIp, isNonRoutableNetworkIp } from "../../../middleware/ip-allowlist.js";
 import {
   applyGlmThinkingParameters,
   glm53CustomGatewayReasoningEffort,
   isGlm53MandatoryReasoningModel,
 } from "./glm-request-compat.js";
+import { resolveOpenAIChatGPTCacheIdentity } from "./openai-chatgpt-cache.js";
+import { fetchResponsesWithDiagnostics, logResponsesProviderEvent } from "./openai-cache-diagnostics.js";
+import {
+  OPENAI_EMPTY_STREAM_CAPTURE_MAX_BYTES,
+  appendOpenAIStreamCaptureChunk,
+  persistOpenAIEmptyStreamCapture,
+} from "./openai-stream-inspection.js";
 
 /**
  * Models routed through the Responses API (`/responses`).
@@ -295,6 +303,22 @@ export class OpenAIProvider extends BaseLLMProvider {
     return typeof message === "string" ? message : "";
   }
 
+  private static responsesFailureError(json: Record<string, unknown>, context: string): Error {
+    const providerError = json.error;
+    const providerCode =
+      providerError && typeof providerError === "object" && !Array.isArray(providerError)
+        ? (providerError as Record<string, unknown>).code
+        : undefined;
+    const code = typeof providerCode === "string" ? providerCode : undefined;
+    const providerMessage = OpenAIProvider.extractProviderErrorMessage(json);
+    const codeDetail = code ? ` (${sanitizeApiError(code)})` : "";
+    const messageDetail = providerMessage ? `: ${sanitizeApiError(providerMessage)}` : "";
+    const message = `${context}: OpenAI Responses API response failed${codeDetail}${messageDetail}`;
+    return code === "server_is_overloaded"
+      ? new LLMHttpError(message, { status: 503, providerCode: code })
+      : new Error(message);
+  }
+
   private static requireChatCompletionsChoices<T>(json: Record<string, unknown>, context: string): T[] {
     if (Array.isArray(json.choices)) return json.choices as T[];
     const providerMessage = OpenAIProvider.extractProviderErrorMessage(json);
@@ -305,9 +329,7 @@ export class OpenAIProvider extends BaseLLMProvider {
   private static assertResponsesSucceeded(json: Record<string, unknown>, context: string): void {
     const status = typeof json.status === "string" ? json.status : "";
     if (status === "failed") {
-      const providerMessage = OpenAIProvider.extractProviderErrorMessage(json);
-      const detail = providerMessage ? `: ${sanitizeApiError(providerMessage)}` : "";
-      throw new Error(`${context}: OpenAI Responses API response failed${detail}`);
+      throw OpenAIProvider.responsesFailureError(json, context);
     }
     if (status === "incomplete") {
       const reason = (json.incomplete_details as Record<string, unknown> | undefined)?.reason ?? "unknown";
@@ -759,7 +781,16 @@ export class OpenAIProvider extends BaseLLMProvider {
    * off" choice is silently discarded before it reaches the request body.
    */
   private isLocalInferenceEndpoint(): boolean {
-    return isLocalInferenceBaseUrl(this.baseUrl);
+    try {
+      const hostname = new URL(this.baseUrl).hostname.toLowerCase().replace(/^\[|\]$|\.$/g, "");
+      if (hostname === "localhost" || isLoopbackIp(hostname)) return true;
+      if (hostname.endsWith(".local") || hostname.endsWith(".localhost")) return true;
+      if (hostname === "host.docker.internal" || hostname === "host.containers.internal") return true;
+      if (!hostname.includes(".") || hostname.endsWith(".internal")) return true;
+      return isNonRoutableNetworkIp(hostname);
+    } catch {
+      return false;
+    }
   }
 
   private enforceLocalInferenceThinkingDisable(
@@ -1054,7 +1085,7 @@ export class OpenAIProvider extends BaseLLMProvider {
   }
 
   private supportsGpt5Verbosity(model: string): boolean {
-    if (this.isOpenAIChatGPTProvider()) return false;
+    if (this.isOpenAIChatGPTProvider()) return /^gpt-(?:5|6)(?:[.-]|$)/i.test(model.trim());
     return this.isGenericCustomProvider() || model.toLowerCase().startsWith("gpt-5") || isOpenAIGpt6AstraModel(model);
   }
 
@@ -1072,7 +1103,7 @@ export class OpenAIProvider extends BaseLLMProvider {
       textOptions.verbosity = options.verbosity;
     }
 
-    if (options.responseFormat) {
+    if (options.responseFormat && !this.isOpenAIChatGPTProvider()) {
       textOptions.format = options.responseFormat;
     }
 
@@ -1601,10 +1632,11 @@ export class OpenAIProvider extends BaseLLMProvider {
       !!options.onToken,
     );
 
+    const requestBodySerialized = JSON.stringify(body);
     const response = await llmFetch(url, {
       method: "POST",
       headers: this.buildHeaders(),
-      body: JSON.stringify(body),
+      body: requestBodySerialized,
       bufferResponse: !useStream,
       ...(options.signal ? { signal: options.signal } : {}),
     });
@@ -1659,6 +1691,19 @@ export class OpenAIProvider extends BaseLLMProvider {
         toolCalls = parseTextualToolCalls(resolvedContent, options.tools);
         if (toolCalls.length > 0) resolvedContent = null;
       }
+      if (!resolvedContent?.trim() && toolCalls.length === 0) {
+        logger.warn(
+          {
+            model: options.model,
+            finishReason: choice?.finish_reason,
+            responseKeys: Object.keys(json),
+            messageKeys: Object.keys(choice?.message ?? {}),
+            rawContentType: typeof choice?.message?.content,
+            response: json,
+          },
+          "[OpenAI chatComplete] Provider response contains no displayable text or tool calls; inspect sanitized response",
+        );
+      }
       return {
         content: resolvedContent,
         toolCalls,
@@ -1688,6 +1733,14 @@ export class OpenAIProvider extends BaseLLMProvider {
     let streamUsage: LLMUsage | undefined;
     const reasoningMetadata: Record<string, unknown> = {};
     let anonymousContentBlockToolCallCount = 0;
+    let rawStreamCapture = "";
+    let rawStreamCaptureBytes = 0;
+    let rawStreamCaptureTruncated = false;
+    const requestBodyCapture = appendOpenAIStreamCaptureChunk(
+      "",
+      requestBodySerialized,
+      OPENAI_EMPTY_STREAM_CAPTURE_MAX_BYTES,
+    );
 
     // Accumulate tool calls from deltas
     const toolCallsMap = new Map<
@@ -1701,7 +1754,16 @@ export class OpenAIProvider extends BaseLLMProvider {
       stream: while (true) {
         const { done, value } = await reader.read();
 
-        buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+        const decoded = done ? decoder.decode() : decoder.decode(value, { stream: true });
+        const captured = appendOpenAIStreamCaptureChunk(
+          rawStreamCapture,
+          decoded,
+          OPENAI_EMPTY_STREAM_CAPTURE_MAX_BYTES,
+        );
+        rawStreamCapture = captured.value;
+        rawStreamCaptureBytes += value?.byteLength ?? 0;
+        rawStreamCaptureTruncated ||= captured.truncated;
+        buffer += decoded;
         const lines = buffer.split(/\r?\n/);
         buffer = done ? "" : (lines.pop() ?? "");
 
@@ -1863,6 +1925,29 @@ export class OpenAIProvider extends BaseLLMProvider {
 
     this.emitChatCompletionsReasoning(options, reasoningMetadata);
 
+    if (!content.trim() && toolCalls.length === 0) {
+      try {
+        const path = await persistOpenAIEmptyStreamCapture({
+          requestBody: requestBodyCapture.value,
+          requestBodyBytes: Buffer.byteLength(requestBodySerialized, "utf8"),
+          requestBodyTruncated: requestBodyCapture.truncated,
+          rawStream: rawStreamCapture,
+          rawStreamBytes: rawStreamCaptureBytes,
+          truncated: rawStreamCaptureTruncated,
+          status: response.status,
+          model: typeof body.model === "string" ? body.model : options.model,
+          contentType: response.headers.get("content-type"),
+          requestId: response.headers.get("x-request-id"),
+        });
+        logger.warn(
+          { model: options.model, capturePath: path, rawStreamBytes: rawStreamCaptureBytes },
+          "[OpenAI chatComplete] Empty streamed response captured for inspection",
+        );
+      } catch (error) {
+        logger.warn(error, "[OpenAI chatComplete] Failed to capture empty streamed response");
+      }
+    }
+
     return {
       content: content || null,
       toolCalls,
@@ -1910,6 +1995,17 @@ export class OpenAIProvider extends BaseLLMProvider {
 
     let sawNonSystemInput = false;
     for (const m of messages) {
+      if (
+        this.isOpenAIChatGPTProvider() &&
+        m.role === "system" &&
+        m.providerMetadata?.marinaraFullLoreContext === true
+      ) {
+        // Keep only the stable lore in instructions. Later GM/state/system messages
+        // remain system messages in input, rather than rewriting this prefix.
+        instructions = m.content;
+        sawNonSystemInput = true;
+        continue;
+      }
       if (m.role === "system") {
         if (m.content?.trim()) {
           if (!sawNonSystemInput) {
@@ -2080,6 +2176,11 @@ export class OpenAIProvider extends BaseLLMProvider {
       ),
       store: false, // don't persist responses on OpenAI side
     };
+    if (isOpenAIChatGPT && messages.some((message) => message.providerMetadata?.marinaraFullLoreContext === true)) {
+      body.prompt_cache_key = `me-lore-${resolveOpenAIChatGPTCacheIdentity(messages)}`;
+      // ChatGPT's Codex backend rejects prompt_cache_options and content
+      // breakpoints. Use its supported automatic caching and stable routing key.
+    }
     const shouldStreamResponses =
       !this.isResponsesStreamingUnsupportedModel(options.model) && (isOpenAIChatGPT || (options.stream ?? true));
 
@@ -2127,9 +2228,18 @@ export class OpenAIProvider extends BaseLLMProvider {
     if (!isOpenAIChatGPT && !suppressModelParameters && this.shouldSendParameter(options, "reasoningEffort")) {
       this.applyResponsesReasoning(body, options);
     }
+    // ChatGPT takes the chosen effort as is. "Off" sends nothing, so the model uses its own default level.
+    if (
+      isOpenAIChatGPT &&
+      this.shouldSendParameter(options, "reasoningEffort") &&
+      this.hasActiveReasoningEffort(options.reasoningEffort)
+    ) {
+      body.reasoning = { effort: options.reasoningEffort };
+    }
 
-    // GPT-5+ verbosity and Responses structured output / JSON mode.
-    if (!isOpenAIChatGPT && !suppressModelParameters) {
+    // GPT-5+ verbosity and Responses structured output / JSON mode. The ChatGPT
+    // backend accepts verbosity, but not Marinara's structured-output requests.
+    if (isOpenAIChatGPT || !suppressModelParameters) {
       this.applyResponsesTextOptions(body, options);
     }
 
@@ -2189,13 +2299,15 @@ export class OpenAIProvider extends BaseLLMProvider {
       Array.isArray(body.tools) ? body.tools.length : 0,
     );
 
-    let response = await llmFetch(url, {
-      method: "POST",
-      headers: this.buildHeaders(),
-      body: JSON.stringify(body),
-      bufferResponse: !parseAsStream,
-      ...(options.signal ? { signal: options.signal } : {}),
-    });
+    let { response, attempt } = await fetchResponsesWithDiagnostics(body, "chatResponses", (serializedBody) =>
+      llmFetch(url, {
+        method: "POST",
+        headers: this.buildHeaders(),
+        body: serializedBody,
+        bufferResponse: !parseAsStream,
+        ...(options.signal ? { signal: options.signal } : {}),
+      }),
+    );
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -2206,14 +2318,17 @@ export class OpenAIProvider extends BaseLLMProvider {
         (body.input as Array<Record<string, unknown>>).some((item) => item.type === "reasoning")
       ) {
         logger.warn("[OpenAI chatResponses] Encrypted reasoning items rejected, retrying without them");
+        options.onEncryptedReasoning?.([]); // clear the cache
         this.stripEncryptedItems(body, errorText, options.model);
-        response = await llmFetch(url, {
-          method: "POST",
-          headers: this.buildHeaders(),
-          body: JSON.stringify(body),
-          bufferResponse: !parseAsStream,
-          ...(options.signal ? { signal: options.signal } : {}),
-        });
+        ({ response, attempt } = await fetchResponsesWithDiagnostics(body, "chatResponses", (serializedBody) =>
+          llmFetch(url, {
+            method: "POST",
+            headers: this.buildHeaders(),
+            body: serializedBody,
+            bufferResponse: !parseAsStream,
+            ...(options.signal ? { signal: options.signal } : {}),
+          }),
+        ));
         if (!response.ok) {
           const retryError = await response.text();
           throw llmHttpErrorFromResponse(
@@ -2235,6 +2350,7 @@ export class OpenAIProvider extends BaseLLMProvider {
         response,
         "OpenAI chatResponses() non-stream response",
       );
+      logResponsesProviderEvent(attempt, "nonstream", json, json.usage as ResponsesUsagePayload | undefined);
       OpenAIProvider.assertResponsesSucceeded(json, "OpenAI chatResponses() non-stream response");
       this.emitMissingResponsesReasoningSummary(json, options, "");
       // Emit encrypted reasoning items for multi-turn context
@@ -2364,6 +2480,12 @@ export class OpenAIProvider extends BaseLLMProvider {
               // Extract usage and encrypted reasoning from the completed response
               const resp = parsed.response as Record<string, unknown> | undefined;
               if (resp) {
+                logResponsesProviderEvent(
+                  attempt,
+                  resp.status === "incomplete" ? "incomplete" : "completed",
+                  resp,
+                  resp.usage as ResponsesUsagePayload | undefined,
+                );
                 streamUsage = this.extractResponsesUsage(resp);
                 if (resp.status === "incomplete" && streamUsage) {
                   streamUsage = {
@@ -2393,16 +2515,17 @@ export class OpenAIProvider extends BaseLLMProvider {
             }
             case "response.failed": {
               const resp = parsed.response as Record<string, unknown> | undefined;
-              const error = resp?.error as Record<string, unknown> | undefined;
-              const msg = (error?.message as string) ?? "unknown error";
-              logger.error(new Error(msg), "[OpenAI Responses] Stream ended with response.failed");
-              throw new Error(`OpenAI Responses stream failed: ${msg}`);
+              logResponsesProviderEvent(attempt, "failed", resp ?? {}, undefined);
+              const error = OpenAIProvider.responsesFailureError(resp ?? {}, "OpenAI Responses stream failed");
+              logger.error(error, "[OpenAI Responses] Stream ended with response.failed");
+              throw error;
             }
             case "response.incomplete": {
               const resp = parsed.response as Record<string, unknown> | undefined;
               const reason = (resp?.incomplete_details as Record<string, unknown>)?.reason ?? "unknown";
               logger.warn("[OpenAI Responses] Stream ended with response.incomplete (reason=%s)", reason);
               if (resp) {
+                logResponsesProviderEvent(attempt, "incomplete", resp, resp.usage as ResponsesUsagePayload | undefined);
                 streamUsage = this.extractResponsesUsage(resp);
                 this.emitEncryptedReasoning(resp, options);
                 emittedReasoningSummary = this.emitMissingResponsesReasoningSummary(
@@ -2453,13 +2576,15 @@ export class OpenAIProvider extends BaseLLMProvider {
       !!options.onThinking,
     );
 
-    let response = await llmFetch(url, {
-      method: "POST",
-      headers: this.buildHeaders(),
-      body: JSON.stringify(body),
-      bufferResponse: !useStream,
-      ...(options.signal ? { signal: options.signal } : {}),
-    });
+    let { response, attempt } = await fetchResponsesWithDiagnostics(body, "chatCompleteResponses", (serializedBody) =>
+      llmFetch(url, {
+        method: "POST",
+        headers: this.buildHeaders(),
+        body: serializedBody,
+        bufferResponse: !useStream,
+        ...(options.signal ? { signal: options.signal } : {}),
+      }),
+    );
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -2470,14 +2595,17 @@ export class OpenAIProvider extends BaseLLMProvider {
         (body.input as Array<Record<string, unknown>>).some((item) => item.type === "reasoning")
       ) {
         logger.warn("[OpenAI chatCompleteResponses] Encrypted reasoning items rejected, retrying without them");
+        options.onEncryptedReasoning?.([]); // clear the cache
         this.stripEncryptedItems(body, errorText, options.model);
-        response = await llmFetch(url, {
-          method: "POST",
-          headers: this.buildHeaders(),
-          body: JSON.stringify(body),
-          bufferResponse: !useStream,
-          ...(options.signal ? { signal: options.signal } : {}),
-        });
+        ({ response, attempt } = await fetchResponsesWithDiagnostics(body, "chatCompleteResponses", (serializedBody) =>
+          llmFetch(url, {
+            method: "POST",
+            headers: this.buildHeaders(),
+            body: serializedBody,
+            bufferResponse: !useStream,
+            ...(options.signal ? { signal: options.signal } : {}),
+          }),
+        ));
         if (!response.ok) {
           const retryError = await response.text();
           throw llmHttpErrorFromResponse(
@@ -2499,6 +2627,7 @@ export class OpenAIProvider extends BaseLLMProvider {
         response,
         "OpenAI chatCompleteResponses() non-stream response",
       );
+      logResponsesProviderEvent(attempt, "nonstream", json, json.usage as ResponsesUsagePayload | undefined);
       OpenAIProvider.assertResponsesSucceeded(json, "OpenAI chatCompleteResponses() non-stream response");
       this.emitMissingResponsesReasoningSummary(json, options, "");
       // Emit encrypted reasoning items for multi-turn context
@@ -2679,6 +2808,12 @@ export class OpenAIProvider extends BaseLLMProvider {
             case "response.completed": {
               const resp = parsed.response as Record<string, unknown> | undefined;
               if (resp) {
+                logResponsesProviderEvent(
+                  attempt,
+                  resp.status === "incomplete" ? "incomplete" : "completed",
+                  resp,
+                  resp.usage as ResponsesUsagePayload | undefined,
+                );
                 streamUsage = this.extractResponsesUsage(resp);
                 const completedReasoning = this.extractEncryptedReasoningItems(resp);
                 if (completedReasoning.length) encryptedReasoning = completedReasoning;
@@ -2708,10 +2843,10 @@ export class OpenAIProvider extends BaseLLMProvider {
             }
             case "response.failed": {
               const resp = parsed.response as Record<string, unknown> | undefined;
-              const error = resp?.error as Record<string, unknown> | undefined;
-              const msg = (error?.message as string) ?? "unknown error";
-              logger.error(new Error(msg), "[OpenAI Responses] chatCompleteResponses stream failed");
-              throw new Error(`OpenAI Responses stream failed: ${msg}`);
+              logResponsesProviderEvent(attempt, "failed", resp ?? {}, undefined);
+              const error = OpenAIProvider.responsesFailureError(resp ?? {}, "OpenAI Responses stream failed");
+              logger.error(error, "[OpenAI Responses] chatCompleteResponses stream failed");
+              throw error;
             }
             case "response.incomplete": {
               const resp = parsed.response as Record<string, unknown> | undefined;
@@ -2722,6 +2857,7 @@ export class OpenAIProvider extends BaseLLMProvider {
                 const completedReasoning = this.extractEncryptedReasoningItems(resp);
                 if (completedReasoning.length) encryptedReasoning = completedReasoning;
                 this.emitEncryptedReasoning(resp, options);
+                logResponsesProviderEvent(attempt, "incomplete", resp, resp.usage as ResponsesUsagePayload | undefined);
                 emittedReasoningSummary = this.emitMissingResponsesReasoningSummary(
                   resp,
                   options,

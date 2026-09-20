@@ -22,6 +22,8 @@ export function assertCapabilityAgentRuntimeServiceRegistration(
 }
 
 export interface CapabilityAgentRuntimeService {
+  /** False when a cached suggestion must be checked against current package state. */
+  reuseCachedInjection?: boolean;
   prepareContext?(input: { agent: AgentExecConfig; context: AgentContext }): Promise<unknown> | unknown;
   finalizeResult?(input: {
     agent: AgentExecConfig;
@@ -37,6 +39,10 @@ function runtimeFor(agentType: string): CapabilityAgentRuntimeService | null {
 
 export function shouldDeferCapabilityAgentResult(agentType: string, finalized = false): boolean {
   return !finalized && typeof runtimeFor(agentType)?.finalizeResult === "function";
+}
+
+export function canReuseCapabilityAgentInjection(agentType: string): boolean {
+  return runtimeFor(agentType)?.reuseCachedInjection !== false;
 }
 
 export async function prepareCapabilityAgentContexts(

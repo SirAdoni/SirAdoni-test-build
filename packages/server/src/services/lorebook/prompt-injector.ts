@@ -137,8 +137,10 @@ export function applyTokenBudget(activatedEntries: ActivatedEntry[], tokenBudget
   let totalTokens = 0;
   const result: ActivatedEntry[] = [];
 
-  // Sort: constant entries first, then by order
+  // Sort: explicit Always Loaded entries first, then compatibility constants, then order.
   const sorted = [...activatedEntries].sort((a, b) => {
+    if (a.entry.alwaysLoaded && !b.entry.alwaysLoaded) return -1;
+    if (!a.entry.alwaysLoaded && b.entry.alwaysLoaded) return 1;
     if (a.entry.constant && !b.entry.constant) return -1;
     if (!a.entry.constant && b.entry.constant) return 1;
     return a.entry.order - b.entry.order;
@@ -146,6 +148,10 @@ export function applyTokenBudget(activatedEntries: ActivatedEntry[], tokenBudget
 
   for (const entry of sorted) {
     const entryTokens = estimateTextTokens(entry.entry.content);
+    if (entry.entry.alwaysLoaded) {
+      result.push(entry);
+      continue;
+    }
     if (totalTokens + entryTokens > tokenBudget) {
       // Budget exhausted — skip remaining entries
       break;

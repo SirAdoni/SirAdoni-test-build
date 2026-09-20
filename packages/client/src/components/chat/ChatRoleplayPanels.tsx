@@ -24,7 +24,7 @@ import {
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { MacroTextarea } from "../ui/MacroTextarea";
 
-type LorebookEntryStatus = "normal" | "constant" | "selective";
+type LorebookEntryStatus = "normal" | "constant" | "always_loaded" | "selective";
 
 const LOREBOOK_ENTRY_STATUS_STYLE: Record<
   LorebookEntryStatus,
@@ -42,6 +42,12 @@ const LOREBOOK_ENTRY_STATUS_STYLE: Record<
     row: "border border-yellow-300/25 bg-yellow-300/10 hover:bg-yellow-300/15",
     badge: "bg-yellow-300/15 text-yellow-200 ring-1 ring-yellow-300/20",
   },
+  always_loaded: {
+    labelKey: "chat.activeContext.status.always_loaded",
+    dot: "bg-violet-300",
+    row: "border border-violet-300/25 bg-violet-300/10 hover:bg-violet-300/15",
+    badge: "bg-violet-300/15 text-violet-200 ring-1 ring-violet-300/20",
+  },
   selective: {
     labelKey: "chat.activeContext.status.selective",
     dot: "bg-red-400",
@@ -50,7 +56,12 @@ const LOREBOOK_ENTRY_STATUS_STYLE: Record<
   },
 };
 
-function getLorebookEntryStatus(entry: { constant?: boolean; selective?: boolean }): LorebookEntryStatus {
+function getLorebookEntryStatus(entry: {
+  constant?: boolean;
+  alwaysLoaded?: boolean;
+  selective?: boolean;
+}): LorebookEntryStatus {
+  if (entry.alwaysLoaded) return "always_loaded";
   if (entry.constant) return "constant";
   if (entry.selective) return "selective";
   return "normal";
@@ -68,7 +79,7 @@ function formatSemanticScore(score: number | null | undefined) {
 }
 
 function formatActivationSource(
-  source: "current_location" | "keyword" | "semantic" | "constant" | "sticky" | "recursive",
+  source: "current_location" | "keyword" | "semantic" | "constant" | "always_loaded" | "sticky" | "recursive",
   t: TFunction,
 ) {
   return t(`chat.activeContext.source.${source}`);
@@ -82,13 +93,16 @@ function ActiveLorebookEntryRow({
     keys: string[];
     content: string;
     constant: boolean;
+    alwaysLoaded: boolean;
     selective: boolean;
     order: number;
     lorebookId: string;
     lorebookName: string;
-    activationSources: Array<"current_location" | "keyword" | "semantic" | "constant" | "sticky" | "recursive">;
+    activationSources: Array<
+      "current_location" | "keyword" | "semantic" | "constant" | "always_loaded" | "sticky" | "recursive"
+    >;
     matchedKeys?: string[];
-    matchType?: "keyword" | "semantic" | "constant" | "sticky";
+    matchType?: "keyword" | "semantic" | "constant" | "always_loaded" | "sticky";
     semanticScore?: number;
   };
 }) {

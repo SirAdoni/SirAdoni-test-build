@@ -1,5 +1,6 @@
 import {
   estimateCharacterCardTokens,
+  getCharacterLibraryCategory,
   PROFESSOR_MARI_ID,
   type CharacterData,
   type CharacterCatalogEntry,
@@ -8,13 +9,17 @@ import {
 import type { DB } from "../../db/connection.js";
 import { characters } from "../../db/schema/index.js";
 
-type CachedCharacterCatalogEntry = CharacterCatalogEntry & { searchText: string };
+type CachedCharacterCatalogEntry = CharacterCatalogEntry & {
+  searchText: string;
+  libraryCategory: "characters" | "npcs";
+};
 
 type CatalogOptions = {
   includeBuiltIn?: boolean;
   search?: string;
   sort?: string;
   favoriteFilter?: string;
+  category?: "characters" | "npcs";
   limit: number;
   offset: number;
 };
@@ -94,6 +99,7 @@ function entry(row: typeof characters.$inferSelect): CachedCharacterCatalogEntry
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     searchText,
+    libraryCategory: getCharacterLibraryCategory(data),
   };
 }
 
@@ -137,10 +143,15 @@ export function createCharacterCatalog(db: DB) {
       if (query) entries = entries.filter((item) => item.searchText.includes(query));
       if (options.favoriteFilter === "favorites") entries = entries.filter((item) => item.favorite);
       if (options.favoriteFilter === "non-favorites") entries = entries.filter((item) => !item.favorite);
+      if (options.category === "characters" || options.category === "npcs") {
+        entries = entries.filter((item) => item.libraryCategory === options.category);
+      }
       entries = sortEntries(entries, options.sort ?? "");
       const page = entries.slice(options.offset, options.offset + options.limit + 1);
       return {
-        items: page.slice(0, options.limit).map(({ searchText: _searchText, ...item }) => item),
+        items: page
+          .slice(0, options.limit)
+          .map(({ searchText: _searchText, libraryCategory: _libraryCategory, ...item }) => item),
         limit: options.limit,
         offset: options.offset,
         hasMore: page.length > options.limit,

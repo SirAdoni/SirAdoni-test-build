@@ -388,7 +388,9 @@ function applyGroupSelection(entries: ActivatedEntry[], random: () => number): A
 
   for (const entry of entries) {
     const group = entry.entry.group;
-    if (group) {
+    // Always Loaded is an explicit additive override. Constant entries retain
+    // their compatibility behavior, including weighted group selection.
+    if (group && !entry.entry.alwaysLoaded) {
       const list = grouped.get(group) ?? [];
       list.push(entry);
       grouped.set(group, list);
@@ -537,6 +539,17 @@ export function scanForActivatedEntries(
   };
 
   for (const entry of entries) {
+    if (entry.enabled && entry.alwaysLoaded) {
+      activated.push({
+        entry,
+        matchedKeys: ["[always_loaded]"],
+        injectionOrder: entry.order,
+        activationSources: ["always_loaded"],
+      });
+      activatedIds.add(entry.id);
+      continue;
+    }
+
     if (entry.delayUntilRecursion && !recursionPass) continue;
     if (entry.excludeRecursion && recursionPass) continue;
 
@@ -557,8 +570,6 @@ export function scanForActivatedEntries(
 
     if (!passesActivationGate(entry, timingState, filterContext, gameState, ignoreTiming)) continue;
 
-    // Constant entries still activate without keywords, but they obey timing,
-    // context filters, activation conditions, schedule, and probability gates.
     if (entry.constant) {
       if (!passesEntryProbability(entry)) continue;
       activated.push({
@@ -612,7 +623,7 @@ export function scanForActivatedEntries(
     const semanticCandidates: Array<{ entry: LorebookEntry; similarity: number }> = [];
 
     for (const entry of entries) {
-      if (!entry.enabled || entry.constant || activatedIds.has(entry.id)) continue;
+      if (!entry.enabled || entry.constant || entry.alwaysLoaded || activatedIds.has(entry.id)) continue;
       if (entry.delayUntilRecursion && !recursionPass) continue;
       if (entry.excludeRecursion && recursionPass) continue;
       if (entry.excludeFromVectorization) continue;

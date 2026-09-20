@@ -2,7 +2,12 @@
 // Store: Game Mode
 // ──────────────────────────────────────────────
 import { create } from "zustand";
-import { isSameNpcAvatarResource, normalizeNpcAvatarName, withFreshNpcAvatarRevision } from "../lib/game-npc-avatar";
+import { buildStableGameNpcId, applyHudWidgetLifecycle } from "@marinara-engine/shared";
+import {
+  mergeGameNpcsPreservingAvatars,
+  normalizeNpcAvatarName,
+  withFreshNpcAvatarRevision,
+} from "../lib/game-npc-avatar";
 import { api } from "../lib/api-client";
 import type {
   GameActiveState,
@@ -13,6 +18,22 @@ import type {
   GameBlueprint,
   WidgetUpdate,
 } from "@marinara-engine/shared";
+
+/**
+ * Campaign Wiki reader navigation kept across window close/reopen. Chat-scoped:
+ * the window ignores a state whose chatId differs from its own.
+ */
+export interface CampaignWikiNavState {
+  chatId: string;
+  /** Entity page being read; null is the entity list. */
+  entityId: string | null;
+  /** Previously read pages, oldest first. */
+  back: Array<string | null>;
+  /** Pages left with the back control, nearest first. */
+  forward: Array<string | null>;
+  /** Reader scroll offset captured when the window closed. */
+  scrollTop: number;
+}
 
 interface GameModeStore {
   /** The active game ID (groupId that links all sessions). */
@@ -48,6 +69,8 @@ interface GameModeStore {
   hudWidgets: HudWidget[];
   /** Game blueprint from setup. */
   blueprint: GameBlueprint | null;
+  /** Campaign Wiki reader position, retained while the window is closed. */
+  campaignWikiNav: CampaignWikiNavState | null;
 
   // Actions
   setActiveGame: (gameId: string | null, sessionChatId?: string | null, partyChatId?: string | null) => void;
@@ -69,8 +92,9 @@ interface GameModeStore {
   setHudWidgets: (widgets: HudWidget[]) => void;
   applyWidgetUpdate: (update: WidgetUpdate) => HudWidget[];
   setBlueprint: (bp: GameBlueprint | null) => void;
+  setCampaignWikiNav: (nav: CampaignWikiNavState | null) => void;
   /** Patch avatarUrl on tracked NPCs after server-side image generation. */
-  patchNpcAvatars: (avatars: Array<{ name: string; avatarUrl: string }>) => void;
+  patchNpcAvatars: (avatars: Array<{ npcId?: string | null; name: string; avatarUrl: string }>) => void;
   reset: () => void;
 }
 
@@ -158,15 +182,9 @@ function removeListWidgetItem(items: string[], target: string): string[] {
   return items.filter((_, index) => index !== partialMatches[0]!.index);
 }
 
-function buildTrackedNpcStub(name: string, avatarUrl: string): GameNpc {
-  const slug = name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "");
-
+function buildTrackedNpcStub(name: string, avatarUrl: string, npcId?: string | null): GameNpc {
   return {
-    id: slug || `npc-${Date.now()}`,
+    id: npcId?.trim() || buildStableGameNpcId(name),
     name,
     emoji: "👤",
     description: "",
@@ -236,6 +254,7 @@ const INITIAL_STATE = {
   sessionNumber: 1,
   hudWidgets: [],
   blueprint: null,
+  campaignWikiNav: null,
 };
 
 export const useGameModeStore = create<GameModeStore>((set) => ({
@@ -297,34 +316,22 @@ export const useGameModeStore = create<GameModeStore>((set) => ({
       const currentMap = s.maps.find((map, index) => getMapId(map, index) === mapId) ?? s.currentMap;
       return { activeMapId: mapId, currentMap };
     }),
-  setNpcs: (npcs) =>
-    set((s) => {
-      // Preserve existing avatarUrls: the incoming list may come from a stale
-      // chat-metadata cache that predates a recent /generate-assets call. If
-      // we already have an avatarUrl for an NPC and the incoming record is
-      // missing one, keep ours rather than clobbering it to null.
-      const existingByName = new Map<string, string>();
-      for (const existing of s.npcs) {
-        if (existing.avatarUrl && existing.name) {
-          existingByName.set(normalizeNpcAvatarName(existing.name), existing.avatarUrl);
-        }
-      }
-      const merged = npcs.map((npc) => {
-        const preserved = existingByName.get(normalizeNpcAvatarName(npc.name ?? ""));
-        if (!preserved) return npc;
-        if (!npc.avatarUrl || isSameNpcAvatarResource(npc.avatarUrl, preserved)) {
-          return { ...npc, avatarUrl: preserved };
-        }
-        return npc;
-      });
-      return { npcs: merged };
-    }),
+  setNpcs: (npcs) => set((s) => ({ npcs: mergeGameNpcsPreservingAvatars(s.npcs, npcs) })),
   patchNpcAvatars: (avatars) =>
     set((s) => {
       let modified = false;
+      const npcNameCounts = new Map<string, number>();
+      for (const npc of s.npcs) {
+        const name = normalizeNpcAvatarName(npc.name);
+        if (name) npcNameCounts.set(name, (npcNameCounts.get(name) ?? 0) + 1);
+      }
       const nextNpcs = s.npcs.map((npc) => {
         const npcName = normalizeNpcAvatarName(npc.name);
-        const match = avatars.find((avatar) => normalizeNpcAvatarName(avatar.name) === npcName);
+        const match = avatars.find((avatar) => {
+          const npcId = avatar.npcId?.trim();
+          if (npcId) return npc.id === npcId;
+          return npcNameCounts.get(npcName) === 1 && normalizeNpcAvatarName(avatar.name) === npcName;
+        });
         if (match) {
           const avatarUrl = withFreshNpcAvatarRevision(match.avatarUrl);
           modified = true;
@@ -335,9 +342,13 @@ export const useGameModeStore = create<GameModeStore>((set) => ({
 
       for (const avatar of avatars) {
         const avatarName = normalizeNpcAvatarName(avatar.name);
-        const exists = nextNpcs.some((npc) => normalizeNpcAvatarName(npc.name) === avatarName);
+        const avatarNpcId = avatar.npcId?.trim();
+        const exists = avatarNpcId
+          ? nextNpcs.some((npc) => npc.id === avatarNpcId)
+          : nextNpcs.filter((npc) => normalizeNpcAvatarName(npc.name) === avatarName).length === 1;
         if (!exists) {
-          nextNpcs.push(buildTrackedNpcStub(avatar.name, withFreshNpcAvatarRevision(avatar.avatarUrl)));
+          if (!avatarNpcId && nextNpcs.some((npc) => normalizeNpcAvatarName(npc.name) === avatarName)) continue;
+          nextNpcs.push(buildTrackedNpcStub(avatar.name, withFreshNpcAvatarRevision(avatar.avatarUrl), avatar.npcId));
           modified = true;
         }
       }
@@ -363,61 +374,63 @@ export const useGameModeStore = create<GameModeStore>((set) => ({
   applyWidgetUpdate: (update) => {
     let nextWidgets: HudWidget[] = [];
     set((s) => {
-      const updatedWidgets = s.hudWidgets.map((w) => {
-        if (w.id !== update.widgetId) return w;
-        const changes = update.changes;
-        const newConfig = { ...w.config };
+      const updatedWidgets = update.changes.action
+        ? applyHudWidgetLifecycle(s.hudWidgets, update)
+        : s.hudWidgets.map((w) => {
+            if (w.id !== update.widgetId) return w;
+            const changes = update.changes;
+            const newConfig = { ...w.config };
 
-        // Handle stat_block: update a specific stat by name, creating it when needed.
-        if (changes.statName && w.type === "stat_block") {
-          const targetName = changes.statName.trim();
-          const rawValue = changes.value;
-          const newValue =
-            typeof rawValue === "number"
-              ? rawValue
-              : typeof rawValue === "string" && rawValue.trim()
-                ? rawValue.trim()
-                : undefined;
-          if (targetName && newValue !== undefined) {
-            const stats = Array.isArray(newConfig.stats) ? [...newConfig.stats] : [];
-            const targetKey = targetName.toLowerCase();
-            const statIndex = stats.findIndex((stat) => stat.name.trim().toLowerCase() === targetKey);
-            if (statIndex >= 0) {
-              stats[statIndex] = { ...stats[statIndex]!, value: newValue };
+            // Handle stat_block: update a specific stat by name, creating it when needed.
+            if (changes.statName && w.type === "stat_block") {
+              const targetName = changes.statName.trim();
+              const rawValue = changes.value;
+              const newValue =
+                typeof rawValue === "number"
+                  ? rawValue
+                  : typeof rawValue === "string" && rawValue.trim()
+                    ? rawValue.trim()
+                    : undefined;
+              if (targetName && newValue !== undefined) {
+                const stats = Array.isArray(newConfig.stats) ? [...newConfig.stats] : [];
+                const targetKey = targetName.toLowerCase();
+                const statIndex = stats.findIndex((stat) => stat.name.trim().toLowerCase() === targetKey);
+                if (statIndex >= 0) {
+                  stats[statIndex] = { ...stats[statIndex]!, value: newValue };
+                } else {
+                  stats.push({ name: targetName, value: newValue });
+                }
+                newConfig.stats = stats;
+              }
             } else {
-              stats.push({ name: targetName, value: newValue });
+              // Merge simple numeric/config fields
+              if (changes.value !== undefined)
+                newConfig.value = typeof changes.value === "number" ? changes.value : newConfig.value;
+              if (changes.count !== undefined) newConfig.count = changes.count;
+              if (changes.running !== undefined) newConfig.running = changes.running;
+              if (changes.seconds !== undefined) newConfig.seconds = changes.seconds;
             }
-            newConfig.stats = stats;
-          }
-        } else {
-          // Merge simple numeric/config fields
-          if (changes.value !== undefined)
-            newConfig.value = typeof changes.value === "number" ? changes.value : newConfig.value;
-          if (changes.count !== undefined) newConfig.count = changes.count;
-          if (changes.running !== undefined) newConfig.running = changes.running;
-          if (changes.seconds !== undefined) newConfig.seconds = changes.seconds;
-        }
 
-        // Handle list/inventory add/remove
-        if (w.type === "list") {
-          let nextItems = [...(newConfig.items ?? [])];
-          if (changes.remove) {
-            nextItems = removeListWidgetItem(nextItems, changes.remove);
-          }
-          if (changes.add) {
-            nextItems = appendListWidgetItem(nextItems, changes.add);
-          }
-          newConfig.items = nextItems;
-        } else {
-          if (changes.add && w.type === "inventory_grid") {
-            newConfig.contents = [...(newConfig.contents ?? []), { name: changes.add, quantity: 1 }];
-          }
-          if (changes.remove && w.type === "inventory_grid") {
-            newConfig.contents = (newConfig.contents ?? []).filter((c) => c.name !== changes.remove);
-          }
-        }
-        return { ...w, config: newConfig };
-      });
+            // Handle list/inventory add/remove
+            if (w.type === "list") {
+              let nextItems = [...(newConfig.items ?? [])];
+              if (changes.remove) {
+                nextItems = removeListWidgetItem(nextItems, changes.remove);
+              }
+              if (changes.add) {
+                nextItems = appendListWidgetItem(nextItems, changes.add);
+              }
+              newConfig.items = nextItems;
+            } else {
+              if (changes.add && w.type === "inventory_grid") {
+                newConfig.contents = [...(newConfig.contents ?? []), { name: changes.add, quantity: 1 }];
+              }
+              if (changes.remove && w.type === "inventory_grid") {
+                newConfig.contents = (newConfig.contents ?? []).filter((c) => c.name !== changes.remove);
+              }
+            }
+            return { ...w, config: newConfig };
+          });
       // Persist to server
       const chatId = s.activeSessionChatId;
       if (chatId) debouncedPersistWidgets(chatId, updatedWidgets);
@@ -427,5 +440,6 @@ export const useGameModeStore = create<GameModeStore>((set) => ({
     return nextWidgets;
   },
   setBlueprint: (bp) => set({ blueprint: bp }),
+  setCampaignWikiNav: (nav) => set({ campaignWikiNav: nav }),
   reset: () => set(INITIAL_STATE),
 }));

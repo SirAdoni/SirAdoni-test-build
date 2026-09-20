@@ -1,0 +1,511 @@
+import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
+import { chromium } from "@playwright/test";
+import { startFixtureServer, stopFixtureServer } from "../lib/fixture-server.mjs";
+
+let fixture;
+let browser;
+const geometryObservations = [];
+try {
+  fixture = startFixtureServer(fileURLToPath(new URL("component-server.mjs", import.meta.url)));
+  const { base } = await fixture.ready;
+  browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  await page.goto(base);
+  await page.getByText("Real NPC", { exact: true }).waitFor();
+  let contact = page.getByRole("dialog").last();
+  assert.equal(await contact.getByText(/Recorded opinion: 0/).count(), 1, "numeric zero opinion renders");
+  await contact.getByRole("button", { name: "Real NPC", exact: true }).click();
+  assert.equal(
+    await page.locator("[data-profile-callback]").textContent(),
+    "char-real",
+    "profile callback receives character id",
+  );
+
+  await page.reload();
+  await page.getByText("Real NPC", { exact: true }).waitFor();
+  contact = page.getByRole("dialog").last();
+  const name = contact.locator("aside input").first();
+  await name.fill("Parent");
+  await contact.getByRole("button", { name: /add category/i }).click();
+  await name.fill("Child");
+  await contact.getByRole("combobox", { name: /parent category/i }).selectOption({ label: "Parent" });
+  await contact.getByRole("button", { name: /add category/i }).click();
+  const article = contact.locator("article").filter({ hasText: "Real NPC" });
+  await article.locator("select").first().selectOption({ label: "Child" });
+  await contact.getByRole("button", { name: "Parent", exact: true }).click();
+  assert.equal(await article.count(), 1, "nested parent category includes child contact");
+
+  await page.keyboard.press("Escape");
+  await contact.waitFor({ state: "hidden" });
+  const photo = page.locator("[data-character-photo-fixture]");
+  const openButton = photo.getByRole("button", { name: "Open Real NPC photo" });
+  assert.equal(
+    await photo.getByRole("button", { name: "Update Real NPC photo" }).count(),
+    0,
+    "thumbnail does not render an update camera",
+  );
+  assert.equal(await photo.locator("[data-photo-updates]").textContent(), "0", "photo update starts idle");
+  await openButton.click();
+  await page.getByRole("button", { name: /close image/i }).waitFor();
+  assert.equal(await photo.locator("[data-photo-updates]").textContent(), "0", "photo preview does not update");
+  const viewerUpdateButton = page.getByRole("button", { name: "Update Real NPC photo" });
+  assert.equal(await viewerUpdateButton.isEnabled(), true, "viewer update camera is enabled");
+  await viewerUpdateButton.click();
+  await page.getByRole("button", { name: /close image/i }).waitFor({ state: "hidden" });
+  assert.equal(await photo.locator("[data-photo-updates]").textContent(), "1", "viewer update invokes callback");
+  await openButton.focus();
+  await openButton.click();
+  await page.getByRole("button", { name: /close image/i }).waitFor();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: /close image/i }).waitFor({ state: "hidden" });
+  assert.equal(await photo.locator("[data-photo-updates]").textContent(), "1", "viewer close does not update");
+  const customWidget = page.locator('[data-game-floating-widget="open-file"]');
+  await customWidget.waitFor();
+  assert.match(await customWidget.textContent(), /Open File/, "real custom widget renders");
+  const customTuck = customWidget.getByRole("button", { name: /collapse to edge/i });
+  await customTuck.click();
+  const customTab = customWidget.locator("[data-game-tuck-tab]");
+  await customTab.waitFor();
+  assert.match(await customTab.textContent(), /📄/, "collapsed custom widget shows its icon");
+  assert.equal(
+    await customTab.evaluate((tab) => {
+      const surface = tab.closest("[data-chat-resource-drop-surface]");
+      const rect = tab.getBoundingClientRect();
+      const host = surface.getBoundingClientRect();
+      const neighborTools = document.createElement("button");
+      neighborTools.textContent = "Neighbor edit controls";
+      Object.assign(neighborTools.style, {
+        position: "absolute",
+        zIndex: "40",
+        left: `${rect.x - host.x}px`,
+        top: `${rect.y - host.y}px`,
+        width: `${rect.width}px`,
+        height: `${rect.height}px`,
+      });
+      surface.append(neighborTools);
+      try {
+        return tab.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+      } finally {
+        neighborTools.remove();
+      }
+    }),
+    true,
+    "bookmark remains reachable above neighboring HUD edit controls",
+  );
+  await page.locator("[data-editing-toggle]").click();
+  await page.evaluate(() => {
+    const samples = [];
+    const sample = () => {
+      const panel = document.querySelector('[data-game-floating-widget="open-file"]');
+      if (panel) {
+        const rect = panel.getBoundingClientRect();
+        const tab = panel.querySelector("[data-game-tuck-tab]")?.getBoundingClientRect();
+        samples.push({
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+          tabCenterY: tab ? tab.y + tab.height / 2 : null,
+        });
+      }
+      if (samples.length < 12) requestAnimationFrame(sample);
+    };
+    window.__customWidgetSamples = samples;
+    requestAnimationFrame(sample);
+  });
+  await customTab.hover();
+  await page.waitForFunction(
+    () => !document.querySelector('[data-game-panel-content="widget:open-file"]')?.classList.contains("hidden"),
+  );
+  await page.waitForFunction(() => (window.__customWidgetSamples?.length ?? 0) >= 12);
+  const hoverSamples = await page.evaluate(() => window.__customWidgetSamples ?? []);
+  console.log(`custom hover x samples: ${JSON.stringify(hoverSamples)}`);
+  const expandedHoverSamples = hoverSamples.filter((sample) => sample.width > 100);
+  assert.ok(
+    expandedHoverSamples.length >= 4 &&
+      Math.max(...expandedHoverSamples.map((sample) => sample.x)) -
+        Math.min(...expandedHoverSamples.map((sample) => sample.x)) <=
+        1,
+    "right custom widget hover keeps x stable across animation frames",
+  );
+  await page.evaluate(() => {
+    const samples = [];
+    const sample = () => {
+      const panel = document.querySelector('[data-game-floating-widget="open-file"]');
+      if (panel) samples.push(panel.getBoundingClientRect().x);
+      if (samples.length < 12) requestAnimationFrame(sample);
+    };
+    window.__customClickSamples = samples;
+    requestAnimationFrame(sample);
+  });
+  await customTab.click();
+  await page.waitForFunction(
+    () => !document.querySelector('[data-game-panel-content="widget:open-file"]')?.classList.contains("hidden"),
+  );
+  await page.waitForFunction(() => (window.__customClickSamples?.length ?? 0) >= 12);
+  const clickSamples = await page.evaluate(() => window.__customClickSamples ?? []);
+  console.log(`custom click x samples: ${JSON.stringify(clickSamples)}`);
+  assert.ok(
+    Math.max(...clickSamples) - Math.min(...clickSamples) <= 16,
+    "right custom widget click-open avoids a large x jump",
+  );
+  await page.locator("[data-editing-toggle]").click();
+  await customTuck.click();
+  await customTab.waitFor();
+  await page.waitForFunction(() => {
+    const panel = document.querySelector('[data-game-floating-widget="open-file"]');
+    return panel
+      ? panel.getBoundingClientRect().width === 36 && Math.abs(panel.getBoundingClientRect().right - innerWidth) <= 1
+      : false;
+  });
+  const customBeforeDrag = await customWidget.boundingBox();
+  assert.ok(customBeforeDrag, "collapsed custom widget has a bounding rect");
+  const customTabBox = await customTab.boundingBox();
+  assert.ok(customTabBox, "collapsed custom widget has a bookmark");
+  const customX = customTabBox.x + customTabBox.width / 2;
+  const customY = customTabBox.y + customTabBox.height / 2;
+  await page.mouse.move(customX, customY);
+  await page.mouse.down();
+  for (let step = 1; step <= 10; step += 1) await page.mouse.move(customX, customY - 12 * step);
+  await page.mouse.up();
+  await page.waitForFunction((previousY) => {
+    const panel = document.querySelector('[data-game-floating-widget="open-file"]');
+    return panel ? Math.abs(panel.getBoundingClientRect().y - previousY) > 20 : false;
+  }, customBeforeDrag.y);
+  const customAfterDrag = await customWidget.boundingBox();
+  assert.ok(customAfterDrag, "dragged custom widget has a bounding rect");
+  const customSavedPosition = await page.evaluate(() => {
+    const raw = localStorage.getItem("marinara-game-panel:hud-chat:floating:widget:open-file");
+    return raw ? JSON.parse(raw) : null;
+  });
+  assert.ok(
+    customSavedPosition && Math.abs(customSavedPosition.y - customAfterDrag.y) <= 1,
+    "custom drag saves its y coordinate",
+  );
+  assert.equal(
+    await customWidget
+      .locator('[data-game-panel-content="widget:open-file"]')
+      .evaluate((element) => element.classList.contains("hidden")),
+    true,
+    "dragging the collapsed bookmark does not untuck the widget",
+  );
+  await customTab.click();
+  await page.waitForFunction(
+    () => !document.querySelector('[data-game-panel-content="widget:open-file"]')?.classList.contains("hidden"),
+  );
+  const customOpenedBox = await customWidget.boundingBox();
+  assert.ok(customOpenedBox && customOpenedBox.x + customOpenedBox.width <= 1440, "click-open stays on the right edge");
+  await customWidget.getByRole("button", { name: /collapse to edge/i }).click();
+  await customWidget.locator("[data-game-tuck-tab]").waitFor();
+  const status = page.locator('[data-game-floating-panel="game-status"]');
+  const tuck = status.getByRole("button", { name: /collapse to edge/i });
+  const tuckTab = status.locator("[data-game-tuck-tab]");
+  const waitStatusOpen = () =>
+    page.waitForFunction(
+      () => !document.querySelector('[data-game-panel-content="game-status"]')?.classList.contains("hidden"),
+    );
+  const waitStatusClosed = () =>
+    page.waitForFunction(
+      () => document.querySelector('[data-game-panel-content="game-status"]')?.classList.contains("hidden") === true,
+    );
+  const readStatusBox = async () => {
+    const box = await status.boundingBox();
+    assert.ok(box, "game status has a bounding rect");
+    return box;
+  };
+  const collapseStatus = async () => {
+    await status.getByRole("button", { name: /collapse to edge/i }).click();
+    await tuckTab.waitFor();
+  };
+  await collapseStatus();
+  const collapsedBox = await readStatusBox();
+  const tabBox = await tuckTab.boundingBox();
+  assert.ok(tabBox, "tucked game status has a tab");
+  assert.equal(Math.round(tabBox.height), 40, "left bookmark uses a fixed 40px hit box");
+  await page.evaluate(() => {
+    const samples = [];
+    const sample = () => {
+      const panel = document.querySelector('[data-game-floating-panel="game-status"]');
+      if (panel) {
+        const rect = panel.getBoundingClientRect();
+        const tab = panel.querySelector("[data-game-tuck-tab]")?.getBoundingClientRect();
+        samples.push({
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+          tabCenterY: tab ? tab.y + tab.height / 2 : null,
+        });
+      }
+      if (samples.length < 12) requestAnimationFrame(sample);
+    };
+    window.__gameHudSamples = samples;
+    requestAnimationFrame(sample);
+  });
+  await tuckTab.focus();
+  await waitStatusOpen();
+  const revealedBox = await readStatusBox();
+  const revealedTabBox = await tuckTab.boundingBox();
+  assert.ok(revealedTabBox, "revealed left game status keeps its tab");
+  assert.ok(
+    Math.abs(revealedTabBox.y + revealedTabBox.height / 2 - (tabBox.y + tabBox.height / 2)) <= 1,
+    "left bookmark center stays fixed while the panel reveals",
+  );
+  console.log(`left reveal geometry: collapsed=${JSON.stringify(collapsedBox)} first=${JSON.stringify(revealedBox)}`);
+  assert.ok(
+    revealedBox.y <= collapsedBox.y && collapsedBox.y <= revealedBox.y + revealedBox.height,
+    "left reveal contains the original edge tab coordinate",
+  );
+  assert.ok(
+    parseFloat(await status.evaluate((element) => getComputedStyle(element).paddingLeft)) >= 32,
+    "left reveal reserves the bookmark gutter inside panel content",
+  );
+  assert.equal(revealedBox.width, 284, "left reveal reserves gutter without shrinking normal panel content");
+  assert.ok(revealedBox.x + revealedBox.width <= 1440, "left reveal stays within the host width");
+  await page.waitForFunction(() => (window.__gameHudSamples?.length ?? 0) >= 12);
+  const frameSamples = await page.evaluate(() => window.__gameHudSamples ?? []);
+  assert.ok(frameSamples.length >= 4, "left reveal captured multiple animation frames");
+  const expandedFrameSamples = frameSamples.filter((sample) => sample.height > 100);
+  assert.ok(expandedFrameSamples.length >= 4, "left reveal captured multiple expanded animation frames");
+  assert.ok(
+    Math.max(...expandedFrameSamples.map((sample) => sample.y)) -
+      Math.min(...expandedFrameSamples.map((sample) => sample.y)) <=
+      1,
+    "left reveal keeps y stable across expanded animation frames",
+  );
+  const expandedTabCenters = expandedFrameSamples
+    .map((sample) => sample.tabCenterY)
+    .filter((center) => typeof center === "number");
+  assert.ok(expandedTabCenters.length >= 4, "left reveal captured bookmark centers across animation frames");
+  assert.ok(
+    Math.max(...expandedTabCenters) - Math.min(...expandedTabCenters) <= 1,
+    "left bookmark center stays fixed across expanded animation frames",
+  );
+  await page.mouse.move(2, 2);
+  await page.keyboard.press("Escape");
+  await waitStatusClosed();
+  const repeatTabBox = await tuckTab.boundingBox();
+  assert.ok(repeatTabBox, "repeat tucked game status has a tab");
+  assert.ok(
+    Math.abs(repeatTabBox.y + repeatTabBox.height / 2 - (tabBox.y + tabBox.height / 2)) <= 1,
+    "left bookmark returns to its collapsed center after hiding",
+  );
+  await page.evaluate(() =>
+    document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined,
+  );
+  await tuckTab.focus();
+  await waitStatusOpen();
+  const repeatRevealBox = await readStatusBox();
+  assert.ok(
+    repeatRevealBox.y <= collapsedBox.y && collapsedBox.y <= repeatRevealBox.y + repeatRevealBox.height,
+    "repeat left reveal contains the original edge tab coordinate",
+  );
+  assert.ok(
+    parseFloat(await status.evaluate((element) => getComputedStyle(element).paddingLeft)) >= 32,
+    "repeat left reveal reserves the bookmark gutter inside panel content",
+  );
+  await page.mouse.move(2, 2);
+  await page.keyboard.press("Escape");
+  await waitStatusClosed();
+  console.log(
+    `tuck reveal geometry after fix: collapsed=${JSON.stringify(collapsedBox)} first=${JSON.stringify(revealedBox)} repeat=${JSON.stringify(repeatRevealBox)} frames=${frameSamples.length}`,
+  );
+
+  await tuckTab.click();
+  await status.getByRole("combobox", { name: /widget edge/i }).selectOption("right");
+  await collapseStatus();
+  const rightTabBox = await tuckTab.boundingBox();
+  assert.ok(
+    rightTabBox && rightTabBox.x + rightTabBox.width >= (await page.evaluate(() => innerWidth)) - 1,
+    "right edge tab is clamped to the viewport",
+  );
+  assert.equal(Math.round(rightTabBox.height), 40, "right bookmark uses a fixed 40px hit box");
+  await page.mouse.move(rightTabBox.x + rightTabBox.width / 2, rightTabBox.y + rightTabBox.height / 2);
+  await tuckTab.focus();
+  await waitStatusOpen();
+  const rightBox = await readStatusBox();
+  const rightRevealedTabBox = await tuckTab.boundingBox();
+  assert.ok(rightRevealedTabBox, "revealed right game status keeps its tab");
+  assert.ok(
+    Math.abs(rightRevealedTabBox.y + rightRevealedTabBox.height / 2 - (rightTabBox.y + rightTabBox.height / 2)) <= 1,
+    "right bookmark center stays fixed while the panel reveals",
+  );
+  console.log(
+    `right reveal geometry: ${JSON.stringify(rightBox)} viewport=${JSON.stringify(await page.evaluate(() => ({ width: innerWidth, height: innerHeight })))}`,
+  );
+  assert.ok(
+    rightBox.x + rightBox.width <= (await page.evaluate(() => innerWidth)) + 1,
+    "right reveal stays within the viewport",
+  );
+  assert.ok(rightBox.x >= 0, "right reveal stays within the left host boundary");
+  assert.ok(
+    parseFloat(await status.evaluate((element) => getComputedStyle(element).paddingRight)) >= 32,
+    "right reveal reserves the bookmark gutter inside panel content",
+  );
+  assert.equal(rightBox.width, 284, "right reveal reserves gutter without shrinking normal panel content");
+  await tuckTab.click();
+
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await status.getByRole("combobox", { name: /widget edge/i }).selectOption("left");
+  await collapseStatus();
+  await page.evaluate(() => {
+    document.documentElement.style.fontSize = "20px";
+  });
+  const largeFontTabBox = await tuckTab.boundingBox();
+  assert.ok(largeFontTabBox, "large-font left edge tab has a bounding rect");
+  assert.equal(Math.round(largeFontTabBox.width), 36, "left edge tab width stays fixed at 36px with a 20px root font");
+  assert.equal(
+    Math.round(largeFontTabBox.height),
+    40,
+    "left edge tab height stays fixed at 40px with a 20px root font",
+  );
+  await page.evaluate(() => {
+    document.documentElement.style.fontSize = "16px";
+  });
+  const resizedTabBox = await tuckTab.boundingBox();
+  assert.ok(resizedTabBox && resizedTabBox.x <= 1, "left edge tab remains clamped after viewport resize");
+  await page.mouse.move(resizedTabBox.x + resizedTabBox.width / 2, resizedTabBox.y + resizedTabBox.height / 2);
+  await tuckTab.focus();
+  await waitStatusOpen();
+  const resizedBox = await readStatusBox();
+  assert.ok(
+    resizedBox.x <= 1 && resizedBox.y + resizedBox.height <= 768,
+    "resized reveal stays within the viewport while preserving its collapsed anchor",
+  );
+  assert.ok(
+    parseFloat(await status.evaluate((element) => getComputedStyle(element).paddingLeft)) >= 32,
+    "resized left reveal reserves the bookmark gutter inside panel content",
+  );
+  await tuckTab.click();
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  await status.getByRole("combobox", { name: /widget edge/i }).selectOption("top");
+  await collapseStatus();
+  const topTabBox = await tuckTab.boundingBox();
+  assert.ok(topTabBox && topTabBox.y <= 1, "top edge tab is clamped to the viewport");
+  await page.evaluate(() =>
+    document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined,
+  );
+  await tuckTab.focus();
+  await waitStatusOpen();
+  const topBox = await readStatusBox();
+  assert.ok(topBox.y <= 1, "keyboard focus reveal stays at the top edge");
+  await page.keyboard.press("Enter");
+  await status.getByRole("button", { name: /collapse to edge/i }).click();
+  await page.locator("[data-status-update]").click({ force: true });
+  await waitStatusOpen();
+  assert.ok((await readStatusBox()).y <= 1, "value-change reveal stays at the top edge");
+  await page.keyboard.press("Escape");
+  const bottomLock = page.getByRole("button", { name: /bottom/i }).last();
+  await bottomLock.click();
+  assert.equal(await bottomLock.getAttribute("aria-pressed"), "true", "bottom pin toggles");
+  assert.equal(
+    await page.evaluate(() => localStorage.getItem("marinara-game-panel:hud-chat:floating:narration:bottom-lock")),
+    "true",
+    "bottom pin persists",
+  );
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 1024, height: 768 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.waitForTimeout(250);
+    assert.equal(
+      await bottomLock.getAttribute("aria-pressed"),
+      "true",
+      `${viewport.width}: bottom pin remains enabled`,
+    );
+    await page.waitForFunction(
+      () => {
+        const panel = document.querySelector('[data-game-floating-panel="narration"]');
+        if (!panel) return false;
+        const rect = panel.getBoundingClientRect();
+        return Math.abs(rect.bottom - (window.innerHeight - 16)) <= 2;
+      },
+      undefined,
+      { timeout: 5000 },
+    );
+    const box = await page.locator('[data-game-floating-panel="narration"]').boundingBox();
+    assert.ok(box, `${viewport.width}: narration panel has a bounding rect`);
+    geometryObservations.push(`${viewport.width}x${viewport.height}: bottom=${box.y + box.height}`);
+  }
+  await page.reload();
+  await page.locator('[data-game-floating-panel="narration"]').waitFor();
+  assert.equal(
+    await page.evaluate(() => localStorage.getItem("marinara-game-panel:hud-chat:floating:widget:open-file:tucked")),
+    "true",
+    "custom bookmark placement survives reload",
+  );
+  const customReloadSaved = await page.evaluate(() => {
+    const raw = localStorage.getItem("marinara-game-panel:hud-chat:floating:widget:open-file");
+    return raw ? JSON.parse(raw) : null;
+  });
+  assert.ok(
+    customReloadSaved && Math.abs(customReloadSaved.y - customSavedPosition.y) <= 1,
+    `custom drag coordinate survives reload (saved=${customReloadSaved?.y}, expected=${customSavedPosition.y})`,
+  );
+  const reopenedContact = page.getByRole("dialog").last();
+  if (await reopenedContact.isVisible().catch(() => false)) await page.keyboard.press("Escape");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const continuityTab = status.locator("[data-game-tuck-tab]");
+  if (await continuityTab.count()) {
+    await continuityTab.focus();
+    await waitStatusOpen();
+  }
+  await status.getByRole("combobox", { name: /widget edge/i }).selectOption("right");
+  const continuityCollapse = status.getByRole("button", { name: /collapse to edge/i });
+  if (await continuityCollapse.count()) await continuityCollapse.click();
+  await continuityTab.waitFor();
+  await continuityTab.focus();
+  await waitStatusOpen();
+  const continuityRightBox = await readStatusBox();
+  assert.equal(continuityRightBox.width, 284, "continuity right reveal reserves the bookmark gutter");
+  await continuityTab.click();
+  await page.waitForFunction(
+    () =>
+      (document.querySelector('[data-game-floating-panel="game-status"]')?.getBoundingClientRect().width ?? 0) < 284,
+  );
+  const continuityUntuckedBox = await readStatusBox();
+  const continuityRelativeX = continuityUntuckedBox.x / (1440 - continuityUntuckedBox.width);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const continuityResizedBox = await readStatusBox();
+  assert.ok(
+    Math.abs(continuityResizedBox.x / (1280 - continuityResizedBox.width) - continuityRelativeX) <= 0.01,
+    "untucked right anchor preserves its relative x after resize",
+  );
+  await page.reload();
+  await page.getByText("Real NPC", { exact: true }).waitFor();
+  const continuityDialog = page.getByRole("dialog").last();
+  if (await continuityDialog.isVisible().catch(() => false)) await page.keyboard.press("Escape");
+  await continuityDialog.waitFor({ state: "hidden" });
+  const continuityReloadedBox = await page.locator('[data-game-floating-panel="game-status"]').boundingBox();
+  assert.ok(continuityReloadedBox, "reloaded untucked right panel has a bounding rect");
+  assert.ok(
+    Math.abs(continuityReloadedBox.x / (1280 - continuityReloadedBox.width) - continuityRelativeX) <= 0.01,
+    "untucked right anchor preserves its relative x after reload",
+  );
+  const afterReloadLock = page.getByRole("button", { name: /bottom/i }).last();
+  assert.equal(await afterReloadLock.getAttribute("aria-pressed"), "true", "bottom pin survives reload");
+  await page.waitForFunction(
+    () => {
+      const panel = document.querySelector('[data-game-floating-panel="narration"]');
+      if (!panel) return false;
+      const rect = panel.getBoundingClientRect();
+      return Math.abs(rect.bottom - (window.innerHeight - 16)) <= 2;
+    },
+    undefined,
+    { timeout: 5000 },
+  );
+  const afterReloadBox = await page.locator('[data-game-floating-panel="narration"]').boundingBox();
+  assert.ok(afterReloadBox, "reload: narration panel has a bounding rect");
+  geometryObservations.push(
+    `reload ${page.viewportSize()?.width}x${page.viewportSize()?.height}: bottom=${afterReloadBox.y + afterReloadBox.height}`,
+  );
+  console.log(
+    `game HUD component fixture passed: numeric zero, profile callback, nested categories, bottom pin across viewports and reload (${geometryObservations.join(", ")})`,
+  );
+} finally {
+  await browser?.close();
+  await stopFixtureServer(fixture?.server);
+}

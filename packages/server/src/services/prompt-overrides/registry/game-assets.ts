@@ -261,15 +261,15 @@ export const GAME_SCENE_ILLUSTRATION: PromptOverrideKeyDef<GameSceneIllustration
     {
       name: "referenceHandlingLine",
       description:
-        "Pre-formatted character-reference instruction, or empty string when no character images are attached.",
+        "Pre-formatted conditional character-reference instruction, or empty string when no character images are selected.",
       example:
-        "Reference handling: attached character reference images are available. Use them to match faces, hair, build, colors, and distinctive features for the referenced characters.",
+        "Reference handling: character reference images may be attached. When attached, use them to match faces, hair, build, colors, and distinctive features for the referenced characters.",
     },
     {
       name: "locationHandlingLine",
-      description: "Pre-formatted location-reference instruction, or empty string when no location image is attached.",
-      example:
-        "Location handling: an attached location reference image is available. Use it to set the scene location.",
+      description:
+        "Pre-formatted conditional location-reference instruction, or empty string when no location image is selected.",
+      example: "Location handling: if a location reference image is attached, use it to set the scene location.",
     },
     {
       name: "appearanceNotesBlock",
@@ -310,9 +310,9 @@ export const GAME_SCENE_ILLUSTRATION: PromptOverrideKeyDef<GameSceneIllustration
     narrativePurposeLine: "Narrative purpose: duel climax — major story beat.",
     charactersLine: "Characters: Lyra, Korr.",
     referenceHandlingLine:
-      "Reference handling: attached character reference images are available. Use them to match faces, hair, build, colors, and distinctive features for the referenced characters.",
+      "Reference handling: character reference images may be attached. When attached, use them to match faces, hair, build, colors, and distinctive features for the referenced characters.",
     locationHandlingLine:
-      "Location handling: an attached location reference image is available. Use it to set the scene location.",
+      "Location handling: if a location reference image is attached, use it to set the scene location.",
     appearanceNotesBlock: "Character appearance notes:\nLyra's Appearance: auburn hair, green eyes, leather jacket",
     artDirectionLine:
       "Art direction: Watercolor fantasy illustration, soft edges, warm palette, Ghibli-inspired, fantasy, medieval kingdom.",

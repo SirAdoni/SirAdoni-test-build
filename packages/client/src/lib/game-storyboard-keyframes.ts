@@ -1,5 +1,16 @@
 import type { GameTurnStoryboardKeyframe } from "@marinara-engine/shared";
 
+/** While rendering, never leave the viewer empty when another frame is ready. */
+export function findVisibleStoryboardKeyframe(
+  frames: readonly GameTurnStoryboardKeyframe[],
+  preferred: GameTurnStoryboardKeyframe | null,
+  rendering: boolean,
+  explicitSelection = false,
+): GameTurnStoryboardKeyframe | null {
+  if (!rendering || explicitSelection || preferred?.image || preferred?.video) return preferred;
+  return frames.find((frame) => frame.image || frame.video) ?? preferred;
+}
+
 export function findReplayStoryboardKeyframe(
   frames: readonly GameTurnStoryboardKeyframe[],
   segmentIndex: number | null,

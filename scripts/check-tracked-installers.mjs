@@ -9,6 +9,7 @@ const REPO_ROOT = resolve(__dirname, "..");
 
 try {
   const { stdout } = await execFileAsync("git", ["ls-files", "--", "installer/*.exe", "win/installer/*.exe"], {
+    windowsHide: true,
     cwd: REPO_ROOT,
   });
 

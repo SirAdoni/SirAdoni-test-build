@@ -147,6 +147,15 @@ try {
     capabilityApi: { major: 1, minor: 27 },
   });
   assert.equal(getCapabilityApiCompatibilityIssue(currentMinorManifest), null);
+  const legacySupportedMinorManifest = capabilityPackageManifestSchema.parse({
+    ...manifestV2,
+    capabilityApi: { major: 1, minor: 15 },
+  });
+  assert.deepEqual(
+    getCapabilityApiCompatibilityIssue(legacySupportedMinorManifest),
+    null,
+    "Capability API 1.15 packages remain compatible with the current Engine",
+  );
   const unsupportedMinorManifest = capabilityPackageManifestSchema.parse({
     ...manifestV2,
     capabilityApi: { major: 1, minor: 29 },
@@ -813,7 +822,7 @@ try {
     { activeAgentIds: ["illustrator"] },
     "The correction must remove an auto-added Maps selection when the chat has no map data",
   );
-  assert.equal(
+  assert.deepEqual(
     buildHierarchicalMapsSelectionCorrectionPatch(
       {
         mode: "roleplay",
@@ -824,16 +833,16 @@ try {
       },
       false,
     ),
-    null,
-    "The correction must preserve Maps when a spatial definition exists",
+    { enableAgents: true },
+    "The correction must restore the agent gate while preserving Maps when a spatial definition exists",
   );
-  assert.equal(
+  assert.deepEqual(
     buildHierarchicalMapsSelectionCorrectionPatch(
       { mode: "game", metadata: { activeAgentIds: ["hierarchical-maps"] } },
       true,
     ),
-    null,
-    "The correction must preserve Maps when spatial snapshots exist",
+    { enableAgents: true },
+    "The correction must restore the agent gate while preserving Maps when spatial snapshots exist",
   );
   assert.equal(
     buildHierarchicalMapsSelectionCorrectionPatch(
@@ -1577,9 +1586,19 @@ try {
   assert.deepEqual(JSON.parse(String((await chatsStore.getById(definitionMapsChat.id))?.metadata)).activeAgentIds, [
     "hierarchical-maps",
   ]);
+  assert.equal(
+    JSON.parse(String((await chatsStore.getById(definitionMapsChat.id))?.metadata)).enableAgents,
+    true,
+    "Persisted hierarchical map state must restore the agent gate when an explicit Maps selection survived migration",
+  );
   assert.deepEqual(JSON.parse(String((await chatsStore.getById(snapshotMapsChat.id))?.metadata)).activeAgentIds, [
     "hierarchical-maps",
   ]);
+  assert.equal(
+    JSON.parse(String((await chatsStore.getById(snapshotMapsChat.id))?.metadata)).enableAgents,
+    true,
+    "Persisted hierarchical map snapshots must restore the agent gate when an explicit Maps selection survived migration",
+  );
   assert.equal(await correctLegacyHierarchicalMapsSelections(db), 0, "The chat correction must be idempotent");
 
   const rollbackChat = await chatsStore.create({

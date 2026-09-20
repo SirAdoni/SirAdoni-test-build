@@ -464,7 +464,7 @@ export class UtilitySidecarService {
         maxParallelJobs: this.config.maxParallelJobs,
       });
 
-      const child = spawn(runtime.serverPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawn(runtime.serverPath, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
       this.child = child;
       this.port = port;
       this.runningModelId = modelId;

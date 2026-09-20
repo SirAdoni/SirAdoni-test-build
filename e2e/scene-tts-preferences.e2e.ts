@@ -440,7 +440,14 @@ test("Game dice narration failures offer regeneration and Peek keeps planner usa
   ).json();
   try {
     await request.patch(`/api/chats/${chat.id}/metadata`, {
-      data: { enableAgents: false, gameId: chat.id, gameSessionStatus: "active", gameIntroPresented: true },
+      data: {
+        enableAgents: false,
+        gameId: chat.id,
+        campaignIndexPrompt: { dismissedAt: "2026-09-19T00:00:00.000Z" },
+        gameSessionStatus: "active",
+        gameIntroPresented: true,
+        cacheSendGuard: { enabled: false },
+      },
     });
     const historical = await request.post(`/api/chats/${chat.id}/messages`, {
       data: {
@@ -497,13 +504,17 @@ test("Game dice narration failures offer regeneration and Peek keeps planner usa
     await expect(failure).toBeVisible();
     await expect(failure.getByRole("button", { name: "Regenerate turn", exact: true })).toBeEnabled();
     await page.screenshot({ path: testInfo.outputPath("game-dice-outcome-failure-dark.png") });
-    await page.locator('[data-component="GameNarration.PeekPrompt"]').first().click();
+    await page
+      .locator('[class~="group/logseg"]')
+      .filter({ hasText: "The old gate waits." })
+      .locator('[data-component="GameNarration.PeekPrompt"]')
+      .click();
     await expect(page.getByRole("heading", { name: "Assembled Prompt", exact: true })).toBeVisible();
     await expect(page.getByText("Tool planner: openai / cheap-planner", { exact: true })).toBeVisible();
     await expect(page.getByText("7 input / 3 output tokens", { exact: true })).toBeVisible();
-    await expect(page.getByText(/11 actual prompt tokens/)).toBeVisible();
+    await expect(page.getByText("Tokens · In 11", { exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("game-peek-planner-dark.png") });
-    await page.getByRole("button", { name: "Close assembled prompt", exact: true }).click();
+    await page.getByRole("button", { name: "Close Assembled Prompt", exact: true }).click();
     await failure.getByRole("button", { name: "Regenerate turn", exact: true }).click();
     await expect.poll(() => regeneratedId).toBe(failed.id);
   } finally {

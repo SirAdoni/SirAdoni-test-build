@@ -166,7 +166,7 @@ function getGitLauncherCommand(platform: ServerPlatform) {
 
 async function gitCommandSucceeds(root: string, args: string[]): Promise<boolean> {
   try {
-    await execFileAsync("git", args, { cwd: root, timeout: 5_000 });
+    await execFileAsync("git", args, { windowsHide: true, cwd: root, timeout: 5_000 });
     return true;
   } catch {
     return false;
@@ -276,6 +276,7 @@ export function getManualUpdateHint(
 
 async function fetchUpdateRef(root: string, channel = UPDATE_CHANNELS.stable) {
   await execFileAsync("git", ["fetch", UPDATE_REMOTE, channel.fetchRef, "--quiet"], {
+    windowsHide: true,
     cwd: root,
     timeout: 15_000,
   });
@@ -289,10 +290,7 @@ async function resolveGitRef(root: string, ref: string, shortLength?: number): P
   args.push(ref);
 
   try {
-    const { stdout } = await execFileAsync("git", args, {
-      cwd: root,
-      timeout: 5_000,
-    });
+    const { stdout } = await execFileAsync("git", args, { windowsHide: true, cwd: root, timeout: 5_000 });
     return stdout.trim() || null;
   } catch {
     return null;
@@ -301,6 +299,7 @@ async function resolveGitRef(root: string, ref: string, shortLength?: number): P
 
 async function getCurrentBranch(root: string): Promise<string | null> {
   const { stdout } = await execFileAsync("git", ["branch", "--show-current"], {
+    windowsHide: true,
     cwd: root,
     timeout: 5_000,
   });
@@ -315,6 +314,7 @@ async function getCurrentBranch(root: string): Promise<string | null> {
 async function cleanStaleSourceFiles(root: string): Promise<void> {
   try {
     await execFileAsync("git", ["clean", "-fdq", "--", ...STALE_SOURCE_CLEAN_PATHS], {
+      windowsHide: true,
       cwd: root,
       timeout: 30_000,
     });
@@ -366,12 +366,13 @@ async function checkTargetStorageFormat(
     const { stdout: listed } = await execFileAsync(
       "git",
       ["ls-tree", "--name-only", targetRef, "--", "storage-format.json"],
-      { cwd: root, timeout: 15_000 },
+      { windowsHide: true, cwd: root, timeout: 15_000 },
     );
     if (!listed.trim()) {
       targetFormat = 2;
     } else {
       const { stdout } = await execFileAsync("git", ["show", `${targetRef}:storage-format.json`], {
+        windowsHide: true,
         cwd: root,
         timeout: 15_000,
       });
@@ -402,18 +403,13 @@ async function checkoutOrCreateUpdateBranch(
   const branchRef = `refs/heads/${channel.branch}`;
   const branchExists = await gitCommandSucceeds(root, ["show-ref", "--verify", "--quiet", branchRef]);
   if (branchExists) {
-    await execFileAsync("git", ["checkout", channel.branch], {
-      cwd: root,
-      timeout: 60_000,
-    });
-    await execFileAsync("git", ["merge", "--ff-only", targetHead], {
-      cwd: root,
-      timeout: 60_000,
-    });
+    await execFileAsync("git", ["checkout", channel.branch], { windowsHide: true, cwd: root, timeout: 60_000 });
+    await execFileAsync("git", ["merge", "--ff-only", targetHead], { windowsHide: true, cwd: root, timeout: 60_000 });
     await cleanStaleSourceFiles(root);
     return;
   }
   await execFileAsync("git", ["checkout", "-b", channel.branch, targetHead], {
+    windowsHide: true,
     cwd: root,
     timeout: 60_000,
   });
@@ -424,18 +420,17 @@ type UpdateStash = { oid: string; marker: string };
 
 async function createUpdateStash(root: string): Promise<UpdateStash | null> {
   const { stdout: status } = await execFileAsync("git", ["status", "--short", "--untracked-files=no"], {
+    windowsHide: true,
     cwd: root,
     timeout: 5_000,
   });
   if (!status.trim()) return null;
 
   const marker = `auto-stash before update ${randomUUID()}`;
-  await execFileAsync("git", ["stash", "push", "-q", "-m", marker], {
-    cwd: root,
-    timeout: 10_000,
-  });
+  await execFileAsync("git", ["stash", "push", "-q", "-m", marker], { windowsHide: true, cwd: root, timeout: 10_000 });
   try {
     const { stdout } = await execFileAsync("git", ["stash", "list", "--format=%H%x09%gs"], {
+      windowsHide: true,
       cwd: root,
       timeout: 5_000,
     });
@@ -454,11 +449,11 @@ async function createUpdateStash(root: string): Promise<UpdateStash | null> {
 async function restoreUpdateStash(root: string, stash: UpdateStash): Promise<void> {
   const recoveryIdentity = `${stash.oid} (${stash.marker})`;
   try {
-    await execFileAsync("git", ["stash", "apply", "-q", stash.oid], { cwd: root, timeout: 10_000 });
+    await execFileAsync("git", ["stash", "apply", "-q", stash.oid], { windowsHide: true, cwd: root, timeout: 10_000 });
   } catch (applyErr) {
     const applyMessage = applyErr instanceof Error ? applyErr.message : String(applyErr);
     try {
-      await execFileAsync("git", ["reset", "--hard", "HEAD"], { cwd: root, timeout: 10_000 });
+      await execFileAsync("git", ["reset", "--hard", "HEAD"], { windowsHide: true, cwd: root, timeout: 10_000 });
     } catch (resetErr) {
       const resetMessage = resetErr instanceof Error ? resetErr.message : String(resetErr);
       throw new Error(
@@ -472,6 +467,7 @@ async function restoreUpdateStash(root: string, stash: UpdateStash): Promise<voi
 
   try {
     const { stdout } = await execFileAsync("git", ["stash", "list", "--format=%H%x09%gd%x09%gs"], {
+      windowsHide: true,
       cwd: root,
       timeout: 5_000,
     });
@@ -486,7 +482,7 @@ async function restoreUpdateStash(root: string, stash: UpdateStash): Promise<voi
     if (!matchingRef) {
       throw new Error("matching stash reflog entry was not found");
     }
-    await execFileAsync("git", ["stash", "drop", "-q", matchingRef], { cwd: root, timeout: 5_000 });
+    await execFileAsync("git", ["stash", "drop", "-q", matchingRef], { windowsHide: true, cwd: root, timeout: 5_000 });
   } catch (err) {
     logger.warn(err, "[Update] Restored local changes but could not drop update stash %s", recoveryIdentity);
   }
@@ -494,10 +490,10 @@ async function restoreUpdateStash(root: string, stash: UpdateStash): Promise<voi
 
 async function restoreOriginalCheckout(root: string, currentBranch: string | null, oldHead: string): Promise<void> {
   if (currentBranch) {
-    await execFileAsync("git", ["checkout", currentBranch], { cwd: root, timeout: 60_000 });
-    await execFileAsync("git", ["reset", "--hard", oldHead], { cwd: root, timeout: 60_000 });
+    await execFileAsync("git", ["checkout", currentBranch], { windowsHide: true, cwd: root, timeout: 60_000 });
+    await execFileAsync("git", ["reset", "--hard", oldHead], { windowsHide: true, cwd: root, timeout: 60_000 });
   } else {
-    await execFileAsync("git", ["checkout", "--detach", oldHead], { cwd: root, timeout: 60_000 });
+    await execFileAsync("git", ["checkout", "--detach", oldHead], { windowsHide: true, cwd: root, timeout: 60_000 });
   }
 
   const restoredHead = await resolveGitRef(root, "HEAD");
@@ -514,6 +510,7 @@ async function getCommitsBehind(channel = UPDATE_CHANNELS.stable): Promise<numbe
     // Fetch the tracked auto-update target (no checkout).
     await fetchUpdateRef(root, channel);
     const { stdout } = await execFileAsync("git", ["rev-list", "--count", `HEAD..${channel.targetRef}`], {
+      windowsHide: true,
       cwd: root,
       timeout: 5_000,
     });
@@ -631,6 +628,7 @@ async function resolvePinnedPnpmRunner(root: string): Promise<PnpmRunner> {
   try {
     const invocation = commandInvocation("corepack", [`pnpm@${pnpmDescriptor}`, "--version"]);
     const { stdout } = await execFileAsync(invocation.command, invocation.args, {
+      windowsHide: true,
       cwd: root,
       // First run downloads the pinned pnpm; slow devices need extra headroom.
       timeout: updateStepTimeout(20_000),
@@ -647,6 +645,7 @@ async function resolvePinnedPnpmRunner(root: string): Promise<PnpmRunner> {
   try {
     const invocation = commandInvocation("pnpm", ["--version"]);
     const { stdout } = await execFileAsync(invocation.command, invocation.args, {
+      windowsHide: true,
       cwd: root,
       timeout: updateStepTimeout(10_000),
     });
@@ -660,6 +659,7 @@ async function resolvePinnedPnpmRunner(root: string): Promise<PnpmRunner> {
   try {
     const invocation = commandInvocation("npx", ["--yes", `pnpm@${pnpmVersion}`, "--version"]);
     const { stdout } = await execFileAsync(invocation.command, invocation.args, {
+      windowsHide: true,
       cwd: root,
       timeout: updateStepTimeout(60_000),
     });
@@ -710,6 +710,7 @@ async function runPinnedPnpm(root: string, args: string[], baseTimeout: number) 
   const invocation = commandInvocation(runner.command, [...runner.prefixArgs, ...PNPM_NONINTERACTIVE_ARGS, ...args]);
   try {
     await execFileAsync(invocation.command, invocation.args, {
+      windowsHide: true,
       cwd: root,
       timeout,
       maxBuffer: PNPM_OUTPUT_MAX_BUFFER,
@@ -1144,6 +1145,7 @@ export async function updatesRoutes(app: FastifyInstance) {
         if (oldHead !== targetHead || shouldAttachStagingBranch) {
           if (currentBranch === channel.branch) {
             await execFileAsync("git", ["merge", "--ff-only", targetHead], {
+              windowsHide: true,
               cwd: root,
               timeout: 60_000,
             });
@@ -1151,6 +1153,7 @@ export async function updatesRoutes(app: FastifyInstance) {
             await checkoutOrCreateUpdateBranch(root, channel, targetHead);
           } else {
             await execFileAsync("git", ["checkout", "--detach", targetHead], {
+              windowsHide: true,
               cwd: root,
               timeout: 60_000,
             });

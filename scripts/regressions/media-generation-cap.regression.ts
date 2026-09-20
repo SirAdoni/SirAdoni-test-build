@@ -12,9 +12,11 @@ import assert from "node:assert/strict";
 
 process.env.MARINARA_MEDIA_GENERATION_CONCURRENCY = "2";
 process.env.MARINARA_MEDIA_GENERATION_WAIT_TIMEOUT_MS = "0";
-const { runMediaGenerationRequest, inspectMediaGenerationConcurrencyForTests } = await import(
-  "../../packages/server/src/services/image/image-generation-queue.js"
-);
+const {
+  OPENAI_CHATGPT_IMAGE_GENERATION_CONCURRENCY,
+  runMediaGenerationRequest,
+  inspectMediaGenerationConcurrencyForTests,
+} = await import("../../packages/server/src/services/image/image-generation-queue.js");
 
 function deferred() {
   let resolve!: () => void;
@@ -28,6 +30,13 @@ function deferred() {
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 const idle = () =>
   assert.deepEqual(inspectMediaGenerationConcurrencyForTests(), {
+    activeGlobalPermits: 0,
+    queuedWaiters: 0,
+    foregroundWaiters: 0,
+    backgroundWaiters: 0,
+  });
+const chatGptImageIdle = () =>
+  assert.deepEqual(inspectMediaGenerationConcurrencyForTests("openai_chatgpt_image"), {
     activeGlobalPermits: 0,
     queuedWaiters: 0,
     foregroundWaiters: 0,
@@ -90,11 +99,33 @@ async function main() {
   assert.equal(nested, "fallback-succeeded", "a nested request under a held permit must reuse it");
   idle();
 
+  await assert.rejects(
+    runMediaGenerationRequest({
+      connectionKey: "outer-shared",
+      queue: false,
+      task: () =>
+        runMediaGenerationRequest({
+          connectionKey: "nested-chatgpt",
+          queue: false,
+          permitProfile: "openai_chatgpt_image",
+          task: async () => "must-not-borrow",
+        }),
+    }),
+    /cannot switch permit pools/u,
+    "nested cross-provider work must not borrow the wider pool or create a lock-order cycle",
+  );
+  idle();
+  chatGptImageIdle();
+
   // ── 4) Abort during the permit wait releases the waiter; grant-then-abort
   //       leaks nothing ──
   process.env.MARINARA_MEDIA_GENERATION_CONCURRENCY = "1";
   const hold = deferred();
-  const holder = runMediaGenerationRequest({ connectionKey: "conn-a", queue: false, task: () => hold.promise.then(() => "held") });
+  const holder = runMediaGenerationRequest({
+    connectionKey: "conn-a",
+    queue: false,
+    task: () => hold.promise.then(() => "held"),
+  });
   await tick();
   const abortEarly = new AbortController();
   const waitingAborted = runMediaGenerationRequest({
@@ -147,7 +178,11 @@ async function main() {
   lowered = true;
   lowerGates[0]!.resolve();
   await tick();
-  assert.equal(lowerRunning, 1, "a lowered limit must converge as in-flight tasks finish, not hand off at the old width");
+  assert.equal(
+    lowerRunning,
+    1,
+    "a lowered limit must converge as in-flight tasks finish, not hand off at the old width",
+  );
   lowerGates[1]!.resolve();
   await tick();
   lowerGates[2]!.resolve();
@@ -161,7 +196,11 @@ async function main() {
   // must wake them without waiting for a release.
   process.env.MARINARA_MEDIA_GENERATION_CONCURRENCY = "1";
   const raiseHold = deferred();
-  const raiseHolder = runMediaGenerationRequest({ connectionKey: "conn-a", queue: false, task: () => raiseHold.promise });
+  const raiseHolder = runMediaGenerationRequest({
+    connectionKey: "conn-a",
+    queue: false,
+    task: () => raiseHold.promise,
+  });
   await tick();
   const parkedGates = [deferred(), deferred()];
   let parkedStarted = 0;
@@ -192,7 +231,11 @@ async function main() {
   process.env.MARINARA_MEDIA_GENERATION_CONCURRENCY = "1";
   process.env.MARINARA_MEDIA_GENERATION_WAIT_TIMEOUT_MS = "25";
   const timeoutHold = deferred();
-  const timeoutHolder = runMediaGenerationRequest({ connectionKey: "conn-a", queue: false, task: () => timeoutHold.promise });
+  const timeoutHolder = runMediaGenerationRequest({
+    connectionKey: "conn-a",
+    queue: false,
+    task: () => timeoutHold.promise,
+  });
   await tick();
   const saturatedRejection = assert.rejects(
     runMediaGenerationRequest({ connectionKey: "conn-b", queue: false, task: async () => "never" }),
@@ -259,7 +302,79 @@ async function main() {
   await Promise.all([bgA, bgB, fg]);
   idle();
 
-  // ── 8) 0 disables the cap entirely (explicit opt-out) ──
+  // ── 8) ChatGPT Subscription images get their own ten-request pool. This
+  //       must not raise the shared pool used by local and other providers. ──
+  process.env.MARINARA_MEDIA_GENERATION_CONCURRENCY = "2";
+  const chatGptGates = Array.from({ length: OPENAI_CHATGPT_IMAGE_GENERATION_CONCURRENCY + 1 }, () => deferred());
+  let activeChatGptImages = 0;
+  let peakChatGptImages = 0;
+  let startedChatGptImages = 0;
+  const chatGptImages = chatGptGates.map((gate) =>
+    runMediaGenerationRequest({
+      connectionKey: "chatgpt-images",
+      queue: false,
+      priority: "background",
+      permitProfile: "openai_chatgpt_image",
+      task: async () => {
+        startedChatGptImages += 1;
+        activeChatGptImages += 1;
+        peakChatGptImages = Math.max(peakChatGptImages, activeChatGptImages);
+        await gate.promise;
+        activeChatGptImages -= 1;
+      },
+    }),
+  );
+  await tick();
+  assert.equal(peakChatGptImages, 10, "ChatGPT image batches must reach the ten-request provider ceiling");
+  assert.deepEqual(inspectMediaGenerationConcurrencyForTests("openai_chatgpt_image"), {
+    activeGlobalPermits: 10,
+    queuedWaiters: 1,
+    foregroundWaiters: 0,
+    backgroundWaiters: 1,
+  });
+  idle();
+
+  // Once saturated, the next released ChatGPT slot goes to foreground work
+  // before the eleventh background image.
+  const interactiveChatGptGate = deferred();
+  let interactiveChatGptStarted = false;
+  const interactiveChatGptImage = runMediaGenerationRequest({
+    connectionKey: "chatgpt-interactive",
+    queue: false,
+    permitProfile: "openai_chatgpt_image",
+    task: async () => {
+      interactiveChatGptStarted = true;
+      await interactiveChatGptGate.promise;
+    },
+  });
+  await tick();
+  assert.equal(interactiveChatGptStarted, false);
+  chatGptGates[0]!.resolve();
+  await tick();
+  assert.equal(interactiveChatGptStarted, true, "foreground ChatGPT work must receive the next released slot");
+  assert.equal(startedChatGptImages, 10, "queued background work must remain behind the foreground waiter");
+  interactiveChatGptGate.resolve();
+  await tick();
+  assert.equal(startedChatGptImages, 11);
+  for (const gate of chatGptGates) gate.resolve();
+  await Promise.all([...chatGptImages, interactiveChatGptImage]);
+  chatGptImageIdle();
+  idle();
+
+  await assert.rejects(
+    runMediaGenerationRequest({
+      connectionKey: "chatgpt-throw",
+      queue: false,
+      permitProfile: "openai_chatgpt_image",
+      task: async () => {
+        throw new Error("chatgpt provider exploded");
+      },
+    }),
+    /chatgpt provider exploded/u,
+  );
+  chatGptImageIdle();
+
+  // ── 9) 0 disables the cap entirely (explicit opt-out) ──
   process.env.MARINARA_MEDIA_GENERATION_CONCURRENCY = "0";
   let unlimitedPeak = 0;
   let unlimitedRunning = 0;
@@ -282,7 +397,7 @@ async function main() {
   await Promise.all(unlimited);
   idle();
 
-  // ── 9) Queued path: FIFO per key preserved, cap spans keys, no deadlock ──
+  // ── 10) Queued path: FIFO per key preserved, cap spans keys, no deadlock ──
   process.env.MARINARA_MEDIA_GENERATION_CONCURRENCY = "1";
   const order: string[] = [];
   const slowGate = deferred();
@@ -317,11 +432,16 @@ async function main() {
   assert.equal(order.length, 3, "every queued task must eventually run — no deadlock between the two queues");
   idle();
 
-  // ── 10) Pre-aborted requests reject without consuming anything ──
+  // ── 11) Pre-aborted requests reject without consuming anything ──
   const preAborted = new AbortController();
   preAborted.abort(new Error("gone"));
   await assert.rejects(
-    runMediaGenerationRequest({ connectionKey: "conn-a", queue: false, signal: preAborted.signal, task: async () => "x" }),
+    runMediaGenerationRequest({
+      connectionKey: "conn-a",
+      queue: false,
+      signal: preAborted.signal,
+      task: async () => "x",
+    }),
     /gone/u,
   );
   idle();

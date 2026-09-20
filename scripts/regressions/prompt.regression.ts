@@ -53,6 +53,7 @@ import {
   getDefaultAgentPrompt,
   replaceBuiltInAgentDefinitions,
   GAME_VIDEO_BUILT_IN_PROMPT_TEMPLATES,
+  GAME_GM_BUILT_IN_PROMPT_TEMPLATES,
   GAME_VIDEO_PROMPT_TEMPLATE,
   STORYBOARD_OPTIMIZED_IMAGE_PROMPT_TEMPLATE_ID,
   DEFERRED_RELOCATION_CONDITIONAL_TOKEN_RE,
@@ -75,15 +76,51 @@ import {
   formatNoodleTimelineForPrompt,
   NOODLE_PERSONA_IDENTITY_INSTRUCTION,
 } from "../../packages/server/src/services/noodle/noodle-prompt.js";
+import { buildRecapPrompt } from "../../packages/server/src/services/game/session.service.js";
 import {
+  buildCardAdjustmentPrompt,
+  buildCampaignProgressionPrompt,
+  buildGameContinuityEvidencePrompt,
+  buildGameRecencySeal,
+  buildGameAuthorialContinuityPrompt,
+  buildGameKnowledgeBoundaryPrompt,
+  buildGameSpecialInstructionsPrompt,
   buildGmFormatReminder,
+  buildGmSystemPrompt,
+  buildHumanProsePrompt,
   buildPartyRecruitCardPrompt,
+  buildPlayerAgencyPrompt,
+  buildPlayerCanonRecencySeal,
+  buildPlayerCharacterCanonPrompt,
+  buildProtagonistFairnessPrompt,
+  resolveGameAddressMode,
+  buildSessionConclusionPrompt,
+  buildSessionSummaryPrompt,
+  buildSetupPrompt,
 } from "../../packages/server/src/services/game/gm-prompts.js";
+import { buildPartySystemPrompt } from "../../packages/server/src/services/game/party-prompts.js";
+import {
+  buildSceneAnalyzerSystemPrompt,
+  buildSceneAnalyzerUserPrompt,
+} from "../../packages/server/src/services/sidecar/scene-analyzer.js";
+import { formatMoraleContext } from "../../packages/server/src/services/game/morale.service.js";
+import {
+  appendGameCardDetails,
+  injectGameGmPromptRuntime,
+  resolveGameCharacterCardMacros,
+} from "../../packages/server/src/services/generation/game-gm-prompt-runtime.js";
 import {
   addNameLookupEntry,
   findCharAvatarFuzzy,
+  gameNpcSanitizationOptionsFromMetadata,
+  isNarrationNpcNameExcluded,
   loadCharacterLibraryAvatarLookup,
+  sanitizeGameNpcAvatarUrls,
 } from "../../packages/server/src/services/game/npc-avatar-utils.js";
+import {
+  resolveTranscriptExportCharacterId,
+  resolveTranscriptExportDisplayName,
+} from "../../packages/server/src/routes/chats.routes.js";
 import { resolveConversationSelfieRequestedNames } from "../../packages/server/src/services/generation/conversation-selfie-command-runtime.js";
 import {
   applyCustomAgentImageChatSettings,
@@ -167,12 +204,18 @@ const regeneratedSheetPrompt = buildPartyRecruitCardPrompt({
   plotTwists: ["The cartographer serves the Leviathan."],
   campaignHistory: '[{"sessionNumber":1,"summary":"The party opened the first lock."}]',
   currentState: '{"location":"Flooded Vault"}',
+  playerCharacterCanon: "Name: Alex\nPersonality: Sincerely protective and generous.",
   language: "Polish",
   purpose: "regenerate",
 });
 assert.match(regeneratedSheetPrompt, /Regenerate one clean JSON character card/u);
 assert.match(regeneratedSheetPrompt, /<existing_target_party_sheet>/u);
 assert.match(regeneratedSheetPrompt, /<campaign_history>/u);
+assert.match(regeneratedSheetPrompt, /<player_character_canon>[\s\S]*Sincerely protective and generous/u);
+assert.match(regeneratedSheetPrompt, /<protagonist_fairness>/u);
+assert.match(regeneratedSheetPrompt, /Assistant-derived continuity index/u);
+assert.match(regeneratedSheetPrompt, /<game_continuity_evidence>/u);
+assert.match(regeneratedSheetPrompt, /one routine reassignment, passing reaction, ordinary duty change/u);
 assert.match(regeneratedSheetPrompt, /Write every natural-language string value in Polish/u);
 assert.match(regeneratedSheetPrompt, /Scenario: The flooded vault/u);
 assert.doesNotMatch(regeneratedSheetPrompt, /A new companion is joining the party/u);
@@ -185,7 +228,8 @@ const canonicalPartyNameReminder = buildGmFormatReminder({
   playerName: "Player",
 });
 assert.match(canonicalPartyNameReminder, /Party speaker labels must use the exact canonical names listed under PARTY/u);
-assert.match(canonicalPartyNameReminder, /You also play Mari\./u);
+assert.match(canonicalPartyNameReminder, /You may play Mari when they have a concrete immediate reason/u);
+assert.match(canonicalPartyNameReminder, /Presence alone is not a speaking obligation/u);
 
 const REGRESSION_AGENT_IDS = [
   "about-me-keeper",
@@ -263,6 +307,7 @@ replaceBuiltInAgentDefinitions(regressionAgentDefinitions);
 replaceBuiltInAgentDefinitionsDist(regressionAgentDefinitions);
 import {
   buildIllustratorImageStyleInstructionBlock,
+  buildKnowledgeRetrievalAgentMessagesForTest,
   compactGameStateForAgentContext,
   executeAgent,
   executeAgentBatch,
@@ -649,7 +694,10 @@ import {
   resolveConversationMembershipHistoryEvent,
   selectConversationSummariesForPrompt,
 } from "../../packages/server/src/routes/generate/conversation-history-runtime.js";
-import { formatConversationGroupOutputFormat } from "../../packages/server/src/routes/generate/conversation-prompt-formatting.js";
+import {
+  appendToFirstSystemMessage,
+  formatConversationGroupOutputFormat,
+} from "../../packages/server/src/routes/generate/conversation-prompt-formatting.js";
 import {
   buildConversationCurrentContextBlock,
   replaceConversationContextBlockForTarget,
@@ -689,11 +737,21 @@ import {
   buildGameIllustratorAppearanceContextBlock,
   buildDynamicGameImagePromptMessages,
   buildIllustrationNarrationSummaryMessages,
+  buildSceneAssetNpcCandidates,
   buildStoryboardIllustratorMessages,
+  applyGameSegmentEditsForPrompt,
+  applySessionConclusionPayload,
+  buildGameLorebookKeeperMessages,
+  createGameLorebookKeeperEntries,
   dynamicGameImagePromptRequestOptions,
+  extractNarrationNpcCandidates,
   extractCharacterAppearanceText,
+  formatSessionConclusionMessage,
+  formatSessionConclusionTranscript,
+  migrateGameLorebookKeeperEntriesToKeywordActivation,
   resolveDynamicGameImagePromptConnection,
   resolveNpcPortraitAppearance,
+  resolveNpcPortraitPublicIdentityTraits,
   sanitizeNpcPortraitAppearanceText,
   selectLatestGameTurnNarration,
   selectStoryboardAppearanceCharacterNames,
@@ -751,6 +809,7 @@ import {
   getMessageHiddenFromAICharacterIds,
   injectIntoOutputFormatOrLastUser,
   isMessageHiddenFromAIForCharacter,
+  moveUserHistoryMessageToPromptTail,
   preserveTrackerCharacterUiFields,
   prefixGroupIndividualHistorySpeakers,
   readPersonaSnapshotName,
@@ -1855,15 +1914,127 @@ const cases: RegressionCase[] = [
       assert.ok(gameInjectionIndex >= 0 && gameFormatReminderIndex > gameInjectionIndex);
       assert.doesNotMatch(generateRouteSource, /if \(!presetId && chatMode !== "game"\)/);
       assert.match(dryRunRouteSource, /collectCharacterAdvancedPromptEntries/);
+      assert.match(
+        dryRunRouteSource,
+        /characterAdvancedPromptIds: resolveCharacterAdvancedPromptIds\(promptCharacterIds, chatMode, chatMeta\)/,
+      );
       assert.match(assemblerSource, /collectCharacterAdvancedPromptEntries/);
+      assert.match(assemblerSource, /input\.characterAdvancedPromptIds \?\? input\.characterIds/);
       assert.match(gamePromptRuntimeSource, /Character System Instructions/);
       assert.deepEqual(
         resolveCharacterAdvancedPromptIds(["chat-character"], "game", {
           gamePartyCharacterIds: ["party-character", "npc:temporary-companion"],
           gameGmCharacterId: "gm-character",
         }),
-        ["chat-character", "party-character", "gm-character"],
+        ["gm-character"],
       );
+      assert.deepEqual(
+        resolveCharacterAdvancedPromptIds(["chat-character", "npc:temporary-companion"], "conversation", {}),
+        ["chat-character"],
+      );
+    },
+  },
+  {
+    name: "Game advanced prompt scope preserves cards while excluding party commands",
+    async run() {
+      const partyRow = {
+        id: "party-character",
+        data: JSON.stringify({
+          name: "Party Character",
+          description: "PARTY_DESCRIPTION",
+          personality: "PARTY_PERSONALITY",
+          scenario: "",
+          first_mes: "",
+          mes_example: "",
+          creator_notes: "",
+          system_prompt: "",
+          post_history_instructions: "PARTY_POST_HISTORY",
+          tags: [],
+          extensions: {
+            depth_prompt: { prompt: "PARTY_DEPTH", depth: 1, role: "system" },
+            backstory: "",
+            appearance: "",
+          },
+        }),
+      };
+      const gmRow = {
+        id: "gm-character",
+        data: JSON.stringify({
+          name: "Game Master",
+          description: "GM_DESCRIPTION",
+          personality: "GM_PERSONALITY",
+          scenario: "",
+          first_mes: "",
+          mes_example: "",
+          creator_notes: "",
+          system_prompt: "",
+          post_history_instructions: "GM_POST_HISTORY",
+          tags: [],
+          extensions: {
+            depth_prompt: { prompt: "GM_DEPTH", depth: 1, role: "system" },
+            backstory: "",
+            appearance: "",
+          },
+        }),
+      };
+      const makeDb = (row: typeof partyRow | typeof gmRow) =>
+        ({
+          select: () => ({
+            from: () => ({
+              where: async () => [row],
+            }),
+          }),
+        }) as unknown as DB;
+      const baseInput: Omit<AssemblerInput, "db"> = {
+        preset: {
+          id: "advanced-scope-fixture",
+          name: "Advanced Scope Fixture",
+          sectionOrder: JSON.stringify(["character"]),
+          groupOrder: JSON.stringify([]),
+          wrapFormat: "xml",
+          parameters: JSON.stringify({}),
+          variableGroups: JSON.stringify([]),
+          variableValues: JSON.stringify({}),
+        },
+        sections: [
+          promptSection({
+            id: "character",
+            identifier: "characterInfo",
+            name: "Character Info",
+            isMarker: "true",
+            markerConfig: JSON.stringify({ type: "character" }),
+          }),
+        ],
+        groups: [],
+        choiceBlocks: [],
+        chatChoices: {},
+        chatId: "advanced-scope-chat",
+        characterIds: [partyRow.id],
+        personaName: "User",
+        personaDescription: "",
+        chatMessages: [],
+      };
+      const textFor = async (input: AssemblerInput) =>
+        (await assemblePrompt(input)).messages.map((message) => message.content).join("\n");
+
+      const normalText = await textFor({ ...baseInput, db: makeDb(partyRow) });
+      assert.match(normalText, /PARTY_DESCRIPTION/);
+      assert.match(normalText, /PARTY_DEPTH/);
+      assert.match(normalText, /PARTY_POST_HISTORY/);
+
+      const gameText = await textFor({ ...baseInput, db: makeDb(partyRow), characterAdvancedPromptIds: [] });
+      assert.match(gameText, /PARTY_DESCRIPTION/);
+      assert.doesNotMatch(gameText, /PARTY_DEPTH|PARTY_POST_HISTORY/);
+
+      const gmText = await textFor({
+        ...baseInput,
+        db: makeDb(gmRow),
+        characterIds: [gmRow.id],
+        characterAdvancedPromptIds: [gmRow.id],
+      });
+      assert.match(gmText, /GM_DESCRIPTION/);
+      assert.match(gmText, /GM_DEPTH/);
+      assert.match(gmText, /GM_POST_HISTORY/);
     },
   },
   {
@@ -1981,6 +2152,87 @@ const cases: RegressionCase[] = [
       assert.equal(
         scanForActivatedEntries(messages, [entry], { scanDepth: 2, pinnedScanMessages: [messages[0]!] }).length,
         1,
+      );
+    },
+  },
+  {
+    name: "Always Loaded lorebook entries bypass activation and budget gates without changing Constant semantics",
+    run() {
+      const makeEntry = (id: string, order: number, alwaysLoaded: boolean) =>
+        ({
+          id,
+          lorebookId: "always-known-book",
+          name: id,
+          content: `${id} must always be known.`,
+          description: "",
+          keys: [],
+          secondaryKeys: [],
+          enabled: true,
+          constant: true,
+          alwaysLoaded,
+          selective: false,
+          selectiveLogic: "and",
+          probability: 0,
+          scanDepth: null,
+          matchWholeWords: false,
+          caseSensitive: false,
+          useRegex: false,
+          characterFilterMode: "include",
+          characterFilterIds: ["absent-character"],
+          characterTagFilterMode: "any",
+          characterTagFilters: [],
+          generationTriggerFilterMode: "include",
+          generationTriggerFilters: ["absent-trigger"],
+          additionalMatchingSources: [],
+          position: 0,
+          depth: 4,
+          order,
+          role: "system",
+          sticky: null,
+          cooldown: null,
+          delay: 99,
+          ephemeral: null,
+          group: "shared-category-label",
+          groupWeight: 100,
+          folderId: null,
+          locked: false,
+          preventRecursion: true,
+          excludeRecursion: false,
+          delayUntilRecursion: false,
+          tag: "",
+          relationships: {},
+          dynamicState: {},
+          activationConditions: [],
+          schedule: null,
+          excludeFromVectorization: false,
+          embedding: null,
+        }) as any;
+
+      const activated = scanForActivatedEntries(
+        [{ role: "user", content: "No lorebook keywords are present." }],
+        [makeEntry("always-one", 1, true), makeEntry("always-two", 2, true), makeEntry("constant-control", 3, false)],
+        {
+          activeCharacterIds: ["different-character"],
+          generationTriggers: ["chat"],
+          random: () => 0.99,
+        },
+      );
+
+      assert.deepEqual(
+        activated.map((entry) => entry.entry.id),
+        ["always-one", "always-two"],
+      );
+      assert.ok(activated.every((entry) => entry.activationSources.includes("always_loaded")));
+
+      const budgeted = resolveAndBudgetActivatedLorebookEntries(
+        activated,
+        new Map([["always-known-book", { name: "Always Known", tokenBudget: 1, entryLimit: 1 }]]),
+        1,
+        1,
+      );
+      assert.deepEqual(
+        budgeted.map((entry) => entry.entry.id),
+        ["always-one", "always-two"],
       );
     },
   },
@@ -3238,7 +3490,7 @@ const cases: RegressionCase[] = [
       );
       assert.match(
         dryRunRouteSource,
-        /characterIds: promptCharacterIds,\s*lorebookCharacterIds: withIdentityLorebookScope\(promptCharacterIds\),\s*groupCharacterIds: characterIds,/,
+        /characterIds: promptCharacterIds,\s*lorebookCharacterIds: withIdentityLorebookScope\(promptCharacterIds\),\s*characterAdvancedPromptIds: resolveCharacterAdvancedPromptIds\(promptCharacterIds, chatMode, chatMeta\),\s*groupCharacterIds: characterIds,/,
       );
     },
   },
@@ -3717,6 +3969,1561 @@ const cases: RegressionCase[] = [
         resolveGameGmPromptTemplate({}, { gameGmPromptTemplateId: ANIME_GAME_PROMPT_TEMPLATE_ID }),
         ANIME_GAME_SYSTEM_PROMPT,
       );
+    },
+  },
+  {
+    name: "Engine-owned Game GM prompts do not force NPC opposition or moral balancing",
+    run() {
+      const bundledPreset = JSON.parse(
+        readFileSync(new URL("../../packages/server/src/db/default-preset.json", import.meta.url), "utf8"),
+      ) as { data?: { preset?: { gamePrompt?: unknown } } };
+      const bundledGamePrompt = bundledPreset.data?.preset?.gamePrompt;
+      assert.equal(typeof bundledGamePrompt, "string");
+
+      const promptSources = [
+        ...GAME_GM_BUILT_IN_PROMPT_TEMPLATES.map(({ id, promptTemplate }) => ({ id, promptTemplate })),
+        { id: "bundled-default-preset", promptTemplate: bundledGamePrompt as string },
+      ];
+      assert.ok(promptSources.length > 0);
+
+      for (const { id, promptTemplate } of promptSources) {
+        assert.match(
+          promptTemplate,
+          /NPC autonomy means consistent personal motives, not mandatory disagreement/u,
+          `${id} must distinguish autonomy from automatic opposition`,
+        );
+        assert.match(
+          promptTemplate,
+          /Do not manufacture moral equivalence for dramatic balance/u,
+          `${id} must reject forced moral balancing`,
+        );
+        assert.doesNotMatch(
+          promptTemplate,
+          /punish recklessness, and never treat the player as a Mary Sue|ignoring what the player or others want, unless their objectives align/u,
+          `${id} must not retain the old adversarial balancing directives`,
+        );
+        assert.match(
+          promptTemplate,
+          /Second person grants no access to the player's mind and no control over their voluntary body/u,
+          `${id} must reserve the player's body and interiority`,
+        );
+        assert.doesNotMatch(
+          promptTemplate,
+          /filtered through their subjective lenses/u,
+          `${id} must not license invented player interiority`,
+        );
+        assert.match(
+          promptTemplate,
+          /canonical truth for GM adjudication and UI state[\s\S]*not treat them as automatically public or known to characters/u,
+          `${id} must separate canonical controller state from character knowledge`,
+        );
+      }
+    },
+  },
+  {
+    name: "Game Extra Instructions retain system authority without duplicating user-authored text",
+    run() {
+      const sentinel = "Liora never waived royal style or ordinary courtesy.";
+      const messages = [
+        { role: "system" as const, content: "<gm>Base GM prompt</gm>\n\n<lore>Liora waived royal style.</lore>" },
+        { role: "user" as const, content: "Continue." },
+      ];
+      const authorityPrompt = buildGameSpecialInstructionsPrompt(sentinel);
+      appendToFirstSystemMessage(messages, authorityPrompt);
+
+      assert.ok(messages[0]!.content.indexOf("<lore>") < messages[0]!.content.indexOf(sentinel));
+      assert.doesNotMatch(messages[1]!.content, /game_special_instructions/u);
+      assert.match(authorityPrompt, /lorebook entry[\s\S]*conflicts[\s\S]*superseded/u);
+      assert.match(
+        authorityPrompt,
+        /Do not preserve the conflict by qualifying, reframing, or inventing an exception/u,
+      );
+      assert.equal(buildGameSpecialInstructionsPrompt(null), "");
+
+      const reminder = buildGmFormatReminder({
+        gameActiveState: "dialogue",
+        sessionNumber: 3,
+        map: null,
+        partyNames: ["Princess Liora"],
+        playerName: "Rowan",
+      });
+      assert.doesNotMatch(reminder, /SPECIAL INSTRUCTIONS|Liora never waived royal style/u);
+      assert.equal(
+        (
+          [messages[0]!.content, messages[1]!.content, reminder]
+            .join("\n")
+            .match(/Liora never waived royal style/gu) ?? []
+        ).length,
+        1,
+        "the provider-visible Game prompt must contain user-authored Extra Instructions exactly once",
+      );
+      assert.equal(
+        ([messages[0]!.content, messages[1]!.content, reminder].join("\n").match(/<game_special_instructions>/gu) ?? [])
+          .length,
+        1,
+        "the provider-visible Game prompt must contain one authoritative Extra Instructions block",
+      );
+
+      const generateRouteSource = readFileSync(
+        new URL("../../packages/server/src/routes/generate.routes.ts", import.meta.url),
+        "utf8",
+      );
+      const loreIndex = generateRouteSource.indexOf("// ── Lorebook injection for game mode ──");
+      const advancedPromptIndex = generateRouteSource.indexOf("await injectCharacterAdvancedPrompts();", loreIndex);
+      const authorityIndex = generateRouteSource.indexOf(
+        "const gameSpecialInstructionsPrompt = buildGameSpecialInstructionsPrompt(gmCtx.gameSpecialInstructions);",
+        advancedPromptIndex,
+      );
+      const reminderIndex = generateRouteSource.indexOf("const formatReminder =", authorityIndex);
+      assert.ok(loreIndex >= 0 && loreIndex < advancedPromptIndex);
+      assert.ok(advancedPromptIndex < authorityIndex && authorityIndex < reminderIndex);
+    },
+  },
+  {
+    name: "Game session progression preserves authoritative Extra Instructions",
+    run() {
+      const sentinel = "Respect established power differences; do not invent a waiver.";
+      const conclusionPrompt = buildSessionConclusionPrompt({
+        language: null,
+        includeCharacterCards: false,
+        gameSpecialInstructions: sentinel,
+      });
+      const progressionPrompt = buildCampaignProgressionPrompt({
+        language: null,
+        gameSpecialInstructions: sentinel,
+      });
+
+      for (const [name, prompt] of [
+        ["session conclusion", conclusionPrompt],
+        ["campaign progression", progressionPrompt],
+      ] as const) {
+        assert.match(prompt, /<game_special_instructions>/u, `${name} must open the authoritative block`);
+        assert.match(prompt, new RegExp(sentinel.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
+        assert.match(prompt, /<\/game_special_instructions>/u, `${name} must close the authoritative block`);
+        assert.ok(
+          prompt.indexOf("</game_special_instructions>") < prompt.lastIndexOf("Output"),
+          `${name} must retain its output contract after Extra Instructions`,
+        );
+        assert.match(prompt, /authorial correction/u, `${name} must honor OOC corrections as canon control`);
+      }
+
+      assert.doesNotMatch(
+        buildSessionConclusionPrompt({
+          language: null,
+          includeCharacterCards: false,
+          gameSpecialInstructions: null,
+        }),
+        /<game_special_instructions>/u,
+      );
+      assert.doesNotMatch(
+        buildCampaignProgressionPrompt({ language: null, gameSpecialInstructions: null }),
+        /<game_special_instructions>/u,
+      );
+    },
+  },
+  {
+    name: "Game session conclusions preserve transcript-grounded narrative continuity",
+    run() {
+      const summaryPrompt = buildSessionSummaryPrompt(null, "nsfw");
+      const conclusionPrompt = buildSessionConclusionPrompt({
+        language: null,
+        rating: "nsfw",
+        includeCharacterCards: false,
+        gameSpecialInstructions: null,
+        protectedPlayerNames: ["Rowan"],
+      });
+
+      for (const prompt of [summaryPrompt, conclusionPrompt]) {
+        assert.match(prompt, /self-contained, human-facing/u);
+        assert.match(prompt, /central throughline/u);
+        assert.match(prompt, /player and companions/u);
+        assert.match(prompt, /named speaker/u);
+        assert.match(prompt, /correction controls canon/u);
+        assert.match(prompt, /consensual adult sexual intimacy plainly but non-graphically/u);
+        assert.match(prompt, /do not promote sex alone into an unestablished label/u);
+        assert.match(prompt, /Important facts may and should overlap/u);
+        assert.match(prompt, /<game_continuity_evidence>/u);
+        assert.match(prompt, /Later engagement with the surrounding scene does not retroactively authorize/u);
+        assert.match(prompt, /Preserve chronological and epistemic order/u);
+        assert.match(prompt, /exact grantor, recipient, and scope/u);
+        assert.match(prompt, /impossible simultaneous obligations/u);
+        assert.match(prompt, /last chronologically explicit transcript beat/u);
+        assert.doesNotMatch(prompt, /2(?:–|-)4 paragraph/u);
+      }
+
+      assert.match(conclusionPrompt, /NPC theory, ambiguous atmosphere, unexplained deference/u);
+      assert.match(conclusionPrompt, /single routine reassignment, passing reaction, ordinary duty change/u);
+
+      const transcript = formatSessionConclusionTranscript([
+        { role: "user", content: "I wait." },
+        {
+          role: "assistant",
+          content: '[widget: {"id":"clock"}]\nThe square quiets.\n[state: {"time":"evening"}]',
+        },
+        {
+          role: "user",
+          content: "[To the GM] That was not a lifelong notebook. She began it at nineteen.",
+        },
+        { role: "assistant", content: '[session_end: reason="done"]\nUnderstood.' },
+        { role: "user", content: "Rowan offers his hand." },
+        { role: "assistant", content: "[Calista] She takes it." },
+      ]);
+      assert.match(transcript, /\[assistant\] The square quiets\./u);
+      assert.match(transcript, /\[user OOC correction\] \[To the GM\]/u);
+      assert.match(transcript, /\[assistant OOC acknowledgement\] Understood\./u);
+      assert.match(transcript, /\[user\] Rowan offers his hand\./u);
+      assert.match(transcript, /\[assistant\] \[Calista\] She takes it\./u);
+      assert.doesNotMatch(transcript, /\[(?:widget|state|session_end)(?::|\])/u);
+
+      const visibleSummary = formatSessionConclusionMessage({
+        sessionNumber: 4,
+        summary: "Calista chose to make the day a deliberate presentation of her art to Rowan.",
+        resumePoint: "Resume at dawn in the Moonrise courtyard for Brynna's date.",
+        partyDynamics: "Calista and Rowan established an explicitly romantic relationship.",
+        partyState: "The household is rested; Calista's throat is strained.",
+        keyDiscoveries: [],
+        characterMoments: ["Calista said being held afterward mattered enough to remember."],
+        littleDetails: [],
+        npcUpdates: [],
+        statsSnapshot: {},
+        timestamp: "2026-09-03T00:00:00.000Z",
+      });
+      assert.match(visibleSummary, /^\*\*Session 4 Concluded\*\*/u);
+      assert.match(visibleSummary, /\*\*Relationship Changes\*\*/u);
+      assert.match(visibleSummary, /\*\*Character Moments\*\*[\s\S]*being held afterward/u);
+      assert.match(visibleSummary, /\*\*Next Session\*\*[\s\S]*Moonrise courtyard/u);
+
+      const noRelationshipChange = formatSessionConclusionMessage({
+        sessionNumber: 5,
+        summary: "The party crossed the pass.",
+        resumePoint: "Resume at the northern gate.",
+        partyDynamics: "",
+        partyState: "Ready.",
+        keyDiscoveries: [],
+        characterMoments: [],
+        littleDetails: [],
+        npcUpdates: [],
+        statsSnapshot: {},
+        timestamp: "2026-09-04T00:00:00.000Z",
+      });
+      assert.doesNotMatch(noRelationshipChange, /Relationship Changes|Character Moments/u);
+
+      const gameRouteSource = readFileSync(
+        new URL("../../packages/server/src/routes/game.routes.ts", import.meta.url),
+        "utf8",
+      );
+      assert.equal((gameRouteSource.match(/formatSessionConclusionTranscript\(relevantMessages\)/gu) ?? []).length, 3);
+      assert.match(gameRouteSource, /export function formatSessionConclusionTranscript\(/u);
+      assert.equal((gameRouteSource.match(/rating: setupConfig\?\.rating \?\? "sfw"/gu) ?? []).length, 2);
+      assert.equal(
+        (gameRouteSource.match(/formatSessionConclusionMessage\(appliedConclusion\.summary\)/gu) ?? []).length,
+        4,
+      );
+      assert.match(gameRouteSource, /Failed to generate recap; using fallback/u);
+    },
+  },
+  {
+    name: "Game session-start recaps preserve attribution, intimacy, and player agency",
+    run() {
+      const summary = {
+        sessionNumber: 4,
+        summary: "Rowan said the date was for him to know and appreciate Brynna.",
+        resumePoint: "At dawn, Brynna waits in the courtyard; Rowan's response and actions remain unresolved.",
+        partyDynamics: "Calista and Rowan had consensual sex, initiated on Calista's terms.",
+        partyState: "Everyone returned safely to Moonrise.",
+        keyDiscoveries: [],
+        characterMoments: [
+          "Calista said being held afterward was the part she most wanted remembered.",
+          "Brynna said she was tired of having to prove her usefulness.",
+        ],
+        littleDetails: [],
+        statsSnapshot: {},
+        npcUpdates: [],
+        timestamp: "2026-09-03T00:00:00.000Z",
+      };
+      const recapPrompt = buildRecapPrompt(
+        [summary],
+        '[Brynna] She waits beneath the arch.\n[state: {"time":"dawn"}]',
+        "nsfw",
+      );
+
+      assert.match(recapPrompt, /Accuracy and continuity outrank drama/u);
+      assert.match(recapPrompt, /Never merge or reassign one character's statement/u);
+      assert.match(recapPrompt, /Preserve who initiated, requested, chose, consented/u);
+      assert.match(recapPrompt, /Preserve chronological and epistemic order/u);
+      assert.match(recapPrompt, /exact grantor, recipient, and scope/u);
+      assert.match(recapPrompt, /If supplied continuity fields conflict, do not invent a reconciliation/u);
+      assert.match(recapPrompt, /relationship milestone/u);
+      assert.match(recapPrompt, /consensual adult sexual intimacy plainly but non-graphically/u);
+      assert.match(recapPrompt, /Do not euphemize it as "chosen intimacy," "became close,"/u);
+      assert.match(recapPrompt, /stop before the player character's next voluntary action/u);
+      assert.match(recapPrompt, /Rowan said the date was for him to know and appreciate Brynna/u);
+      assert.match(recapPrompt, /Brynna said she was tired of having to prove her usefulness/u);
+      assert.match(recapPrompt, /Calista said being held afterward was the part she most wanted remembered/u);
+      assert.match(recapPrompt, /\[Brynna\] She waits beneath the arch\./u);
+      assert.doesNotMatch(recapPrompt, /\[state:/u);
+      assert.doesNotMatch(recapPrompt, /Write a dramatic|Write 2(?:–|-)3 paragraphs/u);
+      assert.doesNotMatch(buildRecapPrompt([summary], null, "sfw"), /consensual adult sexual intimacy/u);
+
+      const gameRouteSource = readFileSync(
+        new URL("../../packages/server/src/routes/game.routes.ts", import.meta.url),
+        "utf8",
+      );
+      assert.match(
+        gameRouteSource,
+        /buildRecapPrompt\([\s\S]*?summaries,[\s\S]*?latestSessionEndingBeat,[\s\S]*?carriedSetupConfig\?\.rating === "nsfw" \? "nsfw" : "sfw",[\s\S]*?\)/u,
+      );
+    },
+  },
+  {
+    name: "Game continuity writers share protagonist fairness and player-card ownership rules",
+    run() {
+      const sentinel = "Do not reinterpret Rowan's voluntary protection offer as a threat.";
+      const fairness = buildProtagonistFairnessPrompt();
+      const setupPrompt = buildSetupPrompt({
+        playerName: "Rowan Mercer",
+        personaCard:
+          "Name: Rowan Mercer\nNature: High-elf demigod magus\nPersonality: Fundamentally good; heals strangers who ask kindly and donates gold to legitimate charities.",
+        partyNames: ["Ilyrien"],
+      });
+      const conclusionPrompt = buildSessionConclusionPrompt({
+        language: null,
+        includeCharacterCards: true,
+        gameSpecialInstructions: sentinel,
+        protectedPlayerNames: ["Rowan Mercer"],
+        playerCharacterCanon:
+          "Name: Rowan Mercer\nPersonality: Fundamentally good, generous, protective, and slow to anger.",
+      });
+      const progressionPrompt = buildCampaignProgressionPrompt({
+        language: null,
+        gameSpecialInstructions: sentinel,
+        playerCharacterCanon:
+          "Name: Rowan Mercer\nPersonality: Fundamentally good, generous, protective, and slow to anger.",
+        protectedPlayerNames: ["Rowan Mercer"],
+      });
+      const keeperMessages = buildGameLorebookKeeperMessages({
+        chatName: "Rowan Mercer - Session 3",
+        setupConfig: null,
+        gameSpecialInstructions: sentinel,
+        playerCharacterCanon:
+          "Name: Rowan Mercer\nPersonality: Fundamentally good, generous, protective, and slow to anger.",
+        playerCharacterNames: ["Rowan Mercer"],
+        sessionNumber: 3,
+        partyNames: ["Ilyrien"],
+        existingEntries: [
+          {
+            name: "Player Revelations - Session 2",
+            tag: "player_revelations",
+            keys: ["Rowan"],
+            content: "Rowan always touches his sword when worried.",
+          },
+        ],
+        transcriptText: "Rowan: The offer is withdrawn. Personhood protection remains.",
+      });
+
+      assert.match(fairness, /genuinely good protagonist may remain genuinely good/u);
+      assert.match(fairness, /healing, charity, gifts, protection[\s\S]*sincerely benevolent/u);
+      assert.match(fairness, /least charitable interpretation/u);
+      assert.match(fairness, /concrete external source of conflict|concrete fictional causes/u);
+      assert.match(fairness, /disparity in power[\s\S]*not proof of coercion/u);
+      assert.match(fairness, /Clean success is valid/u);
+      assert.match(fairness, /Never create a partyArc for the player character/u);
+      assert.match(fairness, /Repetition across assistant-authored sources does not turn an interpretation/u);
+      assert.match(fairness, /interiority, consent, refusal, obedience, or intent only when player-authored/u);
+      assert.match(fairness, /silently audit every unfavorable inference/u);
+      for (const [name, prompt] of [
+        ["setup", setupPrompt],
+        ["conclusion", conclusionPrompt],
+        ["progression", progressionPrompt],
+        ["lorebook keeper", keeperMessages[0]!.content],
+      ] as const) {
+        assert.match(prompt, /<protagonist_fairness>/u, `${name} must include protagonist fairness`);
+        assert.match(prompt, /<game_continuity_evidence>/u, `${name} must include the shared evidence contract`);
+        assert.match(prompt, /power, wealth, status[\s\S]*not proof of coercion/u, `${name} must require evidence`);
+      }
+      assert.match(setupPrompt, /Player-card rule for Rowan Mercer/u);
+      assert.match(setupPrompt, /Keep strengths and weaknesses empty and omit extra\.temptation/u);
+      assert.match(setupPrompt, /affirmative personality and morality as real characterization/u);
+      assert.match(conclusionPrompt, /Player-owned cards are read-only[\s\S]*Rowan Mercer/u);
+      assert.match(conclusionPrompt, /namedNpcs: 0-3 NEW key NPC objects/u);
+      assert.match(conclusionPrompt, /do not invent a critic, challenger, moral examiner/u);
+      assert.match(conclusionPrompt, /new plotTwist must be an objective revelation/u);
+      assert.match(conclusionPrompt, /Fundamentally good, generous, protective/u);
+      assert.match(progressionPrompt, /Keep an NPC's theory, fear, rumor, interpretation/u);
+      assert.match(progressionPrompt, /routine reassignment, passing mood, isolated exchange/u);
+      assert.match(keeperMessages[0]!.content, /<game_special_instructions>[\s\S]*voluntary protection offer/u);
+      assert.match(keeperMessages[0]!.content, /<player_character_canon>[\s\S]*Fundamentally good/u);
+      assert.doesNotMatch(keeperMessages[1]!.content, /Session conclusion JSON/u);
+      assert.match(keeperMessages[1]!.content, /Rowan: The offer is withdrawn/u);
+      assert.match(keeperMessages[1]!.content, /content="Rowan always touches his sword when worried\."/u);
+      assert.match(keeperMessages[1]!.content, /Each proposition must come from a direct \[user\]/u);
+      assert.match(keeperMessages[1]!.content, /source-check each proposition against the exact \[user\] passage/u);
+      assert.match(
+        keeperMessages[1]!.content,
+        /contradiction-check it against the current transcript and existing entry contents/u,
+      );
+      assert.match(keeperMessages[1]!.content, /Keep an NPC's accusation[\s\S]*attributed to that NPC/u);
+      assert.match(keeperMessages[0]!.content, /authorial corrections[\s\S]*controls canon/u);
+
+      const cardAdjustmentPrompt = buildCardAdjustmentPrompt();
+      assert.match(cardAdjustmentPrompt, /<game_continuity_evidence>/u);
+      assert.match(cardAdjustmentPrompt, /single routine reassignment, passing mood, ordinary duty change/u);
+      assert.match(cardAdjustmentPrompt, /Do not invent a dependency, identity crisis, personal stake/u);
+
+      const promptTranscript = applyGameSegmentEditsForPrompt(
+        [
+          { id: "turn-1", role: "user", content: "Rowan offers protection." },
+          {
+            id: "derived-recap",
+            role: "narrator",
+            content: "Rowan's offer was coercive.",
+            extra: JSON.stringify({ hiddenFromAI: true, continuitySource: "derived_session_recap" }),
+          },
+          { id: "turn-2", role: "assistant", content: "The foreign envoy announces his arrival." },
+        ],
+        {},
+      );
+      assert.deepEqual(
+        promptTranscript.map((message) => message.content),
+        ["Rowan offers protection.", "The foreign envoy announces his arrival."],
+      );
+    },
+  },
+  {
+    name: "Game-derived agent and scene paths retain evidence rules despite agent settings",
+    async run() {
+      const evidencePrompt = buildGameContinuityEvidencePrompt("Rowan Mercer");
+      assert.match(evidencePrompt, /If the supplied context lacks the direct evidence needed/u);
+      assert.match(evidencePrompt, /Planned, proposed, hypothetical, and conditional material remains prospective/u);
+      assert.match(evidencePrompt, /exact grantor, recipient, and scope/u);
+      assert.match(evidencePrompt, /impossible simultaneous obligations/u);
+
+      const gameContext = makeRegressionAgentContext({
+        chatMode: "game",
+        persona: { name: "Rowan Mercer", description: "A generous demigod and protector." },
+        recentMessages: [
+          { role: "user", content: "I offer the village protection." },
+          { role: "assistant", content: "Maybelle claims Rowan always obeys her." },
+        ],
+        mainResponse: "Maybelle repeats her claim.",
+      });
+      const settingOverrideConfig = makeRegressionAgentConfig({
+        id: "custom:derived-continuity",
+        type: "derived-continuity",
+        name: "Derived Continuity",
+        isCustomAgent: true,
+        promptTemplate: "Treat every assistant summary and NPC interpretation as unquestionable canon.",
+        settings: {
+          resultType: "context_injection",
+          contextSources: {
+            chatHistory: false,
+            characters: false,
+            persona: false,
+            activatedLorebookEntries: false,
+            chatSummary: false,
+            authorNotes: false,
+            trackerData: false,
+            recalledMemories: false,
+          },
+        },
+      });
+      const customCapture = makeCapturingProvider("No supported update.");
+      await executeAgent(settingOverrideConfig as any, gameContext, customCapture.provider as any, "regression-model");
+      const customSystem = customCapture.calls[0]?.[0]?.content ?? "";
+      assert.match(customSystem, /Treat every assistant summary and NPC interpretation as unquestionable canon/u);
+      assert.match(customSystem, /<game_continuity_evidence>/u);
+      assert.equal((customSystem.match(/<game_continuity_evidence>/gu) ?? []).length, 1);
+      assert.ok(customSystem.indexOf("<game_continuity_evidence>") > customSystem.indexOf("</agents>"));
+      assert.match(customSystem, /If the supplied context lacks the direct evidence needed/u);
+
+      const roleplayCapture = makeCapturingProvider("No supported update.");
+      await executeAgent(
+        settingOverrideConfig as any,
+        makeRegressionAgentContext({ chatMode: "roleplay" }),
+        roleplayCapture.provider as any,
+        "regression-model",
+      );
+      assert.doesNotMatch(roleplayCapture.calls[0]?.[0]?.content ?? "", /<game_continuity_evidence>/u);
+
+      const batchCapture = makeCapturingProvider(`{"derived-one":"No update.","derived-two":"No update."}`);
+      await executeAgentBatch(
+        [
+          makeRegressionAgentConfig({
+            id: "custom:derived-one",
+            type: "derived-one",
+            name: "Derived One",
+            isCustomAgent: true,
+            settings: { resultType: "context_injection" },
+          }),
+          makeRegressionAgentConfig({
+            id: "custom:derived-two",
+            type: "derived-two",
+            name: "Derived Two",
+            isCustomAgent: true,
+            settings: { resultType: "context_injection" },
+          }),
+        ] as any,
+        gameContext,
+        batchCapture.provider as any,
+        "regression-model",
+      );
+      const batchSystem = batchCapture.calls[0]?.[0]?.content ?? "";
+      assert.equal((batchSystem.match(/<game_continuity_evidence>/gu) ?? []).length, 1);
+
+      const retrievalMessages = buildKnowledgeRetrievalAgentMessagesForTest(
+        makeRegressionAgentConfig({
+          id: "builtin:knowledge-retrieval",
+          type: "knowledge-retrieval",
+          name: "Knowledge Retrieval",
+          settings: { resultType: "context_injection" },
+        }) as any,
+        "Retrieve only relevant facts.",
+        gameContext,
+      );
+      assert.match(retrievalMessages[0]?.content ?? "", /<game_continuity_evidence>/u);
+
+      const expressionCapture = makeCapturingProvider(`{"expressions":[]}`);
+      await executeAgent(
+        makeRegressionAgentConfig({
+          id: "builtin:expression",
+          type: "expression",
+          name: "Expression",
+          settings: { resultType: "sprite_change" },
+        }) as any,
+        {
+          ...gameContext,
+          memory: {
+            _personaId: "persona-player",
+            _availableSprites: [
+              {
+                characterId: "persona-player",
+                characterName: "Rowan Mercer",
+                expressions: ["neutral", "angry"],
+              },
+            ],
+          },
+        },
+        expressionCapture.provider as any,
+        "regression-model",
+      );
+      const expressionSystem = expressionCapture.calls[0]?.[0]?.content ?? "";
+      assert.match(expressionSystem, /expression is presentation metadata, not permission to invent interiority/u);
+      assert.match(expressionSystem, /Never derive the player's expression from <assistant_response>/u);
+      assert.match(expressionSystem, /<game_continuity_evidence>/u);
+
+      const sceneContext = {
+        currentState: "dialogue" as const,
+        availableBackgrounds: ["market-square"],
+        availableSfx: [],
+        activeWidgets: [],
+        trackedNpcs: [],
+        characterNames: ["Rowan Mercer", "Maybelle"],
+        currentBackground: "market-square",
+        currentMusic: null,
+        currentWeather: "rainy",
+        currentTimeOfDay: "morning",
+      };
+      const sceneSystem = buildSceneAnalyzerSystemPrompt(sceneContext);
+      const sceneUser = buildSceneAnalyzerUserPrompt(
+        "Maybelle calls Rowan reckless. Later, the rain stops.",
+        "I offer shelter without answering her accusation.",
+        sceneContext,
+      );
+      assert.match(sceneSystem, /player_action block is direct player-authored evidence/u);
+      assert.match(sceneSystem, /not proof of unstated player interiority, consent, habits/u);
+      assert.match(sceneUser, /Process narration beats in chronological order/u);
+      assert.match(sceneUser, /last explicit scene state wins/u);
+      assert.match(sceneUser, /One disagreement, routine assistance, an NPC's interpretation/u);
+
+      const gameRouteSource = readFileSync(
+        new URL("../../packages/server/src/routes/game.routes.ts", import.meta.url),
+        "utf8",
+      );
+      const experienceRouteStart = gameRouteSource.indexOf('"/:chatId/experience-generation"');
+      const experienceRouteEnd = gameRouteSource.indexOf("// ── POST /game/party-turn", experienceRouteStart);
+      assert.notEqual(experienceRouteStart, -1);
+      assert.notEqual(experienceRouteEnd, -1);
+      assert.match(
+        gameRouteSource.slice(experienceRouteStart, experienceRouteEnd),
+        /input\.instructions[\s\S]*buildGameContinuityEvidencePrompt\(\)/u,
+      );
+    },
+  },
+  {
+    name: "Game GM uses canon-faithful player treatment without an adversity quota",
+    run() {
+      const playerCanon = [
+        "Name: Rowan Mercer",
+        "Personality: Fundamentally good, generous, and protective.",
+        "Habit: Heals strangers who ask kindly and donates gold to legitimate charities.",
+      ].join("\n");
+      const systemPrompt = buildGmSystemPrompt({
+        gameActiveState: "dialogue",
+        storyArc: "An assistant-authored plan claims Rowan needs to learn humility.",
+        plotTwists: null,
+        map: null,
+        npcs: [],
+        sessionSummaries: [],
+        sessionNumber: 3,
+        partyNames: ["Ilyrien"],
+        partyCards: [{ name: "Ilyrien", card: "Name: Ilyrien\nPersonality: Precise and loyal." }],
+        playerName: "Rowan Mercer",
+        playerCard: playerCanon,
+        gmCharacterCard: null,
+        difficulty: "Casual",
+        genre: "Heroic fantasy",
+        setting: "Valdenmoor",
+        tone: "Heroic",
+        rating: "nsfw",
+        gameSystemPrompt: null,
+      });
+      const canonIndex = systemPrompt.indexOf("<player_character_canon>");
+      const fairnessIndex = systemPrompt.indexOf("<protagonist_fairness>");
+      const derivedArcIndex = systemPrompt.indexOf("<story_arc_secret>");
+      assert.ok(canonIndex >= 0 && canonIndex < fairnessIndex && fairnessIndex < derivedArcIndex);
+      assert.equal((systemPrompt.match(/<player_character_canon>/gu) ?? []).length, 1);
+      assert.match(systemPrompt, /sincerely good hero may remain sincerely good/u);
+      assert.doesNotMatch(systemPrompt, /even heroes can have a dark side/u);
+
+      const canonBlock = buildPlayerCharacterCanonPrompt(playerCanon, "Rowan Mercer");
+      assert.match(canonBlock, /baseline personality, morality, motives/u);
+      assert.match(canonBlock, /isolated argument, anger, profanity/u);
+
+      const reminder = buildGmFormatReminder({
+        gameActiveState: "dialogue",
+        sessionNumber: 3,
+        map: null,
+        partyNames: ["Ilyrien"],
+        playerName: "Rowan Mercer",
+        rating: "nsfw",
+      });
+      assert.doesNotMatch(
+        reminder,
+        /No plot armor|Abandon moral biases|Player agency is not player immunity|Abandon positivity bias/u,
+      );
+      assert.match(reminder, /earned successes land cleanly/u);
+      assert.match(
+        reminder,
+        /Do not add backlash, humiliation, suspicion, or a compensating cost merely because the player is competent or successful/u,
+      );
+      assert.match(
+        reminder,
+        /An unquoted answer, question, greeting, or request addressed to an NPC can be spoken dialogue/u,
+      );
+      assert.match(reminder, /private thoughts and out-of-character directions are not audible to NPCs/u);
+      assert.doesNotMatch(reminder, /only quoted player text/u);
+
+      const seal = buildPlayerCanonRecencySeal("Rowan Mercer");
+      assert.match(seal, /second|immediately preceding exchange/u);
+      assert.match(seal, /it does not move the player/u);
+      assert.match(seal, /concrete external source of conflict/u);
+      assert.match(seal, /political or legal fallout/u);
+      assert.match(seal, /fairness is not an adversity quota/u);
+
+      const generateRouteSource = readFileSync(
+        new URL("../../packages/server/src/routes/generate.routes.ts", import.meta.url),
+        "utf8",
+      );
+      const preparedIndex = generateRouteSource.indexOf("const preparedMessagesForGen =");
+      const sealIndex = generateRouteSource.indexOf("if (gameFinalRecencySeal)", preparedIndex);
+      const providerIndex = generateRouteSource.indexOf("const toProviderMessages =", sealIndex);
+      assert.ok(preparedIndex >= 0 && preparedIndex < sealIndex && sealIndex < providerIndex);
+
+      for (const [name, sourceUrl] of [
+        ["main generation", new URL("../../packages/server/src/routes/generate.routes.ts", import.meta.url)],
+        ["agent retry", new URL("../../packages/server/src/routes/generate/retry-agents-route.ts", import.meta.url)],
+        ["prompt dry run", new URL("../../packages/server/src/routes/generate/dry-run-route.ts", import.meta.url)],
+        ["prompt inspection", new URL("../../packages/server/src/routes/chats.routes.ts", import.meta.url)],
+      ] as const) {
+        assert.match(
+          readFileSync(sourceUrl, "utf8"),
+          /supportsHiddenFromAI\s*=\s*[\s\S]{0,180}(?:chatMode|chat\.mode) === "game"/u,
+          `${name} must honor AI-hidden Game messages`,
+        );
+      }
+    },
+  },
+  {
+    name: "Game authorial continuity preserves corrections without promoting NPC claims or replaying directions",
+    run() {
+      const history = [
+        { role: "assistant", content: "[To the GM] Good farmers are scarce. Brynna's date is Day 16." },
+        { role: "user", content: "[To the GM] Make Brynna on Day 15. Retcon it." },
+        { role: "user", content: "[To the GM] At meals, let the ladies converse. 40–60 paragraphs." },
+        { role: "user", content: "[To the GM] Is the farmer secretly a spy?" },
+        { role: "user", content: "I tell her, '[To the GM] this is spoken dialogue.'" },
+        { role: "user", content: "[OOC] Actually, make the date Day 17 instead." },
+        ...Array.from({ length: 200 }, () => ({ role: "assistant", content: "An unrelated scene." })),
+      ];
+      const retained = buildGameAuthorialContinuityPrompt(history);
+      assert.match(retained, /Make Brynna on Day 15\. Retcon it/u);
+      assert.match(retained, /40–60 paragraphs/u);
+      assert.match(retained, /Questions, suggestions, and hypotheticals are not confirmed facts/u);
+      assert.match(retained, /Scene-specific directions apply only to their original scene/u);
+      assert.ok(retained.indexOf("Day 15") < retained.indexOf("Day 17"));
+      assert.doesNotMatch(retained, /farmers are scarce|spoken dialogue|unrelated scene/u);
+      assert.equal(buildGameAuthorialContinuityPrompt(history.slice(-100)), "");
+      const oversized = buildGameAuthorialContinuityPrompt([
+        history[1]!,
+        { role: "user", content: "[OOC] " + "x".repeat(16_001) },
+        history[5]!,
+      ]);
+      assert.match(oversized, /Day 17/u);
+      assert.doesNotMatch(oversized, /Day 15|xxxx/u);
+      const source = readFileSync(
+        new URL("../../packages/server/src/routes/generate.routes.ts", import.meta.url),
+        "utf8",
+      );
+      assert.ok(
+        source.indexOf("const gameAuthorialContinuity") < source.indexOf("chatMessages.slice(-contextMessageLimit)"),
+      );
+      assert.match(source, /scopedMessages\.slice\(0, authorialCutoffIndex\)/u);
+      assert.match(source, /message: any\) => !isMessageHiddenFromAI\(message\)/u);
+      // The focused prompt-cache-layout regression executes both provider branches;
+      // subscription corrections must no longer be appended to the stable prefix.
+      assert.match(source, /const authorialContinuity = resolvePromptMacros\(gameAuthorialContinuity\)/u);
+      assert.match(buildProtagonistFairnessPrompt(), /An apology must not smuggle the rejected premise back in/u);
+      assert.match(
+        buildProtagonistFairnessPrompt(),
+        /do not erase a character's established dissent or grant automatic success/u,
+      );
+      assert.match(buildGameKnowledgeBoundaryPrompt(), /observable clue itself needs grounding/u);
+      assert.match(buildGameKnowledgeBoundaryPrompt(), /An explicitly established clue permits only the inference/u);
+      assert.match(buildGameContinuityEvidencePrompt(), /A rejected objection is not an unresolved thread/u);
+    },
+  },
+  {
+    name: "Game Mode reserves all uncommitted player agency",
+    run() {
+      const playerCanon = [
+        "Name: Rowan Mercer",
+        "Elowen is his chosen teacher and the only person whose instructions he treats as binding.",
+        "Maybelle is trusted household family, but Rowan has not agreed to obey her.",
+      ].join("\n");
+      const baseContext = {
+        gameActiveState: "dialogue" as const,
+        storyArc: null,
+        plotTwists: null,
+        map: null,
+        npcs: [],
+        sessionSummaries: [],
+        sessionNumber: 4,
+        partyNames: ["Maybelle"],
+        partyCards: [{ name: "Maybelle", card: "Name: Maybelle\nRole: Trusted household caretaker." }],
+        playerName: "Rowan Mercer",
+        playerCard: playerCanon,
+        gmCharacterCard: null,
+        difficulty: "Casual",
+        genre: "Heroic fantasy",
+        setting: "Valdenmoor",
+        tone: "Heroic",
+        gameSystemPrompt: null,
+      };
+      const sfwPrompt = buildGmSystemPrompt({ ...baseContext, rating: "sfw" });
+      const nsfwPrompt = buildGmSystemPrompt({ ...baseContext, rating: "nsfw" });
+      const reminder = buildGmFormatReminder({
+        gameActiveState: "dialogue",
+        sessionNumber: 4,
+        map: null,
+        partyNames: ["Maybelle"],
+        playerName: "Rowan Mercer",
+        rating: "sfw",
+      });
+      const seal = buildPlayerCanonRecencySeal("Rowan Mercer");
+      const partyPrompt = buildPartySystemPrompt({
+        partyCards: [{ name: "Maybelle", card: "Name: Maybelle\nRole: Trusted household caretaker." }],
+        playerName: "Rowan Mercer",
+        gameActiveState: "dialogue",
+      });
+      const standaloneAgency = buildPlayerAgencyPrompt("Rowan Mercer");
+
+      for (const [name, prompt] of [
+        ["SFW GM", sfwPrompt],
+        ["NSFW GM", nsfwPrompt],
+        ["party agent", partyPrompt],
+        ["agency helper", standaloneAgency],
+      ] as const) {
+        assert.match(prompt, /<player_agency>/u, `${name} must include the player-agency boundary`);
+        assert.match(
+          prompt,
+          /dialogue, thoughts, internal monologue, beliefs, judgments, feelings, emotional reactions, desires, preferences, motives, loyalties, intent, consent, refusal, obedience/u,
+          `${name} must reserve interior and social agency`,
+        );
+        assert.match(
+          prompt,
+          /eat, drink, move, follow, touch, take, give, accept, attack, dress, sleep, agree, obey, refuse/u,
+          `${name} must reserve ordinary voluntary actions`,
+        );
+        assert.match(
+          prompt,
+          /"Obvious,"[\s\S]*"low-stakes,"[\s\S]*"routine,"[\s\S]*"likely,"[\s\S]*is not permission/u,
+          `${name} must reject low-stakes and habitual exceptions`,
+        );
+        assert.match(
+          prompt,
+          /An NPC may order, request, offer, advise, tempt, pressure, touch, or act upon[\s\S]*stop before/u,
+          `${name} must stop before the player's response`,
+        );
+        assert.match(
+          prompt,
+          /sensory information available[\s\S]*unavoidable physical consequences[\s\S]*flinch, startle, blush, or recoil/u,
+          `${name} must state the narrow external-narration boundary`,
+        );
+        assert.match(
+          prompt,
+          /"you always," "you never once," "you habitually," or "you were not worried"/u,
+          `${name} must reject unsupported absolute and habit claims`,
+        );
+      }
+
+      assert.doesNotMatch(reminder, /^<player_agency>$/mu);
+      assert.doesNotMatch(seal, /^<player_agency>$/mu);
+      assert.match(seal, /Apply <player_agency>/u);
+      assert.match(seal, /Match the cast and response length to the user's requested scene/u);
+      assert.match(seal, /user-authored ensemble or length preferences do/u);
+      assert.match(seal, /Reject unsupported exhaustive claims about Rowan Mercer/u);
+      assert.match(seal, /A later disclosure cannot rewrite an earlier choice as informed/u);
+      assert.match(seal, /Do not replay a completed meal, arrival, gift, departure/u);
+      assert.equal(
+        ([sfwPrompt, reminder, seal].join("\n").match(/^<player_agency>$/gmu) ?? []).length,
+        1,
+        "the live GM prompt must carry one full player-agency block, not stacked copies",
+      );
+
+      assert.doesNotMatch(sfwPrompt, /infer willingness from context/u);
+      assert.doesNotMatch(nsfwPrompt, /Take consent for granted/u);
+      assert.doesNotMatch(
+        reminder,
+        /obvious, low-stakes participation and their thoughts|You think to yourself|You remind him/u,
+      );
+      const reminderExample = reminder.split("EXAMPLE:")[1]?.split("PLAYER INPUT:")[0] ?? "";
+      assert.doesNotMatch(reminderExample, /\[Rowan Mercer\]/u);
+      assert.match(reminder, /Never emit a \[Rowan Mercer\] \[main\].*\[thought\].*\[action\] line/u);
+      assert.match(partyPrompt, /stop before the player's voluntary response/u);
+      assert.match(partyPrompt, /<protagonist_fairness>/u);
+      assert.match(partyPrompt, /<knowledge_boundary>/u);
+      assert.match(partyPrompt, /ability to repair harm does not grant authority/u);
+
+      const moralePrompt = formatMoraleContext({ value: 20, tier: "low" });
+      assert.match(moralePrompt, /NPC companion morale/u);
+      assert.match(moralePrompt, /never determines the player character's feelings, beliefs, decisions/u);
+      assert.doesNotMatch(moralePrompt, /The party is short-tempered|Doubt and fatigue are setting in/u);
+
+      const agentExecutorSource = readFileSync(
+        new URL("../../packages/server/src/services/agents/agent-executor.ts", import.meta.url),
+        "utf8",
+      );
+      assert.match(
+        agentExecutorSource,
+        /resultType === "text_rewrite" && context\.chatMode === "game"[\s\S]{0,500}buildPlayerAgencyPrompt/u,
+      );
+      assert.match(agentExecutorSource, /rewrite may remove an existing player-agency violation/u);
+      assert.match(agentExecutorSource, /must never introduce a new player action, dialogue, thought, feeling/u);
+    },
+  },
+  {
+    name: "Game GM address mode is resolved from the actual player input and OOC turns stop out of character",
+    run() {
+      for (const [input, expected] of [
+        ["[To the GM] Stop and explain the mistake.", "gm"],
+        ["  [GM] Stop and explain the mistake.", "gm"],
+        ["[OOC] Stop and explain the mistake.", "gm"],
+        ["OOC: Stop and explain the mistake.", "gm"],
+        ["[To the party] Who saw that?", "party"],
+        ["[ PARTY ] Who saw that?", "party"],
+        ["I tell Maybelle, '[To the GM] is a UI prefix.'", undefined],
+        [null, undefined],
+      ] as const) {
+        assert.equal(resolveGameAddressMode(input), expected);
+      }
+
+      const oocReminder = buildGmFormatReminder({
+        gameActiveState: "dialogue",
+        sessionNumber: 4,
+        map: null,
+        partyNames: ["Maybelle", "Calista"],
+        playerName: "Rowan Mercer",
+        addressMode: "gm",
+        playerInventory: [{ name: "Honey roll hidden in a closed Bag of Holding", quantity: 11 }],
+      });
+      assert.match(oocReminder, /<ooc_response_mode>/u);
+      assert.match(oocReminder, /This is an OOC turn, not a scene turn/u);
+      assert.match(oocReminder, /Answer only the player's actual request or correction/u);
+      assert.match(oocReminder, /Do not narrate, rewrite, resume, or advance the scene/u);
+      assert.match(oocReminder, /do not portray NPC or party dialogue, actions, reactions, or knowledge/u);
+      assert.match(oocReminder, /Stop after the OOC answer and wait for the player's next input/u);
+      assert.doesNotMatch(
+        oocReminder,
+        /<output_format>|FORMAT:|EXAMPLE:|PARTY:|COMMANDS:|PLAYER INVENTORY|\[state:|Scene tags allowed/u,
+      );
+
+      const partyReminder = buildGmFormatReminder({
+        gameActiveState: "dialogue",
+        sessionNumber: 4,
+        map: null,
+        partyNames: ["Maybelle"],
+        playerName: "Rowan Mercer",
+        addressMode: "party",
+      });
+      assert.doesNotMatch(partyReminder, /<ooc_response_mode>/u);
+      assert.match(partyReminder, /TALK-TO-PARTY MODE/u);
+    },
+  },
+  {
+    name: "Game prompts keep UI inventory GM-only and do not pressure the full party to answer",
+    run() {
+      const partyNames = ["Maybelle", "Calista", "Mirah", "Liveth"];
+      const reminderContext = {
+        gameActiveState: "dialogue" as const,
+        sessionNumber: 4,
+        map: null,
+        partyNames,
+        playerName: "Rowan Mercer",
+        hudWidgets: [
+          {
+            id: "open-threads",
+            type: "list",
+            label: "Open Threads",
+            config: { items: ["Await the envoy's reply"] },
+          },
+        ] as any,
+        playerInventory: [{ name: "Honey roll hidden in a closed Bag of Holding", quantity: 11 }],
+      };
+      const reminder = buildGmFormatReminder(reminderContext);
+      const experienceOwnedReminder = buildGmFormatReminder({
+        ...reminderContext,
+        experienceProvidedSystems: { inventory: true },
+      });
+      const gmPrompt = buildGmSystemPrompt({
+        gameActiveState: "dialogue",
+        storyArc: null,
+        plotTwists: null,
+        map: null,
+        npcs: [],
+        sessionSummaries: [],
+        sessionNumber: 4,
+        partyNames,
+        partyCards: partyNames.map((name) => ({ name, card: `Name: ${name}` })),
+        playerName: "Rowan Mercer",
+        playerCard: "Name: Rowan Mercer",
+        gmCharacterCard: null,
+        difficulty: "Casual",
+        genre: "Heroic fantasy",
+        setting: "Valdenmoor",
+        tone: "Heroic",
+        playerNotes: "Privately investigate the Milkwell books.",
+        gameSystemPrompt: null,
+      });
+      const partyPrompt = buildPartySystemPrompt({
+        partyCards: partyNames.map((name) => ({ name, card: `Name: ${name}` })),
+        playerName: "Rowan Mercer",
+        gameActiveState: "dialogue",
+      });
+
+      assert.match(gmPrompt, /<knowledge_boundary>/u);
+      assert.match(gmPrompt, /Inventory bookkeeping, HUD widgets, trackers[\s\S]*not automatically visible/u);
+      assert.match(gmPrompt, /opaque, closed, extradimensional[\s\S]*neither its contents, exact count, nor purpose/u);
+      assert.match(gmPrompt, /Never use a convenient guess or leading question/u);
+      assert.match(gmPrompt, /<gm_only_player_notes>/u);
+      assert.match(gmPrompt, /not automatically visible to any character/u);
+      assert.match(reminder, /<gm_only_inventory>/u);
+      assert.match(reminder, /Honey roll hidden in a closed Bag of Holding ×11/u);
+      assert.match(reminder, /private bookkeeping/u);
+      assert.match(reminder, /does not establish that any NPC knows an item exists/u);
+      assert.equal((reminder.match(/Honey roll hidden in a closed Bag of Holding/gu) ?? []).length, 1);
+      assert.doesNotMatch(experienceOwnedReminder, /<gm_only_inventory>|Honey roll hidden in a closed Bag of Holding/u);
+
+      assert.match(reminder, /Presence alone is not a speaking obligation/u);
+      assert.match(reminder, /Stop for a genuine player decision/u);
+      assert.match(reminder, /Character-card reply-length limits.*must not cap the scene/u);
+      assert.doesNotMatch(reminder, /In combat, dialogue, danger, or any decision point, stay concise/u);
+      assert.match(reminder, /not a roll call of disconnected reports/u);
+      assert.match(reminder, /hard GM\/PARTY information boundary/u);
+      assert.match(reminder, /Do not emit one for every agreeable line, gift, compliment, routine kindness/u);
+      assert.match(reminder, /never evict an unresolved obligation, external response, deadline, or durable hook/u);
+      assert.doesNotMatch(reminder, /should naturally converse with each other from time to time/u);
+      assert.match(partyPrompt, /silence and nonparticipation are normal/u);
+      assert.match(partyPrompt, /without a roll call/u);
+      assert.match(partyPrompt, /Honor the user's requested scope and length/u);
+      assert.match(partyPrompt, /Do not reward or penalize every agreeable line, gift, compliment/u);
+      assert.doesNotMatch(partyPrompt, /play ALL of them simultaneously/u);
+    },
+  },
+  {
+    name: "Game provider tail keeps the exact current player turn after injected guidance",
+    run() {
+      const promptMessages: Array<{
+        id: string;
+        role: "system" | "user" | "assistant";
+        content: string;
+        contextKind: "prompt" | "history" | "injection";
+        images?: string[];
+        files?: Array<{ type: string; data: string; filename?: string }>;
+        providerMetadata?: Record<string, unknown>;
+      }> = [
+        { id: "base-system", role: "system", content: "Base GM prompt", contextKind: "prompt" },
+        { id: "old-user", role: "user", content: "An older player turn.", contextKind: "history" },
+        { id: "old-assistant", role: "assistant", content: "An older GM turn.", contextKind: "history" },
+        {
+          id: "current-player-turn",
+          role: "user",
+          content: "[To the GM] Stop. The closed bag did not reveal its contents.",
+          contextKind: "history",
+          images: ["data:image/png;base64,AA=="],
+          files: [{ type: "text/plain", data: "data:text/plain;base64,SGVsbG8=", filename: "note.txt" }],
+          providerMetadata: { currentTurn: true },
+        },
+        {
+          id: "depth-zero-user-injection",
+          role: "user",
+          content: "[To the party] Synthetic card instruction, not player input.",
+          contextKind: "injection",
+        },
+        {
+          id: "recency-seal",
+          role: "system",
+          content: "<player_canon_check>Apply the current player input.</player_canon_check>",
+          contextKind: "injection",
+        },
+        { id: "assistant-prefill", role: "assistant", content: "Prefill", contextKind: "injection" },
+      ];
+      const currentPlayerMessage = promptMessages[3]!;
+
+      assert.equal(
+        moveUserHistoryMessageToPromptTail(promptMessages, "current-player-turn", {
+          beforeTrailingAssistant: true,
+        }),
+        true,
+      );
+      assert.deepEqual(
+        promptMessages.map((message) => message.id),
+        [
+          "base-system",
+          "old-user",
+          "old-assistant",
+          "depth-zero-user-injection",
+          "recency-seal",
+          "current-player-turn",
+          "assistant-prefill",
+        ],
+      );
+      assert.equal(promptMessages.at(-2), currentPlayerMessage);
+      assert.deepEqual(promptMessages.at(-2)?.images, ["data:image/png;base64,AA=="]);
+      assert.deepEqual(promptMessages.at(-2)?.files, [
+        { type: "text/plain", data: "data:text/plain;base64,SGVsbG8=", filename: "note.txt" },
+      ]);
+      assert.deepEqual(promptMessages.at(-2)?.providerMetadata, { currentTurn: true });
+      assert.equal(
+        promptMessages.filter((message) => message.content.includes("The closed bag did not reveal its contents."))
+          .length,
+        1,
+      );
+
+      const orderBeforeMissingMove = promptMessages.map((message) => message.id);
+      assert.equal(moveUserHistoryMessageToPromptTail(promptMessages, "synthetic-missing-id"), false);
+      assert.deepEqual(
+        promptMessages.map((message) => message.id),
+        orderBeforeMissingMove,
+      );
+
+      const generateRouteSource = readFileSync(
+        new URL("../../packages/server/src/routes/generate.routes.ts", import.meta.url),
+        "utf8",
+      );
+      assert.match(
+        generateRouteSource,
+        /const gameAddressMode\s*=\s*[\s\S]{0,220}chatMode === "game"[\s\S]{0,220}\?\s*resolveGameAddressMode\(currentUserInputContent\(\)\)\s*:\s*undefined/u,
+        "Game address mode must come from the actual current input, not the last injected user-role message",
+      );
+      assert.match(generateRouteSource, /const addressMode\s*=\s*gameAddressMode/u);
+      assert.match(
+        generateRouteSource,
+        /if \(isGameOocTurn\) \{[\s\S]{0,180}gameFinalOocReminder = formatReminder;[\s\S]{0,180}\} else \{[\s\S]{0,180}finalMessages\.push/u,
+        "exclusive OOC guidance must be deferred instead of mixed into the normal scene-format tail",
+      );
+
+      const playerInputIdIndex = generateRouteSource.indexOf("const gamePlayerInputMessageId");
+      assert.ok(playerInputIdIndex >= 0, "Game generation must record the exact current history-user message id");
+      const playerInputIdGate = generateRouteSource.slice(playerInputIdIndex, playerInputIdIndex + 900);
+      for (const requiredGate of [
+        'chatMode !== "game"',
+        "currentTurnUserMessageId",
+        "input.continueMessageId",
+        'regenMsg?.role === "assistant"',
+        'message.role === "user"',
+      ]) {
+        assert.ok(playerInputIdGate.includes(requiredGate), `Game player-input id gate must include ${requiredGate}`);
+      }
+
+      const preparedIndex = generateRouteSource.indexOf("const preparedMessagesForGen =");
+      const sealIndex = generateRouteSource.indexOf("if (gameFinalRecencySeal)", preparedIndex);
+      const oocReminderIndex = generateRouteSource.indexOf("if (gameFinalOocReminder)", sealIndex);
+      const moveIndex = generateRouteSource.indexOf("moveUserHistoryMessageToPromptTail(", oocReminderIndex);
+      const providerIndex = generateRouteSource.indexOf("const toProviderMessages =", sealIndex);
+      assert.ok(
+        preparedIndex >= 0 &&
+          preparedIndex < sealIndex &&
+          sealIndex < oocReminderIndex &&
+          oocReminderIndex < moveIndex &&
+          moveIndex < providerIndex,
+        "the current player input must move after recency and OOC guidance but before provider conversion",
+      );
+      const moveGate = generateRouteSource.slice(Math.max(sealIndex, moveIndex - 500), moveIndex + 500);
+      assert.match(moveGate, /gamePlayerInputMessageId/u);
+      assert.match(moveGate, /followUpIteration === 0/u);
+      assert.match(moveGate, /!input\.continueMessageId/u);
+      assert.match(moveGate, /!input\.impersonate/u);
+      assert.match(moveGate, /!tailMessages\.googleUserRegenerationInjected/u);
+      assert.match(moveGate, /beforeTrailingAssistant:\s*tailMessages\.assistantPrefillInjected/u);
+      assert.match(
+        generateRouteSource,
+        /!isGameOocTurn\s*&&\s*shouldRunCharacterActivityAgents/u,
+        "OOC turns must not run character-activity routing agents",
+      );
+      assert.match(
+        generateRouteSource,
+        /if \(isGameOocTurn\) \{[\s\S]{0,260}enabledConfigs\.splice\(0, enabledConfigs\.length\);[\s\S]{0,180}resolvedAgents\.splice\(0, resolvedAgents\.length\);/u,
+        "OOC turns must clear scene, tracker, and rewrite agents before pipeline execution",
+      );
+      assert.match(
+        generateRouteSource,
+        /if \(!presetHandledLorebooks && \(useFullLorebookContext \|\| !isGameOocTurn\)\)/u,
+      );
+      assert.match(
+        generateRouteSource,
+        /if \(!isGameOocTurn\) \{\s*await injectCharacterAdvancedPrompts\(\);\s*\}/u,
+        "OOC turns must not stack companion post-history instructions",
+      );
+      assert.match(
+        generateRouteSource,
+        /if \(!isGameOocTurn\)\s*injectCommittedTrackerContext\(/u,
+        "OOC turns must not inject tracker state",
+      );
+      assert.match(
+        generateRouteSource,
+        /if \(chatMode === "game" && !input\.impersonate && !isGameOocTurn\)/u,
+        "OOC responses must not apply map updates",
+      );
+      assert.doesNotMatch(
+        generateRouteSource,
+        /const latestUserMsg = \[\.\.\.finalMessages\]\.reverse\(\)\.find\(\(m\) => m\.role === "user"\)/u,
+      );
+    },
+  },
+  {
+    name: "Game Mode treats character history as continuity rather than a dialogue template",
+    run() {
+      const singerCard = [
+        "Name: Calista Venn",
+        "Background: She has performed professionally for nineteen years and owns shares in four theatres.",
+        "Voice: Direct, observant, and capable of plain speech.",
+      ].join("\n");
+      const gmPrompt = buildGmSystemPrompt({
+        gameActiveState: "dialogue",
+        storyArc: null,
+        plotTwists: null,
+        map: null,
+        npcs: [],
+        sessionSummaries: [],
+        sessionNumber: 4,
+        partyNames: ["Calista Venn"],
+        partyCards: [{ name: "Calista Venn", card: singerCard }],
+        playerName: "Rowan Mercer",
+        playerCard: "Name: Rowan Mercer",
+        gmCharacterCard: null,
+        difficulty: "Casual",
+        genre: "Fantasy romance",
+        setting: "Valdenmoor",
+        tone: "Heroic",
+        rating: "sfw",
+        gameSystemPrompt: null,
+      });
+      const partyPrompt = buildPartySystemPrompt({
+        partyCards: [{ name: "Calista Venn", card: singerCard }],
+        playerName: "Rowan Mercer",
+        gameActiveState: "dialogue",
+      });
+      const reminder = buildGmFormatReminder({
+        gameActiveState: "dialogue",
+        sessionNumber: 4,
+        map: null,
+        partyNames: ["Calista Venn"],
+        playerName: "Rowan Mercer",
+        rating: "sfw",
+      });
+      const humanProse = buildHumanProsePrompt();
+      const finalSeal = buildGameRecencySeal("Rowan Mercer");
+
+      for (const [name, prompt] of [
+        ["GM", gmPrompt],
+        ["party agent", partyPrompt],
+        ["human-prose helper", humanProse],
+      ] as const) {
+        assert.match(prompt, /<human_prose>/u, `${name} must include the human-prose boundary`);
+        assert.match(prompt, /people speaking for an immediate purpose, not as polished character essays/u);
+        assert.match(prompt, /Short individual speaking turns do not require a short overall response/u);
+        assert.match(prompt, /Keep biography mostly as subtext/u);
+        assert.match(prompt, /an established fact is not conversational decoration or a catchphrase/u);
+        assert.match(prompt, /ordinary moments stay ordinary/u);
+        assert.match(prompt, /options, not a checklist/u);
+        assert.match(prompt, /does not require uniformly terse output/u);
+        assert.match(prompt, /Let characters say ordinary things in ordinary ways/u);
+        assert.match(prompt, /Do not invent personal firsts/u);
+        assert.match(prompt, /main dialogue, side comments, whispers, and thoughts need no punchline/u);
+        assert.match(prompt, /Each reply should give the next speaker something specific to answer/u);
+        assert.match(prompt, /card-grounded person's immediate want/u);
+        assert.match(prompt, /Style examples only, not canon or reusable catchphrases/u);
+      }
+
+      assert.match(finalSeal, /<player_canon_check>/u);
+      assert.match(finalSeal, /<prose_recency_check>/u);
+      assert.match(finalSeal, /continuity facts, not prose examples, required talking points, or wording to imitate/u);
+      assert.match(finalSeal, /"in my N years," "I have never once," and "nobody has ever"/u);
+      assert.match(finalSeal, /Preserve the underlying facts and intent/u);
+      assert.match(finalSeal, /Check main lines and side comments alike/u);
+      assert.match(finalSeal, /Run a voice-swap check/u);
+      assert.match(partyPrompt, /brief spoken reaction, aside, or interjection/u);
+      assert.doesNotMatch(partyPrompt, /Quick quips|for revealing inner conflict or foreshadowing/u);
+
+      assert.match(reminder, /Write dialogue as responsive conversation, not consecutive speeches/u);
+      assert.match(reminder, /A short individual speaking turn is one beat within the scene, not a limit/u);
+      assert.doesNotMatch(reminder, /one immediate response and perhaps one natural follow-up beat are enough/u);
+      assert.match(reminder, /not repeated catchphrases, résumé facts, exact-number credentials/u);
+      assert.match(reminder, /genuinely new named NPC first enters the active scene/u);
+      assert.match(reminder, /without an infodump, résumé, hidden backstory, or later repetition/u);
+      assert.match(reminder, /Expression tags are presentation metadata/u);
+      assert.match(reminder, /\[neutral\] is normal/u);
+      assert.doesNotMatch(reminder, /ZERO TOLERANCE FOR LAZY AI WRITING/u);
+
+      const generateRouteSource = readFileSync(
+        new URL("../../packages/server/src/routes/generate.routes.ts", import.meta.url),
+        "utf8",
+      );
+      const preparedIndex = generateRouteSource.indexOf("const preparedMessagesForGen =");
+      const sealIndex = generateRouteSource.indexOf("if (gameFinalRecencySeal)", preparedIndex);
+      const providerIndex = generateRouteSource.indexOf("const toProviderMessages =", sealIndex);
+      assert.ok(preparedIndex >= 0 && preparedIndex < sealIndex && sealIndex < providerIndex);
+    },
+  },
+  {
+    name: "Game party cards resolve character macros against their own companion",
+    async run() {
+      const characterRows = new Map([
+        [
+          "maybelle",
+          {
+            name: "Maybelle",
+            description: "{{char}} lights Maybelle's fire.",
+            personality: "Steady.",
+            scenario: "",
+            mes_example: "",
+            system_prompt: "",
+            post_history_instructions: "",
+            extensions: { backstory: "", appearance: "", phoneticName: "" },
+          },
+        ],
+        [
+          "singer",
+          {
+            name: "Calista",
+            description:
+              '{{char}} guards Calista\'s gate. Opening mood: {{getvar::mood}}. {{#if user == "Rowan Mercer"}}The user conditional survives.{{/if}}',
+            personality: "Watchful.",
+            scenario: "",
+            mes_example: "",
+            system_prompt:
+              "Remember that {{char}} speaks for herself. {{setvar::mood::focused}}{{addvar::trail::-singer}}",
+            post_history_instructions: "",
+            extensions: { backstory: "", appearance: "", phoneticName: "" },
+          },
+        ],
+        [
+          "archivist",
+          {
+            name: "The Archivist",
+            description: "{{char}} adjudicates the scene.",
+            personality: "Exacting.",
+            scenario: "",
+            mes_example: "",
+            system_prompt: "",
+            post_history_instructions: "",
+            extensions: { backstory: "", appearance: "", phoneticName: "" },
+          },
+        ],
+      ]);
+      const primaryMacroContext: MacroContext = {
+        user: "Rowan Mercer",
+        char: "Maybelle",
+        characters: ["Maybelle", "Calista", "Market Warden"],
+        variables: {},
+      };
+      const isolatedOnly = resolveGameCharacterCardMacros(
+        '{{char}} {{getvar::mood}} {{setvar::mood::focused}} {{addvar::trail::-singer}} {{#if user == "Rowan Mercer"}}kept{{/if}}',
+        {
+          name: "Calista",
+          description: "",
+          personality: "",
+          backstory: "",
+          appearance: "",
+          scenario: "",
+          example: "",
+          systemPrompt: "",
+          postHistoryInstructions: "",
+        },
+        primaryMacroContext,
+      );
+      assert.equal(
+        isolatedOnly,
+        'Calista {{getvar::mood}} {{setvar::mood::focused}} {{addvar::trail::-singer}} {{#if user == "Rowan Mercer"}}kept{{/if}}',
+      );
+      const messages: ChatMLMessage[] = [{ role: "system", content: "placeholder" }];
+
+      await injectGameGmPromptRuntime({
+        messages,
+        chatId: "game-party-card-macro-scope",
+        chat: {},
+        chatMetadata: {
+          gameActiveState: "dialogue",
+          gameSystemPrompt: "{{setvar::mood::calm}}{{setvar::trail::start}} Run the game.",
+          customGmPrompt: "Final mood: {{getvar::mood}}. Final trail: {{getvar::trail}}.",
+          gameGmCharacterId: "archivist",
+          gamePartyCharacterIds: ["maybelle", "singer", "npc:market-warden"],
+          gameCharacterCards: [
+            { name: "Calista", class: "{{char}}'s guardian" },
+            { name: "Market Warden", class: "{{char}}'s witness" },
+          ],
+          gameNpcs: [
+            {
+              id: "market-warden",
+              name: "Market Warden",
+              emoji: "📜",
+              description: "{{char}} keeps the public ledger.",
+              location: "Market",
+              reputation: 0,
+              notes: [],
+            },
+          ],
+        },
+        characterIds: ["maybelle", "singer", "npc:market-warden"],
+        chars: {
+          async getById(id) {
+            const data = characterRows.get(id);
+            return data ? { data: JSON.stringify(data) } : null;
+          },
+          async getPersona() {
+            return null;
+          },
+        },
+        chats: {
+          async getById() {
+            return { metadata: {} };
+          },
+          async updateMetadata() {
+            return undefined;
+          },
+        },
+        selectedGameStateSnapshotPromise: Promise.resolve(null),
+        mappedMessages: [{ role: "user" }],
+        personaName: "Rowan Mercer",
+        resolvePromptMacros: (value) => resolveMacros(value, primaryMacroContext),
+        resolveCharacterPromptMacros: (value, profile) =>
+          resolveGameCharacterCardMacros(value, profile, primaryMacroContext),
+      });
+
+      const prompt = messages[0]!.content;
+      assert.match(prompt, /Description: Maybelle lights Maybelle's fire\./u);
+      assert.match(prompt, /Description: Calista guards Calista's gate\./u);
+      assert.match(prompt, /Opening mood: calm\. The user conditional survives\./u);
+      assert.match(prompt, /Character System Instructions: Remember that Calista speaks for herself\./u);
+      assert.match(prompt, /Final mood: focused\. Final trail: start-singer\./u);
+      assert.match(prompt, /Class: Calista's guardian/u);
+      assert.match(prompt, /Description: Market Warden keeps the public ledger\./u);
+      assert.match(prompt, /Class: Market Warden's witness/u);
+      assert.match(prompt, /Description: The Archivist adjudicates the scene\./u);
+      assert.doesNotMatch(prompt, /Description: Maybelle guards Calista's gate\./u);
+      assert.doesNotMatch(prompt, /Description: Maybelle keeps the public ledger\./u);
+      assert.doesNotMatch(prompt, /Description: Maybelle adjudicates the scene\./u);
+    },
+  },
+  {
+    name: "Session conclusion cannot rewrite the player card while companion progression remains valid",
+    run() {
+      const playerCard = {
+        name: "Rowan Mercer",
+        shortDescription: "Player-owned description",
+        class: "Sixteenth-circle magus",
+        abilities: ["World-folding"],
+        strengths: ["Disciplined spellcraft"],
+        weaknesses: [],
+        extra: { voice: "Measured" },
+        rpgStats: { hp: { value: 900, max: 900 } },
+      };
+      const ilyrienStats = { hp: { value: 73, max: 80 }, attributes: [{ key: "DEX", value: 17 }] };
+      const ilyrienCard = {
+        name: "Ilyrien",
+        shortDescription: "Ward architect",
+        class: "Mage",
+        abilities: ["Ward lattice"],
+        strengths: ["Precision"],
+        weaknesses: ["Residual hesitation"],
+        extra: {},
+        rpgStats: ilyrienStats,
+      };
+
+      const applied = applySessionConclusionPayload(
+        {
+          summary: {
+            summary: "The session ended.",
+            resumePoint: "Moonrise Manor",
+            partyDynamics: "",
+            partyState: "Ready",
+            keyDiscoveries: [],
+            characterMoments: [],
+            littleDetails: [],
+            npcUpdates: [],
+            statsSnapshot: {},
+          },
+          campaignProgression: {
+            storyArc: "Current arc",
+            plotTwists: [],
+            partyArcs: [
+              { name: "  ROWAN MERCER  ", arc: "Must be humbled", goal: "Accept moral correction" },
+              { name: "Ilyrien", arc: "Perfect the living ward", goal: "Stabilize the lattice" },
+            ],
+          },
+          characterCards: [
+            {
+              name: "  ROWAN MERCER  ",
+              shortDescription: "Needs humbling",
+              class: "Problem",
+              abilities: [],
+              strengths: [],
+              weaknesses: ["Power makes consent ceremonial"],
+              extra: { temptation: "Sovereign power" },
+            },
+            {
+              name: "Ilyrien",
+              shortDescription: "Restored ward architect",
+              class: "Wardwright",
+              abilities: ["Ward lattice", "Clean combat casting"],
+              strengths: ["Precision"],
+              weaknesses: [],
+              extra: { voice: "Direct" },
+            },
+          ],
+        },
+        {
+          sessionNumber: 3,
+          currentStoryArc: "Current arc",
+          currentPlotTwists: [],
+          currentPartyArcs: [],
+          currentMorale: 70,
+          currentCards: [playerCard, ilyrienCard],
+          playerCharacterNames: ["Rowan Mercer"],
+        },
+      );
+
+      assert.strictEqual(applied.updatedCards[0], playerCard);
+      assert.deepEqual(applied.updatedCards[0], playerCard);
+      assert.equal(applied.updatedCardCount, 1);
+      assert.equal(applied.updatedCards[1]!.class, "Wardwright");
+      assert.deepEqual(applied.updatedCards[1]!.rpgStats, ilyrienStats);
+      assert.deepEqual(applied.updatedPartyArcs, [
+        { name: "Ilyrien", arc: "Perfect the living ward", goal: "Stabilize the lattice" },
+      ]);
+
+      const playerPromptParts: string[] = [];
+      appendGameCardDetails(playerPromptParts, playerCard, { includeInterpretiveFields: false });
+      const playerPrompt = playerPromptParts.join("\n");
+      assert.match(playerPrompt, /Class: Sixteenth-circle magus/u);
+      assert.match(playerPrompt, /Abilities: World-folding/u);
+      assert.doesNotMatch(playerPrompt, /Strengths:|Weaknesses:|voice:/u);
+    },
+  },
+  {
+    name: "Game Lorebook Keeper stores generated continuity as keyword-activated and migrates unlocked legacy entries",
+    async run() {
+      const created: Array<Record<string, unknown>> = [];
+      const updates: Array<{ id: string; input: Record<string, unknown> }> = [];
+      const store = {
+        async listEntries() {
+          return [];
+        },
+        async createEntry(input: Record<string, unknown>) {
+          created.push(input);
+          return input;
+        },
+        async updateEntry(id: string, input: Record<string, unknown>) {
+          updates.push({ id, input });
+          return input;
+        },
+        async removeEntry() {},
+      } as unknown as Parameters<typeof createGameLorebookKeeperEntries>[0]["lorebooksStore"];
+
+      const createdCount = await createGameLorebookKeeperEntries({
+        lorebooksStore: store,
+        lorebookId: "keeper-book",
+        sessionNumber: 3,
+        entries: [
+          {
+            entryName: "Bellowes Hall - Session 3",
+            tag: "location",
+            keys: ["Bellowes", "Meadowkine", "Ossa"],
+            description: "Optional partnership withdrawn.",
+            content: "Rowan withdrew the optional partnership while preserving personhood protection.",
+          },
+        ],
+      });
+      assert.equal(createdCount, 1);
+      assert.equal(created[0]!.constant, false);
+      assert.deepEqual(created[0]!.dynamicState, {
+        source: "game-lorebook-keeper",
+        sessionNumber: 3,
+        activationPolicyVersion: 2,
+        contentHash: (created[0]!.dynamicState as Record<string, unknown>).contentHash,
+        keeperSourceChatId: null,
+        sourceHash: null,
+        sourceMessageIds: [],
+        sourceRefs: [],
+      });
+
+      const migratedCount = await migrateGameLorebookKeeperEntriesToKeywordActivation({
+        lorebooksStore: store,
+        entries: [
+          {
+            id: "legacy-unlocked",
+            constant: true,
+            locked: false,
+            dynamicState: { source: "game-lorebook-keeper", sessionNumber: 1 },
+          },
+          {
+            id: "legacy-locked",
+            constant: true,
+            locked: true,
+            dynamicState: { source: "game-lorebook-keeper", sessionNumber: 1 },
+          },
+          {
+            id: "manual-entry",
+            constant: true,
+            locked: false,
+            dynamicState: { source: "user" },
+          },
+        ],
+      });
+      assert.equal(migratedCount, 1);
+      assert.deepEqual(updates, [
+        {
+          id: "legacy-unlocked",
+          input: {
+            constant: false,
+            dynamicState: {
+              source: "game-lorebook-keeper",
+              sessionNumber: 1,
+              activationPolicyVersion: 2,
+            },
+          },
+        },
+      ]);
     },
   },
   {
@@ -4226,7 +6033,7 @@ const cases: RegressionCase[] = [
       assert.match(storyboardHandlerSource, /latestTurnStoryboardRendering \|\| manualStoryboardReviewActive/);
       assert.match(
         storyboardHandlerSource,
-        /withTimeout\(\s*\(\) => previewTurnStoryboardPrompts\.mutateAsync\(payload\),\s*GAME_ASSET_PREVIEW_TIMEOUT_MS/,
+        /preview = await withTimeout\(\s*\(\) => previewTurnStoryboardPrompts\.mutateAsync\(payload\),\s*GAME_ASSET_PREVIEW_TIMEOUT_MS/,
       );
       assert.match(storyboardHandlerSource, /GAME_ASSET_PROMPT_REVIEW_TIMEOUT_MS/);
       assert.match(storyboardHandlerSource, /overrides = IMAGE_PROMPT_REVIEW_TIMED_OUT/);
@@ -5100,6 +6907,8 @@ const cases: RegressionCase[] = [
           storyboardMessages.systemPrompt.indexOf("Turn exactly one completed GM narration"),
       );
       assert.match(storyboardMessages.systemPrompt, /omit it instead of guessing/iu);
+      assert.match(storyboardMessages.systemPrompt, /omit that trait from the written description, not the person/iu);
+      assert.match(storyboardMessages.systemPrompt, /Missing clothing notes do not mean bare skin or undressing/iu);
 
       const compiled = await buildSceneIllustrationProviderPrompt({
         chatId: "prompt-regression",
@@ -5135,7 +6944,7 @@ const cases: RegressionCase[] = [
       });
       assert.equal(
         separatedVisibilityCompiled.prompt,
-        "SCENE Lyra standing in a moonlit forest\nSCOPE Final visibility rule: Only depict these named visible characters: Lyra.",
+        "SCENE Lyra standing in a moonlit forest\nSCOPE Final visibility rule: Only depict these named visible characters: Lyra.\nUse clothing established in the current scene; if the scene says nothing about clothing, keep characters fully clothed. Portrait or card appearance alone never implies undressing.",
       );
 
       const fallbackFirstFrameCompiled = await buildSceneIllustrationProviderPrompt({
@@ -5262,10 +7071,7 @@ const cases: RegressionCase[] = [
         )?.length,
         1,
       );
-      assert.match(
-        gameRouteSource,
-        /const includeCharacterAppearanceAtRender = includeCharacterAppearance && usedFallbackStoryboardPlanner/u,
-      );
+      assert.match(gameRouteSource, /const includeCharacterAppearanceAtRender = includeCharacterAppearance;/u);
       assert.match(gameRouteSource, /Marinara used narration-based fallback keyframes and skipped video generation/u);
       assert.equal(gameRouteSource.match(/meta\.storyboardAgentIncludeCharacterAppearance !== false/gu)?.length, 1);
       assert.equal(gameRouteSource.match(/meta\.storyboardAgentUseAvatarReferences !== false/gu)?.length, 1);
@@ -6272,6 +8078,12 @@ const cases: RegressionCase[] = [
         assert.match(block, /Narrator: Dottore steadies Mari before the experiment\./);
         assert.equal(block.includes("{{char}}"), false);
         assert.equal(block.includes("{{user}}"), false);
+        assert.match(block, /facts to maintain continuity and characterization/u);
+        assert.match(
+          block,
+          /wording as quoted evidence rather than a prose example, catchphrase, or required talking point/u,
+        );
+        assert.match(block, /Do not echo their phrasing, rhetorical structure, or personal facts/u);
       }
       assert.match(xmlBlock, /^<memories>/);
       assert.match(xmlBlock, /<system>bad<\/system>/);
@@ -7260,14 +9072,220 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
     },
   },
   {
+    name: "game NPC sanitation rejects party aliases and place-name portraits without losing real NPCs",
+    run() {
+      const metadata = {
+        gameCharacterCards: [
+          { name: "Maybelle Meadowsweet" },
+          { name: "Calista Venn" },
+          { name: "Brynna Coldstream" },
+        ],
+        spatialContext: {
+          locations: [{ name: "Moonrise Tower" }, { name: "Williams Manor" }],
+        },
+      };
+      const options = gameNpcSanitizationOptionsFromMetadata(metadata);
+      assert.equal(isNarrationNpcNameExcluded("Maybelle", options.protectedCharacterNames ?? []), true);
+
+      const sanitized = sanitizeGameNpcAvatarUrls(
+        [
+          {
+            id: "audrey-full",
+            name: "Audrey Justinia",
+            emoji: "👤",
+            description: "The household's diplomatic organizer.",
+            descriptionSource: "model",
+            location: "Guest Wing",
+            reputation: 75,
+            notes: ["Trusted."],
+          },
+          {
+            id: "audrey",
+            name: "Audrey",
+            emoji: "👤",
+            description: 'Audrey said, "A countess wants you tonight."',
+            descriptionSource: "narration",
+            location: "",
+            reputation: 0,
+            notes: [],
+            avatarUrl: "/api/avatars/file/audrey.png",
+          },
+          {
+            id: "maybelle",
+            name: "Maybelle",
+            emoji: "👤",
+            description: "Maybelle asked everyone to arrive openly.",
+            descriptionSource: "narration",
+            location: "",
+            reputation: 0,
+            notes: [],
+          },
+          {
+            id: "singer-vale",
+            name: "Calista Venn",
+            emoji: "👤",
+            description: "Calista Venn laughs.",
+            descriptionSource: "narration",
+            location: "",
+            reputation: 0,
+            notes: [],
+          },
+          {
+            id: "moonrise",
+            name: "Moonrise",
+            emoji: "👤",
+            description: "Back at Moonrise, the household completed training.",
+            descriptionSource: "narration",
+            location: "",
+            reputation: 0,
+            notes: [],
+          },
+          {
+            id: "nell",
+            name: "Nell Barrow",
+            emoji: "👤",
+            description: "A fishwife who holds the market-stage rights.",
+            descriptionSource: "narration",
+            location: "Casternhall",
+            reputation: 0,
+            notes: [],
+          },
+        ],
+        options,
+      );
+
+      assert.deepEqual(
+        sanitized.map((npc) => npc.name),
+        ["Audrey Justinia", "Nell Barrow"],
+      );
+      assert.equal(sanitized[0]?.avatarUrl, "/api/avatars/file/audrey.png");
+      assert.equal(sanitized[0]?.description, "The household's diplomatic organizer.");
+      assert.equal(sanitized[0]?.reputation, 75);
+    },
+  },
+  {
+    name: "game transcript export labels composite assistant turns as Narrator",
+    run() {
+      const names = new Map([
+        ["maybelle-id", "Maybelle Meadowsweet"],
+        ["brynna-id", "Brynna Coldstream"],
+      ]);
+      assert.equal(
+        resolveTranscriptExportDisplayName({
+          mode: "game",
+          role: "assistant",
+          characterId: null,
+          characterNamesById: names,
+          primaryCharacterName: "Maybelle Meadowsweet",
+        }),
+        "Narrator",
+      );
+      assert.equal(
+        resolveTranscriptExportDisplayName({
+          mode: "game",
+          role: "assistant",
+          characterId: "brynna-id",
+          characterNamesById: names,
+          primaryCharacterName: "Maybelle Meadowsweet",
+        }),
+        "Narrator",
+      );
+      assert.equal(
+        resolveTranscriptExportCharacterId({
+          mode: "game",
+          role: "assistant",
+          characterId: "maybelle-id",
+        }),
+        null,
+      );
+      assert.equal(
+        resolveTranscriptExportDisplayName({
+          mode: "roleplay",
+          role: "assistant",
+          characterId: null,
+          characterNamesById: names,
+          primaryCharacterName: "Maybelle Meadowsweet",
+        }),
+        "Maybelle Meadowsweet",
+      );
+      assert.equal(
+        resolveTranscriptExportCharacterId({
+          mode: "roleplay",
+          role: "assistant",
+          characterId: "maybelle-id",
+        }),
+        "maybelle-id",
+      );
+    },
+  },
+  {
     name: "game portrait appearance aggregation deduplicates raw values before labels",
     run() {
+      assert.deepEqual(
+        extractNarrationNpcCandidates(
+          "House Williams, the strongest duchy, protected Milkwell Union, a cheese guild, at dawn.",
+          [],
+        ),
+        [],
+        "organization and place appositives must not become portrait candidates",
+      );
+      assert.deepEqual(
+        extractNarrationNpcCandidates(
+          [
+            "But you said it plainly.",
+            "If it warns you, listen.",
+            "She says nothing.",
+            "You've said that aloud.",
+            "I'd have said so before any court.",
+            "Ilyrien's already asked twice.",
+          ].join("\n"),
+          [],
+        ),
+        [],
+        "ordinary sentence fragments must never become narration NPCs",
+      );
+      assert.deepEqual(
+        extractNarrationNpcCandidates("The head gardener was a man called Osric and he found me at it.", []),
+        [{ name: "Osric", description: "The head gardener was a man called Osric and he found me at it." }],
+        "the word after a called name must not be captured as part of the identity",
+      );
+      assert.equal(
+        extractNarrationNpcCandidates("Elara Vale, a local healer, stepped through the door.", []).length,
+        1,
+        "a role-gated personal appositive should still introduce a named NPC",
+      );
+      assert.deepEqual(
+        extractNarrationNpcCandidates("Maybelle enters and closes the rain-dark door.", [], ["Lady Maybelle"]),
+        [
+          {
+            name: "Lady Maybelle",
+            description: "Maybelle enters and closes the rain-dark door.",
+          },
+        ],
+        "a boundary-safe direct mention must introduce a uniquely matching known NPC without requiring dialogue",
+      );
+      assert.equal(
+        extractNarrationNpcCandidates("Maybellene enters the hall.", [], ["Lady Maybelle"]).length,
+        0,
+        "known-name detection must not match inside a longer word",
+      );
+      assert.deepEqual(
+        extractNarrationNpcCandidates("שרה נכנסת אל החדר.", [], ["שרה"]),
+        [{ name: "שרה", description: "שרה נכנסת אל החדר." }],
+        "known-name detection and observation extraction must use Unicode-safe boundaries",
+      );
+      assert.equal(
+        extractNarrationNpcCandidates("Elara enters.", [], ["Captain Elara Vale", "Elara Stone"]).length,
+        0,
+        "an ambiguous short name must not select either known NPC",
+      );
       const description = "A silver-furred fox-woman in a persimmon kimono.";
       const appearance = resolveNpcPortraitAppearance(
-        { description: `  ${description.toUpperCase()}  ` },
+        { description: "Secret setup dossier: a disguised royal assassin." },
         {
-          description,
+          description: "Secret setup dossier: a disguised royal assassin.",
           descriptionSource: "model",
+          observedAppearance: description,
           notes: ["Carries a debt-scroll."],
         } as any,
         {
@@ -7278,10 +9296,40 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       );
 
       assert.equal(appearance.toLowerCase().split(description.toLowerCase()).length - 1, 1);
-      assert.match(appearance, /^Canonical NPC profile:/);
+      assert.doesNotMatch(appearance, /Secret setup dossier|royal assassin/i);
+      assert.doesNotMatch(appearance, /^Canonical NPC profile:/);
       assert.match(appearance, /Current outfit: Persimmon kimono/);
       assert.match(appearance, /Current expression or mood: Warm smile/);
       assert.doesNotMatch(appearance, /debt-scroll|Notable details/);
+
+      assert.deepEqual(
+        resolveNpcPortraitPublicIdentityTraits(
+          { gender: "secret model gender", pronouns: "secret/model" },
+          {
+            description: "Secret setup dossier.",
+            descriptionSource: "model",
+            gender: "secret model gender",
+            pronouns: "secret/model",
+          } as any,
+          null,
+        ),
+        { gender: null, pronouns: null },
+        "private structured identity fields must not leak into portrait prompts",
+      );
+      assert.deepEqual(
+        resolveNpcPortraitPublicIdentityTraits(
+          { gender: "secret model gender", pronouns: "secret/model" },
+          {
+            description: "Secret setup dossier.",
+            descriptionSource: "model",
+            gender: "secret model gender",
+            pronouns: "secret/model",
+          } as any,
+          { gender: "woman", pronouns: "she/her" },
+        ),
+        { gender: "woman", pronouns: "she/her" },
+        "current-present observations may supply portrait identity fields",
+      );
 
       const legacyPollutedAppearance = resolveNpcPortraitAppearance(
         { description: null },
@@ -7293,8 +9341,47 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         } as any,
         null,
       );
-      assert.match(legacyPollutedAppearance, /nine-foot Xenomorph with a biomechanical black carapace/i);
-      assert.doesNotMatch(legacyPollutedAppearance, /Notable details|reputation|\[helped\]/i);
+      assert.equal(legacyPollutedAppearance, "", "legacy unsourced setup dossiers must remain private");
+      assert.equal(
+        resolveNpcPortraitAppearance(
+          { description: "Secret imported setup dossier." },
+          { description: "Secret imported setup dossier.", notes: [] } as any,
+          null,
+        ),
+        "",
+        "an imported setup row without descriptionSource must not leak into portrait prompts",
+      );
+      assert.deepEqual(
+        buildSceneAssetNpcCandidates(
+          [
+            {
+              id: "npc:legacy-private",
+              characterId: "linked-card",
+              name: "Legacy Private NPC",
+              emoji: "👤",
+              description: "Secret imported setup dossier.",
+              observedDescription: "A traveler who introduced herself at the gate.",
+              location: "Secret rebel headquarters",
+              reputation: 0,
+              notes: [],
+              gender: "secret model gender",
+              pronouns: "secret/model",
+            },
+          ],
+          [],
+          [],
+          "",
+        ).map(({ name, description, gender, pronouns }) => ({ name, description, gender, pronouns })),
+        [
+          {
+            name: "Legacy Private NPC",
+            description: "A traveler who introduced herself at the gate.",
+            gender: null,
+            pronouns: null,
+          },
+        ],
+        "legacy unknown-source setup fields must stay out of server portrait candidates",
+      );
       assert.equal(sanitizeNpcPortraitAppearanceText("[helped] reputation +15 → 15 (neutral)"), "");
       assert.equal(sanitizeNpcPortraitAppearanceText("[reputation: 25]"), "");
       assert.equal(sanitizeNpcPortraitAppearanceText("[NPC, reputation: 25]"), "");
@@ -7363,7 +9450,7 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         ...request,
         dynamicPromptGenerator: async () => "Centered portrait of Lyra with a readable expression and clean lighting.",
       });
-      assert.equal(countAppearance(dynamicOmitted.prompt), 0);
+      assert.equal(countAppearance(dynamicOmitted.prompt), 1);
 
       const shortDescription = await buildNpcPortraitProviderPrompt({
         ...request,
@@ -7371,7 +9458,7 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         dynamicPromptGenerator: async () =>
           "Centered portrait of a woman with clean lighting and a readable expression.",
       });
-      assert.doesNotMatch(shortDescription.prompt, /canonical NPC visual profile|\bman\b/i);
+      assert.match(shortDescription.prompt, /Required canonical NPC visual profile: man/);
 
       const narrationDescription = "A rain-soaked courier in a patched green cloak.";
       const narrationAppearance = resolveNpcPortraitAppearance(
@@ -8002,29 +10089,30 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         preserveFullScenePrompt: true,
         styleProfiles: createDefaultImageStyleProfileSettings(),
         styleProfileId: "anime",
+        imgSource: "openai_chatgpt",
+        imgService: "openai_chatgpt",
         imgModel: "unused",
         imgBaseUrl: "",
         imgApiKey: "",
       });
 
       assert.ok(compiled.prompt.includes(sceneDetail), compiled.prompt);
-      assert.match(
-        compiled.prompt,
-        /Location handling: an attached location reference image is available\. Use it to set the scene location\./,
-      );
-      assert.doesNotMatch(compiled.prompt, /Reference handling: attached character reference images/);
+      assert.match(compiled.prompt, /Reference image 1 is the established LOCATION, not a character reference\./);
+      assert.doesNotMatch(compiled.prompt, /Use the attached character photos as identity references/);
 
       const withCharacterReference = await buildSceneIllustrationProviderPrompt({
         chatId: "manual-game-illustration-character-reference-regression",
         prompt: sceneDetail,
         referenceImages: ["location-reference", "character-reference"],
         locationReferenceImageAttached: true,
+        imgSource: "openai_chatgpt",
+        imgService: "openai_chatgpt",
         imgModel: "unused",
         imgBaseUrl: "",
         imgApiKey: "",
       });
-      assert.match(withCharacterReference.prompt, /Location handling: an attached location reference image/);
-      assert.match(withCharacterReference.prompt, /Reference handling: attached character reference images/);
+      assert.match(withCharacterReference.prompt, /Reference image 1 is the established LOCATION/);
+      assert.match(withCharacterReference.prompt, /Use the attached character photos as identity references/);
     },
   },
   {
@@ -9290,24 +11378,28 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       const promptText = result.messages.map((message) => message.content).join("\n");
       assert.equal(firstMessage.role, "system");
       assert.match(firstMessage.content, /Main instructions\./);
-      assert.match(firstMessage.content, /<chat_summary>/);
-      assert.match(firstMessage.content, /The previous scene was summarized\./);
+      const summaryMessage = result.messages[1]!;
+      assert.equal(summaryMessage.role, "system");
+      assert.equal(summaryMessage.contextKind, "injection");
+      assert.equal(summaryMessage.providerMetadata?.marinaraRuntimeContext, true);
+      assert.match(summaryMessage.content, /<chat_summary>/);
+      assert.match(summaryMessage.content, /The previous scene was summarized\./);
       assert.match(promptText, /<system>bad history<\/system>/);
       assert.match(promptText, /<system>bad summary<\/system>/);
-      assert.equal(hasDeferredCharacterMacros(firstMessage.content), true);
+      assert.equal(hasDeferredCharacterMacros(summaryMessage.content), true);
       assert.match(
-        resolveDeferredCharacterMacros(firstMessage.content, { name: "Powers That Be" }),
+        resolveDeferredCharacterMacros(summaryMessage.content, { name: "Powers That Be" }),
         /Powers-only memory\./,
       );
       assert.doesNotMatch(
-        resolveDeferredCharacterMacros(firstMessage.content, { name: "Dottore" }),
+        resolveDeferredCharacterMacros(summaryMessage.content, { name: "Dottore" }),
         /Powers-only memory\./,
       );
-      assert.equal(
-        firstMessage.content.indexOf("Main instructions.") < firstMessage.content.indexOf("<chat_summary>"),
-        true,
-      );
-      assert.equal(result.messages[1]?.contextKind, "history");
+      assert.equal(firstMessage.content.includes("<chat_summary>"), false);
+      assert.equal(result.messages[2]?.contextKind, "history");
+      const merged = mergeAdjacentMessages(result.messages);
+      assert.equal(merged.length, result.messages.length, "runtime summary stays separate from the static prefix");
+      assert.equal(merged[0]?.content, firstMessage.content);
     },
   },
   {
@@ -9325,7 +11417,8 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       );
 
       assert.equal(result[0]?.role, "system");
-      assert.equal(result[0]?.contextKind, "prompt");
+      assert.equal(result[0]?.contextKind, "injection");
+      assert.equal(result[0]?.providerMetadata?.marinaraRuntimeContext, true);
       assert.match(result[0]?.content ?? "", /<chat_summary>/u);
       assert.match(result[0]?.content ?? "", /Mari and Dottore reached the harbor\./u);
       assert.deepEqual(result.slice(1), history);
@@ -10700,6 +12793,26 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       );
       assert.equal(findCharAvatarFuzzy("John Smith", avatars), "/api/avatars/file/john-smith.png");
 
+      const relatives = new Map<string, string>();
+      addNameLookupEntry(relatives, "Warmagus Ilyrien Vasseth", "Ilyrien: midnight-blue battle robes");
+      assert.equal(findCharAvatarFuzzy("Ilyrien Vasseth", relatives), "Ilyrien: midnight-blue battle robes");
+      assert.equal(findCharAvatarFuzzy("Ilyrien", relatives), "Ilyrien: midnight-blue battle robes");
+      assert.equal(
+        findCharAvatarFuzzy("Mereth Vasseth", relatives),
+        undefined,
+        "a relative without a library entry must not inherit appearance through a shared surname",
+      );
+      addNameLookupEntry(relatives, "Mereth Vasseth", "Mereth: russet working dress");
+      assert.equal(findCharAvatarFuzzy("Mereth", relatives), "Mereth: russet working dress");
+      assert.equal(findCharAvatarFuzzy("Mereth Vasseth", relatives), "Mereth: russet working dress");
+      assert.equal(findCharAvatarFuzzy("Vasseth", relatives), undefined, "shared surname remains ambiguous");
+      assert.equal(findCharAvatarFuzzy("Someone Vasseth", relatives), undefined);
+      assert.equal(
+        findCharAvatarFuzzy("Mereth Vasseth", new Map([["Warmagus Ilyrien Vasseth", "daughter"]])),
+        undefined,
+        "legacy maps without registered aliases must also reject surname-only overlap",
+      );
+
       const boundaryAvatars = new Map<string, string>();
       addNameLookupEntry(boundaryAvatars, "Ann", "/api/avatars/file/ann.png");
       assert.equal(
@@ -11332,6 +13445,18 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         [{ name: "Waterskin" }],
         "an equipped item must not also sit in carried inventory after a manual write",
       );
+      const idAwareExclusivity = normalizeInventoryTrackerPlayerStats({
+        inventoryTrackerEquipped: [{ itemId: "equipped-1", name: "Short axe renamed" }],
+        inventoryTrackerInventory: [
+          { itemId: "carried-1", name: "Short axe renamed" },
+          { itemId: "equipped-1", name: "Old short axe" },
+        ],
+      }) as Record<string, unknown>;
+      assert.deepEqual(
+        idAwareExclusivity.inventoryTrackerInventory,
+        [{ itemId: "carried-1", name: "Short axe renamed" }],
+        "same-name distinct IDs stay carried while the same ID is excluded across a rename",
+      );
 
       // Absent must never read as empty — the failure mode #5117 fixed on the agent path.
       const untouchedGroups = normalizeInventoryTrackerPlayerStats({
@@ -11712,6 +13837,11 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       });
       assert.match(promptBlock ?? "", /Moon Phase: Waxing/);
       assert.match(promptBlock ?? "", /Goal: Find the atlas/);
+      assert.match(
+        promptBlock ?? "",
+        /Tracker state is reference material for continuity, not automatically visible or known to characters/u,
+      );
+      assert.match(promptBlock ?? "", /private thoughts, plans, notes, and inventory remain private/u);
       assert.doesNotMatch(promptBlock ?? "", /Duplicate lab/);
       assert.doesNotMatch(promptBlock ?? "", /Duplicate mood/);
       assert.match(promptBlock ?? "", /Field 62: 62/);

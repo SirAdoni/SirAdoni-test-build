@@ -40,12 +40,14 @@ const galleryKeys = {
   sceneVideos: (chatId: string) => ["gallery", "scene-videos", chatId] as const,
 };
 
-export function useGalleryImages(chatId: string | undefined) {
+export function useGalleryImages(chatId: string | undefined, live = false) {
   return useQuery({
     queryKey: galleryKeys.chat(chatId!),
     queryFn: () => api.get<ChatImage[]>(`/gallery/${chatId}`),
     enabled: !!chatId,
-    staleTime: 5 * 60_000,
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchInterval: live ? 5000 : false,
   });
 }
 
@@ -54,7 +56,9 @@ export function useChatAssetBrowser(chatId: string | undefined, enabled = true) 
     queryKey: galleryKeys.assets(chatId!),
     queryFn: () => api.get<ChatAssetBrowserItem[]>(`/gallery/assets/${chatId}`),
     enabled: enabled && !!chatId,
-    staleTime: 5 * 60_000,
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchInterval: enabled ? 5000 : false,
   });
 }
 

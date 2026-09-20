@@ -116,21 +116,25 @@ export async function generateRunPodComfyUI(
     wfStr = wfStr.replace(/%model%/g, escapeJsonStr(request.model));
   }
   const referenceImages = collectRunPodReferenceImages(request, defaults);
+  let firstReferenceImageBase64: string | undefined;
   for (let i = 0; i < referenceImages.length; i++) {
     const referenceImage = referenceImages[i]!;
     const referenceImageBase64 = normalizeRunPodReferenceImageBase64(referenceImage);
+    if (i === 0) firstReferenceImageBase64 = referenceImageBase64;
     const numbered = numberedComfyReferencePlaceholder("reference_image", i);
     wfStr = wfStr.replaceAll(numbered, escapeJsonStr(referenceImageBase64));
     if (i === 0) {
       wfStr = wfStr.replace(/%reference_image%/g, escapeJsonStr(referenceImageBase64));
     }
   }
-  if (defaults.uploadPlaceholderOnMissingReference) {
+  if (firstReferenceImageBase64) {
     for (const index of findMissingComfyReferenceSlots(wfStr, "reference_image", referenceImages.length)) {
       const placeholder = numberedComfyReferencePlaceholder("reference_image", index);
-      logger.debug("Backfilled RunPod ComfyUI reference slot %s with the placeholder image", placeholder);
-      wfStr = wfStr.replaceAll(placeholder, escapeJsonStr(COMFYUI_PLACEHOLDER_REFERENCE_BASE64));
+      logger.debug("Backfilled RunPod ComfyUI reference slot %s with the first selected image", placeholder);
+      wfStr = wfStr.replaceAll(placeholder, escapeJsonStr(firstReferenceImageBase64));
     }
+  } else if (/%reference_image(?:_0[1-4])?%/.test(wfStr)) {
+    throw new Error("This RunPod ComfyUI workflow requires a reference image, but none was attached.");
   }
 
   let workflow: Record<string, unknown>;

@@ -29,7 +29,7 @@ export async function completeStoryboardPlan(args: {
       .join("; ");
     try {
       const plan = parseGameJsonish(content);
-      if (storyboardPlanHasRenderableKeyframe(plan)) return plan;
+      if (storyboardPlanHasRenderableKeyframe(plan) || storyboardPlanHasNoVisualBeats(plan)) return plan;
     } catch {
       // Malformed/empty model output is retryable; transport failures and cancellation are not.
     }
@@ -39,6 +39,44 @@ export async function completeStoryboardPlan(args: {
 
 const STORYBOARD_REVIEW_PLAN_KIND = "marinara-storyboard-review-plan-v1";
 const STORYBOARD_PLANNER_ERROR_MAX_CHARS = 1200;
+
+const RETRYABLE_STORYBOARD_PLANNER_TRANSPORT_ERRORS = [
+  "terminated",
+  "socket hang up",
+  "premature close",
+  "econnreset",
+  "und_err_socket",
+  "fetch failed",
+];
+
+function storyboardPlannerErrorParts(error: unknown): string[] {
+  if (!error || typeof error !== "object") return [String(error ?? "")];
+  const record = error as Record<string, unknown>;
+  const cause = record.cause && typeof record.cause === "object" ? (record.cause as Record<string, unknown>) : null;
+  return [record.message, record.code, cause?.message, cause?.code]
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.toLowerCase());
+}
+
+/** Retry only transport failures that can end an otherwise healthy provider SSE stream. */
+export function isRetryableStoryboardPlannerTransportError(error: unknown): boolean {
+  const candidate = error && typeof error === "object" ? (error as Record<string, unknown>) : null;
+  const cause =
+    candidate?.cause && typeof candidate.cause === "object" ? (candidate.cause as Record<string, unknown>) : null;
+  if (
+    candidate?.name === "AbortError" ||
+    candidate?.code === "ABORT_ERR" ||
+    cause?.name === "AbortError" ||
+    cause?.code === "ABORT_ERR" ||
+    candidate?.name === "SyntaxError" ||
+    cause?.name === "SyntaxError"
+  ) {
+    return false;
+  }
+  return storyboardPlannerErrorParts(error).some((part) =>
+    RETRYABLE_STORYBOARD_PLANNER_TRANSPORT_ERRORS.some((candidate) => part.includes(candidate)),
+  );
+}
 
 export interface StoryboardReviewPlanEnvelope {
   kind: typeof STORYBOARD_REVIEW_PLAN_KIND;
@@ -62,6 +100,13 @@ export function compactStoryboardTextAtWordBoundary(value: unknown, maxChars: nu
 
 export function compactStoryboardFallbackBeat(value: unknown): string {
   return compactStoryboardTextAtWordBoundary(value, STORYBOARD_FALLBACK_BEAT_MAX_CHARS);
+}
+
+/** An explicit empty list is a valid decision not to illustrate, not a broken plan. */
+export function storyboardPlanHasNoVisualBeats(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const keyframes = (value as Record<string, unknown>).keyframes;
+  return Array.isArray(keyframes) && keyframes.length === 0;
 }
 
 export function storyboardPlanHasRenderableKeyframe(value: unknown): boolean {

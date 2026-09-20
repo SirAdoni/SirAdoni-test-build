@@ -25,6 +25,7 @@ import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { createGameStateStorage } from "../services/storage/game-state.storage.js";
 import { createPromptOverridesStorage } from "../services/storage/prompt-overrides.storage.js";
+import { getGenerationJobs } from "../services/generation/generation-jobs.js";
 import { buildBackgroundProviderPrompt, generateChatBackground } from "../services/game/game-asset-generation.js";
 import {
   resolveConnectionImageDefaults,
@@ -242,6 +243,7 @@ function sceneBackgroundPromptReviewId(input: { chatId: string; locationSlug?: s
 }
 
 export async function backgroundsRoutes(app: FastifyInstance) {
+  const generationJobs = getGenerationJobs(app);
   // List all backgrounds (includes tags)
   app.get("/", async () => {
     ensureDir();
@@ -520,6 +522,7 @@ export async function backgroundsRoutes(app: FastifyInstance) {
       imgComfyWorkflow: context.imgConn.comfyuiWorkflow || undefined,
       imgDefaults: resolveConnectionImageDefaults(context.imgConn),
       imgQuality: resolveConnectionImageQuality(context.imgConn),
+      imgMaxImageReferences: context.imgConn.maxImageReferences ?? null,
       imgFallback: context.imageFallback,
       styleProfiles: context.imageSettings.styleProfiles,
       styleProfileId: context.styleProfileId,
@@ -557,38 +560,52 @@ export async function backgroundsRoutes(app: FastifyInstance) {
     if ("response" in resolved) return resolved.response;
     const { context } = resolved;
 
-    const filename = await generateChatBackground({
-      chatId: input.chatId,
-      locationSlug: context.locationSlug,
-      sceneDescription: input.sceneDescription.trim(),
-      genre: readTrimmedString(context.setupConfig.genre) ?? undefined,
-      setting: readTrimmedString(context.setupConfig.setting) ?? undefined,
-      currentLocation: context.gameState?.location ?? null,
-      currentWeather: context.gameState?.weather ?? null,
-      currentTimeOfDay: context.gameState?.time ?? null,
-      worldOverview: readTrimmedString(context.metadata.gameWorldOverview),
-      artStyle: resolveGameSetupArtStylePrompt(context.setupConfig) || undefined,
-      reason: input.reason?.trim() || "Manual Gallery background request",
-      sourceMode: context.mode === "game" ? "game" : "roleplay",
-      imgModel: context.imgConn.model || "",
-      imgBaseUrl: context.imgConn.baseUrl || "https://image.pollinations.ai",
-      imgApiKey: context.imgConn.apiKey || "",
-      imgSource: (context.imgConn as any).imageGenerationSource || context.imgConn.model || "",
-      imgService: context.imgConn.imageService || (context.imgConn as any).imageGenerationSource || "",
-      imgEndpointId: context.imgConn.imageEndpointId || undefined,
-      imgComfyWorkflow: context.imgConn.comfyuiWorkflow || undefined,
-      imgDefaults: resolveConnectionImageDefaults(context.imgConn),
-      imgQuality: resolveConnectionImageQuality(context.imgConn),
-      imgFallback: context.imageFallback,
-      styleProfiles: context.imageSettings.styleProfiles,
-      styleProfileId: context.styleProfileId,
-      debugLog: context.debugLog,
-      promptOverridesStorage: createPromptOverridesStorage(app.db),
-      size: context.imageSettings.background,
-      force: input.force,
-      promptOverride: context.promptOverride?.prompt,
-      negativePromptOverride: context.promptOverride?.negativePrompt,
-    });
+    const filename = await generationJobs.run(
+      {
+        kind: "scene-background",
+        label: "Scene background",
+        chatId: input.chatId,
+        timeoutMs: 1_800_000,
+      },
+      async (signal) => {
+        const filename = await generateChatBackground({
+          chatId: input.chatId,
+          locationSlug: context.locationSlug,
+          sceneDescription: input.sceneDescription.trim(),
+          genre: readTrimmedString(context.setupConfig.genre) ?? undefined,
+          setting: readTrimmedString(context.setupConfig.setting) ?? undefined,
+          currentLocation: context.gameState?.location ?? null,
+          currentWeather: context.gameState?.weather ?? null,
+          currentTimeOfDay: context.gameState?.time ?? null,
+          worldOverview: readTrimmedString(context.metadata.gameWorldOverview),
+          artStyle: resolveGameSetupArtStylePrompt(context.setupConfig) || undefined,
+          reason: input.reason?.trim() || "Manual Gallery background request",
+          sourceMode: context.mode === "game" ? "game" : "roleplay",
+          imgModel: context.imgConn.model || "",
+          imgBaseUrl: context.imgConn.baseUrl || "https://image.pollinations.ai",
+          imgApiKey: context.imgConn.apiKey || "",
+          imgSource: (context.imgConn as any).imageGenerationSource || context.imgConn.model || "",
+          imgService: context.imgConn.imageService || (context.imgConn as any).imageGenerationSource || "",
+          imgEndpointId: context.imgConn.imageEndpointId || undefined,
+          imgComfyWorkflow: context.imgConn.comfyuiWorkflow || undefined,
+          imgDefaults: resolveConnectionImageDefaults(context.imgConn),
+          imgQuality: resolveConnectionImageQuality(context.imgConn),
+          imgMaxImageReferences: context.imgConn.maxImageReferences ?? null,
+          imgFallback: context.imageFallback,
+          styleProfiles: context.imageSettings.styleProfiles,
+          styleProfileId: context.styleProfileId,
+          debugLog: context.debugLog,
+          promptOverridesStorage: createPromptOverridesStorage(app.db),
+          size: context.imageSettings.background,
+          force: input.force,
+          promptOverride: context.promptOverride?.prompt,
+          negativePromptOverride: context.promptOverride?.negativePrompt,
+          signal,
+        });
+        if (!filename) throw new Error("Background image generation failed");
+        return filename;
+      },
+    );
 
     if (!filename) {
       return reply.status(500).send({ error: "Background image generation failed. Check the image connection." });

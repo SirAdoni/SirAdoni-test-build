@@ -61,6 +61,7 @@ import { isFileDrag } from "../../lib/chat-resource-drag";
 import { isGenerationSendBlocked, isIosWebKitBrowser } from "../../lib/generation-stream-policy";
 import { requestChatScrollToBottom } from "../../lib/chat-scroll-events";
 import { EmojiPicker } from "../ui/EmojiPicker";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 import { SpeechToTextButton } from "../ui/SpeechToTextButton";
 import { QuickConnectionSwitcher } from "./QuickConnectionSwitcher";
 import { QuickPersonaSwitcher } from "./QuickPersonaSwitcher";
@@ -2238,20 +2239,33 @@ export const ChatInput = memo(function ChatInput({
               {activeChatCharacters!.map((char) => {
                 const queuedOrder = queuedResponseOrder.get(char.id);
                 return (
-                  <button
+                  <div
                     key={char.id}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => handleCharacterResponse(char.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        handleCharacterResponse(char.id);
+                      }
+                    }}
                     className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-all hover:bg-foreground/10"
                   >
                     {char.avatarUrl ? (
-                      <span className="relative h-7 w-7 shrink-0 overflow-hidden rounded-full">
+                      <CharacterPhoto
+                        src={char.avatarUrl}
+                        name={char.name}
+                        className="relative h-7 w-7 shrink-0 overflow-hidden rounded-full"
+                        onUpdate={() => useUIStore.getState().openCharacterDetail(char.id, { initialTab: "card" })}
+                      >
                         <img
                           src={char.avatarUrl}
                           alt={char.name}
                           className="h-full w-full object-cover"
                           style={getAvatarCropStyle(char.avatarCrop)}
                         />
-                      </span>
+                      </CharacterPhoto>
                     ) : (
                       <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-[0.6875rem] font-semibold text-foreground/45">
                         {(char.name || "?")[0].toUpperCase()}
@@ -2263,7 +2277,7 @@ export const ChatInput = memo(function ChatInput({
                         {queuedOrder}
                       </span>
                     )}
-                  </button>
+                  </div>
                 );
               })}
             </div>

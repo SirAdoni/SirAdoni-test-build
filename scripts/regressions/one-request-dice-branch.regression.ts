@@ -499,6 +499,16 @@ const removeSpatial = registerCapabilityService("hierarchical-maps:state-resolut
 // the crypto roller the real path uses.
 let preRolled = 12;
 let calls = 0;
+const isBackgroundGameRequest = (messages: ChatMessage[]): boolean => {
+  const first = messages[0]?.content ?? "";
+  return (
+    first.startsWith("You maintain an evidence-based scene timeline") ||
+    (messages.length === 1 &&
+      /^(?:Extract durable continuity records|Review continuity source-first|Repair only the reviewed continuity findings)/u.test(
+        first,
+      ))
+  );
+};
 function draftFor(roll: number): string {
   return [
     `He edges along the wall. [skill_check: skill="Stealth" dc="10" rolls="${roll}" branch="crates"]`,
@@ -513,6 +523,10 @@ ClaudeSubscriptionProvider.prototype.chat = async function* (
   messages: ChatMessage[],
   options: ChatOptions,
 ): AsyncGenerator<string, LLMUsage> {
+  if (isBackgroundGameRequest(messages)) {
+    yield '{"visits":[],"records":[],"dispositions":[],"recordChecks":[],"findings":[]}';
+    return { promptTokens: 1, completionTokens: 1, totalTokens: 2, finishReason: "stop" };
+  }
   calls++;
   assert.equal(options.tools, undefined, "subscription transports never receive native tool schemas");
   assert.ok(
@@ -558,6 +572,7 @@ try {
       enableTools: false,
       enableAgents: true,
       activeAgentIds: ["hierarchical-maps"],
+      cacheSendGuard: { enabled: false },
     });
     await chats.createMessage({ chatId: chat.id, role: "user", content: "Sneak past the guard." });
     const response = await app.inject({ method: "POST", url: "/api/generate/", payload: { chatId: chat.id } });

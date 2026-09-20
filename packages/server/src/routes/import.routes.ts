@@ -135,6 +135,7 @@ function pickFolder(): Promise<string | null> {
       execFile(
         "osascript",
         ["-e", 'POSIX path of (choose folder with prompt "Select your SillyTavern folder")'],
+        { windowsHide: true },
         (err, stdout) => {
           cleanup();
           if (err) return done(null);
@@ -162,7 +163,7 @@ function pickFolder(): Promise<string | null> {
           `if ($d.ShowDialog($f) -eq 'OK') { $d.SelectedPath } else { '' };` +
           `$f.Dispose()`,
       ];
-      execFile("powershell.exe", ps, (err, stdout) => {
+      execFile("powershell.exe", ps, { windowsHide: true }, (err, stdout) => {
         cleanup();
         if (err) return done(null);
         const p = stdout.trim();
@@ -173,6 +174,7 @@ function pickFolder(): Promise<string | null> {
       execFile(
         "zenity",
         ["--file-selection", "--directory", "--title=Select your SillyTavern folder"],
+        { windowsHide: true },
         (err, stdout) => {
           if (!err && stdout.trim()) {
             cleanup();
@@ -181,6 +183,7 @@ function pickFolder(): Promise<string | null> {
           execFile(
             "kdialog",
             ["--getexistingdirectory", ".", "--title", "Select your SillyTavern folder"],
+            { windowsHide: true },
             (err2, stdout2) => {
               cleanup();
               if (err2) return done(null);

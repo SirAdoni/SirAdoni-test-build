@@ -28,11 +28,8 @@ onlyBuiltDependencies:
   - onnxruntime-node
   - protobufjs
 
-# Dependency version pins applied across the workspace.
-overrides:
-  onnxruntime-common: "1.24.3"
-  onnxruntime-node: "1.24.3"
-  onnxruntime-web: "1.24.3"
-  protobufjs: "7.5.5"
-  brace-expansion: "5.0.9"
-  "@anthropic-ai/sdk": "0.93.0"
+allowBuilds:
+  esbuild: true
+  onnxruntime-node: true
+  protobufjs: true
+  sharp: true

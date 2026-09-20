@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { logger } from "../../packages/server/src/lib/logger.js";
-import { generateImage } from "../../packages/server/src/services/image/image-generation.js";
+import { __setImageDebugLoggerForTesting, generateImage } from "../../packages/server/src/services/image/image-generation.js";
 import { resolveConnectionImageDefaults } from "../../packages/server/src/services/image/image-generation-defaults.js";
 
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
@@ -24,10 +23,7 @@ const custom = {
   method: "DELETE",
 };
 const logs: unknown[][] = [];
-const priorWarn = logger.warn;
-const priorLevel = logger.level;
-logger.level = "warn";
-logger.warn = ((...args: unknown[]) => logs.push(args)) as typeof logger.warn;
+__setImageDebugLoggerForTesting(((...args: unknown[]) => logs.push([args[1], args[2]])) as never);
 function assertSafeLogs() {
   const payloadLogs = logs.filter(([message]) => String(message).includes("payload"));
   assert.ok(payloadLogs.length > 0, "Explicit debug mode still logs the request");
@@ -179,8 +175,7 @@ try {
   assert.equal(requests[1]!.body.lora_url_1, undefined, "Primary fields do not leak into a fallback connection");
   assert.equal(requests[1]!.authorization, "Bearer fallback-key");
 } finally {
-  logger.warn = priorWarn;
-  logger.level = priorLevel;
+  __setImageDebugLoggerForTesting(null);
   await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
 }
 console.info(

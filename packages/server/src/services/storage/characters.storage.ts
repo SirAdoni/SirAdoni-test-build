@@ -25,7 +25,9 @@ import {
 } from "@marinara-engine/shared";
 import { normalizeTimestampOverrides, type TimestampOverrides } from "../import/import-timestamps.js";
 import { toPaginatedList } from "../../utils/list-pagination.js";
+import { getCharacterLibraryCategory } from "@marinara-engine/shared";
 import { withAvatarFileLifecycleLock } from "../image/avatar-file-lifecycle.js";
+import { deletePrivateNotebookRowsForCharacter } from "../private-notebook.service.js";
 
 function resolveTimestamps(overrides?: TimestampOverrides | null) {
   const normalized = normalizeTimestampOverrides(overrides);
@@ -148,10 +150,22 @@ function mergeCharacterData(
 }
 
 type CharacterRow = typeof characters.$inferSelect;
+type CharacterRevisionRow = Pick<CharacterRow, "data" | "comment" | "avatarPath" | "updatedAt">;
+
+/**
+ * Exact revision token for optimistic Character-card writes. Including the
+ * serialized card, comment, and avatar closes the same-millisecond hole that an
+ * `updatedAt`-only comparison would leave open.
+ */
+export function characterStorageRevision(row: CharacterRevisionRow): string {
+  return JSON.stringify([row.updatedAt ?? null, row.data, row.comment ?? "", row.avatarPath ?? null]);
+}
+
 type CharacterListRow = {
   row: CharacterRow;
   name: string;
   favorite: boolean;
+  category: string;
 };
 /** Serialized row shape used by the file-table persistence layer. */
 export type PersonaStorageRow = typeof personas.$inferSelect;
@@ -185,6 +199,7 @@ export type PersonaStorageWriteFields = Pick<
   | "convoBehavior"
 >;
 type CharacterListPageOptions = {
+  category?: string;
   includeBuiltIn?: boolean;
   limit: number;
   offset: number;
@@ -222,9 +237,10 @@ function readCharacterListRow(row: CharacterRow): CharacterListRow {
       row,
       name: typeof parsed.name === "string" && parsed.name.trim() ? parsed.name.trim() : "Unknown",
       favorite: !!parsed.extensions?.fav,
+      category: getCharacterLibraryCategory(parsed),
     };
   } catch {
-    return { row, name: "Unknown", favorite: false };
+    return { row, name: "Unknown", favorite: false, category: "characters" };
   }
 }
 
@@ -411,7 +427,11 @@ export function createCharactersStorage(db: DB) {
           ? options.favoriteFilter
           : "";
       const needsJsonFilteringOrSort =
-        !!favoriteFilter || options.sort === "name-asc" || options.sort === "name-desc" || options.sort === "favorites";
+        !!options.category ||
+        !!favoriteFilter ||
+        options.sort === "name-asc" ||
+        options.sort === "name-desc" ||
+        options.sort === "favorites";
       if (needsJsonFilteringOrSort) {
         const rows = await (whereClause
           ? db
@@ -423,7 +443,11 @@ export function createCharactersStorage(db: DB) {
               .select()
               .from(characters)
               .orderBy(...characterOrder(options.sort)));
-        const annotatedRows = rows.map(readCharacterListRow);
+        const annotatedRows = rows
+          .map(readCharacterListRow)
+          .filter((row) =>
+            options.category === "characters" || options.category === "npcs" ? row.category === options.category : true,
+          );
         const filtered =
           favoriteFilter === "favorites"
             ? annotatedRows.filter((row) => row.favorite)
@@ -572,6 +596,13 @@ export function createCharactersStorage(db: DB) {
         versionReason?: string | null;
         skipVersionSnapshot?: boolean;
         mergeExtensions?: boolean;
+        /**
+         * Apply only if the live row still has this exact revision. The check,
+         * optional version snapshot, and update run in one storage transaction.
+         */
+        expectedRevision?: string;
+        /** Optional caller-owned guard evaluated inside the same transaction as the update. */
+        canUpdate?: (transaction: DB) => Promise<boolean>;
         /** Internal recursion guard for avatar-reference lifecycle serialization. */
         _avatarLifecycleLocked?: boolean;
       },
@@ -581,51 +612,74 @@ export function createCharactersStorage(db: DB) {
           this.update(id, data, avatarPath, { ...options, _avatarLifecycleLocked: true }),
         );
       }
-      const existing = await this.getById(id);
-      if (!existing) return null;
-      const currentData = parseCharacterData(existing.data);
-      let merged = mergeCharacterData(currentData, data, {
-        mergeExtensions: options?.mergeExtensions,
-      });
-      const nextComment = options?.comment !== undefined ? (options.comment ?? "") : (existing.comment ?? "");
-      const nextAvatarPath = avatarPath !== undefined ? avatarPath : existing.avatarPath;
-      const versionedContentChanged =
-        characterVersionedContentChanged(currentData, merged) ||
-        nextComment !== (existing.comment ?? "") ||
-        nextAvatarPath !== existing.avatarPath;
-      const requestedVersionChanged =
-        Object.hasOwn(data, "character_version") && merged.character_version !== currentData.character_version;
-      const shouldSnapshot =
-        !options?.skipVersionSnapshot &&
-        characterVersioningEnabled(merged) &&
-        (versionedContentChanged || requestedVersionChanged);
-      if (shouldSnapshot) {
-        await this.createVersionSnapshot(id, {
-          source: options?.versionSource ?? "manual",
-          reason: options?.versionReason ?? "",
-          // Timestamp the snapshot with when the card being replaced was last
-          // saved (its own edit time), not when this newer save happens, so a
-          // restored version keeps its real date in history (#4040).
-          createdAt: existing.updatedAt ?? options?.updatedAt ?? null,
-        });
-        if (versionedContentChanged && !requestedVersionChanged) {
-          merged = { ...merged, character_version: bumpCardVersion(currentData.character_version) };
+      return db.transaction(async (tx) => {
+        const rows = await tx.select().from(characters).where(eq(characters.id, id));
+        const existing = rows[0];
+        if (!existing) return null;
+        if (
+          options?.expectedRevision !== undefined &&
+          characterStorageRevision(existing) !== options.expectedRevision
+        ) {
+          return null;
         }
-      }
-      const updatedAt = normalizeTimestampOverrides({
-        createdAt: options?.updatedAt,
-        updatedAt: options?.updatedAt,
-      })?.updatedAt;
-      await db
-        .update(characters)
-        .set({
-          data: JSON.stringify(merged),
-          ...(options?.comment !== undefined && { comment: nextComment }),
-          ...(avatarPath !== undefined && { avatarPath }),
-          updatedAt: updatedAt ?? now(),
-        })
-        .where(eq(characters.id, id));
-      return this.getById(id);
+        if (options?.canUpdate && !(await options.canUpdate(tx))) return null;
+
+        const currentData = parseCharacterData(existing.data);
+        let merged = mergeCharacterData(currentData, data, {
+          mergeExtensions: options?.mergeExtensions,
+        });
+        // Keep name-only references resolvable after a rename, including future full-card saves.
+        const referenceNames = [
+          ...new Set([
+            ...(Array.isArray(currentData.extensions?.referenceNames) ? currentData.extensions.referenceNames : []),
+            ...(Array.isArray(merged.extensions?.referenceNames) ? merged.extensions.referenceNames : []),
+            ...(currentData.name !== merged.name ? [currentData.name] : []),
+          ]),
+        ]
+          .filter((name) => typeof name === "string" && name.length > 0 && name.length <= 500)
+          .slice(-100);
+        if (referenceNames.length) merged.extensions = { ...merged.extensions, referenceNames };
+        const nextComment = options?.comment !== undefined ? (options.comment ?? "") : (existing.comment ?? "");
+        const nextAvatarPath = avatarPath !== undefined ? avatarPath : existing.avatarPath;
+        const versionedContentChanged =
+          characterVersionedContentChanged(currentData, merged) ||
+          nextComment !== (existing.comment ?? "") ||
+          nextAvatarPath !== existing.avatarPath;
+        const requestedVersionChanged =
+          Object.hasOwn(data, "character_version") && merged.character_version !== currentData.character_version;
+        const shouldSnapshot =
+          !options?.skipVersionSnapshot &&
+          characterVersioningEnabled(merged) &&
+          (versionedContentChanged || requestedVersionChanged);
+        if (shouldSnapshot) {
+          await insertCharacterVersionSnapshot(tx, existing, {
+            source: options?.versionSource ?? "manual",
+            reason: options?.versionReason ?? "",
+            // Timestamp the snapshot with when the card being replaced was last
+            // saved (its own edit time), not when this newer save happens, so a
+            // restored version keeps its real date in history (#4040).
+            createdAt: existing.updatedAt ?? options?.updatedAt ?? null,
+          });
+          if (versionedContentChanged && !requestedVersionChanged) {
+            merged = { ...merged, character_version: bumpCardVersion(currentData.character_version) };
+          }
+        }
+        const updatedAt = normalizeTimestampOverrides({
+          createdAt: options?.updatedAt,
+          updatedAt: options?.updatedAt,
+        })?.updatedAt;
+        await tx
+          .update(characters)
+          .set({
+            data: JSON.stringify(merged),
+            ...(options?.comment !== undefined && { comment: nextComment }),
+            ...(avatarPath !== undefined && { avatarPath }),
+            updatedAt: updatedAt ?? now(),
+          })
+          .where(eq(characters.id, id));
+        const updatedRows = await tx.select().from(characters).where(eq(characters.id, id));
+        return updatedRows[0] ?? null;
+      });
     },
 
     async updateAvatar(id: string, avatarPath: string | null) {
@@ -748,8 +802,22 @@ export function createCharactersStorage(db: DB) {
       return this.getById(characterId);
     },
 
-    async remove(id: string) {
-      await db.transaction(async (tx) => {
+    async remove(
+      id: string,
+      options?: { expectedRevision?: string; canRemove?: (transaction: DB) => Promise<boolean> },
+    ) {
+      return db.transaction(async (tx) => {
+        const rows = await tx.select().from(characters).where(eq(characters.id, id));
+        const existing = rows[0];
+        if (!existing) return false;
+        if (
+          options?.expectedRevision !== undefined &&
+          characterStorageRevision(existing) !== options.expectedRevision
+        ) {
+          return false;
+        }
+        if (options?.canRemove && !(await options.canRemove(tx))) return false;
+        await deletePrivateNotebookRowsForCharacter(tx, id);
         const affectedLorebookLinks = await tx
           .select()
           .from(lorebookCharacterLinks)
@@ -839,6 +907,7 @@ export function createCharactersStorage(db: DB) {
             })
             .where(eq(characterGroups.id, group.id));
         }
+        return true;
       });
     },
 

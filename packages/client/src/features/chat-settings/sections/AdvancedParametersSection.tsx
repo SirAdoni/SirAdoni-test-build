@@ -13,7 +13,7 @@ import {
 } from "../../../components/ui/GenerationParametersEditor";
 import { DraftNumberInput } from "../../../components/ui/DraftNumberInput";
 import { SettingsSwitch } from "../../../components/panels/settings/SettingControls";
-import { useSaveConnectionDefaults } from "../../../hooks/use-connections";
+import { useModelParameterCapabilities, useSaveConnectionDefaults } from "../../../hooks/use-connections";
 import { isLanguageGenerationConnection, type ConnectionProviderLike } from "../../../lib/connection-filters";
 import { cn } from "../../../lib/utils";
 import { useTranslation as useUiTranslation } from "react-i18next";
@@ -82,6 +82,7 @@ export function AdvancedParametersSection({
     enabledParameters: STRICT_CONNECTION_PARAMETER_SEND_DEFAULTS,
   };
   const conn = connectionId ? connections.find((connection) => connection.id === connectionId) : null;
+  const connectionModelCapabilities = useModelParameterCapabilities(conn);
   const canSaveConnectionDefaults = !!connectionId && connectionId !== "random" && conn?.isLocalSidecar !== true;
   const imageCaptioningDefaults = parseConnectionImageCaptioningDefaults(conn?.defaultParameters);
   const saveDefaults = useSaveConnectionDefaults();
@@ -230,10 +231,11 @@ export function AdvancedParametersSection({
           <fieldset disabled={awaitingDefaults} className="min-w-0 disabled:opacity-60">
             <GenerationParametersFields
               effectiveParameters={preview.data?.parameters}
-              provider={typeof conn?.provider === "string" ? conn.provider : undefined}
-              model={typeof conn?.model === "string" ? conn.model : undefined}
               value={effectiveParams}
-              showServiceTier={conn?.provider === "openrouter" || conn?.provider === "nanogpt"}
+              provider={conn?.provider ?? null}
+              model={conn?.model ?? null}
+              baseUrl={typeof conn?.baseUrl === "string" ? conn.baseUrl : null}
+              modelCapabilities={connectionModelCapabilities}
               enabledParametersFallback={STRICT_CONNECTION_PARAMETER_SEND_DEFAULTS}
               onChange={setParameters}
             />

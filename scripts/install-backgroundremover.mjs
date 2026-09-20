@@ -23,6 +23,7 @@ function run(command, args, options = {}) {
   const label = [command, ...args].join(" ");
   console.log(`  [..] ${label}`);
   const result = spawnSync(command, args, {
+    windowsHide: true,
     cwd: repoRoot,
     stdio: "inherit",
     shell: false,
@@ -36,6 +37,7 @@ function run(command, args, options = {}) {
 
 function capture(command, args) {
   const result = spawnSync(command, args, {
+    windowsHide: true,
     cwd: repoRoot,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],

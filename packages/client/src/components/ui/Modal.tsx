@@ -33,6 +33,8 @@ interface ModalProps {
   chatFloatingPanel?: boolean;
   /** Below the sm breakpoint, fill the viewport edge-to-edge like a window instead of floating as a padded bubble. */
   mobileFullscreen?: boolean;
+  /** Fill the viewport on every breakpoint, with no outer panel padding. */
+  fullScreen?: boolean;
   /** Optional feature-local classes applied to the full panel, including its header. */
   panelClassName?: string;
   /** Optional feature-local classes applied to the scrollable content area. */
@@ -56,6 +58,7 @@ export function Modal({
   focusScopePortalSelector,
   chatFloatingPanel = false,
   mobileFullscreen = false,
+  fullScreen = false,
   panelClassName,
   contentClassName,
   panelStyle,
@@ -167,9 +170,11 @@ export function Modal({
       data-chat-floating-panel={chatFloatingPanel ? "true" : undefined}
       data-component="Modal"
       className={`mari-modal fixed inset-0 z-[10000] flex items-center justify-center ${dragThrough ? "pointer-events-none" : ""} ${
-        mobileFullscreen
-          ? "p-0 sm:p-4"
-          : "p-3 max-md:pt-[max(0.75rem,env(safe-area-inset-top))] max-md:pb-[max(0.75rem,var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))] sm:p-4"
+        fullScreen
+          ? "p-0"
+          : mobileFullscreen
+            ? "p-0 sm:p-4"
+            : "p-3 max-md:pt-[max(0.75rem,env(safe-area-inset-top))] max-md:pb-[max(0.75rem,var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))] sm:p-4"
       }`}
       style={{
         opacity: isEntering ? 1 : 0,
@@ -192,10 +197,14 @@ export function Modal({
       <div
         ref={panelRef}
         tabIndex={-1}
-        className={`mari-modal-panel ${NEUTRAL_PANEL_SHELL} relative flex w-full flex-col ${dragThrough ? "pointer-events-auto" : ""} ${width} max-h-[calc(100dvh-1.5rem)] sm:max-h-[min(90dvh,52rem)]${
-          mobileFullscreen
-            ? " max-sm:h-full max-sm:max-h-none max-sm:max-w-none max-sm:rounded-none max-sm:border-0 max-sm:pt-[env(safe-area-inset-top)] max-sm:pb-[var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom))]"
-            : ""
+        className={`mari-modal-panel ${NEUTRAL_PANEL_SHELL} relative flex w-full flex-col ${dragThrough ? "pointer-events-auto" : ""} ${
+          fullScreen
+            ? "h-full max-h-none max-w-none rounded-none border-0 pt-[env(safe-area-inset-top)] pb-[var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom))]"
+            : `${width} max-h-[calc(100dvh-1.5rem)] sm:max-h-[min(90dvh,52rem)]${
+                mobileFullscreen
+                  ? " max-sm:h-full max-sm:max-h-none max-sm:max-w-none max-sm:rounded-none max-sm:border-0 max-sm:pt-[env(safe-area-inset-top)] max-sm:pb-[var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom))]"
+                  : ""
+              }`
         } ${panelClassName ?? ""}`}
         style={{
           ...panelStyle,

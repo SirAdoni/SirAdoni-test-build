@@ -11,6 +11,7 @@ process.env.DATA_DIR = fixtureDir;
 process.env.FILE_STORAGE_DIR = join(fixtureDir, "storage");
 process.env.NODE_ENV = "test";
 process.env.LOG_LEVEL = "silent";
+process.env.LOG_FILE_LEVEL = "silent";
 const requireServer = createRequire(new URL("../../packages/server/package.json", import.meta.url));
 const sharp = requireServer("sharp");
 const Fastify = requireServer("fastify");
@@ -191,5 +192,6 @@ try {
 } finally {
   await app.close();
   await closeDB();
+  sharp.cache(false);
   rmSync(fixtureDir, { recursive: true, force: true });
 }

@@ -382,6 +382,10 @@ const peekPromptModalSource = readSourceText(
   new URL("../../packages/client/src/components/chat/PeekPromptModal.tsx", import.meta.url),
   "utf8",
 );
+const conversationViewSource = readSourceText(
+  new URL("../../packages/client/src/components/chat/ConversationView.tsx", import.meta.url),
+  "utf8",
+);
 const chatAreaSource = readSourceText(
   new URL("../../packages/client/src/components/chat/ChatArea.tsx", import.meta.url),
   "utf8",
@@ -654,6 +658,18 @@ assert.doesNotMatch(
   peekPromptModalSource.match(/<div\s+className="fixed inset-0 z-\[100\][^\n]*/u)?.[0] ?? "",
   /backdrop-blur/u,
   "Peek Prompt must not continuously repaint the animated scene through a full-screen backdrop filter",
+);
+const conversationBackgroundImageIndex = conversationViewSource.indexOf("<CrossfadeBackground");
+const conversationGradientVeilIndex = conversationViewSource.indexOf("data-conversation-background-gradient-veil");
+assert.notEqual(conversationBackgroundImageIndex, -1, "Conversation must retain its crossfading background image");
+assert.ok(
+  conversationGradientVeilIndex > conversationBackgroundImageIndex,
+  "The Conversation readability gradient veil must render above the background image",
+);
+assert.match(
+  conversationViewSource,
+  /data-conversation-background-gradient-veil[\s\S]{0,180}style=\{\{ \.\.\.gradientStyle, opacity: 0\.35 \}\}/u,
+  "The Conversation gradient veil must remain visible even at 100% image opacity",
 );
 const illustratorCadencePersistenceIndex = generateRouteSource.indexOf(
   "Persist the agent decision before any background image work",

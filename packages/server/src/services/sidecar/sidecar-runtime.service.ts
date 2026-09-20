@@ -108,7 +108,7 @@ export function dependencyAssetDigestsMatch(recorded: readonly string[], expecte
 
 async function commandSucceeds(command: string, args: string[] = []): Promise<boolean> {
   try {
-    await execFileAsync(command, args, { timeout: 5_000 });
+    await execFileAsync(command, args, { timeout: 5_000, windowsHide: true });
     return true;
   } catch {
     return false;
@@ -645,12 +645,12 @@ class SidecarRuntimeService {
     }
 
     if (archivePath.endsWith(".tar.gz")) {
-      await execFileAsync("tar", ["-tzf", archivePath], { timeout: 120_000 }).then(({ stdout }) => {
+      await execFileAsync("tar", ["-tzf", archivePath], { windowsHide: true, timeout: 120_000 }).then(({ stdout }) => {
         for (const entry of stdout.split(/\r?\n/u).filter(Boolean)) {
           assertInsideDir(targetDir, join(targetDir, entry));
         }
       });
-      await execFileAsync("tar", ["-xzf", archivePath, "-C", targetDir], { timeout: 120_000 });
+      await execFileAsync("tar", ["-xzf", archivePath, "-C", targetDir], { windowsHide: true, timeout: 120_000 });
       return;
     }
 
@@ -749,7 +749,7 @@ class SidecarRuntimeService {
       const { stdout } = await execFileAsync(
         "powershell",
         ["-NoProfile", "-Command", "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name"],
-        { timeout: 5_000 },
+        { timeout: 5_000, windowsHide: true },
       );
       return this.parseGpuVendors(stdout);
     } catch {
@@ -759,7 +759,7 @@ class SidecarRuntimeService {
 
   private async detectLinuxGpuVendors(): Promise<GpuVendor[]> {
     try {
-      const { stdout } = await execFileAsync("sh", ["-lc", "lspci -nn"], { timeout: 5_000 });
+      const { stdout } = await execFileAsync("sh", ["-lc", "lspci -nn"], { windowsHide: true, timeout: 5_000 });
       return this.parseGpuVendors(stdout);
     } catch {
       return [];
@@ -777,7 +777,7 @@ class SidecarRuntimeService {
 
     for (const [command, target] of candidates) {
       try {
-        const { stdout } = await execFileAsync(command, [target], { timeout: 5_000 });
+        const { stdout } = await execFileAsync(command, [target], { timeout: 5_000, windowsHide: true });
         const first = stdout
           .split(/\r?\n/u)
           .map((line) => line.trim())

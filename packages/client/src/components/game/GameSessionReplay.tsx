@@ -42,6 +42,7 @@ import type { CharacterMap, PersonaInfo } from "../chat/chat-area.types";
 import { buildGameSessionReplayTurns, type GameReplayPresentationCue } from "../../lib/game-session-replay";
 import { useGameAssetStore } from "../../stores/game-asset.store";
 import { useChatStore } from "../../stores/chat.store";
+import { useUIStore } from "../../stores/ui.store";
 import { ttsService } from "../../lib/tts-service";
 import { GameChoiceCards } from "./GameChoiceCards";
 import { GameNarration } from "./GameNarration";
@@ -211,13 +212,17 @@ function ReplayStoryboardMedia({
       onPlay={() => setPlayingVideoId(frame.video!.id)}
       onPause={() => setPlayingVideoId((current) => (current === frame.video!.id ? null : current))}
       onEnded={() => setPlayingVideoId((current) => (current === frame.video!.id ? null : current))}
-      className={displayMode === "background" ? "h-full w-full object-contain" : "aspect-video w-full object-cover"}
+      className={
+        displayMode === "background" ? "h-full w-full object-contain" : "aspect-video w-full bg-black object-contain"
+      }
     />
   ) : (
     <img
       src={frame.image!.url}
       alt={displayMode === "background" ? "" : frame.title || `Storyboard keyframe ${frame.index + 1}`}
-      className={displayMode === "background" ? "h-full w-full object-contain" : "aspect-video w-full object-cover"}
+      className={
+        displayMode === "background" ? "h-full w-full object-contain" : "aspect-video w-full bg-black object-contain"
+      }
       draggable={false}
     />
   );
@@ -417,6 +422,7 @@ export function GameSessionReplay({
 }: GameSessionReplayProps) {
   const { t: localizeUi } = useUiTranslation();
   const activeChatMetadata = useChatStore((state) => state.activeChat?.metadata);
+  const showTokenUsage = useUIStore((state) => state.showTokenUsage);
   const storyboardDisplayMode: GameStoryboardViewerDisplayMode =
     parseChatMetadata(activeChatMetadata).gameStoryboardViewerDisplayMode === "background" ? "background" : "floating";
   const gameSessionsQuery = useGameSessions(gameId || null);
@@ -665,6 +671,7 @@ export function GameSessionReplay({
         key={turn.message.id}
         messages={turnMessages}
         isStreaming={false}
+        showTokenUsage={showTokenUsage}
         characterMap={characterMap}
         activeCharacterIds={activeCharacterIds}
         personaInfo={personaInfo}

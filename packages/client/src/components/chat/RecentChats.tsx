@@ -13,6 +13,8 @@ import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { useChatStore } from "../../stores/chat.store";
 import { useTranslation } from "react-i18next";
 import { ChatModeIcon } from "./ChatModeIcon";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
+import { useUIStore } from "../../stores/ui.store";
 
 const MODE_BADGE = {
   conversation: {
@@ -83,6 +85,7 @@ export function RecentChats() {
   const feed = useHomeFeed();
   const gameAssets = useGameAssetManifest();
   const setActiveChatId = useChatStore((state) => state.setActiveChatId);
+  const openCharacterDetail = useUIStore((state) => state.openCharacterDetail);
   const recentChats = useMemo(() => feed.data?.recentChats ?? [], [feed.data?.recentChats]);
   const characterIds = useMemo(
     () => Array.from(new Set(recentChats.flatMap(({ chat }) => chat.characterIds))),
@@ -100,9 +103,13 @@ export function RecentChats() {
     [gameAssets.data?.assets, recentChats],
   );
   const characterLookup = useMemo(() => {
-    const lookup = new Map<string, { name: string; avatarUrl: string | null; avatarCrop: AvatarCrop | null }>();
+    const lookup = new Map<
+      string,
+      { id: string; name: string; avatarUrl: string | null; avatarCrop: AvatarCrop | null }
+    >();
     for (const character of summaries.data ?? []) {
       lookup.set(character.id, {
+        id: character.id,
         name: character.name,
         avatarUrl: character.avatarUrl,
         avatarCrop: normalizeAvatarCrop(character.avatarCrop),
@@ -213,10 +220,18 @@ export function RecentChats() {
         const style = { "--recent-chat-accent": mode.accent } as CSSProperties;
 
         return (
-          <button
+          <div
             key={chat.id}
-            type="button"
+            role="button"
+            tabIndex={0}
             onClick={() => setActiveChatId(chat.id)}
+            onKeyDown={(event) => {
+              if (event.target !== event.currentTarget) return;
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                setActiveChatId(chat.id);
+              }
+            }}
             style={style}
             data-chat-mode={chatMode}
             data-recent-chat-index={index}
@@ -256,7 +271,13 @@ export function RecentChats() {
                 )}
               />
             ) : character?.avatarUrl ? (
-              <span className="absolute bottom-2 right-2 h-14 w-14 overflow-hidden rounded-full border-2 border-[var(--recent-chat-accent)]/60 bg-[var(--card)] shadow-lg shadow-black/30 md:bottom-3 md:right-3 md:h-20 md:w-20">
+              <CharacterPhoto
+                src={character.avatarUrl}
+                name={character.name}
+                className="h-14 w-14 shrink-0 rounded-full border-2 border-[var(--recent-chat-accent)]/60 bg-[var(--card)] object-cover shadow-lg shadow-black/30 md:h-20 md:w-20"
+                wrapperClassName="absolute bottom-2 right-2 inline-flex shrink-0 items-center gap-1 overflow-visible md:bottom-3 md:right-3"
+                onUpdate={() => openCharacterDetail(character.id)}
+              >
                 <img
                   src={character.avatarUrl}
                   alt=""
@@ -264,7 +285,7 @@ export function RecentChats() {
                   style={getAvatarCropStyle(character.avatarCrop)}
                   loading="lazy"
                 />
-              </span>
+              </CharacterPhoto>
             ) : (
               <ChatModeIcon
                 mode={chatMode}
@@ -298,7 +319,7 @@ export function RecentChats() {
                   : t("home.recentChats.noPreview")}
               </span>
             </span>
-          </button>
+          </div>
         );
       })}
     </div>

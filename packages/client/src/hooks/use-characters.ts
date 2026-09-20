@@ -110,6 +110,7 @@ export function useCharacters(options: UseCharactersOptions = true) {
 }
 
 export function useCharacterPages(options: {
+  category?: "characters" | "npcs" | "all";
   enabled?: boolean;
   includeBuiltIn?: boolean;
   search?: string;
@@ -123,7 +124,7 @@ export function useCharacterPages(options: {
   const favoriteFilter = options.favoriteFilter ?? "";
 
   return useInfiniteQuery({
-    queryKey: characterKeys.page(includeBuiltIn, search, sort, favoriteFilter),
+    queryKey: [...characterKeys.page(includeBuiltIn, search, sort, favoriteFilter), options.category ?? "all"],
     initialPageParam: 0,
     queryFn: ({ pageParam, signal }) => {
       const params = new URLSearchParams({
@@ -134,6 +135,7 @@ export function useCharacterPages(options: {
       if (search) params.set("search", search);
       if (sort) params.set("sort", sort);
       if (favoriteFilter) params.set("favoriteFilter", favoriteFilter);
+      if (options.category && options.category !== "all") params.set("category", options.category);
       return api.get<CharacterCatalogPage>(`/characters/catalog?${params.toString()}`, { signal });
     },
     getNextPageParam: getNextPageOffset,
@@ -229,6 +231,17 @@ export function useCreateCharacter() {
       void trackAchievementEvent("library_changed")
         .finally(() => qc.invalidateQueries({ queryKey: achievementKeys.all }))
         .catch(() => undefined);
+    },
+  });
+}
+
+export function useBuildNpcProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ chatId, npcId }: { chatId: string; npcId: string }) =>
+      api.post("/game/npc-characters/sync", { chatId, profileNpcId: npcId }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: characterKeys.all });
     },
   });
 }

@@ -82,6 +82,7 @@ import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 import { PersonalExtensionContributionSlot } from "../extensions/PersonalExtensionContributionSlot";
 import { ChatModeIcon } from "../chat/ChatModeIcon";
 import { CharacterScheduleManagerModal } from "../chat/CharacterScheduleManagerModal";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
 
 type ChatSortOption = "recent" | "newest" | "oldest" | "name-asc" | "name-desc";
 const CHAT_LIST_PAGE_SIZE = 100;
@@ -980,7 +981,7 @@ export function ChatSidebar() {
           if (window.innerWidth < 768) setSidebarOpen(false);
         }}
         className={cn(
-          "group relative isolate flex w-full touch-pan-y items-center gap-2.5 overflow-hidden rounded-lg px-3 py-2.5 text-left transition-all duration-150",
+          "group relative isolate flex w-full touch-pan-y items-center gap-2.5 overflow-visible rounded-lg px-3 py-2.5 text-left transition-all duration-150",
           multiSelectMode && isSelected
             ? "mari-chrome-accent-surface mari-accent-animated"
             : isActive
@@ -1051,9 +1052,10 @@ export function ChatSidebar() {
                 const base = charLookup.get(id);
                 if (!base) return null;
                 const chatStatus = conversationStatusByCharacter.get(id);
-                return chatStatus ? { ...base, conversationStatus: chatStatus } : base;
+                return chatStatus ? { id, ...base, conversationStatus: chatStatus } : { id, ...base };
               })
               .filter(Boolean) as {
+              id: string;
               name: string;
               avatarUrl: string | null;
               avatarCrop?: AvatarCrop | null;
@@ -1097,15 +1099,21 @@ export function ChatSidebar() {
             if (avatars.length === 1) {
               const a = avatars[0]!;
               return a.avatarUrl ? (
-                <div className="relative h-7 w-7 flex-shrink-0 transition-transform group-active:scale-90">
-                  <span className="relative block h-7 w-7 overflow-hidden rounded-lg">
+                <div className="relative flex min-w-0 flex-shrink-0 items-center transition-transform group-active:scale-90">
+                  <CharacterPhoto
+                    src={a.avatarUrl}
+                    name={a.name}
+                    wrapperClassName="relative inline-flex shrink-0 items-center gap-1"
+                    className="block h-7 w-7 overflow-hidden rounded-lg"
+                    onUpdate={() => useUIStore.getState().openCharacterDetail(a.id)}
+                  >
                     <img
                       src={a.avatarUrl}
                       alt={a.name}
                       className="h-full w-full object-cover"
                       style={getAvatarCropStyle(a.avatarCrop)}
                     />
-                  </span>
+                  </CharacterPhoto>
                   {statusDot(a.conversationStatus)}
                 </div>
               ) : (
@@ -1126,16 +1134,24 @@ export function ChatSidebar() {
                     <span
                       key={i}
                       className={cn(
-                        "absolute h-5 w-5 overflow-hidden rounded-md ring-2 ring-[var(--sidebar-background)]",
+                        "absolute h-5 w-5 rounded-md ring-2 ring-[var(--sidebar-background)]",
                         i === 0 ? "top-0 left-0 z-10" : "bottom-0 right-0",
                       )}
                     >
-                      <img
+                      <CharacterPhoto
                         src={a.avatarUrl}
-                        alt={a.name}
-                        className="h-full w-full object-cover"
-                        style={getAvatarCropStyle(a.avatarCrop)}
-                      />
+                        name={a.name}
+                        wrapperClassName="relative inline-flex items-center gap-1"
+                        className="block h-5 w-5 overflow-hidden rounded-md"
+                        onUpdate={() => useUIStore.getState().openCharacterDetail(a.id)}
+                      >
+                        <img
+                          src={a.avatarUrl}
+                          alt={a.name}
+                          className="h-full w-full object-cover"
+                          style={getAvatarCropStyle(a.avatarCrop)}
+                        />
+                      </CharacterPhoto>
                     </span>
                   ) : (
                     <div
