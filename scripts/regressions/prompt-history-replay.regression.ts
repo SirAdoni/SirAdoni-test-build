@@ -13,8 +13,11 @@ assert.equal(shouldReplayPromptHistory({ promptTokens: 354496, cachedTokens: 150
 assert.equal(shouldReplayPromptHistory({ promptTokens: 260992, cachedTokens: 235264 }), false);
 assert.equal(shouldReplayPromptHistory({ promptTokens: 260992, cachedTokens: 235264, replayed: true }), true);
 assert.equal(shouldReplayPromptHistory({ promptTokens: 14177, cachedTokens: 13952 }), false);
-assert.equal(shouldReplayPromptHistory({ promptTokens: 300000, cachedTokens: 0, replayed: true }), false);
+assert.equal(shouldReplayPromptHistory({ promptTokens: 300000, cachedTokens: 0, replayed: true }), true);
+assert.equal(shouldReplayPromptHistory({ promptTokens: 300000, cachedTokens: 0 }), false);
 assert.equal(shouldReplayPromptHistory({ promptTokens: 300000 }), false);
+assert.equal(shouldReplayPromptHistory({ promptTokens: 300000, cachedTokens: Number.NaN, replayed: true }), false);
+assert.equal(shouldReplayPromptHistory({ promptTokens: 300000, cachedTokens: -1, replayed: true }), false);
 assert.equal(shouldReplayPromptHistory({ promptTokens: Infinity, cachedTokens: 150528 }), false);
 assert.equal(shouldReplayPromptHistory({ promptTokens: 300000, cachedTokens: 300001 }), false);
 

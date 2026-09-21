@@ -250,11 +250,15 @@ export function shouldReplayPromptHistory(input: {
     promptTokens < 200_000 ||
     typeof cachedTokens !== "number" ||
     !Number.isFinite(cachedTokens) ||
-    cachedTokens <= 0 ||
+    cachedTokens < 0 ||
     cachedTokens > promptTokens
   ) {
     return false;
   }
+  // Once the chain is established, a provider-reported zero is a valid
+  // observation of a cold/intermittent cache. Do not discard the chain and
+  // rewrite the next prompt; zero is still ineligible as the initial signal.
+  if (cachedTokens === 0) return input.replayed === true;
   // These are conservative optimization thresholds, not provider cache limits.
   // Keep an established chain when its improved hit rate crosses the entry threshold.
   return input.replayed === true || cachedTokens / promptTokens < 0.8;

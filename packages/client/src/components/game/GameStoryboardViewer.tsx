@@ -112,7 +112,7 @@ export function GameStoryboardInlineViewer({
     <FloatingGamePanel id="storyboard" width={width} side="hud_right" autoGrow overflowVisible>
       <div
         data-game-skip-bg-nav="true"
-        className="relative w-full select-none max-lg:max-h-[40%] max-lg:shrink-0 max-lg:overflow-y-auto"
+        className="relative w-full select-none max-lg:max-h-[min(40%,max(3.5rem,calc(100dvh-28rem)))] max-lg:shrink-0 max-lg:overflow-y-auto"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="relative">

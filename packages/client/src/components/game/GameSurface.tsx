@@ -12537,37 +12537,47 @@ function GameSurfaceComponent({
               )}
               {!replayActive &&
                 (sceneMembers.length > 0 || sceneExtras.length > 0 || campaignWikiSceneTargets.location) && (
-                  <FloatingGamePanel
-                    id="scene-presence"
-                    width={Math.max(320, Math.min(420, sceneMembers.length * 64))}
-                    side="hud_right"
-                    bottom
-                    autoGrow
-                    autoWidth
+                  <div
+                    data-component="GameSurface.ScenePresence"
+                    className="pointer-events-none absolute inset-x-3 top-16 z-20 lg:contents"
                   >
-                    <div className="pointer-events-auto w-full min-w-0 rounded-xl border border-white/10 bg-black/45 p-2 text-white/80 shadow-xl backdrop-blur-md">
-                      <div className="mb-1 flex flex-wrap items-center justify-between gap-2 text-[0.65rem] font-semibold uppercase tracking-wide text-white/60">
-                        <span>{localizeUi("sceneTimeline.present")}</span>
-                        <button
-                          type="button"
-                          onClick={handleOpenCampaignWiki}
-                          className="rounded px-1.5 py-0.5 hover:bg-white/10"
-                        >
-                          {localizeUi("ui.game.campaignWiki.hud.menu")}
-                        </button>
+                    <FloatingGamePanel
+                      id="scene-presence"
+                      width={Math.max(320, Math.min(420, sceneMembers.length * 64))}
+                      side="hud_right"
+                      bottom
+                      autoGrow
+                      autoWidth
+                    >
+                      <div className="pointer-events-auto flex w-full min-w-0 items-center gap-2 rounded-xl border border-white/10 bg-black/45 p-1.5 text-white/80 shadow-xl backdrop-blur-md lg:block lg:p-2">
+                        <div className="contents text-[0.65rem] font-semibold uppercase tracking-wide text-white/60 lg:mb-1 lg:flex lg:flex-wrap lg:items-center lg:justify-between lg:gap-2">
+                          <span className="truncate">{localizeUi("sceneTimeline.present")}</span>
+                          <button
+                            type="button"
+                            onClick={handleOpenCampaignWiki}
+                            className="order-last ml-auto flex h-11 w-11 shrink-0 items-center justify-center rounded px-1.5 py-0.5 hover:bg-white/10 lg:order-none lg:ml-0 lg:h-auto lg:w-auto"
+                          >
+                            <BookOpen size={14} className="lg:hidden" aria-hidden="true" />
+                            <span className="sr-only lg:not-sr-only">
+                              {localizeUi("ui.game.campaignWiki.hud.menu")}
+                            </span>
+                          </button>
+                        </div>
+                        {sceneMembers.length > 0 && (
+                          <GamePartyBar
+                            partyMembers={sceneMembers}
+                            partyCards={sceneCharacterCards}
+                            mobileMenuLabel={localizeUi("sceneTimeline.present")}
+                          />
+                        )}
+                        {sceneExtras.length > 0 && (
+                          <div className="min-w-0 truncate text-xs text-white/60 lg:mt-1 lg:whitespace-normal">
+                            {sceneExtras.join(", ")}
+                          </div>
+                        )}
                       </div>
-                      {sceneMembers.length > 0 && (
-                        <GamePartyBar
-                          partyMembers={sceneMembers}
-                          partyCards={sceneCharacterCards}
-                          mobileMenuLabel={localizeUi("sceneTimeline.present")}
-                        />
-                      )}
-                      {sceneExtras.length > 0 && (
-                        <div className="mt-1 text-xs text-white/60">{sceneExtras.join(", ")}</div>
-                      )}
-                    </div>
-                  </FloatingGamePanel>
+                    </FloatingGamePanel>
+                  </div>
                 )}
 
               {/* Underlay mount — the part of the surface that belongs BEHIND the narration, such as a
@@ -13428,12 +13438,22 @@ function GameSurfaceComponent({
                           <div
                             data-component="GameSurface.MobileWidgetTray"
                             className={cn(
-                              "pointer-events-auto mb-2 flex items-end justify-between",
+                              "pointer-events-auto mb-2 flex min-w-0 shrink-0 items-center gap-1 overflow-x-auto pb-1",
                               !compactHudWidgets && "md:hidden",
                             )}
                           >
-                            <MobileWidgetPanel widgets={normalizedWidgets} position="hud_left" chatId={activeChatId} />
-                            <MobileWidgetPanel widgets={normalizedWidgets} position="hud_right" chatId={activeChatId} />
+                            <MobileWidgetPanel
+                              widgets={normalizedWidgets}
+                              position="hud_left"
+                              chatId={activeChatId}
+                              layout="horizontal"
+                            />
+                            <MobileWidgetPanel
+                              widgets={normalizedWidgets}
+                              position="hud_right"
+                              chatId={activeChatId}
+                              layout="horizontal"
+                            />
                           </div>
                         ) : undefined;
 

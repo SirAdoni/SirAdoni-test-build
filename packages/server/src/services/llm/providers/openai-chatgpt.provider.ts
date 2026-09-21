@@ -30,9 +30,10 @@ export function resolveOpenAIChatGPTCacheSession(messages: ChatMessage[]): strin
 export class OpenAIChatGPTProvider extends BaseLLMProvider {
   private async delegate(messages: ChatMessage[]): Promise<OpenAIProvider> {
     const auth = await getOpenAIChatGPTAuth();
-    const sessionId = resolveOpenAIChatGPTCacheSession(messages);
     const headers = buildOpenAIChatGPTHeaders(auth);
-    if (sessionId) headers.session_id = sessionId;
+    // ChatGPT Responses cache affinity uses the hyphenated session-id header.
+    const sessionId = resolveOpenAIChatGPTCacheSession(messages);
+    if (sessionId) headers["session-id"] = sessionId;
     return new OpenAIProvider(
       OPENAI_CHATGPT_CODEX_BASE_URL,
       auth.accessToken,

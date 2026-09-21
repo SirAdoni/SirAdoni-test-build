@@ -3,6 +3,7 @@ import { OpenAIProvider } from "../../packages/server/src/services/llm/providers
 import {
   createPromptHistoryReplayDescriptor,
   seedPromptHistoryReplaySnapshot,
+  shouldReplayPromptHistory,
   tryReplayPromptHistory,
   type PromptHistoryReplayScope,
 } from "../../packages/server/src/services/generation/prompt-history-replay.js";
@@ -109,10 +110,22 @@ for (let turn = 1; turn <= 3; turn += 1) {
     u(`turn ${turn}`),
   ]);
   assert.equal(canonical[history.length]?.providerMetadata?.marinaraPromptHistoryReplayPreamble, true);
+  // The first completed turn reports a useful partial hit; the next completed
+  // turn reports zero. The production gate must retain an established replay
+  // chain through that transient zero, while still rejecting zero initially.
+  const telemetry =
+    turn === 1
+      ? { promptTokens: 300000, cachedTokens: 150000, replayed: false }
+      : turn === 2
+        ? { promptTokens: 300000, cachedTokens: 150000, replayed: false }
+        : { promptTokens: 300000, cachedTokens: 0, replayed: true };
+  const replayEligible = turn > 1 && shouldReplayPromptHistory(telemetry);
   const replay =
-    previousPrompt && previousDescriptor
+    replayEligible && previousPrompt && previousDescriptor
       ? tryReplayPromptHistory({ currentMessages: canonical, previousPrompt, previousDescriptor, scope })
       : undefined;
+  if (turn === 1) assert.equal(replayEligible, false);
+  if (turn > 1) assert.equal(replayEligible, true);
   if (previousPrompt) assert.ok(replay);
   const prompt = replay?.prompt ?? canonical;
   const descriptor = createPromptHistoryReplayDescriptor(canonical, prompt, scope);

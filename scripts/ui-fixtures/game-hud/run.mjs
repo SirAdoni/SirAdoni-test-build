@@ -6,11 +6,83 @@ import { startFixtureServer, stopFixtureServer } from "../lib/fixture-server.mjs
 let fixture;
 let browser;
 const geometryObservations = [];
+
+async function runMobileWidgetAssertions(page, base) {
+  for (const viewport of [
+    { width: 320, height: 568 },
+    { width: 390, height: 780 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto(`${base}/?mobile=1`);
+    const tray = page.locator("[data-mobile-widget-tray]");
+    await tray.waitFor();
+    const buttons = tray.getByRole("button");
+    assert.equal(await buttons.count(), 6, `${viewport.width}: all mobile widget buttons render`);
+    const firstBox = await buttons.nth(0).boundingBox();
+    const lastBox = await buttons.nth(5).boundingBox();
+    assert.ok(firstBox && firstBox.height >= 44 && firstBox.width >= 44, `${viewport.width}: first target is 44px`);
+    assert.ok(lastBox && lastBox.height >= 44 && lastBox.width >= 44, `${viewport.width}: last target is 44px`);
+    assert.equal(Math.round(firstBox.y), Math.round(lastBox.y), `${viewport.width}: widgets stay in one row`);
+    const trayBefore = await tray.boundingBox();
+    assert.ok(trayBefore, `${viewport.width}: tray has a bounding box`);
+    await buttons.nth(4).scrollIntoViewIfNeeded();
+    await buttons.nth(4).click();
+    const dialog = page.getByRole("dialog").last();
+    await dialog.waitFor();
+    const panel = dialog.locator(".mari-modal-panel");
+    const dialogBox = await panel.boundingBox();
+    assert.ok(dialogBox, `${viewport.width}: expanded widget modal panel is visible`);
+    assert.ok(
+      dialogBox.x >= 0 && dialogBox.y >= 0,
+      `${viewport.width}: modal panel stays within top-left viewport bounds`,
+    );
+    assert.ok(
+      dialogBox.x + dialogBox.width <= viewport.width + 1 && dialogBox.y + dialogBox.height <= viewport.height + 1,
+      `${viewport.width}: expanded widget modal stays within viewport`,
+    );
+    const trayAfter = await tray.boundingBox();
+    assert.ok(
+      trayAfter && Math.abs(trayAfter.height - trayBefore.height) <= 1,
+      `${viewport.width}: modal does not resize tray`,
+    );
+    assert.equal(
+      await panel.getByRole("button", { name: /edit/i }).count(),
+      1,
+      `${viewport.width}: edit action is present`,
+    );
+    assert.equal(
+      await panel.getByRole("button", { name: /collapse/i }).count(),
+      1,
+      `${viewport.width}: collapse action is present`,
+    );
+    await dialog.getByRole("button", { name: /close/i }).click();
+    await dialog.waitFor({ state: "hidden" });
+    await buttons.nth(5).scrollIntoViewIfNeeded();
+    const lastReachableBox = await buttons.nth(5).boundingBox();
+    assert.ok(
+      lastReachableBox &&
+        lastReachableBox.x >= 0 &&
+        lastReachableBox.x + lastReachableBox.width <= viewport.width &&
+        lastReachableBox.y >= 0 &&
+        lastReachableBox.y + lastReachableBox.height <= viewport.height,
+      `${viewport.width}: last widget remains reachable in the viewport after scroll`,
+    );
+    await buttons.nth(5).click();
+    const lastDialog = page.getByRole("dialog").last();
+    await lastDialog.waitFor();
+    await lastDialog.getByRole("button", { name: /close/i }).click();
+    await lastDialog.waitFor({ state: "hidden" });
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  console.log("mobile widget fixture passed: horizontal row, 44px targets, scroll reachability, bounded modal");
+}
+
 try {
   fixture = startFixtureServer(fileURLToPath(new URL("component-server.mjs", import.meta.url)));
   const { base } = await fixture.ready;
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  await runMobileWidgetAssertions(page, base);
   await page.goto(base);
   await page.getByText("Real NPC", { exact: true }).waitFor();
   let contact = page.getByRole("dialog").last();

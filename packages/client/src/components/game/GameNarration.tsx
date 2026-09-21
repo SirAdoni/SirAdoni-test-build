@@ -4816,7 +4816,7 @@ export function GameNarration({
   };
 
   return (
-    <div className="pointer-events-none relative flex min-h-0 flex-1 flex-col justify-end px-3 pb-[max(0.75rem,var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))] pt-20 md:pt-24 sm:px-6 md:pb-4">
+    <div className="pointer-events-none relative flex min-h-0 flex-1 flex-col justify-end px-3 pb-[max(0.75rem,var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))] pt-32 lg:pt-24 sm:px-6 md:pb-4">
       {/* Readability scrim. It darkens the whole scene, not just the panel, so it has to fade
           out with the panel — otherwise collapsing hides the text but keeps the art dimmed. */}
       <div
@@ -4828,7 +4828,7 @@ export function GameNarration({
 
       <div
         data-tour="game-dialogue"
-        className="pointer-events-none relative z-10 mx-auto flex min-h-0 flex-1 w-full max-w-4xl flex-col justify-end"
+        className="pointer-events-none relative z-10 mx-auto flex min-h-0 flex-1 w-full max-w-4xl flex-col justify-end max-lg:overflow-hidden"
       >
         {spriteStageSlot && (
           <CharacterLinkedContent currentNames showAvatar>
@@ -4840,8 +4840,9 @@ export function GameNarration({
             </div>
           </CharacterLinkedContent>
         )}
+        {/* Below the floating-layout breakpoint, reserve natural height for controls before shrinking narration. */}
         <FloatingGamePanel id="narration" width={896} bottom collapsed={effectiveCollapsed} autoGrow reserveSpace>
-          <div className="pointer-events-auto min-h-0 flex flex-1 flex-col justify-end overflow-visible">
+          <div className="pointer-events-auto min-h-0 flex flex-1 flex-col justify-end overflow-visible max-lg:max-h-[max(3.5rem,40%)] max-lg:flex-none max-lg:justify-start max-lg:overflow-y-auto">
             {/* Stacked mode parks a second log card above the panel, so it collapses with it —
               otherwise "collapse" leaves stacked users looking at most of the same wall of text. */}
             {!effectiveCollapsed &&
@@ -5021,7 +5022,7 @@ export function GameNarration({
               ref={activePanelRef}
               data-game-skip-bg-nav="true"
               data-component="GameNarration.ActivePanel"
-              className="pointer-events-auto min-h-0 max-h-full shrink overflow-y-auto lg:shrink-0 rounded-2xl border border-[var(--border)] bg-[var(--card)]/90 p-3 shadow-[0_16px_38px_rgba(0,0,0,0.45)] backdrop-blur-md dark:border-white/15 dark:bg-black/50 lg:max-h-[calc(100dvh-7rem)]"
+              className="pointer-events-auto min-h-0 max-h-full shrink overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]/90 p-3 shadow-[0_16px_38px_rgba(0,0,0,0.45)] backdrop-blur-md dark:border-white/15 dark:bg-black/50 lg:shrink-0 lg:max-h-[calc(100dvh-7rem)]"
             >
               {/* Scene preparation gate: wait for effects before showing narration */}
               {scenePreparing && (

@@ -4,6 +4,12 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Fixed the mobile Game Mode layout so Currently Present no longer pushes the narration and input below the screen. Widget bookmarks now use a single horizontally scrollable row; opening one shows a dismissible panel without shifting the chat. Short screens also retain room for narration when the storyboard viewer is open. Saved desktop widget placements are preserved.
+
+- Corrected the ChatGPT cache-session header to match OpenAI's current transport. This supplies the intended stable routing hint; cache reuse still depends on the provider.
+
+- Kept established ChatGPT history replay intact after a reported zero-cache turn, avoiding an unnecessary history rebuild on the following turn. Existing context and replay-size limits still apply.
+
 - Reduced repeated unchanged Game Mode state in eligible ChatGPT history replay. Later turns refer to identical state already in the retained context; changed state is still sent in full and removed state is not inherited.
 
 - Fixed ChatGPT history replay remaining disabled when configured tools are omitted by the ChatGPT transport. Added debug diagnostics explaining replay eligibility and persistence without including prompt text.

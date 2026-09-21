@@ -338,6 +338,7 @@ export function MobileWidgetPanel({ widgets, position, chatId, layout = "vertica
   const filtered = getVisibleWidgets(widgets, position);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const { editingWidget, openEditor, closeEditor, saveWidget, isSaving } = useWidgetEditor(widgets, chatId);
+  const expandedWidget = layout === "horizontal" ? (filtered.find((widget) => widget.id === expandedId) ?? null) : null;
 
   if (filtered.length === 0) return null;
 
@@ -346,22 +347,18 @@ export function MobileWidgetPanel({ widgets, position, chatId, layout = "vertica
       <div
         className={cn(
           "pointer-events-auto flex gap-1.5",
-          layout === "horizontal" ? "min-w-0 flex-1 flex-wrap" : "flex-col",
+          layout === "horizontal" ? "min-w-max flex-none flex-nowrap" : "flex-col",
           position === "hud_right" && "items-end",
         )}
       >
         {filtered.map((w) => {
           const isExpanded = expandedId === w.id;
 
-          if (isExpanded) {
+          if (isExpanded && layout !== "horizontal") {
             return (
               <div
                 key={w.id}
-                className={cn(
-                  GAME_WIDGET_SHELL_CLASS,
-                  layout === "horizontal" ? "w-full basis-full" : "w-40",
-                  "transition-all",
-                )}
+                className={cn(GAME_WIDGET_SHELL_CLASS, "w-40", "transition-all")}
                 data-game-skip-bg-nav="true"
               >
                 <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-left">
@@ -399,7 +396,9 @@ export function MobileWidgetPanel({ widgets, position, chatId, layout = "vertica
             <button
               key={w.id}
               onClick={() => setExpandedId(w.id)}
-              className="marinara-chat-toolbar-button flex h-11 w-11 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-base text-[var(--marinara-chat-chrome-button-text)] backdrop-blur-md transition-all hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] active:scale-95"
+              className="marinara-chat-toolbar-button flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-base text-[var(--marinara-chat-chrome-button-text)] backdrop-blur-md transition-all hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] active:scale-95"
+              aria-haspopup={layout === "horizontal" ? "dialog" : undefined}
+              aria-expanded={isExpanded}
               aria-label={w.label}
               title={w.label}
             >
@@ -408,6 +407,43 @@ export function MobileWidgetPanel({ widgets, position, chatId, layout = "vertica
           );
         })}
       </div>
+      {expandedWidget && (
+        <Modal open onClose={() => setExpandedId(null)} title={expandedWidget.label} width="max-w-sm">
+          <div className="space-y-3">
+            <div className={cn(GAME_WIDGET_SHELL_CLASS, "max-h-[min(60vh,28rem)] overflow-y-auto")}>
+              <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-left">
+                {expandedWidget.icon && <span className="text-xs">{expandedWidget.icon}</span>}
+                <span className="min-w-0 flex-1 truncate text-[0.6875rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
+                  <CharacterLinkedContent currentNames>{expandedWidget.label}</CharacterLinkedContent>
+                </span>
+              </div>
+              <div className={cn(GAME_WIDGET_BODY_DIVIDER_CLASS, "px-2.5 py-2")}>
+                <WidgetBody widget={expandedWidget} />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  openEditor(expandedWidget);
+                  setExpandedId(null);
+                }}
+                className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-[var(--border)] px-3 py-2 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--accent)]"
+              >
+                <Pencil size={12} />
+                {localizeUi("ui.game.mobilewidgetpanel.editValue1", { value1: expandedWidget.label })}
+              </button>
+              <button
+                type="button"
+                onClick={() => setExpandedId(null)}
+                className="inline-flex min-h-11 items-center rounded-lg bg-[var(--primary)] px-3 py-2 text-xs text-[var(--primary-foreground)] transition-colors hover:opacity-90"
+              >
+                {localizeUi("ui.game.mobilewidgetpanel.collapseWidget")}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
       <WidgetEditorModal
         widget={editingWidget}
         open={!!editingWidget}

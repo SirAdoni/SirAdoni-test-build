@@ -5,7 +5,7 @@ import type { HudWidget } from "@marinara-engine/shared";
 import { activateLocale } from "../../../packages/client/src/localization/i18n";
 import { FloatingGamePanel, GamePanelContext } from "../../../packages/client/src/components/game/FloatingGamePanel";
 import { GameContactBookWidget } from "../../../packages/client/src/components/game/GameContactBookWidget";
-import { GameWidgetPanel } from "../../../packages/client/src/components/game/GameWidgetPanel";
+import { GameWidgetPanel, MobileWidgetPanel } from "../../../packages/client/src/components/game/GameWidgetPanel";
 import { CharacterPhoto } from "../../../packages/client/src/components/ui/CharacterPhoto";
 import { EditorAvatarTileActions } from "../../../packages/client/src/components/ui/EditorAvatarTileActions";
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -17,6 +17,53 @@ const fixtureWidget: HudWidget = {
   position: "hud_right",
   config: { items: ["Read source file", "Edit layout"], autoSize: true },
 };
+const mobileFixtureWidgets: HudWidget[] = [
+  ...Array.from({ length: 5 }, (_, index) => ({
+    id: `mobile-left-${index + 1}`,
+    type: "counter" as const,
+    label: `Left ${index + 1}`,
+    icon: `${index + 1}`,
+    position: "hud_left" as const,
+    config: { value: index + 1 },
+  })),
+  {
+    id: "mobile-right-1",
+    type: "list" as const,
+    label: "Right 1",
+    icon: "R",
+    position: "hud_right" as const,
+    config: { items: ["Right item"] },
+  },
+];
+
+function MobileWidgetFixture() {
+  const tray = useRef<HTMLDivElement>(null);
+  return (
+    <QueryClientProvider client={queryClient}>
+      <main style={{ minHeight: "100vh", padding: 16, background: "#101217", color: "white" }}>
+        <h1>Mobile widget fixture</h1>
+        <div
+          ref={tray}
+          data-mobile-widget-tray
+          style={{ display: "flex", minWidth: 0, maxWidth: "100%", overflowX: "auto", gap: 4, paddingBottom: 4 }}
+        >
+          <MobileWidgetPanel
+            widgets={mobileFixtureWidgets}
+            position="hud_left"
+            chatId="mobile-hud"
+            layout="horizontal"
+          />
+          <MobileWidgetPanel
+            widgets={mobileFixtureWidgets}
+            position="hud_right"
+            chatId="mobile-hud"
+            layout="horizontal"
+          />
+        </div>
+      </main>
+    </QueryClientProvider>
+  );
+}
 function PhotoMenuFixture() {
   const menu = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -123,4 +170,6 @@ function Harness() {
   );
 }
 await activateLocale("en");
-createRoot(document.getElementById("root")!).render(<Harness />);
+createRoot(document.getElementById("root")!).render(
+  window.location.search.includes("mobile") ? <MobileWidgetFixture /> : <Harness />,
+);
