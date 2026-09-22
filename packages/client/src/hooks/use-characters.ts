@@ -185,6 +185,7 @@ export function flattenCharacterPages(data: { pages?: Array<PaginatedList<Record
   return flattenPaginatedItems(data?.pages);
 }
 
+/** Every catalog row (with parsed tags, favourite and name) matching the filters, across all pages. */
 export function fetchAllCharacterPages(
   options: {
     includeBuiltIn?: boolean;
@@ -196,7 +197,7 @@ export function fetchAllCharacterPages(
   const search = (options.search ?? "").trim();
   const sort = options.sort ?? "";
 
-  return collectAllPaginatedItems<Record<string, unknown>>((offset) => {
+  return collectAllPaginatedItems<CharacterCatalogEntry>((offset) => {
     const params = new URLSearchParams({
       limit: String(LIBRARY_PAGE_SIZE),
       offset: String(offset),
@@ -204,7 +205,7 @@ export function fetchAllCharacterPages(
     if (includeBuiltIn) params.set("includeBuiltIn", "true");
     if (search) params.set("search", search);
     if (sort) params.set("sort", sort);
-    return api.get<PaginatedList<Record<string, unknown>>>(`/characters?${params.toString()}`);
+    return api.get<CharacterCatalogPage>(`/characters/catalog?${params.toString()}`);
   });
 }
 
