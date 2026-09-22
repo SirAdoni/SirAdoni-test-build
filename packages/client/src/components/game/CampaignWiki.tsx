@@ -113,6 +113,12 @@ const RAW_ID = /^(cme_|cmf_|cmk_|cmev_|cmt_|legacy-|gcb_|gch_|gcr_)[\w-]+$/iu;
 /** A stored value that is itself a wiki page id (current state often records a location this way). */
 const ENTITY_ID = /^(cme_|legacy-)[0-9a-f]{16,}$/iu;
 
+/** Event text for the reader; an id stored in place of a summary is never shown. */
+function eventSummary(t: TFn, summary: string | null | undefined): string {
+  const text = summary?.trim();
+  return text && !RAW_ID.test(text) ? text : t("ui.game.campaignWiki.eventRecorded");
+}
+
 /** Name of a page that is not in the loaded detail; shows a neutral label until it arrives. */
 function EntityRefName({ chatId, entityId }: { chatId: string; entityId: string }) {
   const { t } = useUiTranslation();
@@ -983,9 +989,7 @@ function CampaignWikiTimeline({
               )}
               {group.items.map((item) => (
                 <WikiCard as="article" key={item.eventId} className="p-3">
-                  <p className="text-sm leading-6 text-foreground">
-                    {item.summary || t("ui.game.campaignWiki.eventRecorded")}
-                  </p>
+                  <p className="text-sm leading-6 text-foreground">{eventSummary(t, item.summary)}</p>
                   {(item.location || item.participants.length > 0) && (
                     <div className="mt-2 flex flex-wrap items-center gap-1.5">
                       {item.location && item.location.alias && (
@@ -1287,9 +1291,7 @@ function RecentEvents({ chatId, onSelect }: { chatId: string; onSelect: (id: str
         <li key={item.eventId} className="flex items-start gap-3 rounded-lg px-2 py-1.5 hover:bg-secondary/40">
           <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-primary/70" />
           <div className="min-w-0 flex-1">
-            <p className="text-sm leading-6 text-foreground">
-              {item.summary || t("ui.game.campaignWiki.eventRecorded")}
-            </p>
+            <p className="text-sm leading-6 text-foreground">{eventSummary(t, item.summary)}</p>
             {item.participants.length > 0 && (
               <p className="mt-0.5 flex flex-wrap gap-x-2 text-xs text-muted-foreground">
                 {item.participants
