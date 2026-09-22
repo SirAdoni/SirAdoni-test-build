@@ -2199,7 +2199,9 @@ export function ConversationInput({
               key={i}
               className="flex items-center gap-1.5 rounded-lg bg-foreground/10 px-2.5 py-1.5 text-xs ring-1 ring-foreground/10"
             >
-              {att.type.startsWith("image/") ? null : (
+              {att.type.startsWith("image/") ? (
+                <img src={att.data} alt="" className="h-6 w-6 shrink-0 rounded object-cover" />
+              ) : (
                 <FileText
                   size="0.875rem"
                   className={cn(
@@ -2210,10 +2212,13 @@ export function ConversationInput({
               )}
               <span className="max-w-[120px] truncate">{att.name}</span>
               <button
+                type="button"
                 onClick={() => updateAttachments((prev) => prev.filter((_, idx) => idx !== i))}
-                className="rounded p-0.5 text-foreground/45 hover:text-[var(--destructive)]"
+                aria-label={t("chat.input.removeAttachment", { name: att.name })}
+                title={t("chat.input.removeAttachment", { name: att.name })}
+                className="-my-1 flex h-6 w-6 shrink-0 items-center justify-center rounded text-foreground/45 hover:text-[var(--destructive)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] max-md:-my-2 max-md:-mr-1.5 max-md:h-9 max-md:w-9"
               >
-                <X size="0.625rem" />
+                <X size="0.75rem" />
               </button>
             </div>
           ))}

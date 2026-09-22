@@ -117,7 +117,7 @@ export function ConversationMessageLine({ ctx }: { ctx: MessageRenderContext }) 
               >
                 <img
                   src={avatarUrl}
-                  alt={displayName}
+                  alt=""
                   loading="lazy"
                   className="h-full w-full object-cover"
                   style={avatarCropStyle}
@@ -140,7 +140,7 @@ export function ConversationMessageLine({ ctx }: { ctx: MessageRenderContext }) 
                 {avatarUrl ? (
                   <img
                     src={avatarUrl}
-                    alt={displayName}
+                    alt=""
                     loading="lazy"
                     className="h-full w-full object-cover"
                     style={avatarCropStyle}
@@ -156,7 +156,7 @@ export function ConversationMessageLine({ ctx }: { ctx: MessageRenderContext }) 
                 {avatarUrl ? (
                   <img
                     src={avatarUrl}
-                    alt={displayName}
+                    alt=""
                     loading="lazy"
                     className="h-full w-full object-cover"
                     style={avatarCropStyle}

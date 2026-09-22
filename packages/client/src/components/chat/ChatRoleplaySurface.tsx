@@ -1743,11 +1743,18 @@ export function ChatRoleplaySurface({
       }
       const current = chromeInsetsRef.current;
       if (current.target === scrollElement && current.top === top && current.bottom === bottom) return;
+      // When the composer grows (multiline draft, attachment chips) while the reader
+      // is at the latest message, keep it pinned instead of sliding under the input.
+      const pinnedToBottom =
+        current.target === scrollElement &&
+        bottom > current.bottom &&
+        scrollElement.scrollHeight - scrollElement.scrollTop - scrollElement.clientHeight < 48;
       chromeInsetsRef.current = { target: scrollElement, top, bottom };
       scrollElement.style.setProperty("--mari-roleplay-content-padding-top", `${Math.max(16, top + 12)}px`);
       scrollElement.style.setProperty("--mari-roleplay-content-padding-bottom", `${Math.max(16, bottom + 12)}px`);
       scrollElement.style.setProperty("--mari-roleplay-scroll-padding-top", `${Math.max(16, top + 8)}px`);
       scrollElement.style.setProperty("--mari-roleplay-scroll-padding-bottom", `${Math.max(16, bottom + 12)}px`);
+      if (pinnedToBottom) scrollElement.scrollTop = scrollElement.scrollHeight;
     };
 
     measure();

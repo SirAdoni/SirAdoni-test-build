@@ -106,7 +106,10 @@ export function replaceRoleplayDiceMarkers(content: ReactNode, slots: Map<string
       // element, while portals own only the empty slots created inside it.
       return <RoleplayDiceHtml key={`${node.props.className}:${html}`} element={node} slots={slots} />;
     }
-    return node.props.children === undefined ? node : cloneElement(node, {}, visit(node.props.children));
+    if (node.props.children === undefined) return node;
+    const children = visit(node.props.children);
+    // Keep static siblings positional so React does not require keys for them.
+    return Array.isArray(children) ? cloneElement(node, {}, ...children) : cloneElement(node, {}, children);
   };
   const rendered = visit(content);
   return (

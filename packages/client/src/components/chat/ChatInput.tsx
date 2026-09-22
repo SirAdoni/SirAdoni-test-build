@@ -680,6 +680,15 @@ export const ChatInput = memo(function ChatInput({
   const canRetry = !isInputBusy && lastMessageRole === "user";
   const canContinue =
     !isInputBusy && mode === "roleplay" && groupResponseOrder !== "manual" && lastMessageRole === "assistant";
+  const sendButtonLabel = isStreaming
+    ? t("chat.input.stopGenerating")
+    : isInputBusy
+      ? t("chat.input.waitForAgents")
+      : !hasInput && !attachments.length && canRetry
+        ? t("chat.input.retryGeneration")
+        : !hasInput && !attachments.length && canContinue
+          ? t("chat.input.continueGeneration")
+          : t("chat.input.send");
   const pendingAttachmentReads = activeChatId ? (pendingAttachmentReadsByChat[activeChatId] ?? 0) : 0;
   const isReadingAttachments = pendingAttachmentReads > 0;
   const hasPendingAttachments = isReadingAttachments || attachments.length > 0;
@@ -2036,8 +2045,11 @@ export const ChatInput = memo(function ChatInput({
               )}
               <span className="max-w-[7.5rem] truncate">{att.name}</span>
               <button
+                type="button"
                 onClick={() => removeAttachment(i)}
-                className="ml-0.5 rounded-full p-0.5 opacity-60 transition-opacity hover:opacity-100"
+                aria-label={t("chat.input.removeAttachment", { name: att.name })}
+                title={t("chat.input.removeAttachment", { name: att.name })}
+                className="-my-1 ml-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] max-md:-my-2 max-md:-mr-1.5 max-md:h-9 max-md:w-9"
               >
                 <X size="0.75rem" />
               </button>
@@ -2226,6 +2238,9 @@ export const ChatInput = memo(function ChatInput({
         {/* Send / Stop button */}
 
         <button
+          type="button"
+          aria-label={sendButtonLabel}
+          title={sendButtonLabel}
           onClick={isStreaming ? () => useChatStore.getState().stopGeneration(activeChatId ?? undefined) : handleSend}
           disabled={
             (!isStreaming && (isInputBusy || isReadingAttachments)) ||

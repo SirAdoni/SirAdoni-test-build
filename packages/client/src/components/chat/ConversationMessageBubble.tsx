@@ -133,7 +133,7 @@ export function ConversationMessageBubble({ ctx }: { ctx: MessageRenderContext }
                 >
                   <img
                     src={avatarUrl}
-                    alt={displayName}
+                    alt=""
                     loading="lazy"
                     className="h-full w-full object-cover"
                     style={avatarCropStyle}
@@ -155,7 +155,7 @@ export function ConversationMessageBubble({ ctx }: { ctx: MessageRenderContext }
                   {avatarUrl ? (
                     <img
                       src={avatarUrl}
-                      alt={displayName}
+                      alt=""
                       loading="lazy"
                       className="h-full w-full object-cover"
                       style={avatarCropStyle}
@@ -171,7 +171,7 @@ export function ConversationMessageBubble({ ctx }: { ctx: MessageRenderContext }
                   {avatarUrl ? (
                     <img
                       src={avatarUrl}
-                      alt={displayName}
+                      alt=""
                       loading="lazy"
                       className="h-full w-full object-cover"
                       style={avatarCropStyle}
@@ -197,6 +197,8 @@ export function ConversationMessageBubble({ ctx }: { ctx: MessageRenderContext }
           className={cn(
             "mari-message-body min-w-0 flex max-w-[72%] flex-initial flex-col",
             isUser ? "items-end" : "items-start",
+            // The editor has no intrinsic width; without this the column shrinks to the button row.
+            editing && !isHiddenCollapsed && "w-full items-stretch",
           )}
         >
           {/* Header — name + timestamp for first in group */}

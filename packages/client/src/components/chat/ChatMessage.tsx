@@ -1524,7 +1524,9 @@ function colorNamesInNodes(
         const children = Array.isArray(props.children)
           ? props.children.map((c: ReactNode, i: number) => processNode(c, i))
           : processNode(props.children as ReactNode, 0);
-        return cloneElement(element, {}, children);
+        // Spread arrays back into positional children: passing the array as one
+        // child makes React demand keys for static siblings (e.g. thead/tbody).
+        return Array.isArray(children) ? cloneElement(element, {}, ...children) : cloneElement(element, {}, children);
       }
     }
     return node;
@@ -3304,15 +3306,10 @@ export const ChatMessage = memo(function ChatMessage({
                   src={displayAvatarUrl}
                   name={displayName}
                   className="block h-full w-full cursor-zoom-in focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--primary)]"
-                  wrapperClassName="relative inline-flex items-center gap-1"
+                  wrapperClassName="block h-full w-full"
                   onUpdate={onUpdateCharacter}
                 >
-                  <img
-                    src={displayAvatarUrl}
-                    alt={displayName}
-                    className="h-full w-full object-cover"
-                    style={vnAvatarCropStyle}
-                  />
+                  <img src={displayAvatarUrl} alt="" className="h-full w-full object-cover" style={vnAvatarCropStyle} />
                 </CharacterPhoto>
               ) : (
                 <button
@@ -3321,12 +3318,7 @@ export const ChatMessage = memo(function ChatMessage({
                   onClick={() => openImageLightbox(displayAvatarUrl)}
                   aria-label={localizeUi("ui.chat.chatmessage.openValue1Avatar", { value1: displayName })}
                 >
-                  <img
-                    src={displayAvatarUrl}
-                    alt={displayName}
-                    className="h-full w-full object-cover"
-                    style={vnAvatarCropStyle}
-                  />
+                  <img src={displayAvatarUrl} alt="" className="h-full w-full object-cover" style={vnAvatarCropStyle} />
                 </button>
               )
             ) : (
@@ -3602,12 +3594,12 @@ export const ChatMessage = memo(function ChatMessage({
                 >
                   {mergedAvatars.map((avatar, i) => (
                     <img
-                      key={avatar.url}
+                      key={avatar.id}
                       ref={(el) => {
                         mergedAvatarRefs.current[i] = el;
                       }}
                       src={avatar.url}
-                      alt={localizeUi("ui.lorebooks.expandeddrawer.group")}
+                      alt=""
                       loading="lazy"
                       decoding="async"
                       className={cn(
@@ -3636,7 +3628,7 @@ export const ChatMessage = memo(function ChatMessage({
                     >
                       <img
                         src={displayAvatarUrl}
-                        alt={displayName}
+                        alt=""
                         loading="lazy"
                         decoding="async"
                         className="h-full w-full object-cover"
@@ -3655,7 +3647,7 @@ export const ChatMessage = memo(function ChatMessage({
                     >
                       <img
                         src={displayAvatarUrl}
-                        alt={displayName}
+                        alt=""
                         loading="lazy"
                         decoding="async"
                         className="h-full w-full object-cover"
@@ -3809,7 +3801,7 @@ export const ChatMessage = memo(function ChatMessage({
                                 mergedAvatarRefs.current[i] = el;
                               }}
                               src={avatar.url}
-                              alt={localizeUi("ui.lorebooks.expandeddrawer.group")}
+                              alt=""
                               loading="lazy"
                               decoding="async"
                               className={cn(
@@ -3832,12 +3824,12 @@ export const ChatMessage = memo(function ChatMessage({
                               "rpg-avatar-panel-media absolute inset-0 block h-full w-full cursor-zoom-in overflow-hidden",
                               "rpg-avatar-panel",
                             )}
-                            wrapperClassName="relative inline-flex items-center gap-1"
+                            wrapperClassName="absolute inset-0 block"
                             onUpdate={onUpdateCharacter}
                           >
                             <img
                               src={displayAvatarUrl}
-                              alt={displayName}
+                              alt=""
                               loading="lazy"
                               decoding="async"
                               className="h-full w-full object-cover object-top"
@@ -3856,7 +3848,7 @@ export const ChatMessage = memo(function ChatMessage({
                           >
                             <img
                               src={displayAvatarUrl}
-                              alt={displayName}
+                              alt=""
                               loading="lazy"
                               decoding="async"
                               className="h-full w-full object-cover object-top"
@@ -3931,8 +3923,16 @@ export const ChatMessage = memo(function ChatMessage({
 
             {/* Hover actions (tap to toggle on mobile) */}
             <div
-              onClickCapture={() => {
-                if (matchMedia("(pointer: coarse)").matches) setShowActions(true);
+              onClickCapture={(event) => {
+                if (!matchMedia("(pointer: coarse)").matches) return;
+                // A tap on the still-invisible row only reveals it; it must not fire the
+                // hidden Regenerate/Delete/etc. button underneath the finger.
+                const wasHidden = Number.parseFloat(getComputedStyle(event.currentTarget).opacity) < 0.5;
+                setShowActions(true);
+                if (wasHidden) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }
               }}
               className={cn(
                 "mari-message-actions flex w-full min-w-0 flex-wrap items-center justify-between gap-1 px-1 opacity-0 transition-all [@media(pointer:fine)]:focus-within:opacity-100 group-hover:opacity-100 md:justify-start md:gap-x-2",
@@ -4127,7 +4127,7 @@ export const ChatMessage = memo(function ChatMessage({
                       mergedAvatarRefs.current[i] = el;
                     }}
                     src={avatar.url}
-                    alt={localizeUi("ui.lorebooks.expandeddrawer.group")}
+                    alt=""
                     loading="lazy"
                     decoding="async"
                     className="absolute inset-0 h-8 w-8 object-cover transition-opacity duration-700"
@@ -4146,7 +4146,7 @@ export const ChatMessage = memo(function ChatMessage({
                 >
                   <img
                     src={displayAvatarUrl}
-                    alt={displayName}
+                    alt=""
                     loading="lazy"
                     decoding="async"
                     className="h-full w-full object-cover"
@@ -4162,7 +4162,7 @@ export const ChatMessage = memo(function ChatMessage({
                 >
                   <img
                     src={displayAvatarUrl}
-                    alt={displayName}
+                    alt=""
                     loading="lazy"
                     decoding="async"
                     className="h-full w-full object-cover"
@@ -4380,8 +4380,16 @@ export const ChatMessage = memo(function ChatMessage({
 
           {/* Hover actions (tap to toggle on mobile) */}
           <div
-            onClickCapture={() => {
-              if (matchMedia("(pointer: coarse)").matches) setShowActions(true);
+            onClickCapture={(event) => {
+              if (!matchMedia("(pointer: coarse)").matches) return;
+              // A tap on the still-invisible row only reveals it; it must not fire the
+              // hidden Regenerate/Delete/etc. button underneath the finger.
+              const wasHidden = Number.parseFloat(getComputedStyle(event.currentTarget).opacity) < 0.5;
+              setShowActions(true);
+              if (wasHidden) {
+                event.preventDefault();
+                event.stopPropagation();
+              }
             }}
             className={cn(
               "mari-message-actions flex w-full min-w-0 flex-wrap items-center justify-between gap-1 px-1 opacity-0 transition-all [@media(pointer:fine)]:focus-within:opacity-100 group-hover:opacity-100 md:justify-start md:gap-x-2",

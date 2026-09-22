@@ -83,6 +83,7 @@ export const MessageEditTextarea = memo(function MessageEditTextarea({
   const { t: localizeUi } = useUiTranslation();
   const internalRef = useRef<HTMLTextAreaElement>(null);
   const ref = textareaRef ?? internalRef;
+  const editorRef = useRef<HTMLDivElement>(null);
   const rewrite = useAgentSuiteRewrite();
   const { data: rawConnections } = useConnections();
   const activeChatConnectionId = useChatStore((state) => state.activeChat?.connectionId ?? null);
@@ -149,6 +150,20 @@ export const MessageEditTextarea = memo(function MessageEditTextarea({
   useLayoutEffect(() => {
     autoResize();
     ref.current?.focus({ preventScroll: true });
+    // Bring the save/cancel row into view when the editor opens below the fold,
+    // without pushing the top of the draft out of the transcript.
+    const scroller = ref.current?.closest("[data-chat-scroll]") as HTMLElement | null;
+    if (!scroller) return;
+    const frame = window.requestAnimationFrame(() => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      const scrollerRect = scroller.getBoundingClientRect();
+      const editorRect = editor.getBoundingClientRect();
+      const hiddenBelow = editorRect.bottom - scrollerRect.bottom + 8;
+      const roomAbove = editorRect.top - scrollerRect.top - 8;
+      if (hiddenBelow > 0 && roomAbove > 0) scroller.scrollTop += Math.min(hiddenBelow, roomAbove);
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [autoResize, ref]);
 
   const handleSave = useCallback(() => {
@@ -257,9 +272,10 @@ export const MessageEditTextarea = memo(function MessageEditTextarea({
       : 0;
 
   return (
-    <div className="relative isolate z-20 flex flex-col gap-2">
+    <div ref={editorRef} className="relative isolate z-20 flex flex-col gap-2">
       <textarea
         ref={ref}
+        data-chat-message-editor="true"
         defaultValue={formatTextQuotes(initialContent, quoteFormat)}
         readOnly={busy}
         aria-busy={busy}

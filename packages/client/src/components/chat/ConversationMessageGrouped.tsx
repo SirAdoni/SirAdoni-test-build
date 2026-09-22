@@ -260,12 +260,12 @@ export function ConversationMessageGrouped({
                             src={segAvatar}
                             name={segName}
                             className="h-full w-full object-cover"
-                            wrapperClassName="relative inline-flex items-center gap-1"
+                            wrapperClassName="block h-full w-full"
                             onUpdate={onUpdateCharacter ? () => onUpdateCharacter(segSelfId) : undefined}
                           >
                             <img
                               src={segAvatar}
-                              alt={segName}
+                              alt=""
                               loading="lazy"
                               className="h-full w-full object-cover"
                               style={segAvatarCropStyle}
@@ -274,7 +274,7 @@ export function ConversationMessageGrouped({
                         ) : (
                           <img
                             src={segAvatar}
-                            alt={segName}
+                            alt=""
                             loading="lazy"
                             className="h-full w-full object-cover"
                             style={segAvatarCropStyle}
@@ -347,12 +347,12 @@ export function ConversationMessageGrouped({
                             src={segAvatar}
                             name={segName}
                             className="h-full w-full object-cover"
-                            wrapperClassName="relative inline-flex items-center gap-1"
+                            wrapperClassName="block h-full w-full"
                             onUpdate={onUpdateCharacter ? () => onUpdateCharacter(segSelfId) : undefined}
                           >
                             <img
                               src={segAvatar}
-                              alt={segName}
+                              alt=""
                               loading="lazy"
                               className="h-full w-full object-cover"
                               style={segAvatarCropStyle}
@@ -361,7 +361,7 @@ export function ConversationMessageGrouped({
                         ) : (
                           <img
                             src={segAvatar}
-                            alt={segName}
+                            alt=""
                             loading="lazy"
                             className="h-full w-full object-cover"
                             style={segAvatarCropStyle}
