@@ -253,6 +253,7 @@ import {
 } from "./game-storyboard-ui";
 import { DirectionEngine } from "./DirectionEngine";
 import { FloatingGamePanel, GamePanelContext } from "./FloatingGamePanel";
+import { GameLayoutEditToolbar } from "./GameLayoutEditToolbar";
 import { GAME_PANEL_INTERACTIVE_LAYER } from "../../lib/game-panel-layout";
 import { GameWidgetPanel, GameWidgetSessionPrepModal, MobileWidgetPanel } from "./GameWidgetPanel";
 import { WeatherEffects } from "../chat/WeatherEffects";
@@ -2978,6 +2979,8 @@ function GameSurfaceComponent({
   }, [statusWidgetPreferenceKey]);
   const toggleContactBook = useCallback(() => setContactBookVisible((current) => !current), []);
   const [layoutEditing, setLayoutEditing] = useState(false);
+  // Bumped when the layout editor applies a whole layout (undo, saved layout, reset) so panels remount.
+  const [layoutRevision, setLayoutRevision] = useState(0);
   useEffect(() => setLayoutEditing(false), [activeChatId]);
   const [sessionPanelTab, setSessionPanelTab] = useState<"history" | "scenes" | "journal" | "tools">("history");
   const [galleryOpen, setGalleryOpen] = useState(false);
@@ -12562,7 +12565,13 @@ function GameSurfaceComponent({
         onOpen={(id) => useGameModeStore.getState().openCharacterSheet(id)}
       >
         <GamePanelContext.Provider
-          value={{ chatId: gamePanelLayoutScopeId, legacyChatId: activeChatId, surface: hudSurfaceRef, layoutEditing }}
+          value={{
+            chatId: gamePanelLayoutScopeId,
+            legacyChatId: activeChatId,
+            surface: hudSurfaceRef,
+            layoutEditing,
+            layoutRevision,
+          }}
         >
           <GameTransitionManager gameState={gameState} location={gameSnapshot?.location ?? null}>
             <DirectionEngine
@@ -12693,6 +12702,11 @@ function GameSurfaceComponent({
                         >
                           <Pencil size={14} aria-hidden="true" />
                         </button>
+                        <GameLayoutEditToolbar
+                          editing={layoutEditing}
+                          onDone={() => setLayoutEditing(false)}
+                          onLayoutApplied={() => setLayoutRevision((revision) => revision + 1)}
+                        />
                         {renderStoryboardBackgroundControls()}
                         <ChatBranchSelector
                           activeChatId={activeChatId}

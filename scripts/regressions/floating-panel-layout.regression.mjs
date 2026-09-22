@@ -78,7 +78,11 @@ try {
   await panel.waitFor();
   assert.equal(Math.round((await panel.boundingBox()).width), 250, "page reload must retain manual width");
   assert.equal((await readPosition()).y, 220, "page reload must retain position");
-  await page.getByRole("button", { name: "ui.game.floatingPanel.reset", exact: true }).click();
+  // Per-panel options (reset, growth, lock...) live in the chip's options popover.
+  await page.getByRole("button", { name: "ui.game.layoutEditor.options", exact: true }).click();
+  const options = page.getByRole("dialog", { name: "ui.game.layoutEditor.options" });
+  await options.waitFor();
+  await options.getByRole("button", { name: "ui.game.floatingPanel.reset", exact: true }).click();
   await page.evaluate(() => window.renderPanel(320, 1));
   await page.waitForFunction(() => document.querySelector("[data-game-floating-panel]").offsetWidth === 320);
   console.info(

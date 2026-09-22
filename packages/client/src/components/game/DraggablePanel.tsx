@@ -228,6 +228,22 @@ export function useDraggablePanel(
     });
   }, [key, x, y]);
 
+  /** Set the lock explicitly (Lock all / Unlock all in the layout editor). */
+  const setLockedTo = useCallback(
+    (next: boolean) => {
+      setLocked((prev) => {
+        if (prev === next) return prev;
+        // Keep the saved anchor untouched: x/y may hold a temporary reflow position.
+        const stored = window.localStorage.getItem(key)
+          ? readPanelState(key)
+          : { locked: next, x: x.get(), y: y.get(), relativeX: relative.current.x, relativeY: relative.current.y };
+        writePanelState(key, { ...stored, locked: next });
+        return next;
+      });
+    },
+    [key, x, y],
+  );
+
   const handleDragEnd = useCallback(() => {
     placementChanged.current = true;
     clampAndPersist();
@@ -239,7 +255,7 @@ export function useDraggablePanel(
     writePanelState(key, { locked, x: 0, y: 0 });
   }, [key, locked, x, y]);
 
-  return { locked, toggleLocked, resetPosition, x, y, handleDragEnd };
+  return { locked, toggleLocked, setLockedTo, resetPosition, x, y, handleDragEnd };
 }
 
 interface PanelLockButtonProps {

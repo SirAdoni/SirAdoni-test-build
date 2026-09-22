@@ -6,35 +6,71 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import { motion, useDragControls, useMotionValue, useTransform } from "framer-motion";
-import { Bookmark, GripHorizontal, MoveDiagonal2, Pin, RotateCcw } from "lucide-react";
+import { motion, useMotionValue, useTransform } from "framer-motion";
+import { Bookmark, EyeOff, GripVertical, Lock, LockOpen, Ellipsis, Pin, RotateCcw } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { PanelLockButton, useDraggablePanel } from "./DraggablePanel";
+import { useDraggablePanel } from "./DraggablePanel";
+import {
+  GameLayoutPopover,
+  LAYOUT_SOLID_BACKGROUND,
+  LayoutMenuButton,
+  LayoutPopoverSection,
+  LayoutSegmented,
+} from "./GameLayoutPopover";
 import {
   GAME_PANEL_HUD_LAYER,
   GAME_PANEL_INTERACTIVE_LAYER,
   GAME_PANEL_STACK_CHANGE_EVENT,
   arrangeRegisteredPanelStack,
+  beginRegisteredPanelDrag,
+  beginRegisteredPanelResize,
   commitRegisteredPanelGroup,
   constrainRegisteredPanelDrag,
   readGamePanelStacks,
   registeredGamePanelOptions,
   registerGamePanel,
   scheduleGamePanelLayout,
+  setGamePanelLayoutSuspended,
   snapPanelDragPosition,
   writeGamePanelStackMembership,
+  type PanelDragSession,
 } from "../../lib/game-panel-layout";
+import {
+  LAYOUT_GRID,
+  constrainResizeRect,
+  snapResizeRect,
+  type LayoutRect,
+  type ResizeEdges,
+  type SnapTargets,
+} from "../../lib/game-layout-geometry";
+import {
+  GAME_LAYOUT_LOCK_ALL_EVENT,
+  UNHIDEABLE_PANEL_IDS,
+  bringPanelToFront,
+  isLayoutCollisionsEnabled,
+  isLayoutSnapEnabled,
+  registerLayoutCatalogEntry,
+  requestLayoutRecord,
+  setLayoutDragOverlay,
+  setPanelHidden,
+  useIsFrontPanel,
+  usePanelHidden,
+} from "../../lib/game-layout-editor-store";
 
 export const GamePanelContext = createContext<{
   chatId: string;
   legacyChatId?: string;
   surface: RefObject<HTMLElement | null>;
   layoutEditing?: boolean;
+  /** Bumped when a whole layout is applied (undo, saved layout, reset) so panels remount from storage. */
+  layoutRevision?: number;
 } | null>(null);
 
 function migratePanelLayoutStorage(legacyChatId: string | undefined, scopeId: string): void {
@@ -68,6 +104,31 @@ function migratePanelLayoutStorage(legacyChatId: string | undefined, scopeId: st
 
 const TUCK_TAB_WIDTH = 36;
 const TUCK_TAB_HEIGHT = 40;
+const MIN_PANEL_WIDTH = 140;
+const MIN_PANEL_HEIGHT = 64;
+const DRAG_THRESHOLD_PX = 3;
+const SETTLE_DURATION_MS = 170;
+const EDIT_ACCENT = "var(--marinara-chat-chrome-accent, var(--primary))";
+const OVERLAP_COLOR = "#ef4444";
+
+const KNOWN_PANEL_LABELS: Record<string, string> = {
+  narration: "ui.game.layoutEditor.panelNarration",
+  toolbar: "ui.game.layoutEditor.panelToolbar",
+  map: "ui.game.layoutEditor.panelMap",
+  storyboard: "ui.game.layoutEditor.panelStoryboard",
+  "scene-presence": "ui.game.layoutEditor.panelScenePresence",
+  "game-status": "ui.game.layoutEditor.panelGameStatus",
+};
+
+/** Human label for a panel id, used by the edit chip and the Panels menu. */
+export function useGamePanelLabel(id: string, tuckLabel?: string): string {
+  const { t } = useTranslation();
+  if (tuckLabel) return tuckLabel;
+  const known = KNOWN_PANEL_LABELS[id];
+  if (known) return t(known);
+  const bare = id.startsWith("widget:") ? id.slice("widget:".length) : id;
+  return bare.replace(/[-_]+/g, " ").replace(/^\w/, (letter) => letter.toUpperCase());
+}
 
 interface Props {
   id: string;
@@ -99,6 +160,8 @@ interface Props {
   tuckLabel?: string;
   /** Meaningful widget-value signature used for transient reveal after changes. */
   revealOnValueChangeKey?: string;
+  /** With a fixed height, stretch the content to fill the panel box (data-game-panel-fill on the content). */
+  fillHeight?: boolean;
 }
 
 /** Desktop overlays share a surface, never a flow-layout stack. Phone layouts stay inline. */
@@ -112,10 +175,94 @@ export function FloatingGamePanel(props: Props) {
     query.addEventListener("change", update);
     return () => query.removeEventListener("change", update);
   }, []);
+  const scopeId = context?.chatId;
+  const label = useGamePanelLabel(props.id, props.tuckLabel);
+  const userHidden = usePanelHidden(scopeId, props.id);
+  const floating = !!context && desktop && !props.hidden;
+  // List every panel the game offers (including user-hidden ones) in the Panels menu.
+  useEffect(() => {
+    if (!floating || !scopeId) return;
+    return registerLayoutCatalogEntry(scopeId, {
+      id: props.id,
+      label,
+      hideable: !UNHIDEABLE_PANEL_IDS.has(props.id),
+    });
+  }, [floating, label, props.id, scopeId]);
   if (props.hidden) return null;
   if (!context || !desktop) return props.children;
+  if (userHidden) return null;
   migratePanelLayoutStorage(context.legacyChatId, context.chatId);
-  return <FloatingFrame key={`${context.chatId}:${props.id}`} {...props} {...context} />;
+  return (
+    <FloatingFrame
+      key={`${context.chatId}:${props.id}:${context.layoutRevision ?? 0}`}
+      {...props}
+      {...context}
+      label={label}
+    />
+  );
+}
+
+type ResizeHandle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+const RESIZE_HANDLES: ResizeHandle[] = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
+const HANDLE_CURSOR: Record<ResizeHandle, string> = {
+  n: "ns-resize",
+  s: "ns-resize",
+  e: "ew-resize",
+  w: "ew-resize",
+  ne: "nesw-resize",
+  sw: "nesw-resize",
+  nw: "nwse-resize",
+  se: "nwse-resize",
+};
+
+function edgesFor(handle: ResizeHandle): ResizeEdges {
+  return {
+    top: handle.includes("n"),
+    bottom: handle.includes("s"),
+    left: handle.includes("w"),
+    right: handle.includes("e"),
+  };
+}
+
+function handleHitStyle(handle: ResizeHandle): CSSProperties {
+  const edge = 10;
+  const corner = 16;
+  const style: CSSProperties = { position: "absolute", zIndex: 23, cursor: HANDLE_CURSOR[handle], touchAction: "none" };
+  if (handle.length === 2) {
+    Object.assign(style, { width: corner, height: corner });
+    if (handle.includes("n")) style.top = -corner / 2;
+    else style.bottom = -corner / 2;
+    if (handle.includes("w")) style.left = -corner / 2;
+    else style.right = -corner / 2;
+    return style;
+  }
+  if (handle === "n" || handle === "s") {
+    Object.assign(style, { left: corner / 2, right: corner / 2, height: edge });
+    if (handle === "n") style.top = -edge / 2;
+    else style.bottom = -edge / 2;
+  } else {
+    Object.assign(style, { top: corner / 2, bottom: corner / 2, width: edge });
+    if (handle === "w") style.left = -edge / 2;
+    else style.right = -edge / 2;
+  }
+  return style;
+}
+
+function tweenPosition(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  apply: (x: number, y: number) => void,
+  done: () => void,
+): void {
+  const start = performance.now();
+  const step = (now: number) => {
+    const progress = Math.min(1, (now - start) / SETTLE_DURATION_MS);
+    const eased = 1 - Math.pow(1 - progress, 3);
+    apply(from.x + (to.x - from.x) * eased, from.y + (to.y - from.y) * eased);
+    if (progress < 1) requestAnimationFrame(step);
+    else done();
+  };
+  requestAnimationFrame(step);
 }
 
 function FloatingFrame({
@@ -138,25 +285,30 @@ function FloatingFrame({
   tuckIcon,
   tuckLabel,
   revealOnValueChangeKey,
+  fillHeight = false,
   chatId,
   surface,
   layoutEditing = false,
+  label,
 }: Props & {
   chatId: string;
   surface: RefObject<HTMLElement | null>;
   layoutEditing?: boolean;
+  label: string;
 }) {
   const { t } = useTranslation();
   const panel = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const intrinsicContent = useRef<HTMLDivElement>(null);
-  const controls = useDragControls();
   const sizeKey = `marinara-game-panel:${chatId}:floating:${id}:size-v2`;
   const growthPreferenceKey = `${sizeKey}:growth-explicit`;
   const bottomLockKey = `marinara-game-panel:${chatId}:floating:${id}:bottom-lock`;
   const topCenterLockKey = `marinara-game-panel:${chatId}:floating:${id}:top-center-lock`;
   const tuckKey = `marinara-game-panel:${chatId}:floating:${id}:tucked`;
   const tuckEdgeKey = `${tuckKey}:edge`;
+  const frontKey = `${chatId}:${id}`;
+  const isFront = useIsFrontPanel(frontKey);
+  const record = useCallback((delay?: number) => requestLayoutRecord(chatId, delay), [chatId]);
   const [stackGroups, setStackGroups] = useState<Record<string, string>>(() => readGamePanelStacks(chatId));
   const stackEnabled = id.startsWith("widget:");
   const stackGroup = stackEnabled ? (stackGroups[id] ?? null) : null;
@@ -168,12 +320,6 @@ function FloatingFrame({
     window.addEventListener(GAME_PANEL_STACK_CHANGE_EVENT, refresh);
     return () => window.removeEventListener(GAME_PANEL_STACK_CHANGE_EVENT, refresh);
   }, [chatId]);
-  const stackOptions = (surface.current ? registeredGamePanelOptions(surface.current) : [])
-    .filter((option) => option.id !== id && option.id.startsWith("widget:"))
-    .map((option) => ({ ...option, group: stackGroups[option.id] ?? option.id }));
-  if (stackGroup && !stackOptions.some((option) => option.group === stackGroup)) {
-    stackOptions.unshift({ id: `current:${stackGroup}`, label: "This widget stack", group: stackGroup });
-  }
   const setStack = useCallback(
     (groupId: string | null) => {
       if (groupId) {
@@ -189,9 +335,10 @@ function FloatingFrame({
       window.setTimeout(() => {
         if (surface.current && groupId) arrangeRegisteredPanelStack(surface.current, groupId);
         if (surface.current) scheduleGamePanelLayout(surface.current);
+        record(120);
       }, 0);
     },
-    [chatId, id, stackGroups, surface],
+    [chatId, id, record, stackGroups, surface],
   );
   const [bottomLocked, setBottomLocked] = useState(() => {
     if (id !== "narration") return false;
@@ -278,14 +425,27 @@ function FloatingFrame({
     try {
       const stored = JSON.parse(localStorage.getItem(sizeKey) ?? "null");
       return {
-        width: Number.isFinite(stored?.width) ? Math.max(140, stored.width) : width,
-        height: Number.isFinite(stored?.height) ? Math.max(64, stored.height) : height,
+        width: Number.isFinite(stored?.width) ? Math.max(MIN_PANEL_WIDTH, stored.width) : width,
+        height: Number.isFinite(stored?.height) ? Math.max(MIN_PANEL_HEIGHT, stored.height) : height,
         manualWidth: stored?.manualWidth === true,
       };
     } catch {
       return { width, height };
     }
   });
+  /** Switch to an explicit fixed height, as picking "Fixed height" does, so growth never undoes a manual size. */
+  const fixHeight = useCallback(
+    (nextHeight?: number) => {
+      try {
+        localStorage.setItem(growthPreferenceKey, "true");
+      } catch {
+        /* Best effort. */
+      }
+      if (nextHeight != null) setSize((current) => ({ ...current, height: nextHeight }));
+      setGrowth("fixed");
+    },
+    [growthPreferenceKey],
+  );
   const [available, setAvailable] = useState({ width: window.innerWidth, height: window.innerHeight });
   const tuckRevealGutter =
     tucked && !tuckedClosed && (tuckEdge === "left" || tuckEdge === "right")
@@ -304,17 +464,29 @@ function FloatingFrame({
     observer.observe(element);
     return () => observer.disconnect();
   }, [mounted]);
-  const { locked, toggleLocked, resetPosition, x, y, handleDragEnd } = useDraggablePanel(chatId, `floating:${id}`, {
-    surface,
-    panel,
-    side,
-    slot,
-    ready: mounted,
-    anchor: tucked ? "top" : growth === "bottom" ? "bottom" : "top",
-    // preferredAnchor owns width changes, including the untuck transition.
-    skipRightEdgeWidthAdjustment: true,
-  });
+  const { locked, toggleLocked, setLockedTo, resetPosition, x, y, handleDragEnd } = useDraggablePanel(
+    chatId,
+    `floating:${id}`,
+    {
+      surface,
+      panel,
+      side,
+      slot,
+      ready: mounted,
+      anchor: tucked ? "top" : growth === "bottom" ? "bottom" : "top",
+      // preferredAnchor owns width changes, including the untuck transition.
+      skipRightEdgeWidthAdjustment: true,
+    },
+  );
   const panelLocked = locked || bottomLocked || topCenterPinned;
+  useEffect(() => {
+    const onLockAll = (event: Event) => {
+      const detail = (event as CustomEvent<{ scopeId?: string; locked?: boolean }>).detail;
+      if (detail?.scopeId === chatId && typeof detail.locked === "boolean") setLockedTo(detail.locked);
+    };
+    window.addEventListener(GAME_LAYOUT_LOCK_ALL_EVENT, onLockAll);
+    return () => window.removeEventListener(GAME_LAYOUT_LOCK_ALL_EVENT, onLockAll);
+  }, [chatId, setLockedTo]);
   const revealTuck = useCallback(() => {
     if (tucked && tuckEdge !== "top") setTuckRevealAnchorY((current) => current ?? y.get() + TUCK_TAB_HEIGHT / 2);
     setInteractionReveal(true);
@@ -411,6 +583,8 @@ function FloatingFrame({
     },
     [bottomLocked, handleDragEnd, surface, x, y],
   );
+  const rememberPositionRef = useRef(rememberPosition);
+  rememberPositionRef.current = rememberPosition;
   useLayoutEffect(() => {
     const host = surface.current;
     const element = panel.current;
@@ -432,6 +606,7 @@ function FloatingFrame({
       fixed: bottomLocked || topCenterPinned || tucked,
       bottomInset: bottomLocked ? 16 : undefined,
       stackGroup: stackEnabled ? stackGroup : null,
+      firmHeight: !growsWithContent && !collapsed && size.height != null && !tuckedClosed,
       // The narration surface reserves the primary reading area. Keep it ahead
       // of optional HUD widgets when their saved positions would collide so
       // narration controls remain reachable while editing the layout.
@@ -481,6 +656,7 @@ function FloatingFrame({
           relativeY: maxY > 0 ? Math.max(0, Math.min(1, y.get() / maxY)) : 0,
         };
       },
+      commitPosition: () => rememberPositionRef.current(),
     });
   }, [
     id,
@@ -558,8 +734,12 @@ function FloatingFrame({
     }
     return () => window.clearTimeout(timer);
   }, [allowTuck, revealOnValueChangeKey, tuckEdge, tucked, y]);
-  // Float the hover tools above the content, but never above the game surface.
-  const toolsTop = useTransform(y, (value) => Math.max(-28, -value));
+  // The edit chip sits just above the panel, or inside its top edge when the
+  // panel touches the top of the surface.
+  // The chip sits on the top border like a legend, covering only the gap above
+  // the panel; at the very top of the surface it tucks inside the panel.
+  const chipTop = useTransform(y, (value) => (value < 12 ? 4 : -11));
+  const chipLeft = useTransform(y, (value) => (value < 12 ? 6 : 10));
   useLayoutEffect(() => setMounted(true), []);
   useLayoutEffect(() => {
     const host = surface.current;
@@ -616,7 +796,247 @@ function FloatingFrame({
       /* Storage can be disabled. */
     }
   }, [mounted, bottom, surface, x, y, rememberPosition, sizeKey, chatId, id]);
-  const resize = useRef<{ startX: number; startY: number; width: number; height: number } | null>(null);
+
+  // ── Layout editing: drag anywhere, resize from any edge, options popover ──
+  const [interaction, setInteraction] = useState<"drag" | "resize" | "settle" | null>(null);
+  const [overlapping, setOverlapping] = useState(false);
+  const overlappingRef = useRef(false);
+  const [sizeBadge, setSizeBadge] = useState<string | null>(null);
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const optionsButton = useRef<HTMLButtonElement>(null);
+  const moveHandle = useRef<HTMLButtonElement>(null);
+  const dragState = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    moved: boolean;
+    session: PanelDragSession;
+  } | null>(null);
+  const resizeState = useRef<{
+    pointerId: number;
+    handle: ResizeHandle;
+    startX: number;
+    startY: number;
+    origin: LayoutRect;
+    targets: SnapTargets;
+    bounds: { width: number; height: number };
+    obstacles: LayoutRect[];
+    last: LayoutRect;
+  } | null>(null);
+  useEffect(() => {
+    if (layoutEditing) return;
+    setOptionsOpen(false);
+    setInteraction(null);
+    setSizeBadge(null);
+  }, [layoutEditing]);
+  const setOverlapState = (next: boolean) => {
+    if (overlappingRef.current === next) return;
+    overlappingRef.current = next;
+    setOverlapping(next);
+  };
+  const endInteraction = () => {
+    setLayoutDragOverlay(null);
+    setOverlapState(false);
+    setSizeBadge(null);
+    setInteraction(null);
+    if (surface.current) setGamePanelLayoutSuspended(surface.current, false);
+  };
+
+  const startDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    if (!layoutEditing || event.button !== 0) return;
+    bringPanelToFront(frontKey);
+    if (panelLocked || interaction === "settle") return;
+    const host = surface.current;
+    if (!host) return;
+    const session = beginRegisteredPanelDrag(host, id);
+    if (!session) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragState.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      moved: false,
+      session,
+    };
+  };
+  const moveDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = dragState.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const dx = event.clientX - drag.startX;
+    const dy = event.clientY - drag.startY;
+    if (!drag.moved) {
+      if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+      drag.moved = true;
+      untuckAnchorX.current = null;
+      if (surface.current) setGamePanelLayoutSuspended(surface.current, true);
+      setInteraction("drag");
+      setOptionsOpen(false);
+    }
+    event.preventDefault();
+    const collide = isLayoutCollisionsEnabled();
+    const frame = drag.session.move(dx, dy, isLayoutSnapEnabled() && !event.altKey, collide);
+    setOverlapState(frame.overlaps.length > 0);
+    setLayoutDragOverlay({ guides: frame.guides, overlaps: frame.overlaps, ghost: frame.ghost });
+  };
+  const finishDrag = (event: ReactPointerEvent<HTMLElement>, cancelled = false) => {
+    const drag = dragState.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dragState.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId))
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    if (!drag.moved) return;
+    event.preventDefault();
+    const host = surface.current;
+    const commit = () => {
+      rememberPosition();
+      if (host) commitRegisteredPanelGroup(host, id);
+      endInteraction();
+      record();
+    };
+    if (cancelled) {
+      drag.session.cancel();
+      endInteraction();
+      return;
+    }
+    const from = drag.session.groupPosition();
+    const to = drag.session.settleTarget(isLayoutCollisionsEnabled());
+    setLayoutDragOverlay(null);
+    if (Math.abs(from.x - to.x) < 0.5 && Math.abs(from.y - to.y) < 0.5) {
+      commit();
+      return;
+    }
+    // Settle into the nearest free spot with a short glide, never moving a neighbour.
+    setInteraction("settle");
+    setOverlapState(false);
+    tweenPosition(from, to, (nextX, nextY) => drag.session.setGroupPosition(nextX, nextY), commit);
+  };
+  const nudge = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (panelLocked || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const step = event.shiftKey ? 40 : 10;
+    const host = surface.current;
+    const element = panel.current;
+    const maxX = host && element ? Math.max(0, host.clientWidth - element.offsetWidth) : Infinity;
+    const maxY = host && element ? Math.max(0, host.clientHeight - element.offsetHeight) : Infinity;
+    const clamp = (value: number, max: number) => Math.max(0, Math.min(value, max));
+    x.set(clamp(x.get() + (event.key === "ArrowRight" ? step : event.key === "ArrowLeft" ? -step : 0), maxX));
+    y.set(clamp(y.get() + (event.key === "ArrowDown" ? step : event.key === "ArrowUp" ? -step : 0), maxY));
+    rememberPosition();
+    record(500);
+  };
+
+  const resizeTo = (nextWidth: number, nextHeight: number) =>
+    setSize({
+      manualWidth: true,
+      width: Math.min(Math.max(MIN_PANEL_WIDTH, nextWidth), Math.max(MIN_PANEL_WIDTH, available.width - x.get())),
+      height: Math.min(Math.max(MIN_PANEL_HEIGHT, nextHeight), Math.max(MIN_PANEL_HEIGHT, available.height - y.get())),
+    });
+  const startResize = (handle: ResizeHandle) => (event: ReactPointerEvent<HTMLElement>) => {
+    if (!layoutEditing || panelLocked || event.button !== 0) return;
+    const host = surface.current;
+    const element = panel.current;
+    if (!host || !element) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    bringPanelToFront(frontKey);
+    setOptionsOpen(false);
+    const origin = {
+      x: x.get(),
+      y: y.get(),
+      width: element.offsetWidth - tuckRevealGutter,
+      height: element.offsetHeight,
+    };
+    const edges = edgesFor(handle);
+    // A height drag is an explicit size: stop content growth from undoing it.
+    if ((edges.top || edges.bottom) && (growsWithContent || size.height == null)) fixHeight(origin.height);
+    setGamePanelLayoutSuspended(host, true);
+    const { targets, bounds, obstacles } = beginRegisteredPanelResize(host, id);
+    resizeState.current = {
+      pointerId: event.pointerId,
+      handle,
+      startX: event.clientX,
+      startY: event.clientY,
+      origin,
+      targets,
+      bounds,
+      obstacles,
+      last: origin,
+    };
+    setInteraction("resize");
+    setSizeBadge(`${Math.round(origin.width)} × ${Math.round(origin.height)}`);
+  };
+  const moveResize = (event: ReactPointerEvent<HTMLElement>) => {
+    const state = resizeState.current;
+    if (!state || state.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    const edges = edgesFor(state.handle);
+    const dx = event.clientX - state.startX;
+    const dy = event.clientY - state.startY;
+    const { origin } = state;
+    const raw = {
+      x: edges.left ? origin.x + dx : origin.x,
+      y: edges.top ? origin.y + dy : origin.y,
+      width: origin.width + (edges.right ? dx : edges.left ? -dx : 0),
+      height: origin.height + (edges.bottom ? dy : edges.top ? -dy : 0),
+    };
+    const snapOn = isLayoutSnapEnabled() && !event.altKey;
+    const snapped = snapResizeRect(raw, edges, snapOn ? state.targets : null, {
+      bounds: state.bounds,
+      grid: snapOn ? LAYOUT_GRID : 0,
+      minWidth: MIN_PANEL_WIDTH,
+      minHeight: MIN_PANEL_HEIGHT,
+    });
+    const constrained = isLayoutCollisionsEnabled()
+      ? constrainResizeRect(snapped.rect, origin, edges, state.obstacles, {
+          width: MIN_PANEL_WIDTH,
+          height: MIN_PANEL_HEIGHT,
+        })
+      : snapped.rect;
+    const next = constrained ?? state.last;
+    state.last = next;
+    x.set(next.x);
+    y.set(next.y);
+    setSize((current) => ({
+      manualWidth: edges.left || edges.right ? true : current.manualWidth,
+      width: edges.left || edges.right ? next.width : current.width,
+      height: edges.top || edges.bottom ? next.height : current.height,
+    }));
+    setSizeBadge(`${Math.round(next.width)} × ${Math.round(next.height)}`);
+    const guides = snapped.guides.filter((guide) =>
+      guide.axis === "x"
+        ? Math.abs(guide.value - next.x) < 0.5 || Math.abs(guide.value - next.x - next.width) < 0.5
+        : Math.abs(guide.value - next.y) < 0.5 || Math.abs(guide.value - next.y - next.height) < 0.5,
+    );
+    setLayoutDragOverlay({ guides, overlaps: [], ghost: null });
+  };
+  const finishResize = (event: ReactPointerEvent<HTMLElement>) => {
+    const state = resizeState.current;
+    if (!state || state.pointerId !== event.pointerId) return;
+    resizeState.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId))
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    rememberPosition();
+    endInteraction();
+    record();
+  };
+  const resizeWithKeys = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (!["ArrowLeft", "ArrowDown", "ArrowRight", "ArrowUp"].includes(event.key)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const box = panel.current!.getBoundingClientRect();
+    const step = event.shiftKey ? 40 : 10;
+    if ((event.key === "ArrowDown" || event.key === "ArrowUp") && growsWithContent) fixHeight(box.height);
+    resizeTo(
+      box.width + (event.key === "ArrowRight" ? step : event.key === "ArrowLeft" ? -step : 0),
+      box.height + (event.key === "ArrowDown" ? step : event.key === "ArrowUp" ? -step : 0),
+    );
+    record(500);
+  };
+
   const tuckedDrag = useRef<{
     pointerId: number;
     startX: number;
@@ -626,14 +1046,6 @@ function FloatingFrame({
     moved: boolean;
   } | null>(null);
   const suppressTuckClick = useRef(false);
-  const [resizing, setResizing] = useState(false);
-  const dragPosition = useRef<{ x: number; y: number } | null>(null);
-  const resizeTo = (nextWidth: number, nextHeight: number) =>
-    setSize({
-      manualWidth: true,
-      width: Math.min(Math.max(140, nextWidth), Math.max(140, available.width - x.get())),
-      height: Math.min(Math.max(64, nextHeight), Math.max(64, available.height - y.get())),
-    });
   const handleTuckPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (!layoutEditing || event.button !== 0) return;
     suppressTuckClick.current = false;
@@ -659,16 +1071,17 @@ function FloatingFrame({
     const maxX = Math.max(0, surface.current.clientWidth - panel.current.offsetWidth);
     const maxY = Math.max(0, surface.current.clientHeight - panel.current.offsetHeight);
     const clamp = (value: number, max: number) => Math.max(0, Math.min(value, max));
-    const next = constrainRegisteredPanelDrag(
-      surface.current,
-      id,
-      { x: x.get(), y: y.get() },
-      {
-        x: tuckEdge === "right" ? maxX : tuckEdge === "top" ? clamp(drag.originX + dx, maxX) : 0,
-        y: tuckEdge === "top" ? 0 : clamp(drag.originY + dy, maxY),
-      },
-      { width: panel.current.offsetWidth, height: panel.current.offsetHeight },
-    );
+    const requested = {
+      x: tuckEdge === "right" ? maxX : tuckEdge === "top" ? clamp(drag.originX + dx, maxX) : 0,
+      y: tuckEdge === "top" ? 0 : clamp(drag.originY + dy, maxY),
+    };
+    // Edge tabs slide along their edge. With collisions off they pass other tabs freely.
+    const next = isLayoutCollisionsEnabled()
+      ? constrainRegisteredPanelDrag(surface.current, id, { x: x.get(), y: y.get() }, requested, {
+          width: panel.current.offsetWidth,
+          height: panel.current.offsetHeight,
+        })
+      : requested;
     x.set(next.x);
     y.set(next.y);
     event.stopPropagation();
@@ -681,19 +1094,34 @@ function FloatingFrame({
       event.preventDefault();
       rememberPosition();
       if (surface.current) commitRegisteredPanelGroup(surface.current, id);
+      record();
     }
     tuckedDrag.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId))
       event.currentTarget.releasePointerCapture(event.pointerId);
     event.stopPropagation();
   };
+
   if (!mounted || !surface.current) return null;
+  const fillBox = fillHeight && !growsWithContent && !collapsed && size.height != null && !tuckedClosed;
+  const editChrome = layoutEditing && !tuckedClosed;
+  const hideable = !UNHIDEABLE_PANEL_IDS.has(id);
+  const outlineColor = overlapping
+    ? OVERLAP_COLOR
+    : panelLocked
+      ? "color-mix(in srgb, var(--marinara-chat-chrome-panel-muted) 70%, transparent)"
+      : EDIT_ACCENT;
+  const baseZ = tucked ? Math.max(layer, GAME_PANEL_INTERACTIVE_LAYER) + 1 : reserveSpace ? layer + 1 : layer;
+  const zIndex = baseZ + (isFront ? 2 : 0) + (interaction ? 6 : 0);
   const portal = createPortal(
     <motion.div
       ref={panel}
       data-game-floating-panel={id}
       data-game-floating-widget={widgetId}
       data-game-skip-bg-nav="true"
+      data-layout-editing={editChrome ? "true" : undefined}
+      data-layout-locked={editChrome && panelLocked ? "true" : undefined}
+      data-layout-overlapping={overlapping ? "true" : undefined}
       className="group/floating pointer-events-auto absolute left-0 top-0 z-30 max-w-full rounded-lg"
       style={{
         x,
@@ -701,7 +1129,7 @@ function FloatingFrame({
         // The reserved narration panel owns the primary reading surface. Keep
         // its controls above same-layer optional widgets during a reflow.
         // Edge bookmarks must remain reachable above neighboring edit controls.
-        zIndex: tucked ? Math.max(layer, GAME_PANEL_INTERACTIVE_LAYER) + 1 : reserveSpace ? layer + 1 : layer,
+        zIndex,
         width: tuckedClosed ? 36 : expandedPanelWidth,
         height: tuckedClosed
           ? 40
@@ -714,39 +1142,7 @@ function FloatingFrame({
         paddingLeft: tuckEdge === "left" ? tuckRevealGutter : 0,
         paddingRight: tuckEdge === "right" ? tuckRevealGutter : 0,
       }}
-      drag={layoutEditing && !panelLocked}
-      dragListener={false}
-      dragControls={controls}
-      dragMomentum={false}
-      dragElastic={0}
-      dragConstraints={{
-        left: 0,
-        top: 0,
-        right: Math.max(0, available.width - size.width),
-        bottom: Math.max(0, available.height - panelHeight),
-      }}
-      onDragEnd={() => {
-        dragPosition.current = null;
-        rememberPosition(true);
-        if (surface.current) commitRegisteredPanelGroup(surface.current, id);
-      }}
-      onDragStart={() => {
-        dragPosition.current = { x: x.get(), y: y.get() };
-      }}
-      onDrag={() => {
-        const host = surface.current;
-        const element = panel.current;
-        if (!host || !element) return;
-        const current = { x: x.get(), y: y.get() };
-        const from = dragPosition.current ?? current;
-        const constrained = constrainRegisteredPanelDrag(host, id, from, current, {
-          width: element.offsetWidth,
-          height: element.offsetHeight,
-        });
-        if (Math.abs(constrained.x - current.x) > 0.1) x.set(constrained.x);
-        if (Math.abs(constrained.y - current.y) > 0.1) y.set(constrained.y);
-        dragPosition.current = constrained;
-      }}
+      onPointerDownCapture={() => bringPanelToFront(frontKey)}
       onMouseEnter={() => allowTuck && tucked && !layoutEditing && revealTuck()}
       onMouseLeave={(event) => {
         if (!allowTuck || focused) return;
@@ -787,7 +1183,8 @@ function FloatingFrame({
         }
       }}
       onKeyDown={(event) => {
-        if (allowTuck && event.key === "Escape") {
+        // Esc closes a tuck reveal; on an untucked panel it stays free to leave edit mode.
+        if (allowTuck && tucked && event.key === "Escape") {
           event.preventDefault();
           setFocused(false);
           setInteractionReveal(false);
@@ -795,7 +1192,9 @@ function FloatingFrame({
         }
       }}
       onBlur={(event) => {
-        if (allowTuck && !event.currentTarget.contains(event.relatedTarget as Node | null)) {
+        const next = event.relatedTarget as HTMLElement | null;
+        // Focus moving into this panel's options popover (a portal) keeps a tuck reveal open.
+        if (allowTuck && !event.currentTarget.contains(next) && !next?.closest?.("[data-layout-popover]")) {
           setFocused(false);
           setInteractionReveal(false);
         }
@@ -812,8 +1211,8 @@ function FloatingFrame({
             tuckLabel ? t("ui.game.floatingPanel.revealNamed", { name: tuckLabel }) : t("ui.game.floatingPanel.reveal")
           }
           className="absolute z-30 flex h-10 w-9 touch-none items-center justify-center rounded-lg text-[var(--marinara-chat-chrome-panel-title)] focus-visible:outline focus-visible:outline-2"
-          style={
-            tuckEdge === "left"
+          style={{
+            ...(tuckEdge === "left"
               ? {
                   left: 0,
                   top: tuckTabTop,
@@ -829,8 +1228,17 @@ function FloatingFrame({
                     width: TUCK_TAB_WIDTH,
                     height: TUCK_TAB_HEIGHT,
                   }
-                : { left: "50%", top: 0, transform: "translateX(-50%)", width: TUCK_TAB_WIDTH, height: TUCK_TAB_HEIGHT }
-          }
+                : {
+                    left: "50%",
+                    top: 0,
+                    transform: "translateX(-50%)",
+                    width: TUCK_TAB_WIDTH,
+                    height: TUCK_TAB_HEIGHT,
+                  }),
+            ...(layoutEditing && tuckedClosed
+              ? { outline: `1.5px dashed ${EDIT_ACCENT}`, outlineOffset: 2, cursor: "grab" }
+              : null),
+          }}
           onPointerDown={handleTuckPointerDown}
           onPointerMove={handleTuckPointerMove}
           onPointerUp={handleTuckPointerUp}
@@ -857,219 +1265,259 @@ function FloatingFrame({
             setTemporaryReveal(false);
             setTuckRevealAnchorY(null);
             setTucked(false);
+            if (layoutEditing) record(120);
           }}
         >
           {tuckIcon ?? <Bookmark size={14} />}
         </motion.button>
       )}
-      {layoutEditing && !tuckedClosed && (
-        <motion.div
-          data-panel-layout-controls
-          style={{ top: toolsTop }}
-          className={`absolute right-0 z-20 flex h-7 max-w-full items-center justify-end gap-1 rounded-lg bg-[var(--marinara-chat-chrome-panel-bg)] px-1 text-[var(--marinara-chat-chrome-panel-title)] opacity-0 transition-opacity group-hover/floating:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100 ${resizing ? "opacity-100" : ""}`}
+      <div
+        data-game-panel-content={id}
+        data-game-panel-fill={fillBox ? "true" : undefined}
+        // Children can style against the box: `group-data-[game-panel-fill=true]/panelbox:` when a
+        // fixed-height panel asks its content to fill it, and --game-panel-box-max-height otherwise.
+        className={`group/panelbox ${
+          tuckedClosed
+            ? "hidden"
+            : fillBox
+              ? "h-full w-full"
+              : overflowVisible
+                ? "w-full"
+                : growsWithContent
+                  ? `w-full rounded-lg [overflow-wrap:anywhere] ${layoutHeightLimit != null ? "overflow-auto" : "overflow-visible"}`
+                  : "h-full w-full overflow-auto rounded-lg [overflow-wrap:anywhere]"
+        }`}
+        style={
+          {
+            maxHeight: layoutHeightLimit ?? available.height,
+            "--game-panel-box-max-height": `${layoutHeightLimit ?? available.height}px`,
+            ...(fillBox ? { height: "100%" } : null),
+          } as CSSProperties
+        }
+        ref={content}
+      >
+        <div
+          ref={intrinsicContent}
+          data-game-panel-intrinsic={id}
+          className={fillBox ? "h-full w-full min-h-0" : "w-full min-h-0"}
+          style={fillBox ? { height: "100%" } : undefined}
         >
-          <button
-            type="button"
-            disabled={panelLocked}
-            aria-label={t("ui.game.floatingPanel.move")}
-            title={t("ui.game.floatingPanel.move")}
-            className="flex h-6 w-6 shrink-0 touch-none items-center justify-start rounded px-1 enabled:cursor-grab focus-visible:outline focus-visible:outline-2 disabled:opacity-40"
-            onPointerDown={(event) => {
-              if (!panelLocked) controls.start(event);
+          {children}
+        </div>
+      </div>
+      {editChrome && (
+        <>
+          {/* Drag layer: the whole panel is a handle, and content cannot be clicked while editing. */}
+          <div
+            data-panel-drag-layer
+            aria-hidden="true"
+            className={
+              panelLocked
+                ? ""
+                : "transition-colors hover:bg-[color-mix(in_srgb,var(--marinara-chat-chrome-accent)_7%,transparent)]"
+            }
+            style={{
+              position: "absolute",
+              inset: 0,
+              zIndex: 20,
+              borderRadius: 8,
+              touchAction: "none",
+              cursor: panelLocked ? "not-allowed" : interaction === "drag" ? "grabbing" : "grab",
+              background: overlapping ? `color-mix(in srgb, ${OVERLAP_COLOR} 10%, transparent)` : undefined,
             }}
-            onKeyDown={(event) => {
-              if (panelLocked || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
-              event.preventDefault();
-              const step = event.shiftKey ? 40 : 10;
-              x.set(x.get() + (event.key === "ArrowRight" ? step : event.key === "ArrowLeft" ? -step : 0));
-              y.set(y.get() + (event.key === "ArrowDown" ? step : event.key === "ArrowUp" ? -step : 0));
-              rememberPosition();
+            onPointerDown={startDrag}
+            onPointerMove={moveDrag}
+            onPointerUp={(event) => finishDrag(event)}
+            onPointerCancel={(event) => finishDrag(event, true)}
+            onDoubleClick={() => setOptionsOpen(true)}
+          />
+          <div
+            data-panel-edit-outline
+            aria-hidden="true"
+            style={{
+              position: "absolute",
+              inset: -3,
+              zIndex: 21,
+              pointerEvents: "none",
+              borderRadius: 11,
+              border: `1.5px ${interaction === "drag" || interaction === "resize" ? "solid" : "dashed"} ${outlineColor}`,
+              boxShadow:
+                interaction === "drag" || interaction === "resize"
+                  ? `0 0 0 3px color-mix(in srgb, ${outlineColor} 18%, transparent), 0 14px 32px rgba(0,0,0,0.3)`
+                  : undefined,
+              transition: "border-color 120ms ease, box-shadow 120ms ease",
+            }}
+          />
+          <motion.div
+            data-panel-layout-controls
+            className="flex h-[22px] max-w-[calc(100%-20px)] items-center rounded-md border border-[var(--marinara-chat-chrome-panel-border)] text-[0.6875rem] font-medium text-[var(--marinara-chat-chrome-panel-title)] shadow-[0_2px_8px_rgba(0,0,0,0.22)]"
+            style={{
+              position: "absolute",
+              left: chipLeft,
+              top: chipTop,
+              zIndex: 25,
+              background: LAYOUT_SOLID_BACKGROUND,
             }}
           >
-            <GripHorizontal size={14} />
-          </button>
-          <select
-            aria-label={t("ui.game.floatingPanel.growth")}
-            title={t("ui.game.floatingPanel.growth")}
-            className="h-6 min-w-0 max-w-32 rounded bg-[var(--marinara-chat-chrome-panel-bg)] text-[0.625rem]"
-            value={growth}
-            onPointerDown={(event) => event.stopPropagation()}
-            onChange={(event) => {
-              const next = event.target.value as "top" | "bottom" | "fixed";
-              if (next === "fixed" && panel.current)
-                setSize((current) => ({ ...current, height: panel.current!.offsetHeight }));
+            <button
+              ref={moveHandle}
+              type="button"
+              disabled={panelLocked}
+              aria-label={t("ui.game.floatingPanel.move")}
+              title={panelLocked ? t("ui.game.layoutEditor.lockedHint") : t("ui.game.floatingPanel.move")}
+              className="flex h-full min-w-0 touch-none items-center gap-1 rounded-l-md pl-1 pr-1.5 enabled:cursor-grab focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--marinara-chat-chrome-accent)] disabled:cursor-default"
+              onPointerDown={startDrag}
+              onPointerMove={moveDrag}
+              onPointerUp={(event) => finishDrag(event)}
+              onPointerCancel={(event) => finishDrag(event, true)}
+              onKeyDown={nudge}
+            >
+              <GripVertical size={12} aria-hidden="true" className="shrink-0 opacity-60" />
+              <span className="min-w-0 truncate">{label}</span>
+              {panelLocked && (
+                <Lock
+                  size={10}
+                  aria-hidden="true"
+                  data-panel-locked-icon
+                  className="shrink-0 text-[var(--marinara-chat-chrome-panel-muted)]"
+                />
+              )}
+            </button>
+            <button
+              ref={optionsButton}
+              type="button"
+              aria-label={t("ui.game.layoutEditor.options", { name: label })}
+              title={t("ui.game.layoutEditor.options", { name: label })}
+              aria-haspopup="dialog"
+              aria-expanded={optionsOpen}
+              data-panel-options-button
+              className={`flex h-full w-6 shrink-0 items-center justify-center rounded-r-md border-l border-[var(--marinara-chat-chrome-panel-divider)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--marinara-chat-chrome-accent)] ${optionsOpen ? "bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-highlight-text)]" : ""}`}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => setOptionsOpen((open) => !open)}
+            >
+              <Ellipsis size={14} aria-hidden="true" />
+            </button>
+          </motion.div>
+          {!panelLocked &&
+            RESIZE_HANDLES.map((handle) => {
+              const corner = handle.length === 2;
+              const vertical = handle === "e" || handle === "w";
+              const visual = (
+                <span
+                  aria-hidden="true"
+                  className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 border border-[var(--marinara-chat-chrome-accent)] bg-[var(--marinara-chat-chrome-panel-bg)] shadow-sm transition-transform group-hover/handle:scale-125"
+                  style={{
+                    width: corner ? 8 : vertical ? 4 : 18,
+                    height: corner ? 8 : vertical ? 18 : 4,
+                    borderRadius: corner ? 2 : 999,
+                  }}
+                />
+              );
+              const common = {
+                "data-panel-resize-handle": handle,
+                style: handleHitStyle(handle),
+                className: "group/handle",
+                onPointerDown: startResize(handle),
+                onPointerMove: moveResize,
+                onPointerUp: finishResize,
+                onPointerCancel: finishResize,
+              };
+              // The bottom-right corner doubles as the keyboard resize control.
+              return handle === "se" ? (
+                <button
+                  key={handle}
+                  type="button"
+                  aria-label={t("ui.game.floatingPanel.resize")}
+                  title={t("ui.game.floatingPanel.resize")}
+                  {...common}
+                  className="group/handle rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--marinara-chat-chrome-accent)]"
+                  onKeyDown={resizeWithKeys}
+                >
+                  {visual}
+                </button>
+              ) : (
+                <div key={handle} aria-hidden="true" {...common}>
+                  {visual}
+                </div>
+              );
+            })}
+          {sizeBadge && (
+            <div
+              data-panel-size-badge
+              aria-live="polite"
+              className="pointer-events-none rounded-md px-1.5 py-0.5 text-[0.625rem] font-semibold tabular-nums text-white shadow"
+              style={{ position: "absolute", right: 10, bottom: 10, zIndex: 26, background: EDIT_ACCENT }}
+            >
+              {sizeBadge}
+            </div>
+          )}
+        </>
+      )}
+      {editChrome && (
+        <GamePanelOptions
+          anchor={optionsButton}
+          open={optionsOpen}
+          onClose={() => setOptionsOpen(false)}
+          id={id}
+          label={label}
+          surface={surface}
+          locked={locked}
+          onToggleLock={() => {
+            toggleLocked();
+            record(120);
+          }}
+          onReset={() => {
+            setSize({ width, height });
+            resetPosition();
+            rememberPosition();
+            record(120);
+          }}
+          growth={growth}
+          onGrowth={(next) => {
+            if (next === "fixed") fixHeight(panel.current?.offsetHeight);
+            else {
               try {
                 localStorage.setItem(growthPreferenceKey, "true");
               } catch {
                 /* Best effort. */
               }
               setGrowth(next);
-            }}
-          >
-            <option value="top">{t("ui.game.floatingPanel.growthTop")}</option>
-            <option value="bottom">{t("ui.game.floatingPanel.growthBottom")}</option>
-            <option value="fixed">{t("ui.game.floatingPanel.growthFixed")}</option>
-          </select>
-          <button
-            type="button"
-            aria-label={t("ui.game.floatingPanel.reset")}
-            title={t("ui.game.floatingPanel.reset")}
-            className="flex h-6 w-6 items-center justify-center rounded focus-visible:outline focus-visible:outline-2"
-            onClick={() => {
-              setSize({ width, height });
-              resetPosition();
-              rememberPosition();
-            }}
-          >
-            <RotateCcw size={12} />
-          </button>
-          <PanelLockButton locked={locked} onToggle={toggleLocked} className="h-6 w-6" size={12} />
-          {id === "narration" && (
-            <button
-              type="button"
-              aria-label={t(bottomLocked ? "ui.game.floatingPanel.bottomUnlock" : "ui.game.floatingPanel.bottomLock")}
-              title={t(bottomLocked ? "ui.game.floatingPanel.bottomUnlock" : "ui.game.floatingPanel.bottomLock")}
-              aria-pressed={bottomLocked}
-              className={`flex h-6 items-center justify-center gap-1 rounded px-1 text-[0.55rem] focus-visible:outline focus-visible:outline-2 ${bottomLocked ? "text-[var(--primary)]" : ""}`}
-              onClick={() => setBottomLocked((current) => !current)}
-            >
-              <Pin size={12} />
-              <span>{t(bottomLocked ? "ui.game.floatingPanel.bottomUnlock" : "ui.game.floatingPanel.bottomLock")}</span>
-            </button>
-          )}
-          {allowTopCenterPin && (
-            <button
-              type="button"
-              aria-label={t(
-                topCenterPinned ? "ui.game.floatingPanel.topCenterUnlock" : "ui.game.floatingPanel.topCenterLock",
-              )}
-              title={t(
-                topCenterPinned ? "ui.game.floatingPanel.topCenterUnlock" : "ui.game.floatingPanel.topCenterLock",
-              )}
-              aria-pressed={topCenterPinned}
-              className={`flex h-6 w-6 items-center justify-center rounded focus-visible:outline focus-visible:outline-2 ${topCenterPinned ? "text-[var(--primary)]" : ""}`}
-              onClick={() => setTopCenterPinned((current) => !current)}
-            >
-              <Pin size={12} />
-            </button>
-          )}
-          {allowTuck && (
-            <>
-              <select
-                aria-label={t("ui.game.floatingPanel.tuckEdge")}
-                title={t("ui.game.floatingPanel.tuckEdge")}
-                value={tuckEdge}
-                onChange={(event) => setTuckEdge(event.target.value as "left" | "right" | "top")}
-                className="h-6 max-w-20 rounded bg-[var(--marinara-chat-chrome-panel-bg)] text-[0.625rem]"
-              >
-                <option value="left">{t("ui.game.floatingPanel.tuckLeft")}</option>
-                <option value="right">{t("ui.game.floatingPanel.tuckRight")}</option>
-                <option value="top">{t("ui.game.floatingPanel.tuckTop")}</option>
-              </select>
-              <button
-                type="button"
-                aria-label={t("ui.game.floatingPanel.tuck")}
-                title={t("ui.game.floatingPanel.tuck")}
-                className="flex h-6 items-center justify-center gap-1 rounded px-1 text-[0.55rem] focus-visible:outline focus-visible:outline-2"
-                onClick={collapseToEdge}
-              >
-                <GripHorizontal size={12} />
-                <span>{t("ui.game.floatingPanel.tuck")}</span>
-              </button>
-            </>
-          )}
-          {stackEnabled && (
-            <select
-              aria-label={t("ui.game.floatingPanel.stack")}
-              title={t("ui.game.floatingPanel.stack")}
-              value={stackGroup ?? ""}
-              onChange={(event) => setStack(event.target.value || null)}
-              className="h-6 max-w-28 rounded bg-[var(--marinara-chat-chrome-panel-bg)] text-[0.625rem]"
-            >
-              <option value="">{t("ui.game.floatingPanel.stackNone")}</option>
-              {stackOptions.map((option) => (
-                <option key={option.id} value={option.group}>
-                  {t("ui.game.floatingPanel.stackWith", { name: option.label })}
-                </option>
-              ))}
-            </select>
-          )}
-          {stackEnabled && (
-            <button
-              type="button"
-              aria-label={t("ui.game.floatingPanel.newStack")}
-              title={t("ui.game.floatingPanel.newStack")}
-              className="flex h-6 w-6 items-center justify-center rounded focus-visible:outline focus-visible:outline-2"
-              onClick={() => setStack(`stack:${id}`)}
-            >
-              +
-            </button>
-          )}
-        </motion.div>
-      )}
-      <div
-        data-game-panel-content={id}
-        className={
-          tuckedClosed
-            ? "hidden"
-            : overflowVisible
-              ? "w-full"
-              : growsWithContent
-                ? `w-full rounded-lg [overflow-wrap:anywhere] ${layoutHeightLimit != null ? "overflow-auto" : "overflow-visible"}`
-                : "h-full w-full overflow-auto rounded-lg [overflow-wrap:anywhere]"
-        }
-        style={{ maxHeight: layoutHeightLimit ?? available.height }}
-        ref={content}
-      >
-        <div ref={intrinsicContent} data-game-panel-intrinsic={id} className="w-full min-h-0">
-          {children}
-        </div>
-      </div>
-      {layoutEditing && !panelLocked && (
-        <button
-          type="button"
-          aria-label={t("ui.game.floatingPanel.resize")}
-          title={t("ui.game.floatingPanel.resize")}
-          className={`absolute bottom-0 right-0 z-20 flex h-6 w-6 touch-none cursor-nwse-resize items-center justify-center rounded bg-[var(--marinara-chat-chrome-panel-bg)] text-[var(--marinara-chat-chrome-panel-title)] opacity-0 transition-opacity group-hover/floating:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 focus-visible:outline focus-visible:outline-2 ${resizing ? "opacity-100" : ""}`}
-          onPointerDown={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            event.currentTarget.setPointerCapture(event.pointerId);
-            const box = panel.current!.getBoundingClientRect();
-            resize.current = { startX: event.clientX, startY: event.clientY, width: box.width, height: box.height };
-            setResizing(true);
+            }
+            record(120);
           }}
-          onPointerMove={(event) => {
-            if (resize.current)
-              resizeTo(
-                resize.current.width + event.clientX - resize.current.startX,
-                resize.current.height + event.clientY - resize.current.startY,
-              );
+          allowTuck={allowTuck}
+          tuckEdge={tuckEdge}
+          onTuckEdge={(next) => {
+            setTuckEdge(next);
+            record(120);
           }}
-          onPointerUp={(event) => {
-            resize.current = null;
-            setResizing(false);
-            event.currentTarget.releasePointerCapture(event.pointerId);
-            rememberPosition();
+          onCollapse={() => {
+            setOptionsOpen(false);
+            collapseToEdge();
+            record(120);
           }}
-          onPointerCancel={() => {
-            resize.current = null;
-            setResizing(false);
-            rememberPosition();
+          stackEnabled={stackEnabled}
+          stackGroup={stackGroup}
+          stackGroups={stackGroups}
+          onStack={setStack}
+          bottomLockAvailable={id === "narration"}
+          bottomLocked={bottomLocked}
+          onBottomLock={() => {
+            setBottomLocked((current) => !current);
+            record(120);
           }}
-          onKeyDown={(event) => {
-            if (!["ArrowLeft", "ArrowDown", "ArrowRight", "ArrowUp"].includes(event.key)) return;
-            event.preventDefault();
-            const box = panel.current!.getBoundingClientRect();
-            const step = event.shiftKey ? 40 : 10;
-            resizeTo(
-              box.width + (event.key === "ArrowRight" ? step : event.key === "ArrowLeft" ? -step : 0),
-              box.height + (event.key === "ArrowDown" ? step : event.key === "ArrowUp" ? -step : 0),
-            );
+          topCenterAvailable={allowTopCenterPin}
+          topCenterPinned={topCenterPinned}
+          onTopCenter={() => {
+            setTopCenterPinned((current) => !current);
+            record(120);
           }}
-        >
-          <MoveDiagonal2 size={14} />
-        </button>
+          hideable={hideable}
+          onHide={() => {
+            setOptionsOpen(false);
+            setPanelHidden(chatId, id, true);
+          }}
+        />
       )}
     </motion.div>,
     surface.current,
@@ -1080,5 +1528,220 @@ function FloatingFrame({
       <div aria-hidden="true" className="shrink-0" style={{ height: panelHeight }} />
       {portal}
     </>
+  );
+}
+
+interface OptionsProps {
+  anchor: RefObject<HTMLButtonElement | null>;
+  open: boolean;
+  onClose: () => void;
+  id: string;
+  label: string;
+  surface: RefObject<HTMLElement | null>;
+  locked: boolean;
+  onToggleLock: () => void;
+  onReset: () => void;
+  growth: "top" | "bottom" | "fixed";
+  onGrowth: (growth: "top" | "bottom" | "fixed") => void;
+  allowTuck: boolean;
+  tuckEdge: "left" | "right" | "top";
+  onTuckEdge: (edge: "left" | "right" | "top") => void;
+  onCollapse: () => void;
+  stackEnabled: boolean;
+  stackGroup: string | null;
+  stackGroups: Record<string, string>;
+  onStack: (groupId: string | null) => void;
+  bottomLockAvailable: boolean;
+  bottomLocked: boolean;
+  onBottomLock: () => void;
+  topCenterAvailable: boolean;
+  topCenterPinned: boolean;
+  onTopCenter: () => void;
+  hideable: boolean;
+  onHide: () => void;
+}
+
+/** Per-panel options, opened from the chip's "more" button. */
+function GamePanelOptions(props: OptionsProps) {
+  const { t } = useTranslation();
+  const { id, stackGroups, stackGroup, surface } = props;
+  // Stack candidates query the DOM, so build them only while the popover is open.
+  const stackOptions =
+    props.open && props.stackEnabled
+      ? (() => {
+          const options = (surface.current ? registeredGamePanelOptions(surface.current) : [])
+            .filter((option) => option.id !== id && option.id.startsWith("widget:"))
+            .map((option) => ({ ...option, group: stackGroups[option.id] ?? option.id }));
+          if (stackGroup && !options.some((option) => option.group === stackGroup))
+            options.unshift({ id: `current:${stackGroup}`, label: "This widget stack", group: stackGroup });
+          return options;
+        })()
+      : [];
+  return (
+    <GameLayoutPopover
+      anchor={props.anchor}
+      open={props.open}
+      onClose={props.onClose}
+      label={t("ui.game.layoutEditor.options", { name: props.label })}
+      name="panel-options"
+      width={272}
+    >
+      <div className="flex items-center gap-2 px-1 pb-2 pt-0.5">
+        <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
+          {props.label}
+        </span>
+        <button
+          type="button"
+          aria-pressed={!props.locked}
+          aria-label={props.locked ? t("ui.game.panellockbutton.unlockPanel") : t("ui.game.panellockbutton.lockPanel")}
+          title={props.locked ? t("ui.game.panellockbutton.unlockPanel") : t("ui.game.panellockbutton.lockPanel")}
+          data-panel-option="lock"
+          onClick={props.onToggleLock}
+          className={`flex h-6 items-center gap-1 rounded-md px-2 text-[0.6875rem] font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--marinara-chat-chrome-accent)] ${
+            props.locked
+              ? "bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-panel-muted)]"
+              : "bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-highlight-text)]"
+          }`}
+        >
+          {props.locked ? <Lock size={11} aria-hidden="true" /> : <LockOpen size={11} aria-hidden="true" />}
+          {props.locked ? t("ui.game.layoutEditor.lockedState") : t("ui.game.layoutEditor.unlockedState")}
+        </button>
+      </div>
+      <LayoutPopoverSection title={t("ui.game.floatingPanel.growth")}>
+        <LayoutSegmented
+          label={t("ui.game.floatingPanel.growth")}
+          value={props.growth}
+          onChange={props.onGrowth}
+          options={[
+            {
+              value: "top",
+              label: t("ui.game.layoutEditor.growthTopShort"),
+              ariaLabel: t("ui.game.floatingPanel.growthTop"),
+            },
+            {
+              value: "bottom",
+              label: t("ui.game.layoutEditor.growthBottomShort"),
+              ariaLabel: t("ui.game.floatingPanel.growthBottom"),
+            },
+            {
+              value: "fixed",
+              label: t("ui.game.layoutEditor.growthFixedShort"),
+              ariaLabel: t("ui.game.floatingPanel.growthFixed"),
+            },
+          ]}
+        />
+      </LayoutPopoverSection>
+      {props.allowTuck && (
+        <LayoutPopoverSection title={t("ui.game.floatingPanel.tuckEdge")}>
+          <div className="flex items-center gap-1.5">
+            <div className="min-w-0 flex-1">
+              <LayoutSegmented
+                label={t("ui.game.floatingPanel.tuckEdge")}
+                value={props.tuckEdge}
+                onChange={props.onTuckEdge}
+                options={[
+                  {
+                    value: "left",
+                    label: t("ui.game.layoutEditor.edgeLeftShort"),
+                    ariaLabel: t("ui.game.floatingPanel.tuckLeft"),
+                  },
+                  {
+                    value: "right",
+                    label: t("ui.game.layoutEditor.edgeRightShort"),
+                    ariaLabel: t("ui.game.floatingPanel.tuckRight"),
+                  },
+                  {
+                    value: "top",
+                    label: t("ui.game.layoutEditor.edgeTopShort"),
+                    ariaLabel: t("ui.game.floatingPanel.tuckTop"),
+                  },
+                ]}
+              />
+            </div>
+            <button
+              type="button"
+              aria-label={t("ui.game.floatingPanel.tuck")}
+              title={t("ui.game.floatingPanel.tuck")}
+              onClick={props.onCollapse}
+              className="flex h-7 shrink-0 items-center gap-1 rounded-md border border-[var(--marinara-chat-chrome-panel-border)] px-2 text-[0.6875rem] font-medium hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--marinara-chat-chrome-accent)]"
+            >
+              <Bookmark size={11} aria-hidden="true" />
+              {t("ui.game.layoutEditor.collapse")}
+            </button>
+          </div>
+        </LayoutPopoverSection>
+      )}
+      {props.stackEnabled && (
+        <LayoutPopoverSection title={t("ui.game.floatingPanel.stack")}>
+          <div className="flex items-center gap-1.5">
+            <select
+              aria-label={t("ui.game.floatingPanel.stack")}
+              title={t("ui.game.floatingPanel.stack")}
+              value={stackGroup ?? ""}
+              onChange={(event) => props.onStack(event.target.value || null)}
+              className="h-7 min-w-0 flex-1 rounded-md border border-[var(--marinara-chat-chrome-input-border,var(--marinara-chat-chrome-panel-border))] bg-[var(--marinara-chat-chrome-input-bg,var(--marinara-chat-chrome-panel-bg))] px-1.5 text-[0.6875rem] text-[var(--marinara-chat-chrome-panel-text)]"
+            >
+              <option value="">{t("ui.game.floatingPanel.stackNone")}</option>
+              {stackOptions.map((option) => (
+                <option key={option.id} value={option.group}>
+                  {t("ui.game.floatingPanel.stackWith", { name: option.label })}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              aria-label={t("ui.game.floatingPanel.newStack")}
+              title={t("ui.game.floatingPanel.newStack")}
+              onClick={() => props.onStack(`stack:${id}`)}
+              className="flex h-7 shrink-0 items-center rounded-md border border-[var(--marinara-chat-chrome-panel-border)] px-2 text-[0.6875rem] font-medium hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--marinara-chat-chrome-accent)]"
+            >
+              {t("ui.game.layoutEditor.newStackShort")}
+            </button>
+          </div>
+        </LayoutPopoverSection>
+      )}
+      <LayoutPopoverSection>
+        {props.bottomLockAvailable && (
+          <LayoutMenuButton
+            icon={<Pin size={12} />}
+            pressed={props.bottomLocked}
+            ariaLabel={t(
+              props.bottomLocked ? "ui.game.floatingPanel.bottomUnlock" : "ui.game.floatingPanel.bottomLock",
+            )}
+            onClick={props.onBottomLock}
+          >
+            {t(props.bottomLocked ? "ui.game.floatingPanel.bottomUnlock" : "ui.game.floatingPanel.bottomLock")}
+          </LayoutMenuButton>
+        )}
+        {props.topCenterAvailable && (
+          <LayoutMenuButton
+            icon={<Pin size={12} />}
+            pressed={props.topCenterPinned}
+            ariaLabel={t(
+              props.topCenterPinned ? "ui.game.floatingPanel.topCenterUnlock" : "ui.game.floatingPanel.topCenterLock",
+            )}
+            onClick={props.onTopCenter}
+          >
+            {t(props.topCenterPinned ? "ui.game.floatingPanel.topCenterUnlock" : "ui.game.floatingPanel.topCenterLock")}
+          </LayoutMenuButton>
+        )}
+        <LayoutMenuButton
+          icon={<RotateCcw size={12} />}
+          ariaLabel={t("ui.game.floatingPanel.reset")}
+          onClick={props.onReset}
+        >
+          {t("ui.game.floatingPanel.reset")}
+        </LayoutMenuButton>
+        {props.hideable && (
+          <LayoutMenuButton
+            icon={<EyeOff size={12} />}
+            ariaLabel={t("ui.game.layoutEditor.hide")}
+            onClick={props.onHide}
+          >
+            {t("ui.game.layoutEditor.hide")}
+          </LayoutMenuButton>
+        )}
+      </LayoutPopoverSection>
+    </GameLayoutPopover>
   );
 }

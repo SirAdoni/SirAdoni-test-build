@@ -1,3 +1,15 @@
+import {
+  LAYOUT_GRID,
+  buildSnapTargets,
+  findNearestFreePosition,
+  needsSettling,
+  overlapAreas,
+  snapMoveRect,
+  type LayoutRect,
+  type SnapGuide,
+  type SnapTargets,
+} from "./game-layout-geometry";
+
 export interface GamePanelLayoutItem {
   id: string;
   x: number;
@@ -14,6 +26,11 @@ export interface GamePanelLayoutItem {
   bottomInset?: number;
   setPosition: (x: number, y: number) => void;
   setHeightLimit?: (height: number) => void;
+  /**
+   * A height the user set by hand (resize or "Fixed height"). Crowded layouts shrink
+   * automatic panels into scrolling windows, but never undo a manual height.
+   */
+  firmHeight?: boolean;
   /** Panels sharing a stack move and resolve as one vertical group. */
   stackGroup?: string | null;
   stackOrder?: number;
@@ -37,6 +54,19 @@ export interface GamePanelLayoutBounds {
   width: number;
   height: number;
   gap?: number;
+  /** Collisions off: keep every panel at its own anchor, so manual overlaps are intentional. */
+  allowOverlap?: boolean;
+}
+
+/** Device-wide editor preference. When "false", panels may overlap and nothing is pushed apart. */
+export const GAME_PANEL_COLLISIONS_STORAGE_KEY = "marinara-game-layout-collisions";
+
+export function gamePanelCollisionsEnabled(): boolean {
+  try {
+    return typeof localStorage === "undefined" || localStorage.getItem(GAME_PANEL_COLLISIONS_STORAGE_KEY) !== "false";
+  } catch {
+    return true;
+  }
 }
 
 export function snapPanelDragPosition(value: number, max: number, grid = 16): number {
@@ -85,7 +115,8 @@ export function constrainPanelDragPosition(
     // An already-overlapping saved layout must remain escapable by manual dragging.
     if (overlapsRect({ ...start, ...size }, obstacle)) continue;
     const axisTimes = (origin: number, distance: number, min: number, max: number): [number, number] | null => {
-      if (distance === 0) return origin < min || origin > max ? null : [-Infinity, Infinity];
+      // Touching (origin == min or max) on a stationary axis can never produce positive-area overlap.
+      if (distance === 0) return origin <= min || origin >= max ? null : [-Infinity, Infinity];
       const first = (min - origin) / distance;
       const second = (max - origin) / distance;
       return [Math.min(first, second), Math.max(first, second)];
@@ -95,7 +126,8 @@ export function constrainPanelDragPosition(
     if (!xTimes || !yTimes) continue;
     const entry = Math.max(xTimes[0], yTimes[0], 0);
     const exit = Math.min(xTimes[1], yTimes[1], 1);
-    if (entry <= exit && exit >= 0 && entry <= 1) earliest = Math.min(earliest, entry);
+    // Zero-length intervals are edge contact (moving away from or along a touching edge), not penetration.
+    if (entry < exit && entry <= 1) earliest = Math.min(earliest, entry);
   }
   // Stop infinitesimally before impact: edge contact is allowed, positive-area overlap is not.
   const safeT = earliest < 1 ? Math.max(0, earliest - 1e-6) : 1;
@@ -124,7 +156,10 @@ export function resolveGamePanelLayout(items: GamePanelLayoutItem[], bounds: Gam
     const overflow = resolvePanelPositions(
       layoutItems.map((item, index) => ({
         ...item,
-        height: item.setHeightLimit ? Math.min(item.height, Math.max(64, cap - (item.bottomInset ?? 0))) : item.height,
+        height:
+          item.setHeightLimit && !item.firmHeight
+            ? Math.min(item.height, Math.max(64, cap - (item.bottomInset ?? 0)))
+            : item.height,
         setPosition: (x, y) => {
           result[index]!.x = x;
           result[index]!.y = y;
@@ -223,7 +258,7 @@ function resolvePanelPositions(items: GamePanelLayoutItem[], bounds: GamePanelLa
           ? source.preferredY!
           : source.y;
     let current = clamp({ ...source, x: anchorX, y: anchorY }, bounds);
-    if (!source.fixed && placed.some((item) => intersects(current, item, gap))) {
+    if (!source.fixed && !bounds.allowOverlap && placed.some((item) => intersects(current, item, gap))) {
       // Free rectangles begin at a viewport or obstacle edge. Avoid scanning
       // every pixel on each ResizeObserver pass.
       const xs = [
@@ -250,7 +285,7 @@ function resolvePanelPositions(items: GamePanelLayoutItem[], bounds: GamePanelLa
           if (y + candidate.height > bounds.height || placed.some((item) => intersects(candidate, item, gap))) continue;
           if (!best || distance(candidate) < distance(best)) best = candidate;
         }
-      if (!best && source.setHeightLimit) {
+      if (!best && source.setHeightLimit && !source.firmHeight) {
         for (const x of xs)
           for (const y of ys) {
             let height = Math.min(source.height, bounds.height - y);
@@ -284,6 +319,8 @@ type RegisteredPanel = Omit<GamePanelLayoutItem, "width" | "height" | "x" | "y" 
   getSize?: () => { width: number; height: number };
   setPosition: (x: number, y: number) => void;
   setPreferredPosition?: () => void;
+  /** Persist the current position as the user's anchor (used after a grouped drag). */
+  commitPosition?: () => void;
   priority?: number;
   fixed?: boolean;
   bottomInset?: number;
@@ -291,6 +328,131 @@ type RegisteredPanel = Omit<GamePanelLayoutItem, "width" | "height" | "x" | "y" 
 
 const registries = new WeakMap<HTMLElement, Map<string, RegisteredPanel>>();
 const scheduled = new WeakMap<HTMLElement, number>();
+const registryListeners = new WeakMap<HTMLElement, Set<() => void>>();
+const registryNotifyFrames = new WeakMap<HTMLElement, number>();
+
+function notifyRegistry(surface: HTMLElement): void {
+  if (registryNotifyFrames.has(surface) || !registryListeners.get(surface)?.size) return;
+  registryNotifyFrames.set(
+    surface,
+    requestAnimationFrame(() => {
+      registryNotifyFrames.delete(surface);
+      for (const listener of [...(registryListeners.get(surface) ?? [])]) listener();
+    }),
+  );
+}
+
+/** Subscribe to panel registration changes on a surface (batched per frame). */
+export function subscribeGamePanelRegistry(surface: HTMLElement, listener: () => void): () => void {
+  let listeners = registryListeners.get(surface);
+  if (!listeners) {
+    listeners = new Set();
+    registryListeners.set(surface, listeners);
+  }
+  listeners.add(listener);
+  return () => listeners?.delete(listener);
+}
+
+export function registeredGamePanelStates(surface: HTMLElement): Array<{ id: string; locked: boolean }> {
+  return [...(registries.get(surface)?.values() ?? [])].map((panel) => ({ id: panel.id, locked: panel.locked }));
+}
+
+function measuredRect(panel: RegisteredPanel): LayoutRect {
+  const position = panel.getPosition();
+  return { x: position.x, y: position.y, width: panel.element.offsetWidth, height: panel.element.offsetHeight };
+}
+
+export interface PanelDragFrame {
+  /** The moving group's rect (the panel itself, or its whole stack). */
+  rect: LayoutRect;
+  guides: SnapGuide[];
+  overlaps: LayoutRect[];
+  /** Where the group will settle on release, when that differs from `rect`. */
+  ghost: LayoutRect | null;
+}
+
+export interface PanelDragSession {
+  /** `collide: false` lets the panel phase through neighbours with no overlap feedback. */
+  move(dx: number, dy: number, snap: boolean, collide: boolean): PanelDragFrame;
+  /** The free position nearest to the current drop point (or the current position when it is free). */
+  settleTarget(collide: boolean): GamePanelPosition;
+  setGroupPosition(x: number, y: number): void;
+  groupPosition(): GamePanelPosition;
+  /** Put every member back where the drag started. */
+  cancel(): void;
+}
+
+/**
+ * Start a manual drag. Snap lines and obstacles are measured once here, never
+ * per pointer move. The panel (and its stack) moves freely over neighbours;
+ * nothing else moves. On release the caller settles it with `settleTarget`.
+ */
+export function beginRegisteredPanelDrag(surface: HTMLElement, id: string): PanelDragSession | null {
+  const registry = registries.get(surface);
+  const current = registry?.get(id);
+  if (!registry || !current) return null;
+  const bounds = { width: surface.clientWidth, height: surface.clientHeight };
+  const groupId = current.stackGroup ?? null;
+  const stackMembers = groupId ? [...registry.values()].filter((panel) => panel.stackGroup === groupId) : [];
+  const moving = stackMembers.length > 1 ? stackMembers : [current];
+  const memberRects = moving.map((panel) => ({ panel, rect: measuredRect(panel) }));
+  const left = Math.min(...memberRects.map(({ rect }) => rect.x));
+  const top = Math.min(...memberRects.map(({ rect }) => rect.y));
+  const start: LayoutRect = {
+    x: left,
+    y: top,
+    width: Math.max(...memberRects.map(({ rect }) => rect.x + rect.width)) - left,
+    height: Math.max(...memberRects.map(({ rect }) => rect.y + rect.height)) - top,
+  };
+  const obstacles = [...registry.values()]
+    .filter((panel) => !moving.includes(panel))
+    .map(measuredRect)
+    .filter((rect) => rect.width > 0 && rect.height > 0);
+  const targets = buildSnapTargets(bounds, obstacles);
+  let position: GamePanelPosition = { x: start.x, y: start.y };
+  const setGroupPosition = (x: number, y: number) => {
+    position = { x, y };
+    for (const { panel, rect } of memberRects) panel.setPosition(x + rect.x - start.x, y + rect.y - start.y);
+  };
+  const settleTarget = (collide: boolean): GamePanelPosition => {
+    const rect = { ...start, ...position };
+    if (!collide || !needsSettling(rect, obstacles)) return position;
+    return findNearestFreePosition(rect, obstacles, bounds) ?? position;
+  };
+  return {
+    move(dx, dy, snap, collide) {
+      const requested = { ...start, x: start.x + dx, y: start.y + dy };
+      const snapped = snapMoveRect(requested, snap ? targets : null, { bounds, grid: snap ? LAYOUT_GRID : 0 });
+      setGroupPosition(snapped.x, snapped.y);
+      const rect = { ...start, ...position };
+      const target = settleTarget(collide);
+      const moved = Math.abs(target.x - position.x) > 0.5 || Math.abs(target.y - position.y) > 0.5;
+      return {
+        rect,
+        guides: snapped.guides,
+        overlaps: collide ? overlapAreas(rect, obstacles) : [],
+        ghost: moved ? { ...start, ...target } : null,
+      };
+    },
+    settleTarget,
+    setGroupPosition,
+    groupPosition: () => position,
+    cancel: () => setGroupPosition(start.x, start.y),
+  };
+}
+
+/** Snap lines and bounds for resizing one panel, measured once at resize start. */
+export function beginRegisteredPanelResize(
+  surface: HTMLElement,
+  id: string,
+): { targets: SnapTargets; bounds: { width: number; height: number }; obstacles: LayoutRect[] } {
+  const bounds = { width: surface.clientWidth, height: surface.clientHeight };
+  const others = [...(registries.get(surface)?.values() ?? [])]
+    .filter((panel) => panel.id !== id)
+    .map(measuredRect)
+    .filter((rect) => rect.width > 0 && rect.height > 0);
+  return { targets: buildSnapTargets(bounds, others), bounds, obstacles: others };
+}
 export const GAME_PANEL_STACK_CHANGE_EVENT = "marinara-game-panel-stack-change";
 const STACK_STORAGE_PREFIX = "marinara-game-panel-stacks:";
 
@@ -374,10 +536,12 @@ export function registerGamePanel(surface: HTMLElement, panel: RegisteredPanel):
   }
   registry.set(panel.id, panel);
   scheduleGamePanelLayout(surface);
+  notifyRegistry(surface);
   return () => {
-    registry?.delete(panel.id);
+    if (registry?.get(panel.id) === panel) registry.delete(panel.id);
     if (!registry?.size) restoreSurfaceOverflow(surface);
     scheduleGamePanelLayout(surface);
+    notifyRegistry(surface);
   };
 }
 
@@ -443,14 +607,29 @@ export function commitRegisteredPanelGroup(surface: HTMLElement, id: string): vo
   if (!registry || !panel) return;
   const groupId = panel.stackGroup;
   for (const member of registry.values()) {
-    if (groupId && member.stackGroup === groupId) member.setPreferredPosition?.();
+    if (!groupId || member.stackGroup !== groupId || member.id === id) continue;
+    // Persist every member so a grouped drag survives reload, not just the dragged one.
+    if (member.commitPosition) member.commitPosition();
+    else member.setPreferredPosition?.();
   }
+}
+
+const suspendedSurfaces = new WeakSet<HTMLElement>();
+
+/**
+ * Pause the automatic resolver while the user drags or resizes, so reflow
+ * cannot fight the pointer. Resuming schedules one pass.
+ */
+export function setGamePanelLayoutSuspended(surface: HTMLElement, suspended: boolean): void {
+  if (suspended) suspendedSurfaces.add(surface);
+  else if (suspendedSurfaces.delete(surface)) scheduleGamePanelLayout(surface);
 }
 
 export function scheduleGamePanelLayout(surface: HTMLElement): void {
   if (scheduled.has(surface)) return;
   const frame = requestAnimationFrame(() => {
     scheduled.delete(surface);
+    if (suspendedSurfaces.has(surface)) return;
     const registry = registries.get(surface);
     if (!registry || !registry.size || !surface.clientWidth || !surface.clientHeight) {
       restoreSurfaceOverflow(surface);
@@ -471,11 +650,17 @@ export function scheduleGamePanelLayout(surface: HTMLElement): void {
         priority: panel.priority ?? index,
         fixed: panel.fixed,
         bottomInset: panel.bottomInset,
+        firmHeight: panel.firmHeight,
+        stackGroup: panel.stackGroup ?? null,
         setPosition: panel.setPosition,
         setHeightLimit: panel.setHeightLimit,
       } satisfies GamePanelLayoutItem;
     });
-    const overflow = resolveGamePanelLayout(items, { width: surface.clientWidth, height: surface.clientHeight });
+    const overflow = resolveGamePanelLayout(items, {
+      width: surface.clientWidth,
+      height: surface.clientHeight,
+      allowOverlap: !gamePanelCollisionsEnabled(),
+    });
     if (overflow) {
       surface.dataset.gamePanelOverflow = "true";
     } else delete surface.dataset.gamePanelOverflow;

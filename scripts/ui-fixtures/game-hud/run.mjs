@@ -82,6 +82,29 @@ try {
   const { base } = await fixture.ready;
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  // Per-panel layout options (collapse to edge, edge, bottom pin) live in the chip's options popover.
+  const optionsDialog = () => page.getByRole("dialog", { name: /options for/i });
+  const panelOptions = async (panel) => {
+    const button = panel.locator("[data-panel-options-button]").first();
+    if ((await button.getAttribute("aria-expanded")) !== "true") await button.click();
+    await optionsDialog().waitFor();
+    return optionsDialog();
+  };
+  const closeOptions = async () => {
+    if (!(await optionsDialog().count())) return;
+    await page.keyboard.press("Escape");
+    await optionsDialog().waitFor({ state: "detached" });
+  };
+  const collapseViaOptions = async (panel) => {
+    const dialog = await panelOptions(panel);
+    await dialog.getByRole("button", { name: /collapse to edge/i }).click();
+    await dialog.waitFor({ state: "detached" });
+  };
+  const setTuckEdge = async (panel, edge) => {
+    const dialog = await panelOptions(panel);
+    await dialog.getByRole("radio", { name: new RegExp(`^${edge} edge$`, "i") }).click();
+    await closeOptions();
+  };
   await runMobileWidgetAssertions(page, base);
   await page.goto(base);
   await page.getByText("Real NPC", { exact: true }).waitFor();
@@ -135,8 +158,7 @@ try {
   const customWidget = page.locator('[data-game-floating-widget="open-file"]');
   await customWidget.waitFor();
   assert.match(await customWidget.textContent(), /Open File/, "real custom widget renders");
-  const customTuck = customWidget.getByRole("button", { name: /collapse to edge/i });
-  await customTuck.click();
+  await collapseViaOptions(customWidget);
   const customTab = customWidget.locator("[data-game-tuck-tab]");
   await customTab.waitFor();
   assert.match(await customTab.textContent(), /📄/, "collapsed custom widget shows its icon");
@@ -223,7 +245,7 @@ try {
     "right custom widget click-open avoids a large x jump",
   );
   await page.locator("[data-editing-toggle]").click();
-  await customTuck.click();
+  await collapseViaOptions(customWidget);
   await customTab.waitFor();
   await page.waitForFunction(() => {
     const panel = document.querySelector('[data-game-floating-widget="open-file"]');
@@ -268,10 +290,9 @@ try {
   );
   const customOpenedBox = await customWidget.boundingBox();
   assert.ok(customOpenedBox && customOpenedBox.x + customOpenedBox.width <= 1440, "click-open stays on the right edge");
-  await customWidget.getByRole("button", { name: /collapse to edge/i }).click();
+  await collapseViaOptions(customWidget);
   await customWidget.locator("[data-game-tuck-tab]").waitFor();
   const status = page.locator('[data-game-floating-panel="game-status"]');
-  const tuck = status.getByRole("button", { name: /collapse to edge/i });
   const tuckTab = status.locator("[data-game-tuck-tab]");
   const waitStatusOpen = () =>
     page.waitForFunction(
@@ -287,7 +308,7 @@ try {
     return box;
   };
   const collapseStatus = async () => {
-    await status.getByRole("button", { name: /collapse to edge/i }).click();
+    await collapseViaOptions(status);
     await tuckTab.waitFor();
   };
   await collapseStatus();
@@ -385,7 +406,7 @@ try {
   );
 
   await tuckTab.click();
-  await status.getByRole("combobox", { name: /widget edge/i }).selectOption("right");
+  await setTuckEdge(status, "right");
   await collapseStatus();
   const rightTabBox = await tuckTab.boundingBox();
   assert.ok(
@@ -419,7 +440,7 @@ try {
   await tuckTab.click();
 
   await page.setViewportSize({ width: 1024, height: 768 });
-  await status.getByRole("combobox", { name: /widget edge/i }).selectOption("left");
+  await setTuckEdge(status, "left");
   await collapseStatus();
   await page.evaluate(() => {
     document.documentElement.style.fontSize = "20px";
@@ -452,7 +473,7 @@ try {
   await tuckTab.click();
   await page.setViewportSize({ width: 1440, height: 900 });
 
-  await status.getByRole("combobox", { name: /widget edge/i }).selectOption("top");
+  await setTuckEdge(status, "top");
   await collapseStatus();
   const topTabBox = await tuckTab.boundingBox();
   assert.ok(topTabBox && topTabBox.y <= 1, "top edge tab is clamped to the viewport");
@@ -464,14 +485,18 @@ try {
   const topBox = await readStatusBox();
   assert.ok(topBox.y <= 1, "keyboard focus reveal stays at the top edge");
   await page.keyboard.press("Enter");
-  await status.getByRole("button", { name: /collapse to edge/i }).click();
+  await collapseViaOptions(status);
   await page.locator("[data-status-update]").click({ force: true });
   await waitStatusOpen();
   assert.ok((await readStatusBox()).y <= 1, "value-change reveal stays at the top edge");
   await page.keyboard.press("Escape");
-  const bottomLock = page.getByRole("button", { name: /bottom/i }).last();
+  const narrationPanel = page.locator('[data-game-floating-panel="narration"]');
+  const bottomLock = (await panelOptions(narrationPanel)).getByRole("button", { name: /bottom/i });
   await bottomLock.click();
   assert.equal(await bottomLock.getAttribute("aria-pressed"), "true", "bottom pin toggles");
+  await closeOptions();
+  const bottomPinned = () =>
+    page.evaluate(() => localStorage.getItem("marinara-game-panel:hud-chat:floating:narration:bottom-lock"));
   assert.equal(
     await page.evaluate(() => localStorage.getItem("marinara-game-panel:hud-chat:floating:narration:bottom-lock")),
     "true",
@@ -483,11 +508,7 @@ try {
   ]) {
     await page.setViewportSize(viewport);
     await page.waitForTimeout(250);
-    assert.equal(
-      await bottomLock.getAttribute("aria-pressed"),
-      "true",
-      `${viewport.width}: bottom pin remains enabled`,
-    );
+    assert.equal(await bottomPinned(), "true", `${viewport.width}: bottom pin remains enabled`);
     await page.waitForFunction(
       () => {
         const panel = document.querySelector('[data-game-floating-panel="narration"]');
@@ -525,9 +546,8 @@ try {
     await continuityTab.focus();
     await waitStatusOpen();
   }
-  await status.getByRole("combobox", { name: /widget edge/i }).selectOption("right");
-  const continuityCollapse = status.getByRole("button", { name: /collapse to edge/i });
-  if (await continuityCollapse.count()) await continuityCollapse.click();
+  await setTuckEdge(status, "right");
+  await collapseViaOptions(status);
   await continuityTab.waitFor();
   await continuityTab.focus();
   await waitStatusOpen();
@@ -557,8 +577,12 @@ try {
     Math.abs(continuityReloadedBox.x / (1280 - continuityReloadedBox.width) - continuityRelativeX) <= 0.01,
     "untucked right anchor preserves its relative x after reload",
   );
-  const afterReloadLock = page.getByRole("button", { name: /bottom/i }).last();
+  const afterReloadLock = (await panelOptions(page.locator('[data-game-floating-panel="narration"]'))).getByRole(
+    "button",
+    { name: /bottom/i },
+  );
   assert.equal(await afterReloadLock.getAttribute("aria-pressed"), "true", "bottom pin survives reload");
+  await closeOptions();
   await page.waitForFunction(
     () => {
       const panel = document.querySelector('[data-game-floating-panel="narration"]');

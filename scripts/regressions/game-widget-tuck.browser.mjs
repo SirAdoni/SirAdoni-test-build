@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { chromium } from "@playwright/test";
 
 const [url, storageState, chatId] = process.argv.slice(2);
-if (!url || !chatId) throw new Error("Usage: node game-widget-tuck.browser.mjs URL STORAGE_STATE CHAT_ID");
+if (!url || !chatId)
+  throw new Error("Usage: node game-widget-tuck.browser.mjs URL STORAGE_STATE CHAT_ID [LAYOUT_SCOPE]");
+// Layout keys live under the game's panel layout scope, which differs from the chat id for
+// later sessions (chat metadata gamePanelLayoutScopeId). Pass it as the 4th argument when it does.
+const layoutScope = process.argv[5] || chatId;
 
 const browser = await chromium.launch({ channel: "msedge", headless: true });
 try {
@@ -40,17 +44,36 @@ try {
   });
   await page.setViewportSize({ width: 1920, height: 1080 });
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+  // Per-panel layout options live in the edit chip's options popover.
+  const optionsDialog = () => page.getByRole("dialog", { name: /options for/i });
+  const panelOptions = async (panelSelector) => {
+    const button = page.locator(`${panelSelector} [data-panel-options-button]`).first();
+    if ((await button.getAttribute("aria-expanded")) !== "true") await button.click();
+    await optionsDialog().waitFor();
+    return optionsDialog();
+  };
+  const closeOptions = async () => {
+    if (!(await optionsDialog().count())) return;
+    await page.keyboard.press("Escape");
+    await optionsDialog().waitFor({ state: "detached" });
+  };
   const widget = page.locator('[data-game-floating-panel="widget:health"]').first();
-  await widget.waitFor();
+  await widget.waitFor({ timeout: 180000 });
+  // Transient toasts (for example "update ready") and the all-locked hint must not intercept clicks.
+  await page.addStyleTag({
+    content: "[data-sonner-toaster],[data-sonner-toast],[data-layout-locked-hint]{display:none!important}",
+  });
   const edit = page.getByRole("button", { name: /edit layout|done editing/i }).first();
   if ((await edit.getAttribute("aria-pressed")) !== "true") await edit.click();
-  const tuck = widget.getByRole('button', { name: 'Collapse to edge', exact: true });
-  const edge = widget.locator('select[aria-label*="widget edge" i]');
-  await tuck.waitFor();
+  const widgetSelector = '[data-game-floating-panel="widget:health"]';
+  const collapse = async () =>
+    (await panelOptions(widgetSelector)).getByRole("button", { name: "Collapse to edge", exact: true }).click();
   for (const edgeName of ["left", "right", "top"]) {
-    await edge.selectOption(edgeName, { force: true });
+    await (await panelOptions(widgetSelector))
+      .getByRole("radio", { name: new RegExp(`^${edgeName} edge$`, "i") })
+      .click();
     await page.waitForTimeout(100);
-    await tuck.evaluate((element) => element.click());
+    await collapse();
     const tab = widget.locator("[data-game-tuck-tab]");
     await tab.waitFor();
     const box = await widget.boundingBox();
@@ -70,14 +93,18 @@ try {
     await tab.click();
   }
   const tab = widget.locator("[data-game-tuck-tab]");
-  await tuck.evaluate((element) => element.click());
+  await collapse();
   await tab.waitFor();
 
   await page.reload({ waitUntil: "domcontentloaded" });
   await widget.waitFor();
   assert.ok((await widget.boundingBox()).width <= 40, "initial mount stays tucked without a value change");
+  await page.addStyleTag({
+    content: "[data-sonner-toaster],[data-sonner-toast],[data-layout-locked-hint]{display:none!important}",
+  });
   const editAfterReload = page.getByRole("button", { name: /edit layout|done editing/i }).first();
-  if ((await editAfterReload.getAttribute("aria-pressed")) !== "true") await editAfterReload.click();
+  // Hover reveal is a play-mode behaviour (edit mode keeps tabs still so they can be dragged).
+  if ((await editAfterReload.getAttribute("aria-pressed")) === "true") await editAfterReload.click();
 
   await tab.hover();
   await page.waitForTimeout(100);
@@ -123,7 +150,7 @@ try {
   assert.equal(
     await page.evaluate(
       ({ chat, panelId }) => localStorage.getItem(`marinara-game-panel:${chat}:floating:${panelId}:tucked`),
-      { chat: chatId, panelId: await widget.getAttribute("data-game-floating-panel") },
+      { chat: layoutScope, panelId: await widget.getAttribute("data-game-floating-panel") },
     ),
     "false",
     "click reveal persists an untucked preference",

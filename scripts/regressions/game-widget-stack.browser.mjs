@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { chromium } from "@playwright/test";
 
 const [url, storageState, chatId] = process.argv.slice(2);
-if (!url || !chatId) throw new Error("Usage: node game-widget-stack.browser.mjs URL STORAGE_STATE CHAT_ID");
+if (!url || !chatId)
+  throw new Error("Usage: node game-widget-stack.browser.mjs URL STORAGE_STATE CHAT_ID [LAYOUT_SCOPE]");
+// Layout keys live under the game's panel layout scope, which differs from the chat id for
+// later sessions (chat metadata gamePanelLayoutScopeId). Pass it as the 4th argument when it does.
+const layoutScope = process.argv[5] || chatId;
 
 const browser = await chromium.launch({ channel: "msedge", headless: true });
 try {
@@ -12,10 +16,27 @@ try {
   await page.setViewportSize({ width: 2560, height: 1440 });
   await page.route("**/api/**", (route) => (route.request().method() === "GET" ? route.continue() : route.abort()));
   await page.goto(url);
+  // Per-panel layout options live in the edit chip's options popover.
+  const optionsDialog = () => page.getByRole("dialog", { name: /options for/i });
+  const panelOptions = async (panelSelector) => {
+    const button = page.locator(`${panelSelector} [data-panel-options-button]`).first();
+    if ((await button.getAttribute("aria-expanded")) !== "true") await button.click();
+    await optionsDialog().waitFor();
+    return optionsDialog();
+  };
+  const closeOptions = async () => {
+    if (!(await optionsDialog().count())) return;
+    await page.keyboard.press("Escape");
+    await optionsDialog().waitFor({ state: "detached" });
+  };
 
   const widgets = page.locator('[data-game-floating-panel^="widget:"]');
-  await widgets.nth(0).waitFor();
+  await widgets.nth(0).waitFor({ timeout: 180000 });
   assert.ok((await widgets.count()) >= 2, "fixture exposes at least two user widgets");
+  // Transient toasts (for example "update ready") and the all-locked hint must not intercept clicks.
+  await page.addStyleTag({
+    content: "[data-sonner-toaster],[data-sonner-toast],[data-layout-locked-hint]{display:none!important}",
+  });
   const editButton = page.getByRole("button", { name: /edit layout|done editing/i }).first();
   if ((await editButton.getAttribute("aria-pressed")) !== "true") await editButton.click();
 
@@ -24,21 +45,28 @@ try {
   );
   const first = page.locator(`[data-game-floating-panel="${ids[0]}"]`);
   const second = page.locator(`[data-game-floating-panel="${ids[1]}"]`);
-  const stackSelect = (panel) => panel.locator('select[aria-label*="stack" i]').first();
-  await stackSelect(first).selectOption(ids[1]);
+  const stackValue = async (id) => {
+    const value = await (await panelOptions(`[data-game-floating-panel="${id}"]`))
+      .locator('select[aria-label*="stack" i]')
+      .first()
+      .inputValue();
+    await closeOptions();
+    return value;
+  };
+  await (await panelOptions(`[data-game-floating-panel="${ids[0]}"]`))
+    .locator('select[aria-label*="stack" i]')
+    .first()
+    .selectOption(ids[1]);
+  await closeOptions();
   await page.waitForTimeout(300);
 
   const stackState = await page.evaluate(
     (id) => JSON.parse(localStorage.getItem(`marinara-game-panel-stacks:${id}`) ?? "{}"),
-    chatId,
+    layoutScope,
   );
   assert.equal(stackState[ids[0]], stackState[ids[1]], "joining an unstacked widget writes both members atomically");
   assert.ok(stackState[ids[0]], "stack group is persisted");
-  assert.equal(
-    await stackSelect(first).inputValue(),
-    await stackSelect(second).inputValue(),
-    "both controls show the same stack",
-  );
+  assert.equal(await stackValue(ids[0]), await stackValue(ids[1]), "both controls show the same stack");
 
   const before = await page.evaluate(
     (selected) => {
@@ -90,7 +118,7 @@ try {
   await page.waitForTimeout(500);
   const reloaded = await page.evaluate(
     (id) => JSON.parse(localStorage.getItem(`marinara-game-panel-stacks:${id}`) ?? "{}"),
-    chatId,
+    layoutScope,
   );
   assert.equal(reloaded[ids[0]], reloaded[ids[1]], "stack membership survives reload");
   console.info("Game widget stack regression passed: atomic join, grouped drag, and persistence.");

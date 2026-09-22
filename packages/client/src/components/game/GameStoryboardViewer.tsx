@@ -109,13 +109,13 @@ export function GameStoryboardInlineViewer({
     (frame.status === "planned" || frame.status === "rendering_image" || frame.status === "rendering_video");
 
   return (
-    <FloatingGamePanel id="storyboard" width={width} side="hud_right" autoGrow overflowVisible>
+    <FloatingGamePanel id="storyboard" width={width} side="hud_right" autoGrow overflowVisible fillHeight>
       <div
         data-game-skip-bg-nav="true"
-        className="relative w-full select-none max-lg:max-h-[min(40%,max(3.5rem,calc(100dvh-28rem)))] max-lg:shrink-0 max-lg:overflow-y-auto"
+        className="relative w-full select-none max-lg:max-h-[min(40%,max(3.5rem,calc(100dvh-28rem)))] max-lg:shrink-0 max-lg:overflow-y-auto group-data-[game-panel-fill=true]/panelbox:flex group-data-[game-panel-fill=true]/panelbox:h-full group-data-[game-panel-fill=true]/panelbox:flex-col"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="relative">
+        <div className="relative group-data-[game-panel-fill=true]/panelbox:flex group-data-[game-panel-fill=true]/panelbox:min-h-0 group-data-[game-panel-fill=true]/panelbox:flex-1 group-data-[game-panel-fill=true]/panelbox:flex-col">
           <button
             type="button"
             onClick={(event) => {
@@ -133,7 +133,7 @@ export function GameStoryboardInlineViewer({
           >
             <X size={14} />
           </button>
-          <div className="overflow-hidden rounded-xl border border-white/15 bg-black/75 shadow-2xl backdrop-blur-md">
+          <div className="overflow-hidden rounded-xl border border-white/15 bg-black/75 shadow-2xl backdrop-blur-md group-data-[game-panel-fill=true]/panelbox:flex group-data-[game-panel-fill=true]/panelbox:min-h-0 group-data-[game-panel-fill=true]/panelbox:flex-1 group-data-[game-panel-fill=true]/panelbox:flex-col group-data-[game-panel-fill=true]/panelbox:[&>*]:shrink-0">
             <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2 max-lg:min-h-14 max-lg:pr-16">
               <div className="flex min-w-0 items-center gap-2 text-[0.6875rem] font-semibold uppercase tracking-wide text-white/75">
                 <PanelsTopLeft size={13} className="shrink-0 text-[var(--primary)]" />
@@ -235,7 +235,7 @@ export function GameStoryboardInlineViewer({
                 onPlay={() => onVideoPlayingChange(frame.video!.id, true)}
                 onPause={() => onVideoPlayingChange(frame.video!.id, false)}
                 onEnded={() => onVideoPlayingChange(frame.video!.id, false)}
-                className="aspect-video w-full cursor-auto touch-auto bg-black object-contain max-lg:max-h-[24dvh]"
+                className="aspect-video w-full cursor-auto touch-auto bg-black object-contain max-lg:max-h-[24dvh] lg:max-h-[calc(var(--game-panel-box-max-height,100dvh)-150px)] group-data-[game-panel-fill=true]/panelbox:aspect-auto group-data-[game-panel-fill=true]/panelbox:min-h-0 group-data-[game-panel-fill=true]/panelbox:flex-1! group-data-[game-panel-fill=true]/panelbox:lg:max-h-none"
                 data-storyboard-viewer-no-drag
               />
             ) : frame?.image ? (
@@ -243,7 +243,7 @@ export function GameStoryboardInlineViewer({
                 <button
                   type="button"
                   onClick={() => onOpenImage(frame)}
-                  className="block w-full cursor-zoom-in bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--primary)]"
+                  className="block w-full cursor-zoom-in bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--primary)] group-data-[game-panel-fill=true]/panelbox:min-h-0 group-data-[game-panel-fill=true]/panelbox:flex-1!"
                   aria-label={localizeUi("game.storyboard.openFullscreen")}
                   title={localizeUi("game.storyboard.openFullscreen")}
                   data-storyboard-viewer-no-drag
@@ -256,7 +256,7 @@ export function GameStoryboardInlineViewer({
                         index: frame.index + 1,
                       })
                     }
-                    className="aspect-video w-full bg-black object-contain max-lg:max-h-[24dvh]"
+                    className="aspect-video w-full bg-black object-contain max-lg:max-h-[24dvh] lg:max-h-[calc(var(--game-panel-box-max-height,100dvh)-150px)] group-data-[game-panel-fill=true]/panelbox:aspect-auto group-data-[game-panel-fill=true]/panelbox:h-full group-data-[game-panel-fill=true]/panelbox:min-h-0 group-data-[game-panel-fill=true]/panelbox:flex-1! group-data-[game-panel-fill=true]/panelbox:lg:max-h-none"
                     draggable={false}
                   />
                 </button>
@@ -269,12 +269,12 @@ export function GameStoryboardInlineViewer({
                       index: frame.index + 1,
                     })
                   }
-                  className="aspect-video w-full bg-black object-contain max-lg:max-h-[24dvh]"
+                  className="aspect-video w-full bg-black object-contain max-lg:max-h-[24dvh] lg:max-h-[calc(var(--game-panel-box-max-height,100dvh)-150px)] group-data-[game-panel-fill=true]/panelbox:aspect-auto group-data-[game-panel-fill=true]/panelbox:h-full group-data-[game-panel-fill=true]/panelbox:min-h-0 group-data-[game-panel-fill=true]/panelbox:flex-1! group-data-[game-panel-fill=true]/panelbox:lg:max-h-none"
                   draggable={false}
                 />
               )
             ) : generationError && !effectiveGenerating ? null : (
-              <div className="flex min-h-20 w-full items-center justify-center gap-2 bg-black/45 text-xs text-white/55 lg:aspect-video">
+              <div className="flex min-h-20 w-full items-center justify-center gap-2 bg-black/45 text-xs text-white/55 lg:aspect-video group-data-[game-panel-fill=true]/panelbox:aspect-auto group-data-[game-panel-fill=true]/panelbox:min-h-0 group-data-[game-panel-fill=true]/panelbox:flex-1! group-data-[game-panel-fill=true]/panelbox:lg:aspect-auto">
                 {effectiveGenerating ? <Loader2 size={14} className="animate-spin" /> : null}
                 {terminalStoryboardFailure
                   ? localizeUi(

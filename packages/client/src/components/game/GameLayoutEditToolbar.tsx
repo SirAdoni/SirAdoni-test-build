@@ -392,6 +392,12 @@ function LayoutToolbar({
     };
   }, [surface]);
   useEffect(() => {
+    // The hint sits over the top of the surface; let it step aside on its own after a while.
+    if (hint !== "shown") return;
+    const timer = window.setTimeout(() => setHint("dismissed"), 12000);
+    return () => window.clearTimeout(timer);
+  }, [hint]);
+  useEffect(() => {
     if (hint !== "pending") return;
     const timer = window.setTimeout(() => setHint(allLocked ? "shown" : "dismissed"), 160);
     return () => window.clearTimeout(timer);

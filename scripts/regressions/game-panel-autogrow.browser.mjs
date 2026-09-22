@@ -18,14 +18,33 @@ try {
   await page.route("**/api/**", (route) => (route.request().method() === "GET" ? route.continue() : route.abort()));
   await page.setViewportSize({ width: 1920, height: 1080 });
   await page.goto(url);
-  await page.locator('[data-game-floating-panel="map"]').waitFor();
+  // Per-panel layout options live in the edit chip's options popover.
+  const optionsDialog = () => page.getByRole("dialog", { name: /options for/i });
+  const panelOptions = async (panelSelector) => {
+    const button = page.locator(`${panelSelector} [data-panel-options-button]`).first();
+    if ((await button.getAttribute("aria-expanded")) !== "true") await button.click();
+    await optionsDialog().waitFor();
+    return optionsDialog();
+  };
+  const closeOptions = async () => {
+    if (!(await optionsDialog().count())) return;
+    await page.keyboard.press("Escape");
+    await optionsDialog().waitFor({ state: "detached" });
+  };
+  await page.locator('[data-game-floating-panel="map"]').waitFor({ timeout: 180000 });
+  // Transient toasts (for example "update ready") and the all-locked hint must not intercept clicks.
+  await page.addStyleTag({
+    content: "[data-sonner-toaster],[data-sonner-toast],[data-layout-locked-hint]{display:none!important}",
+  });
   const editButton = page.getByRole("button", { name: /edit layout|done editing/i }).first();
   if ((await editButton.getAttribute("aria-pressed")) !== "true") await editButton.click();
   const toolbar = page.locator('[data-game-floating-panel="toolbar"]');
-  const topCenterButton = toolbar.locator('button[aria-label*="top center" i]');
-  await topCenterButton.waitFor();
+  const topCenterButton = (await panelOptions('[data-game-floating-panel="toolbar"]')).locator(
+    'button[aria-label*="top center" i]',
+  );
   await topCenterButton.click();
   assert.equal(await topCenterButton.getAttribute("aria-pressed"), "true", "toolbar top-center pin toggles on");
+  await closeOptions();
   for (const width of [1920, 1440]) {
     await page.setViewportSize({ width, height: 1080 });
     await page.waitForTimeout(300);
@@ -41,14 +60,15 @@ try {
   await page.locator('[data-game-floating-panel="toolbar"]').waitFor();
   const editAfterReload = page.getByRole("button", { name: /edit layout|done editing/i }).first();
   if ((await editAfterReload.getAttribute("aria-pressed")) !== "true") await editAfterReload.click();
-  const pinnedAfterReload = page
-    .locator('[data-game-floating-panel="toolbar"]')
-    .locator('button[aria-label*="top center" i]');
+  const pinnedAfterReload = (await panelOptions('[data-game-floating-panel="toolbar"]')).locator(
+    'button[aria-label*="top center" i]',
+  );
   assert.equal(await pinnedAfterReload.getAttribute("aria-pressed"), "true", "toolbar pin survives reload");
   const reloadedBox = await page.locator('[data-game-floating-panel="toolbar"]').boundingBox();
   assert.ok(reloadedBox && Math.abs(reloadedBox.x + reloadedBox.width / 2 - 1440 / 2) <= 2, "pin restores centered");
   await pinnedAfterReload.click();
   assert.equal(await pinnedAfterReload.getAttribute("aria-pressed"), "false", "toolbar top-center pin toggles off");
+  await closeOptions();
   // Unpinning intentionally restores the saved position and reflows neighbours.
   // Measure jitter after that transition, not during the requested movement.
   await page.waitForTimeout(1000);
