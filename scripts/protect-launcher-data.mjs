@@ -233,6 +233,7 @@ const SHARDED_TABLES = [
   "library_folders",
   "mari_instructions",
   "mari_workspace_context",
+  "generation_usage",
 ];
 const PRIMARY_KEY_COLUMNS = {
   campaign_memory_current_state: "stateId",

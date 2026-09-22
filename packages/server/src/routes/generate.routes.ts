@@ -181,6 +181,7 @@ import { createCustomStickersStorage } from "../services/storage/custom-stickers
 import { createCharacterGalleryStorage } from "../services/storage/character-gallery.storage.js";
 import { createPersonaGalleryStorage } from "../services/storage/persona-gallery.storage.js";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
+import { createGenerationUsageStorage } from "../services/storage/generation-usage.storage.js";
 import { getCustomAgentImportPolicy } from "../services/agents/custom-agent-import-policy.service.js";
 import { buildLorebookSemanticEmbeddingsById, warmLorebookEntryEmbeddings } from "../services/lorebook/embeddings.js";
 import { applyRegexScriptsToPromptMessages } from "../services/regex/regex-application.js";
@@ -1075,6 +1076,7 @@ export async function generateRoutes(app: FastifyInstance) {
   const characterGallery = createCharacterGalleryStorage(app.db);
   const personaGallery = createPersonaGalleryStorage(app.db);
   const appSettings = createAppSettingsStorage(app.db);
+  const generationUsageLedger = createGenerationUsageStorage(app.db);
   // Reconciliation is debounced off the request path so a turn is admitted without re-preparing the chat.
   const continuityChanges = createContinuityChangeNotifier(app);
 
@@ -3852,9 +3854,10 @@ export async function generateRoutes(app: FastifyInstance) {
           });
         }
 
-        let generationProviderOrigin: { model: string; provider: string } = {
+        let generationProviderOrigin: { model: string; provider: string; connectionId: string | null } = {
           model: conn.model,
           provider: conn.provider,
+          connectionId: conn.id ?? null,
         };
         const providerRuntime = resolveGenerationProviderRuntime({
           connectionId: connId ?? "",
@@ -3866,8 +3869,8 @@ export async function generateRoutes(app: FastifyInstance) {
           onProviderUsed: (origin) => {
             generationProviderOrigin =
               origin.kind === "fallback"
-                ? { model: origin.model, provider: origin.provider }
-                : { model: conn.model, provider: conn.provider };
+                ? { model: origin.model, provider: origin.provider, connectionId: mainFallbackConnection?.id ?? null }
+                : { model: conn.model, provider: conn.provider, connectionId: conn.id ?? null };
           },
           chatMode,
           isSceneChat,
@@ -7277,7 +7280,7 @@ export async function generateRoutes(app: FastifyInstance) {
           oocMessages: string[];
           characterId: string | null;
         } | null> => {
-          generationProviderOrigin = { model: conn.model, provider: conn.provider };
+          generationProviderOrigin = { model: conn.model, provider: conn.provider, connectionId: conn.id ?? null };
           let recoveredAlreadyAppliedSpatialTurn = false;
           const pendingGameStateToolCalls: Parameters<typeof executeToolCalls>[0] = [];
           const persistGameStateToolCalls = async (messageId: string, swipeIndex: number) => {
@@ -10205,6 +10208,21 @@ export async function generateRoutes(app: FastifyInstance) {
                 ...(isolatedUsageIncomplete ? { usageIncomplete: true } : {}),
               },
             };
+            // Usage dashboard ledger: best effort and off the response path, so a
+            // storage hiccup can never fail or delay the generation itself.
+            void generationUsageLedger
+              .record({
+                chatId: input.chatId,
+                messageId: savedMsg.id,
+                connectionId: generationProviderOrigin.connectionId,
+                provider: generationProviderOrigin.provider,
+                model: generationProviderOrigin.model,
+                inputTokens: usage?.promptTokens,
+                outputTokens: usage?.completionTokens,
+                cachedInputTokens: usage?.cachedPromptTokens,
+                cacheWriteInputTokens: usage?.cacheWritePromptTokens,
+              })
+              .catch((error) => logger.warn(error, "[usage] Could not record generation usage"));
             if (isolatedGameResult) {
               extraUpdate.isolatedGameTurn = {
                 mode: "isolated",

@@ -136,6 +136,7 @@ import {
   HardDrive,
   LifeBuoy,
   SlidersHorizontal,
+  TextQuote,
 } from "lucide-react";
 import {
   useChat,
@@ -169,6 +170,9 @@ import { PromptOverridesEditor } from "./settings/PromptOverridesEditor";
 import { BackgroundPicker } from "./settings/BackgroundPicker";
 import { RequestTimeoutSettings } from "./settings/RequestTimeoutSettings";
 import { CustomGenerationParametersSettings } from "./settings/CustomGenerationParametersSettings";
+import { TextSnippetsSettings } from "./settings/TextSnippetsSettings";
+import { UsageDashboardSettings } from "./settings/UsageDashboardSettings";
+import { TEXT_SNIPPETS_SETTINGS_CONTROL_ID, USAGE_DASHBOARD_SETTINGS_CONTROL_ID } from "../../lib/settings-targets";
 import { ExternalExtensionsSettings, PersonalExtensionsSettings } from "./settings/PersonalExtensionsSettings";
 import { usePersonalExtensionPolicy, useSetExternalExtensionsEnabled } from "../../hooks/use-personal-extensions";
 import { useAgentImportPolicy, useSetAgentImportsEnabled } from "../../hooks/use-agents";
@@ -256,6 +260,7 @@ type SettingsSectionId =
   | "notifications"
   | "responses"
   | "input-editing"
+  | "text-snippets"
   | "text-rules"
   | "game-playback"
   | "overall-generations"
@@ -279,6 +284,7 @@ type SettingsSectionId =
   | "admin-access"
   | "updates"
   | "support-diagnostics"
+  | "usage-dashboard"
   | "request-timeouts"
   | "parameters"
   | "message-tools"
@@ -350,6 +356,13 @@ const SETTINGS_SECTIONS: readonly SettingsSectionMeta[] = [
       "guide reply",
       "impersonate",
     ],
+  },
+  {
+    id: "text-snippets",
+    tab: "general",
+    label: "Text Snippets",
+    description: "Short triggers that expand into longer text in the chat input.",
+    aliases: ["snippets", "shortcuts", "expand", "trigger", "ooc", "templates", "text expander", "macro"],
   },
   {
     id: "text-rules",
@@ -521,6 +534,13 @@ const SETTINGS_SECTIONS: readonly SettingsSectionMeta[] = [
     label: "Support Diagnostics",
     description: "Copy technical details for support tickets.",
     aliases: ["support", "diagnostics", "system info", "gpu", "model", "ticket", "bug report"],
+  },
+  {
+    id: "usage-dashboard",
+    tab: "advanced",
+    label: "Usage Dashboard",
+    description: "Token usage per connection, chat, and day, with optional cost estimates.",
+    aliases: ["usage", "tokens", "cost", "price", "spend", "billing", "statistics", "stats", "dashboard"],
   },
   {
     id: "request-timeouts",
@@ -1403,6 +1423,22 @@ const SETTINGS_SEARCHABLE_CONTROLS: readonly SettingsSearchableControlMeta[] = [
     description: "Create reusable numeric provider parameters for chats and connections.",
     aliases: ["parameter", "provider", "min p", "min_p", "range", "tooltip"],
     kind: "Input",
+  },
+  {
+    id: TEXT_SNIPPETS_SETTINGS_CONTROL_ID,
+    sectionId: "text-snippets",
+    label: "Text Snippets",
+    description: "Short triggers that expand into longer text in the chat input.",
+    aliases: ["snippets", "expand", "trigger", "ooc"],
+    kind: "Input",
+  },
+  {
+    id: USAGE_DASHBOARD_SETTINGS_CONTROL_ID,
+    sectionId: "usage-dashboard",
+    label: "Usage Dashboard",
+    description: "Token usage per connection, chat, and day, with optional cost estimates.",
+    aliases: ["usage", "tokens", "cost", "price"],
+    kind: "Picker",
   },
   {
     id: QUICK_REPLIES_SETTINGS_CONTROL_ID,
@@ -3873,6 +3909,17 @@ function GeneralSettings() {
             help={localizeUi("settings.controls.doubleClickEdit.help")}
           />
         </div>
+      </SettingsSection>
+
+      <SettingsSection
+        title={localizeUi("settings.sections.textSnippets.title")}
+        description={localizeUi("settings.sections.textSnippets.description")}
+        icon={<TextQuote size="0.875rem" />}
+        {...getSettingsSectionAnchorProps("text-snippets")}
+      >
+        <SearchableSettingTarget controlId={TEXT_SNIPPETS_SETTINGS_CONTROL_ID}>
+          <TextSnippetsSettings />
+        </SearchableSettingTarget>
       </SettingsSection>
 
       <SettingsSection
@@ -8661,6 +8708,17 @@ function AdvancedSettings() {
             <Copy size="0.8125rem" />
             {localizeUi("ui.panels.advancedsettings.copySupportDiagnostics")}
           </button>
+        </SearchableSettingTarget>
+      </SettingsSection>
+
+      <SettingsSection
+        title={localizeUi("settings.sections.usageDashboard.title")}
+        description={localizeUi("settings.sections.usageDashboard.description")}
+        icon={<BarChart3 size="0.875rem" />}
+        {...getSettingsSectionAnchorProps("usage-dashboard")}
+      >
+        <SearchableSettingTarget controlId={USAGE_DASHBOARD_SETTINGS_CONTROL_ID}>
+          <UsageDashboardSettings />
         </SearchableSettingTarget>
       </SettingsSection>
 

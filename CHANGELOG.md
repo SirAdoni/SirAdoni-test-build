@@ -24,6 +24,13 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Added **Duplicates** to the character library. It groups likely duplicate cards by matching names or very similar description and personality, with side-by-side basics, a field-by-field compare, and an open button. Nothing is deleted automatically.
 
 - Selected characters can now have tags added, removed, or renamed in bulk from the library selection bar, with a review summary before applying. Each changed card is saved through its normal save path, so version history records the edit.
+- Added a command palette. Press Ctrl+K (Cmd+K on Mac) or tap the search button in the top bar to jump to chats, characters, personas, lorebooks, presets and Settings tabs, or run actions such as starting a new chat, switching light or dark mode and opening the chat guide. Recent picks come first.
+
+- Added a keyboard shortcuts list. Press ? while not typing, or pick Keyboard shortcuts in the command palette, to see every shortcut the app supports, grouped by where it works.
+
+- Added text snippets. Define triggers such as ;ooc in Settings > General > Text Snippets, then type the trigger followed by Space or Tab in the chat input to expand it. {{cursor}} sets where the caret lands, macros like {{char}} are filled in when you send, and Ctrl+Z undoes an expansion. Snippets can also be inserted from the Quick replies menu or the command palette, and sync with your other devices.
+
+- Added a Usage Dashboard in Settings > Advanced. It totals the tokens your providers report for each reply by connection, chat and day over a chosen range, and can estimate cost from prices you enter per 1M input and output tokens. Usage is recorded from this version on.
 
 - Fixed the mobile Game Mode layout so Currently Present no longer pushes the narration and input below the screen. Widget bookmarks now use a single horizontally scrollable row; opening one shows a dismissible panel without shifting the chat. Short screens also retain room for narration when the storyboard viewer is open. Saved desktop widget placements are preserved.
 

@@ -423,6 +423,7 @@ const BUILT_IN_FILE_BACKED_TABLES = [
   "library_folders",
   "mari_instructions",
   "mari_workspace_context",
+  "generation_usage",
 ] as const;
 
 /**
@@ -505,6 +506,7 @@ const SHARD_KEY_COLUMNS: Record<string, string> = {
   memory_chunks: "chatId",
   advanced_memory_records: "chatId",
   mari_workspace_context: "chatId",
+  generation_usage: "day",
 };
 // Deliberately mutable, unlike the arrays it mirrors: SHARDED_TABLES aliases
 // FILE_BACKED_TABLES, so a registered table becomes "sharded" by array identity

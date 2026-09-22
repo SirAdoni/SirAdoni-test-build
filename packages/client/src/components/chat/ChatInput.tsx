@@ -16,6 +16,7 @@ import {
   Sparkles,
   WandSparkles,
   Swords,
+  TextQuote,
 } from "lucide-react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
@@ -67,6 +68,8 @@ import { QuickConnectionSwitcher } from "./QuickConnectionSwitcher";
 import { QuickPersonaSwitcher } from "./QuickPersonaSwitcher";
 import { QuickSwitcherMobile } from "./QuickSwitcherMobile";
 import { SlashCommandFeedback } from "./SlashCommandFeedback";
+import { SnippetPicker } from "./SnippetPicker";
+import { useSnippetExpansion } from "../../hooks/use-snippet-expansion";
 import { MessageReplyPreview } from "./MessageReplyPreview";
 import { QuickReplyMenu, type QuickReplyAction } from "./QuickReplyMenu";
 import { getChatInputShellClass } from "./chat-input-styles";
@@ -243,6 +246,12 @@ export const ChatInput = memo(function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const emojiButtonRef = useRef<HTMLButtonElement>(null);
   const inputBarRef = useRef<HTMLDivElement>(null);
+  const [snippetPickerOpen, setSnippetPickerOpen] = useState(false);
+  const openSnippetPicker = useCallback(() => setSnippetPickerOpen(true), []);
+  const { snippets, expandOnInput, expandOnKeyDown, insertSnippet } = useSnippetExpansion(
+    textareaRef,
+    openSnippetPicker,
+  );
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resizeFrameRef = useRef(0);
@@ -1494,8 +1503,20 @@ export const ChatInput = memo(function ChatInput({
         onSelect: () => sendCustomQuickReply(entry.content),
       });
     }
+    if (snippets.length > 0) {
+      actions.push({
+        id: "insert-snippet",
+        label: t("snippets.quickAction"),
+        description: t("snippets.quickActionDescription"),
+        icon: <TextQuote size="0.875rem" />,
+        disabled: !activeChatId,
+        onSelect: () => setSnippetPickerOpen(true),
+      });
+    }
     return actions;
   }, [
+    snippets.length,
+    t,
     activeChatId,
     isInputBusy,
     inputBusyReason,
@@ -1614,6 +1635,8 @@ export const ChatInput = memo(function ChatInput({
       }
     }
 
+    if (expandOnKeyDown(e as React.KeyboardEvent<HTMLTextAreaElement>)) return;
+
     if (e.key === "Enter") {
       if (enterToSend && !e.shiftKey) {
         e.preventDefault();
@@ -1636,6 +1659,9 @@ export const ChatInput = memo(function ChatInput({
   const handleInput = (event?: FormEvent<HTMLTextAreaElement>) => {
     const el = textareaRef.current;
     if (!el) return;
+    // A trigger + space expands in place; the expansion's own input event has
+    // already re-run this handler, and the rest below is idempotent.
+    expandOnInput(event);
     const inputEvent = event?.nativeEvent as InputEvent | undefined;
     const isDeleting = inputEvent?.inputType?.startsWith("delete") === true;
     const shouldDeferDeleteWork = mode === "roleplay" && isDeleting && heldDeleteKeyRef.current;
@@ -2189,6 +2215,13 @@ export const ChatInput = memo(function ChatInput({
         {showQuickRepliesMenu && quickReplyActions.length > 0 && (
           <QuickReplyMenu actions={quickReplyActions} disabled={!activeChatId || isInputBusy || isReadingAttachments} />
         )}
+        <SnippetPicker
+          open={snippetPickerOpen}
+          onClose={() => setSnippetPickerOpen(false)}
+          anchorRef={inputBarRef}
+          snippets={snippets}
+          onPick={insertSnippet}
+        />
 
         {/* Send / Stop button */}
 

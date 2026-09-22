@@ -16,6 +16,7 @@ import {
   RefreshCw,
   Sparkles,
   WandSparkles,
+  TextQuote,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useQueryClient, type InfiniteData } from "@tanstack/react-query";
@@ -60,6 +61,8 @@ import { SpeechToTextButton } from "../ui/SpeechToTextButton";
 import { SlashCommandFeedback } from "./SlashCommandFeedback";
 import { MessageReplyPreview } from "./MessageReplyPreview";
 import { QuickReplyMenu, type QuickReplyAction } from "./QuickReplyMenu";
+import { SnippetPicker } from "./SnippetPicker";
+import { useSnippetExpansion } from "../../hooks/use-snippet-expansion";
 import { getChatInputShellClass } from "./chat-input-styles";
 import { MariSuggestionChips } from "./MariSuggestionChips";
 import { resolveChatContextBudget } from "../../lib/professor-mari-context-budget";
@@ -373,6 +376,12 @@ export function ConversationInput({
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inputBarRef = useRef<HTMLDivElement>(null);
+  const [snippetPickerOpen, setSnippetPickerOpen] = useState(false);
+  const openSnippetPicker = useCallback(() => setSnippetPickerOpen(true), []);
+  const { snippets, expandOnInput, expandOnKeyDown, insertSnippet } = useSnippetExpansion(
+    textareaRef,
+    openSnippetPicker,
+  );
   const focusAfterMobileRestoreRef = useRef(false);
   const attachmentsRef = useRef<Attachment[]>([]);
   const pendingAttachmentDraftsRef = useRef<Map<string, Attachment[]>>(new Map());
@@ -1525,8 +1534,20 @@ export function ConversationInput({
         onSelect: () => sendCustomQuickReply(entry.content),
       });
     }
+    if (snippets.length > 0) {
+      actions.push({
+        id: "insert-snippet",
+        label: t("snippets.quickAction"),
+        description: t("snippets.quickActionDescription"),
+        icon: <TextQuote size="0.875rem" />,
+        disabled: !activeChatId,
+        onSelect: () => setSnippetPickerOpen(true),
+      });
+    }
     return actions;
   }, [
+    snippets.length,
+    t,
     activeChatId,
     isSendBlocked,
     delayedCharacterInfo,
@@ -1624,6 +1645,8 @@ export function ConversationInput({
         }
       }
 
+      if (expandOnKeyDown(e)) return;
+
       const shouldSend = enterToSend ? e.key === "Enter" && !e.shiftKey : e.key === "Enter" && (e.metaKey || e.ctrlKey);
       if (shouldSend) {
         e.preventDefault();
@@ -1631,6 +1654,7 @@ export function ConversationInput({
       }
     },
     [
+      expandOnKeyDown,
       completions,
       activeChatId,
       selectedCompletion,
@@ -1651,6 +1675,9 @@ export function ConversationInput({
     (event: FormEvent<HTMLTextAreaElement>) => {
       const el = textareaRef.current;
       if (!el) return;
+      // A trigger + space expands in place; the expansion's own input event has
+      // already re-run this handler, and the rest below is idempotent.
+      expandOnInput(event);
       const formatted = applyTextareaQuoteFormat(el, quoteFormat, event.nativeEvent as InputEvent);
       // Debounced resize to reduce layout reflows during fast typing
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
@@ -1747,6 +1774,7 @@ export function ConversationInput({
       syncInputState,
       availableCapabilityIds,
       conversationGameSlashContributions,
+      expandOnInput,
     ],
   );
 
@@ -2384,6 +2412,13 @@ export function ConversationInput({
               <QuickReplyMenu actions={quickReplyActions} disabled={!activeChatId || isReadingAttachments} />
             </div>
           )}
+          <SnippetPicker
+            open={snippetPickerOpen}
+            onClose={() => setSnippetPickerOpen(false)}
+            anchorRef={inputBarRef}
+            snippets={snippets}
+            onPick={insertSnippet}
+          />
 
           <button
             onClick={

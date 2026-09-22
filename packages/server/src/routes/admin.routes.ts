@@ -169,6 +169,8 @@ export async function adminRoutes(app: FastifyInstance) {
       await runDelete("chat_images", () => db.delete(schema.chatImages).run());
       await runDelete("chat_folders", () => db.delete(schema.chatFolders).run());
       await runDelete("chats", () => db.delete(schema.chats).run());
+      // The usage dashboard's ledger names chats, so it goes with them.
+      await runDelete("generation_usage", () => db.delete(schema.generationUsage).run());
       filesDeleted.gallery = clearDirectory(join(DATA_DIR, "gallery"));
       filesDeleted.gameSceneVideos = clearDirectory(join(DATA_DIR, "game-scene-videos"));
     }

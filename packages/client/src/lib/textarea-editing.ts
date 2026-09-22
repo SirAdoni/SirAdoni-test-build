@@ -146,3 +146,25 @@ export function handleTextareaTab(event: TextareaTabEvent): boolean {
   if (edit) applyTextareaEdit(event.currentTarget, edit);
   return true;
 }
+
+/**
+ * Replaces `[start, end)` with `replacement` and places a collapsed caret,
+ * keeping the edit in the browser's native undo history (Ctrl+Z restores the
+ * original text). Dispatches an `input` event like a typed edit would.
+ */
+export function replaceTextareaRange(
+  textarea: HTMLTextAreaElement,
+  start: number,
+  end: number,
+  replacement: string,
+  caret: number,
+): void {
+  applyTextareaEdit(textarea, {
+    start,
+    end,
+    replacement,
+    selectionStart: caret,
+    selectionEnd: caret,
+    selectionDirection: "none",
+  });
+}

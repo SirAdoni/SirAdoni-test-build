@@ -26,6 +26,8 @@ import { CapabilityElement } from "../capabilities/CapabilityElement";
 import type { PendingSpatialTransitionDraft } from "../../stores/chat.store";
 import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
 import { applyTextareaQuoteFormat } from "../../lib/textarea-quotes";
+import { SnippetPicker } from "../chat/SnippetPicker";
+import { useSnippetExpansion } from "../../hooks/use-snippet-expansion";
 
 interface Attachment {
   type: string;
@@ -170,6 +172,10 @@ export function GameInput({
   const inputBarRef = useRef<HTMLDivElement>(null);
   const addressButtonRef = useRef<HTMLButtonElement>(null);
   const addressMenuRef = useRef<HTMLDivElement>(null);
+  // Game mode has no quick menu, so the snippet picker opens from the command palette.
+  const [snippetPickerOpen, setSnippetPickerOpen] = useState(false);
+  const openSnippetPicker = useCallback(() => setSnippetPickerOpen(true), []);
+  const { snippets, expandOnInput, expandOnKeyDown, insertSnippet } = useSnippetExpansion(inputRef, openSnippetPicker);
   const activeChat = useChatStore((s) => s.activeChat);
   const pendingSpatialTransition = useChatStore((s) =>
     draftKey ? (s.pendingSpatialTransitions.get(draftKey) ?? null) : null,
@@ -314,7 +320,8 @@ export function GameInput({
     }
   };
 
-  const handleKeyDown = (e: KeyboardEvent) => {
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (expandOnKeyDown(e)) return;
     const shouldSend = enterToSend ? e.key === "Enter" && !e.shiftKey : e.key === "Enter" && (e.metaKey || e.ctrlKey);
     if (shouldSend) {
       e.preventDefault();
@@ -643,6 +650,9 @@ export function GameInput({
           ref={inputRef}
           value={text}
           onChange={(e) => {
+            // A trigger + space expands in place; the expansion's own change
+            // event has already stored the expanded text.
+            if (expandOnInput(e)) return;
             const formatted = applyTextareaQuoteFormat(e.target, quoteFormat, e.nativeEvent as InputEvent);
             updateText(formatted);
             // Auto-grow: reset height then set to scrollHeight
@@ -754,6 +764,13 @@ export function GameInput({
             onSelect={handleEmojiSelect}
             anchorRef={emojiButtonRef}
             containerRef={inputBarRef}
+          />
+          <SnippetPicker
+            open={snippetPickerOpen}
+            onClose={() => setSnippetPickerOpen(false)}
+            anchorRef={inputBarRef}
+            snippets={snippets}
+            onPick={insertSnippet}
           />
         </div>
 

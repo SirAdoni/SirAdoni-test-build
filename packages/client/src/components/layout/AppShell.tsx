@@ -65,6 +65,8 @@ import {
 } from "react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
+import { CommandPaletteHost } from "../command-palette/CommandPaletteHost";
+
 const ChatArea = lazy(() => import("../chat/ChatArea").then((module) => ({ default: module.ChatArea })));
 const CharacterEditor = lazy(() =>
   import("../characters/CharacterEditor").then((module) => ({ default: module.CharacterEditor })),
@@ -1549,6 +1551,7 @@ export function AppShell() {
         </Suspense>
       )}
       <ProfessorMariFloatingAssistantHost active={professorMariFloatingActive} />
+      <CommandPaletteHost />
       <div data-component="MobileMusicWidgetLayer" className="contents">
         {isMobile && musicDjInstalled ? (
           <>

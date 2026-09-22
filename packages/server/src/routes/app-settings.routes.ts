@@ -8,6 +8,9 @@ import {
   CUSTOM_GENERATION_PARAMETERS_SETTINGS_KEY,
   EMPTY_IMPERSONATE_PROMPT_TEMPLATE_CATALOG,
   IMPERSONATE_PROMPT_TEMPLATES_SETTINGS_KEY,
+  EMPTY_TEXT_SNIPPET_CATALOG,
+  TEXT_SNIPPETS_SETTINGS_KEY,
+  textSnippetCatalogSchema,
   HOME_CUSTOM_WIDGETS_SETTINGS_KEY,
   homeCustomWidgetCatalogSchema,
   STORAGE_MIGRATION_NOTICE_SETTINGS_KEY,
@@ -64,6 +67,23 @@ export async function appSettingsRoutes(app: FastifyInstance) {
   app.put(`/${IMPERSONATE_PROMPT_TEMPLATES_SETTINGS_KEY}`, async (req) => {
     const catalog = impersonatePromptTemplateCatalogSchema.parse(req.body);
     await storage.set(IMPERSONATE_PROMPT_TEMPLATES_SETTINGS_KEY, JSON.stringify(catalog));
+    return catalog;
+  });
+
+  app.get(`/${TEXT_SNIPPETS_SETTINGS_KEY}`, async () => {
+    const value = await storage.get(TEXT_SNIPPETS_SETTINGS_KEY);
+    if (!value) return EMPTY_TEXT_SNIPPET_CATALOG;
+    try {
+      return textSnippetCatalogSchema.parse(JSON.parse(value));
+    } catch (error) {
+      logger.warn(error, "Ignoring invalid stored text snippet catalog");
+      return EMPTY_TEXT_SNIPPET_CATALOG;
+    }
+  });
+
+  app.put(`/${TEXT_SNIPPETS_SETTINGS_KEY}`, async (req) => {
+    const catalog = textSnippetCatalogSchema.parse(req.body);
+    await storage.set(TEXT_SNIPPETS_SETTINGS_KEY, JSON.stringify(catalog));
     return catalog;
   });
 
