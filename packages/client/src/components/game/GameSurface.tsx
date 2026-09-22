@@ -179,6 +179,7 @@ import type {
   PendingSpatialTransition,
 } from "@marinara-engine/shared";
 import type { AvatarCrop, SceneSegmentEffect } from "@marinara-engine/shared";
+import type { Journal } from "./GameJournal";
 import {
   PROFESSOR_MARI_ID,
   SPOTIFY_RECENT_TRACK_HISTORY_LIMIT,
@@ -202,6 +203,8 @@ import {
   type MusicEnemyTier,
   scoreAmbient,
   normalizeCharacterLookupName,
+  buildStableGameNpcId,
+  buildLegacyGameNpcId,
   rulesetSheetEnvelopeSchema,
   type RulesetCatalogEntriesById,
   type RulesetCatalogPayload,
@@ -1216,20 +1219,9 @@ function pruneGameJournalNpc(rawJournal: unknown, npcName: string): unknown {
   };
 }
 
-function normalizePartyLookupName(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
 function buildPartyNpcId(name: string): string {
-  const slug = normalizePartyLookupName(name).replace(/\s+/g, "-");
-  const encodedSlug = encodeURIComponent(name.trim().toLowerCase())
-    .replace(/%/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "");
-  return `npc:${slug || encodedSlug || "unknown"}`;
+  // Must match the server party id derivation.
+  return buildStableGameNpcId(name);
 }
 
 function buildPartyNpcLookup(npcs: GameNpc[], metadataNpcs: unknown): Map<string, GameNpc> {
@@ -1237,6 +1229,9 @@ function buildPartyNpcLookup(npcs: GameNpc[], metadataNpcs: unknown): Map<string
   const add = (npc: GameNpc) => {
     if (!npc.name) return;
     lookup.set(buildPartyNpcId(npc.name), npc);
+    // Older saves stored mixed-script names under the legacy ASCII-slug id.
+    const legacyId = buildLegacyGameNpcId(npc.name);
+    if (!lookup.has(legacyId)) lookup.set(legacyId, npc);
   };
   if (Array.isArray(metadataNpcs)) {
     for (const npc of metadataNpcs) {
@@ -3431,6 +3426,13 @@ function GameSurfaceComponent({
   const [npcCharacterSyncRetryToken, setNpcCharacterSyncRetryToken] = useState(0);
   const npcCharacterSyncKeyRef = useRef<string | null>(null);
   const npcCharacterSyncRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (npcCharacterSyncRetryTimerRef.current) clearTimeout(npcCharacterSyncRetryTimerRef.current);
+      npcCharacterSyncRetryTimerRef.current = null;
+    },
+    [],
+  );
   const npcCharacterSyncDelayedRetryKeyRef = useRef<string | null>(null);
   const npcCharacterSyncRecoveryAttemptRef = useRef(0);
 
@@ -4386,7 +4388,10 @@ function GameSurfaceComponent({
     const syncToastId = `${GAME_NPC_CHARACTER_SYNC_TOAST_ID}:${activeChatId}`;
     if (npcCharacterSyncKeyRef.current === syncKey) return;
     const debounceTimer = setTimeout(() => {
-      if (npcCharacterSyncRetryTimerRef.current) clearTimeout(npcCharacterSyncRetryTimerRef.current);
+      if (npcCharacterSyncRetryTimerRef.current) {
+        clearTimeout(npcCharacterSyncRetryTimerRef.current);
+        npcCharacterSyncRetryTimerRef.current = null;
+      }
       npcCharacterSyncKeyRef.current = syncKey;
       const scheduleDelayedRetry = () => {
         if (npcCharacterSyncRetryTimerRef.current) return;
@@ -7835,33 +7840,38 @@ function GameSurfaceComponent({
   );
 
   const handleRemoveNpcFromJournal = useCallback(
-    async (npcName: string) => {
+    async (npcId: string, npcName: string): Promise<Journal | undefined> => {
       if (!activeChatId) return;
 
       const target = normalizeGameNpcJournalName(npcName);
-      if (!target) return;
-
       const currentNpcs = useGameModeStore.getState().npcs;
-      const nextNpcs = currentNpcs.filter((npc) => normalizeGameNpcJournalName(npc.name) !== target);
-      const prunedJournal = pruneGameJournalNpc(chatMeta.gameJournal, npcName);
+      const exactNpc =
+        (npcId ? currentNpcs.find((npc) => npc.id === npcId) : undefined) ??
+        (target ? currentNpcs.find((npc) => normalizeGameNpcJournalName(npc.name) === target) : undefined);
+      if (!exactNpc && !target) return;
 
       try {
-        const exactNpc = currentNpcs.find((npc) => normalizeGameNpcJournalName(npc.name) === target);
+        let updatedJournal: Journal;
         if (exactNpc?.id) {
-          await removeGameNpc.mutateAsync({ chatId: activeChatId, npcId: exactNpc.id, npcName });
+          const res = await removeGameNpc.mutateAsync({ chatId: activeChatId, npcId: exactNpc.id, npcName });
+          updatedJournal = res.journal;
         } else {
+          const nextNpcs = currentNpcs.filter((npc) => normalizeGameNpcJournalName(npc.name) !== target);
+          const prunedJournal = pruneGameJournalNpc(chatMeta.gameJournal, npcName);
           await updateChatMetadata.mutateAsync({
             id: activeChatId,
             gameNpcs: nextNpcs,
             gameJournal: prunedJournal,
           });
+          useGameModeStore.getState().setNpcs(nextNpcs);
+          updatedJournal = prunedJournal as Journal;
         }
-        useGameModeStore.getState().setNpcs(nextNpcs);
         toast.success(
           localizeUi("ui.game.gamesurfacecomponent.value1RemovedFromTheNpcJournal", {
             value1: cleanGameNpcDisplayName(npcName),
           }),
         );
+        return updatedJournal;
       } catch (error) {
         toast.error(
           error instanceof Error
@@ -8004,7 +8014,8 @@ function GameSurfaceComponent({
       if (!activeChatId) return;
 
       const itemName = item.name;
-      const updatedInventory = removeInventoryUnit(inventoryItems, itemName);
+      const itemIdentity = { itemId: item.itemId, name: itemName };
+      const updatedInventory = removeInventoryUnit(inventoryItems, itemIdentity);
       if (updatedInventory === inventoryItems) {
         toast.error(localizeUi("ui.game.gamesurfacecomponent.value1IsNoLongerInYourInventory", { value1: itemName }));
         return;
@@ -8014,7 +8025,7 @@ function GameSurfaceComponent({
       const currentPlayerStats = currentGameState?.chatId === activeChatId ? currentGameState.playerStats : null;
       const nextPlayerStats = currentPlayerStats
         ? (() => {
-            const updatedDetailedInventory = removeInventoryUnit(currentPlayerStats.inventory, itemName);
+            const updatedDetailedInventory = removeInventoryUnit(currentPlayerStats.inventory, itemIdentity);
             return updatedDetailedInventory === currentPlayerStats.inventory
               ? currentPlayerStats
               : { ...currentPlayerStats, inventory: updatedDetailedInventory };
@@ -8146,7 +8157,8 @@ function GameSurfaceComponent({
       if (!activeChatId) return null;
 
       const currentName = item.name;
-      const renamedInventory = renameInventoryItem(inventoryItems, currentName, nextName);
+      const itemIdentity = { itemId: item.itemId, name: currentName };
+      const renamedInventory = renameInventoryItem(inventoryItems, itemIdentity, nextName);
       if (!renamedInventory) {
         toast.error(
           localizeUi("ui.game.gamesurfacecomponent.value1IsNoLongerInYourInventory", { value1: currentName }),
@@ -8163,7 +8175,7 @@ function GameSurfaceComponent({
       const currentPlayerStats = currentGameState?.chatId === activeChatId ? currentGameState.playerStats : null;
       const nextPlayerStats = currentPlayerStats
         ? (() => {
-            const renamedDetailedInventory = renameInventoryItem(currentPlayerStats.inventory, currentName, nextName);
+            const renamedDetailedInventory = renameInventoryItem(currentPlayerStats.inventory, itemIdentity, nextName);
             return renamedDetailedInventory
               ? { ...currentPlayerStats, inventory: renamedDetailedInventory.items }
               : currentPlayerStats;
