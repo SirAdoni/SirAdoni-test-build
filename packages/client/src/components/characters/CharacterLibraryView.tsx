@@ -1,5 +1,6 @@
 import { CardLibraryPreview } from "./CardLibraryPreview";
 import { CharacterPhoto } from "../ui/CharacterPhoto";
+import { AvatarImage } from "./AvatarImage";
 import {
   Fragment,
   useCallback,
@@ -246,9 +247,11 @@ function CardLibraryDetailCard({
               updateLabel={localizeUi("ui.noodle.noodlepostcard.edit")}
             >
               <span className="absolute inset-0 overflow-hidden rounded-[inherit]">
-                <img
+                <AvatarImage
                   src={card.avatarPath}
                   alt={card.name}
+                  iconSize="2.5rem"
+                  fallbackClassName="text-[var(--marinara-chat-chrome-panel-title)]"
                   className="h-full w-full object-cover"
                   style={getAvatarCropStyle(card.avatarCrop)}
                 />
@@ -613,8 +616,8 @@ export function CharacterLibraryView() {
                 {copy.heading}
               </h1>
               <p className="text-xs text-[var(--marinara-chat-chrome-panel-muted)] md:text-sm">
-                {filteredCards.length} {localizeUi("ui.characters.characterlibraryview.outOf")} {cards.length}{" "}
-                {localizeUi("ui.characters.characterlibraryview.card")}
+                {filteredCards.length} {localizeUi("ui.characters.characterlibraryview.outOf")} {cards.length}
+                {hasNextPage ? "+" : ""} {localizeUi("ui.characters.characterlibraryview.card")}
                 {cards.length === 1 ? "" : localizeUi("ui.noodle.stageprofileview.s")}
               </p>
             </div>

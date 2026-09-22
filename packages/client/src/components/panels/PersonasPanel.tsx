@@ -55,6 +55,7 @@ import {
 import { clearActiveChatResourceDrag, writeChatResourceDragPayload } from "../../lib/chat-resource-drag";
 import { ChatResourceActionButton } from "../chat/ChatResourceActionButton";
 import { CharacterPhoto } from "../ui/CharacterPhoto";
+import { AvatarImage } from "../characters/AvatarImage";
 import { estimateTextTokens, type Persona } from "@marinara-engine/shared";
 
 type PersonaGroupRow = { id: string; name: string; description: string; personaIds: string };
@@ -972,9 +973,10 @@ export function PersonasPanel() {
                                 updateLabel={localizeUi("ui.panels.personaspanel.changeAvatar")}
                               >
                                 <span className="absolute inset-0 overflow-hidden rounded-lg">
-                                  <img
+                                  <AvatarImage
                                     src={p.avatarPath}
                                     alt=""
+                                    iconSize="0.625rem"
                                     className="h-full w-full object-cover"
                                     style={getAvatarCropStyle(p.avatarCrop)}
                                   />
@@ -1002,7 +1004,7 @@ export function PersonasPanel() {
                               </div>
                             )}
                             <div className="truncate text-[0.625rem] text-[var(--muted-foreground)]">
-                              {p.description || "No description"}
+                              {p.description || localizeUi("ui.panels.agentcard.noDescription")}
                             </div>
                           </div>
                           {!selectionMode && (
@@ -1173,7 +1175,7 @@ export function PersonasPanel() {
                   updateLabel={localizeUi("ui.panels.personaspanel.changeAvatar")}
                 >
                   <span className="absolute inset-0 overflow-hidden rounded-xl">
-                    <img
+                    <AvatarImage
                       src={persona.avatarPath}
                       alt=""
                       loading="lazy"
@@ -1207,7 +1209,7 @@ export function PersonasPanel() {
                   <div className="truncate text-[0.625rem] text-[var(--muted-foreground)]">{personaMetadata}</div>
                 )}
                 <div className="truncate text-[0.6875rem] text-[var(--muted-foreground)]">
-                  {persona.description || "No description"}
+                  {persona.description || localizeUi("ui.panels.agentcard.noDescription")}
                 </div>
               </div>
 

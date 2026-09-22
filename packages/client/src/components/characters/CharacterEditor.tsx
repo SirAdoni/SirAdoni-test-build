@@ -529,6 +529,12 @@ export function CharacterEditor() {
 
   const handleSave = async () => {
     if (!characterId || !formData) return false;
+    // Rejected locally: an empty name never reaches the network (the server answers with an opaque
+    // validation error) and the draft is kept.
+    if (!(typeof formData.name === "string" && formData.name.trim())) {
+      toast.error(localizeUi("ui.characters.charactereditor.nameIsRequired"));
+      return false;
+    }
     if (avatarUploadInFlightRef.current) {
       toast.error(localizeUi("ui.characters.charactereditor.waitForTheCurrentAvatarUploadToFinishBefore"));
       return false;

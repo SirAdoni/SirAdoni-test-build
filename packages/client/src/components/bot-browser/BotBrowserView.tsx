@@ -1569,6 +1569,14 @@ export function BotBrowserView() {
   const [excludeTags, setExcludeTags] = useState<string[]>([]);
   const [showTagPanel, setShowTagPanel] = useState(false);
   const [availableTags, setAvailableTags] = useState<string[]>([]);
+  useEffect(() => {
+    if (!showTagPanel) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !event.defaultPrevented) setShowTagPanel(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [showTagPanel]);
 
   const [showFiltersPanel, setShowFiltersPanel] = useState(false);
   const [minTokens, setMinTokens] = useState("");
@@ -2303,10 +2311,19 @@ export function BotBrowserView() {
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="relative flex flex-1 overflow-hidden">
         {/* ═══ Tag Sidebar ═══ */}
+        {/* Phones get the tag list as an overlay drawer instead of a column that squeezes the results. */}
         {showTagPanel && (
-          <div className="flex w-[260px] flex-shrink-0 flex-col border-r border-[var(--marinara-chat-chrome-panel-divider)] bg-[var(--marinara-chat-chrome-panel-bg)]/80">
+          <button
+            type="button"
+            aria-label={localizeUi("navigation.common.close")}
+            onClick={() => setShowTagPanel(false)}
+            className="absolute inset-0 z-20 bg-black/50 md:hidden"
+          />
+        )}
+        {showTagPanel && (
+          <div className="flex w-[260px] flex-shrink-0 flex-col border-r border-[var(--marinara-chat-chrome-panel-divider)] bg-[var(--marinara-chat-chrome-panel-bg)]/80 max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-30 max-md:w-[min(18rem,85%)] max-md:bg-[var(--marinara-chat-chrome-panel-bg)] max-md:shadow-2xl">
             <div className="flex items-center justify-between border-b border-[var(--marinara-chat-chrome-panel-divider)] px-3 py-2">
               <span className="mari-chrome-text-strong flex items-center gap-1.5 text-xs font-semibold">
                 <Tag size="0.75rem" /> {localizeUi("ui.characters.metadatatab.tags")}
@@ -2322,7 +2339,9 @@ export function BotBrowserView() {
                 )}
                 <button
                   onClick={() => setShowTagPanel(false)}
-                  className="mari-chrome-control mari-chrome-control--small min-h-0 p-0.5"
+                  className="mari-chrome-control mari-chrome-control--small min-h-0 p-0.5 max-md:min-h-9 max-md:min-w-9"
+                  aria-label={localizeUi("navigation.common.close")}
+                  title={localizeUi("navigation.common.close")}
                 >
                   <X size="0.75rem" />
                 </button>
