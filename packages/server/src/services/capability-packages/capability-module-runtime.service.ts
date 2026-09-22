@@ -43,6 +43,19 @@ import {
 } from "./capability-prompt-context.service.js";
 import { registerCapabilityTool, type CapabilityToolRegistration } from "./capability-tool-registry.service.js";
 
+/**
+ * Errors raised by the host's own Fastify lifecycle (the app was booted or started listening before registration
+ * finished) say nothing about the package. Rolling the package back or persisting "error" for them would disable a
+ * healthy package on every later boot, as happened when a startup race hit hierarchical-maps, conversation-calls
+ * and long-term-memory.
+ */
+export function isHostLifecycleActivationError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (code === "FST_ERR_INSTANCE_ALREADY_LISTENING" || code === "AVV_ERR_ROOT_PLG_BOOTED") return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /Root plugin has already booted|Fastify instance is already listening/u.test(message);
+}
+
 type Cleanup = () => void | Promise<void>;
 type CapabilityActivationContext = {
   app: FastifyInstance;
@@ -303,6 +316,16 @@ class CapabilityModuleRuntime {
         }
       } catch (cleanupError) {
         logger.warn(cleanupError, "Capability package %s cleanup failed after activation error", installed.id);
+      }
+      if (isHostLifecycleActivationError(error)) {
+        // Keep the installed version and status so the next boot activates it normally.
+        logger.warn(
+          "Capability package %s@%s was not activated because the server finished starting too early; it will be retried on the next start",
+          installed.id,
+          installed.version,
+        );
+        if (throwOnFailure) throw error;
+        return;
       }
       const previous = allowRollback ? await capabilityPackageManager.rollbackRuntime(installed.id) : null;
       if (previous) {

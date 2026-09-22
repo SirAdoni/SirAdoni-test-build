@@ -61,3 +61,27 @@ assert.ok(
 );
 
 console.log("startup-inject-gate regression passed");
+
+// A host lifecycle failure must not roll a package back or mark it "error" (that disabled three packages for good).
+const { isHostLifecycleActivationError } =
+  await import("../../packages/server/src/services/capability-packages/capability-module-runtime.service.js");
+const booted = Object.assign(new Error("Root plugin has already booted"), { code: "AVV_ERR_ROOT_PLG_BOOTED" });
+const listening = Object.assign(new Error("Fastify instance is already listening. Cannot add route!"), {
+  code: "FST_ERR_INSTANCE_ALREADY_LISTENING",
+});
+assert.equal(isHostLifecycleActivationError(booted), true);
+assert.equal(isHostLifecycleActivationError(listening), true);
+assert.equal(isHostLifecycleActivationError(new Error("Cannot find module './server.mjs'")), false);
+const runtimeSource = readFileSync(
+  new URL(
+    "../../packages/server/src/services/capability-packages/capability-module-runtime.service.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
+assert.ok(
+  runtimeSource.indexOf("if (isHostLifecycleActivationError(error))") <
+    runtimeSource.indexOf("await capabilityPackageManager.rollbackRuntime(installed.id)"),
+  "host lifecycle errors return before rollback and before the error status is persisted",
+);
+console.log("capability host-lifecycle error handling passed");
