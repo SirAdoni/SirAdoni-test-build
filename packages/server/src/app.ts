@@ -2,6 +2,7 @@
 // Fastify App Factory
 // ──────────────────────────────────────────────
 import { structurePublishedContinuity } from "./services/game/continuity-structure.js";
+import { holdInjectUntilRegistered } from "./lib/fastify-inject-gate.js";
 import Fastify, { LogController, type FastifyBaseLogger, type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
@@ -156,6 +157,8 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
     ...(https && { https }),
   });
   protectTerminalLogger(app.log, getNodeEnv() !== "production");
+  // Hold internal inject() calls until every route, hook and package is registered (see fastify-inject-gate.ts).
+  const releaseInjectGate = holdInjectUntilRegistered(app);
 
   registerDiagnosticHttpHooks(app);
 
@@ -425,6 +428,7 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
     };
   });
 
+  releaseInjectGate();
   return app;
 }
 
