@@ -479,6 +479,15 @@ function Detail({
     );
   };
   const liveFacts = visibleFacts.filter((fact) => fact.status !== "retracted");
+  // Stored events carry no prose; a fact citing the same message and quote says what happened.
+  const factTextByEvidence = new Map<string, string>();
+  for (const fact of facts.items) {
+    if (fact.status === "retracted" || fact.status === "superseded") continue;
+    for (const item of fact.evidence) {
+      const key = `${item.messageId}|${item.quote ?? ""}`;
+      if (!factTextByEvidence.has(key)) factTextByEvidence.set(key, factDisplay(fact).text);
+    }
+  }
   const withdrawnFacts = visibleFacts.filter((fact) => fact.status === "retracted");
 
   return (
@@ -737,6 +746,9 @@ function Detail({
             .sort((left, right) => right.occurrenceOrder.localeCompare(left.occurrenceOrder))
             .map((item) => {
               const quote = item.evidence[0]?.quote;
+              const happened = item.evidence
+                .map((evidence) => factTextByEvidence.get(`${evidence.messageId}|${evidence.quote ?? ""}`))
+                .find(Boolean);
               const participants = item.participantEntityIds.filter((id) => id !== entity.entityId);
               const locationName = item.locationEntityId ? nameOf(item.locationEntityId) : null;
               return (
@@ -756,8 +768,16 @@ function Detail({
                       <WhenChip order={item.occurrenceOrder} />
                     </span>
                   </div>
+                  {happened && <p className="mt-2 text-sm leading-6 text-foreground">{happened}</p>}
                   {quote && (
-                    <p className="mt-2 text-sm italic leading-6 text-foreground/90">
+                    <p
+                      className={cn(
+                        "italic",
+                        happened
+                          ? "mt-1 text-xs leading-5 text-muted-foreground"
+                          : "mt-2 text-sm leading-6 text-foreground/90",
+                      )}
+                    >
                       {t("ui.game.detail.value1", { value1: quote })}
                     </p>
                   )}
