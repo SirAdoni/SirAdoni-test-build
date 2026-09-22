@@ -180,6 +180,7 @@ const SHARDED_TABLES = [
   "lorebook_persona_links",
   "lorebook_folders",
   "lorebook_entries",
+  "lorebook_entry_activation_stats",
   "prompt_presets",
   "prompt_groups",
   "prompt_sections",
@@ -241,6 +242,7 @@ const PRIMARY_KEY_COLUMNS = {
   campaign_memory_knowledge: "knowledgeId",
   campaign_memory_mutation_journal: "journalId",
   campaign_memory_relationships: "relationshipId",
+  lorebook_entry_activation_stats: "entryId",
   app_settings: "key",
   prompt_overrides: "key",
 };

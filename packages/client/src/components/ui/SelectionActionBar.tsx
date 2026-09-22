@@ -50,22 +50,22 @@ export function SelectionActionBar({
           type="button"
           onClick={onExport}
           disabled={selectedCount === 0 || exportDisabled || exporting}
-          className="mari-chrome-control flex-1 px-3 py-2 text-xs"
+          className="mari-chrome-control min-w-0 flex-1 px-3 py-2 text-xs"
         >
           <Upload size="0.75rem" />
-          {localizeUi("ui.characters.spritestab.export")}
+          <span className="truncate">{localizeUi("ui.characters.spritestab.export")}</span>
         </button>
         <button
           type="button"
           onClick={onDelete}
           disabled={selectedCount === 0 || deleteDisabled || exporting}
           className={cn(
-            "mari-chrome-control flex-1 px-3 py-2 text-xs",
+            "mari-chrome-control min-w-0 flex-1 px-3 py-2 text-xs",
             deleteTone === "danger" ? "mari-chrome-control--danger" : "mari-chrome-control--primary",
           )}
         >
           <Trash2 size="0.75rem" />
-          {localizeUi("lorebook.editor.batch.delete")}
+          <span className="truncate">{localizeUi("lorebook.editor.batch.delete")}</span>
         </button>
       </div>
     </div>

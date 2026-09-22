@@ -565,3 +565,53 @@ export function useActiveLorebookEntries(chatId: string | null, enabled = false)
     staleTime: 30_000,
   });
 }
+
+// ── Lorebook tools: test scan and activation statistics ──
+
+export interface LorebookTestScanResult {
+  activated: Array<{
+    entryId: string;
+    name: string;
+    matchedKeys: string[];
+    activationSources: string[];
+    triggeredBy: string[];
+    probability: number | null;
+  }>;
+  blocked: Array<{
+    entryId: string;
+    name: string;
+    matchedKeys: string[];
+    reason:
+      | "secondary_keys"
+      | "filters"
+      | "conditions"
+      | "group"
+      | "probability"
+      | "recursion_only"
+      | "folder_disabled";
+  }>;
+  recursive: boolean;
+  scannedMessages: number;
+}
+
+/** Run the server's real scanner against pasted text or a chat, scoped to one lorebook. */
+export function runLorebookTestScan(lorebookId: string, input: { text?: string; chatId?: string }) {
+  return api.post<LorebookTestScanResult>(`/lorebooks/${lorebookId}/test`, input);
+}
+
+export interface LorebookEntryActivationStat {
+  entryId: string;
+  lorebookId: string;
+  count: number;
+  lastActivatedAt: string | null;
+  lastChatId: string | null;
+}
+
+export function useLorebookActivationStats(lorebookId: string | null) {
+  return useQuery({
+    queryKey: [...lorebookKeys.all, "activation-stats", lorebookId ?? ""] as const,
+    queryFn: () => api.get<LorebookEntryActivationStat[]>(`/lorebooks/${lorebookId}/activation-stats`),
+    enabled: !!lorebookId,
+    staleTime: 60_000,
+  });
+}

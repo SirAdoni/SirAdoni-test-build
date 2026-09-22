@@ -15,6 +15,15 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Added a Dice Log to Game Mode (Session panel, Tools tab). Every roll from the dice tray, GM narration and skill checks is kept with its dice, total and crit or fumble flags; the log shows recent rolls, average against expected, natural 20s and 1s and a per-face distribution, for the current session or the whole game. Logging never blocks or fails a roll.
 - Added an offline fantasy name generator with harsh northern, flowing elvish, desert and imperial styles, plus names learned from a chosen lorebook or the character library. Names are seeded, can be locked, copied and regenerated, and the tool opens from the Game Mode Tools tab or anywhere through its own window.
 - Added a campaign codex export (Session panel, Tools tab) that downloads a game's campaign memory as readable Markdown or JSON: entities grouped by kind with aliases, current state, verified facts, knowledge and relationships tagged by session, and a timeline across all sessions. The export only reads memory.
+- Added **Check lorebook** to the lorebook editor. It lists empty entries, entries without keys, duplicate keys and content, invalid or unsafe regex keys, overlong entries, disabled entries, and very short or common-word keys, with severity filters and a jump to each entry.
+
+- The lorebook keyword test can now run the real generation scanner on pasted text or the current chat. It shows which entries would fire and why (matched key, constant, or recursion from another entry), and which entries matched but were held back by secondary keys, filters, groups, or conditions.
+
+- Lorebook entries now count how often they fire in real generations. The editor shows each entry's count and last activation, adds a **Fired** sort, and a **Never fired** filter for finding unused entries. Each saved reply counts once (swipes and regenerations count, Continue does not). Counting is batched, can never interrupt a generation, and is written out on shutdown.
+
+- Added **Duplicates** to the character library. It groups likely duplicate cards by matching names or very similar description and personality, with side-by-side basics, a field-by-field compare, and an open button. Nothing is deleted automatically.
+
+- Selected characters can now have tags added, removed, or renamed in bulk from the library selection bar, with a review summary before applying. Each changed card is saved through its normal save path, so version history records the edit.
 
 - Fixed the mobile Game Mode layout so Currently Present no longer pushes the narration and input below the screen. Widget bookmarks now use a single horizontally scrollable row; opening one shows a dismissible panel without shifting the chat. Short screens also retain room for narration when the storyboard viewer is open. Saved desktop widget placements are preserved.
 

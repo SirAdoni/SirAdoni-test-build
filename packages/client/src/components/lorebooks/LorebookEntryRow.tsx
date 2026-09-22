@@ -97,6 +97,8 @@ interface Props {
    */
   previewMatch?: "matched" | "constant" | "always_loaded";
   mapBacklinks?: Array<{ chatId: string; locationId: string; locationName: string }>;
+  /** How often this entry fired in real generations (absent = never). */
+  activationStat?: { count: number; lastActivatedAt: string | null };
   onUpdateEntry?: LorebookEntryUpdateHandler;
   /** Override only this row's enabled control; content edits keep their existing scope. */
   chatEnabled?: { enabled: boolean; onChange: (enabled: boolean) => Promise<unknown> };
@@ -237,6 +239,7 @@ export function LorebookEntryRow({
   isSelected = false,
   onToggleSelected,
   previewMatch,
+  activationStat,
   mapBacklinks = [],
   onUpdateEntry,
   chatEnabled,
@@ -794,6 +797,21 @@ export function LorebookEntryRow({
           className="min-w-0 flex-1 truncate rounded bg-transparent px-1 text-sm font-medium outline-none transition-colors hover:bg-[var(--accent)]/40 focus:bg-[var(--accent)]/40 focus:ring-1 focus:ring-[var(--ring)] sm:min-w-[7rem]"
         />
 
+        {activationStat && activationStat.count > 0 && (
+          <span
+            className="shrink-0 rounded px-1 text-[0.625rem] tabular-nums text-[var(--muted-foreground)]"
+            title={localizeUi("lorebook.editor.stats.firedTitle", {
+              count: activationStat.count,
+              date: activationStat.lastActivatedAt ? new Date(activationStat.lastActivatedAt).toLocaleString() : "",
+            })}
+            aria-label={localizeUi("lorebook.editor.stats.firedTitle", {
+              count: activationStat.count,
+              date: activationStat.lastActivatedAt ? new Date(activationStat.lastActivatedAt).toLocaleString() : "",
+            })}
+          >
+            {localizeUi("lorebook.editor.stats.firedShort", { count: activationStat.count })}
+          </span>
+        )}
         {mapBacklinks.length > 0 && (
           <button
             type="button"

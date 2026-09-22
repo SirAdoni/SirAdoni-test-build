@@ -1418,3 +1418,67 @@ export function useDeletePersonaGroup() {
     onSuccess: () => qc.invalidateQueries({ queryKey: characterKeys.personaGroups }),
   });
 }
+
+// ── Library maintenance: duplicates and bulk tags ──
+
+export interface CharacterDuplicateCard {
+  id: string;
+  name: string;
+  comment: string;
+  avatarPath: string | null;
+  creator: string;
+  version: string;
+  tags: string[];
+  description: string;
+  personality: string;
+  descriptionLength: number;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface CharacterDuplicatesResult {
+  scanned: number;
+  groups: Array<{ ids: string[]; nameMatch: boolean; similarity: number; characters: CharacterDuplicateCard[] }>;
+}
+
+export function useCharacterDuplicates(enabled: boolean) {
+  return useQuery({
+    queryKey: [...characterKeys.all, "duplicates"] as const,
+    queryFn: () => api.get<CharacterDuplicatesResult>("/characters/duplicates"),
+    enabled,
+    staleTime: 0,
+  });
+}
+
+export function useBulkEditCharacterTags() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      ids: string[];
+      add?: string[];
+      remove?: string[];
+      rename?: Array<{ from: string; to: string }>;
+    }) => {
+      // The server takes at most 5000 cards per request; bigger selections go in slices.
+      const merged = { updatedIds: [] as string[], unchangedIds: [] as string[], failedIds: [] as string[] };
+      for (let start = 0; start < input.ids.length; start += 5000) {
+        const result = await api.post<typeof merged>("/characters/bulk-tags", {
+          ...input,
+          ids: input.ids.slice(start, start + 5000),
+        });
+        merged.updatedIds.push(...result.updatedIds);
+        merged.unchangedIds.push(...result.unchangedIds);
+        merged.failedIds.push(...result.failedIds);
+      }
+      return merged;
+    },
+    onSuccess: (result) => {
+      if (result.updatedIds.length === 0) return;
+      qc.invalidateQueries({ queryKey: characterKeys.list() });
+      qc.invalidateQueries({ queryKey: characterKeys.summariesRoot() });
+      // One prefix match instead of one cache walk per card (a selection can be thousands);
+      // it also covers each card's version history, which gained a snapshot.
+      qc.invalidateQueries({ queryKey: [...characterKeys.all, "detail"] });
+    },
+  });
+}

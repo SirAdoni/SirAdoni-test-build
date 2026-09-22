@@ -37,6 +37,7 @@ import {
   useReorderLorebookFolders,
   useUpdateLorebookFolder,
   useTransferLorebookEntries,
+  useLorebookActivationStats,
   lorebookKeys,
 } from "../../hooks/use-lorebooks";
 import { useCharacters, usePersonas } from "../../hooks/use-characters";
@@ -98,6 +99,8 @@ import {
 } from "@marinara-engine/shared";
 import { LorebookEntryRow } from "./LorebookEntryRow";
 import { LorebookFolderRow } from "./LorebookFolderRow";
+import { LorebookLintPanel } from "./LorebookLintPanel";
+import { LorebookScanTest, type LorebookScanPreviewMatch } from "./LorebookScanTest";
 import { ExpandableTextarea, estimateTokens } from "./LorebookFormFields";
 import { ExportFormatDialog, type ExportFormatChoice } from "../ui/ExportFormatDialog";
 import { EditorTabNavigation } from "../ui/EditorTabNavigation";
@@ -321,7 +324,7 @@ const CATEGORY_OPTIONS: Array<{ value: LorebookCategory; label: string; icon: ty
   { value: "uncategorized", label: "Uncategorized", icon: BookOpen },
 ];
 
-type EntrySortKey = "order" | "entries" | "name-asc" | "name-desc" | "tokens" | "keys" | "newest" | "oldest";
+type EntrySortKey = "order" | "entries" | "name-asc" | "name-desc" | "tokens" | "keys" | "fired" | "newest" | "oldest";
 
 const SORT_OPTIONS: Array<{ value: EntrySortKey; label: string }> = [
   { value: "order", label: "Order" },
@@ -330,6 +333,7 @@ const SORT_OPTIONS: Array<{ value: EntrySortKey; label: string }> = [
   { value: "name-desc", label: "Name Z→A" },
   { value: "tokens", label: "Tokens ↓" },
   { value: "keys", label: "Keys ↓" },
+  { value: "fired", label: "Fired ↓" },
   { value: "newest", label: "Newest" },
   { value: "oldest", label: "Oldest" },
 ];
@@ -536,6 +540,14 @@ export function LorebookEditor() {
     const handle = window.setTimeout(() => setKeywordPreviewDebounced(keywordPreviewText), 150);
     return () => window.clearTimeout(handle);
   }, [keywordPreviewText]);
+  // Full scanner test result; while shown, row highlights follow it instead of the instant preview.
+  const [scanTestMatches, setScanTestMatches] = useState<Map<string, LorebookScanPreviewMatch> | null>(null);
+  const { data: activationStats } = useLorebookActivationStats(lorebookId);
+  const activationStatsById = useMemo(
+    () => new Map((activationStats ?? []).map((stat) => [stat.entryId, stat])),
+    [activationStats],
+  );
+  const [neverFiredOnly, setNeverFiredOnly] = useState(false);
   const [draggingEntryIdx, setDraggingEntryIdx] = useState<number | null>(null);
   const [entryDragReadyIdx, setEntryDragReadyIdx] = useState<number | null>(null);
   const [entryDropIdx, setEntryDropIdx] = useState<number | null>(null);
@@ -707,6 +719,7 @@ export function LorebookEditor() {
   // a non-Order sort is selected, both of which suppress folder grouping).
   const filteredEntries = useMemo(() => {
     let result = entries;
+    if (neverFiredOnly) result = result.filter((entry) => !activationStatsById.has(entry.id));
     if (entrySearch) {
       result = result.filter(
         (e) =>
@@ -724,6 +737,12 @@ export function LorebookEditor() {
         return [...result].sort((a, b) => estimateTokens(b.content) - estimateTokens(a.content));
       case "keys":
         return [...result].sort((a, b) => b.keys.length - a.keys.length);
+      case "fired":
+        return [...result].sort(
+          (a, b) =>
+            (activationStatsById.get(b.id)?.count ?? 0) - (activationStatsById.get(a.id)?.count ?? 0) ||
+            a.order - b.order,
+        );
       case "newest":
         return [...result].sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
       case "oldest":
@@ -737,12 +756,12 @@ export function LorebookEditor() {
       default:
         return [...result].sort((a, b) => a.order - b.order);
     }
-  }, [entries, entrySearch, entrySort]);
+  }, [activationStatsById, entries, entrySearch, entrySort, neverFiredOnly]);
 
   // Folder grouping is only meaningful when the user is sorting by Order with
   // no search — any other state would put entries out of their containers
   // (e.g. "Name A→Z" interleaves entries from different folders).
-  const showFolderGrouping = entrySort === "order" && entrySearch.trim().length === 0;
+  const showFolderGrouping = entrySort === "order" && entrySearch.trim().length === 0 && !neverFiredOnly;
   const transferTargetLorebooks = useMemo(
     () => lorebooks.filter((book) => book.id !== lorebookId).sort((a, b) => a.name.localeCompare(b.name)),
     [lorebooks, lorebookId],
@@ -823,8 +842,9 @@ export function LorebookEditor() {
     return result;
   }, [entries, keywordPreviewDebounced]);
 
-  const previewActive = keywordPreviewDebounced.trim().length > 0;
-  const previewMatchCount = previewMatches.size;
+  const effectivePreviewMatches = scanTestMatches ?? previewMatches;
+  const previewActive = keywordPreviewDebounced.trim().length > 0 || scanTestMatches !== null;
+  const previewMatchCount = effectivePreviewMatches.size;
 
   // ── Handlers ──
   const markLorebookDirty = useCallback(() => {
@@ -1001,6 +1021,48 @@ export function LorebookEditor() {
   const toggleEntryExpanded = useCallback((entryId: string) => {
     setExpandedEntryId((current) => (current === entryId ? null : entryId));
   }, []);
+
+  // Jump from a lint issue or test result to its entry: clear anything that
+  // could hide the row, open its folder chain, expand it, and scroll to it.
+  const jumpToEntry = useCallback(
+    (entryId: string) => {
+      const target = entries.find((entry) => entry.id === entryId);
+      if (!target) return;
+      setEntrySearch("");
+      setNeverFiredOnly(false);
+      if (lorebookId && target.folderId) {
+        const parentById = new Map(folders.map((folder) => [folder.id, folder.parentFolderId ?? null]));
+        setCollapsedFolderIds((prev) => {
+          const next = new Set(prev);
+          let folderId: string | null = target.folderId;
+          const seen = new Set<string>();
+          while (folderId && !seen.has(folderId)) {
+            seen.add(folderId);
+            next.delete(folderId);
+            folderId = parentById.get(folderId) ?? null;
+          }
+          if (next.size === prev.size) return prev;
+          writeCollapsedFolderIds(lorebookId, next);
+          return next;
+        });
+      }
+      setExpandedEntryId(entryId);
+      window.requestAnimationFrame(() => {
+        contentRef.current
+          ?.querySelector<HTMLElement>(`[data-lorebook-entry-row-id="${CSS.escape(entryId)}"]`)
+          ?.scrollIntoView({ block: "start", behavior: "smooth" });
+      });
+    },
+    [contentRef, entries, folders, lorebookId],
+  );
+  const entryNameById = useMemo(() => new Map(entries.map((entry) => [entry.id, entry.name])), [entries]);
+  const activeChatForTest = useMemo(
+    () =>
+      activeChat
+        ? { id: activeChat.id, name: activeChat.name || localizeUi("lorebook.editor.scanTest.sourceChat") }
+        : null,
+    [activeChat, localizeUi],
+  );
 
   const entryListRef = useRef<HTMLDivElement | null>(null);
 
@@ -1817,7 +1879,8 @@ export function LorebookEditor() {
                     selectionMode={entrySelectionMode}
                     isSelected={selectedEntryIds.has(entry.id)}
                     onToggleSelected={() => toggleEntrySelection(entry.id)}
-                    previewMatch={previewMatches.get(entry.id)}
+                    previewMatch={effectivePreviewMatches.get(entry.id)}
+                    activationStat={activationStatsById.get(entry.id)}
                     mapBacklinks={mapBacklinksByEntryId.get(entry.id)}
                     onUpdateEntry={handleEntryUpdate}
                   />
@@ -2446,6 +2509,8 @@ export function LorebookEditor() {
             </section>
             <section data-editor-section="entries">
               <div className="space-y-3">
+                <LorebookLintPanel entries={entries} onJumpToEntry={jumpToEntry} />
+
                 {/* Keyword test — collapsible authoring aid (issue #816).
                     Paste sample chat text or a paragraph and the editor
                     highlights which entries would activate. Honors keyword
@@ -2498,7 +2563,7 @@ export function LorebookEditor() {
                           </button>
                         )}
                       </div>
-                      {previewActive && (
+                      {previewActive && !scanTestMatches && (
                         <p className="text-[0.6875rem] text-[var(--muted-foreground)]">
                           {previewMatchCount === 0
                             ? localizeUi("ui.lorebooks.lorebookeditor.noEntriesWouldActivateOnThisText")
@@ -2507,6 +2572,16 @@ export function LorebookEditor() {
                                 count: entries.filter((entry) => entry.enabled).length,
                               })}
                         </p>
+                      )}
+                      {lorebookId && (
+                        <LorebookScanTest
+                          lorebookId={lorebookId}
+                          text={keywordPreviewText}
+                          activeChat={activeChatForTest}
+                          entryNameById={entryNameById}
+                          onJumpToEntry={jumpToEntry}
+                          onResult={setScanTestMatches}
+                        />
                       )}
                     </div>
                   )}
@@ -2682,7 +2757,7 @@ export function LorebookEditor() {
 
                 {/* Total tokens summary */}
                 {entries.length > 0 && (
-                  <div className="flex items-center gap-3 text-[0.6875rem] text-[var(--muted-foreground)]">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[0.6875rem] text-[var(--muted-foreground)]">
                     <span>
                       {entries.length}{" "}
                       {entries.length === 1
@@ -2706,6 +2781,26 @@ export function LorebookEditor() {
                       {entries.reduce((sum, e) => sum + estimateTokens(e.content), 0).toLocaleString()}{" "}
                       {localizeUi("ui.lorebooks.lorebookeditor.tokensEst")}
                     </span>
+                    {activationStats && (
+                      <>
+                        <span>•</span>
+                        <button
+                          type="button"
+                          onClick={() => setNeverFiredOnly((value) => !value)}
+                          aria-pressed={neverFiredOnly}
+                          title={localizeUi("lorebook.editor.stats.neverFiredHint")}
+                          className={cn(
+                            "rounded-md px-1.5 py-0.5 transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
+                            neverFiredOnly &&
+                              "bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-button-text-active)]",
+                          )}
+                        >
+                          {localizeUi("lorebook.editor.stats.neverFired", {
+                            count: entries.filter((entry) => !activationStatsById.has(entry.id)).length,
+                          })}
+                        </button>
+                      </>
+                    )}
                     {!showFolderGrouping && folders.length > 0 && (
                       <span className="ml-auto italic">
                         {localizeUi("ui.lorebooks.lorebookeditor.folderViewPausedClearSearchAndSortByOrder")}
@@ -2859,7 +2954,8 @@ export function LorebookEditor() {
                               selectionMode={entrySelectionMode}
                               isSelected={selectedEntryIds.has(entry.id)}
                               onToggleSelected={() => toggleEntrySelection(entry.id)}
-                              previewMatch={previewMatches.get(entry.id)}
+                              previewMatch={effectivePreviewMatches.get(entry.id)}
+                              activationStat={activationStatsById.get(entry.id)}
                               mapBacklinks={mapBacklinksByEntryId.get(entry.id)}
                               onUpdateEntry={handleEntryUpdate}
                             />
@@ -2898,7 +2994,8 @@ export function LorebookEditor() {
                         selectionMode={entrySelectionMode}
                         isSelected={selectedEntryIds.has(entry.id)}
                         onToggleSelected={() => toggleEntrySelection(entry.id)}
-                        previewMatch={previewMatches.get(entry.id)}
+                        previewMatch={effectivePreviewMatches.get(entry.id)}
+                        activationStat={activationStatsById.get(entry.id)}
                         mapBacklinks={mapBacklinksByEntryId.get(entry.id)}
                         onUpdateEntry={handleEntryUpdate}
                       />

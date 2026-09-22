@@ -61,6 +61,7 @@ import { openCodeSessionHook } from "./utils/opencode-session.js";
 import { logger } from "./lib/logger.js";
 import { withDiagnosticContext } from "./lib/diagnostics.js";
 import { sanitizeDiagnosticText } from "./lib/diagnostics.js";
+import { flushLorebookActivationStats } from "./services/lorebook/activation-stats.js";
 import { createGameContinuityRuntime, type ContinuityRuntime } from "./services/game/continuity-runtime.js";
 
 type SessionSummaryRefreshRuntime = {
@@ -210,6 +211,8 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
         capabilityModuleRuntime.stop(),
         personalServerExtensionRuntime.stop(),
         sidecarProcessService.stop(),
+        // Write the last batched lorebook activation counts while the database is still open.
+        flushLorebookActivationStats(),
       ]);
       for (const result of stopResults) {
         if (result.status === "rejected") {

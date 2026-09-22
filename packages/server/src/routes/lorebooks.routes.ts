@@ -31,6 +31,8 @@ import { resolveChatUserIdentity } from "../services/chat-user-identity.js";
 import { createGameStateStorage } from "../services/storage/game-state.storage.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { filterRelevantLorebooks, processLorebooks } from "../services/lorebook/index.js";
+import { runLorebookTestScan } from "../services/lorebook/test-scan.js";
+import { listLorebookActivationStats } from "../services/lorebook/activation-stats.js";
 import {
   buildLorebookEntryEmbeddingText,
   buildLorebookSemanticEmbeddingsById,
@@ -65,6 +67,10 @@ import { parseLibraryPageQuery } from "../utils/list-pagination.js";
 import AdmZip from "adm-zip";
 
 const LOREBOOK_IMAGES_DIR = join(DATA_DIR, "lorebooks", "images");
+/** Pasted test text is capped; the scanner only looks at recent context anyway. */
+const LOREBOOK_TEST_MAX_TEXT = 200_000;
+/** Request cap for the test route: room for the capped text in any encoding, far below the upload limit. */
+const LOREBOOK_TEST_BODY_LIMIT = 1024 * 1024;
 
 function parseCsvQuery(value: unknown) {
   if (typeof value !== "string" || !value.trim()) return [];
@@ -1164,6 +1170,68 @@ export async function lorebooksRoutes(app: FastifyInstance) {
       totalEntries: result.totalEntries,
       budgetSkippedEntries: result.budgetSkippedEntries,
     };
+  });
+
+  // ── Test tool: which entries of this lorebook would fire on some text, and why ──
+
+  app.post<{ Params: { id: string }; Body: { text?: unknown; chatId?: unknown } }>(
+    "/:id/test",
+    { bodyLimit: LOREBOOK_TEST_BODY_LIMIT },
+    async (req, reply) => {
+      const lorebook = (await storage.getById(req.params.id)) as unknown as Lorebook | null;
+      if (!lorebook) return reply.status(404).send({ error: "Lorebook not found" });
+      const chatId = typeof req.body?.chatId === "string" && req.body.chatId.trim() ? req.body.chatId.trim() : null;
+      const text = typeof req.body?.text === "string" ? req.body.text.slice(0, LOREBOOK_TEST_MAX_TEXT) : "";
+
+      let messages: Array<{ role: string; content: string }> = [];
+      let activeCharacterIds: string[] = [];
+      let activeCharacterTags: string[] = [];
+      let generationTriggers = ["chat"];
+      if (chatId) {
+        const chatsStorage = createChatsStorage(app.db);
+        const chat = await chatsStorage.getById(chatId);
+        if (!chat) return reply.status(404).send({ error: "Chat not found" });
+        messages = (await chatsStorage.listMessages(chatId)).map((message) => ({
+          role: message.role === "narrator" ? "system" : String(message.role),
+          content: typeof message.content === "string" ? message.content : "",
+        }));
+        activeCharacterIds = asStringArray(chat.characterIds);
+        const characterRows = await createCharactersStorage(app.db).getByIds(activeCharacterIds);
+        activeCharacterTags = characterRows.flatMap((row) => {
+          const data = parseRecord(row.data);
+          return Array.isArray(data.tags) ? data.tags.filter((tag): tag is string => typeof tag === "string") : [];
+        });
+        generationTriggers = resolveScanGenerationTriggers(chat.mode).filter((trigger) => trigger !== "test_scan");
+      } else if (text.trim()) {
+        messages = [{ role: "user", content: text }];
+      }
+
+      const [entries, folders] = await Promise.all([
+        storage.listEntries(lorebook.id),
+        storage.listFolders(lorebook.id),
+      ]);
+      return runLorebookTestScan({
+        lorebook,
+        entries: entries as unknown as LorebookEntry[],
+        folders: folders as unknown as LorebookFolder[],
+        messages,
+        activeCharacterIds,
+        activeCharacterTags,
+        generationTriggers,
+      });
+    },
+  );
+
+  // ── Activation statistics (counted during real generations) ──
+
+  app.get<{ Params: { id: string } }>("/:id/activation-stats", async (req, reply) => {
+    const lorebook = await storage.getById(req.params.id);
+    if (!lorebook) return reply.status(404).send({ error: "Lorebook not found" });
+    const entries = (await storage.listEntries(req.params.id)) as unknown as Array<{ id: string }>;
+    return listLorebookActivationStats(
+      app.db,
+      entries.map((entry) => entry.id),
+    );
   });
 
   // ── Vectorize: generate embeddings for all entries in a lorebook ──

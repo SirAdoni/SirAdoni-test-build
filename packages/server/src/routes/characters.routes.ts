@@ -22,9 +22,18 @@ import {
   findImageStyleProfile,
   type ImageStyleProfile,
   MAX_FILE_SIZES,
+  applyCharacterTagEdit,
+  characterTagListsEqual,
+  findDuplicateCharacters,
+  isEmptyCharacterTagEdit,
+  normalizeCharacterTagEdit,
 } from "@marinara-engine/shared";
 import type { CharacterData, ConversationCallCharacterVideoClipKind, ExportEnvelope } from "@marinara-engine/shared";
-import { createCharactersStorage, type PersonaStorageRow } from "../services/storage/characters.storage.js";
+import {
+  characterStorageRevision,
+  createCharactersStorage,
+  type PersonaStorageRow,
+} from "../services/storage/characters.storage.js";
 import { createCharacterCatalog } from "../services/storage/character-catalog.js";
 import { encodePersonaCreate, encodePersonaUpdate, projectPersona } from "../services/personas/persona-projector.js";
 import { createCharacterGalleryStorage } from "../services/storage/character-gallery.storage.js";
@@ -79,6 +88,7 @@ import {
 import { logger, logDebugOverride } from "../lib/logger.js";
 import { isDebugAgentsEnabled } from "../config/runtime-config.js";
 import { parseLibraryPageQuery } from "../utils/list-pagination.js";
+import { settleWithConcurrency } from "../utils/settle-with-concurrency.js";
 import {
   resolveChatSummaryConnection,
   resolveChatSummaryTemperatureOptions,
@@ -118,6 +128,9 @@ const ALLOWED_GALLERY_VIDEO_EXTS = new Set([".mp4", ".webm", ".mov"]);
 const CHARACTER_CARD_PNG_KEYWORDS = new Set(["chara", "ccv3"]);
 const CUSTOM_NAME_RE = /^[a-z0-9_]{1,32}$/;
 const PATH_SAFE_ID_RE = /^[A-Za-z0-9_-]+$/;
+/** Upper bound for one bulk tag request; the library UI sends the current selection. */
+const BULK_TAG_MAX_CHARACTERS = 5000;
+const BULK_TAG_CONCURRENCY = 4;
 const CUSTOM_KIND_MAX_DIMENSION = {
   emoji: 256,
   sticker: 512,
@@ -970,6 +983,133 @@ export async function charactersRoutes(app: FastifyInstance) {
     const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter((id): id is string => typeof id === "string") : [];
     return storage.listSummariesByIds(ids);
   });
+
+  // ── Library maintenance: duplicate finder and bulk tag edits ──
+
+  /** Likely duplicates by normalized name and description/personality overlap. Read-only. */
+  app.get("/duplicates", async () => {
+    const rows = (await storage.list()).filter((row) => row.id !== PROFESSOR_MARI_ID);
+    const cards = rows.map((row) => {
+      const data = parseCharacterDataRecord(row.data) as Partial<CharacterData>;
+      return { row, data };
+    });
+    const groups = findDuplicateCharacters(
+      cards.map(({ row, data }) => ({
+        id: row.id,
+        name: typeof data.name === "string" ? data.name : "",
+        description: typeof data.description === "string" ? data.description : "",
+        personality: typeof data.personality === "string" ? data.personality : "",
+      })),
+    );
+    const cardById = new Map(cards.map((card) => [card.row.id, card]));
+    const preview = (value: unknown, length: number) =>
+      typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, length) : "";
+    return {
+      scanned: cards.length,
+      groups: groups.map((group) => ({
+        ...group,
+        characters: group.ids.flatMap((id) => {
+          const card = cardById.get(id);
+          if (!card) return [];
+          const { row, data } = card;
+          return [
+            {
+              id,
+              name: typeof data.name === "string" ? data.name : "",
+              comment: row.comment ?? "",
+              avatarPath: row.avatarPath ?? null,
+              creator: typeof data.creator === "string" ? data.creator : "",
+              version: typeof data.character_version === "string" ? data.character_version : "",
+              tags: Array.isArray(data.tags) ? data.tags.filter((tag): tag is string => typeof tag === "string") : [],
+              description: preview(data.description, 280),
+              personality: preview(data.personality, 160),
+              descriptionLength: typeof data.description === "string" ? data.description.length : 0,
+              createdAt: row.createdAt ?? null,
+              updatedAt: row.updatedAt ?? null,
+            },
+          ];
+        }),
+      })),
+    };
+  });
+
+  /**
+   * Add, remove, and rename tags across many characters. Each card is updated
+   * in its own transaction through the normal update path, so version history
+   * snapshots are recorded exactly as for a manual edit.
+   */
+  app.post<{ Body: { ids?: unknown; add?: unknown; remove?: unknown; rename?: unknown } }>(
+    "/bulk-tags",
+    async (req, reply) => {
+      const body = req.body ?? {};
+      const stringList = (value: unknown) =>
+        Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+      const ids = Array.from(new Set(stringList(body.ids))).filter((id) => id !== PROFESSOR_MARI_ID);
+      const edit = normalizeCharacterTagEdit({
+        add: stringList(body.add),
+        remove: stringList(body.remove),
+        rename: Array.isArray(body.rename)
+          ? body.rename.flatMap((item) =>
+              item && typeof item === "object" && typeof item.from === "string" && typeof item.to === "string"
+                ? [{ from: item.from, to: item.to }]
+                : [],
+            )
+          : [],
+      });
+      if (ids.length === 0) return reply.status(400).send({ error: "No characters selected" });
+      if (ids.length > BULK_TAG_MAX_CHARACTERS) {
+        return reply.status(400).send({ error: `At most ${BULK_TAG_MAX_CHARACTERS} characters per request` });
+      }
+      if (isEmptyCharacterTagEdit(edit)) return reply.status(400).send({ error: "No tag changes requested" });
+
+      const versionReason = [
+        edit.add.length ? `+${edit.add.join(", +")}` : "",
+        edit.remove.length ? `-${edit.remove.join(", -")}` : "",
+        ...edit.rename.map((item) => `${item.from} > ${item.to}`),
+      ]
+        .filter(Boolean)
+        .join("; ")
+        .slice(0, 300);
+
+      const applyToCharacter = (id: string) =>
+        enqueueUpdate(characterUpdateQueues, id, async (): Promise<"updated" | "unchanged" | "missing"> => {
+          // Retry when another writer lands between read and write; the revision
+          // check keeps each card's read-modify-write atomic.
+          for (let attempt = 0; attempt < 3; attempt++) {
+            const current = await storage.getById(id);
+            if (!current) return "missing";
+            const data = parseCharacterDataRecord(current.data) as Partial<CharacterData>;
+            const tags = Array.isArray(data.tags)
+              ? data.tags.filter((tag): tag is string => typeof tag === "string")
+              : [];
+            const nextTags = applyCharacterTagEdit(tags, edit);
+            if (characterTagListsEqual(tags, nextTags)) return "unchanged";
+            const updated = await storage.update(id, { tags: nextTags }, undefined, {
+              versionSource: "bulk-tags",
+              versionReason,
+              expectedRevision: characterStorageRevision(current),
+            });
+            if (updated) return "updated";
+          }
+          throw new Error("Character changed during the bulk tag edit");
+        });
+
+      // A few cards at a time: thousands of parallel read-modify-write transactions
+      // (each with a version snapshot) would hold every parsed card in memory at once.
+      const results = await settleWithConcurrency(ids, BULK_TAG_CONCURRENCY, (id) => applyToCharacter(id));
+      const updatedIds: string[] = [];
+      const unchangedIds: string[] = [];
+      const failedIds: string[] = [];
+      results.forEach((result, index) => {
+        const id = ids[index]!;
+        if (result.status === "rejected" || result.value === "missing") failedIds.push(id);
+        else if (result.value === "updated") updatedIds.push(id);
+        else unchangedIds.push(id);
+      });
+      if (failedIds.length > 0) logger.warn("[characters] Bulk tag edit skipped %d character(s)", failedIds.length);
+      return { updatedIds, unchangedIds, failedIds };
+    },
+  );
 
   app.post<{
     Params: { id: string };

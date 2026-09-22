@@ -48,6 +48,8 @@ import {
   Star,
   MessageCircle,
   Bot,
+  ScanSearch,
+  Tags,
 } from "lucide-react";
 import { getCharacterTitle } from "../../lib/character-display";
 import {
@@ -71,6 +73,8 @@ import { clearActiveChatResourceDrag, writeChatResourceDragPayload } from "../..
 import { ChatResourceActionButton } from "../chat/ChatResourceActionButton";
 import { CharacterPhoto } from "../ui/CharacterPhoto";
 import { CharacterCategoryFilter } from "../characters/CharacterCategoryFilter";
+import { CharacterDuplicatesModal } from "../characters/CharacterDuplicatesModal";
+import { CharacterBulkTagsModal } from "../characters/CharacterBulkTagsModal";
 import type { CharacterLibraryCategory } from "@marinara-engine/shared";
 
 type CharacterRow = CharacterCatalogEntry;
@@ -218,6 +222,8 @@ export function CharactersPanel() {
   const [selectedCharacterIds, setSelectedCharacterIds] = useState<Set<string>>(new Set());
   const [exportingSelected, setExportingSelected] = useState(false);
   const [movingSelected, setMovingSelected] = useState(false);
+  const [duplicatesOpen, setDuplicatesOpen] = useState(false);
+  const [bulkTagsOpen, setBulkTagsOpen] = useState(false);
 
   // Parse character data and filter by search
   const parsedCharacters = useMemo(() => {
@@ -244,6 +250,17 @@ export function CharactersPanel() {
   const parsedCharacterMap = useMemo(
     () => new Map(parsedCharacters.map((character) => [character.id, character])),
     [parsedCharacters],
+  );
+  // Built only while the bulk tag dialog is open, and stable between renders.
+  const bulkTagCharacters = useMemo(
+    () =>
+      bulkTagsOpen
+        ? [...selectedCharacterIds].flatMap((id) => {
+            const character = parsedCharacterMap.get(id);
+            return character ? [{ id, tags: getCharacterTags(character) }] : [];
+          })
+        : [],
+    [bulkTagsOpen, parsedCharacterMap, selectedCharacterIds],
   );
 
   const filteredCharacters = useMemo(() => {
@@ -891,6 +908,15 @@ export function CharactersPanel() {
           >
             <FolderPlus size="0.75rem" />
             {localizeUi("ui.panels.backgroundpicker.newFolder")}
+          </button>
+          <button
+            type="button"
+            onClick={() => setDuplicatesOpen(true)}
+            className="mari-chrome-control mari-chrome-control--small shrink-0 text-[0.6875rem]"
+            title={localizeUi("characters.duplicates.action")}
+          >
+            <ScanSearch size="0.75rem" />
+            {localizeUi("characters.duplicates.actionShort")}
           </button>
         </div>
         {parsedGroups.length > 0 && (
@@ -1770,22 +1796,52 @@ export function CharactersPanel() {
           placement="panel"
           selectedCount={selectedCharacterIds.size}
           extraAction={
-            <button
-              type="button"
-              onClick={() => void handleMoveSelected()}
-              disabled={selectedCharacterIds.size === 0 || parsedGroups.length === 0 || movingSelected}
-              className="mari-chrome-control flex-1 px-3 py-2 text-xs"
-              title={localizeUi("lorebook.editor.batch.move")}
-            >
-              <FolderInput size="0.75rem" />
-              {localizeUi("lorebook.editor.batch.move")}
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => void handleMoveSelected()}
+                disabled={selectedCharacterIds.size === 0 || parsedGroups.length === 0 || movingSelected}
+                className="mari-chrome-control min-w-0 flex-1 px-2 py-2 text-xs"
+                title={localizeUi("lorebook.editor.batch.move")}
+              >
+                <FolderInput size="0.75rem" />
+                <span className="truncate">{localizeUi("lorebook.editor.batch.move")}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setBulkTagsOpen(true)}
+                disabled={selectedCharacterIds.size === 0}
+                className="mari-chrome-control min-w-0 flex-1 px-2 py-2 text-xs"
+                title={localizeUi("characters.bulkTags.action")}
+              >
+                <Tags size="0.75rem" />
+                <span className="truncate">{localizeUi("characters.bulkTags.actionShort")}</span>
+              </button>
+            </>
           }
           onExport={() => void handleExportSelected()}
           onDelete={handleDeleteSelected}
           exporting={exportingSelected}
         />
       )}
+
+      <CharacterDuplicatesModal
+        open={duplicatesOpen}
+        onClose={() => setDuplicatesOpen(false)}
+        onOpenCharacter={(id) => {
+          setDuplicatesOpen(false);
+          openCharacterDetailFromPanel(id);
+        }}
+      />
+      <CharacterBulkTagsModal
+        open={bulkTagsOpen}
+        onClose={() => setBulkTagsOpen(false)}
+        characters={bulkTagCharacters}
+        onApplied={() => {
+          setBulkTagsOpen(false);
+          exitSelectionMode();
+        }}
+      />
     </div>
   );
 }
