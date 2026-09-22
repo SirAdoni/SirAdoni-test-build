@@ -374,7 +374,7 @@ export function EditorStepper({ step, labels }: { step: 1 | 2 | 3; labels: [stri
 /** Save/cancel bar that stays in reach at the bottom of long forms. */
 export function EditorFooter({ status, children }: { status?: ReactNode; children: ReactNode }) {
   return (
-    <div className="sticky bottom-0 z-10 -mx-1 border-t border-border bg-background px-1 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3">
+    <div className="sticky bottom-0 z-10 -mx-1 border-t border-border bg-background px-1 pb-[max(0.75rem,var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))] pt-3">
       {status && <div className="mb-2 text-xs leading-5 text-muted-foreground">{status}</div>}
       <div className="flex flex-wrap items-center justify-end gap-2 [&>*]:flex-1 sm:[&>*]:flex-none">{children}</div>
     </div>
