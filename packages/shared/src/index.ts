@@ -192,6 +192,7 @@ export * from "./utils/dice-branch.js";
 export * from "./utils/dice-notation.js";
 export * from "./utils/dice-placeholder.js";
 export * from "./utils/dice-pool.js";
+export * from "./utils/message-marks.js";
 
 export { parseChoiceOptions, resolveChoiceVariableValue, type ChoiceOptionValue } from "./utils/preset-choices.js";
 

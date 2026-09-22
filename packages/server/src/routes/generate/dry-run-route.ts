@@ -14,6 +14,7 @@ import {
   isAgentConfigDeleted,
   isBuiltInAgentRuntimeDisabled,
   normalizeAdvancedMemorySettings,
+  applyContextMessageLimitWithPins,
 } from "@marinara-engine/shared";
 import {
   appendRoleplayPromptTail,
@@ -694,7 +695,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
       contextMessageLimit > 0 &&
       chatMessages.length > contextMessageLimit
     ) {
-      chatMessages = chatMessages.slice(-contextMessageLimit);
+      chatMessages = applyContextMessageLimitWithPins(chatMessages, contextMessageLimit);
     }
 
     // Ephemeral user line (normal dry run only): mirrors an unsaved "what if I said this" turn.

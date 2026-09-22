@@ -4675,7 +4675,8 @@ const cases: RegressionCase[] = [
         "utf8",
       );
       assert.ok(
-        source.indexOf("const gameAuthorialContinuity") < source.indexOf("chatMessages.slice(-contextMessageLimit)"),
+        source.indexOf("const gameAuthorialContinuity") <
+          source.indexOf("applyContextMessageLimitWithPins(chatMessages, contextMessageLimit)"),
       );
       assert.match(source, /scopedMessages\.slice\(0, authorialCutoffIndex\)/u);
       assert.match(source, /message: any\) => !isMessageHiddenFromAI\(message\)/u);

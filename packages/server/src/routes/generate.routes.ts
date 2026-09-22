@@ -530,6 +530,7 @@ import {
 import { applyPromptPatchOperations } from "../services/generation/prompt-patch-runtime.js";
 import { resolveGenerationProviderRuntime } from "../services/generation/provider-generation-runtime.js";
 import { supportsNativeToolCalls } from "@marinara-engine/shared";
+import { applyContextMessageLimitWithPins } from "@marinara-engine/shared";
 import { planGameToolCalls } from "../services/generation/game-tool-planning.js";
 import {
   countProfessorMariCommands,
@@ -1922,7 +1923,8 @@ export async function generateRoutes(app: FastifyInstance) {
         contextMessageLimit > 0 &&
         chatMessages.length > contextMessageLimit
       ) {
-        chatMessages = chatMessages.slice(-contextMessageLimit);
+        // Pinned messages the limit would drop come back first, marked, in chronological order.
+        chatMessages = applyContextMessageLimitWithPins(chatMessages, contextMessageLimit);
       }
       const pastReasoning = collectPastReasoningMetadata(
         chatMessages,

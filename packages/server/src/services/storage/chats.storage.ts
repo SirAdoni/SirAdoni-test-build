@@ -61,6 +61,7 @@ import {
 } from "../import/import-timestamps.js";
 import { type CharacterSchedules, type WeekSchedule } from "../conversation/schedule.service.js";
 import type { ConversationStatusOverride } from "@marinara-engine/shared";
+import { MESSAGE_MARK_EXTRA_KEYS } from "@marinara-engine/shared";
 import { resolveConversationTimeZone } from "../conversation/timezone.js";
 import { logger } from "../../lib/logger.js";
 import { galleryFileHasReferences, unlinkGalleryFileIfUnreferenced } from "../image/gallery-file-lifecycle.js";
@@ -601,6 +602,7 @@ function freshSwipeMessageExtra(value: unknown): Record<string, unknown> {
     "conversationStartForCharacterIds",
     "reactions",
     "personaSnapshot",
+    ...MESSAGE_MARK_EXTRA_KEYS,
   ]) {
     if (current.commandOnly === true && (key === "hiddenFromAI" || key === "hiddenFromUser")) continue;
     if (Object.prototype.hasOwnProperty.call(current, key)) {

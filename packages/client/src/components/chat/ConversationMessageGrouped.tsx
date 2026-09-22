@@ -16,6 +16,7 @@ import {
   type MessageRenderContext,
 } from "./ConversationMessageShared";
 import { ConversationMessageActions } from "./ConversationMessageActions";
+import { MessageMarkIndicators } from "./MessageMarks";
 import { MessageReactions } from "./MessageReactions";
 import { ReactionAddButton } from "./ReactionAddButton";
 import {
@@ -473,6 +474,7 @@ export function ConversationMessageGrouped({
 
       <ConversationMessageSwipes ctx={ctx} />
 
+      <MessageMarkIndicators message={message} className="px-1" />
       {reactionRow}
 
       {/* Action bar */}

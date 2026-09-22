@@ -5170,7 +5170,8 @@ export function HomeProfessorMariChat({
       // Optimistic update from local state
       setMessages((current) => current.filter((m) => m.id !== messageId));
       try {
-        await api.delete(`/chats/${chatId}/messages/${messageId}`);
+        // Mari's chat has no Trash view, so deletes here stay permanent.
+        await api.delete(`/chats/${chatId}/messages/${messageId}?trash=false`);
       } catch (error) {
         console.error("[Professor Mari] Failed to delete message", error);
         await loadMessages(chatId).catch(() => undefined);
@@ -5238,7 +5239,7 @@ export function HomeProfessorMariChat({
 
         messageLoadAbortRef.current?.abort();
         setMessages((current) => current.filter((message) => message.id !== messageId));
-        await api.delete(`/chats/${chatId}/messages/${messageId}`);
+        await api.delete(`/chats/${chatId}/messages/${messageId}?trash=false`);
         const { received, runId, hiddenDuringStream } = await sendWorkspaceMessage(
           { id: chatId },
           userMessage.content,

@@ -22,9 +22,10 @@ import { cn } from "../../lib/utils";
 import { MsgAction } from "./ConversationMessageShared";
 import { MESSAGE_ACTION_ICON_SIZE } from "./MessageActionButton";
 import { ReactionAddButton } from "./ReactionAddButton";
+import { MessageMarksAction } from "./MessageMarks";
 
 export interface ConversationMessageActionsProps {
-  message: Pick<Message, "id" | "chatId" | "content">;
+  message: Pick<Message, "id" | "chatId" | "content"> & { extra?: unknown };
   name: string;
   isUser: boolean;
   // Visibility
@@ -148,6 +149,7 @@ export function ConversationMessageActions({
           }
         />
       )}
+      {!thinkingOnly && <MessageMarksAction message={message} align={isUser ? "right" : "left"} stopPropagation />}
       {isLastAssistantMessage && !isUser && onPeekPrompt && (
         <MsgAction
           icon={<Search size={MESSAGE_ACTION_ICON_SIZE} />}

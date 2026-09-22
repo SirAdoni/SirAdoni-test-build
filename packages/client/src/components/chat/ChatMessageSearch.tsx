@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { normalizeTextForMatch, type Message } from "@marinara-engine/shared";
-import { Loader2, Search, X } from "lucide-react";
+import { Bookmark, Loader2, Search, Trash2, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useTranslation as useUiTranslation } from "react-i18next";
@@ -25,6 +25,15 @@ import {
   NEUTRAL_PANEL_SHELL,
   NEUTRAL_PANEL_TITLE,
 } from "../ui/neutral-surface-styles";
+import { ChatBookmarksList, ChatTrashList } from "./ChatMessageMarksPanels";
+
+type SearchPanelView = "search" | "bookmarks" | "trash";
+
+const PANEL_VIEWS = [
+  { id: "search", icon: Search, labelKey: "ui.chat.messagemarks.searchTab" },
+  { id: "bookmarks", icon: Bookmark, labelKey: "ui.chat.messagemarks.bookmarksTab" },
+  { id: "trash", icon: Trash2, labelKey: "ui.chat.messagetrash.trashTab" },
+] as const satisfies ReadonlyArray<{ id: SearchPanelView; icon: typeof Search; labelKey: string }>;
 
 type SearchResult = {
   message: Message;
@@ -54,6 +63,7 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
   const { t: localizeUi } = useUiTranslation();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [view, setView] = useState<SearchPanelView>("search");
   const [anchor, setAnchor] = useState<ChatToolbarFloatingPanelAnchor>(null);
   const panelId = useId();
   const titleId = useId();
@@ -61,6 +71,10 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const title = localizeUi("chat.toolbar.searchMessages");
+  const activeView = PANEL_VIEWS.find((item) => item.id === view) ?? PANEL_VIEWS[0];
+  const ViewIcon = activeView.icon;
+  const viewTitle = view === "search" ? title : localizeUi(activeView.labelKey);
+  const buttonTitle = localizeUi("ui.chat.messagemarks.toolbarTitle");
 
   const {
     data: messages,
@@ -93,6 +107,7 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
   useEffect(() => {
     setOpen(false);
     setQuery("");
+    setView("search");
   }, [chatId]);
 
   useLayoutEffect(() => {
@@ -112,7 +127,7 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
 
   useEffect(() => {
     if (!open) return;
-    inputRef.current?.focus();
+    if (view === "search") inputRef.current?.focus();
     const handlePointerDown = (event: PointerEvent) => {
       if (!(event.target instanceof Node)) return;
       if (buttonRef.current?.contains(event.target) || panelRef.current?.contains(event.target)) return;
@@ -135,7 +150,7 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
       window.removeEventListener(CHAT_TOOLBAR_ACTION_EVENT, handleToolbarAction);
       window.removeEventListener(CHAT_FLOATING_UI_DISMISS_EVENT, handleDismiss);
     };
-  }, [open]);
+  }, [open, view]);
 
   const jumpToMessage = (messageNumber: number) => {
     useChatStore.getState().requestGotoMessage(chatId, messageNumber);
@@ -149,8 +164,8 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
         data-chat-help="search"
         data-chat-toolbar-panel-action="search"
         className={getChatToolbarButtonClass({ open })}
-        title={title}
-        aria-label={title}
+        title={buttonTitle}
+        aria-label={buttonTitle}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
@@ -174,8 +189,8 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
           >
             <div className={cn(NEUTRAL_PANEL_HEADER, "flex shrink-0 items-center justify-between")}>
               <h3 id={titleId} className={NEUTRAL_PANEL_TITLE}>
-                <Search size="0.8125rem" className="shrink-0 text-[var(--muted-foreground)]" />
-                {title}
+                <ViewIcon size="0.8125rem" className="shrink-0 text-[var(--muted-foreground)]" />
+                {viewTitle}
               </h3>
               <button
                 type="button"
@@ -187,34 +202,65 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
               </button>
             </div>
 
-            <div className="shrink-0 p-3">
-              <div className="relative">
-                <Search
-                  size="0.875rem"
-                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted-foreground)]"
-                />
-                <input
-                  ref={inputRef}
-                  type="search"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && results[0]) jumpToMessage(results[0].messageNumber);
-                  }}
-                  placeholder={localizeUi("ui.chat.chatmessagesearch.placeholder")}
-                  aria-label={localizeUi("ui.chat.chatmessagesearch.inputLabel")}
-                  className="h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] pl-9 pr-3 text-sm text-[var(--foreground)] outline-none transition-colors placeholder:text-[var(--muted-foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25"
-                />
-              </div>
-              <p className="mt-2 min-h-4 text-xs text-[var(--muted-foreground)]" role="status" aria-live="polite">
-                {query.trim()
-                  ? localizeUi("ui.chat.chatmessagesearch.resultCount", { count: results.length })
-                  : localizeUi("ui.chat.chatmessagesearch.startTyping")}
-              </p>
+            <div
+              role="tablist"
+              aria-label={localizeUi("ui.chat.messagemarks.panelViews")}
+              className="flex shrink-0 gap-1 border-b border-[var(--border)] px-3 py-1.5"
+            >
+              {PANEL_VIEWS.map(({ id, icon: Icon, labelKey }) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  aria-selected={view === id}
+                  onClick={() => setView(id)}
+                  className={cn(
+                    "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]",
+                    view === id
+                      ? "bg-[var(--accent)] font-medium text-[var(--foreground)]"
+                      : "text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
+                  )}
+                >
+                  <Icon size="0.75rem" className="shrink-0" />
+                  {localizeUi(labelKey)}
+                </button>
+              ))}
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto border-t border-[var(--border)]">
-              {isLoading ? (
+            {view === "search" && (
+              <div className="shrink-0 p-3">
+                <div className="relative">
+                  <Search
+                    size="0.875rem"
+                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted-foreground)]"
+                  />
+                  <input
+                    ref={inputRef}
+                    type="search"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && results[0]) jumpToMessage(results[0].messageNumber);
+                    }}
+                    placeholder={localizeUi("ui.chat.chatmessagesearch.placeholder")}
+                    aria-label={localizeUi("ui.chat.chatmessagesearch.inputLabel")}
+                    className="h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] pl-9 pr-3 text-sm text-[var(--foreground)] outline-none transition-colors placeholder:text-[var(--muted-foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/25"
+                  />
+                </div>
+                <p className="mt-2 min-h-4 text-xs text-[var(--muted-foreground)]" role="status" aria-live="polite">
+                  {query.trim()
+                    ? localizeUi("ui.chat.chatmessagesearch.resultCount", { count: results.length })
+                    : localizeUi("ui.chat.chatmessagesearch.startTyping")}
+                </p>
+              </div>
+            )}
+
+            <div
+              className={cn("min-h-0 flex-1 overflow-y-auto", view === "search" && "border-t border-[var(--border)]")}
+            >
+              {view === "trash" ? (
+                <ChatTrashList chatId={chatId} enabled={open} />
+              ) : isLoading ? (
                 <div className="flex items-center justify-center gap-2 px-3 py-8 text-sm text-[var(--muted-foreground)]">
                   <Loader2 size="0.875rem" className="animate-spin" />
                   {localizeUi("ui.chat.chatmessagesearch.loading")}
@@ -230,6 +276,8 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
                     {localizeUi("ui.chat.chatmessagesearch.tryAgain")}
                   </button>
                 </div>
+              ) : view === "bookmarks" ? (
+                <ChatBookmarksList chatId={chatId} messages={messages ?? []} onJump={jumpToMessage} />
               ) : query.trim() && results.length === 0 ? (
                 <p className="px-3 py-8 text-center text-sm text-[var(--muted-foreground)]">
                   {localizeUi("ui.chat.chatmessagesearch.noMatches")}

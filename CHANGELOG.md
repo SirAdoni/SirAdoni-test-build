@@ -31,6 +31,13 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Added text snippets. Define triggers such as ;ooc in Settings > General > Text Snippets, then type the trigger followed by Space or Tab in the chat input to expand it. {{cursor}} sets where the caret lands, macros like {{char}} are filled in when you send, and Ctrl+Z undoes an expansion. Snippets can also be inserted from the Quick replies menu or the command palette, and sync with your other devices.
 
 - Added a Usage Dashboard in Settings > Advanced. It totals the tokens your providers report for each reply by connection, chat and day over a chosen range, and can estimate cost from prices you enter per 1M input and output tokens. Usage is recorded from this version on.
+- Added message bookmarks. Bookmark any message from its bookmark action, give it an optional short label, and find every bookmark (speaker, snippet and time) in the new Bookmarks tab of chat search; clicking one jumps to the message.
+
+- Added Pin to context. A pinned message (up to 10 per chat) stays in the prompt even when the chat's context message limit would drop it; it is sent in its original order and marked as an earlier pinned message. Peek Prompt shows the same result.
+
+- Deleted Roleplay and Conversation messages now go to a per-chat Trash (the Trash tab in chat search) instead of disappearing. Restore puts a message back in its original position with its swipes, bookmarks and notes; you can also delete forever or empty the trash, and trashed messages are purged automatically after 30 days. Game mode deletes stay permanent.
+
+- Added private message notes. Attach a note to any message from its bookmark action; a small note icon on the message shows it. Notes are never sent to the model and are left out of chat exports unless you turn on "Include private notes in exports".
 
 - Fixed the mobile Game Mode layout so Currently Present no longer pushes the narration and input below the screen. Widget bookmarks now use a single horizontally scrollable row; opening one shows a dismissible panel without shifting the chat. Short screens also retain room for narration when the storyboard viewer is open. Saved desktop widget placements are preserved.
 

@@ -41,6 +41,13 @@ import {
   normalizeRpgStatPools,
   characterDataSchema,
   rulesetLiveStatesSchema,
+  applyContextMessageLimitWithPins,
+  isMessagePinnedToContext,
+  normalizeMessageMarkPatch,
+  stripPrivateMessageNote,
+  readMessagePrivateNote,
+  MAX_PINNED_CONTEXT_MESSAGES,
+  MESSAGE_MARK_EXTRA_KEYS,
 } from "@marinara-engine/shared";
 import type {
   CharacterData,
@@ -69,6 +76,7 @@ import {
   parseMessageCursor,
   withChatMetadataPatchQueue,
 } from "../services/storage/chats.storage.js";
+import { createMessageTrashStorage, sweepExpiredMessageTrash } from "../services/storage/message-trash.storage.js";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
 import { createContinuityChangeNotifier } from "../services/game/continuity-change-notifier.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
@@ -843,6 +851,21 @@ function resolveEntryStateOverrides(value: unknown): EntryStateOverrides | undef
 
 export async function chatsRoutes(app: FastifyInstance) {
   const storage = createChatsStorage(app.db);
+  const messageTrashStore = createMessageTrashStorage(app.db);
+  // Expired trash is purged when a chat's trash is read or written; this background sweep
+  // covers chats nobody reopens. Unref'd so it never holds the process open.
+  const sweepMessageTrash = () =>
+    void sweepExpiredMessageTrash(app.db).catch((error) =>
+      logger.warn(error, "[message-trash] Expired trash sweep failed"),
+    );
+  const messageTrashStartupSweep = setTimeout(sweepMessageTrash, 2 * 60 * 1000);
+  messageTrashStartupSweep.unref();
+  const messageTrashSweepInterval = setInterval(sweepMessageTrash, 6 * 60 * 60 * 1000);
+  messageTrashSweepInterval.unref();
+  app.addHook("onClose", async () => {
+    clearTimeout(messageTrashStartupSweep);
+    clearInterval(messageTrashSweepInterval);
+  });
   // Message edits, deletes, swipes and AI-visibility changes alter continuity
   // sources; schedule a debounced reconcile + summary re-evaluation off the
   // request path so game chats mark stale work without waiting for a generation.
@@ -2401,22 +2424,72 @@ export async function chatsRoutes(app: FastifyInstance) {
     return created;
   });
 
-  // Delete message
-  app.delete<{ Params: { chatId: string; messageId: string } }>("/:chatId/messages/:messageId", async (req, reply) => {
-    await storage.removeMessage(req.params.messageId);
-    continuityChanges.notify(req.params.chatId, [req.params.messageId]);
-    return reply.status(204).send();
-  });
+  // Game turns carry state snapshots a restore cannot bring back, and Game mode has no Trash
+  // view, so its deletes stay permanent as before.
+  const chatUsesMessageTrash = async (chatId: string) => (await storage.getById(chatId))?.mode !== "game";
 
-  // Bulk delete messages
+  // Delete message (moves it to the chat's trash)
+  app.delete<{ Params: { chatId: string; messageId: string }; Querystring: { trash?: string } }>(
+    "/:chatId/messages/:messageId",
+    async (req, reply) => {
+      // `trash=false` is for rollbacks of rows the user never saw (failed sends, regenerate-by-delete).
+      const trashed =
+        req.query.trash === "false" || !(await chatUsesMessageTrash(req.params.chatId))
+          ? []
+          : await messageTrashStore.trashMessages(req.params.chatId, [req.params.messageId]);
+      // A message addressed through another chat id keeps the old untrashed delete behavior.
+      if (trashed.length === 0) await storage.removeMessage(req.params.messageId);
+      continuityChanges.notify(req.params.chatId, [req.params.messageId]);
+      return reply.status(204).send();
+    },
+  );
+
+  // Bulk delete messages (moves them to the chat's trash)
   app.post<{ Params: { chatId: string } }>("/:chatId/messages/bulk-delete", async (req, reply) => {
     const { messageIds } = req.body as { messageIds: string[] };
     if (!Array.isArray(messageIds) || messageIds.length === 0) {
       return reply.status(400).send({ error: "messageIds array is required" });
     }
-    await storage.removeMessages(messageIds, req.params.chatId);
+    const ids = messageIds.filter((id): id is string => typeof id === "string");
+    if (await chatUsesMessageTrash(req.params.chatId)) await messageTrashStore.trashMessages(req.params.chatId, ids);
+    else await storage.removeMessages(ids, req.params.chatId);
     continuityChanges.notify(req.params.chatId, messageIds);
     return reply.status(204).send();
+  });
+
+  // ── Message trash ──
+  app.get<{ Params: { chatId: string } }>("/:chatId/trash", async (req, reply) => {
+    const chat = await storage.getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    return messageTrashStore.list(req.params.chatId);
+  });
+
+  app.post<{ Params: { chatId: string } }>("/:chatId/trash/restore", async (req, reply) => {
+    const body = z.object({ entryIds: z.array(z.string().min(1)).min(1).max(5000) }).safeParse(req.body);
+    if (!body.success) return reply.status(400).send({ error: "entryIds array is required" });
+    const chat = await storage.getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const active = (app as unknown as { activeGenerations?: Map<string, unknown> }).activeGenerations;
+    if (active?.has(req.params.chatId))
+      return reply.status(409).send({ error: "Wait for the current generation to finish before restoring messages." });
+    const result = await messageTrashStore.restore(req.params.chatId, body.data.entryIds);
+    if (result.restoredMessageIds.length > 0) continuityChanges.notify(req.params.chatId, result.restoredMessageIds);
+    return result;
+  });
+
+  app.post<{ Params: { chatId: string } }>("/:chatId/trash/delete", async (req, reply) => {
+    const body = z
+      .object({ entryIds: z.array(z.string().min(1)).min(1).max(5000).optional(), all: z.boolean().optional() })
+      .safeParse(req.body);
+    if (!body.success || (!body.data.all && !body.data.entryIds))
+      return reply.status(400).send({ error: "entryIds array or all: true is required" });
+    const chat = await storage.getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const deleted = await messageTrashStore.deleteForever(
+      req.params.chatId,
+      body.data.all ? undefined : body.data.entryIds,
+    );
+    return { deleted };
   });
 
   // Edit message content
@@ -2464,7 +2537,18 @@ export async function chatsRoutes(app: FastifyInstance) {
       const swipeIndex = req.query.swipeIndex === undefined ? undefined : Number(req.query.swipeIndex);
       if (swipeIndex !== undefined && (!Number.isSafeInteger(swipeIndex) || swipeIndex < 0))
         return reply.status(400).send({ error: "Invalid swipe index" });
-      const partial = { ...(req.body as Record<string, unknown>) };
+      const markPatch = normalizeMessageMarkPatch({ ...(req.body as Record<string, unknown>) });
+      if ("error" in markPatch) return reply.status(400).send({ error: markPatch.error });
+      const partial = markPatch.patch;
+      if (partial.pinnedToContext === true && !isMessagePinnedToContext(message.extra)) {
+        const chatRows = await storage.listMessages(req.params.chatId);
+        const pinnedCount = chatRows.filter((row) => isMessagePinnedToContext(row.extra)).length;
+        if (pinnedCount >= MAX_PINNED_CONTEXT_MESSAGES) {
+          return reply.status(409).send({
+            error: `A chat can pin at most ${MAX_PINNED_CONTEXT_MESSAGES} messages. Unpin one first.`,
+          });
+        }
+      }
       for (const key of ["hiddenFromAICharacterIds", "conversationStartForCharacterIds"] as const) {
         if (Object.prototype.hasOwnProperty.call(partial, key)) {
           partial[key] = normalizeMessageCharacterIds(partial[key]);
@@ -2507,6 +2591,10 @@ export async function chatsRoutes(app: FastifyInstance) {
       }
       if (Object.prototype.hasOwnProperty.call(partial, "reactions")) {
         syncAllSwipeExtra.reactions = partial.reactions;
+      }
+      // Bookmarks, context pins and private notes belong to the message, not one swipe.
+      for (const key of MESSAGE_MARK_EXTRA_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(partial, key)) syncAllSwipeExtra[key] = partial[key];
       }
 
       if (Object.keys(syncAllSwipeExtra).length > 0) {
@@ -3240,7 +3328,7 @@ export async function chatsRoutes(app: FastifyInstance) {
           // Apply context message limit
           const contextLimit = chatMeta.contextMessageLimit as number | null;
           if (contextLimit && contextLimit > 0 && filteredMessages.length > contextLimit) {
-            filteredMessages = filteredMessages.slice(-contextLimit);
+            filteredMessages = applyContextMessageLimitWithPins(filteredMessages, contextLimit);
           }
 
           const mappedMessages = filteredMessages.map((m: any) => ({
@@ -4136,9 +4224,13 @@ export async function chatsRoutes(app: FastifyInstance) {
   const serializeChatTranscript = async (
     chat: ChatRow,
     format: ExportFormat,
-    options: { includeReasoning?: boolean; includeAvatars?: boolean } = {},
+    options: { includeReasoning?: boolean; includeAvatars?: boolean; includePrivateNotes?: boolean } = {},
   ) => {
     const includeReasoning = options.includeReasoning === true;
+    // Private message notes stay out of exports unless the user opted in.
+    const includePrivateNotes = options.includePrivateNotes === true;
+    const exportNoteExtra = (extra: Record<string, unknown>) =>
+      includePrivateNotes ? extra : stripPrivateMessageNote(extra);
     const rawMessages = await storage.listMessages(chat.id);
     const charIds = parseExportCharacterIds(chat.characterIds);
     const metadata = parseExportMetadata(chat.metadata);
@@ -4297,6 +4389,8 @@ export async function chatsRoutes(app: FastifyInstance) {
           const thinking = includeReasoning ? getExportThinking(parseExportMetadata(msg.extra)) : null;
           const parts = [`[${name}]${ts ? ` (${ts})` : ""}`, resolveExportMessageContent(msg)];
           if (thinking) parts.push(`[Thinking]\n${thinking}`);
+          const note = includePrivateNotes ? readMessagePrivateNote(msg.extra) : null;
+          if (note) parts.push(`[Private note]\n${note}`);
           return parts.join("\n");
         })
         .join("\n\n");
@@ -4340,7 +4434,9 @@ export async function chatsRoutes(app: FastifyInstance) {
         storage.prepareRoleplayInterruptionExtraForCopy(extra, (content, target) =>
           resolveExportMessageContent({ content, characterId: target.characterId }),
         );
-      const messageExtra = await normalizeInterruptionExtra(sanitizeJsonlMessageExtra(rawMessageExtra));
+      const messageExtra = await normalizeInterruptionExtra(
+        exportNoteExtra(sanitizeJsonlMessageExtra(rawMessageExtra)),
+      );
       const thinking = includeReasoning ? getExportThinking(rawMessageExtra) : null;
       const exportCharacterId = resolveTranscriptExportCharacterId({
         mode: chat.mode,
@@ -4367,7 +4463,9 @@ export async function chatsRoutes(app: FastifyInstance) {
                 extra:
                   swipe.index === msg.activeSwipeIndex
                     ? messageExtra
-                    : await normalizeInterruptionExtra(sanitizeJsonlMessageExtra(parseExportMetadata(swipe.extra))),
+                    : await normalizeInterruptionExtra(
+                        exportNoteExtra(sanitizeJsonlMessageExtra(parseExportMetadata(swipe.extra))),
+                      ),
                 createdAt: swipe.createdAt,
               })),
             )
@@ -4435,10 +4533,17 @@ export async function chatsRoutes(app: FastifyInstance) {
   };
 
   app.post<{
-    Body: { chatIds?: string[]; format?: string; scope?: "selected" | "all"; includeReasoning?: boolean | string };
+    Body: {
+      chatIds?: string[];
+      format?: string;
+      scope?: "selected" | "all";
+      includeReasoning?: boolean | string;
+      includePrivateNotes?: boolean | string;
+    };
   }>("/export/bulk", async (req, reply) => {
     const format = normalizeExportFormat(req.body?.format);
     const includeReasoning = normalizeExportBoolean(req.body?.includeReasoning);
+    const includePrivateNotes = normalizeExportBoolean(req.body?.includePrivateNotes);
     const scope = req.body?.scope === "all" ? "all" : "selected";
     const uniqueIds = [...new Set((req.body?.chatIds ?? []).filter((id): id is string => typeof id === "string"))];
 
@@ -4458,7 +4563,7 @@ export async function chatsRoutes(app: FastifyInstance) {
 
     for (let index = 0; index < chatsToExport.length; index++) {
       const chat = chatsToExport[index]!;
-      const serialized = await serializeChatTranscript(chat, format, { includeReasoning });
+      const serialized = await serializeChatTranscript(chat, format, { includeReasoning, includePrivateNotes });
       const file = buildBulkExportFilename(
         chat,
         index,
@@ -4510,16 +4615,18 @@ export async function chatsRoutes(app: FastifyInstance) {
   // Export chat — supports JSONL (default, SillyTavern-compatible), plain text, Markdown and a standalone HTML story
   app.get<{
     Params: { id: string };
-    Querystring: { format?: string; includeReasoning?: string; includeAvatars?: string };
+    Querystring: { format?: string; includeReasoning?: string; includeAvatars?: string; includePrivateNotes?: string };
   }>("/:id/export", async (req, reply) => {
     const chat = await storage.getById(req.params.id);
     if (!chat) return reply.status(404).send({ error: "Chat not found" });
 
     const format = normalizeExportFormat(req.query.format);
     const includeReasoning = normalizeExportBoolean(req.query.includeReasoning);
+    const includePrivateNotes = normalizeExportBoolean(req.query.includePrivateNotes);
     const serialized = await serializeChatTranscript(chat as ChatRow, format, {
       includeReasoning,
       includeAvatars: req.query.includeAvatars !== "false",
+      includePrivateNotes,
     });
 
     return reply

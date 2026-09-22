@@ -1,4 +1,4 @@
-import { normalizeTextForMatch } from "@marinara-engine/shared";
+import { applyContextMessageLimitWithPins, normalizeTextForMatch } from "@marinara-engine/shared";
 import type { ConversationStatusOverride } from "@marinara-engine/shared";
 
 import type { DB } from "../../db/connection.js";
@@ -249,7 +249,7 @@ export async function resolveConversationPresenceRuntime(args: {
       const rScoped = rStartIdx > 0 ? refreshed.slice(rStartIdx) : refreshed;
       chatMessages = args.supportsHiddenFromAI ? rScoped.filter((message) => !isMessageHiddenFromAI(message)) : rScoped;
       if (args.contextMessageLimit && args.contextMessageLimit > 0 && chatMessages.length > args.contextMessageLimit) {
-        chatMessages = chatMessages.slice(-args.contextMessageLimit);
+        chatMessages = applyContextMessageLimitWithPins(chatMessages, args.contextMessageLimit);
       }
       finalMessages = [];
       const latestUserMessageId = [...chatMessages].reverse().find((message) => message.role === "user")?.id;

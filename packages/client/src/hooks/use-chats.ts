@@ -41,7 +41,9 @@ import type {
   HomeFeedSnapshot,
   ChatPersonaAttributionsSummary,
   ReassignMessagePersonaInput,
+  MessageTrashEntry,
 } from "@marinara-engine/shared";
+import { translate } from "../localization/i18n";
 
 import { useRollingBackfillStore } from "../stores/backfill.store";
 import { homeFeedKeys } from "./use-home-feed";
@@ -56,6 +58,7 @@ export const chatKeys = {
   personaAttributions: (chatId: string) => [...chatKeys.all, "personaAttributions", chatId] as const,
   memories: (chatId: string) => [...chatKeys.all, "memories", chatId] as const,
   notes: (chatId: string) => [...chatKeys.all, "notes", chatId] as const,
+  trash: (chatId: string) => [...chatKeys.all, "trash", chatId] as const,
   group: (groupId: string) => [...chatKeys.all, "group", groupId] as const,
 };
 
@@ -1307,12 +1310,24 @@ export function useCreateMessage(chatId: string | null) {
   });
 }
 
+/**
+ * Delete one message. User deletes move it to the chat's trash; pass
+ * `{ messageId, skipTrash: true }` for rollbacks of rows the user never saw.
+ */
 export function useDeleteMessage(chatId: string | null) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (messageId: string) => api.delete(`/chats/${chatId}/messages/${messageId}`),
-    onSuccess: () => {
+    mutationFn: (target: string | { messageId: string; skipTrash?: boolean }) => {
+      const { messageId, skipTrash } = typeof target === "string" ? { messageId: target, skipTrash: false } : target;
+      return api.delete(`/chats/${chatId}/messages/${messageId}${skipTrash ? "?trash=false" : ""}`);
+    },
+    onSuccess: (_data, target) => {
       if (chatId) {
+        if ((typeof target === "string" || !target.skipTrash) && chatUsesMessageTrash(qc, chatId)) {
+          qc.invalidateQueries({ queryKey: chatKeys.trash(chatId) });
+          notifyMovedToTrash(1);
+        }
+        qc.invalidateQueries({ queryKey: ["chat-message-search", chatId] });
         qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.messagePeek(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.messageCount(chatId) });
@@ -1327,14 +1342,75 @@ export function useDeleteMessages(chatId: string | null) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (messageIds: string[]) => api.post(`/chats/${chatId}/messages/bulk-delete`, { messageIds }),
-    onSuccess: () => {
+    onSuccess: (_data, messageIds) => {
       if (chatId) {
+        if (chatUsesMessageTrash(qc, chatId)) {
+          qc.invalidateQueries({ queryKey: chatKeys.trash(chatId) });
+          notifyMovedToTrash(messageIds.length);
+        }
+        qc.invalidateQueries({ queryKey: ["chat-message-search", chatId] });
         qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.messagePeek(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.messageCount(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.list() });
         qc.invalidateQueries({ queryKey: lorebookKeys.active(chatId) });
       }
+    },
+  });
+}
+
+/** Game chats keep permanent deletes (the server skips their trash; there is no Trash view). */
+function chatUsesMessageTrash(qc: ReturnType<typeof useQueryClient>, chatId: string) {
+  return qc.getQueryData<Chat>(chatKeys.detail(chatId))?.mode !== "game";
+}
+
+function notifyMovedToTrash(count: number) {
+  toast.success(translate("ui.chat.messagetrash.movedToTrash", { count }), {
+    description: translate("ui.chat.messagetrash.movedToTrashHint"),
+  });
+}
+
+/** Trashed messages of one chat, newest deletion first. */
+export function useMessageTrash(chatId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: chatKeys.trash(chatId ?? ""),
+    queryFn: ({ signal }) => api.get<MessageTrashEntry[]>(`/chats/${chatId}/trash`, { signal }),
+    enabled: !!chatId && enabled,
+    staleTime: 10_000,
+  });
+}
+
+function invalidateAfterTrashChange(qc: ReturnType<typeof useQueryClient>, chatId: string) {
+  qc.invalidateQueries({ queryKey: chatKeys.trash(chatId) });
+  qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
+  qc.invalidateQueries({ queryKey: chatKeys.messagePeek(chatId) });
+  qc.invalidateQueries({ queryKey: chatKeys.messageCount(chatId) });
+  qc.invalidateQueries({ queryKey: chatKeys.list() });
+  qc.invalidateQueries({ queryKey: ["chat-message-search", chatId] });
+}
+
+/** Restore trashed messages to their original position. */
+export function useRestoreTrashedMessages(chatId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (entryIds: string[]) =>
+      api.post<{ restoredMessageIds: string[]; conflictEntryIds: string[] }>(`/chats/${chatId}/trash/restore`, {
+        entryIds,
+      }),
+    onSuccess: () => {
+      if (chatId) invalidateAfterTrashChange(qc, chatId);
+    },
+  });
+}
+
+/** Permanently delete trash entries; omit ids to empty the chat's trash. */
+export function useDeleteTrashedMessages(chatId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (entryIds?: string[]) =>
+      api.post<{ deleted: number }>(`/chats/${chatId}/trash/delete`, entryIds ? { entryIds } : { all: true }),
+    onSuccess: () => {
+      if (chatId) qc.invalidateQueries({ queryKey: chatKeys.trash(chatId) });
     },
   });
 }
@@ -1585,7 +1661,9 @@ export function useExportChat() {
     mutationFn: async ({ chatId, format = "jsonl" }: { chatId: string; format?: ChatExportFormat }) => {
       const ext = CHAT_EXPORT_EXTENSIONS[format];
       const includeReasoning = useUIStore.getState().includeReasoningInExports;
-      const reasoningParam = includeReasoning ? "&includeReasoning=true" : "";
+      const reasoningParam = `${includeReasoning ? "&includeReasoning=true" : ""}${
+        useUIStore.getState().includePrivateNotesInExports ? "&includePrivateNotes=true" : ""
+      }`;
       await api.download(
         `/chats/${encodeURIComponent(chatId)}/export?format=${encodeURIComponent(format)}${reasoningParam}`,
         `chat-${chatId}${ext}`,
@@ -1611,7 +1689,13 @@ export function useBulkExportChats() {
     }) =>
       api.downloadPost(
         "/chats/export/bulk",
-        { chatIds, format, scope, includeReasoning: useUIStore.getState().includeReasoningInExports },
+        {
+          chatIds,
+          format,
+          scope,
+          includeReasoning: useUIStore.getState().includeReasoningInExports,
+          includePrivateNotes: useUIStore.getState().includePrivateNotesInExports,
+        },
         `chat-transcripts-${format}.zip`,
       ),
   });

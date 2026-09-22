@@ -108,7 +108,8 @@ import { ChatImageLightbox } from "./ChatImageLightbox";
 import { SwipeJumpControl } from "./SwipeJumpControl";
 import { toast } from "sonner";
 import { MessageThinkingModal } from "./MessageThinkingModal";
-import { MESSAGE_ACTION_ICON_SIZE, MessageActionButton } from "./MessageActionButton";
+import { MESSAGE_ACTION_ICON_SIZE, MessageActionButton, useMessageActionMenu } from "./MessageActionButton";
+import { MessageMarkIndicators, MessageMarksAction, readMessageMarks } from "./MessageMarks";
 import { RoleplayStoryboardMessageMedia } from "./RoleplayStoryboardMessageMedia";
 import { MessageEditTextarea } from "./MessageEditTextarea";
 import { applyTextareaQuoteFormat } from "../../lib/textarea-quotes";
@@ -367,60 +368,6 @@ function AIVisibilityRecipientAvatars({
       ))}
     </span>
   );
-}
-
-function useMessageActionMenu(align: "left" | "right") {
-  const [open, setOpen] = useState(false);
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState({ top: 0, left: 0 });
-
-  useLayoutEffect(() => {
-    if (!open) return;
-    const update = () => {
-      const button = buttonRef.current;
-      const menu = menuRef.current;
-      if (!button || !menu) return;
-      const rect = button.getBoundingClientRect();
-      const left = align === "right" ? rect.right - menu.offsetWidth : rect.left;
-      setPosition({
-        top: Math.max(8, rect.top - menu.offsetHeight - 7),
-        left: Math.max(8, Math.min(left, window.innerWidth - menu.offsetWidth - 8)),
-      });
-    };
-    update();
-    window.addEventListener("resize", update);
-    window.addEventListener("scroll", update, true);
-    const observer = new ResizeObserver(update);
-    if (menuRef.current) observer.observe(menuRef.current);
-    return () => {
-      window.removeEventListener("resize", update);
-      window.removeEventListener("scroll", update, true);
-      observer.disconnect();
-    };
-  }, [align, open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target as Node;
-      if (!buttonRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setOpen(false);
-        buttonRef.current?.focus({ preventScroll: true });
-      }
-    };
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [open]);
-
-  return { open, setOpen, buttonRef, menuRef, position };
 }
 
 function HideFromAIAction({
@@ -3128,6 +3075,8 @@ export const ChatMessage = memo(function ChatMessage({
       hiddenCharacterIds={hiddenFromAICharacterIds}
     />
   );
+  const hasMessageMarks = readMessageMarks(message).any;
+  const messageMarkIndicators = <MessageMarkIndicators message={message} />;
   const hiddenFromAIHeader = isHiddenFromAI ? (
     <HiddenFromAIMessageButton
       roleplay={isRoleplay}
@@ -3542,6 +3491,7 @@ export const ChatMessage = memo(function ChatMessage({
                 <div className="mb-1 flex items-center gap-2 text-[0.625rem] font-semibold uppercase tracking-widest text-amber-400/70">
                   <span className="h-px flex-1 bg-amber-400/20" />
                   {hiddenFromAIHeader}
+                  {messageMarkIndicators}
                   {localizeUi("ui.chat.chatmessage.narrator")}
                   <span className="h-px flex-1 bg-amber-400/20" />
                 </div>
@@ -3756,6 +3706,7 @@ export const ChatMessage = memo(function ChatMessage({
             {!isGrouped && (
               <div className={cn("flex items-baseline gap-2 px-1", isUser && "flex-row-reverse")}>
                 {hiddenFromAIHeader}
+                {messageMarkIndicators}
                 <span
                   className={cn(
                     "mari-message-name text-[0.75rem] font-bold tracking-tight",
@@ -3784,6 +3735,9 @@ export const ChatMessage = memo(function ChatMessage({
                     </span>
                   )}
               </div>
+            )}
+            {isGrouped && hasMessageMarks && (
+              <div className={cn("flex px-1", isUser && "justify-end")}>{messageMarkIndicators}</div>
             )}
 
             <ConversationStartMarkers
@@ -4026,6 +3980,7 @@ export const ChatMessage = memo(function ChatMessage({
                 />
               )}
               <GuidedRegenerateActionBtn onClick={() => onRegenerate?.(message.id)} />
+              <MessageMarksAction message={message} align={isUser ? "right" : "left"} />
               {onToggleConversationStart && (
                 <ConversationStartAction
                   messageId={message.id}
@@ -4239,6 +4194,7 @@ export const ChatMessage = memo(function ChatMessage({
           {!isGrouped && !isUser && (
             <div className="flex items-center gap-2 px-3">
               {hiddenFromAIHeader}
+              {messageMarkIndicators}
               <span
                 className={cn(
                   "mari-message-name text-[0.6875rem] font-semibold",
@@ -4249,6 +4205,9 @@ export const ChatMessage = memo(function ChatMessage({
                 {isMergedGroup ? mergedNameElement : <NameColorText color={msgNameColor}>{displayName}</NameColorText>}
               </span>
             </div>
+          )}
+          {(isGrouped || isUser) && hasMessageMarks && (
+            <div className={cn("flex px-3", isUser && "justify-end")}>{messageMarkIndicators}</div>
           )}
 
           <ConversationStartMarkers
@@ -4523,6 +4482,7 @@ export const ChatMessage = memo(function ChatMessage({
                 disabled={isCloneSceneFromHereDisabled}
               />
             )}
+            <MessageMarksAction message={message} align={isUser ? "right" : "left"} />
             {onToggleHiddenFromAI && (
               <HideFromAIAction
                 messageId={message.id}
