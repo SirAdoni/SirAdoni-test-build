@@ -26,7 +26,7 @@ import { useGameModeStore } from "../../stores/game-mode.store";
 import { useRenderTimer } from "../../lib/perf-diagnostics";
 import { Modal } from "../ui/Modal";
 import { FloatingGamePanel } from "./FloatingGamePanel";
-import { GameWidgetSetupEditor, widgetIcon } from "./GameWidgetSetupEditor";
+import { GameWidgetSetupEditor, normalizeGameHudWidgets, widgetIcon } from "./GameWidgetSetupEditor";
 import { CharacterLinkedContent } from "../characters/CharacterReferences";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
@@ -1020,7 +1020,7 @@ export function GameWidgetSessionPrepModal({
     }
 
     try {
-      await updateGameWidgets.mutateAsync({ chatId, widgets: draftWidgets });
+      await updateGameWidgets.mutateAsync({ chatId, widgets: normalizeGameHudWidgets(draftWidgets) });
       onStartSession();
     } catch {
       toast.error(copy.savingError);

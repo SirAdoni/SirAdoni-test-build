@@ -231,7 +231,9 @@ function stripUnknownBracketTags(text: string, keep?: (tagName: string) => boole
             if (c === inString) inString = null;
             continue;
           }
-          if (c === '"' || c === "'") {
+          // An apostrophe inside a word ("the guard's eyes") is not a string quote; treating it as one
+          // never finds the closing `]` and leaves the whole tag in the visible text.
+          if (c === '"' || (c === "'" && !/[\p{L}\p{N}]/u.test(text[k - 1] ?? ""))) {
             inString = c;
             continue;
           }
@@ -1059,15 +1061,17 @@ export function stripGmTagsKeepReadables(content: string): string {
   // Quote-aware catch-all for unknown tags, keeping Note/Book inline.
   // Case-insensitive to match extractBalancedTags (which lowercases the prefix);
   // otherwise `[note:]` / `[book:]` would slip past extraction and get stripped.
+  // `[whisper:Target]` is the party-line header for a whisper, not a tag: stripping it turns the whisper into
+  // ordinary dialogue and loses its target.
   text = stripUnknownBracketTags(text, (name) => {
     const lower = name.toLowerCase();
-    return lower === "note" || lower === "book";
+    return lower === "note" || lower === "book" || lower === "whisper";
   });
   // Balanced bracket stripping for non-readable tags
   text = stripMapUpdateTag(text);
   text = stripBalancedTag(text, "[choices:");
   // Catch-all: strip unknown [tag: ...] except [Note:] and [Book:]
-  text = text.replace(/\[(?!Note:|Book:)\w+:[^\]]*\]/g, "");
+  text = text.replace(/\[(?!Note:|Book:|whisper:)\w+:[^\]]*\]/gi, "");
   // NOTE: [Note:] and [Book:] are intentionally kept!
   text = stripDanglingTagClosers(text);
   return text.trim();

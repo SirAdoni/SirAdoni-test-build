@@ -10566,13 +10566,18 @@ function GameSurfaceComponent({
       if (!selectedChoice) return;
       setActiveChoices(null);
       const pendingSpatialTransition = useChatStore.getState().pendingSpatialTransitions.get(activeChatId);
-      sendMessage(
+      void sendMessage(
+      const shownChoices = activeChoices;
         `[choice: ${selectedChoice}]`,
         undefined,
         pendingSpatialTransition?.status === "ready" ? pendingSpatialTransition.transition : undefined,
-      );
+      ).then((sent) => {
+        // A refused or failed send leaves the turn unplayed: bring the cards back (unless something newer
+        // replaced them), as the text input restores its draft.
+        if (sent === false && shownChoices) setActiveChoices((current) => current ?? shownChoices);
+      });
     },
-    [activeChatId, sendMessage, sessionInteractive],
+    [activeChatId, activeChoices, sendMessage, sessionInteractive],
   );
 
   const handleDismissChoices = useCallback(() => {

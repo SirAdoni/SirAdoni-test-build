@@ -3091,7 +3091,7 @@ export function GameSetupWizard({
                           <GameWidgetFileControls
                             widgets={customHudWidgets}
                             onImport={(widgets) => {
-                              setCustomHudWidgets(normalizeGameHudWidgets(widgets));
+                              setCustomHudWidgets(normalizeGameHudWidgets(widgets, { mode: "draft" }));
                               setManualWidgetSetupEnabled(true);
                             }}
                             exportFilename="game-setup-widgets"

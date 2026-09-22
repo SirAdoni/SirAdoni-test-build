@@ -468,7 +468,9 @@ interface GameWidgetSetupEditorProps {
 export function GameWidgetSetupEditor({ widgets, onChange, disabled, className }: GameWidgetSetupEditorProps) {
   const { t: localizeUi } = useUiTranslation();
   const [newWidgetType, setNewWidgetType] = useState<HudWidgetType>("progress_bar");
-  const normalizedWidgets = useMemo(() => normalizeGameHudWidgets(widgets), [widgets]);
+  // Draft mode while editing: strict mode trims labels and drops empty stat names on every keystroke, which
+  // swallowed typed spaces. Callers normalize strictly when they save or submit.
+  const normalizedWidgets = useMemo(() => normalizeGameHudWidgets(widgets, { mode: "draft" }), [widgets]);
 
   const replaceWidget = (widgetId: string, patch: Partial<HudWidget>) => {
     onChange(

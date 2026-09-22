@@ -160,6 +160,9 @@ export function GameInput({
   const [showDice, setShowDice] = useState(false);
   const [customDice, setCustomDice] = useState("");
   const [queuedDice, setQueuedDice] = useState<string | null>(null);
+  // A queued roll already made on the server (and in the Dice Log) for a turn whose send failed. Reused on
+  // retry so a failed send is not a free reroll and the log does not get a second row.
+  const preRolledDiceRef = useRef<{ notation: string; tag: string } | null>(null);
   const [rollingQueuedDice, setRollingQueuedDice] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [isTranslatingDraft, setIsTranslatingDraft] = useState(false);
@@ -195,6 +198,13 @@ export function GameInput({
   useEffect(() => {
     const draft = readGameInputDraft(storageKey);
     setText(draft);
+    // The composer is shared across chats: only the text is per chat (its draft), so everything else starts
+    // clean, or a die queued or an image attached in one chat would be sent with the next chat's turn.
+    setAttachments([]);
+    setQueuedDice(null);
+    preRolledDiceRef.current = null;
+    setShowDice(false);
+    setAddressMode("scene");
     requestAnimationFrame(() => {
       if (!inputRef.current) return;
       inputRef.current.style.height = "auto";
@@ -275,16 +285,21 @@ export function GameInput({
     const pendingAttachments =
       attachments.length > 0 ? attachments.map((a) => ({ type: a.type, data: a.data })) : undefined;
 
+    const rolledNotation = queuedDice;
     if (queuedDice) {
-      setRollingQueuedDice(true);
-      let diceResult: DiceRollResult | null = null;
-      try {
-        diceResult = await onRollDice(queuedDice);
-      } finally {
-        setRollingQueuedDice(false);
+      let diceTag = preRolledDiceRef.current?.notation === queuedDice ? preRolledDiceRef.current.tag : null;
+      if (!diceTag) {
+        setRollingQueuedDice(true);
+        let diceResult: DiceRollResult | null = null;
+        try {
+          diceResult = await onRollDice(queuedDice);
+        } finally {
+          setRollingQueuedDice(false);
+        }
+        if (!diceResult) return;
+        diceTag = formatDiceResultTag(diceResult);
+        preRolledDiceRef.current = { notation: queuedDice, tag: diceTag };
       }
-      if (!diceResult) return;
-      const diceTag = formatDiceResultTag(diceResult);
       body = body ? `${body}\n${diceTag}` : diceTag;
       setQueuedDice(null);
     }
@@ -312,15 +327,20 @@ export function GameInput({
       setText(submittedText);
       writeGameInputDraft(storageKey, submittedText);
       setAttachments(submittedAttachments);
+      if (rolledNotation) setQueuedDice(rolledNotation);
       requestAnimationFrame(() => {
         if (!inputRef.current) return;
         inputRef.current.style.height = "auto";
         inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 120)}px`;
       });
+    } else if (rolledNotation) {
+      preRolledDiceRef.current = null;
     }
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Enter that confirms an IME candidate (Japanese, Chinese, Korean input) must not send the turn.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (expandOnKeyDown(e)) return;
     const shouldSend = enterToSend ? e.key === "Enter" && !e.shiftKey : e.key === "Enter" && (e.metaKey || e.ctrlKey);
     if (shouldSend) {

@@ -2063,7 +2063,7 @@ const hudWidgetSchema = z.object({
     "charges",
     "calendar",
   position: z.enum(["hud_left", "hud_right"]),
-  accent: z.string().trim().max(32).optional(),
+  accent: z.string().trim().max(64).optional(),
   config: z.record(z.unknown()).default({}),
 });
 
