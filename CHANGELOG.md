@@ -4,6 +4,14 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Added Search All Chats: find messages across every chat with quoted phrases and filters for mode, character, sender and date range. Results show highlighted snippets and open the chat at that message. Open it from the search button beside the chat list.
+
+- Added Markdown and HTML story exports next to JSONL and Text in the branch menu. Exports follow the active swipe, leave out hidden and system messages, and the HTML story is a standalone page with light, dark and print styling and small embedded avatars.
+
+- Added chat stats (Stats in the branch menu): messages, words per speaker, average reply length, messages per day, the longest message, reported generation tokens and play time. Play time adds up sittings, and a pause of more than 30 minutes starts a new sitting.
+
+- Added an Activity overview (pulse button beside your status) with a yearly heatmap of messages across all chats, streaks, totals, total play time and your most played chats.
+
 - Fixed the mobile Game Mode layout so Currently Present no longer pushes the narration and input below the screen. Widget bookmarks now use a single horizontally scrollable row; opening one shows a dismissible panel without shifting the chat. Short screens also retain room for narration when the storyboard viewer is open. Saved desktop widget placements are preserved.
 
 - Corrected the ChatGPT cache-session header to match OpenAI's current transport. This supplies the intended stable routing hint; cache reuse still depends on the provider.

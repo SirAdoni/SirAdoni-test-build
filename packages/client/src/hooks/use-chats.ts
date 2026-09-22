@@ -1570,11 +1570,20 @@ export function usePeekPrompt() {
   });
 }
 
-/** Export a chat as JSONL or plain text */
+export type ChatExportFormat = "jsonl" | "text" | "markdown" | "html";
+
+const CHAT_EXPORT_EXTENSIONS: Record<ChatExportFormat, string> = {
+  jsonl: ".jsonl",
+  text: ".txt",
+  markdown: ".md",
+  html: ".html",
+};
+
+/** Export a chat as JSONL, plain text, Markdown or a standalone HTML story */
 export function useExportChat() {
   return useMutation({
-    mutationFn: async ({ chatId, format = "jsonl" }: { chatId: string; format?: "jsonl" | "text" }) => {
-      const ext = format === "text" ? ".txt" : ".jsonl";
+    mutationFn: async ({ chatId, format = "jsonl" }: { chatId: string; format?: ChatExportFormat }) => {
+      const ext = CHAT_EXPORT_EXTENSIONS[format];
       const includeReasoning = useUIStore.getState().includeReasoningInExports;
       const reasoningParam = includeReasoning ? "&includeReasoning=true" : "";
       await api.download(

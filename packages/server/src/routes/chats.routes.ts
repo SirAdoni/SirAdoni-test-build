@@ -110,6 +110,13 @@ import { forwardPromptPreview } from "./generate/prompt-preview.js";
 import { wrapContent } from "../services/prompt/format-engine.js";
 import { chatSummaryFingerprintMatches, fingerprintChatSummary } from "../services/prompt/chat-summary-fingerprint.js";
 import { newId } from "../utils/id-generator.js";
+import {
+  isStoryTranscriptMessage,
+  renderTranscriptHtml,
+  renderTranscriptMarkdown,
+  type TranscriptDocumentEntry,
+} from "../services/chat-insights/transcript-document.js";
+import { readSmallAvatarDataUri } from "../services/chat-insights/transcript-avatars.js";
 import { characters, gameStateSnapshots, memoryChunks } from "../db/schema/index.js";
 import { and, desc, eq, inArray } from "../db/file-query.js";
 import { existsSync } from "fs";
@@ -3928,11 +3935,16 @@ export async function chatsRoutes(app: FastifyInstance) {
 
   // ── Export ──
 
-  type ExportFormat = "jsonl" | "text";
+  type ExportFormat = "jsonl" | "text" | "markdown" | "html";
   type ChatRow = NonNullable<Awaited<ReturnType<typeof storage.getById>>>;
 
-  const normalizeExportFormat = (value: unknown): ExportFormat =>
-    typeof value === "string" && value.toLowerCase() === "text" ? "text" : "jsonl";
+  const normalizeExportFormat = (value: unknown): ExportFormat => {
+    const normalized = typeof value === "string" ? value.toLowerCase() : "";
+    if (normalized === "text") return "text";
+    if (normalized === "markdown" || normalized === "md") return "markdown";
+    if (normalized === "html") return "html";
+    return "jsonl";
+  };
 
   const normalizeExportBoolean = (value: unknown): boolean =>
     value === true || value === "true" || value === "1" || value === 1;
@@ -4124,7 +4136,7 @@ export async function chatsRoutes(app: FastifyInstance) {
   const serializeChatTranscript = async (
     chat: ChatRow,
     format: ExportFormat,
-    options: { includeReasoning?: boolean } = {},
+    options: { includeReasoning?: boolean; includeAvatars?: boolean } = {},
   ) => {
     const includeReasoning = options.includeReasoning === true;
     const rawMessages = await storage.listMessages(chat.id);
@@ -4156,10 +4168,12 @@ export async function chatsRoutes(app: FastifyInstance) {
 
     // Build a characterId → name map for all characters in this chat
     const charNameMap = new Map<string, string>();
+    const charAvatarPathMap = new Map<string, string>();
     if (charIds.length > 0) {
       try {
         const rows = await app.db.select().from(characters).where(inArray(characters.id, charIds));
         for (const row of rows) {
+          if (row.avatarPath) charAvatarPathMap.set(row.id, row.avatarPath);
           const data = JSON.parse(row.data);
           if (data?.name) charNameMap.set(row.id, data.name);
         }
@@ -4219,6 +4233,60 @@ export async function chatsRoutes(app: FastifyInstance) {
     const resolveExportMessageContent = (msg: { content: string; characterId?: string | null }) =>
       resolvePromptMessageMacros([{ content: msg.content, characterId: msg.characterId }], promptMacroContext)[0]!
         .content;
+
+    if (format === "markdown" || format === "html") {
+      const userName = persona?.name?.trim() || "User";
+      const entries: TranscriptDocumentEntry[] = [];
+      for (const msg of msgs) {
+        const extra = parseExportMetadata(msg.extra);
+        const content = resolveExportMessageContent(msg);
+        if (!isStoryTranscriptMessage({ role: msg.role, content, extra })) continue;
+        const displayName = getDisplayName(msg);
+        const snapshotName =
+          msg.role === "user" && isExportRecord(extra.personaSnapshot)
+            ? readExportName(extra.personaSnapshot.name)
+            : null;
+        const isCharacterTurn = msg.role === "assistant" && displayName !== "Narrator";
+        entries.push({
+          speakerKey:
+            msg.role === "user" ? "user" : isCharacterTurn ? `character:${msg.characterId ?? "primary"}` : "narrator",
+          speaker: msg.role === "user" ? (snapshotName ?? userName) : displayName,
+          role: isCharacterTurn || msg.role === "user" ? msg.role : "narrator",
+          content,
+          createdAt: msg.createdAt,
+          thinking: includeReasoning ? getExportThinking(extra) : null,
+        });
+      }
+      const title = branchName ? `${chat.name} (${branchName})` : chat.name;
+      if (format === "markdown") {
+        return {
+          content: renderTranscriptMarkdown({ title, entries }),
+          extension: "md",
+          contentType: "text/markdown; charset=utf-8",
+          messageCount: entries.length,
+          branchName,
+        };
+      }
+      const avatars = new Map<string, string>();
+      if (options.includeAvatars !== false) {
+        const personaAvatar = await readSmallAvatarDataUri(persona?.avatarUrl);
+        if (personaAvatar) avatars.set("user", personaAvatar);
+        for (const key of new Set(entries.map((entry) => entry.speakerKey))) {
+          if (!key.startsWith("character:")) continue;
+          const characterId = key.slice("character:".length);
+          const avatarPath = charAvatarPathMap.get(characterId === "primary" ? (charIds[0] ?? "") : characterId);
+          const dataUri = await readSmallAvatarDataUri(avatarPath);
+          if (dataUri) avatars.set(key, dataUri);
+        }
+      }
+      return {
+        content: renderTranscriptHtml({ title, entries, avatars, generatedAt: new Date().toISOString() }),
+        extension: "html",
+        contentType: "text/html; charset=utf-8",
+        messageCount: entries.length,
+        branchName,
+      };
+    }
 
     if (format === "text") {
       const header = `Chat: ${chat.name}\nDate: ${chat.createdAt}\n${"─".repeat(50)}\n`;
@@ -4439,26 +4507,26 @@ export async function chatsRoutes(app: FastifyInstance) {
       .send(zip.toBuffer());
   });
 
-  // Export chat — supports JSONL (default, SillyTavern-compatible) and plain text
-  app.get<{ Params: { id: string }; Querystring: { format?: string; includeReasoning?: string } }>(
-    "/:id/export",
-    async (req, reply) => {
-      const chat = await storage.getById(req.params.id);
-      if (!chat) return reply.status(404).send({ error: "Chat not found" });
+  // Export chat — supports JSONL (default, SillyTavern-compatible), plain text, Markdown and a standalone HTML story
+  app.get<{
+    Params: { id: string };
+    Querystring: { format?: string; includeReasoning?: string; includeAvatars?: string };
+  }>("/:id/export", async (req, reply) => {
+    const chat = await storage.getById(req.params.id);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
 
-      const format = normalizeExportFormat(req.query.format);
-      const includeReasoning = normalizeExportBoolean(req.query.includeReasoning);
-      const serialized = await serializeChatTranscript(chat as ChatRow, format, { includeReasoning });
+    const format = normalizeExportFormat(req.query.format);
+    const includeReasoning = normalizeExportBoolean(req.query.includeReasoning);
+    const serialized = await serializeChatTranscript(chat as ChatRow, format, {
+      includeReasoning,
+      includeAvatars: req.query.includeAvatars !== "false",
+    });
 
-      return reply
-        .header("Content-Type", serialized.contentType)
-        .header(
-          "Content-Disposition",
-          `attachment; filename="${encodeURIComponent(chat.name)}.${serialized.extension}"`,
-        )
-        .send(serialized.content);
-    },
-  );
+    return reply
+      .header("Content-Type", serialized.contentType)
+      .header("Content-Disposition", `attachment; filename="${encodeURIComponent(chat.name)}.${serialized.extension}"`)
+      .send(serialized.content);
+  });
 
   // ── Branch (duplicate) ──
 

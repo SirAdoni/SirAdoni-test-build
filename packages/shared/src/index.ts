@@ -42,6 +42,7 @@ export * from "./types/localization.js";
 export * from "./types/personal-extension.js";
 export * from "./types/home-feed.js";
 export * from "./types/diagnostics.js";
+export * from "./types/chat-insights.js";
 
 // Schemas
 export * from "./schemas/chat.schema.js";
@@ -163,6 +164,8 @@ export * from "./utils/thinking-tags.js";
 export * from "./utils/rpg-stats.js";
 export * from "./utils/lorebook-folder-tree.js";
 export * from "./utils/text-matching.js";
+export * from "./utils/chat-search-query.js";
+export * from "./utils/chat-stats.js";
 export * from "./utils/character-cast.js";
 export * from "./utils/speaker-segments.js";
 export * from "./utils/sprite-labels.js";

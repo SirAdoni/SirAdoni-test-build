@@ -27,7 +27,10 @@ import {
   Loader2,
   PhoneIncoming,
   CalendarClock,
+  TextSearch,
+  Activity,
 } from "lucide-react";
+import { openActivityOverview, openGlobalSearch } from "../../lib/chat-insights";
 import { useBulkExportChats, useChats, useCreateChat, useDeleteChat, useDeleteChatGroup } from "../../hooks/use-chats";
 import { useChatPresets, useApplyChatPreset } from "../../hooks/use-chat-presets";
 import { useConnections } from "../../hooks/use-connections";
@@ -1397,6 +1400,15 @@ export function ChatSidebar() {
               className="mari-chrome-field-icon mari-chrome-sort-icon mari-accent-animated pointer-events-none absolute right-2 top-1/2 -translate-y-1/2"
             />
           </div>
+          <button
+            type="button"
+            onClick={() => openGlobalSearch(searchQuery.trim())}
+            className="mari-chrome-control mari-chrome-control--small h-10 w-10 shrink-0 justify-center p-0! md:h-9 md:w-9"
+            title={localizeUi("chatInsights.search.open")}
+            aria-label={localizeUi("chatInsights.search.open")}
+          >
+            <TextSearch size="0.875rem" />
+          </button>
         </div>
 
         {allTags.length > 0 && (
@@ -2050,6 +2062,15 @@ function UserStatusFooter({
           aria-label={localizeUi("ui.layout.userstatusfooter.customActivity")}
           className="mari-chrome-field mari-chrome-field--compact min-w-0 flex-1 px-2 py-1 text-xs max-md:h-9 max-md:min-h-9"
         />
+        <button
+          type="button"
+          onClick={openActivityOverview}
+          title={localizeUi("chatInsights.activity.open")}
+          aria-label={localizeUi("chatInsights.activity.open")}
+          className="mari-chrome-control mari-chrome-control--small ml-1 h-7 w-7 shrink-0 justify-center p-0! max-md:h-9 max-md:min-h-9 max-md:w-9"
+        >
+          <Activity className="shrink-0" size="1rem" strokeWidth={2.25} />
+        </button>
         {showScheduleManager && (
           <button
             type="button"
