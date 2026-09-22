@@ -102,6 +102,8 @@ const APP_ACCENT_CUSTOM_VARIABLES = [
   "--marinara-chat-chrome-accent-gradient",
 ] as const;
 const ACCENT_RGB_TICK_MS = 500;
+/** Above this many DOM elements the live accent pauses; restyling the whole page every tick stalls it. */
+const ACCENT_ANIMATION_MAX_ELEMENTS = 6000;
 const ACCENT_RGB_SOLID_CYCLE_MS = 7_200;
 const ACCENT_RGB_GRADIENT_STOP_MS = 6_000;
 const CUSTOM_CURSOR_RECOLOR_SCROLL_FREEZE_MS = 360;
@@ -837,7 +839,9 @@ export function App() {
           return;
         }
 
-        applyLiveAccent();
+        // Each tick rewrites root tokens, which restyles every element. On very large pages (a lorebook
+        // with hundreds of open rows) that costs more than the tick interval, so hold the current accent.
+        if (document.getElementsByTagName("*").length <= ACCENT_ANIMATION_MAX_ELEMENTS) applyLiveAccent();
         queueAccentAnimationTick();
       }, ACCENT_RGB_TICK_MS);
     };
