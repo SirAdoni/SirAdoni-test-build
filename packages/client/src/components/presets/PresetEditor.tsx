@@ -577,7 +577,13 @@ export function PresetEditor() {
       {/* ── Header ── */}
       <div className="mari-editor-header mari-editor-header--with-nav">
         <div className="mari-editor-header-main">
-          <button onClick={handleClose} className="mari-editor-action inline-flex">
+          <button
+            type="button"
+            onClick={handleClose}
+            aria-label={localizeUi("ui.presets.preseteditor.backToPresets")}
+            title={localizeUi("ui.presets.preseteditor.backToPresets")}
+            className="mari-editor-action inline-flex"
+          >
             <ArrowLeft size="1.125rem" />
           </button>
           <div className="mari-editor-icon-tile mari-panel-gradient-surface mari-panel-gradient--presets overflow-hidden">
@@ -613,8 +619,10 @@ export function PresetEditor() {
             <span className="mari-editor-save-label">{localizeUi("ui.noodle.noodlehome.save")}</span>
           </button>
           <button
+            type="button"
             onClick={handleExportPreset}
             className="mari-editor-action inline-flex"
+            aria-label={localizeUi("ui.presets.preseteditor.exportPreset")}
             title={
               dirty
                 ? localizeUi("ui.presets.preseteditor.saveCurrentEditsBeforeExporting")
@@ -638,7 +646,13 @@ export function PresetEditor() {
               <rect x="3" y="15" width="14" height="2" rx="1" fill="currentColor" />
             </svg>
           </button>
-          <button onClick={handleDelete} className="mari-editor-action inline-flex">
+          <button
+            type="button"
+            onClick={handleDelete}
+            aria-label={localizeUi("ui.presets.preseteditor.deletePreset")}
+            title={localizeUi("ui.presets.preseteditor.deletePreset")}
+            className="mari-editor-action inline-flex"
+          >
             <Trash2 size="0.9375rem" />
           </button>
         </div>
@@ -656,7 +670,7 @@ export function PresetEditor() {
         {/* Content area */}
         <div ref={contentRef} className="mari-editor-content @max-5xl:p-4">
           <div className="mari-editor-content-inner space-y-6">
-            <section data-editor-section="overview">
+            <section data-editor-section="overview" className="space-y-3">
               <OverviewTab
                 preset={data.preset}
                 name={localName}
@@ -1918,8 +1932,14 @@ function SectionsTab({
                       </button>
                     </div>
                     <button
+                      type="button"
                       data-preset-section-toggle
                       onClick={() => toggleExpanded(section.id)}
+                      aria-expanded={isExpanded}
+                      aria-label={localizeUi(
+                        isExpanded ? "ui.presets.sectionstab.collapseValue1" : "ui.presets.sectionstab.expandValue1",
+                        { value1: section.name },
+                      )}
                       className="shrink-0 rounded p-0.5 hover:bg-[var(--accent)]"
                     >
                       {isExpanded ? (
@@ -1984,7 +2004,13 @@ function SectionsTab({
                             enabled: !isEnabled,
                           })
                         }
+                        type="button"
                         className="rounded-lg p-1 hover:bg-[var(--accent)]"
+                        aria-pressed={isEnabled}
+                        aria-label={localizeUi(
+                          isEnabled ? "ui.presets.sectionstab.disableValue1" : "ui.presets.sectionstab.enableValue1",
+                          { value1: section.name },
+                        )}
                         title={
                           isEnabled
                             ? localizeUi("ui.presets.sectionstab.disable")
@@ -2013,7 +2039,11 @@ function SectionsTab({
                           }
                           onDeleteSection.mutate({ presetId, sectionId: section.id });
                         }}
+                        type="button"
                         className="rounded-lg p-1 text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+                        aria-label={localizeUi("ui.presets.sectionstab.deleteValue1", {
+                          value1: section.name || localizeUi("ui.presets.sectionstab.promptBlock"),
+                        })}
                         title={localizeUi("lorebook.editor.batch.delete")}
                       >
                         <Trash2 size="0.75rem" />
@@ -2653,7 +2683,16 @@ function VariableCard({
             <ArrowDown size="0.75rem" />
           </button>
         </div>
-        <button onClick={onToggle} className="shrink-0 rounded p-0.5 hover:bg-[var(--accent)]">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={isExpanded}
+          aria-label={localizeUi(
+            isExpanded ? "ui.presets.sectionstab.collapseValue1" : "ui.presets.sectionstab.expandValue1",
+            { value1: varName || localizeUi("ui.presets.variablecard.variable") },
+          )}
+          className="shrink-0 rounded p-0.5 hover:bg-[var(--accent)]"
+        >
           {isExpanded ? (
             <ChevronDown size="0.875rem" className="text-[var(--muted-foreground)]" />
           ) : (

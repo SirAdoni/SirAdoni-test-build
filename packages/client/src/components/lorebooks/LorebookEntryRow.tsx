@@ -8,6 +8,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type DragEvent as ReactDragEvent,
@@ -511,6 +512,7 @@ export function LorebookEntryRow({
     ],
   );
 
+  const tokenEstimate = useMemo(() => estimateTokens(entry.content), [entry.content]);
   const showDepthInput = localPosition === 2;
   const isVectorExcluded = entry.excludeFromVectorization === true;
   const isVectorized = Array.isArray(entry.embedding) && entry.embedding.length > 0;
@@ -1048,15 +1050,15 @@ export function LorebookEntryRow({
           {/* Token estimate (compact) */}
           <span
             className={cn(
-              "hidden items-center gap-0.5 rounded px-1 py-0.5 text-[0.625rem] text-[var(--muted-foreground)]",
+              "hidden min-w-[3.25rem] items-center justify-end gap-0.5 rounded px-1 py-0.5 text-[0.625rem] tabular-nums text-[var(--muted-foreground)]",
               !compact && "lg:inline-flex",
             )}
             title={localizeUi("ui.lorebooks.lorebookentryrow.value1TokensEstimated", {
-              value1: estimateTokens(entry.content).toLocaleString(),
+              value1: tokenEstimate.toLocaleString(),
             })}
           >
             <Hash size="0.5625rem" />
-            {estimateTokens(entry.content).toLocaleString()}
+            {tokenEstimate.toLocaleString()}
           </span>
         </div>
 
@@ -1067,7 +1069,7 @@ export function LorebookEntryRow({
           title={localizeUi("ui.lorebooks.lorebookentryrow.duplicateEntry")}
           disabled={duplicateDisabled}
           onClick={handleDuplicate}
-          className="shrink-0 rounded p-0.5 text-[var(--muted-foreground)] opacity-0 transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] group-hover:opacity-100 disabled:cursor-not-allowed max-md:opacity-100 sm:p-1"
+          className="shrink-0 rounded p-0.5 text-[var(--muted-foreground)] opacity-0 transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] group-hover:opacity-100 focus-visible:opacity-100 disabled:cursor-not-allowed max-md:opacity-100 sm:p-1"
         >
           <Copy size="0.75rem" />
         </button>
@@ -1077,7 +1079,7 @@ export function LorebookEntryRow({
           type="button"
           aria-label={localizeUi("ui.lorebooks.lorebookentryrow.deleteEntry")}
           onClick={handleDelete}
-          className="shrink-0 rounded p-0.5 text-[var(--muted-foreground)] opacity-0 transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] group-hover:opacity-100 max-md:opacity-100 sm:p-1"
+          className="shrink-0 rounded p-0.5 text-[var(--muted-foreground)] opacity-0 transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] group-hover:opacity-100 focus-visible:opacity-100 max-md:opacity-100 sm:p-1"
         >
           <Trash2 size="0.75rem" />
         </button>
@@ -1167,12 +1169,8 @@ function CompactNumber({
     let clamped = parsed;
     if (min !== undefined && clamped < min) clamped = min;
     if (max !== undefined && clamped > max) clamped = max;
-    if (clamped !== value) {
-      setDraft(String(clamped));
-      onCommit(clamped);
-    } else if (clamped !== parsed) {
-      setDraft(String(clamped));
-    }
+    setDraft(String(clamped));
+    if (clamped !== value) onCommit(clamped);
   };
 
   return (
@@ -1192,7 +1190,8 @@ function CompactNumber({
         }}
         min={min}
         max={max}
-        className="w-8 bg-transparent text-right tabular-nums outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        style={{ width: `${Math.min(Math.max(draft.length, 4), 9) + 1}ch` }}
+        className="bg-transparent text-right tabular-nums outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
       />
       {suffix && <span className="text-[var(--muted-foreground)]">{suffix}</span>}
     </label>

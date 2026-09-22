@@ -1985,8 +1985,11 @@ export function LorebookEditor() {
       <div className="mari-editor-header mari-editor-header--with-nav">
         <div className="mari-editor-header-main">
           <button
+            type="button"
             onClick={handleClose}
             disabled={saving}
+            aria-label={localizeUi("ui.lorebooks.lorebookeditor.closeEditor")}
+            title={localizeUi("ui.lorebooks.lorebookeditor.closeEditor")}
             className="mari-editor-action inline-flex disabled:opacity-50"
           >
             <ArrowLeft size="1rem" />
@@ -2122,6 +2125,9 @@ export function LorebookEditor() {
                       <span key={tag} className="mari-editor-chip mari-editor-chip--accent px-2 py-1 text-[0.6875rem]">
                         {tag}
                         <button
+                          type="button"
+                          aria-label={localizeUi("ui.lorebooks.lorebookeditor.removeTag", { value1: tag })}
+                          title={localizeUi("ui.lorebooks.lorebookeditor.removeTag", { value1: tag })}
                           onClick={() => {
                             setFormTags(formTags.filter((t) => t !== tag));
                             markLorebookDirty();
@@ -2146,7 +2152,13 @@ export function LorebookEditor() {
                       placeholder={localizeUi("ui.lorebooks.lorebookeditor.addTag")}
                       className="mari-editor-field flex-1 px-3 py-2 text-xs"
                     />
-                    <button onClick={handleAddTags} className="mari-editor-action px-3 py-2">
+                    <button
+                      type="button"
+                      onClick={handleAddTags}
+                      aria-label={localizeUi("ui.lorebooks.lorebookeditor.addTagButton")}
+                      title={localizeUi("ui.lorebooks.lorebookeditor.addTagButton")}
+                      className="mari-editor-action px-3 py-2"
+                    >
                       <Plus size="0.75rem" />
                     </button>
                   </div>
@@ -2605,7 +2617,7 @@ export function LorebookEditor() {
                       className="mari-editor-field w-full py-2.5 pl-8 pr-3 text-xs"
                     />
                   </div>
-                  <div className="relative shrink-0">
+                  <div className="relative shrink-0 max-sm:flex-1">
                     <ArrowUpDown
                       size="0.8125rem"
                       className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted-foreground)]"
@@ -2613,7 +2625,7 @@ export function LorebookEditor() {
                     <select
                       value={entrySort}
                       onChange={(e) => setEntrySort(e.target.value as EntrySortKey)}
-                      className="mari-editor-field h-full appearance-none py-2.5 pl-8 pr-6 text-xs"
+                      className="mari-editor-field h-full appearance-none py-2.5 pl-8 pr-6 text-xs max-sm:w-full"
                     >
                       {SORT_OPTIONS.map((opt) => (
                         <option key={opt.value} value={opt.value}>
@@ -2628,7 +2640,7 @@ export function LorebookEditor() {
                       else setEntrySelectionMode(true);
                     }}
                     className={cn(
-                      "mari-editor-action flex shrink-0 items-center gap-1.5 px-3 py-2.5 text-xs",
+                      "mari-editor-action flex shrink-0 items-center justify-center gap-1.5 px-3 py-2.5 text-xs max-sm:flex-1",
                       entrySelectionMode &&
                         "border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-button-text-active)]",
                     )}
@@ -2639,7 +2651,7 @@ export function LorebookEditor() {
                   </button>
                   <button
                     onClick={handleAddFolder}
-                    className="mari-editor-action flex shrink-0 items-center gap-1.5 px-3 py-2.5 text-xs"
+                    className="mari-editor-action flex shrink-0 items-center justify-center gap-1.5 px-3 py-2.5 text-xs max-sm:flex-1"
                     title={localizeUi("ui.lorebooks.lorebookeditor.createANewFolderToGroupEntries")}
                   >
                     <FolderPlus size="0.8125rem" />
@@ -2647,20 +2659,22 @@ export function LorebookEditor() {
                   </button>
                   <button
                     onClick={handleAddEntry}
-                    className="mari-editor-action mari-editor-action--primary inline-flex shrink-0"
+                    className="mari-editor-action mari-editor-action--primary inline-flex shrink-0 justify-center max-sm:flex-1"
                   >
                     <Plus size="0.8125rem" />
                     {localizeUi("ui.lorebooks.lorebookeditor.addEntry")}
                   </button>
                 </div>
 
-                <p
-                  role="note"
-                  className="flex items-start gap-1.5 px-1 text-[0.6875rem] leading-relaxed text-[var(--muted-foreground)]"
-                >
-                  <Info size="0.6875rem" aria-hidden="true" className="mt-0.5 shrink-0 text-[var(--primary)]" />
-                  <span>{t("lorebook.editor.batch.hint")}</span>
-                </p>
+                {!entrySelectionMode && (
+                  <p
+                    role="note"
+                    className="flex items-start gap-1.5 px-1 text-[0.6875rem] leading-relaxed text-[var(--muted-foreground)]"
+                  >
+                    <Info size="0.6875rem" aria-hidden="true" className="mt-0.5 shrink-0 text-[var(--primary)]" />
+                    <span>{t("lorebook.editor.batch.hint")}</span>
+                  </p>
+                )}
 
                 {entrySelectionMode && (
                   <div className="mari-editor-toolbar flex flex-wrap items-center gap-2 px-3 py-2">

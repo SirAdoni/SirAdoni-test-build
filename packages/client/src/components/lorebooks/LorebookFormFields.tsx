@@ -52,11 +52,17 @@ export function KeysEditor({ keys, onChange }: { keys: string[]; onChange: (keys
     <div>
       <div className="flex flex-wrap gap-1.5">
         {keys.map((key, i) => (
-          <span key={i} className="mari-editor-chip mari-editor-chip--accent px-2 py-1 text-[0.6875rem]">
+          <span
+            key={i}
+            className="mari-editor-chip mari-editor-chip--accent max-w-full px-2 py-1 text-[0.6875rem] [overflow-wrap:anywhere]"
+          >
             {key}
             <button
+              type="button"
+              aria-label={localizeUi("ui.lorebooks.keyseditor.removeKeyword", { value1: key })}
+              title={localizeUi("ui.lorebooks.keyseditor.removeKeyword", { value1: key })}
               onClick={() => onChange(keys.filter((_, j) => j !== i))}
-              className="ml-0.5 rounded-sm text-[var(--marinara-editor-muted)] hover:text-[var(--destructive)]"
+              className="ml-0.5 shrink-0 rounded-sm text-[var(--marinara-editor-muted)] hover:text-[var(--destructive)]"
             >
               ×
             </button>
