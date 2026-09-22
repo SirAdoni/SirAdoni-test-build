@@ -302,7 +302,80 @@ export function buildStableGameNpcId(name: string): string {
   const normalized = name.trim().normalize("NFKC").toLowerCase();
   const asciiSlug = normalized.replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
   if (/^[\x00-\x7f]*$/.test(normalized)) return boundedGameNpcId(asciiSlug, normalized);
+  return buildEncodedGameNpcId(normalized);
+}
 
+/**
+ * The name-derived id written by older saves (party ids, ignored NPC ids): the
+ * ASCII slug won whenever it was non-empty, so mixed-script names such as
+ * "José Silva" were stored as "npc:jos-silva".
+ */
+export function buildLegacyGameNpcId(name: string): string {
+  const lowered = name.trim().toLowerCase();
+  const legacySlug = lowered.replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+  if (legacySlug) return `npc:${legacySlug}`;
+  try {
+    const encodedSlug = encodeURIComponent(lowered)
+      .replace(/%/g, "")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)/g, "");
+    return `npc:${encodedSlug || "unknown"}`;
+  } catch {
+    return "npc:unknown";
+  }
+}
+
+/** True when a stored name-derived NPC id refers to this name, in the current or legacy form. */
+export function gameNpcIdMatchesName(id: string | null | undefined, name: string): boolean {
+  const trimmed = id?.trim();
+  if (!trimmed || !name.trim()) return false;
+  return trimmed === buildStableGameNpcId(name) || trimmed === buildLegacyGameNpcId(name);
+}
+
+/**
+ * Resolve a stored name-derived NPC id against candidates, preferring an exact
+ * current-form match over a legacy one. A legacy id of a mixed-script name
+ * ("Sarah שרה" was "npc:sarah") is also the current id of the ASCII name, so the
+ * current owner must win whenever both are present.
+ */
+export function findGameNpcByNameDerivedId<T>(
+  id: string | null | undefined,
+  candidates: readonly T[],
+  getName: (candidate: T) => unknown,
+): T | undefined {
+  const trimmed = id?.trim();
+  if (!trimmed) return undefined;
+  const named = candidates.filter((candidate) => {
+    const name = getName(candidate);
+    return typeof name === "string" && !!name.trim();
+  });
+  return (
+    named.find((candidate) => buildStableGameNpcId(getName(candidate) as string) === trimmed) ??
+    named.find((candidate) => buildLegacyGameNpcId(getName(candidate) as string) === trimmed)
+  );
+}
+
+/**
+ * True when a stored party id refers to this name. A legacy-form match only
+ * counts when no other known name owns that id in the current form.
+ */
+export function gameNpcIdRefersToName(
+  id: string | null | undefined,
+  name: string,
+  knownNames: Iterable<string> = [],
+): boolean {
+  if (!gameNpcIdMatchesName(id, name)) return false;
+  const currentId = buildStableGameNpcId(name);
+  if (id!.trim() === currentId) return true;
+  for (const knownName of knownNames) {
+    if (typeof knownName !== "string" || !knownName.trim()) continue;
+    const knownId = buildStableGameNpcId(knownName);
+    if (knownId !== currentId && knownId === id!.trim()) return false;
+  }
+  return true;
+}
+
+function buildEncodedGameNpcId(normalized: string): string {
   try {
     const encodedSlug = encodeURIComponent(normalized)
       .toLowerCase()
@@ -327,9 +400,13 @@ export function isIgnoredGameNpcIdentity(
   ignoredNpcIds: ReadonlySet<string>,
   npcId: string | null | undefined,
   name: string,
+  knownNames: Iterable<string> = [],
 ): boolean {
   const explicitId = npcId?.trim();
-  return explicitId ? ignoredNpcIds.has(explicitId) : ignoredNpcIds.has(buildStableGameNpcId(name));
+  if (explicitId) return ignoredNpcIds.has(explicitId);
+  if (ignoredNpcIds.has(buildStableGameNpcId(name))) return true;
+  const legacyId = buildLegacyGameNpcId(name);
+  return ignoredNpcIds.has(legacyId) && gameNpcIdRefersToName(legacyId, name, knownNames);
 }
 
 /** Resolve the durable campaign identity used by both current and legacy chats. */
