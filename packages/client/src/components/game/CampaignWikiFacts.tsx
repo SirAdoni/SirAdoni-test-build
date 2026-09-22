@@ -143,7 +143,7 @@ function useFactList(
     ...filters,
     limit: FACT_PAGE_SIZE,
     enabled: options.enabled,
-    initialPage: options.seed,
+    initialPage: options.enabled ? options.seed : undefined,
   });
   const pages = query.data?.pages;
   const facts = useMemo(() => {
@@ -163,7 +163,8 @@ function useFactList(
     return merged;
   }, [pages]);
   const { hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage } = query;
-  const autoload = options.autoload ?? 0;
+  // fetchNextPage ignores `enabled`, so a disabled list must never page on its own.
+  const autoload = options.enabled ? (options.autoload ?? 0) : 0;
   useEffect(() => {
     if (hasNextPage && !isFetchingNextPage && !isFetchNextPageError && facts.length < autoload) void fetchNextPage();
   }, [hasNextPage, isFetchingNextPage, isFetchNextPageError, facts.length, autoload, fetchNextPage]);
@@ -277,8 +278,8 @@ export function CampaignWikiFacts(props: CampaignWikiFactsProps) {
       aria-label={t("ui.game.campaignWiki.facts")}
       data-component="campaign-wiki-facts"
     >
-      <div className="space-y-2.5">
-        <label className="relative block">
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="relative order-1 block min-w-0 flex-1 basis-64">
           <Search
             size={14}
             className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
@@ -305,9 +306,9 @@ export function CampaignWikiFacts(props: CampaignWikiFactsProps) {
             </button>
           )}
         </label>
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <div className="contents">
           <div
-            className="flex min-w-0 flex-1 basis-60 flex-wrap gap-1"
+            className="order-3 flex min-w-0 basis-full flex-wrap gap-1"
             role="group"
             aria-label={t("ui.game.campaignWiki.facts.filterKind", { defaultValue: "Filter facts by kind" })}
           >
@@ -335,7 +336,7 @@ export function CampaignWikiFacts(props: CampaignWikiFactsProps) {
             ))}
           </div>
           {(moreKinds.length > 0 || sessionKeys.length > 1) && (
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="order-2 flex shrink-0 items-center gap-2">
               {moreKinds.length > 0 && (
                 <select
                   value={moreKinds.some(([item]) => item === kind) ? kind : ""}
@@ -739,7 +740,12 @@ function CampaignWikiFactRow({
   const pinned = isPinnedFact(fact);
   const withdrawn = fact.status === "retracted";
   return (
-    <li className={cn("rounded-lg transition-colors", open ? "bg-secondary/55 ring-1 ring-border/70" : "hover:bg-secondary/30")}>
+    <li
+      className={cn(
+        "rounded-lg transition-colors",
+        open ? "bg-secondary/55 ring-1 ring-border/70" : "hover:bg-secondary/30",
+      )}
+    >
       <button
         type="button"
         onClick={onToggle}

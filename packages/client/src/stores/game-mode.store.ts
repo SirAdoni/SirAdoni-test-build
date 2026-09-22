@@ -2,7 +2,13 @@
 // Store: Game Mode
 // ──────────────────────────────────────────────
 import { create } from "zustand";
-import { buildStableGameNpcId, applyHudWidgetLifecycle } from "@marinara-engine/shared";
+import {
+  buildStableGameNpcId,
+  applyExtendedWidgetUpdate,
+  applyHudWidgetLifecycle,
+  isExtendedHudWidgetType,
+  leadingWidgetNumber,
+} from "@marinara-engine/shared";
 import {
   mergeGameNpcsPreservingAvatars,
   normalizeNpcAvatarName,
@@ -378,13 +384,14 @@ export const useGameModeStore = create<GameModeStore>((set) => ({
         ? applyHudWidgetLifecycle(s.hudWidgets, update)
         : s.hudWidgets.map((w) => {
             if (w.id !== update.widgetId) return w;
+            if (isExtendedHudWidgetType(w.type)) return applyExtendedWidgetUpdate(w, update.changes);
             const changes = update.changes;
             const newConfig = { ...w.config };
 
             // Handle stat_block: update a specific stat by name, creating it when needed.
             if (changes.statName && w.type === "stat_block") {
               const targetName = changes.statName.trim();
-              const rawValue = changes.value;
+              const rawValue = leadingWidgetNumber(changes.value) ?? changes.value;
               const newValue =
                 typeof rawValue === "number"
                   ? rawValue
@@ -404,8 +411,7 @@ export const useGameModeStore = create<GameModeStore>((set) => ({
               }
             } else {
               // Merge simple numeric/config fields
-              if (changes.value !== undefined)
-                newConfig.value = typeof changes.value === "number" ? changes.value : newConfig.value;
+              if (changes.value !== undefined) newConfig.value = leadingWidgetNumber(changes.value) ?? newConfig.value;
               if (changes.count !== undefined) newConfig.count = changes.count;
               if (changes.running !== undefined) newConfig.running = changes.running;
               if (changes.seconds !== undefined) newConfig.seconds = changes.seconds;

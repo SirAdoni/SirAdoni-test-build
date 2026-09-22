@@ -82,13 +82,13 @@ try {
     await openDetail(desktop);
     await desktop.getByRole("group", { name: "Filter facts by kind" }).getByRole("button", { name: /^Commitment/ }).click();
     await desktop.getByText("Ariadne promised to guard the gate until the thaw.", { exact: true }).waitFor(WAIT);
-    const body = await text(desktop);
-    record("kind chip filters on the server", !/holds the northern archive key/i.test(body) && body.includes("Ariadne agreed to escort caravan 11."), await loadedText(desktop));
+    const rows = await desktop.locator('[data-component="campaign-wiki-facts"] li').allInnerTexts();
+    record("kind chip filters on the server", rows.length === 15 && !rows.some((row) => /holds the northern archive key/i.test(row)) && rows.some((row) => row.includes("Ariadne agreed to escort caravan 11.")), `rows=${rows.length}`);
     await desktop.getByRole("group", { name: "Filter facts by kind" }).getByRole("button", { name: /^All/ }).click();
     await desktop.getByPlaceholder(/^Search 101 facts$/).fill("caravan 60");
     await desktop.getByText("Ariadne agreed to escort caravan 60.", { exact: true }).waitFor(WAIT);
-    const rows = await desktop.locator('[data-component="campaign-wiki-facts"] li button[aria-expanded]').count();
-    record("search finds a fact from a closed session", rows === 1, `rows=${rows}`);
+    const found = await desktop.locator('[data-component="campaign-wiki-facts"] li button[aria-expanded]').count();
+    record("search finds a fact from a closed session", found === 1, `rows=${found}`);
     await shot(desktop, "desktop-detail-search-viewport");
   });
   await step("desktop fact actions", async () => {

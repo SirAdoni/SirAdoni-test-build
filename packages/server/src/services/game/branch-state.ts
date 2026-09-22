@@ -1,4 +1,12 @@
-import { applyHudWidgetLifecycle, type HudWidget, type WidgetUpdate } from "@marinara-engine/shared";
+import {
+  applyExtendedWidgetUpdate,
+  applyHudWidgetLifecycle,
+  coerceWidgetValue,
+  isExtendedHudWidgetType,
+  leadingWidgetNumber,
+  type HudWidget,
+  type WidgetUpdate,
+} from "@marinara-engine/shared";
 import type { Journal, JournalEntry } from "./journal.service.js";
 
 function normalizeListItem(value: string): string {
@@ -16,6 +24,46 @@ function readWidgetParam(body: string, name: string): string | null {
   return value || null;
 }
 
+/** count / seconds read like the live tag parser: parseInt, 0 when not a number. */
+function liveInteger(raw: string): number {
+  const parsed = parseInt(raw, 10);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+/**
+ * Without blueprint widgets the starting point is the stored end state, so content that messages add up (list
+ * items, tasks, events, rumors, tags, ledger transactions) is cleared before replay, as lists always were. Levels,
+ * turn names, meters, maxima and labels are structure and stay. A ledger balance is rolled back by the
+ * transactions it still lists (exact when it has at most 6).
+ */
+function resetReplayedContent(widget: HudWidget): HudWidget {
+  if (widget.type === "list") return { ...widget, config: { ...widget.config, items: [] } };
+  if (!isExtendedHudWidgetType(widget.type)) return widget;
+  const config = widget.config ?? {};
+  switch (widget.type) {
+    case "checklist":
+    case "obligations":
+      return { ...widget, config: { ...config, tasks: [] } };
+    case "schedule":
+    case "calendar":
+      return { ...widget, config: { ...config, entries: [] } };
+    case "log":
+      return { ...widget, config: { ...config, items: [] } };
+    case "rumor_board":
+      return { ...widget, config: { ...config, rumors: [] } };
+    case "tags":
+      return { ...widget, config: { ...config, tags: [] } };
+    case "ledger": {
+      const transactions = Array.isArray(config.transactions) ? config.transactions : [];
+      const spent = transactions.reduce((sum, entry) => sum + (Number(entry?.amount) || 0), 0);
+      const balance = (Number(config.value) || 0) - spent;
+      return { ...widget, config: { ...config, value: Math.round(balance * 100) / 100, transactions: [] } };
+    }
+    default:
+      return widget;
+  }
+}
+
 export function restoreBranchHudLists(
   metadata: Record<string, unknown>,
   copiedMessages: Array<{ content?: string | null }>,
@@ -31,13 +79,10 @@ export function restoreBranchHudLists(
       : Array.isArray(metadata.gameWidgetState)
         ? (metadata.gameWidgetState as HudWidget[])
         : [];
-  let widgets = initial.map((widget) => ({
-    ...widget,
-    config: {
-      ...widget.config,
-      ...(!hasBlueprintWidgets && widget.type === "list" ? { items: [] } : {}),
-    },
-  }));
+  let widgets = initial.map((widget) => {
+    const copy = { ...widget, config: { ...widget.config } };
+    return hasBlueprintWidgets ? copy : resetReplayedContent(copy);
+  });
 
   for (const message of copiedMessages) {
     for (const match of (message.content ?? "").matchAll(/\[widget:\s*([^,\]]+),([^\]]*)\]/gi)) {
@@ -51,10 +96,15 @@ export function restoreBranchHudLists(
           label: readWidgetParam(body, "label") ?? undefined,
           icon: readWidgetParam(body, "icon") ?? undefined,
           position: readWidgetParam(body, "position") as WidgetUpdate["changes"]["position"],
+          text: readWidgetParam(body, "text") ?? undefined,
         };
-        for (const key of ["value", "max", "count", "seconds"] as const) {
+        const createValue = readWidgetParam(body, "value");
+        if (createValue !== null) changes.value = coerceWidgetValue(createValue);
+        const createMax = readWidgetParam(body, "max");
+        if (createMax !== null) changes.max = Number(createMax);
+        for (const key of ["count", "seconds"] as const) {
           const value = readWidgetParam(body, key);
-          if (value !== null) changes[key] = Number(value);
+          if (value !== null) changes[key] = liveInteger(value);
         }
         changes.running = readWidgetParam(body, "running") === "true";
         widgets = applyHudWidgetLifecycle(widgets, { widgetId, changes });
@@ -64,21 +114,38 @@ export function restoreBranchHudLists(
       const remove = readWidgetParam(match[2] ?? "", "remove");
       widgets = widgets.map((widget) => {
         if (widget.id !== widgetId) return widget;
+        if (isExtendedHudWidgetType(widget.type)) {
+          const rawValue = readWidgetParam(body, "value");
+          const rawMax = readWidgetParam(body, "max");
+          return applyExtendedWidgetUpdate(widget, {
+            add: add ?? undefined,
+            remove: remove ?? undefined,
+            check: readWidgetParam(body, "check") ?? undefined,
+            uncheck: readWidgetParam(body, "uncheck") ?? undefined,
+            text: readWidgetParam(body, "text") ?? undefined,
+            statName: readWidgetParam(body, "stat") ?? undefined,
+            value: rawValue === null ? undefined : coerceWidgetValue(rawValue),
+            max: rawMax !== null && Number.isFinite(Number(rawMax)) ? Number(rawMax) : undefined,
+          });
+        }
         if (widget.type !== "list") {
           const config = { ...widget.config };
           const stat = readWidgetParam(body, "stat");
           const rawValue = readWidgetParam(body, "value");
           if (stat && widget.type === "stat_block" && rawValue !== null) {
-            const value = Number.isFinite(Number(rawValue)) ? Number(rawValue) : rawValue;
+            const value = leadingWidgetNumber(rawValue) ?? rawValue;
             const stats = [...(config.stats ?? [])];
             const index = stats.findIndex((s) => s.name.toLowerCase() === stat.toLowerCase());
             if (index < 0) stats.push({ name: stat, value });
             else stats[index] = { ...stats[index]!, value };
             config.stats = stats;
           } else {
-            for (const key of ["value", "count", "seconds"] as const) {
-              const value = readWidgetParam(body, key);
-              if (value !== null && Number.isFinite(Number(value))) config[key] = Number(value);
+            const value = readWidgetParam(body, "value");
+            const number = value === null ? null : leadingWidgetNumber(value);
+            if (number !== null) config.value = number;
+            for (const key of ["count", "seconds"] as const) {
+              const raw = readWidgetParam(body, key);
+              if (raw !== null) config[key] = liveInteger(raw);
             }
             const running = readWidgetParam(body, "running");
             if (running !== null) config.running = running === "true";

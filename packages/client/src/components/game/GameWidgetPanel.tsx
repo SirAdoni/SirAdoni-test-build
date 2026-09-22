@@ -9,7 +9,16 @@ import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } fro
 import { createPortal } from "react-dom";
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import type { HudWidget } from "@marinara-engine/shared";
+import {
+  EXTENDED_WIDGET_TEXT_FORMAT,
+  describeExtendedWidgetForPrompt,
+  extendedWidgetConfigFromText,
+  extendedWidgetConfigToText,
+  isExtendedHudWidgetType,
+  normalizeExtendedWidgetConfig,
+  type HudWidget,
+} from "@marinara-engine/shared";
+import { ExtendedWidgetView } from "./ExtendedWidgets";
 import { useUpdateGameWidgets } from "../../hooks/use-game";
 import { showConfirmDialog } from "../../lib/app-dialogs";
 import { cn } from "../../lib/utils";
@@ -115,8 +124,11 @@ function describeWidget(widget: HudWidget) {
       return `${widget.config.slots ?? 0} slots`;
     case "timer":
       return `${widget.config.seconds ?? 0}s remaining`;
-    default:
-      return formatWidgetTypeLabel(widget.type);
+    default: {
+      const summary = describeExtendedWidgetForPrompt(widget);
+      if (summary === null) return formatWidgetTypeLabel(widget.type);
+      return summary.length > 48 ? `${summary.slice(0, 47)}\u2026` : summary;
+    }
   }
 }
 
@@ -135,7 +147,11 @@ function createWidgetEditorDraft(widget: HudWidget): WidgetEditorDraft {
     stats: Array.isArray(widget.config.stats)
       ? widget.config.stats.map((stat) => ({ name: stat.name, value: String(stat.value ?? "") }))
       : [],
-    items: Array.isArray(widget.config.items) ? widget.config.items.join("\n") : "",
+    items: isExtendedHudWidgetType(widget.type)
+      ? extendedWidgetConfigToText(widget.type, widget.config)
+      : Array.isArray(widget.config.items)
+        ? widget.config.items.join("\n")
+        : "",
   };
 }
 
@@ -168,6 +184,9 @@ function buildUpdatedWidgetConfig(
   options?: { syncStartingValue?: boolean },
 ): HudWidget["config"] {
   const nextConfig = { ...widget.config };
+  if (isExtendedHudWidgetType(widget.type)) {
+    return extendedWidgetConfigFromText(widget.type, draft.items, widget.config);
+  }
 
   switch (widget.type) {
     case "progress_bar":
@@ -472,19 +491,26 @@ function WidgetCard({
   const [collapsed, setCollapsed] = useState(false);
   const naturalWidth = useMemo(() => {
     if (widget.config.autoSize === false) return 176;
+    // Stored configs are not guaranteed well-formed (model blueprints, older saves), so measure defensively.
+    const config = isExtendedHudWidgetType(widget.type)
+      ? normalizeExtendedWidgetConfig(widget.type, widget.config ?? {})
+      : (widget.config ?? {});
+    const stats = Array.isArray(config.stats) ? config.stats : [];
+    const items = Array.isArray(config.items) ? config.items : [];
+    const contents = Array.isArray(config.contents) ? config.contents : [];
     const labels = [
       widget.label,
-      ...(widget.config.stats ?? []).flatMap((stat) => [stat.name, String(stat.value)]),
-      ...(widget.config.items ?? []),
-      ...(widget.config.contents ?? []).map((item) => item.name),
-    ];
+      ...stats.flatMap((stat) => [stat?.name, stat?.value]),
+      ...items,
+      ...contents.map((item) => item?.name),
+    ].map((label) => (label == null ? "" : String(label)));
     const longest = labels.reduce((length, label) => Math.max(length, Array.from(label).length), 0);
     if (widget.type === "stat_block") {
       const columnWidths = [0, 0];
-      for (const [index, stat] of (widget.config.stats ?? []).entries()) {
+      for (const [index, stat] of stats.entries()) {
         columnWidths[index % 2] = Math.max(
           columnWidths[index % 2],
-          Array.from(stat.name).length * 6.2 + String(stat.value).length * 6.2 + 32,
+          Array.from(String(stat?.name ?? "")).length * 6.2 + String(stat?.value ?? "").length * 6.2 + 32,
         );
       }
       return Math.max(176, Math.ceil(columnWidths[0] + columnWidths[1] + 36), widget.label.length * 6.2 + 64);
@@ -571,6 +597,7 @@ function WidgetBody({ widget }: { widget: HudWidget }) {
     case "timer":
       return <TimerWidget widget={widget} />;
     default:
+      if (isExtendedHudWidgetType(widget.type)) return <ExtendedWidgetView widget={widget} />;
       return (
         <p className={cn("text-[0.625rem]", GAME_WIDGET_MUTED_CLASS)}>
           {localizeUi("ui.game.widgetbody.unknownWidgetType")}
@@ -784,6 +811,29 @@ function WidgetEditorModal({
             <span className="block text-xs text-[var(--muted-foreground)]">
               {localizeUi("ui.game.widgeteditormodal.enterOneItemPerLine")}
             </span>
+          </label>
+        )}
+
+        {isExtendedHudWidgetType(widget.type) && (
+          <label className="space-y-1.5">
+            <span className="text-xs font-medium text-[var(--muted-foreground)]">
+              {localizeUi(
+                widget.type === "note" ? "ui.game.widgeteditormodal.text" : "ui.game.widgeteditormodal.items",
+              )}
+            </span>
+            <textarea
+              value={draft.items}
+              onChange={(event) => setDraft((current) => ({ ...current, items: event.target.value }))}
+              rows={6}
+              className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--foreground)] outline-none transition focus:border-[var(--primary)]"
+            />
+            {EXTENDED_WIDGET_TEXT_FORMAT[widget.type] && (
+              <span className="block text-xs text-[var(--muted-foreground)]">
+                {localizeUi("ui.game.widgeteditormodal.formatHint", {
+                  format: EXTENDED_WIDGET_TEXT_FORMAT[widget.type],
+                })}
+              </span>
+            )}
           </label>
         )}
 

@@ -32,7 +32,8 @@ try {
       await commitments.getByText("Recover the archive key", { exact: true }).waitFor();
       await page.goto(base);
       await page.locator('[data-campaign-wiki-entity-list]').waitFor();
-      await page.evaluate(() => { window.__wikiMock.failCommitments = 1; });
+      // The infobox reads the same first page before the full list mounts (and refetches the failed query): fail both.
+      await page.evaluate(() => { window.__wikiMock.failCommitments = 2; });
       await page.locator('[data-campaign-wiki-entity-list]').getByRole("button", { name: /Ariadne Vale/ }).click();
       await page.getByRole("heading", { name: /Ariadne Vale/ }).waitFor(); await openCommitmentsTab(page);
       const erroredCommitments = page.getByRole("region", { name: /quests and commitments/i });

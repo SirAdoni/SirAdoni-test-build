@@ -17,6 +17,7 @@ import {
   type DirectionEffect,
   type SkillCheckTag,
   type WidgetUpdate,
+  coerceWidgetValue,
 } from "@marinara-engine/shared";
 
 // The check-tag reader lives in shared so the server reads a GM tag exactly the
@@ -826,12 +827,13 @@ export function parseGmTags(content: string): ParsedGmTags {
         else if (k === "icon") changes.icon = stripped;
         else if (k === "position") changes.position = stripped as NonNullable<WidgetUpdate["changes"]["position"]>;
         else if (k === "max") changes.max = Number(stripped);
-        else if (k === "value") {
-          const parsed = parseFloat(stripped);
-          changes.value = isNaN(parsed) ? stripped : parsed;
-        } else if (k === "stat") changes.statName = stripped;
+        else if (k === "value") changes.value = coerceWidgetValue(stripped);
+        else if (k === "stat") changes.statName = stripped;
         else if (k === "add") changes.add = stripped;
         else if (k === "remove") changes.remove = stripped;
+        else if (k === "check") changes.check = stripped;
+        else if (k === "uncheck") changes.uncheck = stripped;
+        else if (k === "text") changes.text = stripped;
         else if (k === "count") {
           const parsed = parseInt(stripped, 10);
           changes.count = isNaN(parsed) ? 0 : parsed;

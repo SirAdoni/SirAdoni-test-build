@@ -5,7 +5,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Copy, Download, Plus, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import {
+  EXTENDED_HUD_WIDGET_TYPES,
+  EXTENDED_WIDGET_TEXT_FORMAT,
+  defaultExtendedWidgetConfig,
+  extendedWidgetConfigFromText,
+  extendedWidgetConfigToText,
+  isExtendedHudWidgetType,
+  normalizeExtendedWidgetConfig,
   normalizeTextForMatch,
+  type ExtendedHudWidgetType,
   type HudWidget,
   type HudWidgetConfig,
   type HudWidgetType,
@@ -16,6 +24,7 @@ import { DraftNumberInput } from "../ui/DraftNumberInput";
 import { ColorPicker } from "../ui/ColorPicker";
 import { AgentSettingsActionButton } from "../chat/AgentSettingsControls";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { EXTENDED_WIDGET_ACCENTS } from "./ExtendedWidgets";
 
 const GAME_WIDGET_EXPORT_KIND = "marinara-game-hud-widgets";
 const GAME_WIDGET_EXPORT_VERSION = 1;
@@ -29,6 +38,7 @@ const WIDGET_TYPES: readonly HudWidgetType[] = [
   "list",
   "inventory_grid",
   "timer",
+  ...EXTENDED_HUD_WIDGET_TYPES,
 ];
 
 const DEFAULT_ACCENTS: Record<HudWidgetType, string> = {
@@ -40,7 +50,8 @@ const DEFAULT_ACCENTS: Record<HudWidgetType, string> = {
   list: "#14b8a6",
   inventory_grid: "#94a3b8",
   timer: "var(--marinara-chat-chrome-accent)",
-};
+  ...EXTENDED_WIDGET_ACCENTS,
+} as Record<HudWidgetType, string>;
 
 const DEFAULT_ICONS: Record<HudWidgetType, string> = {
   progress_bar: "◆",
@@ -51,6 +62,25 @@ const DEFAULT_ICONS: Record<HudWidgetType, string> = {
   list: "☰",
   inventory_grid: "▣",
   timer: "◷",
+  checklist: "☑",
+  schedule: "▤",
+  note: "✎",
+  clock: "◴",
+  pips: "●",
+  countdown: "⏳",
+  tug_of_war: "⇄",
+  tier_track: "▲",
+  stages: "➜",
+  tags: "◇",
+  ledger: "¤",
+  log: "≡",
+  rumor_board: "?",
+  obligations: "⚖",
+  turn_order: "↻",
+  scoreboard: "♛",
+  bars: "▥",
+  charges: "✦",
+  calendar: "▦",
 };
 
 const WIDGET_NUMBER_INPUT_CLASS =
@@ -69,7 +99,8 @@ function isHudWidgetType(value: unknown): value is HudWidgetType {
     value === "stat_block" ||
     value === "list" ||
     value === "inventory_grid" ||
-    value === "timer"
+    value === "timer" ||
+    isExtendedHudWidgetType(value)
   );
 }
 
@@ -179,6 +210,8 @@ function defaultWidgetConfig(type: HudWidgetType): HudWidgetConfig {
       return { slots: 8, contents: [] };
     case "timer":
       return { seconds: 60, running: false };
+    default:
+      return defaultExtendedWidgetConfig(type);
   }
 }
 
@@ -190,6 +223,8 @@ function normalizeConfig(
   const source = config && typeof config === "object" && !Array.isArray(config) ? (config as HudWidgetConfig) : {};
   const fallback = defaultWidgetConfig(type);
   const draftMode = options.mode === "draft";
+
+  if (isExtendedHudWidgetType(type)) return normalizeExtendedWidgetConfig(type, source);
 
   if (type === "progress_bar" || type === "gauge" || type === "relationship_meter") {
     const max = parseNumber(source.max, fallback.max ?? 100, 1);
@@ -779,6 +814,17 @@ function WidgetConfigFields({
     );
   }
 
+  if (isExtendedHudWidgetType(widget.type)) {
+    return (
+      <ExtendedTextField
+        type={widget.type}
+        config={widget.config}
+        disabled={disabled}
+        onConfigChange={onConfigChange}
+      />
+    );
+  }
+
   if (widget.type === "inventory_grid") {
     const contents = Array.isArray(widget.config.contents) ? widget.config.contents : [];
     return (
@@ -842,6 +888,52 @@ function WidgetConfigFields({
         {localizeUi("ui.game.widgetconfigfields.running")}
       </label>
     </div>
+  );
+}
+
+/** Checklist / schedule / note setup field: edited as text, committed on blur so typing is never reformatted. */
+function ExtendedTextField({
+  type,
+  config,
+  disabled,
+  onConfigChange,
+}: {
+  type: ExtendedHudWidgetType;
+  config: HudWidgetConfig;
+  disabled?: boolean;
+  onConfigChange: (patch: Partial<HudWidgetConfig>) => void;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  const externalValue = extendedWidgetConfigToText(type, config);
+  const [draft, setDraft] = useState(externalValue);
+
+  useEffect(() => {
+    setDraft(externalValue);
+  }, [externalValue]);
+
+  return (
+    <label className="mt-2 block space-y-1">
+      <span className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+        {localizeUi(type === "note" ? "ui.game.widgeteditormodal.text" : "ui.game.widgeteditormodal.items")}
+      </span>
+      <textarea
+        value={draft}
+        disabled={disabled}
+        rows={3}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => {
+          const next = extendedWidgetConfigFromText(type, draft, config);
+          onConfigChange(next);
+          setDraft(extendedWidgetConfigToText(type, next));
+        }}
+        className="w-full rounded-lg border border-[var(--border)] bg-[var(--secondary)] px-2.5 py-2 text-xs text-[var(--foreground)]"
+      />
+      {EXTENDED_WIDGET_TEXT_FORMAT[type] && (
+        <span className="block text-[0.625rem] text-[var(--muted-foreground)]">
+          {localizeUi("ui.game.widgeteditormodal.formatHint", { format: EXTENDED_WIDGET_TEXT_FORMAT[type] })}
+        </span>
+      )}
+    </label>
   );
 }
 

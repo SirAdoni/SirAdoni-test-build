@@ -759,7 +759,26 @@ export type HudWidgetType =
   | "stat_block"
   | "list"
   | "inventory_grid"
-  | "timer";
+  | "timer"
+  | "checklist"
+  | "schedule"
+  | "note"
+  | "clock"
+  | "pips"
+  | "countdown"
+  | "tug_of_war"
+  | "tier_track"
+  | "stages"
+  | "tags"
+  | "ledger"
+  | "log"
+  | "rumor_board"
+  | "obligations"
+  | "turn_order"
+  | "scoreboard"
+  | "bars"
+  | "charges"
+  | "calendar";
 
 /** Milestone marker on a progress/relationship bar. */
 export interface WidgetMilestone {
@@ -809,6 +828,33 @@ export interface HudWidgetConfig {
   seconds?: number;
   running?: boolean;
 
+  // checklist: tasks with a done flag
+  tasks?: Array<{ text: string; done: boolean }>;
+
+  // schedule / calendar: dated entries ("Day 21, dusk" / "Rusk strike"), kept in day order.
+  // calendar also uses value (today's day number), max (days per week) and text (date label).
+  entries?: Array<{ when: string; text: string }>;
+
+  // note: one short free-text status; also the caption of countdown, the "Left | Right" sides of tug_of_war and
+  // the unit of ledger
+  text?: string;
+
+  // tier_track / stages: ordered levels; current is a 0-based index (also turn_order's current turn)
+  levels?: string[];
+  current?: number;
+
+  // tags: short state chips
+  tags?: string[];
+
+  // ledger: value is the balance; recent transactions
+  transactions?: Array<{ amount: number; text: string }>;
+
+  // rumor_board
+  rumors?: Array<{ text: string; status: "unverified" | "confirmed" | "false" }>;
+
+  // bars / charges: named meters
+  meters?: Array<{ name: string; value: number; max: number }>;
+
   // GM-defined value hints for the scene model (e.g. "alpha | omega | beta" for a class stat)
   valueHints?: Record<string, string>;
 }
@@ -827,6 +873,11 @@ export interface WidgetUpdate {
     add?: string;
     remove?: string;
     statName?: string;
+    /** checklist: mark a task done (added done when missing) / not done. */
+    check?: string;
+    uncheck?: string;
+    /** note: replace the text. */
+    text?: string;
   };
 }
 

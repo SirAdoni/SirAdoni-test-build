@@ -206,5 +206,6 @@ export { applyHudWidgetLifecycle } from "./utils/hud-widget-lifecycle.js";
 export * from "./types/game-scene-timeline.js";
 export * from "./types/storyboard-progress.js";
 export * from "./types/game-continuity.js";
+export * from "./utils/hud-widget-extended.js";
 export * from "./types/campaign-memory.js";
 export * from "./types/campaign-memory-api.js";

@@ -155,7 +155,7 @@ export function CampaignWikiInfobox({
           title={t("ui.game.campaignWiki.reader.rightNow", { defaultValue: "Right now" })}
           label={t("ui.game.campaignWiki.currentState")}
         >
-          <dl className="grid gap-x-4 gap-y-2 @xl:grid-cols-2 @3xl:grid-cols-1">
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 @3xl:grid-cols-1">
             {currentState.items.map((item) => (
               <StateRow
                 key={item.stateId}
