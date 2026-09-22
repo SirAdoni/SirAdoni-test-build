@@ -10,7 +10,7 @@ import type {
   SessionSummary,
   HudWidget,
 } from "@marinara-engine/shared";
-import { DEFAULT_GAME_SYSTEM_PROMPT, wrapGameInstructions } from "@marinara-engine/shared";
+import { DEFAULT_GAME_SYSTEM_PROMPT, describeExtendedWidgetForPrompt, wrapGameInstructions } from "@marinara-engine/shared";
 import type { CharacterSpriteInfo } from "./sprite.service.js";
 
 /**
@@ -634,6 +634,8 @@ function buildCompactInventoryLine(items: Array<{ name: string; quantity: number
 function buildWidgetSummaryLines(widgets: HudWidget[]): string[] {
   return widgets.map((widget) => {
     const config = (widget.config ?? {}) as Record<string, any>;
+    const extended = describeExtendedWidgetForPrompt(widget);
+    if (extended !== null) return `- ${widget.id} (${widget.type}): ${extended}`;
     if (widget.type === "stat_block" && Array.isArray(config.stats) && config.stats.length > 0) {
       const stats = config.stats.map((stat) => `${stat.name}=${stat.value}`).join(", ");
       return `- ${widget.id} (${widget.type}): ${stats}`;
@@ -1469,12 +1471,22 @@ export function buildGmFormatReminder(
       `These values are UI bookkeeping, not facts characters can automatically perceive or discuss.`,
       ...buildWidgetSummaryLines(hudWidgets),
       `- You may dynamically create useful HUD widgets and delete obsolete ones as the scene changes. There is no fixed widget-count cap. Reuse stable IDs; do not duplicate existing widgets or invent story events to justify UI changes. Preserve user-requested trackers unless the user removes them or their stated purpose is complete.`,
-      `- Create: [widget: stable_id, action: create, type: counter, label: "Supplies", position: hud_left, count: 3]. Supported types: progress_bar, gauge, relationship_meter, counter, stat_block, list, inventory_grid, timer. Optional initial fields: value, max, count, seconds, running, icon. For a new stat_block or list, create it first and then use ordinary stat/add commands to fill it.`,
+      `- Create: [widget: stable_id, action: create, type: counter, label: "Supplies", position: hud_left, count: 3]. Supported types: progress_bar, gauge, relationship_meter, counter, stat_block, list, inventory_grid, timer, and the extra types below. Optional initial fields: value, max, count, seconds, running, text, icon. For a new stat_block, list or extra type, create it first and then use ordinary stat/add/text commands to fill it.`,
       `- Delete an entire widget: [widget: stable_id, action: delete]. This removes only its HUD display, never inventory, relationships, quests, or other canonical facts. The existing remove: "Item" command removes a list item, NOT the widget. Create commands are idempotent and never overwrite an existing widget's values.`,
       `- Widget usage: emit widget commands for every real change to these rendered HUD widgets. Do not skip a changed widget just because another system tracks related player or party stats, and never create a narrative event merely to change or clear a widget.`,
       `- HUD widgets are visual UI state only. Player stats, inventory, party member HP, party relationships, and other durable game facts remain in their own canonical systems; use [widget:] only to mirror a visible widget when that widget's displayed value should change.`,
       `- Command mapping: value = bars/gauges, count = counters, stat = one stat_block entry, add/remove = rotating list items, running/seconds = timers.`,
       `- Widget commands: [widget: id, value: n] [widget: id, stat: "Name", value: x] [widget: id, count: n] [widget: id, add: "Item"] [widget: id, remove: "Item"] [widget: id, running: true, seconds: 60]`,
+      `- Extra types. Pick one only when it shows something better than a list or stat_block would; never create a widget just to use a type. Each is created empty, then updated with the keys shown:`,
+      `  checklist: add/check/uncheck/remove: "Task" (check when done in the story). obligations (debts, favors, promises): add: "Party owes Rusk | 200 gold", check when settled.`,
+      `  schedule (dated appointments, kept in day order): add: "Day 21, dusk | Rusk strike" (re-adding moves it), remove: "Rusk strike". log (newest first, 6 kept): add: "Event".`,
+      `  note: text: "One short status" (replaces). tags (current conditions or states): add/remove: "Poisoned".`,
+      `  clock (max: 4-12 segments) and pips (max: 1-20): value: filled. countdown: value: remaining, text: "days until the ball".`,
+      `  tug_of_war (chase, contest, negotiation; max: n): value: -n..n, positive favors the right side; text: "Left side | Right side".`,
+      `  tier_track (escalating levels like alert or heat) and stages (quest or journey steps): add: "Level" in order; value: "Level", its number, up/next or down/back.`,
+      `  ledger: add: "+50 | Sold the ring" or "-20 | Bribe" (the balance updates), text: "gold". rumor_board: add: "Rumor", check: confirmed, uncheck: proven false.`,
+      `  turn_order: add/remove: "Name", value: "Name" or next. scoreboard: stat: "Side", value: n. bars (named meters) and charges (named uses shown as pips): add: "Name | 3 / 10", then stat: "Name", value: n.`,
+      `  calendar (in-game date with upcoming events; max: days per week, default 7): value: today's day number or next, text: "12 Frostfall 412", add: "Day 21 | Rusk strike", remove: "Rusk strike".`,
       `- List widgets: keep at most 5 short entries visible. Remove resolved or genuinely stale items first; never evict an unresolved obligation, external response, deadline, or durable hook merely to display posture, symbolism, praise, or another transient relationship beat.`,
       `</gm_only_hud_widgets>`,
     );
@@ -1669,6 +1681,17 @@ export function buildSetupPrompt(ctx: SetupPromptContext = {}): string {
           `  stat_block: config = { stats: [{ name: string, value: string|number }] }`,
           `  list: config = { items: string[] }`,
           `  timer: config = { seconds: number, running: boolean }`,
+          `  checklist / obligations: config = { tasks: [{ text: string, done: boolean }] }`,
+          `  schedule: config = { entries: [{ when: string, text: string }] } (when like "Day 21, dusk")`,
+          `  note: config = { text: string }`,
+          `  clock / pips: config = { value: number, max: number }; countdown: config = { value: number, max?: number, text: "days left" }`,
+          `  tug_of_war: config = { value: number, max: number, text: "Left side | Right side" }`,
+          `  tier_track / stages: config = { levels: string[], current: number (0-based) }; turn_order: config = { items: string[], current: number }`,
+          `  tags: config = { tags: string[] }; log: config = { items: string[] } (newest first)`,
+          `  ledger: config = { value: number (balance), text: "gold", transactions: [{ amount: number, text: string }] }`,
+          `  rumor_board: config = { rumors: [{ text: string, status: "unverified" | "confirmed" | "false" }] }`,
+          `  scoreboard: config = { stats: [{ name: string, value: number }] }; bars / charges: config = { meters: [{ name: string, value: number, max: number }] }`,
+          `  calendar: config = { value: number (today's day), max: number (days per week), text: "date label", entries: [{ when: "Day 21", text: string }] }`,
           ``,
           `If you design a list widget, treat it as a compact rotating list with a hard cap of 5 entries. Choose items worth surfacing right now, and expect older entries to be swapped out as the situation changes.`,
           `Reserve those slots for actionable or unresolved continuity. Do not replace an open obligation, answer, deadline, or plot hook with a transient gesture, posture, praise, or symbolic interpretation.`,
@@ -1771,13 +1794,13 @@ export function buildSetupPrompt(ctx: SetupPromptContext = {}): string {
           `    "hudWidgets": [`,
           `      {`,
           `        "id": "widget_unique_id",`,
-          `        "type": "progress_bar|gauge|relationship_meter|counter|stat_block|list|timer",`,
+          `        "type": "progress_bar|gauge|relationship_meter|counter|stat_block|list|timer|checklist|obligations|schedule|calendar|note|clock|pips|countdown|tug_of_war|tier_track|stages|turn_order|tags|log|ledger|rumor_board|scoreboard|bars|charges",`,
           `        "label": "Display Name",`,
           `        "icon": "emoji",`,
           `        "position": "hud_left|hud_right",`,
           `        "accent": "#hexcolor",`,
           `        "config": {`,
-          `          "_note_config": "For bars/gauges/meters, set startingValue to the first-turn value, set value equal to startingValue, and set max separately. For counters use count, for stat_blocks use stats, for lists use items, and for timers use seconds.",`,
+          `          "_note_config": "For bars/gauges/meters, set startingValue to the first-turn value, set value equal to startingValue, and set max separately. For counters use count, for stat_blocks use stats, for lists use items, and for timers use seconds. For every other type use exactly the config keys listed for it in <blueprint_widget_types>.",`,
           `          "_note_valueHints": "For stat_block widgets with string values, add valueHints: {statName: 'option1 | option2 | option3'} so the scene model knows the valid choices. Example: for a 'class' stat, valueHints: {'class': 'alpha | omega | beta'}"`,
           `        }`,
           `      }`,

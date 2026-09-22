@@ -4,6 +4,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Nineteen new Game Mode HUD widgets: checklist, obligations (debts and favors), schedule, calendar (in-game date, day grid and upcoming events), note, clock (segmented progress clock), pips, countdown, tug of war, tier track (escalating alert levels), stages (quest or journey steps), tags (conditions), ledger (balance with recent transactions), log (newest-first events), rumor board (unverified, confirmed, false), turn order, scoreboard, bars and charges (named uses such as spell slots). They use the existing `[widget:]` keys (add, remove, check, uncheck, text, value, max, stat), so the GM can create and update them during play; you can also add them in the widget setup and edit them by hand. They restore correctly on branches.
 - Added Search All Chats: find messages across every chat with quoted phrases and filters for mode, character, sender and date range. Results show highlighted snippets and open the chat at that message. Open it from the search button beside the chat list.
 
 - Added Markdown and HTML story exports next to JSONL and Text in the branch menu. Exports follow the active swipe, leave out hidden and system messages, and the HTML story is a standalone page with light, dark and print styling and small embedded avatars.
