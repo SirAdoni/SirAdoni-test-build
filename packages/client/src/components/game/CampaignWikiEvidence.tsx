@@ -117,7 +117,8 @@ function EvidenceItem({ chatId, item }: { chatId: string; item: CampaignWikiEvid
     const mark = markRef.current;
     if (!container || !mark) return;
     container.scrollTop = Math.max(0, mark.offsetTop - 32);
-  }, [content, range]);
+    // `open` too: hiding and reopening mounts a fresh container while the cached content stays the same.
+  }, [content, range, open]);
 
   return (
     <figure className="rounded-lg bg-secondary/35 px-3 py-2.5">

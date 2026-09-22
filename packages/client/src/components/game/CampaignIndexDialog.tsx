@@ -770,6 +770,11 @@ export function CampaignIndexDialog({ chatId, onClose }: CampaignIndexDialogProp
                 {t("ui.game.campaignIndex.cancelError")}
               </p>
             )}
+            {run.isError && (
+              <p role="alert" className="text-xs text-destructive">
+                {t("ui.game.campaignIndex.startError")}
+              </p>
+            )}
             {confirmCancel && (job.status === "running" || job.status === "paused") && (
               <div
                 role="alertdialog"

@@ -7917,6 +7917,7 @@
   "ui.game.mapzoomcontrols.zoomOutMap": "Zoom out map",
   "ui.game.memorySettings.budgetHint": "Characters of memory per turn. Empty uses {{count}}.",
   "ui.game.memorySettings.budgetLabel": "Memory budget for the GM",
+  "ui.game.memorySettings.keeperAllHint": "Memory keeps the lorebook for every session.",
   "ui.game.memorySettings.keeperLabel": "Replace the Lorebook Keeper",
   "ui.game.memorySettings.keeperNeedsOn": "Applies while memory is On.",
   "ui.game.memorySettings.keeperOffHint": "The Lorebook Keeper still writes the lorebook after each session.",

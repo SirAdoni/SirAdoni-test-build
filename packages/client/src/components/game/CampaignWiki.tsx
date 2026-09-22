@@ -133,6 +133,13 @@ function displayEntityName(t: TFn, entity: Pick<CampaignMemoryEntityListItem, "a
   return alias || t("ui.game.campaignWiki.untitledEntity", { kind: kindLabel(t, entity.kind) });
 }
 
+/** The wiki page a stored state value points at, when the value is a page reference. */
+function stateTargetId(value: CampaignMemoryJson | undefined): string | undefined {
+  const record = wikiValueRecord(value);
+  if (record && typeof record.entityId === "string") return record.entityId;
+  return typeof value === "string" && ENTITY_ID.test(value.trim()) ? value.trim() : undefined;
+}
+
 /** Readable text for any stored value, never raw JSON. */
 function readableValue(value: CampaignMemoryJson | undefined): string {
   return wikiValueSummary(value);
@@ -336,14 +343,14 @@ function Detail({
     if (entity.kind === "character" || entity.kind === "persona") {
       byId.set(entity.entityId, {
         entityId: entity.entityId,
-        alias: entity.aliases[0] || "",
+        alias: displayEntityName(t, entity),
         epistemicState: "knows",
       });
     }
     for (const fact of facts.items)
       for (const holder of fact.coHolders ?? []) if (!byId.has(holder.entityId)) byId.set(holder.entityId, holder);
     return [...byId.values()].filter((holder) => holder.alias && !RAW_ID.test(holder.alias));
-  }, [entity, facts.items]);
+  }, [entity, facts.items, t]);
   const holderState = (fact: CampaignMemoryFactWithCoHolders) =>
     perspective === entity.entityId
       ? knowledge.items.find((item) => item.factId === fact.factId)?.epistemicState
@@ -591,13 +598,7 @@ function Detail({
           <div className="grid gap-2 sm:grid-cols-2">
             {currentState.items.map((item) => {
               const sourceEvent = referencedEventById.get(item.sourceEventId);
-              const valueRecord = wikiValueRecord(item.value);
-              const target =
-                valueRecord && typeof valueRecord.entityId === "string"
-                  ? valueRecord.entityId
-                  : typeof item.value === "string" && ENTITY_ID.test(item.value.trim())
-                    ? item.value.trim()
-                    : undefined;
+              const target = stateTargetId(item.value);
               const targetName = target ? nameOf(target) : null;
               return (
                 <WikiCard key={item.stateId} className="p-3">
@@ -638,7 +639,11 @@ function Detail({
       <WikiTabs
         tabs={tabs}
         value={tab}
-        onChange={setTab}
+        onChange={(next) => {
+          setTab(next);
+          // One offset pages every section; a page from another tab would skip or empty this one.
+          if (detailOffset > 0) onPageChange(0);
+        }}
         label={t("ui.game.campaignWiki.reader.sections", { defaultValue: "Sections" })}
       />
 
@@ -768,7 +773,11 @@ function Detail({
                       <WhenChip order={item.occurrenceOrder} />
                     </span>
                   </div>
-                  {happened && <p className="mt-2 text-sm leading-6 text-foreground">{happened}</p>}
+                  {(happened || !quote) && (
+                    <p className="mt-2 text-sm leading-6 text-foreground">
+                      {happened || t("ui.game.campaignWiki.eventRecorded")}
+                    </p>
+                  )}
                   {quote && (
                     <p
                       className={cn(
@@ -797,11 +806,11 @@ function Detail({
                       })}
                     </div>
                   )}
-                  {item.evidence.length > 1 && (
+                  {item.evidence.length > (quote ? 1 : 0) && (
                     <CampaignWikiEvidence
                       chatId={chatId}
                       sourceChatId={recordOrigin(item).chatId ?? chatId}
-                      evidence={item.evidence.slice(1)}
+                      evidence={quote ? item.evidence.slice(1) : item.evidence}
                     />
                   )}
                 </WikiCard>
@@ -935,7 +944,6 @@ function Detail({
                 revision: entity.provenance.sourceRevision,
               })}
             </p>
-            <p className="mt-1 break-all text-[0.6875rem] text-muted-foreground">{entity.entityId}</p>
           </details>
         </section>
       )}
@@ -1013,7 +1021,7 @@ function CampaignWikiTimeline({
                   <p className="text-sm leading-6 text-foreground">{eventSummary(t, item.summary)}</p>
                   {(item.location || item.participants.length > 0) && (
                     <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                      {item.location && item.location.alias && (
+                      {item.location && item.location.alias && !RAW_ID.test(item.location.alias) && (
                         <EntityChipButton
                           entity={null}
                           name={item.location.alias}
@@ -1037,11 +1045,24 @@ function CampaignWikiTimeline({
                   )}
                   {item.stateChanges.length > 0 && (
                     <ul className="mt-2 space-y-0.5 text-xs text-muted-foreground">
-                      {item.stateChanges.map((change, index) => (
-                        <li key={`${change.entityId}-${change.key}-${index}`}>
-                          {humanizeKey(change.key)}: {readableValue(change.value)}
-                        </li>
-                      ))}
+                      {item.stateChanges.map((change, index) => {
+                        const target = stateTargetId(change.value);
+                        const known = target
+                          ? [item.location, ...item.participants].find((ref) => ref?.entityId === target)?.alias
+                          : undefined;
+                        return (
+                          <li key={`${change.entityId}-${change.key}-${index}`}>
+                            {humanizeKey(change.key)}:{" "}
+                            {!target ? (
+                              readableValue(change.value)
+                            ) : known && !RAW_ID.test(known) ? (
+                              known
+                            ) : (
+                              <EntityRefName chatId={chatId} entityId={target} />
+                            )}
+                          </li>
+                        );
+                      })}
                     </ul>
                   )}
                   <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -1423,6 +1444,11 @@ export function CampaignWiki({
   };
   const entities = useCampaignMemoryEntities(chatId, { query, kind, offset: entityOffset, limit: ENTITY_PAGE_SIZE });
   const detail = useCampaignMemoryEntity(chatId, selectedId, { offset: detailOffset });
+  // Paging changes the query key; keep the loaded page on screen meanwhile so the open tab and perspective survive.
+  const [keptDetail, setKeptDetail] = useState<CampaignMemoryEntityDetail | null>(null);
+  if (detail.data && detail.data !== keptDetail) setKeptDetail(detail.data);
+  const shownDetail =
+    detail.data ?? (detail.isLoading && keptDetail?.entity.entityId === selectedId ? keptDetail : undefined);
   const selected = useMemo(
     () => entities.data?.items.find((entity) => entity.entityId === selectedId),
     [entities.data, selectedId],
@@ -1736,7 +1762,7 @@ export function CampaignWiki({
                 <CampaignWikiCommitments chatId={chatId} onNavigate={selectEntity} />
               </div>
             )}
-            {selectedId && detail.isLoading && (
+            {selectedId && detail.isLoading && !shownDetail && (
               <div className="mx-auto max-w-[62rem] space-y-3 pt-2">
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <Loader2 size={14} className="animate-spin" />
@@ -1757,11 +1783,11 @@ export function CampaignWiki({
               />
             )}
             {selectedId &&
-              detail.data &&
+              shownDetail &&
               (editing ? (
                 <CampaignWikiEditor
                   chatId={chatId}
-                  detail={detail.data}
+                  detail={shownDetail}
                   onClose={() => {
                     setEditing(false);
                     setEditorDirty(false);
@@ -1775,9 +1801,9 @@ export function CampaignWiki({
                 />
               ) : (
                 <Detail
-                  key={detail.data.entity.entityId}
+                  key={shownDetail.entity.entityId}
                   chatId={chatId}
-                  detail={detail.data}
+                  detail={shownDetail}
                   onBack={() => void closeReading()}
                   onSelect={selectEntity}
                   onPageChange={setDetailOffset}
@@ -1788,7 +1814,7 @@ export function CampaignWiki({
                   portraits={portraits}
                 />
               ))}
-            {selected && !detail.data && !detail.isLoading && !detail.isError && (
+            {selected && !shownDetail && !detail.isLoading && !detail.isError && (
               <p className="text-xs text-muted-foreground">{selected.summary}</p>
             )}
           </div>

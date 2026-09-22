@@ -282,8 +282,25 @@ export function CampaignWikiEditor({
     return names;
   }, [detail.relatedEntities, displayName, entity.entityId]);
 
+  // Diffs and expectedRevision use the records the draft was loaded from. A refetch while the draft is dirty
+  // then surfaces as a 409 conflict instead of a silent overwrite; a clean draft follows the fresh record.
+  const [entityBase, setEntityBase] = useState(entity);
+  const [factBase, setFactBase] = useState(fact);
+  useEffect(() => {
+    if (dirty) return;
+    setEntityBase(entity);
+    setName(entity.aliases[0] ?? "");
+    setOtherNames(entity.aliases.slice(1).join("\n"));
+    setTags(entity.tags.join(", "));
+    setSummary(entity.summary ?? "");
+    setBody((entity as { body?: string }).body ?? "");
+    setManualLock(entity.manualLock);
+    setArchived(entity.status === "archived");
+  }, [dirty, entity]);
+
   useEffect(() => {
     if (!fact || dirty) return;
+    setFactBase(fact);
     setPredicate(fact.predicate);
     setFactValue(valueText(fact.value));
     setValueType(valueKind(fact.value));
@@ -354,28 +371,31 @@ export function CampaignWikiEditor({
     const id = operationId();
     if (tab === "entity") {
       const aliases = aliasList();
+      const base = entityBase.entityId === entity.entityId ? entityBase : entity;
+      const entityBody = (base as { body?: string }).body ?? "";
       return {
         operationId: id,
         action: "update",
         recordType: "entity",
         recordId: entity.entityId,
-        expectedRevision: entity.revision,
+        expectedRevision: base.revision,
         reason,
         patch: {
-          ...(aliases.join("\n") !== entity.aliases.join("\n") ? { aliases } : {}),
-          ...(tagList(tags).join(",") !== entity.tags.join(",") ? { tags: tagList(tags) } : {}),
-          ...(summary !== (entity.summary ?? "") ? { summary } : {}),
+          ...(aliases.join("\n") !== base.aliases.join("\n") ? { aliases } : {}),
+          ...(tagList(tags).join(",") !== base.tags.join(",") ? { tags: tagList(tags) } : {}),
+          ...(summary !== (base.summary ?? "") ? { summary } : {}),
           ...(body !== entityBody ? { body } : {}),
-          ...(manualLock !== entity.manualLock ? { manualLock } : {}),
-          ...(archived !== (entity.status === "archived") ? { status: archived ? "archived" : "active" } : {}),
+          ...(manualLock !== base.manualLock ? { manualLock } : {}),
+          ...(archived !== (base.status === "archived") ? { status: archived ? "archived" : "active" } : {}),
         },
       };
     }
     if (!fact) return null;
     if (tab === "fact") {
+      const base = factBase?.factId === fact.factId ? factBase : fact;
       const typedValue = parseValue(factValue, valueType);
-      const conditionsChanged = conditions !== conditionsText(fact.conditions);
-      const parsedConditions = conditionsChanged ? parseConditions(conditions, fact.conditions).conditions : undefined;
+      const conditionsChanged = conditions !== conditionsText(base.conditions);
+      const parsedConditions = conditionsChanged ? parseConditions(conditions, base.conditions).conditions : undefined;
       if (typedValue === undefined || (conditionsChanged && !parsedConditions)) {
         setValidationError(true);
         return null;
@@ -385,14 +405,14 @@ export function CampaignWikiEditor({
         action: "update",
         recordType: "fact",
         recordId: fact.factId,
-        expectedRevision: fact.revision,
+        expectedRevision: base.revision,
         reason,
         patch: {
-          ...(predicate !== fact.predicate ? { predicate } : {}),
-          ...(factValue !== valueText(fact.value) || valueType !== valueKind(fact.value) ? { value: typedValue } : {}),
+          ...(predicate !== base.predicate ? { predicate } : {}),
+          ...(factValue !== valueText(base.value) || valueType !== valueKind(base.value) ? { value: typedValue } : {}),
           ...(parsedConditions ? { conditions: parsedConditions } : {}),
-          ...(factStatus !== fact.status ? { status: factStatus } : {}),
-          ...(factLock !== fact.manualLock ? { manualLock: factLock } : {}),
+          ...(factStatus !== base.status ? { status: factStatus } : {}),
+          ...(factLock !== base.manualLock ? { manualLock: factLock } : {}),
         },
       };
     }

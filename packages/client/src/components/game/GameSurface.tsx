@@ -2321,6 +2321,23 @@ interface GameSurfaceProps {
   selectedMessageIds?: Set<string>;
 }
 
+/**
+ * The desktop Session panel is right-anchored to its button; when the toolbar sits on the left, pull it back on
+ * screen. Module-level so React attaches it once per mount instead of on every render. Uses `translate` and
+ * offsetLeft so neither the shell's transform entry animation nor an earlier shift skews the measurement.
+ */
+function clampDesktopSessionPanel(element: HTMLDivElement | null) {
+  if (!element) return;
+  const clamp = () => {
+    const parentLeft = (element.offsetParent as HTMLElement | null)?.getBoundingClientRect().left ?? 0;
+    const left = parentLeft + element.offsetLeft;
+    element.style.translate = left < 12 ? `${Math.round(12 - left)}px 0` : "";
+  };
+  clamp();
+  window.addEventListener("resize", clamp);
+  return () => window.removeEventListener("resize", clamp);
+}
+
 function GameSurfaceComponent({
   activeChatId,
   chat,
@@ -12065,17 +12082,7 @@ function GameSurfaceComponent({
             : "absolute right-0 top-9 z-50 h-[min(42rem,calc(100dvh-6rem))] w-[min(42rem,calc(100vw-1.5rem))]",
         )}
         style={mobile ? getGameMobileFloatingPanelStyle(mobileSessionPanelAnchor) : undefined}
-        ref={
-          mobile
-            ? undefined
-            : (element: HTMLDivElement | null) => {
-                // Right-anchored to its button; when the toolbar sits on the left, pull it back on screen.
-                if (!element) return;
-                element.style.transform = "";
-                const left = element.getBoundingClientRect().left;
-                if (left < 12) element.style.transform = `translateX(${Math.round(12 - left)}px)`;
-              }
-        }
+        ref={mobile ? undefined : clampDesktopSessionPanel}
       >
         <div className={cn(NEUTRAL_PANEL_HEADER, "flex items-start gap-3")}>
           <div className="min-w-0 flex-1">

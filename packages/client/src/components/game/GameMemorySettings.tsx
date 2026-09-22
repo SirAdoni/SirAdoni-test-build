@@ -19,6 +19,8 @@ interface GameMemorySettingsProps {
   /** Saved continuity mode; the Keeper hand-off only applies while memory is On. */
   mode: "off" | "shadow" | "active";
   ownership?: ContinuityOwnershipValue | null;
+  /** False until the continuity status has loaded; the Keeper switch waits for the real ownership. */
+  ownershipLoaded?: boolean;
   onContinuityChanged: () => void;
 }
 
@@ -89,6 +91,7 @@ export function GameMemorySettings({
   metadata,
   mode,
   ownership,
+  ownershipLoaded = true,
   onContinuityChanged,
 }: GameMemorySettingsProps) {
   const { t } = useUiTranslation();
@@ -117,11 +120,24 @@ export function GameMemorySettings({
     },
   });
   const patchMeta = (patch: Record<string, unknown>) => updateMetadata.mutate({ id: chatId, ...patch });
+  const { reset: resetOwnership } = saveOwnership;
+  const { reset: resetMetadata } = updateMetadata;
+  // A save error belongs to the chat it happened in.
+  useEffect(() => {
+    resetOwnership();
+    resetMetadata();
+  }, [chatId, resetOwnership, resetMetadata]);
 
-  const keeperReplaced = ownership?.lorebook === "continuity";
+  // No saved ownership means the server's legacy gate: while memory is On the Keeper is off for every session.
+  const keeperReplaced = !ownership || ownership.lorebook === "continuity";
   const busy = saveOwnership.isPending || updateMetadata.isPending;
 
-  const commitBudget = () => {
+  const commitBudget = (badInput: boolean) => {
+    // A number input reports half-typed text such as "1e" as an empty value; keep the saved budget.
+    if (badInput) {
+      setBudgetText(savedBudget ? String(savedBudget) : "");
+      return;
+    }
     const trimmed = budgetText.trim();
     if (!trimmed) {
       if (savedBudget !== null) patchMeta({ gameCampaignMemoryMaxCharacters: null });
@@ -137,14 +153,16 @@ export function GameMemorySettings({
     if (clamped !== savedBudget) patchMeta({ gameCampaignMemoryMaxCharacters: clamped });
   };
 
-  const keeperHint = keeperReplaced
-    ? t("ui.game.memorySettings.keeperOnHint", {
-        defaultValue: "Memory keeps the lorebook from session {{session}} on.",
-        session: ownership?.fromSession ?? sessionNumber,
-      })
-    : t("ui.game.memorySettings.keeperOffHint", {
-        defaultValue: "The Lorebook Keeper still writes the lorebook after each session.",
-      });
+  const keeperHint = !ownership
+    ? t("ui.game.memorySettings.keeperAllHint", { defaultValue: "Memory keeps the lorebook for every session." })
+    : keeperReplaced
+      ? t("ui.game.memorySettings.keeperOnHint", {
+          defaultValue: "Memory keeps the lorebook from session {{session}} on.",
+          session: ownership.fromSession,
+        })
+      : t("ui.game.memorySettings.keeperOffHint", {
+          defaultValue: "The Lorebook Keeper still writes the lorebook after each session.",
+        });
 
   return (
     <div data-component="GameMemorySettings" className="border-t border-border pt-2">
@@ -165,7 +183,7 @@ export function GameMemorySettings({
             role="switch"
             aria-checked={keeperReplaced}
             aria-label={t("ui.game.memorySettings.keeperLabel", { defaultValue: "Replace the Lorebook Keeper" })}
-            disabled={busy}
+            disabled={busy || !ownershipLoaded}
             onClick={() =>
               saveOwnership.mutate(
                 keeperReplaced
@@ -251,7 +269,7 @@ export function GameMemorySettings({
             disabled={updateMetadata.isPending}
             aria-label={t("ui.game.memorySettings.budgetLabel", { defaultValue: "Memory budget for the GM" })}
             onChange={(event) => setBudgetText(event.target.value)}
-            onBlur={commitBudget}
+            onBlur={(event) => commitBudget(event.currentTarget.validity.badInput)}
             onKeyDown={(event) => {
               if (event.key === "Enter") event.currentTarget.blur();
             }}

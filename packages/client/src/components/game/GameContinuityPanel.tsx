@@ -497,6 +497,14 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
     config.verificationInstructions,
   ]);
 
+  // Batch views and save errors belong to the chat they were opened in.
+  const { reset: resetSave } = updateMetadata;
+  useEffect(() => {
+    setExpandedBatchId(null);
+    setVisibleCount(BATCH_PAGE);
+    resetSave();
+  }, [chatId, resetSave]);
+
   const status = useQuery({
     queryKey: continuityKeys.status(chatId),
     queryFn: () => api.get<ContinuityStatusResponse>(`/game/${chatId}/continuity`),
@@ -1343,6 +1351,7 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
             metadata={metadata}
             mode={config.mode}
             ownership={status.data?.config?.ownership ?? null}
+            ownershipLoaded={Boolean(status.data)}
             onContinuityChanged={() => void queryClient.invalidateQueries({ queryKey: continuityKeys.status(chatId) })}
           />
         </div>
