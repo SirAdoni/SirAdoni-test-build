@@ -283,6 +283,8 @@ export interface CharacterGroup {
   avatarPath: string | null;
   /** IDs of characters belonging to this group */
   characterIds: string[];
+  /** Parent group when this group is nested as a character folder; null or absent = root. */
+  parentId?: string | null;
   createdAt: string;
   updatedAt: string;
 }

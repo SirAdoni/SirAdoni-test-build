@@ -34,6 +34,8 @@ import {
   createCharactersStorage,
   type PersonaStorageRow,
 } from "../services/storage/characters.storage.js";
+import { LibraryFolderTreeError } from "../services/storage/library-folders.storage.js";
+import { resolveLibraryCampaignFilter } from "./library-campaigns.routes.js";
 import { createCharacterCatalog } from "../services/storage/character-catalog.js";
 import { encodePersonaCreate, encodePersonaUpdate, projectPersona } from "../services/personas/persona-projector.js";
 import { createCharacterGalleryStorage } from "../services/storage/character-gallery.storage.js";
@@ -965,6 +967,7 @@ export async function charactersRoutes(app: FastifyInstance) {
       sort?: string;
       favoriteFilter?: string;
       category?: string;
+      campaign?: string;
     };
   }>("/catalog", async (req) => {
     const page = parseLibraryPageQuery(req.query);
@@ -976,6 +979,7 @@ export async function charactersRoutes(app: FastifyInstance) {
       sort: page.sort,
       favoriteFilter: page.favoriteFilter,
       category: req.query.category === "characters" || req.query.category === "npcs" ? req.query.category : undefined,
+      ids: await resolveLibraryCampaignFilter(app.db, "character", req.query.campaign),
     });
   });
 
@@ -3336,14 +3340,29 @@ export async function charactersRoutes(app: FastifyInstance) {
     return group;
   });
 
-  app.post("/groups", async (req) => {
+  app.post("/groups", async (req, reply) => {
     const input = createGroupSchema.parse(req.body);
-    return storage.createGroup(input.name, input.description ?? "", input.characterIds ?? []);
+    try {
+      return await storage.createGroup(
+        input.name,
+        input.description ?? "",
+        input.characterIds ?? [],
+        input.parentId ?? null,
+      );
+    } catch (error) {
+      if (error instanceof LibraryFolderTreeError) return reply.status(400).send({ error: error.message });
+      throw error;
+    }
   });
 
-  app.patch<{ Params: { id: string } }>("/groups/:id", async (req) => {
+  app.patch<{ Params: { id: string } }>("/groups/:id", async (req, reply) => {
     const input = updateGroupSchema.parse(req.body);
-    return storage.updateGroup(req.params.id, input);
+    try {
+      return await storage.updateGroup(req.params.id, input);
+    } catch (error) {
+      if (error instanceof LibraryFolderTreeError) return reply.status(400).send({ error: error.message });
+      throw error;
+    }
   });
 
   app.delete<{ Params: { id: string } }>("/groups/:id", async (req, reply) => {

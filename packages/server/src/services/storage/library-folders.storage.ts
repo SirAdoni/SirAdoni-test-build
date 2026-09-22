@@ -1,12 +1,15 @@
 // ──────────────────────────────────────────────
 // Storage: Resource Library Folders
 // ──────────────────────────────────────────────
-import type {
-  CreateLibraryFolderInput,
-  LibraryFolderScope,
-  MigrateLibraryFoldersInput,
-  MoveLibraryItemsInput,
-  UpdateLibraryFolderInput,
+import {
+  checkLibraryFolderParent,
+  planLibraryFolderDelete,
+  type CreateLibraryFolderInput,
+  type LibraryFolderMoveErrorCode,
+  type LibraryFolderScope,
+  type MigrateLibraryFoldersInput,
+  type MoveLibraryItemsInput,
+  type UpdateLibraryFolderInput,
 } from "@marinara-engine/shared";
 import type { DB } from "../../db/connection.js";
 import { eq } from "../../db/file-query.js";
@@ -14,6 +17,26 @@ import { libraryFolders } from "../../db/schema/index.js";
 import { newId, now } from "../../utils/id-generator.js";
 
 type LibraryFolderRow = typeof libraryFolders.$inferSelect;
+
+/** A rejected nesting change (missing parent, cycle or too deep); routes answer 400. */
+export class LibraryFolderTreeError extends Error {
+  constructor(
+    readonly code: LibraryFolderMoveErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "LibraryFolderTreeError";
+  }
+}
+
+function assertParent(rows: LibraryFolderRow[], folderId: string | null, parentId: string | null) {
+  const check = checkLibraryFolderParent(
+    rows.map((row) => ({ id: row.id, parentId: row.parentId ?? null })),
+    folderId,
+    parentId,
+  );
+  if (!check.ok) throw new LibraryFolderTreeError(check.code, check.reason);
+}
 
 function parseItemIds(value: string): string[] {
   try {
@@ -32,14 +55,15 @@ function mapFolder(row: LibraryFolderRow) {
     collapsed: row.collapsed === "true",
     sortOrder: row.sortOrder,
     itemIds: parseItemIds(row.itemIds),
+    parentId: row.parentId ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
 }
 
 export function createLibraryFoldersStorage(db: DB) {
-  const listRows = (scope: LibraryFolderScope) =>
-    db.select().from(libraryFolders).where(eq(libraryFolders.scope, scope)).orderBy(libraryFolders.sortOrder);
+  const listRows = (scope: LibraryFolderScope, handle: Pick<DB, "select"> = db) =>
+    handle.select().from(libraryFolders).where(eq(libraryFolders.scope, scope)).orderBy(libraryFolders.sortOrder);
 
   return {
     async list(scope: LibraryFolderScope) {
@@ -55,42 +79,84 @@ export function createLibraryFoldersStorage(db: DB) {
     async create(scope: LibraryFolderScope, input: CreateLibraryFolderInput) {
       const id = newId();
       const timestamp = now();
-      const existing = await listRows(scope);
-      const nextSortOrder = existing.reduce((maximum, folder) => Math.max(maximum, folder.sortOrder), -1) + 1;
-      await db.insert(libraryFolders).values({
-        id,
-        scope,
-        name: input.name,
-        collapsed: "false",
-        sortOrder: nextSortOrder,
-        itemIds: "[]",
-        createdAt: timestamp,
-        updatedAt: timestamp,
+      const parentId = input.parentId ?? null;
+      // Check and write in one transaction: a concurrent move or delete must not
+      // slip in between and leave the new folder under a vanished parent.
+      await db.transaction(async (tx) => {
+        const existing = await listRows(scope, tx);
+        assertParent(existing, null, parentId);
+        const nextSortOrder = existing.reduce((maximum, folder) => Math.max(maximum, folder.sortOrder), -1) + 1;
+        await tx.insert(libraryFolders).values({
+          id,
+          scope,
+          name: input.name,
+          collapsed: "false",
+          sortOrder: nextSortOrder,
+          itemIds: "[]",
+          parentId,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
       });
       return this.getById(scope, id);
     },
 
     async update(scope: LibraryFolderScope, id: string, input: UpdateLibraryFolderInput) {
-      const existing = await this.getById(scope, id);
-      if (!existing) return null;
-      await db
-        .update(libraryFolders)
-        .set({
-          ...(input.name !== undefined && { name: input.name }),
-          ...(input.collapsed !== undefined && { collapsed: input.collapsed ? "true" : "false" }),
-          ...(input.sortOrder !== undefined && { sortOrder: input.sortOrder }),
-          ...(input.itemIds !== undefined && { itemIds: JSON.stringify(input.itemIds) }),
-          updatedAt: now(),
-        })
-        .where(eq(libraryFolders.id, id));
-      return this.getById(scope, id);
+      // Check and write in one transaction: two concurrent moves (A under B, B
+      // under A) would each pass the cycle check on their own and form a loop.
+      const updated = await db.transaction(async (tx) => {
+        const rows = await listRows(scope, tx);
+        if (!rows.some((row) => row.id === id)) return false;
+        if (input.parentId !== undefined) assertParent(rows, id, input.parentId);
+        await tx
+          .update(libraryFolders)
+          .set({
+            ...(input.name !== undefined && { name: input.name }),
+            ...(input.collapsed !== undefined && { collapsed: input.collapsed ? "true" : "false" }),
+            ...(input.sortOrder !== undefined && { sortOrder: input.sortOrder }),
+            ...(input.itemIds !== undefined && { itemIds: JSON.stringify(input.itemIds) }),
+            ...(input.parentId !== undefined && { parentId: input.parentId }),
+            updatedAt: now(),
+          })
+          .where(eq(libraryFolders.id, id));
+        return true;
+      });
+      return updated ? this.getById(scope, id) : null;
     },
 
     async remove(scope: LibraryFolderScope, id: string) {
-      const existing = await this.getById(scope, id);
-      if (!existing) return false;
-      await db.delete(libraryFolders).where(eq(libraryFolders.id, id));
-      return true;
+      return db.transaction(async (tx) => {
+        const rows = await tx
+          .select()
+          .from(libraryFolders)
+          .where(eq(libraryFolders.scope, scope))
+          .orderBy(libraryFolders.sortOrder);
+        const plan = planLibraryFolderDelete(
+          rows.map((row) => ({ id: row.id, parentId: row.parentId ?? null, itemIds: parseItemIds(row.itemIds) })),
+          id,
+        );
+        if (!plan) return false;
+        // Subfolders and items move up one level instead of disappearing with the folder.
+        const timestamp = now();
+        for (const childId of plan.childIds) {
+          await tx
+            .update(libraryFolders)
+            .set({ parentId: plan.parentId, updatedAt: timestamp })
+            .where(eq(libraryFolders.id, childId));
+        }
+        const parentRow = plan.parentId ? rows.find((row) => row.id === plan.parentId) : undefined;
+        if (parentRow && plan.itemIdsForParent.length > 0) {
+          await tx
+            .update(libraryFolders)
+            .set({
+              itemIds: JSON.stringify([...parseItemIds(parentRow.itemIds), ...plan.itemIdsForParent]),
+              updatedAt: timestamp,
+            })
+            .where(eq(libraryFolders.id, parentRow.id));
+        }
+        await tx.delete(libraryFolders).where(eq(libraryFolders.id, id));
+        return true;
+      });
     },
 
     async moveItems(scope: LibraryFolderScope, input: MoveLibraryItemsInput) {

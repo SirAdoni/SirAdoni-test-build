@@ -10,6 +10,7 @@ import {
   useRef,
   type ChangeEvent,
   type DragEvent,
+  type ReactNode,
   type TouchEvent,
 } from "react";
 import { toast } from "sonner";
@@ -24,9 +25,10 @@ import {
   ArrowUpDown,
   Tag,
   ChevronDown,
-  ChevronRight,
   ChevronUp,
+  Folder,
   FolderPlus,
+  Swords,
   X,
   Trash2,
   Camera,
@@ -57,11 +59,17 @@ import {
   useMoveLibraryItem,
   useUpdateLibraryFolder,
 } from "../../hooks/use-library-folders";
-import { handleFolderRenameKeyDown, useFolderRenameGesture } from "../../hooks/use-folder-rename-gesture";
 import { useTouchFolderDrag } from "../../hooks/use-touch-folder-drag";
 import { SelectionActionBar } from "../ui/SelectionActionBar";
-import { SmoothFolderContent } from "../ui/SmoothFolderContent";
 import { TouchDragHandle } from "../ui/TouchDragHandle";
+import { buildLibraryFolderView, type LibraryFolderNode } from "../../lib/library-folder-view";
+import { CAMPAIGN_FILTER_ALL, LibraryCampaignBar } from "./library/LibraryCampaignBar";
+import { LibraryCampaignBadges } from "./library/LibraryCampaignBadges";
+import { LibraryCampaignSections } from "./library/LibraryCampaignSections";
+import { LibraryFolderTree } from "./library/LibraryFolderTree";
+import { LibrarySelectionExtraActions } from "./library/LibrarySelectionExtraActions";
+import { useAutoLoadAllPages } from "./library/use-auto-load-all-pages";
+import { useLibraryOrganizer } from "./library/use-library-organizer";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { PanelLoadMoreBar } from "./PanelLoadMoreBar";
@@ -138,14 +146,11 @@ export function LorebooksPanel() {
   const [selectedLorebookIds, setSelectedLorebookIds] = useState<Set<string>>(new Set());
   const [exportingSelected, setExportingSelected] = useState(false);
   const isMobileOverlay = usePanelMobileOverlay();
-  const [expandedFolderId, setExpandedFolderId] = useState<string | null>(null);
-  const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
-  const [editFolderName, setEditFolderName] = useState("");
   const [draggedLorebookId, setDraggedLorebookId] = useState<string | null>(null);
   const lorebookImageInputRef = useRef<HTMLInputElement>(null);
   const imageTargetLorebookIdRef = useRef<string | null>(null);
   const suppressLorebookClickRef = useRef(false);
-  const handleFolderRenameGesture = useFolderRenameGesture();
+  const organizer = useLibraryOrganizer("lorebooks", "lorebook");
 
   // Active chat context for the "Active" filter
   const activeChat = useChatStore((s) => s.activeChat);
@@ -167,6 +172,8 @@ export function LorebooksPanel() {
     category: activeCategory === "active" || activeCategory === "all" ? undefined : activeCategory,
     search: searchQuery,
     sort,
+    campaign: organizer.serverCampaignParam,
+    campaignRevision: organizer.serverCampaignRevision,
     active:
       activeCategory === "active"
         ? {
@@ -322,15 +329,30 @@ export function LorebooksPanel() {
   }, [filtered, sort]);
 
   const lorebookById = useMemo(() => new Map(sorted.map((lorebook) => [lorebook.id, lorebook])), [sorted]);
-  const folderFilterActive = searchQuery.trim().length > 0 || activeCategory !== "all" || activeTag !== null;
+  const folderFilterActive =
+    searchQuery.trim().length > 0 ||
+    activeCategory !== "all" ||
+    activeTag !== null ||
+    organizer.campaignFilter !== CAMPAIGN_FILTER_ALL;
 
-  const folderedLorebookIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const folder of lorebookFolders) {
-      for (const id of folder.itemIds) ids.add(id);
-    }
-    return ids;
-  }, [lorebookFolders]);
+  const folderNodes = useMemo<LibraryFolderNode[]>(
+    () =>
+      lorebookFolders.map((folder) => ({
+        id: folder.id,
+        name: folder.name,
+        parentId: folder.parentId ?? null,
+        itemIds: folder.itemIds,
+      })),
+    [lorebookFolders],
+  );
+  const folderView = useMemo(
+    () => buildLibraryFolderView(folderNodes, (id) => lorebookById.has(id), folderFilterActive),
+    [folderNodes, lorebookById, folderFilterActive],
+  );
+  const folderedLorebookIds = folderView.folderedItemIds;
+  const showFolderPaths = searchQuery.trim().length > 0;
+  // Grouping by campaign needs every lorebook, not just the first page.
+  useAutoLoadAllPages(lorebookPages, organizer.groupByCampaign);
 
   const rootLorebooks = useMemo(
     () => sorted.filter((lorebook) => !folderedLorebookIds.has(lorebook.id)),
@@ -565,25 +587,72 @@ export function LorebooksPanel() {
     [uploadLorebookImage, localizeUi],
   );
 
-  const handleCreateFolder = useCallback(() => {
-    createLorebookFolder.mutate(
-      { name: getNextUnnamedLibraryFolderName(lorebookFolders) },
-      {
-        onSuccess: (folder) => {
-          setExpandedFolderId(folder.id);
+  const { setFolderExpanded, openMovePicker } = organizer;
+  const showFolderError = useCallback(
+    (error: unknown) =>
+      toast.error(error instanceof Error ? error.message : localizeUi("ui.panels.libraryorganize.couldNotMoveFolder")),
+    [localizeUi],
+  );
+
+  const handleCreateFolder = useCallback(
+    (parentId: string | null = null) => {
+      createLorebookFolder.mutate(
+        { name: getNextUnnamedLibraryFolderName(lorebookFolders), parentId },
+        {
+          onSuccess: (folder) => {
+            if (parentId) setFolderExpanded(parentId, true);
+            setFolderExpanded(folder.id, true);
+          },
+          onError: showFolderError,
         },
-      },
-    );
-  }, [createLorebookFolder, lorebookFolders]);
+      );
+    },
+    [createLorebookFolder, lorebookFolders, setFolderExpanded, showFolderError],
+  );
 
   const handleRenameFolder = useCallback(
-    (folderId: string) => {
-      const name = editFolderName.trim();
-      if (name) updateLorebookFolder.mutate({ id: folderId, name });
-      setEditingFolderId(null);
-      setEditFolderName("");
+    (folderId: string, name: string) => updateLorebookFolder.mutate({ id: folderId, name }),
+    [updateLorebookFolder],
+  );
+
+  const handleMoveFolder = useCallback(
+    (folderId: string, parentId: string | null) =>
+      updateLorebookFolder.mutate({ id: folderId, parentId }, { onError: showFolderError }),
+    [showFolderError, updateLorebookFolder],
+  );
+
+  const handleDeleteFolder = useCallback(
+    (folder: LibraryFolderNode) => {
+      const parent = folder.parentId ? folderNodes.find((candidate) => candidate.id === folder.parentId) : undefined;
+      const subfolderCount = folderView.tree.childrenByParent.get(folder.id)?.length ?? 0;
+      void confirmNonEmptyFolderDelete(folder.itemIds.length + subfolderCount, {
+        title: localizeUi("ui.panels.backgroundpicker.deleteFolder"),
+        message: parent
+          ? localizeUi("ui.panels.libraryorganize.deleteFolderValue1ContentsMoveToValue2", {
+              value1: folder.name,
+              value2: parent.name,
+            })
+          : localizeUi("ui.panels.libraryorganize.deleteFolderValue1ContentsMoveToTopLevel", { value1: folder.name }),
+        confirmLabel: localizeUi("lorebook.editor.batch.delete"),
+        tone: "destructive",
+      }).then((ok) => {
+        if (!ok) return;
+        deleteLorebookFolder.mutate(folder.id);
+        setFolderExpanded(folder.id, false);
+      });
     },
-    [editFolderName, updateLorebookFolder],
+    [deleteLorebookFolder, folderNodes, folderView, localizeUi, setFolderExpanded],
+  );
+
+  const requestMoveFolder = useCallback(
+    (folder: LibraryFolderNode) =>
+      openMovePicker(folderNodes, folderView, {
+        title: localizeUi("ui.panels.libraryorganize.moveValue1To", { value1: folder.name }),
+        movingFolderId: folder.id,
+        currentFolderId: folder.parentId,
+        onPick: (parentId) => handleMoveFolder(folder.id, parentId),
+      }),
+    [folderNodes, folderView, handleMoveFolder, localizeUi, openMovePicker],
   );
 
   const getDraggedLorebookIds = useCallback(
@@ -647,13 +716,22 @@ export function LorebooksPanel() {
   });
 
   const renderLorebookRow = useCallback(
-    (lb: LorebookListItem) => {
+    (lb: LorebookListItem, section?: { rowKey: string; campaignId: string }) => {
       const combinedNames = [...getCharacterNames(lb), ...getPersonaNames(lb)].join(", ") || undefined;
       return (
         <LorebookRow
-          key={lb.id}
+          key={section?.rowKey ?? lb.id}
           lorebook={lb}
           characterName={combinedNames}
+          folderPath={showFolderPaths ? folderView.pathByItemId.get(lb.id) : undefined}
+          campaignBadges={
+            <LibraryCampaignBadges
+              campaigns={organizer.membership.get(lb.id)}
+              hideCampaignId={section?.campaignId ?? organizer.filteredCampaignId}
+              onSelect={organizer.setCampaignFilter}
+            />
+          }
+          onCampaigns={organizer.campaignsAvailable ? () => organizer.openCampaignPicker([lb.id]) : undefined}
           onClick={() => {
             if (suppressLorebookClickRef.current) return;
             if (selectionMode) toggleSelection(lb.id);
@@ -734,8 +812,34 @@ export function LorebooksPanel() {
       startLorebookTouchDrag,
       toggleSelection,
       localizeUi,
+      showFolderPaths,
+      folderView,
+      organizer,
     ],
   );
+
+  const handleMoveSelected = useCallback(() => {
+    const ids = [...selectedLorebookIds];
+    if (ids.length === 0) return;
+    const holders = new Set(ids.map((id) => folderNodes.find((folder) => folder.itemIds.includes(id))?.id ?? null));
+    openMovePicker(folderNodes, folderView, {
+      title: localizeUi("ui.panels.libraryorganize.moveLorebooks", { count: ids.length }),
+      movingFolderId: null,
+      currentFolderId: holders.size === 1 ? [...holders][0] : undefined,
+      onPick: (folderId) => {
+        moveLorebooksToFolder(ids, folderId);
+        exitSelectionMode();
+      },
+    });
+  }, [
+    exitSelectionMode,
+    folderNodes,
+    folderView,
+    localizeUi,
+    moveLorebooksToFolder,
+    openMovePicker,
+    selectedLorebookIds,
+  ]);
 
   return (
     <div className="flex min-h-full flex-col gap-2 p-3">
@@ -813,10 +917,18 @@ export function LorebooksPanel() {
         </div>
       </div>
 
+      <LibraryCampaignBar
+        campaigns={organizer.campaigns}
+        value={organizer.campaignFilter}
+        onChange={organizer.setCampaignFilter}
+        groupByCampaign={organizer.groupByCampaign}
+        onGroupByCampaignChange={organizer.setGroupByCampaign}
+      />
+
       <div className="flex flex-col gap-0.5">
         <div className="flex items-center gap-1">
           <button
-            onClick={handleCreateFolder}
+            onClick={() => handleCreateFolder()}
             className="mari-chrome-control mari-chrome-control--small flex-1 justify-start text-[0.6875rem]"
           >
             <FolderPlus size="0.75rem" />
@@ -969,152 +1081,34 @@ export function LorebooksPanel() {
         </div>
       )}
 
-      <div className="flex flex-col gap-0.5">
-        {lorebookFolders.map((folder) => {
-          const isEditing = editingFolderId === folder.id;
-          const folderItems = folder.itemIds
-            .map((id) => lorebookById.get(id))
-            .filter((item): item is LorebookListItem => Boolean(item));
-          if (folderFilterActive && folderItems.length === 0) return null;
-          const isExpanded = (folderFilterActive && folderItems.length > 0) || expandedFolderId === folder.id;
-          return (
-            <div
-              key={folder.id}
-              data-lorebook-folder-id={folder.id}
-              onDragOver={(event) => {
-                if (draggedLorebookId) {
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = "move";
-                }
-              }}
-              onDrop={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                const payload = event.dataTransfer.getData("application/x-marinara-lorebook-ids");
-                handleLorebookDrop(folder.id, payload ? (JSON.parse(payload) as string[]) : undefined);
-              }}
-              className="flex flex-col rounded-lg transition-colors"
-            >
-              <div
-                role="button"
-                tabIndex={0}
-                aria-expanded={isExpanded}
-                aria-label={localizeUi("ui.panels.agentspanel.value1FolderValue2DoubleTapOrPressF2To", {
-                  value1: isExpanded
-                    ? localizeUi("ui.panels.ttsconfigcard.collapse")
-                    : localizeUi("ui.panels.ttsconfigcard.expand"),
-                  value2: folder.name,
-                })}
-                title={localizeUi("ui.panels.backgroundpicker.doubleClickDoubleTapOrPressF2ToRename")}
-                className="group relative flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 transition-all hover:bg-[var(--sidebar-accent)]/40 max-md:pr-12 [@media(pointer:coarse)]:pr-12"
-                onClick={(event) =>
-                  handleFolderRenameGesture(folder.id, event, {
-                    onSingleClick: () => setExpandedFolderId(isExpanded ? null : folder.id),
-                    onRename: () => {
-                      setEditingFolderId(folder.id);
-                      setEditFolderName(folder.name);
-                    },
-                  })
-                }
-                onKeyDown={(event) => {
-                  if (event.target !== event.currentTarget) return;
-                  handleFolderRenameKeyDown(event, {
-                    onSingleClick: () => setExpandedFolderId(isExpanded ? null : folder.id),
-                    onRename: () => {
-                      setEditingFolderId(folder.id);
-                      setEditFolderName(folder.name);
-                    },
-                  });
-                }}
-              >
-                <ChevronRight
-                  size="0.75rem"
-                  className={cn(
-                    "mari-chrome-accent-icon mari-accent-animated shrink-0 transition-transform duration-200 ease-out",
-                    isExpanded && "rotate-90",
-                  )}
-                />
-                <div className="min-w-0 flex-1">
-                  {isEditing ? (
-                    <input
-                      autoFocus
-                      value={editFolderName}
-                      onChange={(event) => setEditFolderName(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") event.currentTarget.blur();
-                        if (event.key === "Escape") {
-                          setEditingFolderId(null);
-                          setEditFolderName("");
-                        }
-                      }}
-                      onClick={(event) => event.stopPropagation()}
-                      onBlur={() => handleRenameFolder(folder.id)}
-                      className="w-full rounded bg-transparent px-1 py-0.5 text-xs font-medium outline-none ring-1 ring-amber-400/30"
-                    />
-                  ) : (
-                    <div className="mari-chrome-text-muted truncate text-xs font-medium">{folder.name}</div>
-                  )}
-                </div>
-                {(folderFilterActive ? folderItems.length : folder.itemIds.length) > 0 && (
-                  <span
-                    data-folder-item-count="inline"
-                    className="shrink-0 text-[0.5625rem] text-[var(--muted-foreground)] max-md:hidden [@media(pointer:coarse)]:hidden"
-                  >
-                    {folderFilterActive ? folderItems.length : folder.itemIds.length}
-                  </span>
-                )}
-                <div
-                  data-folder-actions
-                  className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
-                >
-                  {(folderFilterActive ? folderItems.length : folder.itemIds.length) > 0 && (
-                    <span
-                      data-folder-item-count="actions"
-                      className="hidden px-1 text-[0.5625rem] text-[var(--muted-foreground)] max-md:inline [@media(pointer:coarse)]:inline"
-                    >
-                      {folderFilterActive ? folderItems.length : folder.itemIds.length}
-                    </span>
-                  )}
-                  <button
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void confirmNonEmptyFolderDelete(folder.itemIds.length, {
-                        title: "Delete Folder",
-                        message: `Delete "${folder.name}"? Its ${folder.itemIds.length} lorebook${
-                          folder.itemIds.length === 1 ? "" : "s"
-                        } will move out of the folder.`,
-                        confirmLabel: "Delete",
-                        tone: "destructive",
-                      }).then((ok) => {
-                        if (!ok) return;
-                        deleteLorebookFolder.mutate(folder.id);
-                        if (expandedFolderId === folder.id) setExpandedFolderId(null);
-                      });
-                    }}
-                    className="mari-chrome-control mari-chrome-control--small p-1"
-                    title={localizeUi("ui.panels.backgroundpicker.deleteFolder")}
-                  >
-                    <Trash2 size="0.6875rem" />
-                  </button>
-                </div>
-              </div>
-              <SmoothFolderContent
-                open={isExpanded}
-                className="ml-4 border-l border-[var(--border)]/20 pb-1 pl-1"
-                innerClassName="flex flex-col gap-0.5"
-              >
-                {folderItems.length === 0 ? (
-                  <p className="mari-chrome-text-muted py-2 text-[0.625rem] italic">
-                    {localizeUi("ui.panels.lorebookspanel.dropLorebooksHere")}
-                  </p>
-                ) : (
-                  folderItems.map((lb) => renderLorebookRow(lb))
-                )}
-              </SmoothFolderContent>
-            </div>
-          );
-        })}
-      </div>
+      {!organizer.groupByCampaign && (
+        <LibraryFolderTree
+          folders={folderNodes}
+          view={folderView}
+          filterActive={folderFilterActive}
+          expandedIds={organizer.expandedFolderIds}
+          onExpandedChange={organizer.setFolderExpanded}
+          isItemShown={(id) => lorebookById.has(id)}
+          renderItem={(id) => {
+            const lorebook = lorebookById.get(id);
+            return lorebook ? renderLorebookRow(lorebook) : null;
+          }}
+          folderIdAttribute="data-lorebook-folder-id"
+          folderDragType="application/x-marinara-lorebook-folder"
+          itemDragActive={draggedLorebookId !== null}
+          allowFolderDrag={!isMobileOverlay}
+          onItemDrop={(folderId, event) => {
+            const payload = event.dataTransfer.getData("application/x-marinara-lorebook-ids");
+            handleLorebookDrop(folderId, payload ? (JSON.parse(payload) as string[]) : undefined);
+          }}
+          onRename={handleRenameFolder}
+          onDelete={handleDeleteFolder}
+          onCreateSubfolder={(parentId) => handleCreateFolder(parentId)}
+          onMoveFolder={handleMoveFolder}
+          onRequestMoveFolder={requestMoveFolder}
+          emptyFolderText={localizeUi("ui.panels.lorebookspanel.dropLorebooksHere")}
+        />
+      )}
 
       {/* Loading */}
       {isLoading && (
@@ -1142,7 +1136,7 @@ export function LorebooksPanel() {
       {/* Lorebook list */}
       {!isLoading && sorted.length > 0 && (
         <>
-          {draggedLorebookId && (
+          {draggedLorebookId && !organizer.groupByCampaign && (
             <div
               data-lorebook-folder-root
               onDragOver={(event) => {
@@ -1161,22 +1155,40 @@ export function LorebooksPanel() {
           )}
 
           <div className="stagger-children flex min-h-8 flex-col gap-1 rounded-xl transition-colors">
-            {activeCategory === "all" && grouped
-              ? // Grouped view
-                Array.from(grouped.entries()).map(([category, books]) => {
-                  const catMeta = CATEGORIES.find((c) => c.id === category) ?? CATEGORIES[6];
-                  return (
-                    <div key={category} className="mb-2">
-                      <div className="mb-1 flex items-center gap-1.5 px-1 text-[0.6875rem] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
-                        {catMeta.label}
-                        <span className="ml-auto text-[0.625rem] font-normal">{books.length}</span>
-                      </div>
-                      {books.map((lb) => renderLorebookRow(lb))}
+            {organizer.groupByCampaign ? (
+              <LibraryCampaignSections
+                campaigns={
+                  organizer.filteredCampaignId
+                    ? organizer.campaigns.filter((campaign) => campaign.id === organizer.filteredCampaignId)
+                    : organizer.campaigns
+                }
+                items={sorted}
+                membership={organizer.membership}
+                collapsedIds={organizer.collapsedCampaignIds}
+                onToggle={organizer.setCampaignSectionCollapsed}
+                renderItem={(lb, sectionId) =>
+                  renderLorebookRow(lb, { rowKey: `${sectionId}:${lb.id}`, campaignId: sectionId })
+                }
+                showUnassigned={organizer.filteredCampaignId === null}
+              />
+            ) : activeCategory === "all" && grouped ? (
+              // Grouped view
+              Array.from(grouped.entries()).map(([category, books]) => {
+                const catMeta = CATEGORIES.find((c) => c.id === category) ?? CATEGORIES[6];
+                return (
+                  <div key={category} className="mb-2">
+                    <div className="mb-1 flex items-center gap-1.5 px-1 text-[0.6875rem] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
+                      {catMeta.label}
+                      <span className="ml-auto text-[0.625rem] font-normal">{books.length}</span>
                     </div>
-                  );
-                })
-              : // Flat view
-                rootLorebooks.map((lb) => renderLorebookRow(lb))}
+                    {books.map((lb) => renderLorebookRow(lb))}
+                  </div>
+                );
+              })
+            ) : (
+              // Flat view
+              rootLorebooks.map((lb) => renderLorebookRow(lb))
+            )}
           </div>
         </>
       )}
@@ -1196,11 +1208,21 @@ export function LorebooksPanel() {
         <SelectionActionBar
           placement="panel"
           selectedCount={selectedLorebookIds.size}
+          extraAction={
+            <LibrarySelectionExtraActions
+              disabled={selectedLorebookIds.size === 0}
+              onMove={folderNodes.length > 0 ? handleMoveSelected : undefined}
+              onCampaigns={
+                organizer.campaignsAvailable ? () => organizer.openCampaignPicker([...selectedLorebookIds]) : undefined
+              }
+            />
+          }
           onExport={() => void handleExportSelected()}
           onDelete={handleDeleteSelected}
           exporting={exportingSelected}
         />
       )}
+      {organizer.modals}
     </div>
   );
 }
@@ -1208,6 +1230,9 @@ export function LorebooksPanel() {
 function LorebookRow({
   lorebook,
   characterName,
+  folderPath,
+  campaignBadges,
+  onCampaigns,
   onClick,
   onDelete,
   onDuplicate,
@@ -1223,6 +1248,10 @@ function LorebookRow({
 }: {
   lorebook: Lorebook;
   characterName?: string;
+  /** Folder breadcrumb, shown while searching. */
+  folderPath?: string;
+  campaignBadges?: ReactNode;
+  onCampaigns?: () => void;
   onClick: () => void;
   onDelete: () => void;
   onDuplicate: () => void;
@@ -1324,31 +1353,59 @@ function LorebookRow({
         </button>
       )}
       <div className={cn("min-w-0 flex-1", !selectionMode && "pr-0 max-md:pr-24 [@media(pointer:coarse)]:pr-24")}>
-        <div className="flex items-center gap-1.5">
-          <span className="truncate text-sm font-medium">{lorebook.name}</span>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="min-w-0 truncate text-sm font-medium">{lorebook.name}</span>
           {!lorebook.enabled && (
-            <span className="rounded bg-[var(--muted)]/50 px-1 py-0.5 text-[0.5625rem] text-[var(--muted-foreground)]">
+            <span className="shrink-0 rounded bg-[var(--muted)]/50 px-1 py-0.5 text-[0.5625rem] text-[var(--muted-foreground)]">
               {localizeUi("ui.panels.lorebookrow.off")}
             </span>
           )}
         </div>
-        <div className="truncate text-[0.6875rem] text-[var(--muted-foreground)]">
-          {characterName ? (
-            <span className="inline-flex items-center gap-1">
-              <UserRound size="0.625rem" className="shrink-0" />
-              {characterName}
-              {lorebook.description ? localizeUi("ui.panels.lorebookrow.value1", { value1: lorebook.description }) : ""}
-            </span>
-          ) : (
-            lorebook.description || "No description"
-          )}
+        <div className="flex min-w-0 items-center gap-1 text-[0.6875rem] text-[var(--muted-foreground)]">
+          {campaignBadges}
+          <span className="min-w-0 truncate">
+            {characterName ? (
+              <span className="inline-flex items-center gap-1">
+                <UserRound size="0.625rem" className="shrink-0" />
+                {characterName}
+                {lorebook.description
+                  ? localizeUi("ui.panels.lorebookrow.value1", { value1: lorebook.description })
+                  : ""}
+              </span>
+            ) : (
+              lorebook.description || "No description"
+            )}
+          </span>
         </div>
+        {folderPath && (
+          <div
+            data-library-folder-path
+            className="flex min-w-0 items-center gap-1 text-[0.5625rem] text-[var(--muted-foreground)]"
+          >
+            <Folder size="0.5625rem" className="shrink-0" />
+            <span className="truncate">{folderPath}</span>
+          </div>
+        )}
       </div>
       {!selectionMode && (
         <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 flex shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
           <ChatResourceActionButton
             payload={{ version: 1, kind: "lorebook", ids: [lorebook.id], label: lorebook.name }}
           />
+          {onCampaigns && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onCampaigns();
+              }}
+              // Touch layouts keep row actions always visible, so campaigns stay in selection mode there.
+              className="mari-chrome-control mari-chrome-control--small p-1.5 max-md:hidden [@media(pointer:coarse)]:hidden"
+              title={localizeUi("ui.panels.libraryorganize.campaigns")}
+              aria-label={localizeUi("ui.panels.libraryorganize.campaigns")}
+            >
+              <Swords size="0.75rem" />
+            </button>
+          )}
           <button
             onClick={(e) => {
               e.stopPropagation();

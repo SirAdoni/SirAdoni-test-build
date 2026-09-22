@@ -20,6 +20,8 @@ type CatalogOptions = {
   sort?: string;
   favoriteFilter?: string;
   category?: "characters" | "npcs";
+  /** Restrict to (include) or leave out (exclude) these character ids, e.g. for a campaign filter. */
+  ids?: { include?: string[]; exclude?: string[] };
   limit: number;
   offset: number;
 };
@@ -145,6 +147,14 @@ export function createCharacterCatalog(db: DB) {
       if (options.favoriteFilter === "non-favorites") entries = entries.filter((item) => !item.favorite);
       if (options.category === "characters" || options.category === "npcs") {
         entries = entries.filter((item) => item.libraryCategory === options.category);
+      }
+      if (options.ids?.include) {
+        const include = new Set(options.ids.include);
+        entries = entries.filter((item) => include.has(item.id));
+      }
+      if (options.ids?.exclude && options.ids.exclude.length > 0) {
+        const exclude = new Set(options.ids.exclude);
+        entries = entries.filter((item) => !exclude.has(item.id));
       }
       entries = sortEntries(entries, options.sort ?? "");
       const page = entries.slice(options.offset, options.offset + options.limit + 1);

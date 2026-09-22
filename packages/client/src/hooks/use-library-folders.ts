@@ -15,6 +15,8 @@ export type LibraryFolder = {
   collapsed: boolean;
   sortOrder: number;
   itemIds: string[];
+  /** Parent folder for nested folders; null = root. Older servers omit it. */
+  parentId?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -121,7 +123,7 @@ export function useLibraryFolders(scope: LibraryFolderScope) {
 export function useCreateLibraryFolder(scope: LibraryFolderScope) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (data: { name: string }) => {
+    mutationFn: async (data: { name: string; parentId?: string | null }) => {
       return api.post<LibraryFolder>(`/library-folders/${scope}`, data);
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: libraryFolderKeys.list(scope) }),
@@ -131,7 +133,16 @@ export function useCreateLibraryFolder(scope: LibraryFolderScope) {
 export function useUpdateLibraryFolder(scope: LibraryFolderScope) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, ...data }: { id: string; name?: string; collapsed?: boolean; itemIds?: string[] }) => {
+    mutationFn: async ({
+      id,
+      ...data
+    }: {
+      id: string;
+      name?: string;
+      collapsed?: boolean;
+      itemIds?: string[];
+      parentId?: string | null;
+    }) => {
       return api.patch<LibraryFolder>(`/library-folders/${scope}/${id}`, data);
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: libraryFolderKeys.list(scope) }),

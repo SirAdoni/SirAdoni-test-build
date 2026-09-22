@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────
 // Storage: Lorebooks
 // ──────────────────────────────────────────────
-import { eq, desc, and, like, inArray, asc, or } from "../../db/file-query.js";
+import { eq, desc, and, like, inArray, notInArray, asc, or } from "../../db/file-query.js";
 import type { DB } from "../../db/connection.js";
 import {
   characters,
@@ -268,6 +268,8 @@ type LorebookListPageOptions = {
     personaId?: string | null;
     chatId?: string | null;
   };
+  /** Restrict to (include) or leave out (exclude) these lorebook ids, e.g. for a campaign filter. */
+  ids?: { include?: string[]; exclude?: string[] };
 };
 
 function likePattern(value: string | undefined) {
@@ -423,6 +425,14 @@ export function createLorebooksStorage(db: DB) {
     async listPage(options: LorebookListPageOptions) {
       const clauses = [eq(lorebooks.hiddenFromLibrary, "false")];
       if (options.category) clauses.push(eq(lorebooks.category, options.category));
+      if (options.ids?.include) {
+        clauses.push(
+          options.ids.include.length > 0 ? inArray(lorebooks.id, options.ids.include) : eq(lorebooks.id, ""),
+        );
+      }
+      if (options.ids?.exclude && options.ids.exclude.length > 0) {
+        clauses.push(notInArray(lorebooks.id, options.ids.exclude));
+      }
       const pattern = likePattern(options.search);
       if (pattern) {
         clauses.push(

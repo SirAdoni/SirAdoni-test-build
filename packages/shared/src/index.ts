@@ -73,6 +73,7 @@ export * from "./schemas/personal-extension.schema.js";
 export * from "./schemas/folder.schema.js";
 export * from "./schemas/scene-analysis.schema.js";
 export * from "./schemas/library-folder.schema.js";
+export * from "./schemas/library-campaign.schema.js";
 export * from "./schemas/home-widget.schema.js";
 export * from "./schemas/private-notebook.schema.js";
 
@@ -168,6 +169,7 @@ export * from "./utils/game-art-style.js";
 export * from "./utils/thinking-tags.js";
 export * from "./utils/rpg-stats.js";
 export * from "./utils/lorebook-folder-tree.js";
+export * from "./utils/library-folder-tree.js";
 export * from "./utils/text-matching.js";
 export * from "./utils/chat-search-query.js";
 export * from "./utils/chat-stats.js";

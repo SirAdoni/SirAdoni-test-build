@@ -11,6 +11,8 @@ export const libraryFolders = fileTable("library_folders", {
   sortOrder: integer("sort_order").notNull().default(0),
   /** JSON array of resource IDs assigned to this folder. */
   itemIds: text("item_ids").notNull().default("[]"),
+  /** Parent folder in the same scope for nested folders; null (or absent on older rows) = root. */
+  parentId: text("parent_id"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });

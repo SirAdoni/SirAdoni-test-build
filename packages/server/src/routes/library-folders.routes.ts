@@ -10,7 +10,7 @@ import {
   moveLibraryItemsSchema,
   updateLibraryFolderSchema,
 } from "@marinara-engine/shared";
-import { createLibraryFoldersStorage } from "../services/storage/library-folders.storage.js";
+import { createLibraryFoldersStorage, LibraryFolderTreeError } from "../services/storage/library-folders.storage.js";
 
 export async function libraryFoldersRoutes(app: FastifyInstance) {
   const storage = createLibraryFoldersStorage(app.db);
@@ -34,16 +34,27 @@ export async function libraryFoldersRoutes(app: FastifyInstance) {
     return reply.send({ ok: true });
   });
 
-  app.post("/:scope", async (req) => {
+  app.post("/:scope", async (req, reply) => {
     const { scope } = libraryFolderScopeParamsSchema.parse(req.params);
     const input = createLibraryFolderSchema.parse(req.body);
-    return storage.create(scope, input);
+    try {
+      return await storage.create(scope, input);
+    } catch (error) {
+      if (error instanceof LibraryFolderTreeError) return reply.status(400).send({ error: error.message });
+      throw error;
+    }
   });
 
   app.patch("/:scope/:id", async (req, reply) => {
     const { scope, id } = libraryFolderParamsSchema.parse(req.params);
     const input = updateLibraryFolderSchema.parse(req.body);
-    const folder = await storage.update(scope, id, input);
+    let folder;
+    try {
+      folder = await storage.update(scope, id, input);
+    } catch (error) {
+      if (error instanceof LibraryFolderTreeError) return reply.status(400).send({ error: error.message });
+      throw error;
+    }
     if (!folder) return reply.status(404).send({ error: "Folder not found" });
     return reply.send(folder);
   });

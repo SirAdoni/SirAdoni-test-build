@@ -18,8 +18,8 @@ export const lorebookKeys = {
   all: ["lorebooks"] as const,
   list: () => [...lorebookKeys.all, "list"] as const,
   byCategory: (cat: string) => [...lorebookKeys.all, "category", cat] as const,
-  page: (category: string, search: string, sort: string, activeKey: string) =>
-    [...lorebookKeys.list(), "page", category, search, sort, activeKey] as const,
+  page: (category: string, search: string, sort: string, activeKey: string, campaign = "") =>
+    [...lorebookKeys.list(), "page", category, search, sort, activeKey, campaign] as const,
   detail: (id: string) => [...lorebookKeys.all, "detail", id] as const,
   entries: (lorebookId: string) => [...lorebookKeys.all, "entries", lorebookId] as const,
   entry: (entryId: string) => [...lorebookKeys.all, "entry", entryId] as const,
@@ -50,6 +50,10 @@ export function useLorebookPages(options: {
   category?: string;
   search?: string;
   sort?: string;
+  /** Campaign id, or LIBRARY_CAMPAIGN_NONE for lorebooks in no campaign. */
+  campaign?: string;
+  /** Content key of the campaign filter membership; a change refetches the filtered pages. */
+  campaignRevision?: string;
   active?: {
     lorebookIds: string[];
     characterIds: string[];
@@ -69,8 +73,16 @@ export function useLorebookPages(options: {
       ].join("|")
     : "";
 
+  const campaign = options.campaign ?? "";
+
   return useInfiniteQuery({
-    queryKey: lorebookKeys.page(category, search, sort, activeKey),
+    queryKey: lorebookKeys.page(
+      category,
+      search,
+      sort,
+      activeKey,
+      campaign ? `${campaign}#${options.campaignRevision ?? ""}` : "",
+    ),
     initialPageParam: 0,
     queryFn: ({ pageParam }) => {
       const params = new URLSearchParams({
@@ -80,6 +92,7 @@ export function useLorebookPages(options: {
       if (category) params.set("category", category);
       if (search) params.set("search", search);
       if (sort) params.set("sort", sort);
+      if (campaign) params.set("campaign", campaign);
       if (options.active) {
         params.set("active", "true");
         if (options.active.lorebookIds.length > 0)

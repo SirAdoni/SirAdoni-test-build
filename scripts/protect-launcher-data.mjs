@@ -232,6 +232,7 @@ const SHARDED_TABLES = [
   "prompt_overrides",
   "installed_extensions",
   "library_folders",
+  "library_campaign_links",
   "mari_instructions",
   "mari_workspace_context",
   "generation_usage",

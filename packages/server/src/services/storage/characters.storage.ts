@@ -28,6 +28,7 @@ import { toPaginatedList } from "../../utils/list-pagination.js";
 import { getCharacterLibraryCategory } from "@marinara-engine/shared";
 import { withAvatarFileLifecycleLock } from "../image/avatar-file-lifecycle.js";
 import { deletePrivateNotebookRowsForCharacter } from "../private-notebook.service.js";
+import { assertCharacterGroupParent, removeCharacterGroupKeepingContents } from "./character-folders.js";
 
 function resolveTimestamps(overrides?: TimestampOverrides | null) {
   const normalized = normalizeTimestampOverrides(overrides);
@@ -1375,44 +1376,65 @@ export function createCharactersStorage(db: DB) {
       return rows[0] ?? null;
     },
 
-    async createGroup(name: string, description: string, characterIds: string[] = []) {
+    async createGroup(name: string, description: string, characterIds: string[] = [], parentId: string | null = null) {
       const id = newId();
       const timestamp = now();
-      await db.insert(characterGroups).values({
-        id,
-        name,
-        description,
-        characterIds: JSON.stringify(characterIds),
-        createdAt: timestamp,
-        updatedAt: timestamp,
+      // Parent check and insert share a transaction so a concurrent delete cannot orphan the new group.
+      await db.transaction(async (tx) => {
+        await assertCharacterGroupParent(tx, null, parentId);
+        await tx.insert(characterGroups).values({
+          id,
+          name,
+          description,
+          characterIds: JSON.stringify(characterIds),
+          parentId,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
       });
       return this.getGroupById(id);
     },
 
     async updateGroup(
       id: string,
-      updates: { name?: string; description?: string; characterIds?: string[]; avatarPath?: string | null },
+      updates: {
+        name?: string;
+        description?: string;
+        characterIds?: string[];
+        avatarPath?: string | null;
+        parentId?: string | null;
+      },
     ) {
       const update = async () => {
-        const existing = await this.getGroupById(id);
-        if (!existing) return null;
-        await db
-          .update(characterGroups)
-          .set({
-            ...(updates.name !== undefined && { name: updates.name }),
-            ...(updates.description !== undefined && { description: updates.description }),
-            ...(updates.characterIds !== undefined && { characterIds: JSON.stringify(updates.characterIds) }),
-            ...(updates.avatarPath !== undefined && { avatarPath: updates.avatarPath }),
-            updatedAt: now(),
-          })
-          .where(eq(characterGroups.id, id));
-        return this.getGroupById(id);
+        // Parent check and write share a transaction: two concurrent moves (A under B,
+        // B under A) would each pass the cycle check on their own and form a loop.
+        const updated = await db.transaction(async (tx) => {
+          const existing = await tx
+            .select({ id: characterGroups.id })
+            .from(characterGroups)
+            .where(eq(characterGroups.id, id));
+          if (existing.length === 0) return false;
+          if (updates.parentId !== undefined) await assertCharacterGroupParent(tx, id, updates.parentId);
+          await tx
+            .update(characterGroups)
+            .set({
+              ...(updates.name !== undefined && { name: updates.name }),
+              ...(updates.description !== undefined && { description: updates.description }),
+              ...(updates.characterIds !== undefined && { characterIds: JSON.stringify(updates.characterIds) }),
+              ...(updates.avatarPath !== undefined && { avatarPath: updates.avatarPath }),
+              ...(updates.parentId !== undefined && { parentId: updates.parentId }),
+              updatedAt: now(),
+            })
+            .where(eq(characterGroups.id, id));
+          return true;
+        });
+        return updated ? this.getGroupById(id) : null;
       };
       return updates.avatarPath !== undefined ? withAvatarFileLifecycleLock(update) : update();
     },
 
     async removeGroup(id: string) {
-      await db.delete(characterGroups).where(eq(characterGroups.id, id));
+      await removeCharacterGroupKeepingContents(db, id);
     },
 
     // ── Persona Groups ──

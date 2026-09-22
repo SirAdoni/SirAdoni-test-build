@@ -116,6 +116,10 @@ export function useCharacterPages(options: {
   search?: string;
   sort?: string;
   favoriteFilter?: string;
+  /** Campaign id, or LIBRARY_CAMPAIGN_NONE for characters in no campaign. */
+  campaign?: string;
+  /** Content key of the campaign filter membership; a change refetches the filtered pages. */
+  campaignRevision?: string;
 }) {
   const enabled = options.enabled ?? true;
   const includeBuiltIn = options.includeBuiltIn === true;
@@ -124,7 +128,11 @@ export function useCharacterPages(options: {
   const favoriteFilter = options.favoriteFilter ?? "";
 
   return useInfiniteQuery({
-    queryKey: [...characterKeys.page(includeBuiltIn, search, sort, favoriteFilter), options.category ?? "all"],
+    queryKey: [
+      ...characterKeys.page(includeBuiltIn, search, sort, favoriteFilter),
+      options.category ?? "all",
+      options.campaign ? `${options.campaign}#${options.campaignRevision ?? ""}` : "",
+    ],
     initialPageParam: 0,
     queryFn: ({ pageParam, signal }) => {
       const params = new URLSearchParams({
@@ -136,6 +144,7 @@ export function useCharacterPages(options: {
       if (sort) params.set("sort", sort);
       if (favoriteFilter) params.set("favoriteFilter", favoriteFilter);
       if (options.category && options.category !== "all") params.set("category", options.category);
+      if (options.campaign) params.set("campaign", options.campaign);
       return api.get<CharacterCatalogPage>(`/characters/catalog?${params.toString()}`, { signal });
     },
     getNextPageParam: getNextPageOffset,
@@ -1361,7 +1370,7 @@ export function useCharacterGroups() {
 export function useCreateGroup() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { name: string; description?: string; characterIds?: string[] }) =>
+    mutationFn: (data: { name: string; description?: string; characterIds?: string[]; parentId?: string | null }) =>
       api.post("/characters/groups", data),
     onSuccess: () => qc.invalidateQueries({ queryKey: characterKeys.groups }),
   });
@@ -1370,8 +1379,16 @@ export function useCreateGroup() {
 export function useUpdateGroup() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, ...data }: { id: string; name?: string; description?: string; characterIds?: string[] }) =>
-      api.patch(`/characters/groups/${id}`, data),
+    mutationFn: ({
+      id,
+      ...data
+    }: {
+      id: string;
+      name?: string;
+      description?: string;
+      characterIds?: string[];
+      parentId?: string | null;
+    }) => api.patch(`/characters/groups/${id}`, data),
     onSuccess: () => qc.invalidateQueries({ queryKey: characterKeys.groups }),
   });
 }

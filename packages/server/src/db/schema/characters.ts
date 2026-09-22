@@ -120,6 +120,8 @@ export const characterGroups = fileTable("character_groups", {
   avatarPath: text("avatar_path"),
   /** JSON array of character IDs */
   characterIds: text("character_ids").notNull().default("[]"),
+  /** Parent group when the group is nested as a character folder; null (or absent on older rows) = root. */
+  parentId: text("parent_id"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });

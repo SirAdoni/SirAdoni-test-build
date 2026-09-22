@@ -64,6 +64,7 @@ import { normalizeTimestampOverrides } from "../services/import/import-timestamp
 import { DATA_DIR } from "../utils/data-dir.js";
 import { assertInsideDir, extensionFromImageMime, isAllowedImageBuffer } from "../utils/security.js";
 import { parseLibraryPageQuery } from "../utils/list-pagination.js";
+import { resolveLibraryCampaignFilter } from "./library-campaigns.routes.js";
 import AdmZip from "adm-zip";
 
 const LOREBOOK_IMAGES_DIR = join(DATA_DIR, "lorebooks", "images");
@@ -424,6 +425,7 @@ export async function lorebooksRoutes(app: FastifyInstance) {
         search: page.search,
         sort: page.sort,
         category: query.category,
+        ids: await resolveLibraryCampaignFilter(app.db, "lorebook", query.campaign),
         active:
           query.active === "true"
             ? {

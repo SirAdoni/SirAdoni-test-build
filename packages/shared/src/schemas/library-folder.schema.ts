@@ -31,6 +31,8 @@ export const libraryFolderParamsSchema = libraryFolderScopeParamsSchema.extend({
 
 export const createLibraryFolderSchema = z.object({
   name: z.string().trim().min(1).max(200),
+  /** Parent folder for a nested folder; omitted or null creates a root folder. */
+  parentId: libraryFolderIdSchema.nullable().optional(),
 });
 
 export const updateLibraryFolderSchema = z.object({
@@ -38,6 +40,8 @@ export const updateLibraryFolderSchema = z.object({
   collapsed: z.boolean().optional(),
   sortOrder: z.number().int().nonnegative().optional(),
   itemIds: libraryFolderItemIdsSchema.optional(),
+  /** Move the folder under another folder, or to the root with null. */
+  parentId: libraryFolderIdSchema.nullable().optional(),
 });
 
 export const moveLibraryItemsSchema = z.object({

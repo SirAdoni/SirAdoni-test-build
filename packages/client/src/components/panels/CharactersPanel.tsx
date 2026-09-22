@@ -26,7 +26,7 @@ import {
   useDuplicateCharacter,
 } from "../../hooks/use-characters";
 import { api } from "../../lib/api-client";
-import { confirmNonEmptyFolderDelete, showChoiceDialog, showConfirmDialog } from "../../lib/app-dialogs";
+import { confirmNonEmptyFolderDelete, showConfirmDialog } from "../../lib/app-dialogs";
 import {
   Plus,
   Trash2,
@@ -34,10 +34,9 @@ import {
   User,
   Check,
   Search,
+  Folder,
   FolderPlus,
-  FolderInput,
   ChevronDown,
-  ChevronRight,
   Copy,
   Users,
   X,
@@ -59,26 +58,41 @@ import {
   parseCardLibrarySearchQuery,
 } from "../../lib/card-library-search";
 import { useUIStore, type CharacterLibrarySort } from "../../stores/ui.store";
-import { handleFolderRenameKeyDown, useFolderRenameGesture } from "../../hooks/use-folder-rename-gesture";
 import { useTouchFolderDrag } from "../../hooks/use-touch-folder-drag";
 import { normalizeAvatarCrop } from "@marinara-engine/shared";
 import type { CharacterCatalogEntry } from "@marinara-engine/shared";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { formatEstimatedTokens } from "../../lib/character-token-count";
 import { SelectionActionBar } from "../ui/SelectionActionBar";
-import { SmoothFolderContent } from "../ui/SmoothFolderContent";
 import { TouchDragHandle } from "../ui/TouchDragHandle";
+import { buildLibraryFolderView, type LibraryFolderNode } from "../../lib/library-folder-view";
+import { CAMPAIGN_FILTER_ALL, LibraryCampaignBar } from "./library/LibraryCampaignBar";
+import { LibraryCampaignBadges } from "./library/LibraryCampaignBadges";
+import { LibraryCampaignSections } from "./library/LibraryCampaignSections";
+import { LibraryFolderTree } from "./library/LibraryFolderTree";
+import { LibrarySelectionExtraActions } from "./library/LibrarySelectionExtraActions";
+import { useAutoLoadAllPages } from "./library/use-auto-load-all-pages";
+import { useLibraryOrganizer } from "./library/use-library-organizer";
 import { PanelLoadMoreBar } from "./PanelLoadMoreBar";
 import { clearActiveChatResourceDrag, writeChatResourceDragPayload } from "../../lib/chat-resource-drag";
 import { ChatResourceActionButton } from "../chat/ChatResourceActionButton";
 import { CharacterPhoto } from "../ui/CharacterPhoto";
+import { AvatarImage } from "../characters/AvatarImage";
 import { CharacterCategoryFilter } from "../characters/CharacterCategoryFilter";
 import { CharacterDuplicatesModal } from "../characters/CharacterDuplicatesModal";
 import { CharacterBulkTagsModal } from "../characters/CharacterBulkTagsModal";
 import type { CharacterLibraryCategory } from "@marinara-engine/shared";
 
 type CharacterRow = CharacterCatalogEntry;
-type GroupRow = { id: string; name: string; description: string; characterIds: string; avatarPath: string | null };
+type GroupRow = {
+  id: string;
+  name: string;
+  description: string;
+  characterIds: string;
+  avatarPath: string | null;
+  /** Parent group when this character folder is nested; null or absent = root. */
+  parentId?: string | null;
+};
 type ParsedCharacterRow = CharacterRow & { parsed: Record<string, any> };
 type ParsedGroupRow = GroupRow & { memberIds: string[] };
 
@@ -197,31 +211,29 @@ export function CharactersPanel() {
   const serverSearch = useMemo(() => parseCardLibrarySearchQuery(deferredSearch).text, [deferredSearch]);
   const serverFavoriteFilter = favFilter === "favorites" || favFilter === "non-favorites" ? favFilter : "";
   const [category, setCategory] = useState<CharacterLibraryCategory | "all">("characters");
+  const organizer = useLibraryOrganizer("characters", "character");
   const characterPages = useCharacterPages({
     search: serverSearch,
     sort,
     favoriteFilter: serverFavoriteFilter,
     category,
+    campaign: organizer.serverCampaignParam,
+    campaignRevision: organizer.serverCampaignRevision,
   });
   const characters = useMemo(() => flattenCharacterPages(characterPages.data), [characterPages.data]);
   const isLoading = characterPages.isLoading;
 
-  const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
-  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
-  const [editGroupName, setEditGroupName] = useState("");
   const [draggedCharacterId, setDraggedCharacterId] = useState<string | null>(null);
   const panelScrollRef = useRef<HTMLDivElement | null>(null);
   const pendingPanelScrollTopRef = useRef(0);
   const panelScrollFrameRef = useRef<number | null>(null);
   const suppressCharacterClickRef = useRef(false);
   const isMobileOverlay = usePanelMobileOverlay();
-  const handleFolderRenameGesture = useFolderRenameGesture();
   const includedTags = useMemo(() => new Set(includedTagValues), [includedTagValues]);
   const excludedTags = useMemo(() => new Set(excludedTagValues), [excludedTagValues]);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedCharacterIds, setSelectedCharacterIds] = useState<Set<string>>(new Set());
   const [exportingSelected, setExportingSelected] = useState(false);
-  const [movingSelected, setMovingSelected] = useState(false);
   const [duplicatesOpen, setDuplicatesOpen] = useState(false);
   const [bulkTagsOpen, setBulkTagsOpen] = useState(false);
 
@@ -341,9 +353,8 @@ export function CharactersPanel() {
         return;
       }
       try {
-        const allCharacters = (await fetchAllCharacterPages({ sort })).map((char) =>
-          parseCharacterRow(char as CharacterRow),
-        );
+        // Catalog rows carry the parsed tag list; raw /characters rows only hold it inside the data string.
+        const allCharacters = (await fetchAllCharacterPages({ sort })).map(parseCharacterRow);
         const affected = allCharacters.filter((c) => getCharacterTags(c).includes(tag));
         for (const c of affected) {
           const newTags = getCharacterTags(c).filter((t) => t !== tag);
@@ -482,23 +493,46 @@ export function CharactersPanel() {
     });
   }, [groups]);
 
-  const folderedCharacterIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const folder of parsedGroups) {
-      for (const id of folder.memberIds) ids.add(id);
-    }
-    return ids;
-  }, [parsedGroups]);
   const visibleCharacterById = useMemo(
     () => new Map(sortedCharacters.map((character) => [character.id, character])),
     [sortedCharacters],
   );
-  const folderFilterActive =
-    category !== "all" ||
+  // The category is always set by default, so it only narrows folder members; it must not hide
+  // empty folders or force folders open the way an explicit search/tag/favourite/campaign filter does.
+  const userFolderFilterActive =
     search.trim().length > 0 ||
     includedTags.size > 0 ||
     excludedTags.size > 0 ||
-    favFilter !== "all";
+    favFilter !== "all" ||
+    organizer.campaignFilter !== CAMPAIGN_FILTER_ALL;
+  const folderFilterActive = category !== "all" || userFolderFilterActive;
+  const folderNodes = useMemo<LibraryFolderNode[]>(
+    () =>
+      parsedGroups.map((group) => ({
+        id: group.id,
+        name: group.name,
+        parentId: group.parentId ?? null,
+        itemIds: group.memberIds,
+      })),
+    [parsedGroups],
+  );
+  const isFolderMemberShown = useCallback(
+    (id: string) => (folderFilterActive ? visibleCharacterById.has(id) : charMap.has(id)),
+    [charMap, folderFilterActive, visibleCharacterById],
+  );
+  const folderView = useMemo(
+    () => buildLibraryFolderView(folderNodes, isFolderMemberShown, userFolderFilterActive),
+    [folderNodes, isFolderMemberShown, userFolderFilterActive],
+  );
+  const folderedCharacterIds = folderView.folderedItemIds;
+  const showFolderPaths = search.trim().length > 0;
+  // Grouping by campaign and tag filtering (tags are matched in the browser, as is the full tag
+  // list) need every page of the current server results, not just the first page.
+  const tagFilterActive = includedTags.size > 0 || excludedTags.size > 0;
+  useAutoLoadAllPages(
+    characterPages,
+    (organizer.groupByCampaign || tagFilterActive || tagsExpanded) && !characterPages.isFetchNextPageError,
+  );
 
   const visibleRootCharacters = useMemo(
     () => sortedCharacters.filter((char) => !folderedCharacterIds.has(char.id)),
@@ -555,36 +589,74 @@ export function CharactersPanel() {
     [],
   );
 
-  const handleCreateFolder = useCallback(() => {
-    createGroup.mutate({ name: getNextUnnamedFolderName(parsedGroups), characterIds: [] });
-  }, [createGroup, parsedGroups]);
+  const { setFolderExpanded, openMovePicker } = organizer;
+  const showFolderError = useCallback(
+    (error: unknown) =>
+      toast.error(error instanceof Error ? error.message : localizeUi("ui.panels.libraryorganize.couldNotMoveFolder")),
+    [localizeUi],
+  );
+
+  const handleCreateFolder = useCallback(
+    (parentId: string | null = null) => {
+      createGroup.mutate(
+        { name: getNextUnnamedFolderName(parsedGroups), characterIds: [], parentId },
+        {
+          onSuccess: (group) => {
+            if (parentId) setFolderExpanded(parentId, true);
+            const createdId = (group as { id?: unknown } | null)?.id;
+            if (typeof createdId === "string") setFolderExpanded(createdId, true);
+          },
+          onError: showFolderError,
+        },
+      );
+    },
+    [createGroup, parsedGroups, setFolderExpanded, showFolderError],
+  );
 
   const handleRenameGroup = useCallback(
-    (groupId: string) => {
-      const name = editGroupName.trim();
-      if (name) updateGroup.mutate({ id: groupId, name });
-      setEditingGroupId(null);
-      setEditGroupName("");
-    },
-    [editGroupName, updateGroup],
+    (groupId: string, name: string) => updateGroup.mutate({ id: groupId, name }),
+    [updateGroup],
+  );
+
+  const handleMoveFolder = useCallback(
+    (groupId: string, parentId: string | null) =>
+      updateGroup.mutate({ id: groupId, parentId }, { onError: showFolderError }),
+    [showFolderError, updateGroup],
   );
 
   const handleDeleteGroup = useCallback(
-    async (group: ParsedGroupRow) => {
-      const memberCount = group.memberIds.length;
-      const ok = await confirmNonEmptyFolderDelete(memberCount, {
-        title: "Delete Folder",
-        message: `Delete "${group.name}"? Its ${memberCount} character${
-          memberCount === 1 ? "" : "s"
-        } will stay in the library and move out of the folder.`,
-        confirmLabel: "Delete",
+    async (folder: LibraryFolderNode) => {
+      const parent = folder.parentId ? folderNodes.find((candidate) => candidate.id === folder.parentId) : undefined;
+      const subfolderCount = folderView.tree.childrenByParent.get(folder.id)?.length ?? 0;
+      const ok = await confirmNonEmptyFolderDelete(folder.itemIds.length + subfolderCount, {
+        title: localizeUi("ui.panels.backgroundpicker.deleteFolder"),
+        // Characters are not merged into the parent: every folder is also a chat setup
+        // group preset, and deleting a subfolder must not change the parent preset.
+        message: parent
+          ? localizeUi("ui.panels.libraryorganize.deleteCharacterFolderValue1SubfoldersMoveToValue2", {
+              value1: folder.name,
+              value2: parent.name,
+            })
+          : localizeUi("ui.panels.libraryorganize.deleteFolderValue1ContentsMoveToTopLevel", { value1: folder.name }),
+        confirmLabel: localizeUi("lorebook.editor.batch.delete"),
         tone: "destructive",
       });
       if (!ok) return;
-      deleteGroup.mutate(group.id);
-      if (expandedGroupId === group.id) setExpandedGroupId(null);
+      deleteGroup.mutate(folder.id);
+      setFolderExpanded(folder.id, false);
     },
-    [deleteGroup, expandedGroupId],
+    [deleteGroup, folderNodes, folderView, localizeUi, setFolderExpanded],
+  );
+
+  const requestMoveFolder = useCallback(
+    (folder: LibraryFolderNode) =>
+      openMovePicker(folderNodes, folderView, {
+        title: localizeUi("ui.panels.libraryorganize.moveValue1To", { value1: folder.name }),
+        movingFolderId: folder.id,
+        currentFolderId: folder.parentId,
+        onPick: (parentId) => handleMoveFolder(folder.id, parentId),
+      }),
+    [folderNodes, folderView, handleMoveFolder, localizeUi, openMovePicker],
   );
 
   const getDraggedCharacterIds = useCallback(
@@ -710,38 +782,33 @@ export function CharactersPanel() {
     }
   }, [selectedCharacterIds, localizeUi]);
 
-  const handleMoveSelected = useCallback(async () => {
+  const handleMoveSelected = useCallback(() => {
     const ids = [...selectedCharacterIds];
-    if (ids.length === 0 || movingSelected) return;
-
-    setMovingSelected(true);
-    try {
-      const choice = await showChoiceDialog({
-        title: localizeUi("lorebook.editor.batch.move"),
-        message: localizeUi("ui.panels.characterspanel.chooseFolderForValue1Character", {
-          value1: ids.length,
-          value2: ids.length === 1 ? "" : localizeUi("ui.noodle.stageprofileview.s"),
-        }),
-        choices: [
-          // Uniform tone: no folder is a recommended target, so none gets the primary highlight.
-          ...parsedGroups.map((folder) => ({ key: folder.id, label: folder.name, tone: "accent" as const })),
-          { key: "__none__", label: localizeUi("ui.panels.characterspanel.noFolder"), tone: "accent" as const },
-        ],
-      });
-      if (!choice) return;
-
-      try {
-        await moveCharactersToFolder(ids, choice === "__none__" ? null : choice);
-        exitSelectionMode();
-      } catch (error) {
-        toast.error(
-          error instanceof Error ? error.message : localizeUi("ui.panels.characterspanel.failedToMoveCharacters"),
-        );
-      }
-    } finally {
-      setMovingSelected(false);
-    }
-  }, [selectedCharacterIds, parsedGroups, moveCharactersToFolder, exitSelectionMode, localizeUi, movingSelected]);
+    if (ids.length === 0) return;
+    const holders = new Set(ids.map((id) => folderNodes.find((folder) => folder.itemIds.includes(id))?.id ?? null));
+    openMovePicker(folderNodes, folderView, {
+      title: localizeUi("ui.panels.libraryorganize.moveCharacters", { count: ids.length }),
+      movingFolderId: null,
+      currentFolderId: holders.size === 1 ? [...holders][0] : undefined,
+      onPick: (folderId) => {
+        moveCharactersToFolder(ids, folderId)
+          .then(exitSelectionMode)
+          .catch((error: unknown) =>
+            toast.error(
+              error instanceof Error ? error.message : localizeUi("ui.panels.characterspanel.failedToMoveCharacters"),
+            ),
+          );
+      },
+    });
+  }, [
+    exitSelectionMode,
+    folderNodes,
+    folderView,
+    localizeUi,
+    moveCharactersToFolder,
+    openMovePicker,
+    selectedCharacterIds,
+  ]);
 
   const handleDeleteSelected = useCallback(async () => {
     const ids = [...selectedCharacterIds];
@@ -787,6 +854,596 @@ export function CharactersPanel() {
 
     exitSelectionMode();
   }, [selectedCharacterIds, deleteCharacter, exitSelectionMode, localizeUi]);
+
+  const renderFolderMember = (memberId: string) => {
+    const member = charMap.get(memberId);
+    if (!member) return null;
+    const fullMember = parsedCharacterMap.get(memberId);
+    const isBulkSelected = selectedCharacterIds.has(memberId);
+    const memberName = fullMember?.parsed.name ?? member.name;
+    const memberTitle = fullMember
+      ? getCharacterTitle({ name: memberName, comment: fullMember.comment })
+      : getCharacterTitle(member);
+    const memberPreviewMetadata = fullMember ? getCharacterPreviewMetadata(fullMember) : null;
+    const memberTags = fullMember ? getCharacterTags(fullMember) : [];
+    const memberTokenEstimate = fullMember?.tokenEstimate ?? null;
+    const memberNameColor = (fullMember?.parsed.extensions?.nameColor as string) || undefined;
+    const memberAvatarCrop = normalizeAvatarCrop(fullMember?.parsed.extensions?.avatarCrop) ?? undefined;
+    return (
+      <div
+        key={memberId}
+        data-touch-drag-card="character"
+        onClick={() => {
+          if (suppressCharacterClickRef.current) return;
+          if (selectionMode) {
+            toggleSelection(memberId);
+            return;
+          }
+          openCharacterDetailFromPanel(memberId);
+        }}
+        onKeyDown={(e) => {
+          if (e.target !== e.currentTarget) return;
+          if (e.key !== "Enter" && e.key !== " ") return;
+          e.preventDefault();
+          if (selectionMode) {
+            toggleSelection(memberId);
+            return;
+          }
+          openCharacterDetailFromPanel(memberId);
+        }}
+        draggable
+        onDragStart={(event) => {
+          const ids = getDraggedCharacterIds(memberId);
+          setDraggedCharacterId(memberId);
+          event.dataTransfer.effectAllowed = "copyMove";
+          event.dataTransfer.setData("application/x-marinara-character-ids", JSON.stringify(ids));
+          event.dataTransfer.setData("text/plain", memberId);
+          writeChatResourceDragPayload(event.dataTransfer, {
+            version: 1,
+            kind: "character",
+            ids,
+            label:
+              ids.length === 1
+                ? memberName
+                : localizeUi("ui.chat.chatresourcedropoverlay.characterCount", { count: ids.length }),
+          });
+        }}
+        onDragEnd={() => {
+          setDraggedCharacterId(null);
+          clearActiveChatResourceDrag();
+        }}
+        role="button"
+        tabIndex={0}
+        className={cn(
+          "group group/member relative flex touch-pan-y cursor-pointer items-center gap-2 rounded-lg p-1.5 transition-all hover:bg-[var(--sidebar-accent)]",
+          selectionMode &&
+            isBulkSelected &&
+            "bg-[var(--marinara-chat-chrome-highlight-bg)] ring-1 ring-[var(--marinara-chat-chrome-button-border-active)]",
+          draggedCharacterId === memberId && "opacity-50",
+        )}
+      >
+        {selectionMode && (
+          <button
+            type="button"
+            aria-label={
+              isBulkSelected
+                ? localizeUi("ui.panels.characterspanel.deselectCharacter")
+                : localizeUi("ui.panels.ttsconfigcard.selectCharacter")
+            }
+            className={cn(
+              "flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors",
+              isBulkSelected
+                ? "border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-button-text-active)]"
+                : "border-[var(--muted-foreground)]/40 bg-[var(--secondary)] text-transparent",
+            )}
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleSelection(memberId);
+            }}
+          >
+            {isBulkSelected && <Check size="0.75rem" />}
+          </button>
+        )}
+        <TouchDragHandle
+          label={localizeUi("ui.panels.characterspanel.dragCharacter")}
+          size="0.75rem"
+          onTouchStart={(event) => {
+            startCharacterTouchDrag(event, memberId, {
+              allowInteractiveTarget: true,
+              chatResourcePayload: {
+                version: 1,
+                kind: "character",
+                ids: getDraggedCharacterIds(memberId),
+                label:
+                  getDraggedCharacterIds(memberId).length === 1
+                    ? memberName
+                    : localizeUi("ui.chat.chatresourcedropoverlay.characterCount", {
+                        count: getDraggedCharacterIds(memberId).length,
+                      }),
+              },
+              sourceElement: event.currentTarget.closest<HTMLElement>('[data-touch-drag-card="character"]'),
+            });
+          }}
+        />
+        <div className="mari-avatar-placeholder mari-avatar-placeholder--character relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg">
+          <div className="absolute inset-0 overflow-hidden rounded-lg">
+            {member.avatarPath ? (
+              <div onClick={(event) => event.stopPropagation()}>
+                <CharacterPhoto
+                  src={member.avatarPath}
+                  name={memberName}
+                  className="block h-full w-full"
+                  onUpdate={() => openCharacterDetailFromPanel(memberId)}
+                  updateLabel={localizeUi("ui.game.npcsview.openCharacterCard")}
+                >
+                  <AvatarImage
+                    src={member.avatarPath}
+                    alt={memberName}
+                    loading="lazy"
+                    iconSize="0.75rem"
+                    className="h-full w-full object-cover"
+                    style={getAvatarCropStyle(memberAvatarCrop)}
+                  />
+                </CharacterPhoto>
+              </div>
+            ) : (
+              <div className="flex h-full w-full items-center justify-center">
+                <User size="0.75rem" />
+              </div>
+            )}
+          </div>
+          {member.isFavorite && (
+            <div
+              aria-hidden="true"
+              data-character-favorite-indicator="folder"
+              className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-md bg-[var(--background)] text-[var(--marinara-chat-chrome-accent)] shadow-sm ring-1 ring-[var(--border)]"
+            >
+              <Star size="0.5625rem" className="fill-current" />
+            </div>
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <span
+            className="block truncate text-[0.75rem] font-medium"
+            style={
+              memberNameColor
+                ? memberNameColor.startsWith("linear-gradient")
+                  ? {
+                      background: memberNameColor,
+                      backgroundRepeat: "no-repeat",
+                      backgroundSize: "100% 100%",
+                      WebkitBackgroundClip: "text",
+                      WebkitTextFillColor: "transparent",
+                      backgroundClip: "text",
+                      color: "transparent",
+                      display: "inline-block",
+                    }
+                  : { color: memberNameColor }
+                : undefined
+            }
+          >
+            {memberName}
+          </span>
+          <LibraryCampaignBadges
+            campaigns={organizer.membership.get(memberId)}
+            hideCampaignId={organizer.filteredCampaignId}
+            onSelect={organizer.setCampaignFilter}
+          />
+          {showFolderPaths && folderView.pathByItemId.get(memberId) && (
+            <span
+              data-library-folder-path
+              className="flex min-w-0 items-center gap-1 text-[0.5625rem] text-[var(--muted-foreground)]"
+            >
+              <Folder size="0.5rem" className="shrink-0" />
+              <span className="truncate">{folderView.pathByItemId.get(memberId)}</span>
+            </span>
+          )}
+          {memberTitle && (
+            <span className="block truncate text-[0.5625rem] italic text-[var(--muted-foreground)]">{memberTitle}</span>
+          )}
+          {memberPreviewMetadata && (
+            <span className="block truncate text-[0.5625rem] text-[var(--muted-foreground)]">
+              {memberPreviewMetadata}
+            </span>
+          )}
+          {memberTokenEstimate !== null && (
+            <span
+              className="mari-chrome-text-muted flex items-center gap-1 text-[0.5625rem]"
+              title={localizeUi("ui.panels.characterspanel.estimatedFromCharacterCardTextFieldsActualTokenizerCounts")}
+            >
+              <Hash size="0.5rem" />
+              {formatEstimatedTokens(memberTokenEstimate, localizeUi)}
+            </span>
+          )}
+          {memberTags.length > 0 && (
+            <span className="mt-0.5 flex flex-wrap gap-0.5">
+              {memberTags.slice(0, 3).map((tag) => (
+                <span
+                  key={tag}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleIncludedTag(tag);
+                  }}
+                  className="mari-chrome-muted-badge cursor-pointer px-1.5 py-px text-[0.5rem] transition-all hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]"
+                >
+                  {tag}
+                </span>
+              ))}
+              {memberTags.length > 3 && (
+                <span className="mari-chrome-tag bg-[var(--secondary)] px-1.5 py-px text-[0.5rem] text-[var(--muted-foreground)]">
+                  +{memberTags.length - 3}
+                </span>
+              )}
+            </span>
+          )}
+        </div>
+        {!selectionMode && (
+          <div
+            data-character-row-actions
+            className="pointer-events-none absolute right-1 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] p-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover/member:opacity-100 [@media(pointer:fine)]:group-focus-within/member:opacity-100 max-md:static max-md:translate-y-0 max-md:opacity-100 [@media(pointer:coarse)]:static [@media(pointer:coarse)]:translate-y-0 [@media(pointer:coarse)]:opacity-100 group-hover/member:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within/member:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
+          >
+            <ChatResourceActionButton
+              payload={{ version: 1, kind: "character", ids: [memberId], label: memberName }}
+              size="row"
+              className="flex h-5 min-h-5 w-5 items-center justify-center rounded-md p-0 active:scale-90"
+              iconClassName="h-2.5 w-2.5 shrink-0"
+            />
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                duplicateCharacter.mutate(memberId, {
+                  onSuccess: () => {
+                    toast.success(
+                      localizeUi("ui.panels.characterspanel.duplicatedValue1", {
+                        value1: memberName,
+                      }),
+                    );
+                  },
+                });
+              }}
+              className="mari-chrome-control flex h-5 min-h-5 w-5 items-center justify-center rounded-md p-0 active:scale-90"
+              title={localizeUi("ui.presets.sectionstab.duplicate")}
+              aria-label={localizeUi("ui.presets.sectionstab.duplicate")}
+            >
+              <Copy size="0.625rem" />
+            </button>
+            <button
+              type="button"
+              onClick={async (e) => {
+                e.stopPropagation();
+                if (
+                  !(await showConfirmDialog({
+                    title: localizeUi("ui.panels.characterspanel.deleteCharacter"),
+                    message: localizeUi("ui.panels.characterspanel.deleteValue1ThisCannotBeUndone", {
+                      value1: memberName,
+                    }),
+                    confirmLabel: localizeUi("lorebook.editor.batch.delete"),
+                    tone: "destructive",
+                  }))
+                ) {
+                  return;
+                }
+                deleteCharacter.mutate(memberId);
+              }}
+              className="mari-chrome-control flex h-5 min-h-5 w-5 items-center justify-center rounded-md p-0 text-[var(--destructive)] active:scale-90"
+              title={localizeUi("lorebook.editor.batch.delete")}
+              aria-label={localizeUi("lorebook.editor.batch.delete")}
+            >
+              <Trash2 size="0.625rem" />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                openModal("start-character-chat", {
+                  characterId: memberId,
+                  characterName: memberName,
+                });
+              }}
+              className="mari-chrome-control flex h-5 min-h-5 w-5 items-center justify-center rounded-md border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-button-bg-active)] p-0 text-[var(--marinara-chat-chrome-button-text-active)] active:scale-90"
+              title={localizeUi("ui.panels.characterspanel.startNewChatWithValue1", {
+                value1: memberName,
+              })}
+              aria-label={localizeUi("ui.panels.characterspanel.startNewChatWithValue1", {
+                value1: memberName,
+              })}
+            >
+              <MessageCircle size="0.625rem" />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                void moveCharactersToFolder([memberId], null);
+              }}
+              className="mari-chrome-control flex h-5 min-h-5 w-5 items-center justify-center rounded-md p-0 text-[var(--muted-foreground)] active:scale-90"
+              title={localizeUi("ui.panels.characterspanel.removeFromFolder")}
+              aria-label={localizeUi("ui.panels.characterspanel.removeFromFolder")}
+            >
+              <UserMinus size="0.625rem" />
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderRootCharacter = (char: ParsedCharacterRow, section?: { rowKey: string; campaignId: string }) => {
+    const charName = char.parsed.name ?? "Unnamed";
+    const charTitle = getCharacterTitle({ name: charName, comment: char.comment });
+    const charTags = getCharacterTags(char);
+    const charNameColor = (char.parsed.extensions?.nameColor as string) || undefined;
+    const isBulkSelected = selectedCharacterIds.has(char.id);
+    const isFavorite = !!char.parsed.extensions?.fav;
+    const avatarUrl = char.avatarPath;
+    const previewMetadata = getCharacterPreviewMetadata(char);
+    const tokenEstimate = char.tokenEstimate;
+
+    return (
+      <div
+        key={section?.rowKey ?? char.id}
+        data-character-id={char.id}
+        data-touch-drag-card="character"
+        onClick={() => {
+          if (suppressCharacterClickRef.current) return;
+          if (selectionMode) {
+            toggleSelection(char.id);
+          } else {
+            openCharacterDetailFromPanel(char.id);
+          }
+        }}
+        draggable
+        onDragStart={(event) => {
+          const ids = getDraggedCharacterIds(char.id);
+          setDraggedCharacterId(char.id);
+          event.dataTransfer.effectAllowed = "copyMove";
+          event.dataTransfer.setData("application/x-marinara-character-ids", JSON.stringify(ids));
+          event.dataTransfer.setData("text/plain", char.id);
+          writeChatResourceDragPayload(event.dataTransfer, {
+            version: 1,
+            kind: "character",
+            ids,
+            label:
+              ids.length === 1
+                ? charName
+                : localizeUi("ui.chat.chatresourcedropoverlay.characterCount", { count: ids.length }),
+          });
+        }}
+        onDragEnd={() => {
+          setDraggedCharacterId(null);
+          clearActiveChatResourceDrag();
+        }}
+        className={cn(
+          "group relative flex min-h-[4.5rem] shrink-0 touch-pan-y cursor-pointer items-center gap-2.5 rounded-xl p-2 transition-all hover:bg-[var(--sidebar-accent)] max-md:min-h-16",
+          selectionMode &&
+            isBulkSelected &&
+            "bg-[var(--marinara-chat-chrome-highlight-bg)] ring-1 ring-[var(--marinara-chat-chrome-button-border-active)]",
+          draggedCharacterId === char.id && "opacity-50",
+        )}
+      >
+        {selectionMode && (
+          <button
+            type="button"
+            aria-label={
+              isBulkSelected
+                ? localizeUi("ui.panels.characterspanel.deselectCharacter")
+                : localizeUi("ui.panels.ttsconfigcard.selectCharacter")
+            }
+            className={cn(
+              "flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors",
+              isBulkSelected
+                ? "border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-button-text-active)]"
+                : "border-[var(--muted-foreground)]/40 bg-[var(--secondary)] text-transparent",
+            )}
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleSelection(char.id);
+            }}
+          >
+            {isBulkSelected && <Check size="0.75rem" />}
+          </button>
+        )}
+        <TouchDragHandle
+          label={localizeUi("ui.panels.characterspanel.dragCharacter")}
+          onTouchStart={(event) => {
+            startCharacterTouchDrag(event, char.id, {
+              allowInteractiveTarget: true,
+              chatResourcePayload: {
+                version: 1,
+                kind: "character",
+                ids: getDraggedCharacterIds(char.id),
+                label:
+                  getDraggedCharacterIds(char.id).length === 1
+                    ? charName
+                    : localizeUi("ui.chat.chatresourcedropoverlay.characterCount", {
+                        count: getDraggedCharacterIds(char.id).length,
+                      }),
+              },
+              sourceElement: event.currentTarget.closest<HTMLElement>('[data-touch-drag-card="character"]'),
+            });
+          }}
+        />
+        {/* Avatar */}
+        <div className="mari-avatar-placeholder mari-avatar-placeholder--character relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm">
+          {avatarUrl ? (
+            <div className="absolute inset-0 overflow-hidden rounded-xl">
+              <div onClick={(event) => event.stopPropagation()}>
+                <CharacterPhoto
+                  src={avatarUrl}
+                  name={charName}
+                  className="block h-full w-full"
+                  onUpdate={() => openCharacterDetailFromPanel(char.id)}
+                  updateLabel={localizeUi("ui.game.npcsview.openCharacterCard")}
+                >
+                  <AvatarImage
+                    src={avatarUrl}
+                    alt={charName}
+                    className="h-full w-full object-cover"
+                    style={getAvatarCropStyle(normalizeAvatarCrop(char.parsed.extensions?.avatarCrop))}
+                  />
+                </CharacterPhoto>
+              </div>
+            </div>
+          ) : (
+            <User size="1rem" />
+          )}
+          {isFavorite && (
+            <div
+              aria-hidden="true"
+              data-character-favorite-indicator="panel"
+              className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-md bg-[var(--background)] text-[var(--marinara-chat-chrome-accent)] shadow-sm ring-1 ring-[var(--border)]"
+            >
+              <Star size="0.625rem" className="fill-current" />
+            </div>
+          )}
+        </div>
+
+        {/* Info */}
+        <div className={cn("min-w-0 flex-1", !selectionMode && "pr-0 max-md:pr-32 [@media(pointer:coarse)]:pr-32")}>
+          <div
+            data-character-row-name
+            className="w-fit max-w-full truncate text-sm font-medium"
+            style={
+              charNameColor
+                ? charNameColor.startsWith("linear-gradient")
+                  ? {
+                      background: charNameColor,
+                      backgroundRepeat: "no-repeat",
+                      backgroundSize: "100% 100%",
+                      WebkitBackgroundClip: "text",
+                      WebkitTextFillColor: "transparent",
+                      backgroundClip: "text",
+                      color: "transparent",
+                      display: "inline-block",
+                    }
+                  : { color: charNameColor }
+                : undefined
+            }
+          >
+            {charName}
+          </div>
+          <LibraryCampaignBadges
+            campaigns={organizer.membership.get(char.id)}
+            hideCampaignId={section?.campaignId ?? organizer.filteredCampaignId}
+            onSelect={organizer.setCampaignFilter}
+          />
+          {charTitle && (
+            <div className="truncate text-[0.625rem] italic text-[var(--muted-foreground)]">{charTitle}</div>
+          )}
+          {previewMetadata && (
+            <div className="truncate text-[0.625rem] text-[var(--muted-foreground)]">{previewMetadata}</div>
+          )}
+          <div
+            className="mari-chrome-text-muted flex items-center gap-1 text-[0.625rem]"
+            title={localizeUi("ui.panels.characterspanel.estimatedFromCharacterCardTextFieldsActualTokenizerCounts")}
+          >
+            <Hash size="0.5625rem" />
+            {formatEstimatedTokens(tokenEstimate, localizeUi)}
+          </div>
+          {charTags.length > 0 && (
+            <div data-character-row-tags className="mt-0.5 flex flex-wrap gap-0.5">
+              {charTags.slice(0, 3).map((tag) => (
+                <span
+                  key={tag}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleIncludedTag(tag);
+                  }}
+                  className="mari-chrome-muted-badge cursor-pointer px-1.5 py-px text-[0.5rem] transition-all hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]"
+                >
+                  {tag}
+                </span>
+              ))}
+              {charTags.length > 3 && (
+                <span className="mari-chrome-tag bg-[var(--secondary)] px-1.5 py-px text-[0.5rem] text-[var(--muted-foreground)]">
+                  +{charTags.length - 3}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Actions */}
+        {!selectionMode && (
+          <div
+            data-character-row-actions
+            className="pointer-events-none absolute right-2 top-1/2 z-10 flex w-auto -translate-y-1/2 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] p-1 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
+          >
+            <ChatResourceActionButton
+              payload={{ version: 1, kind: "character", ids: [char.id], label: charName }}
+              size="row"
+              className="mari-character-row-action flex w-7 items-center justify-center max-md:w-6"
+              iconClassName="h-4 w-4 shrink-0 max-md:h-3.5 max-md:w-3.5"
+            />
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                duplicateCharacter.mutate(char.id, {
+                  onSuccess: () => {
+                    toast.success(
+                      localizeUi("ui.panels.characterspanel.duplicatedValue1", {
+                        value1: char.parsed?.name ?? localizeUi("ui.noodle.noodlehome.character"),
+                      }),
+                    );
+                  },
+                });
+              }}
+              className="mari-chrome-control mari-character-row-action flex w-7 items-center justify-center max-md:w-6"
+              title={localizeUi("ui.presets.sectionstab.duplicate")}
+              aria-label={localizeUi("ui.presets.sectionstab.duplicate")}
+            >
+              <Copy className="h-4 w-4 shrink-0 max-md:h-3.5 max-md:w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={async (e) => {
+                e.stopPropagation();
+                if (
+                  !(await showConfirmDialog({
+                    title: localizeUi("ui.panels.characterspanel.deleteCharacter"),
+                    message: localizeUi("ui.panels.characterspanel.deleteValue1ThisCannotBeUndone", {
+                      value1: char.parsed?.name ?? localizeUi("ui.panels.characterspanel.thisCharacter"),
+                    }),
+                    confirmLabel: localizeUi("lorebook.editor.batch.delete"),
+                    tone: "destructive",
+                  }))
+                ) {
+                  return;
+                }
+                deleteCharacter.mutate(char.id);
+              }}
+              className="mari-chrome-control mari-character-row-action flex w-7 items-center justify-center max-md:w-6"
+              title={localizeUi("lorebook.editor.batch.delete")}
+              aria-label={localizeUi("lorebook.editor.batch.delete")}
+            >
+              <Trash2 className="h-4 w-4 shrink-0 max-md:h-3.5 max-md:w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                openModal("start-character-chat", {
+                  characterId: char.id,
+                  characterName: charName,
+                });
+              }}
+              className="mari-chrome-control mari-character-row-action flex w-7 items-center justify-center border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-button-bg-active)] text-[var(--marinara-chat-chrome-button-text-active)] max-md:w-6"
+              title={localizeUi("ui.panels.characterspanel.startNewChatWithValue1", {
+                value1: charName,
+              })}
+              aria-label={localizeUi("ui.panels.characterspanel.startNewChatWithValue1", {
+                value1: charName,
+              })}
+            >
+              <MessageCircle className="h-3.5 w-3.5 shrink-0 max-md:h-3 max-md:w-3" />
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div
@@ -900,10 +1557,18 @@ export function CharactersPanel() {
         </div>
       </div>
 
+      <LibraryCampaignBar
+        campaigns={organizer.campaigns}
+        value={organizer.campaignFilter}
+        onChange={organizer.setCampaignFilter}
+        groupByCampaign={organizer.groupByCampaign}
+        onGroupByCampaignChange={organizer.setGroupByCampaign}
+      />
+
       <div className="flex flex-col gap-0.5">
         <div className="flex items-center gap-1">
           <button
-            onClick={handleCreateFolder}
+            onClick={() => handleCreateFolder()}
             className="mari-chrome-control mari-chrome-control--small flex-1 justify-start text-[0.6875rem]"
           >
             <FolderPlus size="0.75rem" />
@@ -1007,455 +1672,37 @@ export function CharactersPanel() {
         </div>
       )}
 
-      <div className="flex flex-col gap-0.5">
-        {parsedGroups.map((group) => {
-          const folderMemberIds = folderFilterActive
-            ? group.memberIds.filter((memberId) => visibleCharacterById.has(memberId))
-            : group.memberIds;
-          if (folderFilterActive && folderMemberIds.length === 0) return null;
-          const isExpanded = (folderFilterActive && folderMemberIds.length > 0) || expandedGroupId === group.id;
-          const isEditing = editingGroupId === group.id;
-
-          return (
-            <div
-              key={group.id}
-              data-character-folder-id={group.id}
-              onDragOver={(event) => {
-                if (draggedCharacterId) {
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = "move";
-                }
-              }}
-              onDrop={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                const payload = event.dataTransfer.getData("application/x-marinara-character-ids");
-                handleCharacterDrop(group.id, parseDroppedCharacterIds(payload));
-              }}
-              className="flex flex-col rounded-lg transition-colors"
-            >
-              {/* Folder header */}
-              <div
-                role="button"
-                tabIndex={0}
-                aria-expanded={isExpanded}
-                aria-label={localizeUi("ui.panels.agentspanel.value1FolderValue2DoubleTapOrPressF2To", {
-                  value1: isExpanded
-                    ? localizeUi("ui.panels.ttsconfigcard.collapse")
-                    : localizeUi("ui.panels.ttsconfigcard.expand"),
-                  value2: group.name,
-                })}
-                title={localizeUi("ui.panels.backgroundpicker.doubleClickDoubleTapOrPressF2ToRename")}
-                className="group relative flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 transition-all hover:bg-[var(--sidebar-accent)]/40 max-md:pr-12 [@media(pointer:coarse)]:pr-12"
-                onClick={(event) =>
-                  handleFolderRenameGesture(group.id, event, {
-                    onSingleClick: () => setExpandedGroupId(isExpanded ? null : group.id),
-                    onRename: () => {
-                      setEditingGroupId(group.id);
-                      setEditGroupName(group.name);
-                    },
-                  })
-                }
-                onKeyDown={(event) => {
-                  if (event.target !== event.currentTarget) return;
-                  handleFolderRenameKeyDown(event, {
-                    onSingleClick: () => setExpandedGroupId(isExpanded ? null : group.id),
-                    onRename: () => {
-                      setEditingGroupId(group.id);
-                      setEditGroupName(group.name);
-                    },
-                  });
-                }}
-              >
-                <ChevronRight
-                  size="0.75rem"
-                  className={cn(
-                    "mari-chrome-accent-icon mari-accent-animated shrink-0 transition-transform duration-200 ease-out",
-                    isExpanded && "rotate-90",
-                  )}
-                />
-                <div className="min-w-0 flex-1">
-                  {isEditing ? (
-                    <input
-                      autoFocus
-                      value={editGroupName}
-                      onChange={(e) => setEditGroupName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") e.currentTarget.blur();
-                        if (e.key === "Escape") {
-                          setEditingGroupId(null);
-                          setEditGroupName("");
-                        }
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                      onBlur={() => handleRenameGroup(group.id)}
-                      className="w-full rounded bg-transparent px-1 py-0.5 text-xs font-medium outline-none ring-1 ring-[var(--marinara-chat-chrome-input-border-focus)]"
-                    />
-                  ) : (
-                    <>
-                      <div className="truncate text-xs font-medium text-[var(--muted-foreground)]">{group.name}</div>
-                    </>
-                  )}
-                </div>
-                {folderMemberIds.length > 0 && (
-                  <span
-                    data-folder-item-count="inline"
-                    className="shrink-0 text-[0.5625rem] text-[var(--muted-foreground)] max-md:hidden [@media(pointer:coarse)]:hidden"
-                  >
-                    {folderMemberIds.length}
-                  </span>
-                )}
-                <div
-                  data-folder-actions
-                  className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 flex shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
-                >
-                  {folderMemberIds.length > 0 && (
-                    <span
-                      data-folder-item-count="actions"
-                      className="hidden px-1 text-[0.5625rem] text-[var(--muted-foreground)] max-md:inline [@media(pointer:coarse)]:inline"
-                    >
-                      {folderMemberIds.length}
-                    </span>
-                  )}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void handleDeleteGroup(group);
-                    }}
-                    className="mari-chrome-control mari-chrome-control--small p-1"
-                    title={localizeUi("ui.panels.backgroundpicker.deleteFolder")}
-                  >
-                    <Trash2 size="0.6875rem" />
-                  </button>
-                </div>
-              </div>
-
-              {/* Expanded: show members */}
-              <SmoothFolderContent
-                open={isExpanded}
-                className="ml-4 border-l border-[var(--border)]/20 pb-1 pl-1"
-                innerClassName="flex flex-col gap-0.5"
-              >
-                {folderMemberIds.length === 0 && (
-                  <div className="py-2 text-[0.625rem] italic text-[var(--muted-foreground)]">
-                    {localizeUi("ui.panels.characterspanel.dropCharactersHere")}
-                  </div>
-                )}
-                {folderMemberIds.map((memberId) => {
-                  const member = charMap.get(memberId);
-                  if (!member) return null;
-                  const fullMember = parsedCharacterMap.get(memberId);
-                  const isBulkSelected = selectedCharacterIds.has(memberId);
-                  const memberName = fullMember?.parsed.name ?? member.name;
-                  const memberTitle = fullMember
-                    ? getCharacterTitle({ name: memberName, comment: fullMember.comment })
-                    : getCharacterTitle(member);
-                  const memberPreviewMetadata = fullMember ? getCharacterPreviewMetadata(fullMember) : null;
-                  const memberTags = fullMember ? getCharacterTags(fullMember) : [];
-                  const memberTokenEstimate = fullMember?.tokenEstimate ?? null;
-                  const memberNameColor = (fullMember?.parsed.extensions?.nameColor as string) || undefined;
-                  const memberAvatarCrop = normalizeAvatarCrop(fullMember?.parsed.extensions?.avatarCrop) ?? undefined;
-                  return (
-                    <div
-                      key={memberId}
-                      data-touch-drag-card="character"
-                      onClick={() => {
-                        if (suppressCharacterClickRef.current) return;
-                        if (selectionMode) {
-                          toggleSelection(memberId);
-                          return;
-                        }
-                        openCharacterDetailFromPanel(memberId);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.target !== e.currentTarget) return;
-                        if (e.key !== "Enter" && e.key !== " ") return;
-                        e.preventDefault();
-                        if (selectionMode) {
-                          toggleSelection(memberId);
-                          return;
-                        }
-                        openCharacterDetailFromPanel(memberId);
-                      }}
-                      draggable
-                      onDragStart={(event) => {
-                        const ids = getDraggedCharacterIds(memberId);
-                        setDraggedCharacterId(memberId);
-                        event.dataTransfer.effectAllowed = "copyMove";
-                        event.dataTransfer.setData("application/x-marinara-character-ids", JSON.stringify(ids));
-                        event.dataTransfer.setData("text/plain", memberId);
-                        writeChatResourceDragPayload(event.dataTransfer, {
-                          version: 1,
-                          kind: "character",
-                          ids,
-                          label:
-                            ids.length === 1
-                              ? memberName
-                              : localizeUi("ui.chat.chatresourcedropoverlay.characterCount", { count: ids.length }),
-                        });
-                      }}
-                      onDragEnd={() => {
-                        setDraggedCharacterId(null);
-                        clearActiveChatResourceDrag();
-                      }}
-                      role="button"
-                      tabIndex={0}
-                      className={cn(
-                        "group group/member relative flex touch-pan-y cursor-pointer items-center gap-2 rounded-lg p-1.5 transition-all hover:bg-[var(--sidebar-accent)]",
-                        selectionMode &&
-                          isBulkSelected &&
-                          "bg-[var(--marinara-chat-chrome-highlight-bg)] ring-1 ring-[var(--marinara-chat-chrome-button-border-active)]",
-                        draggedCharacterId === memberId && "opacity-50",
-                      )}
-                    >
-                      {selectionMode && (
-                        <button
-                          type="button"
-                          aria-label={
-                            isBulkSelected
-                              ? localizeUi("ui.panels.characterspanel.deselectCharacter")
-                              : localizeUi("ui.panels.ttsconfigcard.selectCharacter")
-                          }
-                          className={cn(
-                            "flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors",
-                            isBulkSelected
-                              ? "border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-button-text-active)]"
-                              : "border-[var(--muted-foreground)]/40 bg-[var(--secondary)] text-transparent",
-                          )}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleSelection(memberId);
-                          }}
-                        >
-                          {isBulkSelected && <Check size="0.75rem" />}
-                        </button>
-                      )}
-                      <TouchDragHandle
-                        label={localizeUi("ui.panels.characterspanel.dragCharacter")}
-                        size="0.75rem"
-                        onTouchStart={(event) => {
-                          startCharacterTouchDrag(event, memberId, {
-                            allowInteractiveTarget: true,
-                            chatResourcePayload: {
-                              version: 1,
-                              kind: "character",
-                              ids: getDraggedCharacterIds(memberId),
-                              label:
-                                getDraggedCharacterIds(memberId).length === 1
-                                  ? memberName
-                                  : localizeUi("ui.chat.chatresourcedropoverlay.characterCount", {
-                                      count: getDraggedCharacterIds(memberId).length,
-                                    }),
-                            },
-                            sourceElement: event.currentTarget.closest<HTMLElement>(
-                              '[data-touch-drag-card="character"]',
-                            ),
-                          });
-                        }}
-                      />
-                      <div className="mari-avatar-placeholder mari-avatar-placeholder--character relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg">
-                        <div className="absolute inset-0 overflow-hidden rounded-lg">
-                          {member.avatarPath ? (
-                            <div onClick={(event) => event.stopPropagation()}>
-                              <CharacterPhoto
-                                src={member.avatarPath}
-                                name={memberName}
-                                className="block h-full w-full"
-                                onUpdate={() => openCharacterDetailFromPanel(memberId)}
-                                updateLabel={localizeUi("ui.game.npcsview.openCharacterCard")}
-                              >
-                                <img
-                                  src={member.avatarPath}
-                                  alt={memberName}
-                                  loading="lazy"
-                                  className="h-full w-full object-cover"
-                                  style={getAvatarCropStyle(memberAvatarCrop)}
-                                />
-                              </CharacterPhoto>
-                            </div>
-                          ) : (
-                            <div className="flex h-full w-full items-center justify-center">
-                              <User size="0.75rem" />
-                            </div>
-                          )}
-                        </div>
-                        {member.isFavorite && (
-                          <div
-                            aria-hidden="true"
-                            data-character-favorite-indicator="folder"
-                            className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-md bg-[var(--background)] text-[var(--marinara-chat-chrome-accent)] shadow-sm ring-1 ring-[var(--border)]"
-                          >
-                            <Star size="0.5625rem" className="fill-current" />
-                          </div>
-                        )}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <span
-                          className="block truncate text-[0.75rem] font-medium"
-                          style={
-                            memberNameColor
-                              ? memberNameColor.startsWith("linear-gradient")
-                                ? {
-                                    background: memberNameColor,
-                                    backgroundRepeat: "no-repeat",
-                                    backgroundSize: "100% 100%",
-                                    WebkitBackgroundClip: "text",
-                                    WebkitTextFillColor: "transparent",
-                                    backgroundClip: "text",
-                                    color: "transparent",
-                                    display: "inline-block",
-                                  }
-                                : { color: memberNameColor }
-                              : undefined
-                          }
-                        >
-                          {memberName}
-                        </span>
-                        {memberTitle && (
-                          <span className="block truncate text-[0.5625rem] italic text-[var(--muted-foreground)]">
-                            {memberTitle}
-                          </span>
-                        )}
-                        {memberPreviewMetadata && (
-                          <span className="block truncate text-[0.5625rem] text-[var(--muted-foreground)]">
-                            {memberPreviewMetadata}
-                          </span>
-                        )}
-                        {memberTokenEstimate !== null && (
-                          <span
-                            className="mari-chrome-text-muted flex items-center gap-1 text-[0.5625rem]"
-                            title={localizeUi(
-                              "ui.panels.characterspanel.estimatedFromCharacterCardTextFieldsActualTokenizerCounts",
-                            )}
-                          >
-                            <Hash size="0.5rem" />
-                            {formatEstimatedTokens(memberTokenEstimate, localizeUi)}
-                          </span>
-                        )}
-                        {memberTags.length > 0 && (
-                          <span className="mt-0.5 flex flex-wrap gap-0.5">
-                            {memberTags.slice(0, 3).map((tag) => (
-                              <span
-                                key={tag}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  toggleIncludedTag(tag);
-                                }}
-                                className="mari-chrome-muted-badge cursor-pointer px-1.5 py-px text-[0.5rem] transition-all hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]"
-                              >
-                                {tag}
-                              </span>
-                            ))}
-                            {memberTags.length > 3 && (
-                              <span className="mari-chrome-tag bg-[var(--secondary)] px-1.5 py-px text-[0.5rem] text-[var(--muted-foreground)]">
-                                +{memberTags.length - 3}
-                              </span>
-                            )}
-                          </span>
-                        )}
-                      </div>
-                      {!selectionMode && (
-                        <div
-                          data-character-row-actions
-                          className="pointer-events-none absolute right-1 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] p-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover/member:opacity-100 [@media(pointer:fine)]:group-focus-within/member:opacity-100 max-md:static max-md:translate-y-0 max-md:opacity-100 [@media(pointer:coarse)]:static [@media(pointer:coarse)]:translate-y-0 [@media(pointer:coarse)]:opacity-100 group-hover/member:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within/member:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
-                        >
-                          <ChatResourceActionButton
-                            payload={{ version: 1, kind: "character", ids: [memberId], label: memberName }}
-                            size="row"
-                            className="flex h-5 min-h-5 w-5 items-center justify-center rounded-md p-0 active:scale-90"
-                            iconClassName="h-2.5 w-2.5 shrink-0"
-                          />
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              duplicateCharacter.mutate(memberId, {
-                                onSuccess: () => {
-                                  toast.success(
-                                    localizeUi("ui.panels.characterspanel.duplicatedValue1", {
-                                      value1: memberName,
-                                    }),
-                                  );
-                                },
-                              });
-                            }}
-                            className="mari-chrome-control flex h-5 min-h-5 w-5 items-center justify-center rounded-md p-0 active:scale-90"
-                            title={localizeUi("ui.presets.sectionstab.duplicate")}
-                            aria-label={localizeUi("ui.presets.sectionstab.duplicate")}
-                          >
-                            <Copy size="0.625rem" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={async (e) => {
-                              e.stopPropagation();
-                              if (
-                                !(await showConfirmDialog({
-                                  title: localizeUi("ui.panels.characterspanel.deleteCharacter"),
-                                  message: localizeUi("ui.panels.characterspanel.deleteValue1ThisCannotBeUndone", {
-                                    value1: memberName,
-                                  }),
-                                  confirmLabel: localizeUi("lorebook.editor.batch.delete"),
-                                  tone: "destructive",
-                                }))
-                              ) {
-                                return;
-                              }
-                              deleteCharacter.mutate(memberId);
-                            }}
-                            className="mari-chrome-control flex h-5 min-h-5 w-5 items-center justify-center rounded-md p-0 text-[var(--destructive)] active:scale-90"
-                            title={localizeUi("lorebook.editor.batch.delete")}
-                            aria-label={localizeUi("lorebook.editor.batch.delete")}
-                          >
-                            <Trash2 size="0.625rem" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openModal("start-character-chat", {
-                                characterId: memberId,
-                                characterName: memberName,
-                              });
-                            }}
-                            className="mari-chrome-control flex h-5 min-h-5 w-5 items-center justify-center rounded-md border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-button-bg-active)] p-0 text-[var(--marinara-chat-chrome-button-text-active)] active:scale-90"
-                            title={localizeUi("ui.panels.characterspanel.startNewChatWithValue1", {
-                              value1: memberName,
-                            })}
-                            aria-label={localizeUi("ui.panels.characterspanel.startNewChatWithValue1", {
-                              value1: memberName,
-                            })}
-                          >
-                            <MessageCircle size="0.625rem" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void moveCharactersToFolder([memberId], null);
-                            }}
-                            className="mari-chrome-control flex h-5 min-h-5 w-5 items-center justify-center rounded-md p-0 text-[var(--muted-foreground)] active:scale-90"
-                            title={localizeUi("ui.panels.characterspanel.removeFromFolder")}
-                            aria-label={localizeUi("ui.panels.characterspanel.removeFromFolder")}
-                          >
-                            <UserMinus size="0.625rem" />
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </SmoothFolderContent>
-            </div>
-          );
-        })}
-      </div>
+      {!organizer.groupByCampaign && (
+        <LibraryFolderTree
+          folders={folderNodes}
+          view={folderView}
+          filterActive={userFolderFilterActive}
+          expandedIds={organizer.expandedFolderIds}
+          onExpandedChange={organizer.setFolderExpanded}
+          isItemShown={isFolderMemberShown}
+          renderItem={(memberId) => renderFolderMember(memberId)}
+          folderIdAttribute="data-character-folder-id"
+          folderDragType="application/x-marinara-character-folder"
+          itemDragActive={draggedCharacterId !== null}
+          allowFolderDrag={!isMobileOverlay}
+          onItemDrop={(folderId, event) => {
+            const payload = event.dataTransfer.getData("application/x-marinara-character-ids");
+            handleCharacterDrop(folderId, parseDroppedCharacterIds(payload));
+          }}
+          onRename={handleRenameGroup}
+          onDelete={(folder) => void handleDeleteGroup(folder)}
+          onCreateSubfolder={(parentId) => handleCreateFolder(parentId)}
+          onMoveFolder={handleMoveFolder}
+          onRequestMoveFolder={requestMoveFolder}
+          emptyFolderText={localizeUi("ui.panels.characterspanel.dropCharactersHere")}
+        />
+      )}
 
       {/* Characters Section Header */}
       <div className="flex items-center gap-1.5 px-1 pt-1 text-[0.6875rem] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
         <User size="0.6875rem" />
-        {localizeUi("ui.panels.characterspanel.characters")}
-        {filteredCharacters.length})
+        {t(`characters.organization.${category}`)} ({filteredCharacters.length}
+        {characterPages.hasNextPage ? "+" : ""})
         {selectionMode && (
           <span className="text-[0.625rem] font-normal normal-case">
             · {selectedCharacterIds.size} {localizeUi("ui.panels.npcdefaultvoicepool.selected")}
@@ -1478,14 +1725,14 @@ export function CharactersPanel() {
             <User size="1.25rem" />
           </div>
           <p className="mari-chrome-text-muted text-xs">
-            {search
+            {userFolderFilterActive
               ? localizeUi("ui.panels.characterspanel.noMatchesFound")
               : localizeUi("ui.panels.characterspanel.noCharactersYet")}
           </p>
         </div>
       )}
 
-      {draggedCharacterId && (
+      {draggedCharacterId && !organizer.groupByCampaign && (
         <div
           data-character-folder-root
           onDragOver={(event) => {
@@ -1504,280 +1751,25 @@ export function CharactersPanel() {
       )}
 
       <div className="flex min-h-8 shrink-0 flex-col gap-1 rounded-xl transition-colors">
-        {visibleRootCharacters.map((char) => {
-          const charName = char.parsed.name ?? "Unnamed";
-          const charTitle = getCharacterTitle({ name: charName, comment: char.comment });
-          const charTags = getCharacterTags(char);
-          const charNameColor = (char.parsed.extensions?.nameColor as string) || undefined;
-          const isBulkSelected = selectedCharacterIds.has(char.id);
-          const isFavorite = !!char.parsed.extensions?.fav;
-          const avatarUrl = char.avatarPath;
-          const previewMetadata = getCharacterPreviewMetadata(char);
-          const tokenEstimate = char.tokenEstimate;
-
-          return (
-            <div
-              key={char.id}
-              data-character-id={char.id}
-              data-touch-drag-card="character"
-              onClick={() => {
-                if (suppressCharacterClickRef.current) return;
-                if (selectionMode) {
-                  toggleSelection(char.id);
-                } else {
-                  openCharacterDetailFromPanel(char.id);
-                }
-              }}
-              draggable
-              onDragStart={(event) => {
-                const ids = getDraggedCharacterIds(char.id);
-                setDraggedCharacterId(char.id);
-                event.dataTransfer.effectAllowed = "copyMove";
-                event.dataTransfer.setData("application/x-marinara-character-ids", JSON.stringify(ids));
-                event.dataTransfer.setData("text/plain", char.id);
-                writeChatResourceDragPayload(event.dataTransfer, {
-                  version: 1,
-                  kind: "character",
-                  ids,
-                  label:
-                    ids.length === 1
-                      ? charName
-                      : localizeUi("ui.chat.chatresourcedropoverlay.characterCount", { count: ids.length }),
-                });
-              }}
-              onDragEnd={() => {
-                setDraggedCharacterId(null);
-                clearActiveChatResourceDrag();
-              }}
-              className={cn(
-                "group relative flex min-h-[4.5rem] shrink-0 touch-pan-y cursor-pointer items-center gap-2.5 rounded-xl p-2 transition-all hover:bg-[var(--sidebar-accent)] max-md:min-h-16",
-                selectionMode &&
-                  isBulkSelected &&
-                  "bg-[var(--marinara-chat-chrome-highlight-bg)] ring-1 ring-[var(--marinara-chat-chrome-button-border-active)]",
-                draggedCharacterId === char.id && "opacity-50",
-              )}
-            >
-              {selectionMode && (
-                <button
-                  type="button"
-                  aria-label={
-                    isBulkSelected
-                      ? localizeUi("ui.panels.characterspanel.deselectCharacter")
-                      : localizeUi("ui.panels.ttsconfigcard.selectCharacter")
-                  }
-                  className={cn(
-                    "flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors",
-                    isBulkSelected
-                      ? "border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-button-text-active)]"
-                      : "border-[var(--muted-foreground)]/40 bg-[var(--secondary)] text-transparent",
-                  )}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleSelection(char.id);
-                  }}
-                >
-                  {isBulkSelected && <Check size="0.75rem" />}
-                </button>
-              )}
-              <TouchDragHandle
-                label={localizeUi("ui.panels.characterspanel.dragCharacter")}
-                onTouchStart={(event) => {
-                  startCharacterTouchDrag(event, char.id, {
-                    allowInteractiveTarget: true,
-                    chatResourcePayload: {
-                      version: 1,
-                      kind: "character",
-                      ids: getDraggedCharacterIds(char.id),
-                      label:
-                        getDraggedCharacterIds(char.id).length === 1
-                          ? charName
-                          : localizeUi("ui.chat.chatresourcedropoverlay.characterCount", {
-                              count: getDraggedCharacterIds(char.id).length,
-                            }),
-                    },
-                    sourceElement: event.currentTarget.closest<HTMLElement>('[data-touch-drag-card="character"]'),
-                  });
-                }}
-              />
-              {/* Avatar */}
-              <div className="mari-avatar-placeholder mari-avatar-placeholder--character relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm">
-                {avatarUrl ? (
-                  <div className="absolute inset-0 overflow-hidden rounded-xl">
-                    <div onClick={(event) => event.stopPropagation()}>
-                      <CharacterPhoto
-                        src={avatarUrl}
-                        name={charName}
-                        className="block h-full w-full"
-                        onUpdate={() => openCharacterDetailFromPanel(char.id)}
-                        updateLabel={localizeUi("ui.game.npcsview.openCharacterCard")}
-                      >
-                        <img
-                          src={avatarUrl}
-                          alt={charName}
-                          className="h-full w-full object-cover"
-                          style={getAvatarCropStyle(normalizeAvatarCrop(char.parsed.extensions?.avatarCrop))}
-                        />
-                      </CharacterPhoto>
-                    </div>
-                  </div>
-                ) : (
-                  <User size="1rem" />
-                )}
-                {isFavorite && (
-                  <div
-                    aria-hidden="true"
-                    data-character-favorite-indicator="panel"
-                    className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-md bg-[var(--background)] text-[var(--marinara-chat-chrome-accent)] shadow-sm ring-1 ring-[var(--border)]"
-                  >
-                    <Star size="0.625rem" className="fill-current" />
-                  </div>
-                )}
-              </div>
-
-              {/* Info */}
-              <div
-                className={cn("min-w-0 flex-1", !selectionMode && "pr-0 max-md:pr-32 [@media(pointer:coarse)]:pr-32")}
-              >
-                <div
-                  data-character-row-name
-                  className="w-fit max-w-full truncate text-sm font-medium"
-                  style={
-                    charNameColor
-                      ? charNameColor.startsWith("linear-gradient")
-                        ? {
-                            background: charNameColor,
-                            backgroundRepeat: "no-repeat",
-                            backgroundSize: "100% 100%",
-                            WebkitBackgroundClip: "text",
-                            WebkitTextFillColor: "transparent",
-                            backgroundClip: "text",
-                            color: "transparent",
-                            display: "inline-block",
-                          }
-                        : { color: charNameColor }
-                      : undefined
-                  }
-                >
-                  {charName}
-                </div>
-                {charTitle && (
-                  <div className="truncate text-[0.625rem] italic text-[var(--muted-foreground)]">{charTitle}</div>
-                )}
-                {previewMetadata && (
-                  <div className="truncate text-[0.625rem] text-[var(--muted-foreground)]">{previewMetadata}</div>
-                )}
-                <div
-                  className="mari-chrome-text-muted flex items-center gap-1 text-[0.625rem]"
-                  title={localizeUi(
-                    "ui.panels.characterspanel.estimatedFromCharacterCardTextFieldsActualTokenizerCounts",
-                  )}
-                >
-                  <Hash size="0.5625rem" />
-                  {formatEstimatedTokens(tokenEstimate, localizeUi)}
-                </div>
-                {charTags.length > 0 && (
-                  <div data-character-row-tags className="mt-0.5 flex flex-wrap gap-0.5">
-                    {charTags.slice(0, 3).map((tag) => (
-                      <span
-                        key={tag}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleIncludedTag(tag);
-                        }}
-                        className="mari-chrome-muted-badge cursor-pointer px-1.5 py-px text-[0.5rem] transition-all hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]"
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                    {charTags.length > 3 && (
-                      <span className="mari-chrome-tag bg-[var(--secondary)] px-1.5 py-px text-[0.5rem] text-[var(--muted-foreground)]">
-                        +{charTags.length - 3}
-                      </span>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Actions */}
-              {!selectionMode && (
-                <div
-                  data-character-row-actions
-                  className="pointer-events-none absolute right-2 top-1/2 z-10 flex w-auto -translate-y-1/2 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] p-1 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
-                >
-                  <ChatResourceActionButton
-                    payload={{ version: 1, kind: "character", ids: [char.id], label: charName }}
-                    size="row"
-                    className="mari-character-row-action flex w-7 items-center justify-center max-md:w-6"
-                    iconClassName="h-4 w-4 shrink-0 max-md:h-3.5 max-md:w-3.5"
-                  />
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      duplicateCharacter.mutate(char.id, {
-                        onSuccess: () => {
-                          toast.success(
-                            localizeUi("ui.panels.characterspanel.duplicatedValue1", {
-                              value1: char.parsed?.name ?? localizeUi("ui.noodle.noodlehome.character"),
-                            }),
-                          );
-                        },
-                      });
-                    }}
-                    className="mari-chrome-control mari-character-row-action flex w-7 items-center justify-center max-md:w-6"
-                    title={localizeUi("ui.presets.sectionstab.duplicate")}
-                    aria-label={localizeUi("ui.presets.sectionstab.duplicate")}
-                  >
-                    <Copy className="h-4 w-4 shrink-0 max-md:h-3.5 max-md:w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={async (e) => {
-                      e.stopPropagation();
-                      if (
-                        !(await showConfirmDialog({
-                          title: localizeUi("ui.panels.characterspanel.deleteCharacter"),
-                          message: localizeUi("ui.panels.characterspanel.deleteValue1ThisCannotBeUndone", {
-                            value1: char.parsed?.name ?? localizeUi("ui.panels.characterspanel.thisCharacter"),
-                          }),
-                          confirmLabel: localizeUi("lorebook.editor.batch.delete"),
-                          tone: "destructive",
-                        }))
-                      ) {
-                        return;
-                      }
-                      deleteCharacter.mutate(char.id);
-                    }}
-                    className="mari-chrome-control mari-character-row-action flex w-7 items-center justify-center max-md:w-6"
-                    title={localizeUi("lorebook.editor.batch.delete")}
-                    aria-label={localizeUi("lorebook.editor.batch.delete")}
-                  >
-                    <Trash2 className="h-4 w-4 shrink-0 max-md:h-3.5 max-md:w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      openModal("start-character-chat", {
-                        characterId: char.id,
-                        characterName: charName,
-                      });
-                    }}
-                    className="mari-chrome-control mari-character-row-action flex w-7 items-center justify-center border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-button-bg-active)] text-[var(--marinara-chat-chrome-button-text-active)] max-md:w-6"
-                    title={localizeUi("ui.panels.characterspanel.startNewChatWithValue1", {
-                      value1: charName,
-                    })}
-                    aria-label={localizeUi("ui.panels.characterspanel.startNewChatWithValue1", {
-                      value1: charName,
-                    })}
-                  >
-                    <MessageCircle className="h-3.5 w-3.5 shrink-0 max-md:h-3 max-md:w-3" />
-                  </button>
-                </div>
-              )}
-            </div>
-          );
-        })}
+        {organizer.groupByCampaign ? (
+          <LibraryCampaignSections
+            campaigns={
+              organizer.filteredCampaignId
+                ? organizer.campaigns.filter((campaign) => campaign.id === organizer.filteredCampaignId)
+                : organizer.campaigns
+            }
+            items={sortedCharacters}
+            membership={organizer.membership}
+            collapsedIds={organizer.collapsedCampaignIds}
+            onToggle={organizer.setCampaignSectionCollapsed}
+            renderItem={(char, sectionId) =>
+              renderRootCharacter(char, { rowKey: `${sectionId}:${char.id}`, campaignId: sectionId })
+            }
+            showUnassigned={organizer.filteredCampaignId === null}
+          />
+        ) : (
+          visibleRootCharacters.map((char) => renderRootCharacter(char))
+        )}
       </div>
 
       {characterPages.hasNextPage && (
@@ -1797,25 +1789,23 @@ export function CharactersPanel() {
           selectedCount={selectedCharacterIds.size}
           extraAction={
             <>
-              <button
-                type="button"
-                onClick={() => void handleMoveSelected()}
-                disabled={selectedCharacterIds.size === 0 || parsedGroups.length === 0 || movingSelected}
-                className="mari-chrome-control min-w-0 flex-1 px-2 py-2 text-xs"
-                title={localizeUi("lorebook.editor.batch.move")}
-              >
-                <FolderInput size="0.75rem" />
-                <span className="truncate">{localizeUi("lorebook.editor.batch.move")}</span>
-              </button>
+              <LibrarySelectionExtraActions
+                disabled={selectedCharacterIds.size === 0}
+                onMove={parsedGroups.length > 0 ? handleMoveSelected : undefined}
+                onCampaigns={
+                  organizer.campaignsAvailable ? () => organizer.openCampaignPicker([...selectedCharacterIds]) : undefined
+                }
+              />
               <button
                 type="button"
                 onClick={() => setBulkTagsOpen(true)}
                 disabled={selectedCharacterIds.size === 0}
                 className="mari-chrome-control min-w-0 flex-1 px-2 py-2 text-xs"
                 title={localizeUi("characters.bulkTags.action")}
+                aria-label={localizeUi("characters.bulkTags.action")}
               >
-                <Tags size="0.75rem" />
-                <span className="truncate">{localizeUi("characters.bulkTags.actionShort")}</span>
+                <Tags size="0.75rem" className="shrink-0" />
+                <span className="truncate max-[400px]:sr-only">{localizeUi("characters.bulkTags.actionShort")}</span>
               </button>
             </>
           }
@@ -1842,6 +1832,7 @@ export function CharactersPanel() {
           exitSelectionMode();
         }}
       />
+      {organizer.modals}
     </div>
   );
 }

@@ -150,6 +150,8 @@ export const createGroupSchema = z.object({
   description: z.string().default(""),
   avatarPath: z.string().nullable().optional(),
   characterIds: z.array(z.string()).default([]),
+  /** Parent character folder for nesting; omitted or null keeps the folder at the root. */
+  parentId: z.string().min(1).max(256).nullable().optional(),
 });
 
 export const updateGroupSchema = createGroupSchema.partial();
