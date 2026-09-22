@@ -72,6 +72,12 @@ type ChatMemory = {
 };
 
 const PRIOR_SESSION_CACHE_MS = 60_000;
+/**
+ * A projection of a long campaign holds every fact of every session (tens of MB); keep only the few chats being
+ * played or browsed. Earlier-session memory is kept for at most one campaign's worth of sessions.
+ */
+const MAX_CACHED_PROJECTIONS = 4;
+const MAX_CACHED_SESSION_MEMORIES = 24;
 const memoryCache = new Map<string, { at: number; memory: ChatMemory }>();
 const sourceCache = new Map<string, { at: number; version: string; sources: Map<string, CampaignMemorySource> }>();
 
@@ -110,7 +116,7 @@ function gameIdOf(row: ChatRow): string {
 function nameKey(value: string): string {
   return value
     .normalize("NFKD")
-    .replace(/[̀-ͯ]/gu, "")
+    .replace(/[\u0300-\u036f]/gu, "")
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
@@ -173,7 +179,13 @@ async function readChatMemory(db: DB, chatId: string, cache: boolean): Promise<C
     storage.listRelationships(scope),
   ]);
   const memory = { entities, facts, knowledge, events, currentState, relationships };
-  if (cache) memoryCache.set(chatId, { at: Date.now(), memory });
+  if (cache) {
+    const now = Date.now();
+    for (const [key, entry] of memoryCache) if (now - entry.at >= PRIOR_SESSION_CACHE_MS) memoryCache.delete(key);
+    memoryCache.delete(chatId);
+    if (memoryCache.size >= MAX_CACHED_SESSION_MEMORIES) memoryCache.delete(memoryCache.keys().next().value!);
+    memoryCache.set(chatId, { at: now, memory });
+  }
   return memory;
 }
 
@@ -220,10 +232,16 @@ function memoryGeneration(db: DB): string | null {
 export async function readCampaignMemoryProjection(db: DB, chatId: string): Promise<CampaignMemoryProjection> {
   const generation = memoryGeneration(db);
   const cached = generation === null ? undefined : projectionCache.get(chatId);
-  if (cached && cached.generation === generation) return cached.projection;
+  if (cached && cached.generation === generation) {
+    // Most recently used last, so eviction drops the chat nobody has read for longest.
+    projectionCache.delete(chatId);
+    projectionCache.set(chatId, cached);
+    return cached.projection;
+  }
   const projection = await buildCampaignMemoryProjection(db, chatId);
   if (generation !== null && memoryGeneration(db) === generation) {
-    if (projectionCache.size >= 16) projectionCache.delete(projectionCache.keys().next().value!);
+    projectionCache.delete(chatId);
+    if (projectionCache.size >= MAX_CACHED_PROJECTIONS) projectionCache.delete(projectionCache.keys().next().value!);
     projectionCache.set(chatId, { generation, projection });
   }
   return projection;
