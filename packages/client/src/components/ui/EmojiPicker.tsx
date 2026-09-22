@@ -926,7 +926,7 @@ export function EmojiPicker({
           <button
             type="button"
             onClick={() => setActiveCategory("custom")}
-            aria-label={customTab.label ?? "Custom emojis"}
+            aria-label={customTab.label ?? localizeUi("ui.ui.emojipicker.customEmojis")}
             aria-pressed={activeCategory === "custom"}
             className={cn(
               "ml-auto flex items-center rounded-md p-1.5 text-sm transition-colors",
@@ -1003,7 +1003,7 @@ export function EmojiPicker({
   return createPortal(
     <div
       ref={panelRef}
-      className="fixed z-[9999] flex h-[22rem] w-[21rem] max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-xl border border-foreground/10 bg-[var(--card)] shadow-xl"
+      className="fixed z-[10050] flex h-[22rem] w-[21rem] max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-xl border border-foreground/10 bg-[var(--card)] shadow-xl"
       style={{
         ...(pos.top != null ? { top: pos.top } : {}),
         ...(pos.left != null ? { left: pos.left } : {}),

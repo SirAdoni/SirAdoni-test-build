@@ -69,7 +69,7 @@ export function ContextMenu({ x, y, items, onClose, destructiveTone = "destructi
     <div
       ref={ref}
       role="menu"
-      style={{ position: "fixed", left: pos.left, top: pos.top, zIndex: 9999 }}
+      style={{ position: "fixed", left: pos.left, top: pos.top, zIndex: 10050 }}
       className="min-w-[12rem] rounded-lg border border-[var(--border)] bg-[var(--card)] py-1 shadow-xl animate-fade-in-up"
       onContextMenu={(e) => e.preventDefault()}
     >

@@ -105,7 +105,7 @@ export function CreateCharacterModal({ open, onClose }: Props) {
               fileInputRef.current?.click();
             }
           }}
-          className="mari-chrome-accent-tile mari-accent-animated group relative flex h-24 min-w-24 w-auto items-center justify-start overflow-visible rounded-full transition-transform hover:scale-105"
+          className="mari-chrome-accent-tile mari-accent-animated group relative flex h-24 min-w-24 w-auto items-center justify-center overflow-visible rounded-full transition-transform hover:scale-105"
         >
           {avatarDataUrl ? (
             <CharacterPhoto

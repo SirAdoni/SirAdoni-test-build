@@ -1920,7 +1920,8 @@
 .mari-editor-byline {
   display: flex;
   min-width: 0;
-  max-width: 42%;
+  /* 42% cut a short "No creator · v1.1" to "No c…" on phone-width headers. */
+  max-width: 65%;
   flex: 0 1 auto;
   align-items: baseline;
   gap: 0.25rem;
@@ -6320,6 +6321,8 @@ strong {
     flex: 1 1 0;
     min-width: 0;
     width: auto !important;
+    /* Touch target: the 48px bar has room for a 36px-tall hit area. */
+    height: 2.25rem !important;
     padding: clamp(3px, 1.35vw, 7px) !important;
   }
 
@@ -6606,7 +6609,6 @@ strong {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
 }
-
 
 /* ─────────────────────────────────────────────
    22. DISPLAY SIZE SCALING

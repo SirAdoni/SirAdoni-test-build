@@ -575,17 +575,17 @@ export function BackgroundPicker({
   const handleDeleteFolder = useCallback(
     async (folder: BackgroundLibraryFolder, itemCount: number) => {
       const confirmed = await confirmNonEmptyFolderDelete(itemCount, {
-        title: "Delete Background Folder",
+        title: localizeUi("ui.panels.backgroundpicker.deleteFolderTitle"),
         message:
           itemCount > 0
-            ? `Delete “${folder.name}”? Its ${itemCount} background${itemCount === 1 ? "" : "s"} will return to the unfiled list.`
-            : `Delete “${folder.name}”?`,
-        confirmLabel: "Delete Folder",
+            ? localizeUi("ui.panels.backgroundpicker.deleteFolderMessage", { name: folder.name, count: itemCount })
+            : localizeUi("ui.panels.backgroundpicker.deleteEmptyFolderMessage", { name: folder.name }),
+        confirmLabel: localizeUi("ui.panels.connectionspanel.deleteFolderTitle"),
         tone: "destructive",
       });
       if (confirmed) deleteFolder.mutate(folder.id);
     },
-    [deleteFolder],
+    [deleteFolder, localizeUi],
   );
 
   const assignBackground = useCallback(

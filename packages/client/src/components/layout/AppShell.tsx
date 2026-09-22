@@ -61,7 +61,7 @@ import {
   useMemo,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
-  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
@@ -643,8 +643,8 @@ export function AppShell() {
   }, [activeChat?.metadata, activeChatId, clearAutonomousUnread, clearUnread, isClearingAutonomousUnread]);
 
   const startSidebarResize = useCallback(
-    (event: ReactMouseEvent<HTMLDivElement>) => {
-      if (shellOverlayMode) return;
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (shellOverlayMode || (event.pointerType === "mouse" && event.button !== 0)) return;
       event.preventDefault();
       const originalCursor = document.body.style.cursor;
       const originalUserSelect = document.body.style.userSelect;
@@ -653,7 +653,7 @@ export function AppShell() {
       sidebarDragWidthRef.current = sharedSidebarWidth;
       setSidebarDragWidth(sharedSidebarWidth);
 
-      const onMove = (moveEvent: MouseEvent) => {
+      const onMove = (moveEvent: PointerEvent) => {
         const nextWidth = clampWidth(moveEvent.clientX, SHARED_SIDEBAR_WIDTH_MIN, SHARED_SIDEBAR_WIDTH_MAX);
         sidebarDragWidthRef.current = nextWidth;
         setSidebarDragWidth(nextWidth);
@@ -669,21 +669,23 @@ export function AppShell() {
         setSidebarDragWidth(null);
         document.body.style.cursor = originalCursor;
         document.body.style.userSelect = originalUserSelect;
-        window.removeEventListener("mousemove", onMove);
-        window.removeEventListener("mouseup", finishResize);
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", finishResize);
+        window.removeEventListener("pointercancel", finishResize);
         window.removeEventListener("blur", finishResize);
       };
 
-      window.addEventListener("mousemove", onMove);
-      window.addEventListener("mouseup", finishResize);
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", finishResize);
+      window.addEventListener("pointercancel", finishResize);
       window.addEventListener("blur", finishResize);
     },
     [setRightPanelWidth, setSidebarWidth, sharedSidebarWidth, shellOverlayMode],
   );
 
   const startRightPanelResize = useCallback(
-    (event: ReactMouseEvent<HTMLDivElement>) => {
-      if (shellOverlayMode) return;
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (shellOverlayMode || (event.pointerType === "mouse" && event.button !== 0)) return;
       event.preventDefault();
       const originalCursor = document.body.style.cursor;
       const originalUserSelect = document.body.style.userSelect;
@@ -692,7 +694,7 @@ export function AppShell() {
       rightPanelDragWidthRef.current = sharedSidebarWidth;
       setRightPanelDragWidth(sharedSidebarWidth);
 
-      const onMove = (moveEvent: MouseEvent) => {
+      const onMove = (moveEvent: PointerEvent) => {
         const nextWidth = clampWidth(
           window.innerWidth - moveEvent.clientX,
           SHARED_SIDEBAR_WIDTH_MIN,
@@ -712,13 +714,15 @@ export function AppShell() {
         setRightPanelDragWidth(null);
         document.body.style.cursor = originalCursor;
         document.body.style.userSelect = originalUserSelect;
-        window.removeEventListener("mousemove", onMove);
-        window.removeEventListener("mouseup", finishResize);
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", finishResize);
+        window.removeEventListener("pointercancel", finishResize);
         window.removeEventListener("blur", finishResize);
       };
 
-      window.addEventListener("mousemove", onMove);
-      window.addEventListener("mouseup", finishResize);
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", finishResize);
+      window.addEventListener("pointercancel", finishResize);
       window.addEventListener("blur", finishResize);
     },
     [setRightPanelWidth, setSidebarWidth, sharedSidebarWidth, shellOverlayMode],
@@ -1303,9 +1307,9 @@ export function AppShell() {
           aria-valuemax={SHARED_SIDEBAR_WIDTH_MAX}
           aria-valuenow={Math.round(liveSidebarWidth)}
           tabIndex={0}
-          onMouseDown={startSidebarResize}
+          onPointerDown={startSidebarResize}
           onKeyDown={adjustSidebarWidth}
-          className="absolute inset-y-0 z-40 hidden w-1 cursor-col-resize bg-transparent transition-colors hover:bg-[var(--primary)]/30 focus-visible:bg-[var(--primary)]/40 focus-visible:outline-none md:block"
+          className="absolute inset-y-0 z-40 hidden w-1 cursor-col-resize touch-none bg-transparent transition-colors hover:bg-[var(--primary)]/30 focus-visible:bg-[var(--primary)]/40 focus-visible:outline-none md:block"
           style={{ left: sidebarOpen ? liveSidebarWidth : 0 }}
         />
       )}
@@ -1517,9 +1521,9 @@ export function AppShell() {
           aria-valuemax={SHARED_SIDEBAR_WIDTH_MAX}
           aria-valuenow={Math.round(liveRightPanelWidth)}
           tabIndex={0}
-          onMouseDown={startRightPanelResize}
+          onPointerDown={startRightPanelResize}
           onKeyDown={adjustRightPanelWidth}
-          className="absolute inset-y-0 z-40 hidden w-1 cursor-col-resize bg-transparent transition-colors hover:bg-[var(--primary)]/30 focus-visible:bg-[var(--primary)]/40 focus-visible:outline-none md:block"
+          className="absolute inset-y-0 z-40 hidden w-1 cursor-col-resize touch-none bg-transparent transition-colors hover:bg-[var(--primary)]/30 focus-visible:bg-[var(--primary)]/40 focus-visible:outline-none md:block"
           style={{ right: rightPanelOpen ? Math.max(0, liveRightPanelWidth - 4) : 0 }}
         />
       )}

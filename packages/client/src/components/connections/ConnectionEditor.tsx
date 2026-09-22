@@ -4,7 +4,7 @@ import { useEffectiveGenerationParameters } from "../../hooks/use-effective-gene
 // Full-Page Connection Editor
 // Click a connection → opens this editor (like presets/characters)
 // ──────────────────────────────────────────────
-import { useState, useCallback, useEffect, useMemo, useRef, type ChangeEvent } from "react";
+import { useState, useCallback, useEffect, useId, useMemo, useRef, type ChangeEvent } from "react";
 import { useUIStore } from "../../stores/ui.store";
 import {
   useConnection,
@@ -63,6 +63,10 @@ import {
   type ConnectionTransferRow,
 } from "../../lib/connection-transfer";
 import { DraftNumberInput } from "../ui/DraftNumberInput";
+import { useEditorLeaveSave } from "../../hooks/use-editor-leave-save";
+import { leaveWithoutSaving } from "../../lib/editor-leave";
+import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
+import { translate } from "../../localization/i18n";
 import { HelpTooltip } from "../ui/HelpTooltip";
 import { SettingsCheckbox, SettingsSwitch } from "../panels/settings/SettingControls";
 import {
@@ -224,7 +228,7 @@ function normalizeEndpointUrlInput(raw: string, label: string): { value: string;
   try {
     new URL(value);
   } catch {
-    return { value: trimmed, error: `${label} must be a valid URL, like http://localhost:11434/v1.` };
+    return { value: trimmed, error: translate("ui.connections.connectioneditor.urlMustBeValid", { label }) };
   }
   return { value, error: null };
 }
@@ -315,6 +319,7 @@ function normalizeMaxParallelJobs(value: unknown): number {
 export function ConnectionEditor() {
   const { t: localizeUi } = useUiTranslation();
   const { t } = useTranslation();
+  const localize = useLocalizedUiText();
   const connectionDetailId = useUIStore((s) => s.connectionDetailId);
   const closeConnectionDetail = useUIStore((s) => s.closeConnectionDetail);
 
@@ -336,6 +341,12 @@ export function ConnectionEditor() {
   const { data: allPresets } = usePresets();
 
   const [dirty, setDirty] = useState(false);
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
+  const loadedConnectionIdRef = useRef<string | null>(null);
+  // While our own save is in flight its refetch must hydrate (clearing the
+  // typed API key, applying server normalization) even though `dirty` is set.
+  const savingRef = useRef(false);
   const setEditorDirty = useUIStore((s) => s.setEditorDirty);
   const imageStyleProfiles = useUIStore((s) => s.imageStyleProfiles);
   useEffect(() => {
@@ -455,18 +466,28 @@ export function ConnectionEditor() {
     () =>
       isLocalAuthConnectionProvider(localProvider) || isChatGPTImageService
         ? { value: "", error: null }
-        : normalizeEndpointUrlInput(localBaseUrl, "Base URL"),
-    [isChatGPTImageService, localBaseUrl, localProvider],
+        : normalizeEndpointUrlInput(localBaseUrl, localizeUi("ui.connections.connectioneditor.baseUrl")),
+    [isChatGPTImageService, localBaseUrl, localProvider, localizeUi],
   );
   const embeddingBaseUrlValidation = useMemo(
-    () => normalizeEndpointUrlInput(localEmbeddingBaseUrl, "Embedding endpoint URL"),
-    [localEmbeddingBaseUrl],
+    () =>
+      normalizeEndpointUrlInput(
+        localEmbeddingBaseUrl,
+        localizeUi("ui.connections.connectioneditor.embeddingEndpointUrl"),
+      ),
+    [localEmbeddingBaseUrl, localizeUi],
   );
 
   // Populate from server
   useEffect(() => {
     if (!conn) return;
     const c = conn as Record<string, unknown>;
+    const loadedId = typeof c.id === "string" ? c.id : null;
+    // A background refetch of the same connection (a shuffle toggle, a default
+    // change in the panel, a save of another field) must not wipe unsaved edits.
+    if (dirtyRef.current && !savingRef.current && loadedId !== null && loadedId === loadedConnectionIdRef.current)
+      return;
+    loadedConnectionIdRef.current = loadedId;
     const model = typeof c.model === "string" ? c.model : "";
     setLocalName((c.name as string) ?? "");
     const provider = (c.provider as APIProvider) ?? "openai";
@@ -525,11 +546,8 @@ export function ConnectionEditor() {
     setLocalImageService(imageService);
     setLocalImageEndpointId((c.imageEndpointId as string) ?? "");
     setLocalImagePromptInstructions((c.imagePromptInstructions as string) ?? "");
-    setLocalImageGenerationQuality(
-      c.imageGenerationQuality === "low" || c.imageGenerationQuality === "medium" || c.imageGenerationQuality === "high"
-        ? c.imageGenerationQuality
-        : "auto",
-    );
+    // Keep the GPT Image 2.5 tiers (xhigh, max) the server stores for that model.
+    setLocalImageGenerationQuality(resolveOpenAIImageQuality(c.imageGenerationQuality, model));
     setLocalMaxImageReferences(
       typeof c.maxImageReferences === "number" &&
         Number.isInteger(c.maxImageReferences) &&
@@ -601,7 +619,10 @@ export function ConnectionEditor() {
         }
       }
       const lineNum = charPos !== null ? wf.slice(0, charPos).split("\n").length : null;
-      const labelMsg = lineNum !== null ? `Invalid JSON on line ${lineNum}` : "Invalid JSON";
+      const labelMsg =
+        lineNum !== null
+          ? localizeUi("ui.connections.connectioneditor.invalidJsonOnLine", { line: lineNum })
+          : localizeUi("ui.connections.connectioneditor.invalidJson");
       const label = labelMsg + ": " + msg.split("\n")[0];
       return { parseError: true as const, label, charPos };
     }
@@ -645,7 +666,15 @@ export function ConnectionEditor() {
       return !wf.includes(token);
     });
     return { parseError: false as const, missing };
-  }, [localBaseUrl, localComfyuiWorkflow, localModel, localProvider, localVideoGenerationSource, localVideoService]);
+  }, [
+    localBaseUrl,
+    localComfyuiWorkflow,
+    localModel,
+    localProvider,
+    localVideoGenerationSource,
+    localVideoService,
+    localizeUi,
+  ]);
 
   const effectiveVideoGenerationSource = useMemo(() => {
     if (localProvider !== "video_generation") return "";
@@ -785,17 +814,6 @@ export function ConnectionEditor() {
 
   // Subscription connections can report their real model list and what each model accepts, so load it on open.
   const liveModelsRequestedFor = useRef<string | null>(null);
-  useEffect(() => {
-    if (localProvider !== "claude_subscription" || !connectionDetailId) return;
-    if (liveModelsRequestedFor.current === connectionDetailId) return;
-    liveModelsRequestedFor.current = connectionDetailId;
-    fetchModels.mutate(connectionDetailId, {
-      onSuccess: (data) => {
-        const result = data as { models: RemoteConnectionModel[] };
-        if (Array.isArray(result.models)) setRemoteModels(result.models);
-      },
-    });
-  }, [connectionDetailId, fetchModels, localProvider]);
 
   // Clear remote models when provider changes
   useEffect(() => {
@@ -803,7 +821,24 @@ export function ConnectionEditor() {
     setRemoteLoras([]);
     fetchScopeRef.current++;
     setFetchError(null);
+    // The cleared list must be loaded again, even for a connection opened earlier.
+    liveModelsRequestedFor.current = null;
   }, [localProvider, selectedImageService, connectionDetailId]);
+
+  // Declared after the clear effect so the scope captured here already includes this commit's bump.
+  useEffect(() => {
+    if (localProvider !== "claude_subscription" || !connectionDetailId) return;
+    if (liveModelsRequestedFor.current === connectionDetailId) return;
+    liveModelsRequestedFor.current = connectionDetailId;
+    const requestScope = fetchScopeRef.current;
+    fetchModels.mutate(connectionDetailId, {
+      onSuccess: (data) => {
+        if (fetchScopeRef.current !== requestScope) return;
+        const result = data as { models: RemoteConnectionModel[] };
+        if (Array.isArray(result.models)) setRemoteModels(result.models);
+      },
+    });
+  }, [connectionDetailId, fetchModels, localProvider]);
 
   useEffect(() => {
     if (!showModelDropdown) return;
@@ -918,6 +953,7 @@ export function ConnectionEditor() {
     } else if (clearStoredApiKeyOnSave) {
       payload.apiKey = "";
     }
+    savingRef.current = true;
     try {
       // Persist media/default parameters first. The main connection save runs
       // last so its query refresh cannot race in an older defaults snapshot.
@@ -974,11 +1010,15 @@ export function ConnectionEditor() {
       setSavedFlash(true);
       setTimeout(() => setSavedFlash(false), 1500);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to save connection";
+      const message =
+        err instanceof Error ? err.message : localizeUi("ui.connections.connectioneditor.failedToSaveConnection");
       setSaveError(message);
       throw err instanceof Error ? err : new Error(message);
+    } finally {
+      savingRef.current = false;
     }
   }, [
+    localizeUi,
     connectionDetailId,
     localName,
     localProvider,
@@ -1030,6 +1070,16 @@ export function ConnectionEditor() {
     isChatGPTImageService,
   ]);
 
+  // Opening another connection (or any other editor) while this one has unsaved
+  // edits saves them first, like the character, persona, lorebook and preset
+  // editors. A failed save keeps this draft mounted and reports the error.
+  useEditorLeaveSave(
+    `connectionDetailId:${connectionDetailId}`,
+    dirty,
+    handleSave,
+    updateConnection.isPending || saveConnectionDefaults.isPending,
+  );
+
   const handleDelete = useCallback(async () => {
     if (!connectionDetailId) return;
     if (
@@ -1044,7 +1094,7 @@ export function ConnectionEditor() {
     ) {
       return;
     }
-    deleteConnection.mutate(connectionDetailId, { onSuccess: () => closeConnectionDetail() });
+    deleteConnection.mutate(connectionDetailId, { onSuccess: () => leaveWithoutSaving(closeConnectionDetail) });
   }, [closeConnectionDetail, conn?.name, connectionDetailId, deleteConnection, localizeUi]);
 
   const handleExportConnection = useCallback(async () => {
@@ -1367,10 +1417,12 @@ export function ConnectionEditor() {
       },
       onError: (err) => {
         if (fetchScopeRef.current !== requestScope) return;
-        setFetchError(err instanceof Error ? err.message : "Failed to fetch models");
+        setFetchError(
+          err instanceof Error ? err.message : localizeUi("ui.connections.connectioneditor.failedToFetchModels"),
+        );
       },
     });
-  }, [connectionDetailId, dirty, handleSave, fetchModels]);
+  }, [connectionDetailId, dirty, handleSave, fetchModels, localizeUi]);
 
   const selectModel = useCallback(
     (model: { id: string; context?: number; maxOutput?: number; isRemote?: boolean }) => {
@@ -1428,13 +1480,17 @@ export function ConnectionEditor() {
   const usesLocalAuth = isLocalAuthProvider || isChatGPTImageService;
   const supportsDirectEmbeddingConfig = providerSupportsDirectEmbeddingConfig(localProvider);
   const canTreatAsLocalEndpoint = canProviderTreatAsLocalEndpoint(localProvider);
-  const modelFetchSourceLabel = isGrokSubscriptionProvider ? "Grok CLI" : "API";
-  const modelFetchButtonLabel = isGrokSubscriptionProvider ? "Fetch Models from Grok CLI" : "Fetch Models from API";
+  const modelFetchSourceLabel = isGrokSubscriptionProvider
+    ? localizeUi("ui.connections.connectioneditor.grokCli")
+    : localizeUi("ui.connections.connectioneditor.api");
+  const modelFetchButtonLabel = isGrokSubscriptionProvider
+    ? localizeUi("ui.connections.connectioneditor.fetchModelsFromGrokCli")
+    : localizeUi("ui.connections.connectioneditor.fetchModelsFromApi");
   const emptyModelLabel = isGrokSubscriptionProvider
-    ? "Use Grok CLI default model"
+    ? localizeUi("ui.connections.connectioneditor.useGrokCliDefaultModel")
     : isChatGPTImageService
       ? localizeUi("ui.connections.connectioneditor.chatgptImageModelAutomatic")
-      : "Select a model…";
+      : localizeUi("ui.connections.connectioneditor.selectAModel");
   const canSendTestMessage = isGrokSubscriptionProvider || Boolean(localModel.trim());
 
   if (!connectionDetailId) return null;
@@ -1464,7 +1520,13 @@ export function ConnectionEditor() {
     <div className="mari-editor-shell mari-editor-legacy-bridge flex flex-1 flex-col overflow-hidden">
       {/* ── Header ── */}
       <div className="mari-editor-header">
-        <button onClick={handleClose} className="mari-editor-action inline-flex shrink-0">
+        <button
+          type="button"
+          onClick={handleClose}
+          aria-label={localizeUi("navigation.common.back")}
+          title={localizeUi("navigation.common.back")}
+          className="mari-editor-action inline-flex shrink-0"
+        >
           <ArrowLeft size="1.125rem" />
         </button>
         <div className="mari-editor-icon-tile">
@@ -1477,6 +1539,7 @@ export function ConnectionEditor() {
             markDirty();
           }}
           className="mari-editor-title-input min-w-0 flex-1 placeholder:text-[var(--marinara-editor-muted)]"
+          aria-label={localizeUi("ui.connections.connectioneditor.connectionName")}
           placeholder={localizeUi("ui.connections.connectioneditor.connectionName")}
         />
         <div className="mari-editor-actions flex shrink-0">
@@ -1498,7 +1561,7 @@ export function ConnectionEditor() {
             </span>
           )}
           <button
-            onClick={handleSave}
+            onClick={() => void handleSave().catch(() => undefined)}
             aria-label={localizeUi("ui.noodle.noodlehome.save")}
             disabled={updateConnection.isPending || saveConnectionDefaults.isPending || !!swarmUiWorkflowError}
             className="mari-editor-action mari-editor-action--primary inline-flex disabled:opacity-50"
@@ -1536,7 +1599,7 @@ export function ConnectionEditor() {
               {localizeUi("ui.connections.connectioneditor.keepEditing")}
             </button>
             <button
-              onClick={() => closeConnectionDetail()}
+              onClick={() => leaveWithoutSaving(closeConnectionDetail)}
               className="mari-editor-action mari-editor-action--accent mari-editor-action--compact inline-flex rounded-lg px-3 py-1"
             >
               {localizeUi("ui.connections.connectioneditor.discard")}
@@ -1545,7 +1608,8 @@ export function ConnectionEditor() {
               onClick={async () => {
                 try {
                   await handleSave();
-                  closeConnectionDetail();
+                  // Already saved: skip the leave handler's second save.
+                  leaveWithoutSaving(closeConnectionDetail);
                 } catch {
                   // Keep the editor open so the user can fix the failed save.
                 }
@@ -1563,7 +1627,12 @@ export function ConnectionEditor() {
         <div className="flex items-center gap-2 bg-red-500/10 px-4 py-2 text-xs text-red-400">
           <AlertCircle size="0.8125rem" />
           <span className="flex-1">{saveError}</span>
-          <button onClick={() => setSaveError(null)} className="rounded-lg px-2 py-0.5 hover:bg-red-500/20">
+          <button
+            type="button"
+            onClick={() => setSaveError(null)}
+            aria-label={localizeUi("ui.chat.slashcommandfeedback.dismiss")}
+            className="rounded-lg px-2 py-0.5 hover:bg-red-500/20"
+          >
             <X size="0.75rem" />
           </button>
         </div>
@@ -1584,6 +1653,7 @@ export function ConnectionEditor() {
                 setLocalName(e.target.value);
                 markDirty();
               }}
+              aria-label={localizeUi("ui.connections.connectioneditor.connectionName_669ca65")}
               className="w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm ring-1 ring-[var(--border)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
               placeholder={localizeUi("ui.connections.connectioneditor.eGClaudeSonnetRp")}
             />
@@ -1822,7 +1892,7 @@ export function ConnectionEditor() {
                     className="mt-1.5 inline-flex items-center gap-1 text-[0.6875rem] font-medium text-sky-400 transition-colors hover:text-sky-300"
                   >
                     <ExternalLink size="0.625rem" />
-                    {apiKeyLink.label}
+                    {localize(apiKeyLink.label)}
                   </a>
                 )}
                 {localProvider === "custom" && (
@@ -2208,8 +2278,18 @@ export function ConnectionEditor() {
             <div ref={modelDropdownRef} className={cn("relative min-w-0", showModelDropdown && "z-50")}>
               <div
                 onClick={() => setShowModelDropdown(!showModelDropdown)}
+                // Closed, the picker is a button; open, focus moves to its search input.
+                role={showModelDropdown ? undefined : "button"}
+                tabIndex={showModelDropdown ? undefined : 0}
+                aria-haspopup="listbox"
+                aria-expanded={showModelDropdown}
+                onKeyDown={(event) => {
+                  if (showModelDropdown || (event.key !== "Enter" && event.key !== " ")) return;
+                  event.preventDefault();
+                  setShowModelDropdown(true);
+                }}
                 className={cn(
-                  "relative flex min-w-0 cursor-pointer items-center gap-2 rounded-xl bg-[var(--secondary)] px-3 py-2.5 ring-1 ring-[var(--border)] transition-all hover:ring-[var(--ring)]",
+                  "relative flex min-w-0 cursor-pointer items-center gap-2 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] bg-[var(--secondary)] px-3 py-2.5 ring-1 ring-[var(--border)] transition-all hover:ring-[var(--ring)]",
                   showModelDropdown && "z-50 ring-sky-400/50",
                 )}
               >
@@ -2415,33 +2495,6 @@ export function ConnectionEditor() {
               </div>
             )}
           </FieldGroup>
-
-          {supportsGptImageQuality && (
-            <FieldGroup
-              label={localizeUi("ui.connections.connectioneditor.gptImageQuality")}
-              icon={<Sparkles size="0.875rem" className="text-sky-400" />}
-              help={localizeUi(
-                isChatGPTImageService
-                  ? "ui.connections.connectioneditor.chatgptImageQualityHelp"
-                  : "ui.connections.connectioneditor.gptImageQualityHelp",
-              )}
-            >
-              <select
-                aria-label={localizeUi("ui.connections.connectioneditor.gptImageQuality")}
-                value={localImageGenerationQuality}
-                onChange={(event) => {
-                  setLocalImageGenerationQuality(event.target.value as ImageGenerationQuality);
-                  markDirty();
-                }}
-                className="w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm outline-none ring-1 ring-[var(--border)] transition-shadow focus:ring-sky-400/50"
-              >
-                <option value="auto">{localizeUi("ui.connections.connectioneditor.imageQualityAuto")}</option>
-                <option value="low">{localizeUi("ui.connections.connectioneditor.imageQualityLow")}</option>
-                <option value="medium">{localizeUi("ui.connections.connectioneditor.imageQualityMedium")}</option>
-                <option value="high">{localizeUi("ui.connections.connectioneditor.imageQualityHigh")}</option>
-              </select>
-            </FieldGroup>
-          )}
 
           {localProvider === "image_generation" && (
             <FieldGroup
@@ -2659,9 +2712,14 @@ export function ConnectionEditor() {
             <FieldGroup
               label={localizeUi("ui.connections.connectioneditor.gptImageQuality")}
               icon={<Sparkles size="0.875rem" className="text-sky-400" />}
-              help={localizeUi("ui.connections.connectioneditor.gptImageQualityHelp")}
+              help={localizeUi(
+                isChatGPTImageService
+                  ? "ui.connections.connectioneditor.chatgptImageQualityHelp"
+                  : "ui.connections.connectioneditor.gptImageQualityHelp",
+              )}
             >
               <select
+                aria-label={localizeUi("ui.connections.connectioneditor.gptImageQuality")}
                 value={effectiveImageGenerationQuality}
                 onChange={(event) => {
                   setLocalImageGenerationQuality(event.target.value as ImageGenerationQuality);
@@ -2753,6 +2811,7 @@ export function ConnectionEditor() {
             >
               <div className="flex items-center gap-3">
                 <DraftNumberInput
+                  ariaLabel={localizeUi("ui.connections.connectioneditor.maxContextWindow")}
                   value={localMaxContext}
                   min={1}
                   selectOnFocus
@@ -2785,6 +2844,8 @@ export function ConnectionEditor() {
                 <DraftNumberInput
                   value={localMaxTokensOverride ?? 0}
                   min={0}
+                  emptyValue={0}
+                  ariaLabel={localizeUi("ui.connections.connectioneditor.maxOutputTokensOverride")}
                   selectOnFocus
                   onCommit={(nextValue) => {
                     setLocalMaxTokensOverride(nextValue > 0 ? nextValue : null);
@@ -2817,6 +2878,7 @@ export function ConnectionEditor() {
             >
               <div className="flex items-center gap-3">
                 <DraftNumberInput
+                  ariaLabel={localizeUi("ui.connections.connectioneditor.maxParallelAgentJobs")}
                   value={localMaxParallelJobs}
                   min={1}
                   max={MAX_PARALLEL_JOBS}
@@ -3230,7 +3292,7 @@ export function ConnectionEditor() {
                         "ui.connections.connectioneditor.fastModeIsEffectivelyADeadFeatureTodayClaude_41c07ae",
                       ),
                       confirmLabel: localizeUi("ui.connections.connectioneditor.enableAnyway"),
-                      cancelLabel: "Keep it off",
+                      cancelLabel: localizeUi("ui.connections.connectioneditor.keepItOff"),
                       tone: "destructive",
                     });
                     if (!confirmed) return;
@@ -3501,7 +3563,7 @@ export function ConnectionEditor() {
                   </div>
                 ) : (
                   <span className="text-[var(--marinara-editor-accent)]">
-                    {msgResult.error || "No response received"}
+                    {msgResult.error || localizeUi("ui.connections.connectioneditor.noResponseReceived")}
                   </span>
                 )}
               </TestResultCard>
@@ -3694,11 +3756,14 @@ function FieldGroup({
   help?: string;
   children: React.ReactNode;
 }) {
+  const headingId = useId();
   return (
-    <div className="mari-editor-panel space-y-2 p-3">
+    <div role="group" aria-labelledby={headingId} className="mari-editor-panel space-y-2 p-3">
       <div className="flex items-center gap-1.5">
         {icon}
-        <h3 className="text-xs font-semibold text-[var(--foreground)]">{label}</h3>
+        <h3 id={headingId} className="text-xs font-semibold text-[var(--foreground)]">
+          {label}
+        </h3>
         {help && <HelpTooltip text={help} />}
       </div>
       {children}
@@ -4731,7 +4796,8 @@ function ChoiceSetting({
   onChange: (value: string) => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
-  const listId = `image-default-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+  // useId: a label-derived id collapses to "image-default--" for non-Latin locales.
+  const listId = useId();
   return (
     <label className="block">
       <span className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">{label}</span>
@@ -4775,14 +4841,17 @@ function NumberSetting({
   }, [value]);
 
   const commit = () => {
-    const parsed = Number(draft);
+    // An emptied field reverts instead of committing Number("") === 0, which
+    // would silently turn a random seed (-1) into a fixed seed of 0.
+    const parsed = draft.trim() === "" ? Number.NaN : Number(draft);
     if (!Number.isFinite(parsed)) {
       setDraft(String(value));
       return;
     }
     const clamped = Math.min(max, Math.max(min, integer ? Math.trunc(parsed) : parsed));
     setDraft(String(clamped));
-    onCommit(clamped);
+    // Tabbing through an untouched field must not mark the editor unsaved.
+    if (clamped !== value) onCommit(clamped);
   };
 
   return (

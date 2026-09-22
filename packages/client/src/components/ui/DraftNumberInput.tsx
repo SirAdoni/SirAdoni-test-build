@@ -15,6 +15,8 @@ interface DraftNumberInputProps {
   placeholder?: string;
   title?: string;
   id?: string;
+  /** Committed when the field is left empty, for fields where "empty" means "off" (e.g. 0). */
+  emptyValue?: number;
 }
 
 export function DraftNumberInput({
@@ -28,6 +30,7 @@ export function DraftNumberInput({
   commitOnValidChange = false,
   disabled = false,
   ariaLabel,
+  emptyValue,
   ariaDescribedBy,
   placeholder,
   title,
@@ -68,6 +71,17 @@ export function DraftNumberInput({
   };
 
   const commit = () => {
+    // Focusing and leaving an untouched field is not an edit: committing the
+    // unchanged value would mark editors unsaved on a simple Tab through.
+    if (draft.trim() === String(value)) {
+      setDraft(String(value));
+      return;
+    }
+    if (emptyValue !== undefined && !draft.trim()) {
+      onCommit(emptyValue);
+      setDraft(String(emptyValue));
+      return;
+    }
     const parsed = parseDraft(draft);
 
     if (parsed !== null) {

@@ -76,7 +76,18 @@ export function Modal({
   const [animating, setAnimating] = useState<"enter" | "exit" | null>(null);
   const enterRafRef = useRef<number | null>(null);
   const backdropDismiss = useBackdropDismiss(onClose, closeDisabled);
-  useDialogFocusScope(open && mounted, panelRef, initialFocusRef, restoreFocusRef, focusScopePortalSelector);
+  // Only the topmost dialog traps Tab: a confirm stacked over a settings dialog
+  // is portaled outside the parent panel, and both traps fighting over every
+  // Tab would pin focus to the confirm's first control.
+  const overlayRegistrationRef = useRef<ModalOverlayRegistration | null>(null);
+  useDialogFocusScope(
+    open && mounted,
+    panelRef,
+    initialFocusRef,
+    restoreFocusRef,
+    focusScopePortalSelector,
+    () => overlayRegistrationRef.current?.isTopmost() ?? true,
+  );
   // Hardware / gesture back closes the topmost modal. While closing is disabled
   // the press is absorbed rather than ignored, matching Escape: an in-flight
   // operation must not be interrupted by backgrounding the app.
@@ -112,7 +123,6 @@ export function Modal({
   // draw their own full-page shell learn that a dialog is stacked above them,
   // and the Escape listener below asks whether THIS dialog is the topmost one,
   // since every open Modal hears the same keypress and none stops propagation.
-  const overlayRegistrationRef = useRef<ModalOverlayRegistration | null>(null);
   useEffect(() => {
     if (!open) return;
     const registration = registerModalOverlay();
@@ -128,6 +138,8 @@ export function Modal({
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
+      // Escape during IME composition cancels the composition, not the dialog.
+      if (e.isComposing) return;
       if (e.key !== "Escape" || closeDisabled) return;
       if (!overlayRegistrationRef.current?.isTopmost()) return;
       onClose();

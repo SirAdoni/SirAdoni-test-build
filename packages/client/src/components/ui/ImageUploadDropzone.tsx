@@ -39,8 +39,8 @@ export function ImageUploadDropzone({
   onFilesSelected,
   icon,
   pending = false,
-  pendingLabel = "Uploading...",
-  dragLabel = "Drop images to upload",
+  pendingLabel: pendingLabelProp,
+  dragLabel: dragLabelProp,
   className,
   labelClassName,
   accept = "image/*",
@@ -50,6 +50,10 @@ export function ImageUploadDropzone({
   fileKind = "image",
 }: ImageUploadDropzoneProps) {
   const { t: localizeUi } = useUiTranslation();
+  const pendingLabel = pendingLabelProp ?? localizeUi("ui.ui.imageuploaddropzone.uploading");
+  const dragLabel =
+    dragLabelProp ??
+    localizeUi(fileKind === "video" ? "ui.ui.imageuploaddropzone.dropVideos" : "ui.ui.imageuploaddropzone.dropImages");
   const inputRef = useRef<HTMLInputElement>(null);
   const dragDepthRef = useRef(0);
   const [isDragging, setIsDragging] = useState(false);

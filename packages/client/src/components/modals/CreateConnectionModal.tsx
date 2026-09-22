@@ -9,6 +9,7 @@ import { Loader2, Link } from "lucide-react";
 import { MODEL_LISTS, PROVIDERS, type APIProvider } from "@marinara-engine/shared";
 import { cn } from "../../lib/utils";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { toast } from "sonner";
 
 interface Props {
   open: boolean;
@@ -27,8 +28,14 @@ export function CreateConnectionModal({ open, onClose }: Props) {
     setProvider("openai");
   };
 
+  const handleClose = () => {
+    reset();
+    onClose();
+  };
+
   const handleCreate = async () => {
-    if (!name.trim()) return;
+    // Enter can fire again while the first create is still in flight.
+    if (!name.trim() || createConnection.isPending) return;
     const providerDef = PROVIDERS[provider];
     const defaultModel = MODEL_LISTS[provider]?.[0];
     try {
@@ -44,15 +51,20 @@ export function CreateConnectionModal({ open, onClose }: Props) {
       onClose();
       reset();
       if (connId) openConnectionDetail(connId);
-    } catch {
-      // stay in modal on failure
+    } catch (error) {
+      // Stay in the modal so the name and provider can be retried.
+      toast.error(
+        error instanceof Error && error.message
+          ? error.message
+          : localizeUi("ui.modals.createconnectionmodal.createFailed"),
+      );
     }
   };
 
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={handleClose}
       title={localizeUi("ui.modals.createconnectionmodal.createConnection")}
       width="max-w-sm"
     >

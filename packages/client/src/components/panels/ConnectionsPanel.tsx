@@ -381,26 +381,30 @@ function SidecarCard() {
   const activeSpeechModel = speechModels.find((model) => model.id === speechModelChoice) ?? speechModels[0];
   const speechStatusLabel = speechModelDownloaded
     ? `${speechModelDisplayName ?? "Whisper"}${
-        speechStatus === "ready" ? " • Ready" : speechStatus === "loading" ? " • Loading" : " • Downloaded"
+        speechStatus === "ready"
+          ? ` • ${localizeUi("ui.panels.sidecarcard.statusReady")}`
+          : speechStatus === "loading"
+            ? ` • ${localizeUi("ui.panels.sidecarcard.statusLoading")}`
+            : ` • ${localizeUi("ui.panels.sidecarcard.statusDownloaded")}`
       }${speechModelSize ? ` • ${formatBytes(speechModelSize)}` : ""}`
     : speechAvailable
-      ? "Not downloaded"
-      : "Unavailable on this install";
+      ? localizeUi("ui.panels.sidecarcard.notDownloaded")
+      : localizeUi("ui.panels.sidecarcard.unavailableOnThisInstall");
   const localModelStatusLabel = isDownloaded
     ? `${activeModelName ?? "Model"} • ${backendLabel}${nativeToolLabel}${modelSize ? ` • ${formatBytes(modelSize)}` : ""}${
         status === "starting_server"
-          ? " • Starting"
+          ? ` • ${localizeUi("ui.panels.sidecarcard.statusStarting")}`
           : status === "server_error"
-            ? " • Error"
+            ? ` • ${localizeUi("ui.panels.sidecarcard.statusError")}`
             : status === "ready"
-              ? " • Ready"
+              ? ` • ${localizeUi("ui.panels.sidecarcard.statusReady")}`
               : ""
       }`
     : callsPackageInstalled && speechModelDownloaded
       ? speechStatusLabel
       : callsPackageInstalled && speechDownloading
-        ? "Downloading Whisper..."
-        : "Not downloaded";
+        ? localizeUi("ui.panels.sidecarcard.downloadingWhisper")
+        : localizeUi("ui.panels.sidecarcard.notDownloaded");
   const speechUnavailableMessage = describeSpeechRuntimeUnavailable(speechRuntime);
 
   const handleDownloadWhisper = async () => {
@@ -595,7 +599,7 @@ function SidecarCard() {
                         />
                       </div>
                       <div className="mt-1 truncate text-[0.625rem] text-[var(--muted-foreground)]">
-                        {speechDownloadProgress.label ?? "Downloading Local Whisper"}
+                        {speechDownloadProgress.label ?? localizeUi("ui.panels.sidecarcard.downloadingLocalWhisper")}
                       </div>
                     </div>
                   )}
@@ -696,7 +700,7 @@ function SidecarCard() {
                 {localizeUi("ui.panels.sidecarcard.localRuntimeUnavailable")}
               </div>
               <div className="mt-1 text-[0.6875rem] text-[var(--muted-foreground)]/75">
-                {startupError ?? "Marinara will keep running without the local model until you retry."}
+                {startupError ?? localizeUi("ui.panels.sidecarcard.keepsRunningWithoutLocalModel")}
               </div>
               {failedRuntimeVariant && (
                 <div className="mt-1 text-[0.6875rem] text-[var(--muted-foreground)]/60">
@@ -1165,8 +1169,8 @@ function ConnectionDefaultsSection({ connectionsList }: { connectionsList: Conne
             connections={languageConnections}
             primaryField="isDefault"
             fallbackField="fallbackForMain"
-            primaryEmptyLabel="No default main connection"
-            fallbackModelLabel="No model set"
+            primaryEmptyLabel={localizeUi("ui.panels.connectiondefaultssection.noDefaultMainConnection")}
+            fallbackModelLabel={localizeUi("ui.panels.connectiondefaultssection.noModelSet")}
           />
           <ConnectionDefaultPair
             title={localizeUi("navigation.topbar.agents")}
@@ -1174,8 +1178,8 @@ function ConnectionDefaultsSection({ connectionsList }: { connectionsList: Conne
             connections={languageConnections}
             primaryField="defaultForAgents"
             fallbackField="fallbackForAgents"
-            primaryEmptyLabel="Use the active chat connection"
-            fallbackModelLabel="No model set"
+            primaryEmptyLabel={localizeUi("ui.panels.connectiondefaultssection.useTheActiveChatConnection")}
+            fallbackModelLabel={localizeUi("ui.panels.connectiondefaultssection.noModelSet")}
             includeLocalSidecar
             showPaidConnectionWarningToggle
             onApplyToAllAgents={() => void handleApplyToAllAgents()}
@@ -1188,8 +1192,8 @@ function ConnectionDefaultsSection({ connectionsList }: { connectionsList: Conne
             connections={imageConnections}
             primaryField="defaultForAgents"
             fallbackField="fallbackForAgents"
-            primaryEmptyLabel="No default image connection"
-            fallbackModelLabel="Image generation"
+            primaryEmptyLabel={localizeUi("ui.panels.connectiondefaultssection.noDefaultImageConnection")}
+            fallbackModelLabel={localizeUi("ui.panels.connectiondefaultssection.imageGeneration")}
           />
           <ConnectionDefaultPair
             title={localizeUi("ui.panels.connectiondefaultssection.videos")}
@@ -1197,8 +1201,8 @@ function ConnectionDefaultsSection({ connectionsList }: { connectionsList: Conne
             connections={videoConnections}
             primaryField="defaultForAgents"
             fallbackField="fallbackForAgents"
-            primaryEmptyLabel="No default video connection"
-            fallbackModelLabel="Video generation"
+            primaryEmptyLabel={localizeUi("ui.panels.connectiondefaultssection.noDefaultVideoConnection")}
+            fallbackModelLabel={localizeUi("ui.panels.connectiondefaultssection.videoGeneration")}
           />
           <ConnectionDefaultPair
             title={localizeUi("ui.panels.connectiondefaultssection.audio")}
@@ -1348,7 +1352,7 @@ function ConnectionRow({
           {conn.name}
         </div>
         <div className="truncate text-[0.6875rem] leading-4 text-[var(--muted-foreground)]">
-          {conn.provider} • {conn.model || "No model set"}
+          {conn.provider} • {conn.model || localizeUi("ui.panels.connectiondefaultssection.noModelSet")}
         </div>
       </div>
       <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 flex shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-foreground/10 transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
@@ -1600,7 +1604,13 @@ function ConnectionFolderRow({
 export function ConnectionsPanel() {
   const { t: localizeUi } = useUiTranslation();
   const localize = useLocalizedUiText();
-  const { data: connections, isLoading } = useConnections();
+  const {
+    data: connections,
+    isLoading,
+    isError: connectionsLoadFailed,
+    refetch: refetchConnections,
+    isFetching: connectionsRefetching,
+  } = useConnections();
   const uploadConnectionImage = useUploadConnectionImage();
   const deleteConnection = useDeleteConnection();
   const activeChat = useChatStore((s) => s.activeChat);
@@ -1689,11 +1699,12 @@ export function ConnectionsPanel() {
   const handleDeleteFolder = async (folder: ConnectionFolder) => {
     const connectionCount = connectionsList.filter((connection) => connection.folderId === folder.id).length;
     const ok = await confirmNonEmptyFolderDelete(connectionCount, {
-      title: "Delete Folder",
-      message: `Delete "${folder.name}"? Its ${connectionCount} connection${
-        connectionCount === 1 ? "" : "s"
-      } will move back to Unfiled.`,
-      confirmLabel: "Delete",
+      title: localizeUi("ui.panels.connectionspanel.deleteFolderTitle"),
+      message: localizeUi("ui.panels.connectionspanel.deleteFolderMessage", {
+        name: folder.name,
+        count: connectionCount,
+      }),
+      confirmLabel: localizeUi("ui.panels.connectionspanel.deleteFolderConfirm"),
       tone: "destructive",
     });
     if (!ok) return;
@@ -2097,6 +2108,7 @@ export function ConnectionsPanel() {
           <input
             type="text"
             placeholder={localize("Search connections")}
+            aria-label={localize("Search connections")}
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             className="mari-chrome-field h-10 w-full py-0 pl-8 pr-3 text-xs md:h-9"
@@ -2157,14 +2169,33 @@ export function ConnectionsPanel() {
         </div>
       )}
 
-      {!isLoading && (!connections || (connections as unknown[]).length === 0) && (
-        <div className="flex flex-col items-center gap-2 py-8 text-center">
-          <div className="animate-float flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-400/20 to-blue-500/20">
-            <Link size="1.25rem" className="text-sky-400" />
-          </div>
-          <p className="mari-chrome-text-muted text-xs">{localizeUi("ui.panels.connectionspanel.noConnectionsYet")}</p>
+      {!isLoading && !connections && connectionsLoadFailed && (
+        <div role="alert" className="flex flex-col items-center gap-2 py-8 text-center">
+          <p className="mari-chrome-text-muted text-xs">{localizeUi("ui.panels.connectionspanel.loadFailed")}</p>
+          <button
+            type="button"
+            onClick={() => void refetchConnections()}
+            disabled={connectionsRefetching}
+            className="mari-chrome-control mari-chrome-control--small min-h-9 px-3 text-xs disabled:opacity-50"
+          >
+            {connectionsRefetching ? <Loader2 size="0.75rem" className="animate-spin" /> : null}
+            {localizeUi("ui.panels.connectionspanel.retry")}
+          </button>
         </div>
       )}
+
+      {!isLoading &&
+        !(connectionsLoadFailed && !connections) &&
+        (!connections || (connections as unknown[]).length === 0) && (
+          <div className="flex flex-col items-center gap-2 py-8 text-center">
+            <div className="animate-float flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-400/20 to-blue-500/20">
+              <Link size="1.25rem" className="text-sky-400" />
+            </div>
+            <p className="mari-chrome-text-muted text-xs">
+              {localizeUi("ui.panels.connectionspanel.noConnectionsYet")}
+            </p>
+          </div>
+        )}
 
       {!isLoading && connectionsList.length > 0 && filteredConnections.length === 0 && (
         <div className="flex flex-col items-center gap-2 py-8 text-center">
@@ -2178,40 +2209,43 @@ export function ConnectionsPanel() {
       )}
 
       {/* LinkAPI recommendation banner */}
-      {!isLoading && (!connections || (connections as unknown[]).length === 0) && !linkApiBannerDismissed && (
-        <div className="rounded-xl border border-sky-400/20 bg-gradient-to-br from-sky-400/5 to-blue-500/5 p-3 flex flex-col gap-2">
-          <p className="text-xs text-[var(--muted-foreground)]">
-            {localizeUi("ui.panels.connectionspanel.lookingToTryNewModelsFromATrustedProvider")}{" "}
-            <a
-              href="https://linkapi.ai/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="font-medium text-sky-400 underline decoration-sky-400/30 hover:text-sky-300 transition-colors"
-            >
-              {localizeUi("ui.panels.connectionspanel.linkapi")}
-            </a>
-            !
-          </p>
-          <div className="grid min-w-0 grid-cols-2 gap-2">
-            <a
-              href="https://linkapi.ai/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mari-chrome-control mari-chrome-control--small w-full px-2 text-xs"
-            >
-              <ExternalLink size="0.75rem" className="shrink-0" />
-              <span>{localizeUi("ui.panels.connectionspanel.visitLinkapi")}</span>
-            </a>
-            <button
-              onClick={dismissLinkApiBanner}
-              className="mari-chrome-control mari-chrome-control--small w-full px-2 text-xs"
-            >
-              <X size="0.75rem" className="shrink-0" />
-              <span>{localizeUi("ui.panels.connectionspanel.dismissPermanently")}</span>
-            </button>
+      {!isLoading &&
+        !(connectionsLoadFailed && !connections) &&
+        (!connections || (connections as unknown[]).length === 0) &&
+        !linkApiBannerDismissed && (
+          <div className="rounded-xl border border-sky-400/20 bg-gradient-to-br from-sky-400/5 to-blue-500/5 p-3 flex flex-col gap-2">
+            <p className="text-xs text-[var(--muted-foreground)]">
+              {localizeUi("ui.panels.connectionspanel.lookingToTryNewModelsFromATrustedProvider")}{" "}
+              <a
+                href="https://linkapi.ai/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-medium text-sky-400 underline decoration-sky-400/30 hover:text-sky-300 transition-colors"
+              >
+                {localizeUi("ui.panels.connectionspanel.linkapi")}
+              </a>
+              !
+            </p>
+            <div className="grid min-w-0 grid-cols-2 gap-2">
+              <a
+                href="https://linkapi.ai/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mari-chrome-control mari-chrome-control--small w-full px-2 text-xs"
+              >
+                <ExternalLink size="0.75rem" className="shrink-0" />
+                <span>{localizeUi("ui.panels.connectionspanel.visitLinkapi")}</span>
+              </a>
+              <button
+                onClick={dismissLinkApiBanner}
+                className="mari-chrome-control mari-chrome-control--small w-full px-2 text-xs"
+              >
+                <X size="0.75rem" className="shrink-0" />
+                <span>{localizeUi("ui.panels.connectionspanel.dismissPermanently")}</span>
+              </button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
       {/* Folders (drag-to-reorder) */}
       {localFolderOrder.length > 0 && (

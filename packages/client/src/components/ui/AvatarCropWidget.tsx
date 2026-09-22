@@ -12,6 +12,7 @@
 // container's full area. Square-in-source-pixels crops survive any source aspect
 // ratio without distortion.
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Crop, Maximize2, RotateCcw, Trash2, X } from "lucide-react";
 import type { AvatarCrop, SourceRectAvatarCrop } from "@marinara-engine/shared";
 import { getAvatarCropStyle, isLegacyAvatarCrop } from "../../lib/utils";
@@ -53,6 +54,18 @@ export function AvatarCropWidget({ src, alt, crop, onChange, onRemove, removing 
   const [imgRect, setImgRect] = useState<{ w: number; h: number } | null>(null);
   const [cropPx, setCropPx] = useState<CropPx | null>(null);
   const [showFullView, setShowFullView] = useState(false);
+
+  // Escape closes only the full-size view, before any host dialog hears it.
+  useEffect(() => {
+    if (!showFullView) return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.isComposing) return;
+      event.stopPropagation();
+      setShowFullView(false);
+    };
+    window.addEventListener("keydown", handler, true);
+    return () => window.removeEventListener("keydown", handler, true);
+  }, [showFullView]);
 
   const dragRef = useRef<{
     handle: DragHandle;
@@ -344,20 +357,31 @@ export function AvatarCropWidget({ src, alt, crop, onChange, onRemove, removing 
         </div>
       </div>
 
-      {showFullView && (
-        <div
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80"
-          onClick={() => setShowFullView(false)}
-        >
-          <img src={src} alt={alt} className="max-h-[85vh] max-w-[90vw] rounded-lg object-contain shadow-2xl" />
-          <button
+      {showFullView &&
+        // Portaled so a blurred or transformed ancestor (editor panels, dialogs)
+        // cannot trap the fixed overlay inside its own box.
+        createPortal(
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={localizeUi("ui.ui.avatarcropwidget.fullImage")}
+            className="fixed inset-0 z-[10060] flex items-center justify-center bg-black/80"
             onClick={() => setShowFullView(false)}
-            className="absolute right-3 top-3 rounded-lg bg-black/60 p-2 text-white transition-colors hover:bg-black/80"
           >
-            <X size="1rem" />
-          </button>
-        </div>
-      )}
+            <img src={src} alt={alt} className="max-h-[85vh] max-w-[90vw] rounded-lg object-contain shadow-2xl" />
+            <button
+              type="button"
+              autoFocus
+              onClick={() => setShowFullView(false)}
+              aria-label={localizeUi("ui.ui.avatarcropwidget.closeFullImage")}
+              title={localizeUi("ui.ui.avatarcropwidget.closeFullImage")}
+              className="absolute right-3 top-3 rounded-lg bg-black/60 p-2 text-white transition-colors hover:bg-black/80"
+            >
+              <X size="1rem" />
+            </button>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

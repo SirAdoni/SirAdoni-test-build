@@ -29,10 +29,10 @@ export function UILanguageSetting({ anchorId }: { anchorId: string }) {
 
   return (
     <div id={anchorId} className="flex scroll-mt-3 flex-col gap-1">
-      <label htmlFor={`${anchorId}-select`} className="inline-flex items-center gap-1 text-xs font-medium">
-        {t("settings.application.language.label")}
+      <span className="inline-flex items-center gap-1 text-xs font-medium">
+        <label htmlFor={`${anchorId}-select`}>{t("settings.application.language.label")}</label>
         <HelpTooltip text={t("settings.application.language.help")} />
-      </label>
+      </span>
       <select
         id={`${anchorId}-select`}
         value={language}

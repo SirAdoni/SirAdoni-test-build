@@ -3,6 +3,7 @@ import { Modal } from "./Modal";
 import { dismissActiveDialog, resolveActiveDialog } from "../../lib/app-dialogs";
 import { useDialogStore } from "../../stores/dialog.store";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 
 function getDialogTitle(kind: "alert" | "confirm" | "prompt" | "choice", title?: string) {
   if (title) return title;
@@ -13,6 +14,7 @@ function getDialogTitle(kind: "alert" | "confirm" | "prompt" | "choice", title?:
 
 export function AppDialogRenderer() {
   const { t: localizeUi } = useUiTranslation();
+  const localize = useLocalizedUiText();
   const dialog = useDialogStore((state) => state.dialog);
   const [promptValue, setPromptValue] = useState("");
   const promptInputRef = useRef<HTMLInputElement>(null);
@@ -90,13 +92,13 @@ export function AppDialogRenderer() {
                 onClick={dismissActiveDialog}
                 className="rounded-lg px-3 py-2 text-sm font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
               >
-                {dialog.cancelLabel ?? "Cancel"}
+                {localize(dialog.cancelLabel ?? "Cancel")}
               </button>
               <button
                 type="submit"
                 className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${confirmToneClass}`}
               >
-                {dialog.confirmLabel ?? "Confirm"}
+                {localize(dialog.confirmLabel ?? "Confirm")}
               </button>
             </div>
           </form>
@@ -110,14 +112,14 @@ export function AppDialogRenderer() {
                 onClick={dismissActiveDialog}
                 className="rounded-lg px-3 py-2 text-sm font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
               >
-                {dialog.cancelLabel ?? "Cancel"}
+                {localize(dialog.cancelLabel ?? "Cancel")}
               </button>
               <button
                 type="button"
                 onClick={() => resolveActiveDialog(true)}
                 className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${confirmToneClass}`}
               >
-                {dialog.confirmLabel ?? "Confirm"}
+                {localize(dialog.confirmLabel ?? "Confirm")}
               </button>
             </div>
           </div>
@@ -130,7 +132,7 @@ export function AppDialogRenderer() {
               onClick={() => resolveActiveDialog(undefined)}
               className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${confirmToneClass}`}
             >
-              {dialog.confirmLabel ?? "OK"}
+              {localize(dialog.confirmLabel ?? "OK")}
             </button>
           </div>
         )}
@@ -160,7 +162,7 @@ export function AppDialogRenderer() {
               onClick={dismissActiveDialog}
               className="w-full rounded-lg px-3 py-2 text-sm font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
             >
-              {dialog.cancelLabel ?? "Cancel"}
+              {localize(dialog.cancelLabel ?? "Cancel")}
             </button>
           </div>
         )}

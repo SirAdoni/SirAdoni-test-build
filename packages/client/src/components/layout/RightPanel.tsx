@@ -177,7 +177,7 @@ export function RightPanel() {
               <div
                 data-panel-key={key}
                 className={cn(
-                  "absolute inset-0",
+                  "@container/panel absolute inset-0",
                   key === "characters"
                     ? "flex min-h-0 flex-col overflow-hidden"
                     : "overflow-y-auto [scrollbar-gutter:stable]",

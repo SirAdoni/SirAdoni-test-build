@@ -331,14 +331,16 @@ export function ColorPicker({
   compact = false,
   label,
   helpText,
-  emptyText = "No color set — uses default",
+  emptyText: emptyTextProp,
   emptyPreviewValue = "",
-  clearLabel = "Clear",
+  clearLabel: clearLabelProp,
   clearValue = "",
   headerAction,
   disabled = false,
 }: ColorPickerProps) {
   const { t: localizeUi } = useUiTranslation();
+  const emptyText = emptyTextProp ?? localizeUi("ui.ui.colorpicker.noColorSet");
+  const clearLabel = clearLabelProp ?? localizeUi("ui.ui.colorpicker.clear");
   const previewValue = value || emptyPreviewValue;
   const isGradient = isEditableLinearGradient(previewValue);
   const [mode, setMode] = useState<"solid" | "gradient">(isGradient ? "gradient" : "solid");

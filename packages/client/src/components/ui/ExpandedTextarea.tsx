@@ -38,18 +38,19 @@ export function ExpandedTextarea({
   readOnly = false,
   placeholder,
   surface = "default",
-  closeLabel = "Collapse",
+  closeLabel: closeLabelProp,
   footer,
   overlayStyle,
 }: ExpandedTextareaProps) {
   const { t: localizeUi } = useUiTranslation();
+  const closeLabel = closeLabelProp ?? localizeUi("ui.ui.expandedtextarea.collapse");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isChatSurface = surface === "chat";
 
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !e.isComposing) onClose();
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);

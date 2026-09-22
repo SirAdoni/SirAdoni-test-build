@@ -356,7 +356,7 @@ export function GifPicker({ open, onClose, onSelect, anchorRef, containerRef, em
   return createPortal(
     <div
       ref={panelRef}
-      className="fixed z-[9999] flex h-[26rem] w-96 max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-xl border border-foreground/10 bg-[var(--card)] shadow-xl"
+      className="fixed z-[10050] flex h-[26rem] w-96 max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-xl border border-foreground/10 bg-[var(--card)] shadow-xl"
       style={{
         bottom: pos.bottom,
         ...(pos.right != null ? { right: pos.right } : {}),

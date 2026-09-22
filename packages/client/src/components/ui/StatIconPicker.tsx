@@ -204,7 +204,7 @@ export function StatIconPicker({
                   if (!panelRef.current?.contains(ownerDocument.activeElement)) setOpen(false);
                 });
               }}
-              className="fixed z-[9999] flex w-80 max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-xl"
+              className="fixed z-[10050] flex w-80 max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-xl"
               style={{ top: position.top, left: position.left, maxHeight: position.maxHeight }}
             >
               <div className="border-b border-[var(--border)] p-2">

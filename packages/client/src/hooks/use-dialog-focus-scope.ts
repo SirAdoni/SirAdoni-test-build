@@ -19,6 +19,12 @@ export function useDialogFocusScope(
   initialFocusRef?: RefObject<HTMLElement | null>,
   restoreFocusRef?: RefObject<HTMLElement | null>,
   ownedPortalSelector?: string,
+  /**
+   * When provided, Tab is only trapped while this returns true. Stacked dialogs
+   * pass "am I the topmost overlay" so a parent dialog does not pull focus out
+   * of a child dialog portaled outside its panel.
+   */
+  isActive?: () => boolean,
 ) {
   useEffect(() => {
     if (!open) return;
@@ -43,6 +49,7 @@ export function useDialogFocusScope(
 
     const trapFocus = (event: KeyboardEvent) => {
       if (event.key !== "Tab") return;
+      if (isActive && !isActive()) return;
       const container = containerRef.current;
       if (!container) return;
       const roots = [
@@ -82,5 +89,7 @@ export function useDialogFocusScope(
       document.removeEventListener("keydown", trapFocus);
       restoreDialogFocus(restoreFocusRef, opener);
     };
+    // isActive is read at event time; callers pass a stable reader over a ref.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [containerRef, initialFocusRef, open, ownedPortalSelector, restoreFocusRef]);
 }

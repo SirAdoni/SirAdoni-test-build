@@ -718,7 +718,7 @@ export function WhatsNewModal({
             </p>
           ) : null}
 
-          <footer className="sticky bottom-0 z-10 -mx-5 -mb-6 flex flex-col-reverse gap-2 border-t border-[var(--marinara-chat-chrome-panel-divider)] bg-[var(--marinara-chat-chrome-panel-bg)] px-5 py-3 shadow-[0_-10px_24px_rgba(0,0,0,0.12)] sm:-mx-6 sm:flex-row sm:justify-end sm:px-6">
+          <footer className="sticky bottom-[-1rem] z-10 -mx-5 -mb-5 flex flex-col-reverse gap-2 border-t border-[var(--marinara-chat-chrome-panel-divider)] bg-[var(--marinara-chat-chrome-panel-bg)] bg-[linear-gradient(var(--marinara-chat-chrome-panel-bg),var(--marinara-chat-chrome-panel-bg))] px-5 py-3 shadow-[0_-10px_24px_rgba(0,0,0,0.12)] backdrop-blur-xl sm:-mx-6 sm:-mb-6 sm:flex-row sm:justify-end sm:px-6">
             <a
               href={releaseUrl}
               target="_blank"

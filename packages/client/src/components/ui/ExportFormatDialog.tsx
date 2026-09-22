@@ -20,25 +20,47 @@ interface ExportFormatDialogProps {
 export function ExportFormatDialog({
   open,
   title,
-  description = "Choose how Marinara should package this export.",
-  nativeDescription = "Keeps Marinara-specific fields, folders, metadata, and import fidelity.",
-  compatibleDescription = "Uses folderless, platform-friendly JSON where possible for tools like SillyTavern and Chub.",
-  pngDescription = "Chara Card V2 PNG with the avatar baked in — works in SillyTavern, Chub, and Risu.",
+  description: descriptionProp,
+  nativeDescription: nativeDescriptionProp,
+  compatibleDescription: compatibleDescriptionProp,
+  pngDescription: pngDescriptionProp,
   showPngOption = false,
   onClose,
   onSelect,
 }: ExportFormatDialogProps) {
   const { t: localizeUi } = useUiTranslation();
+  const description = descriptionProp ?? localizeUi("ui.ui.exportformatdialog.description");
+  const nativeDescription = nativeDescriptionProp ?? localizeUi("ui.ui.exportformatdialog.nativeDescription");
+  const compatibleDescription =
+    compatibleDescriptionProp ?? localizeUi("ui.ui.exportformatdialog.compatibleDescription");
+  const pngDescription = pngDescriptionProp ?? localizeUi("ui.ui.exportformatdialog.pngDescription");
   const options: Array<{
     id: ExportFormatChoice;
     label: string;
     icon: typeof Layers;
     description: string;
   }> = [
-    { id: "native", label: "Marinara Native", icon: Layers, description: nativeDescription },
-    { id: "compatible", label: "Compatible JSON", icon: FileJson, description: compatibleDescription },
+    {
+      id: "native",
+      label: localizeUi("ui.ui.exportformatdialog.native"),
+      icon: Layers,
+      description: nativeDescription,
+    },
+    {
+      id: "compatible",
+      label: localizeUi("ui.ui.exportformatdialog.compatibleJson"),
+      icon: FileJson,
+      description: compatibleDescription,
+    },
     ...(showPngOption
-      ? [{ id: "compatible-png" as const, label: "Compatible PNG Card", icon: ImageDown, description: pngDescription }]
+      ? [
+          {
+            id: "compatible-png" as const,
+            label: localizeUi("ui.ui.exportformatdialog.compatiblePngCard"),
+            icon: ImageDown,
+            description: pngDescription,
+          },
+        ]
       : []),
   ];
   const gridColumns = options.length === 3 ? "sm:grid-cols-3" : "sm:grid-cols-2";

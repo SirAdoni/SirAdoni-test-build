@@ -29,12 +29,25 @@ export function DraftTextarea({ value, onCommit, onFocus, onBlur, ...props }: Dr
   const onCommitRef = useRef(onCommit);
   onCommitRef.current = onCommit;
 
+  // The last committed text and the value it replaced. An async commit (a
+  // metadata mutation) leaves `value` stale for a moment after blur; without
+  // this the re-seed below would flash the old text until the refetch lands.
+  const pendingCommitRef = useRef<{ from: string; to: string } | null>(null);
+
   useEffect(() => {
-    if (!focused) setDraft(value);
+    if (focused) return;
+    const pending = pendingCommitRef.current;
+    if (pending) {
+      if (value === pending.from && value !== pending.to) return;
+      pendingCommitRef.current = null;
+    }
+    setDraft(value);
   }, [focused, value]);
 
   const commit = () => {
-    if (draftRef.current !== valueRef.current) onCommitRef.current(draftRef.current);
+    if (draftRef.current === valueRef.current) return;
+    pendingCommitRef.current = { from: valueRef.current, to: draftRef.current };
+    onCommitRef.current(draftRef.current);
   };
 
   useEffect(

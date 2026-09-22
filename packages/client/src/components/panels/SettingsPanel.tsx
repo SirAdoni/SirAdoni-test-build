@@ -1882,6 +1882,18 @@ const CHAT_LIST_BACKGROUND_OPTIONS: Array<{ id: ChatListBackgroundMode; label: s
   { id: "off", label: "Off", desc: "No banners. Chat rows keep the plain sidebar background." },
 ];
 
+const CHAT_LIST_BACKGROUND_LABEL_KEYS: Record<ChatListBackgroundMode, string> = {
+  hover: "ui.panels.appearancesettings.chatListBackgroundHover",
+  always: "ui.panels.appearancesettings.chatListBackgroundEveryRow",
+  off: "ui.panels.appearancesettings.off",
+};
+
+/** Older builds offered "always"/"never" here, so "never" may still be stored. */
+function normalizeChatListBackgroundMode(value: string): ChatListBackgroundMode {
+  if (value === "never") return "off";
+  return value === "always" || value === "off" ? value : "hover";
+}
+
 const GAME_DIALOGUE_DISPLAY_OPTIONS: Array<{ id: GameDialogueDisplayMode; label: string; desc: string }> = [
   {
     id: "classic",
@@ -2060,7 +2072,7 @@ function ImageDimensionRow({
   return (
     <div
       id={controlId ? getSettingsControlAnchorId(controlId) : undefined}
-      className="grid scroll-mt-3 gap-2 rounded-lg bg-[var(--background)]/55 p-3 ring-1 ring-[var(--border)] sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+      className="grid scroll-mt-3 gap-2 rounded-lg bg-[var(--background)]/55 p-3 ring-1 ring-[var(--border)] @sm/panel:grid-cols-[minmax(0,1fr)_auto] @sm/panel:items-center"
     >
       <div className="min-w-0">
         <div className="inline-flex items-center gap-1 text-xs font-medium text-[var(--foreground)]">
@@ -2071,7 +2083,7 @@ function ImageDimensionRow({
           {localizeUi("ui.panels.imagedimensionrow.pixelsClampedFrom64To4096")}
         </div>
       </div>
-      <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-1.5 sm:w-40">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-1.5 @sm/panel:w-40">
         <DraftNumberInput
           value={width}
           ariaLabel={localizeUi("settings.imageDimensions.width", { label })}
@@ -3465,12 +3477,15 @@ function DocsLanguageSetting() {
 
   return (
     <div id={getSettingsControlAnchorId("docs-language")} className="flex scroll-mt-3 flex-col gap-1">
-      <label className="flex flex-col gap-1">
+      <div className="flex flex-col gap-1">
         <span className="inline-flex items-center gap-1 text-xs font-medium">
-          {localizeUi("settings.application.docsLanguage.label")}
+          <label htmlFor={`${getSettingsControlAnchorId("docs-language")}-select`}>
+            {localizeUi("settings.application.docsLanguage.label")}
+          </label>
           <HelpTooltip text={localizeUi("settings.application.docsLanguage.help")} />
         </span>
         <select
+          id={`${getSettingsControlAnchorId("docs-language")}-select`}
           value={selection}
           onChange={(event) => setPickedLanguage(event.target.value)}
           disabled={statusLoading || setDocsLanguage.isPending}
@@ -3482,7 +3497,7 @@ function DocsLanguageSetting() {
             </option>
           ))}
         </select>
-      </label>
+      </div>
       {activeInfo && active !== "en" ? (
         <p className="text-[0.625rem] text-[var(--muted-foreground)]">
           {localizeUi("settings.application.docsLanguage.active", {
@@ -4317,7 +4332,7 @@ function VideoGenerationSettings() {
         <div className="flex flex-col gap-3">
           <div
             id={getSettingsControlAnchorId("video-scene-duration")}
-            className="grid scroll-mt-3 gap-2 rounded-lg bg-[var(--background)]/55 p-3 ring-1 ring-[var(--border)] sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+            className="grid scroll-mt-3 gap-2 rounded-lg bg-[var(--background)]/55 p-3 ring-1 ring-[var(--border)] @sm/panel:grid-cols-[minmax(0,1fr)_auto] @sm/panel:items-center"
           >
             <div className="min-w-0">
               <div className="inline-flex items-center gap-1 text-xs font-medium text-[var(--foreground)]">
@@ -4331,7 +4346,7 @@ function VideoGenerationSettings() {
                 {localizeUi("ui.noodle.wizardfooter.to")} {VIDEO_SCENE_DURATION_MAX}.
               </div>
             </div>
-            <div className="grid grid-cols-[minmax(0,4rem)_auto] items-center gap-1.5 sm:w-28">
+            <div className="grid grid-cols-[minmax(0,4rem)_auto] items-center gap-1.5 @sm/panel:w-28">
               <DraftNumberInput
                 value={draft.sceneVideoDurationSeconds}
                 min={VIDEO_SCENE_DURATION_MIN}
@@ -4407,13 +4422,13 @@ function VideoGenerationSettings() {
               {localizeUi("ui.panels.videogenerationsettings.callClipsAreClampedFrom")} {VIDEO_CALL_CLIP_DURATION_MIN}{" "}
               {localizeUi("ui.noodle.wizardfooter.to")} {VIDEO_CALL_CLIP_DURATION_MAX}{" "}
               {localizeUi("ui.panels.videogenerationsettings.seconds")}
-              {saveVideoSettings.isPending ? localizeUi("chat.settings.inlineEditor.saving") : ""}
+              {saveVideoSettings.isPending ? <> {localizeUi("chat.settings.inlineEditor.saving")}</> : null}
             </div>
           </div>
 
           <div
             id={getSettingsControlAnchorId("video-animated-expression-duration")}
-            className="grid scroll-mt-3 gap-2 rounded-lg bg-[var(--background)]/55 p-3 ring-1 ring-[var(--border)] sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+            className="grid scroll-mt-3 gap-2 rounded-lg bg-[var(--background)]/55 p-3 ring-1 ring-[var(--border)] @sm/panel:grid-cols-[minmax(0,1fr)_auto] @sm/panel:items-center"
           >
             <div className="min-w-0">
               <div className="inline-flex items-center gap-1 text-xs font-medium text-[var(--foreground)]">
@@ -4430,7 +4445,7 @@ function VideoGenerationSettings() {
                 {VIDEO_ANIMATED_EXPRESSION_CLIP_DURATION_MAX}.
               </div>
             </div>
-            <div className="grid grid-cols-[minmax(0,4rem)_auto] items-center gap-1.5 sm:w-28">
+            <div className="grid grid-cols-[minmax(0,4rem)_auto] items-center gap-1.5 @sm/panel:w-28">
               <DraftNumberInput
                 value={draft.animatedExpressionClipDurationSeconds}
                 min={VIDEO_ANIMATED_EXPRESSION_CLIP_DURATION_MIN}
@@ -4518,7 +4533,9 @@ function GameAssetsSettings() {
       );
       const succeeded = uploads.filter((result) => result.status === "fulfilled").length;
       const failed = uploads.length - succeeded;
-      await rescanGameAssets.mutateAsync();
+      // A failed rescan must not swallow the upload results below; the next
+      // Rescan press (or app start) rebuilds the manifest.
+      await rescanGameAssets.mutateAsync().catch(() => undefined);
       if (succeeded > 0) {
         toast.success(
           localizeUi("ui.panels.gameassetssettings.uploadedValue1GameAssetValue2", {
@@ -4589,7 +4606,7 @@ function GameAssetsSettings() {
           ))}
         </div>
 
-        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2">
           <label className="flex min-w-0 flex-col gap-1">
             <span className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
               {localizeUi("ui.panels.gameassetssettings.type")}
@@ -5080,18 +5097,20 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                     [
                       {
                         id: "default" as VisualTheme,
-                        label: "Default (Marinara)",
-                        desc: "Y2K / retro aesthetic with glow effects",
+                        label: localizeUi("ui.panels.appearancesettings.visualStyleDefaultLabel"),
+                        desc: localizeUi("ui.panels.appearancesettings.visualStyleDefaultDesc"),
                       },
                       {
                         id: "sillytavern" as VisualTheme,
-                        label: "SillyTavern",
-                        desc: "Classic SillyTavern look — clean & minimal",
+                        label: localizeUi("ui.panels.appearancesettings.visualStyleSillyTavernLabel"),
+                        desc: localizeUi("ui.panels.appearancesettings.visualStyleSillyTavernDesc"),
                       },
                     ] as const
                   ).map((opt) => (
                     <button
                       key={opt.id}
+                      type="button"
+                      aria-pressed={visualTheme === opt.id}
                       onClick={() => setVisualTheme(opt.id)}
                       className={cn(
                         "flex flex-col items-start gap-1 rounded-lg border p-3 text-left text-xs transition-all",
@@ -5504,13 +5523,13 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                   </span>
                   <select
                     id={getSettingsControlAnchorId("chat-list-backgrounds")}
-                    value={chatListBackgrounds}
+                    value={normalizeChatListBackgroundMode(chatListBackgrounds)}
                     onChange={(e) => setChatListBackgrounds(e.target.value as ChatListBackgroundMode)}
                     className="h-7 min-w-0 flex-1 scroll-mt-3 rounded-md border border-[var(--border)] bg-[var(--secondary)] px-2 text-xs"
                   >
                     {CHAT_LIST_BACKGROUND_OPTIONS.map((opt) => (
                       <option key={opt.id} value={opt.id}>
-                        {opt.label}
+                        {localizeUi(CHAT_LIST_BACKGROUND_LABEL_KEYS[opt.id])}
                       </option>
                     ))}
                   </select>
@@ -5650,12 +5669,15 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                 </span>
                 <select
                   id={getSettingsControlAnchorId("chat-list-backgrounds")}
-                  value={chatListBackgrounds}
+                  value={normalizeChatListBackgroundMode(chatListBackgrounds)}
                   onChange={(e) => setChatListBackgrounds(e.target.value as ChatListBackgroundMode)}
                   className="h-7 min-w-0 flex-1 scroll-mt-3 rounded-md border border-[var(--border)] bg-[var(--secondary)] px-2 text-xs"
                 >
-                  <option value="always">{localizeUi("ui.panels.appearancesettings.always")}</option>
-                  <option value="never">{localizeUi("ui.panels.appearancesettings.never")}</option>
+                  {CHAT_LIST_BACKGROUND_OPTIONS.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {localizeUi(CHAT_LIST_BACKGROUND_LABEL_KEYS[opt.id])}
+                    </option>
+                  ))}
                 </select>
               </label>
               <div
@@ -5895,7 +5917,7 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                   className="w-full accent-[var(--primary)] disabled:cursor-not-allowed disabled:opacity-50"
                 />
               </label>
-              <div className="grid gap-3 rounded-lg border border-[var(--border)] p-3 sm:grid-cols-2">
+              <div className="grid gap-3 rounded-lg border border-[var(--border)] p-3 @sm/panel:grid-cols-2">
                 <label
                   id={getSettingsControlAnchorId("roleplay-vn-portrait-scale")}
                   className="flex scroll-mt-3 min-w-0 flex-col gap-2 text-xs"
@@ -6021,7 +6043,7 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                 />
                 <div
                   id={getSettingsControlAnchorId("roleplay-avatar-style")}
-                  className="grid scroll-mt-3 grid-cols-1 gap-2 sm:grid-cols-2"
+                  className="grid scroll-mt-3 grid-cols-1 gap-2 @sm/panel:grid-cols-2"
                 >
                   {ROLEPLAY_AVATAR_STYLE_OPTIONS.map((opt) => (
                     <button
@@ -6081,8 +6103,8 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                   ))}
                 </div>
                 <div className="rounded-lg border border-[var(--border)] bg-[var(--secondary)]/45 p-3">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-                    <div className="flex h-20 w-full shrink-0 items-end justify-center gap-3 overflow-hidden rounded-md bg-black/30 p-2 ring-1 ring-[var(--border)]/70 sm:w-28">
+                  <div className="flex flex-col gap-3 @sm/panel:flex-row @sm/panel:flex-wrap @sm/panel:items-center">
+                    <div className="flex h-20 w-full shrink-0 items-end justify-center gap-3 overflow-hidden rounded-md bg-black/30 p-2 ring-1 ring-[var(--border)]/70 @sm/panel:w-28">
                       {roleplayAvatarStyle === "none" ? (
                         <div
                           className="flex shrink-0 items-center justify-center rounded-md border border-dashed border-white/20 px-2 text-[0.625rem] font-medium text-white/35"
@@ -6117,7 +6139,7 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                         }}
                       />
                     </div>
-                    <div className="grid min-w-0 flex-1 gap-3 sm:min-w-[9rem]">
+                    <div className="grid min-w-0 flex-1 gap-3 @sm/panel:min-w-[9rem]">
                       <label
                         id={getSettingsControlAnchorId("roleplay-avatar-scale")}
                         className="flex scroll-mt-3 min-w-0 flex-col gap-1"
@@ -6197,8 +6219,8 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                   />
                 </div>
                 <div className="rounded-lg border border-[var(--border)] bg-[var(--secondary)]/45 p-3">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-                    <div className="flex h-20 w-full shrink-0 items-end justify-center gap-3 overflow-hidden rounded-md bg-black/30 p-2 ring-1 ring-[var(--border)]/70 sm:w-28">
+                  <div className="flex flex-col gap-3 @sm/panel:flex-row @sm/panel:flex-wrap @sm/panel:items-center">
+                    <div className="flex h-20 w-full shrink-0 items-end justify-center gap-3 overflow-hidden rounded-md bg-black/30 p-2 ring-1 ring-[var(--border)]/70 @sm/panel:w-28">
                       <div
                         className="shrink-0 rounded-lg border border-white/20 bg-gradient-to-b from-sky-300/80 via-cyan-200/65 to-slate-800/90 shadow-lg transition-all"
                         style={{
@@ -6214,7 +6236,7 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                         }}
                       />
                     </div>
-                    <div className="grid min-w-0 flex-1 gap-3 sm:min-w-[9rem]">
+                    <div className="grid min-w-0 flex-1 gap-3 @sm/panel:min-w-[9rem]">
                       <label
                         id={getSettingsControlAnchorId("game-dialogue-portrait-scale")}
                         className="flex scroll-mt-3 min-w-0 flex-col gap-1"
@@ -6276,7 +6298,7 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                 </div>
                 <div
                   id={getSettingsControlAnchorId("game-dialogue-display")}
-                  className="grid scroll-mt-3 grid-cols-1 gap-2 sm:grid-cols-2"
+                  className="grid scroll-mt-3 grid-cols-1 gap-2 @sm/panel:grid-cols-2"
                 >
                   {GAME_DIALOGUE_DISPLAY_OPTIONS.map((opt) => (
                     <button
@@ -8229,10 +8251,17 @@ function AdvancedSettings() {
   }, [activeConnection, health.data, health.error, localizeUi]);
 
   const deleteBackupMutation = useMutation({
-    mutationFn: (name: string) => api.delete(`/backup/${name}`),
+    mutationFn: (name: string) => api.delete(`/backup/${encodeURIComponent(name)}`),
     onSuccess: () => {
       toast.success(localizeUi("ui.panels.advancedsettings.backupDeleted"));
       qc.invalidateQueries({ queryKey: ["backups"] });
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error && error.message
+          ? error.message
+          : localizeUi("ui.panels.advancedsettings.backupDeleteFailed"),
+      );
     },
   });
 
@@ -8883,7 +8912,7 @@ function AdvancedSettings() {
               </div>
               <div
                 id={getSettingsControlAnchorId("automatic-backups-kept")}
-                className="mt-2 grid scroll-mt-3 gap-2 border-t border-[var(--border)]/60 pt-2 sm:grid-cols-[minmax(0,1fr)_5.5rem] sm:items-center"
+                className="mt-2 grid scroll-mt-3 gap-2 border-t border-[var(--border)]/60 pt-2 @sm/panel:grid-cols-[minmax(0,1fr)_5.5rem] @sm/panel:items-center"
               >
                 <div className="min-w-0">
                   <label
@@ -8974,8 +9003,21 @@ function AdvancedSettings() {
                     </span>
                   </div>
                   <button
-                    onClick={() => deleteBackupMutation.mutate(b.name)}
-                    className="ml-2 rounded p-1 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+                    type="button"
+                    disabled={deleteBackupMutation.isPending}
+                    aria-label={localizeUi("ui.panels.advancedsettings.deleteBackupNamed", { name: b.name })}
+                    title={localizeUi("ui.panels.advancedsettings.deleteBackup")}
+                    onClick={async () => {
+                      // Deleting a backup archive cannot be undone.
+                      const confirmed = await showConfirmDialog({
+                        title: localizeUi("ui.panels.advancedsettings.deleteBackup"),
+                        message: localizeUi("ui.panels.advancedsettings.deleteBackupMessage", { name: b.name }),
+                        confirmLabel: localizeUi("ui.panels.connectionspanel.deleteFolderConfirm"),
+                        tone: "destructive",
+                      });
+                      if (confirmed) deleteBackupMutation.mutate(b.name);
+                    }}
+                    className="ml-2 rounded p-1 text-[var(--muted-foreground)] disabled:opacity-50 transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
                   >
                     <Trash2 size="0.75rem" />
                   </button>

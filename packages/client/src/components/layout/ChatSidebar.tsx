@@ -46,6 +46,8 @@ import { useCharacterSummaries } from "../../hooks/use-characters";
 import { handleFolderRenameKeyDown, useFolderRenameGesture } from "../../hooks/use-folder-rename-gesture";
 import { useChatStore } from "../../stores/chat.store";
 import { confirmNonEmptyFolderDelete, showConfirmDialog } from "../../lib/app-dialogs";
+import { AvatarImage } from "../characters/AvatarImage";
+import { translate } from "../../localization/i18n";
 import { useUIStore, type UserStatus } from "../../stores/ui.store";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { chatBackgroundMetadataToUrl } from "../../lib/backgrounds";
@@ -765,9 +767,9 @@ export function ChatSidebar() {
   const handleDeleteFolder = useCallback(
     async (folder: ChatFolder, chatCount: number) => {
       const ok = await confirmNonEmptyFolderDelete(chatCount, {
-        title: "Delete Folder",
-        message: `Delete "${folder.name}"? Its ${chatCount} chat${chatCount === 1 ? "" : "s"} will move to the top level.`,
-        confirmLabel: "Delete",
+        title: translate("ui.panels.connectionspanel.deleteFolderTitle"),
+        message: translate("ui.layout.chatsidebar.deleteFolderMessage", { name: folder.name, count: chatCount }),
+        confirmLabel: translate("ui.panels.connectionspanel.deleteFolderConfirm"),
         tone: "destructive",
       });
       if (ok) {
@@ -932,7 +934,8 @@ export function ChatSidebar() {
     // Deliberately no fallback to defaultRoleplayBackground (which ChatArea's restore effect
     // applies): that would paint one identical banner across every roleplay chat.
     const bannerUrl =
-      chatListBackgrounds === "off"
+      // "never" is what an older Conversation-tab select stored for "off".
+      chatListBackgrounds === "off" || (chatListBackgrounds as string) === "never"
         ? null
         : chatBackgroundMetadataToUrl(chat.metadata?.background, BACKGROUND_THUMBNAIL_WIDTH);
 
@@ -1107,14 +1110,15 @@ export function ChatSidebar() {
                     src={a.avatarUrl}
                     name={a.name}
                     wrapperClassName="relative inline-flex shrink-0 items-center gap-1"
-                    className="block h-7 w-7 overflow-hidden rounded-lg"
+                    className="relative block h-7 w-7 overflow-hidden rounded-lg bg-[var(--secondary)] text-[var(--muted-foreground)]"
                     onUpdate={() => useUIStore.getState().openCharacterDetail(a.id)}
                   >
-                    <img
+                    <AvatarImage
                       src={a.avatarUrl}
                       alt={a.name}
                       className="h-full w-full object-cover"
                       style={getAvatarCropStyle(a.avatarCrop)}
+                      iconSize="0.875rem"
                     />
                   </CharacterPhoto>
                   {statusDot(a.conversationStatus)}
@@ -1145,14 +1149,15 @@ export function ChatSidebar() {
                         src={a.avatarUrl}
                         name={a.name}
                         wrapperClassName="relative inline-flex items-center gap-1"
-                        className="block h-5 w-5 overflow-hidden rounded-md"
+                        className="relative block h-5 w-5 overflow-hidden rounded-md bg-[var(--secondary)] text-[var(--muted-foreground)]"
                         onUpdate={() => useUIStore.getState().openCharacterDetail(a.id)}
                       >
-                        <img
+                        <AvatarImage
                           src={a.avatarUrl}
                           alt={a.name}
                           className="h-full w-full object-cover"
                           style={getAvatarCropStyle(a.avatarCrop)}
+                          iconSize="0.625rem"
                         />
                       </CharacterPhoto>
                     </span>
@@ -1247,7 +1252,8 @@ export function ChatSidebar() {
                 }
               }
             }}
-            className="shrink-0 rounded-md p-1 text-[var(--muted-foreground)] opacity-0 transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] group-hover:opacity-100 max-md:opacity-100"
+            type="button"
+            className="flex shrink-0 items-center justify-center rounded-md p-1 text-[var(--muted-foreground)] opacity-0 transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] group-hover:opacity-100 max-md:h-9 max-md:w-9 max-md:opacity-100 [@media(pointer:coarse)]:h-9 [@media(pointer:coarse)]:w-9 [@media(pointer:coarse)]:opacity-100"
           >
             <Trash2 size="0.75rem" />
           </button>
@@ -1377,9 +1383,11 @@ export function ChatSidebar() {
             <input
               type="text"
               placeholder={t(`navigation.chatSidebar.search.${activeTab}`)}
+              aria-label={t(`navigation.chatSidebar.search.${activeTab}`)}
+              title={t(`navigation.chatSidebar.search.${activeTab}`)}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="mari-chrome-field h-10 w-full py-0 pl-8 pr-3 text-xs md:h-9"
+              className="mari-chrome-field h-10 w-full text-ellipsis py-0 pl-8 pr-2 text-xs md:h-9"
             />
           </div>
           <div className="relative">

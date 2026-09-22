@@ -4,7 +4,8 @@
 import { useRef, useState } from "react";
 import { CheckCircle, Download, FileJson, Loader2, XCircle } from "lucide-react";
 import { Modal } from "../ui/Modal";
-import { useCreateConnection, useSaveConnectionDefaults } from "../../hooks/use-connections";
+import { useQueryClient } from "@tanstack/react-query";
+import { connectionKeys, useCreateConnection, useSaveConnectionDefaults } from "../../hooks/use-connections";
 import { getConnectionImportEntries, normalizeImportedConnectionEntry } from "../../lib/connection-transfer";
 import { api } from "../../lib/api-client";
 import { useTranslation as useUiTranslation } from "react-i18next";
@@ -22,15 +23,22 @@ export function ImportConnectionModal({ open, onClose }: Props) {
   const [status, setStatus] = useState<"idle" | "loading" | "done">("idle");
   const [results, setResults] = useState<Array<{ filename: string; success: boolean; message: string }>>([]);
   const [dragOver, setDragOver] = useState(false);
+  const queryClient = useQueryClient();
+  // Bumped by reset(): an import still running when the modal closes must not
+  // write its results into the next session of the modal.
+  const runIdRef = useRef(0);
 
   const reset = () => {
+    runIdRef.current += 1;
     setStatus("idle");
     setResults([]);
     setDragOver(false);
   };
 
   const handleFiles = async (files: File[]) => {
-    if (files.length === 0) return;
+    // A second drop while an import runs would interleave two result lists.
+    if (files.length === 0 || status === "loading") return;
+    const runId = ++runIdRef.current;
     setStatus("loading");
     setResults([]);
 
@@ -40,7 +48,7 @@ export function ImportConnectionModal({ open, onClose }: Props) {
       try {
         const parsed = JSON.parse(await file.text()) as unknown;
         const entries = getConnectionImportEntries(parsed);
-        if (entries.length === 0) throw new Error("No connection data found");
+        if (entries.length === 0) throw new Error(localizeUi("ui.modals.importconnectionmodal.noConnectionData"));
 
         let imported = 0;
         let failed = 0;
@@ -66,28 +74,38 @@ export function ImportConnectionModal({ open, onClose }: Props) {
           } catch {
             if (createdConnectionId) {
               await api.delete(`/connections/${createdConnectionId}`).catch(() => undefined);
+              // The create already refreshed the list; drop the rolled-back row too.
+              void queryClient.invalidateQueries({ queryKey: connectionKeys.list() });
             }
             failed += 1;
           }
         }
 
-        if (imported === 0) throw new Error("No supported connection entries found");
+        if (imported === 0) throw new Error(localizeUi("ui.modals.importconnectionmodal.noSupportedEntries"));
+        const importedMessage = localizeUi("ui.modals.importconnectionmodal.importedWithoutKeys", {
+          count: imported,
+        });
         nextResults.push({
           filename: file.name,
           success: true,
-          message: `Imported ${imported} connection${imported === 1 ? "" : "s"} without API keys${
-            failed > 0 ? ` (${failed} skipped)` : ""
-          }`,
+          message:
+            failed > 0
+              ? `${importedMessage} ${localizeUi("ui.modals.importconnectionmodal.skippedCount", { count: failed })}`
+              : importedMessage,
         });
       } catch (error) {
         nextResults.push({
           filename: file.name,
           success: false,
-          message: error instanceof Error ? error.message : "Failed to import connections",
+          message:
+            error instanceof Error && !(error instanceof SyntaxError) && error.message
+              ? error.message
+              : localizeUi("ui.modals.importconnectionmodal.importFailed"),
         });
       }
     }
 
+    if (runId !== runIdRef.current) return;
     setResults(nextResults);
     setStatus("done");
   };
@@ -116,6 +134,15 @@ export function ImportConnectionModal({ open, onClose }: Props) {
           }}
           onDragLeave={() => setDragOver(false)}
           onClick={() => fileRef.current?.click()}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              fileRef.current?.click();
+            }
+          }}
+          role="button"
+          tabIndex={0}
+          aria-label={localizeUi("ui.modals.importconnectionmodal.dropOneOrMoreConnectionFilesHereOrClick")}
           className={`flex cursor-pointer flex-col items-center gap-3 rounded-xl border-2 border-dashed p-8 text-center transition-all ${
             dragOver
               ? "border-[var(--primary)] bg-[var(--primary)]/10"
