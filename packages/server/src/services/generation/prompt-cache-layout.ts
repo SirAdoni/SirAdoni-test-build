@@ -17,10 +17,11 @@ export interface FullLorebookContextParts {
  * exchange is ineligible for the old mutable-tail replay optimization: we
  * trade that optimization for clearer conversational continuity.
  */
-export function keepGameDialogueAdjacent<T extends PromptCacheLayoutMessage>(messages: readonly T[]): T[] {
-  const currentUserIndex = messages.length - 1;
-  const currentUser = messages[currentUserIndex];
-  if (currentUser?.role !== "user" || currentUser.contextKind !== "history") return messages.slice();
+export function keepGameDialogueAdjacent<T extends PromptCacheLayoutMessage>(input: readonly T[]): T[] {
+  const currentUserIndex = input.length - 1;
+  const currentUser = input[currentUserIndex];
+  if (currentUser?.role !== "user" || currentUser.contextKind !== "history") return input.slice();
+  const messages = moveLeadingRuntimeSystemContextToCurrentTurn(input);
 
   let historyIndex = -1;
   for (let index = currentUserIndex - 1; index >= 0; index -= 1) {
@@ -48,6 +49,30 @@ export function keepGameDialogueAdjacent<T extends PromptCacheLayoutMessage>(mes
   const next = messages.slice();
   const [assistant] = next.splice(historyIndex, 1);
   next.splice(next.length - 1, 0, assistant!);
+  return next;
+}
+
+/**
+ * App-owned runtime system blocks inserted straight after the system prompt (for example the World Maps
+ * spatial context, which names the current location) change whenever the scene does. Left there, every
+ * change rewrites the whole history behind them and breaks prefix caching for providers that cache by
+ * prefix. Move them to just before the current user turn, the same place the subscription layout uses.
+ * Only system injections marked as runtime or dynamic lore context move; user-authored prompt sections
+ * and everything else keep their position.
+ */
+function moveLeadingRuntimeSystemContextToCurrentTurn<T extends PromptCacheLayoutMessage>(messages: readonly T[]): T[] {
+  const isLeadingRuntime = (message: T): boolean =>
+    message.role === "system" &&
+    message.contextKind === "injection" &&
+    (message.providerMetadata?.marinaraRuntimeContext === true ||
+      message.providerMetadata?.marinaraDynamicLoreContext === true);
+  let prefixEnd = 0;
+  while (prefixEnd < messages.length && messages[prefixEnd]?.role === "system") prefixEnd += 1;
+  const moving = messages.slice(0, prefixEnd).filter(isLeadingRuntime);
+  if (moving.length === 0 || prefixEnd >= messages.length - 1) return messages.slice();
+  const movingSet = new Set(moving);
+  const next = messages.filter((message) => !movingSet.has(message));
+  next.splice(next.length - 1, 0, ...moving);
   return next;
 }
 

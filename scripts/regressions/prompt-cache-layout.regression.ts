@@ -404,6 +404,44 @@ assert.deepEqual(
 );
 
 const olderGameHistory = { role: "assistant" as const, content: "Older history", contextKind: "history" as const };
+
+// A World Maps spatial block is inserted right after the system prompt and names the current location.
+// On providers without the subscription layout it must travel to the current turn, so a move changes only
+// the tail of the prompt and the system prompt plus older history stay a byte-identical cacheable prefix.
+const gmPrompt = { role: "system" as const, content: "GM system prompt" };
+const spatialAt = (place: string) => ({
+  role: "system" as const,
+  content: `<spatial_context mode="game" authority="application">Current path: ${place}</spatial_context>`,
+  contextKind: "injection" as const,
+  providerMetadata: { marinaraRuntimeContext: true },
+});
+const spatialLayout = (place: string) =>
+  keepGameDialogueAdjacent([gmPrompt, spatialAt(place), olderGameHistory, gameAssistant, gameUser]);
+const inHall = spatialLayout("Great Hall");
+assert.deepEqual(
+  inHall.map((message) => message.content),
+  [
+    "GM system prompt",
+    "Older history",
+    '<spatial_context mode="game" authority="application">Current path: Great Hall</spatial_context>',
+    "Maybelle answers from the grove gate.",
+    "Please ask Maybelle to bring you to Honoria.",
+  ],
+  "the spatial block moves from the system prefix to the current turn",
+);
+const inGarden = spatialLayout("Garden Room");
+assert.deepEqual(
+  inGarden.slice(0, 2).map((message) => message.content),
+  inHall.slice(0, 2).map((message) => message.content),
+  "changing location leaves the system prompt and older history identical",
+);
+assert.deepEqual(
+  keepGameDialogueAdjacent([gmPrompt, { ...gmPrompt, content: "User prompt section" }, olderGameHistory, gameUser]).map(
+    (message) => message.content,
+  ),
+  ["GM system prompt", "User prompt section", "Older history", "Please ask Maybelle to bring you to Honoria."],
+  "unmarked system sections keep their place",
+);
 assert.deepEqual(
   keepGameDialogueAdjacent([staticLore, olderGameHistory, gameAssistant, runtimeContext, gameUser]),
   [staticLore, olderGameHistory, runtimeContext, gameAssistant, gameUser],
