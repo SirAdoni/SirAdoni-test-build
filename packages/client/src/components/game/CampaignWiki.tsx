@@ -116,7 +116,8 @@ const ENTITY_ID = /^(cme_|legacy-)[0-9a-f]{16,}$/iu;
 /** Event text for the reader; an id stored in place of a summary is never shown. */
 function eventSummary(t: TFn, summary: string | null | undefined): string {
   const text = summary?.trim();
-  return text && !RAW_ID.test(text) ? text : t("ui.game.campaignWiki.eventRecorded");
+  const idsOnly = text?.split(/\s+/u).every((token) => RAW_ID.test(token));
+  return text && !idsOnly ? text : t("ui.game.campaignWiki.eventRecorded");
 }
 
 /** Name of a page that is not in the loaded detail; shows a neutral label until it arrives. */

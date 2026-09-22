@@ -52,7 +52,7 @@ try {
     await desktop.waitForTimeout(350);
     const listText = await desktop.locator('[data-campaign-wiki-entity-list]').innerText();
     record("search filters", listText.includes("Ariadne Vale") && !listText.includes("Location 1"));
-    await desktop.getByRole("button", { name: "Location", exact: true }).click();
+    await desktop.locator('[role="group"]:has(> button[aria-pressed])').getByRole("button", { name: /^Location\s*[\d,]*$/ }).click();
     await desktop.waitForTimeout(350);
     record("kind filter applies", (await text(desktop)).includes("No pages match"));
   });
@@ -96,7 +96,7 @@ try {
     await step(`mobile list states @${tag}`, async () => {
       await openList(mobile);
       await mobile.evaluate(() => { window.__wikiMock.delayMs = 500; });
-      await mobile.getByRole("button", { name: "Character", exact: true }).click();
+      await mobile.locator('[role="group"]:has(> button[aria-pressed])').getByRole("button", { name: /^Character\s*[\d,]*$/ }).click();
       rec("loading state visible", await mobile.getByText("Loading campaign memory...", { exact: true }).isVisible());
       await mobile.getByPlaceholder("Search entities").fill("No match");
       await mobile.waitForTimeout(800);

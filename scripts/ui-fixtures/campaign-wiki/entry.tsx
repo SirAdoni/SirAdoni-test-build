@@ -9,9 +9,11 @@ import { initializeLocalization } from "../../../packages/client/src/localizatio
 import { useGameModeStore } from "../../../packages/client/src/stores/game-mode.store";
 import { useUIStore } from "../../../packages/client/src/stores/ui.store";
 
-type MockControl = { delayMs: number; failList: number; failDetail: number; failCommitments: number; failApplyOnce: boolean; forceConflict: boolean; appliedOperationId: string | null; lastMutation: unknown; mutationIds: string[]; audit: unknown[]; branchMode: string; chatFailures: number; knowledgeMode: string };
+type MockControl = { delayMs: number; failList: number; failDetail: number; failCommitments: number; failApplyOnce: boolean; forceConflict: boolean; appliedOperationId: string | null; lastMutation: unknown; mutationIds: string[]; audit: unknown[]; branchMode: string; chatFailures: number; knowledgeMode: string;
+  commitmentRevisions: Record<string, number>; commitmentListFetches: number; transitions: Array<{ commitmentId: string; body: any; status: number }>;
+  ownerHold: boolean; releaseOwner: () => void; ownerLinked: Record<string, string>; ownerLookups: string[] };
 declare global {
-  interface Window { __wikiMock: MockControl; __ownerStores?: { game: () => unknown; ui: () => unknown }; }
+  interface Window { __wikiMock: MockControl; __queryClient?: QueryClient; __ownerStores?: { game: () => unknown; ui: () => unknown }; }
 }
 
 const source = "fixture-campaign";
@@ -98,7 +100,11 @@ function detail(id: string, offset: number) {
 async function main() {
   await initializeLocalization("en");
   const branchMode = new URL(window.location.href).searchParams.get("branch") ?? "none";
-  window.__wikiMock = { delayMs: 0, failList: 0, failDetail: 0, failCommitments: 0, failApplyOnce: false, forceConflict: false, appliedOperationId: null, lastMutation: null, mutationIds: [], audit: [], branchMode, chatFailures: branchMode === "error-once" ? 1 : branchMode === "error" ? 999 : 0, knowledgeMode: "isolated" };
+  window.__wikiMock = { delayMs: 0, failList: 0, failDetail: 0, failCommitments: 0, failApplyOnce: false, forceConflict: false, appliedOperationId: null, lastMutation: null, mutationIds: [], audit: [], branchMode, chatFailures: branchMode === "error-once" ? 1 : branchMode === "error" ? 999 : 0, knowledgeMode: "isolated",
+    commitmentRevisions: { "commitment-proposed": 1, "commitment-active": 1, "commitment-completed": 2 }, commitmentListFetches: 0, transitions: [],
+    ownerHold: false, releaseOwner: () => undefined, ownerLinked: {}, ownerLookups: [] };
+  const ownerWaiters: Array<() => void> = [];
+  window.__wikiMock.releaseOwner = () => { window.__wikiMock.ownerHold = false; ownerWaiters.splice(0).forEach((resolve) => resolve()); };
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof Request ? input.url : input.url;
@@ -154,12 +160,25 @@ async function main() {
       const items = entityFilter ? timelineItems.filter((item) => item.participants.some((p) => p.entityId === entityFilter)) : timelineItems;
       return new Response(JSON.stringify({ items, nextCursor: null }), { headers: { "Content-Type": "application/json" } });
     }
+    const transitionMatch = parsed.pathname.match(/^\/api\/game\/chat-demo\/memory\/commitments\/([^/]+)\/transition$/);
+    if (transitionMatch && init?.method === "POST") {
+      // Compare-and-set like the server: a stale expectedRevision answers 409.
+      const body = JSON.parse(String(init.body ?? "{}"));
+      const commitmentId = decodeURIComponent(transitionMatch[1]);
+      const current = control.commitmentRevisions[commitmentId] ?? 1;
+      const status = body.expectedRevision === current ? 200 : 409;
+      control.transitions.push({ commitmentId, body, status });
+      if (status === 409) return new Response(JSON.stringify({ error: { code: "CAMPAIGN_MEMORY_CAS_MISMATCH", message: "stale revision" } }), { status: 409, headers: { "Content-Type": "application/json" } });
+      control.commitmentRevisions[commitmentId] = current + 1;
+      return new Response(JSON.stringify({ commitmentId, state: body.state, revision: current + 1 }), { headers: { "Content-Type": "application/json" } });
+    }
     if (parsed.pathname === "/api/game/chat-demo/memory/commitments") {
+      control.commitmentListFetches += 1;
       if (control.failCommitments > 0) { control.failCommitments -= 1; return new Response(JSON.stringify({ error: "fixture commitments failure" }), { status: 503, headers: { "Content-Type": "application/json" } }); }
       const pageTwo = parsed.searchParams.get("cursor") === "commitments-page-2";
       const items = pageTwo
-        ? [{ commitmentId: "commitment-completed", subjectEntityId: "entity-0", kind: "quest", title: "Archive key recovered", state: "completed", conditions: [], deadline: null, notes: "The key reached the northern archive.", participants: [{ entityId: "entity-0", alias: "Ariadne Vale", role: "holder" }], evidence: [{ messageId: "msg-commitment-2", quote: "The archive key is secured.", sourceHash: "hash-commitment-2" }], transitions: [{ factId: "fact-commitment-2", state: "completed", sourceOrder: "14", evidenceMessageIds: ["msg-commitment-2"] }], historical: false, openSince: null, revision: 2 }]
-        : [{ commitmentId: "commitment-proposed", subjectEntityId: "entity-0", kind: "quest", title: "Recover the archive key", state: "proposed", conditions: ["After the eclipse"], deadline: "Day 5", notes: "Bring the key back intact.", participants: [{ entityId: "entity-0", alias: "Ariadne Vale", role: "quest giver" }], evidence: [{ messageId: "msg-commitment-1", quote: "Recover the archive key.", sourceHash: "hash-commitment-1" }], transitions: [{ factId: "fact-commitment-1", state: "proposed", sourceOrder: "12", evidenceMessageIds: ["msg-commitment-1"] }], historical: false, openSince: "12", revision: 1 }, { commitmentId: "commitment-active", subjectEntityId: "entity-0", kind: "promise", title: "Keep the archive watch", state: "active", conditions: [], deadline: null, notes: "The watch remains active.", participants: [{ entityId: "entity-0", alias: "Ariadne Vale", role: "watcher" }], evidence: [{ messageId: "msg-commitment-1", quote: "I will keep watch.", sourceHash: "hash-commitment-1" }], transitions: [{ factId: "fact-commitment-active", state: "active", sourceOrder: "13", evidenceMessageIds: ["msg-commitment-1"] }], historical: false, openSince: "13", revision: 1 }];
+        ? [{ commitmentId: "commitment-completed", subjectEntityId: "entity-0", kind: "quest", title: "Archive key recovered", state: "completed", conditions: [], deadline: null, notes: "The key reached the northern archive.", participants: [{ entityId: "entity-0", alias: "Ariadne Vale", role: "holder" }], evidence: [{ messageId: "msg-commitment-2", quote: "The archive key is secured.", sourceHash: "hash-commitment-2" }], transitions: [{ factId: "fact-commitment-2", state: "completed", sourceOrder: "14", evidenceMessageIds: ["msg-commitment-2"] }], historical: false, openSince: null, revision: control.commitmentRevisions["commitment-completed"] }]
+        : [{ commitmentId: "commitment-proposed", subjectEntityId: "entity-0", kind: "quest", title: "Recover the archive key", state: "proposed", conditions: ["After the eclipse"], deadline: "Day 5", notes: "Bring the key back intact.", participants: [{ entityId: "entity-0", alias: "Ariadne Vale", role: "quest giver" }], evidence: [{ messageId: "msg-commitment-1", quote: "Recover the archive key.", sourceHash: "hash-commitment-1" }], transitions: [{ factId: "fact-commitment-1", state: "proposed", sourceOrder: "12", evidenceMessageIds: ["msg-commitment-1"] }], historical: false, openSince: "12", revision: control.commitmentRevisions["commitment-proposed"] }, { commitmentId: "commitment-active", subjectEntityId: "entity-0", kind: "promise", title: "Keep the archive watch", state: "active", conditions: [], deadline: null, notes: "The watch remains active.", participants: [{ entityId: "entity-0", alias: "Ariadne Vale", role: "watcher" }], evidence: [{ messageId: "msg-commitment-1", quote: "I will keep watch.", sourceHash: "hash-commitment-1" }], transitions: [{ factId: "fact-commitment-active", state: "active", sourceOrder: "13", evidenceMessageIds: ["msg-commitment-1"] }], historical: false, openSince: "13", revision: control.commitmentRevisions["commitment-active"] }];
       return new Response(JSON.stringify({ items, nextCursor: pageTwo ? null : "commitments-page-2" }), { headers: { "Content-Type": "application/json" } });
     }
     const match = parsed.pathname.match(/^\/api\/game\/chat-demo\/memory\/entities(?:\/([^/]+))?$/);
@@ -168,6 +187,15 @@ async function main() {
     if (control.delayMs) await new Promise((resolve) => setTimeout(resolve, control.delayMs));
     if (isDetail && control.failDetail > 0) { control.failDetail -= 1; return new Response(JSON.stringify({ error: "fixture detail failure" }), { status: 503, headers: { "Content-Type": "application/json" } }); }
     if (!isDetail && control.failList > 0) { control.failList -= 1; return new Response(JSON.stringify({ error: "fixture list failure" }), { status: 503, headers: { "Content-Type": "application/json" } }); }
+    const ownerRef = parsed.searchParams.get("owner");
+    if (!isDetail && ownerRef) {
+      // Owner lookup for the create form; ownerHold keeps it in flight until releaseOwner().
+      control.ownerLookups.push(ownerRef);
+      if (control.ownerHold) await new Promise<void>((resolve) => ownerWaiters.push(resolve));
+      const linkedName = control.ownerLinked[ownerRef];
+      const items = linkedName ? [{ ...entity("entity-owned", 2), entityId: "entity-owned", aliases: [linkedName] }] : [];
+      return new Response(JSON.stringify({ items, total: items.length, offset: 0, limit: 5 }), { headers: { "Content-Type": "application/json" } });
+    }
     if (isDetail) return new Response(JSON.stringify(detail(match[1], Number(parsed.searchParams.get("offset") ?? 0))), { headers: { "Content-Type": "application/json" } });
     const q = (parsed.searchParams.get("q") ?? "").toLowerCase();
     const kind = parsed.searchParams.get("kind");
@@ -176,6 +204,7 @@ async function main() {
     return new Response(JSON.stringify({ items: filtered.slice(offset, offset + 20), total: filtered.length, offset, limit: 20 }), { headers: { "Content-Type": "application/json" } });
   };
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  window.__queryClient = queryClient;
   const surface = new URL(window.location.href).searchParams.get("surface");
   createRoot(document.getElementById("root")!).render(<QueryClientProvider client={queryClient}>{surface === "inventory" ? <InventoryHarness /> : surface === "settings" ? <SettingsHarness /> : surface === "window" ? <CampaignWikiWindow chatId="chat-demo" onClose={() => undefined} /> : <CampaignWiki chatId="chat-demo" />}</QueryClientProvider>);
   window.__ownerStores = {

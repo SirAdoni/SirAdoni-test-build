@@ -47,7 +47,7 @@ try {
     await page.close();
   }
   checks.push({ name: "scrolled screenshots captured", pass: screenshots.length === Object.keys(VIEWPORTS).length * 2, detail: `${screenshots.length} screenshots` });
-  const output = { generatedAt: new Date().toISOString(), base, checks, pass: checks.every((check) => check.pass), screenshots, note: "Fixture-only API responses; commitments loading, grouping, cursor pagination, and error/retry are covered. State-changing commitment transitions are intentionally untested." };
+  const output = { generatedAt: new Date().toISOString(), base, checks, pass: checks.every((check) => check.pass), screenshots, note: "Fixture-only API responses; commitments loading, grouping, cursor pagination, and error/retry are covered. Commitment transition 409/reload/retry is covered by run-commitment-conflict.mjs." };
   await fs.writeFile(path.join(out, "pulse8-scrolled-results.json"), JSON.stringify(output, null, 2)); console.log(JSON.stringify(output, null, 2));
   if (!output.pass) process.exitCode = 1;
 } catch (error) { console.error(error); await fs.writeFile(path.join(out, "pulse8-scrolled-error.txt"), String(error?.stack ?? error)); process.exitCode = 1; }

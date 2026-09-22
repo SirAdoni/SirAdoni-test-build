@@ -1,7 +1,9 @@
 // Campaign Wiki create/evidence/owner fixture: fact create payload shape,
 // create retry reuses operation ID, stale verified fact excluded from knowledge
 // choices, relationship target reset, escaped source text, stale source shows
-// no content, owner links open character sheet / persona detail store actions.
+// no content, owner check blocks preview while catching up and blocks apply for
+// an owner that already has a page, owner links open character sheet / persona
+// detail store actions.
 import { chromium } from "@playwright/test";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -57,6 +59,56 @@ try {
   await targetSearch.fill("Item"); await desktop.waitForTimeout(350);
   record("relationship search clears old target", oldTarget && (await targetSelect.inputValue()) === "", `old=${oldTarget} new=${await targetSelect.inputValue()}`);
   await shot(desktop, "create-desktop-viewport");
+
+  // Owner check: it only counts when it covers the exact owner ID being sent and is not fetching.
+  const STILL_CHECKING = "Still checking whether this owner already has a page. Try again in a moment.";
+  await openEditor(desktop); await addRecord(desktop);
+  await desktop.getByLabel("Record type", { exact: true }).selectOption({ label: "New entity page" });
+  await desktop.getByLabel("Entity kind", { exact: true }).selectOption("item");
+  await desktop.getByLabel("Name", { exact: true }).fill("Fixture Lantern");
+  await desktop.getByLabel("Reason for this change", { exact: true }).fill("Owner check fixture");
+  const ownerField = desktop.getByLabel("Existing owner record ID", { exact: true });
+  const previewButton = desktop.getByRole("button", { name: "Review preview", exact: true });
+  const stillChecking = desktop.getByText(STILL_CHECKING, { exact: true });
+  await ev(desktop, () => { window.__wikiMock.ownerHold = true; window.__wikiMock.lastMutation = null; });
+  await ownerField.fill("item-free");
+  await previewButton.click();
+  record("owner check: preview blocked before debounce catches up", (await stillChecking.count()) === 1 && (await ev(desktop, () => window.__wikiMock.lastMutation)) === null, `stillChecking=${await stillChecking.count()}`);
+  await desktop.waitForFunction(() => window.__wikiMock.ownerLookups.includes("game-state:item-free"));
+  await previewButton.click();
+  record("owner check: preview blocked while lookup is in flight", (await stillChecking.count()) === 1 && (await desktop.getByText("Checking for an existing page...", { exact: true }).count()) === 1 && (await ev(desktop, () => window.__wikiMock.lastMutation)) === null, `stillChecking=${await stillChecking.count()}`);
+  await ev(desktop, () => window.__wikiMock.releaseOwner());
+  await desktop.getByText("No page exists for this owner yet.", { exact: true }).waitFor();
+  record("owner check: still-checking notice clears once the lookup resolves", (await stillChecking.count()) === 0);
+
+  // A finished check for the previous ID must not cover a new ID.
+  await ev(desktop, () => { window.__wikiMock.ownerHold = true; window.__wikiMock.ownerLinked["game-state:item-linked"] = "Existing Lantern"; });
+  await ownerField.fill("item-linked");
+  await previewButton.click();
+  record("owner check: result for old owner ID does not cover new ID", (await stillChecking.count()) === 1 && (await desktop.getByText("No page exists for this owner yet.", { exact: true }).count()) === 0 && (await ev(desktop, () => window.__wikiMock.lastMutation)) === null, `stillChecking=${await stillChecking.count()}`);
+  await desktop.waitForFunction(() => window.__wikiMock.ownerLookups.includes("game-state:item-linked"));
+  await ev(desktop, () => window.__wikiMock.releaseOwner());
+  const linkedText = desktop.getByText("This owner already has a page: Existing Lantern", { exact: true });
+  await linkedText.first().waitFor();
+  await stillChecking.waitFor({ state: "detached" });
+  await previewButton.click(); await desktop.waitForTimeout(200);
+  record("owner check: owner with a page blocks preview", (await linkedText.count()) >= 2 && (await ev(desktop, () => window.__wikiMock.lastMutation)) === null && (await desktop.getByText("Changed fields", { exact: true }).count()) === 0, `linkedTexts=${await linkedText.count()}`);
+
+  // Free owner previews; a check that later finds a page still blocks apply.
+  await ownerField.fill("item-late");
+  await desktop.getByText("No page exists for this owner yet.", { exact: true }).waitFor();
+  await previewButton.click();
+  await desktop.getByText("Changed fields", { exact: true }).waitFor();
+  const previewed = await ev(desktop, () => window.__wikiMock.lastMutation);
+  record("owner check: free owner previews with exact owner ref", previewed?.input?.owner?.recordId === "item-late" && previewed?.input?.owner?.store === "game-state", JSON.stringify(previewed?.input?.owner));
+  const appliesBefore = await ev(desktop, () => window.__wikiMock.mutationIds.length);
+  await ev(desktop, async () => { window.__wikiMock.ownerLinked["game-state:item-late"] = "Late Lantern"; await window.__queryClient.invalidateQueries({ queryKey: ["campaign-memory", "owner"] }); });
+  const lateLinked = desktop.getByText("This owner already has a page: Late Lantern", { exact: true });
+  await lateLinked.first().waitFor();
+  await desktop.getByRole("button", { name: "Apply reviewed change", exact: true }).click(); await desktop.waitForTimeout(250);
+  const appliesAfter = await ev(desktop, () => window.__wikiMock.mutationIds.length);
+  record("owner check: owner that already has a page blocks apply", appliesAfter === appliesBefore && (await lateLinked.count()) >= 2, `applies ${appliesBefore}->${appliesAfter} linkedTexts=${await lateLinked.count()}`);
+  await shot(desktop, "create-owner-linked-desktop");
 
   await openDetail(desktop);
   // The fact with a matching source and a stale source; its quotes sit in a closed "From the story" disclosure.
