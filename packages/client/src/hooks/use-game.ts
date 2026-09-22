@@ -9,6 +9,7 @@ import { ApiError, api, isJsonRepairApiError } from "../lib/api-client";
 import { captureChatMetadataVersion, chatKeys, guardServerChatSnapshot } from "./use-chats";
 import { characterKeys } from "./use-characters";
 import { lorebookKeys } from "./use-lorebooks";
+import { recordDiceLogEntry } from "./use-game-tools";
 import {
   clearPendingHudWidgetPersist,
   getHudWidgetStateSignature,
@@ -669,12 +670,19 @@ export function useRemovePartyMember() {
 
 export function useRollDice() {
   const store = useGameModeStore;
+  const qc = useQueryClient();
 
   return useMutation({
     mutationFn: (data: { chatId: string; notation: string; context?: string }) =>
       api.post<DiceRollResponse>("/game/dice/roll", data),
-    onSuccess: (res) => {
+    onSuccess: (res, variables) => {
       store.getState().setDiceRollResult(res.result);
+      recordDiceLogEntry(qc, {
+        source: "player",
+        chatId: variables.chatId,
+        result: res.result,
+        ...(variables.context ? { context: variables.context } : {}),
+      });
     },
   });
 }
@@ -701,6 +709,12 @@ export function useSkillCheck() {
         data,
       ),
     onSuccess: (res, variables) => {
+      recordDiceLogEntry(qc, {
+        source: "skill_check",
+        chatId: variables.chatId,
+        result: res.result,
+        ...(variables.messageId ? { messageId: variables.messageId } : {}),
+      });
       if (res.updatedContent) {
         qc.invalidateQueries({ queryKey: chatKeys.messages(variables.chatId) });
         qc.invalidateQueries({ queryKey: lorebookKeys.active(variables.chatId) });

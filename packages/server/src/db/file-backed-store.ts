@@ -397,6 +397,7 @@ const BUILT_IN_FILE_BACKED_TABLES = [
   "game_turn_storyboards",
   "game_turn_storyboard_keyframes",
   "game_dice_pools",
+  "game_dice_rolls",
   "game_rulesets",
   "regex_scripts",
   "chat_images",
@@ -493,6 +494,7 @@ const SHARD_KEY_COLUMNS: Record<string, string> = {
   game_turn_storyboards: "chatId",
   game_turn_storyboard_keyframes: "storyboardId",
   game_dice_pools: "chatId",
+  game_dice_rolls: "chatId",
   chat_images: "chatId",
   character_images: "characterId",
   persona_images: "personaId",
@@ -835,6 +837,7 @@ export const CASCADES: Array<{ parent: FileBackedTable; child: FileBackedTable; 
     { parent: "chats", child: "game_scene_videos", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "game_turn_storyboards", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "game_dice_pools", parentKey: "id", childKey: "chatId" },
+    { parent: "chats", child: "game_dice_rolls", parentKey: "id", childKey: "chatId" },
     {
       parent: "game_turn_storyboards",
       child: "game_turn_storyboard_keyframes",

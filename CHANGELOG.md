@@ -12,6 +12,9 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Added chat stats (Stats in the branch menu): messages, words per speaker, average reply length, messages per day, the longest message, reported generation tokens and play time. Play time adds up sittings, and a pause of more than 30 minutes starts a new sitting.
 
 - Added an Activity overview (pulse button beside your status) with a yearly heatmap of messages across all chats, streaks, totals, total play time and your most played chats.
+- Added a Dice Log to Game Mode (Session panel, Tools tab). Every roll from the dice tray, GM narration and skill checks is kept with its dice, total and crit or fumble flags; the log shows recent rolls, average against expected, natural 20s and 1s and a per-face distribution, for the current session or the whole game. Logging never blocks or fails a roll.
+- Added an offline fantasy name generator with harsh northern, flowing elvish, desert and imperial styles, plus names learned from a chosen lorebook or the character library. Names are seeded, can be locked, copied and regenerated, and the tool opens from the Game Mode Tools tab or anywhere through its own window.
+- Added a campaign codex export (Session panel, Tools tab) that downloads a game's campaign memory as readable Markdown or JSON: entities grouped by kind with aliases, current state, verified facts, knowledge and relationships tagged by session, and a timeline across all sessions. The export only reads memory.
 
 - Fixed the mobile Game Mode layout so Currently Present no longer pushes the narration and input below the screen. Widget bookmarks now use a single horizontally scrollable row; opening one shows a dismissible panel without shifting the chat. Short screens also retain room for narration when the storyboard viewer is open. Saved desktop widget placements are preserved.
 

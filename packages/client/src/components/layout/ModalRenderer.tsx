@@ -80,6 +80,9 @@ const ChatStatsModal = lazy(() =>
 const ActivityOverviewModal = lazy(() =>
   import("../modals/ActivityOverviewModal").then((module) => ({ default: module.ActivityOverviewModal })),
 );
+const NameGeneratorModal = lazy(() =>
+  import("../modals/NameGeneratorModal").then((module) => ({ default: module.NameGeneratorModal })),
+);
 
 export function ModalRenderer() {
   const modal = useUIStore((s) => s.modal);
@@ -214,6 +217,9 @@ export function ModalRenderer() {
       break;
     case "activity-overview":
       content = <ActivityOverviewModal open onClose={closeModal} />;
+      break;
+    case "name-generator":
+      content = <NameGeneratorModal open onClose={closeModal} />;
       break;
     default:
       content = null;

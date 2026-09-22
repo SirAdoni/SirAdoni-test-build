@@ -100,6 +100,7 @@ import type {
   ChatSummaryEntry,
   ChatMode,
   DiceRollResult,
+  SkillCheckResult,
   ResolvedSpatialTravel,
   ThinkingTagPair,
 } from "@marinara-engine/shared";
@@ -108,6 +109,8 @@ import {
   RoleplayInterruptionConflictError,
   withChatMetadataPatchQueue,
 } from "../services/storage/chats.storage.js";
+import { recordGameDiceRollsSafely } from "../services/storage/game-dice-rolls.storage.js";
+import { gmTurnDiceLogEntries } from "../services/game/dice-roll-log.js";
 import { updateInterruptedPromptHistory } from "../services/generation/roleplay-interrupt-context.js";
 import {
   commitSpatialOwnerTurn,
@@ -8186,6 +8189,8 @@ export async function generateRoutes(app: FastifyInstance) {
           let geminiResponseParts: unknown[] | null = null;
           // Each generation attempt owns its rolls; swipes never inherit this list.
           const toolDiceRollResults: DiceRollResult[] = [];
+          // Skill checks rolled this attempt, for the dice history written with the message.
+          const diceLogChecks: SkillCheckResult[] = [];
           let chatCompletionsReasoning: Record<string, unknown> | null = null;
           const rememberChatCompletionsReasoning = (metadata: Record<string, unknown>) => {
             chatCompletionsReasoning = readChatCompletionsReasoningMetadata(metadata) ?? metadata;
@@ -9447,6 +9452,7 @@ export async function generateRoutes(app: FastifyInstance) {
               fullResponse = generalRolls.content;
               contentReplaced = true;
             }
+            diceLogChecks.push(...(rolled.results ?? []), ...generalRolls.checkResults);
             for (const result of generalRolls.diceRolls) {
               toolDiceRollResults.push(result);
               sendSseEvent(reply, {
@@ -10278,6 +10284,15 @@ export async function generateRoutes(app: FastifyInstance) {
                 .map((roll) => parseRollDiceToolResult(JSON.stringify(roll) ?? ""))
                 .filter((roll): roll is DiceRollResult => roll !== null);
               extraUpdate.diceRollResults = [...retainedRolls, ...toolDiceRollResults];
+              // History only: never awaited, and a failed write never touches the turn.
+              void recordGameDiceRollsSafely(
+                app.db,
+                input.chatId,
+                gmTurnDiceLogEntries(toolDiceRollResults, diceLogChecks),
+                {
+                  messageId: savedMsg.id,
+                },
+              );
               // Message-extra updates are shallow: clear a legacy card on every new swipe.
               extraUpdate.diceRollResult = null;
               // A continuation writes into the same swipe through the same shallow merge,

@@ -1635,6 +1635,10 @@ const CampaignWikiWindow = lazy(async () => {
   const module = await import("./CampaignWikiWindow");
   return { default: module.CampaignWikiWindow };
 });
+const GameToolsPanel = lazy(async () => {
+  const module = await import("./GameToolsPanel");
+  return { default: module.GameToolsPanel };
+});
 const GameHudUtilityButtons = lazy(async () => {
   const module = await import("./GameHudUtilityButtons");
   return { default: module.GameHudUtilityButtons };
@@ -2155,6 +2159,7 @@ import {
   Volume2,
   VolumeX,
   X,
+  Wrench,
 } from "lucide-react";
 
 /** Randomly sample up to `max` items from an array (Fisher-Yates shuffle). */
@@ -2979,7 +2984,7 @@ function GameSurfaceComponent({
   const toggleContactBook = useCallback(() => setContactBookVisible((current) => !current), []);
   const [layoutEditing, setLayoutEditing] = useState(false);
   useEffect(() => setLayoutEditing(false), [activeChatId]);
-  const [sessionPanelTab, setSessionPanelTab] = useState<"history" | "scenes" | "journal">("history");
+  const [sessionPanelTab, setSessionPanelTab] = useState<"history" | "scenes" | "journal" | "tools">("history");
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [galleryAnchor, setGalleryAnchor] = useState<ChatToolbarFloatingPanelAnchor>(null);
   const resolvedGalleryOpen = galleryOpen || externalGalleryOpen;
@@ -12107,13 +12112,15 @@ function GameSurfaceComponent({
         </div>
 
         <div className="flex gap-1 border-b border-[var(--marinara-chat-chrome-panel-divider)] p-2">
-          {(["history", "scenes", "journal"] as const).map((tab) => (
+          {(["history", "scenes", "journal", "tools"] as const).map((tab) => (
             <button
               key={tab}
               type="button"
               onClick={() => setSessionPanelTab(tab)}
               className={cn(
-                "flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-2 text-[0.6875rem] font-medium transition-colors",
+                "flex min-w-0 flex-1 items-center justify-center rounded-md text-[0.6875rem] font-medium transition-colors",
+                // Four tabs share a phone-width panel: stack the icon over a label that may wrap.
+                mobile ? "flex-col gap-0.5 px-1 py-1.5 leading-tight" : "gap-1.5 px-2 py-2",
                 sessionPanelTab === tab
                   ? "bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-highlight-text)]"
                   : "text-[var(--marinara-chat-chrome-panel-muted)] hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-highlight-text)]",
@@ -12123,14 +12130,20 @@ function GameSurfaceComponent({
                 <ScrollText size={12} />
               ) : tab === "scenes" ? (
                 <MapIcon size={12} />
-              ) : (
+              ) : tab === "journal" ? (
                 <BookOpen size={12} />
+              ) : (
+                <Wrench size={12} />
               )}
-              {tab === "history"
-                ? localizeUi("ui.game.gamesurfacecomponent.sessionHistory")
-                : tab === "scenes"
-                  ? localizeUi("ui.game.gamesurfacecomponent.scenes")
-                  : localizeUi("ui.game.gamesurfacecomponent.journal")}
+              <span className="min-w-0 max-w-full text-center [overflow-wrap:anywhere]">
+                {tab === "history"
+                  ? localizeUi("ui.game.gamesurfacecomponent.sessionHistory")
+                  : tab === "scenes"
+                    ? localizeUi("ui.game.gamesurfacecomponent.scenes")
+                    : tab === "journal"
+                      ? localizeUi("ui.game.gamesurfacecomponent.journal")
+                      : localizeUi("ui.game.tools.tab")}
+              </span>
             </button>
           ))}
         </div>
@@ -12206,6 +12219,12 @@ function GameSurfaceComponent({
           <div className="min-h-0 flex-1 overflow-y-auto p-3">
             <Suspense fallback={null}>
               <GameSceneTimeline chatId={activeChatId} />
+            </Suspense>
+          </div>
+        ) : sessionPanelTab === "tools" ? (
+          <div className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain p-3">
+            <Suspense fallback={null}>
+              <GameToolsPanel chatId={activeChatId} />
             </Suspense>
           </div>
         ) : (
