@@ -26,7 +26,7 @@ import { useGameModeStore } from "../../stores/game-mode.store";
 import { useRenderTimer } from "../../lib/perf-diagnostics";
 import { Modal } from "../ui/Modal";
 import { FloatingGamePanel } from "./FloatingGamePanel";
-import { GameWidgetSetupEditor } from "./GameWidgetSetupEditor";
+import { GameWidgetSetupEditor, widgetIcon } from "./GameWidgetSetupEditor";
 import { CharacterLinkedContent } from "../characters/CharacterReferences";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
@@ -381,7 +381,7 @@ export function MobileWidgetPanel({ widgets, position, chatId, layout = "vertica
                 data-game-skip-bg-nav="true"
               >
                 <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-left">
-                  {w.icon && <span className="text-xs">{w.icon}</span>}
+                  <span className="text-xs">{widgetIcon(w)}</span>
                   <span className="flex-1 truncate text-[0.6875rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
                     <CharacterLinkedContent currentNames>{w.label}</CharacterLinkedContent>
                   </span>
@@ -421,7 +421,7 @@ export function MobileWidgetPanel({ widgets, position, chatId, layout = "vertica
               aria-label={w.label}
               title={w.label}
             >
-              {w.icon || "📊"}
+              {widgetIcon(w)}
             </button>
           );
         })}
@@ -525,7 +525,7 @@ function WidgetCard({
       autoWidth={widget.config.autoSize !== false}
       autoGrow
       allowTuck
-      tuckIcon={widget.icon || "📊"}
+      tuckIcon={widgetIcon(widget)}
       tuckLabel={widget.label}
       revealOnValueChangeKey={JSON.stringify(widget.config)}
       side={widget.position}
@@ -546,7 +546,7 @@ function WidgetCard({
           }}
           className={GAME_WIDGET_HEADER_CLASS}
         >
-          {widget.icon && <span className="text-xs">{widget.icon}</span>}
+          <span className="text-xs">{widgetIcon(widget)}</span>
           <span className={GAME_WIDGET_TITLE_CLASS}>
             <CharacterLinkedContent currentNames>{widget.label}</CharacterLinkedContent>
           </span>
@@ -1052,7 +1052,7 @@ export function GameWidgetSessionPrepModal({
                 >
                   <div className="min-w-0 space-y-1">
                     <div className="flex items-center gap-2">
-                      {widget.icon && <span className="text-sm">{widget.icon}</span>}
+                      <span className="text-sm">{widgetIcon(widget)}</span>
                       <span className="truncate text-sm font-medium text-[var(--foreground)]">{widget.label}</span>
                       <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[0.6875rem] uppercase tracking-wide text-[var(--muted-foreground)]">
                         {formatWidgetTypeLabel(widget.type)}

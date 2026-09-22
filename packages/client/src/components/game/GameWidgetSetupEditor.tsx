@@ -53,7 +53,7 @@ const DEFAULT_ACCENTS: Record<HudWidgetType, string> = {
   ...EXTENDED_WIDGET_ACCENTS,
 } as Record<HudWidgetType, string>;
 
-const DEFAULT_ICONS: Record<HudWidgetType, string> = {
+export const DEFAULT_ICONS: Record<HudWidgetType, string> = {
   progress_bar: "◆",
   gauge: "◔",
   relationship_meter: "♥",
@@ -82,6 +82,11 @@ const DEFAULT_ICONS: Record<HudWidgetType, string> = {
   charges: "✦",
   calendar: "▦",
 };
+
+/** Icon shown for a widget: its own, else its type's default, so model-created widgets stay distinguishable. */
+export function widgetIcon(widget: Pick<HudWidget, "icon" | "type">): string {
+  return widget.icon || DEFAULT_ICONS[widget.type] || "📊";
+}
 
 const WIDGET_NUMBER_INPUT_CLASS =
   "w-full rounded-lg border border-transparent bg-[var(--secondary)] px-2.5 py-2 text-xs text-[var(--foreground)] outline-none transition-colors focus:border-[var(--primary)]/40";
