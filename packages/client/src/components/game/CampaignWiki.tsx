@@ -110,6 +110,16 @@ function kindLabel(t: TFn, kind: CampaignMemoryEntityKind | "all") {
 }
 
 const RAW_ID = /^(cme_|cmf_|cmk_|cmev_|cmt_|legacy-|gcb_|gch_|gcr_)[\w-]+$/iu;
+/** A stored value that is itself a wiki page id (current state often records a location this way). */
+const ENTITY_ID = /^(cme_|legacy-)[0-9a-f]{16,}$/iu;
+
+/** Name of a page that is not in the loaded detail; shows a neutral label until it arrives. */
+function EntityRefName({ chatId, entityId }: { chatId: string; entityId: string }) {
+  const { t } = useUiTranslation();
+  const detail = useCampaignMemoryEntity(chatId, entityId, { limit: 1 });
+  if (detail.data?.entity) return <>{displayEntityName(t, detail.data.entity)}</>;
+  return <>{detail.isError ? t("ui.game.campaignWiki.reader.unknownPage", { defaultValue: "Unknown page" }) : "…"}</>;
+}
 
 function displayEntityName(t: TFn, entity: Pick<CampaignMemoryEntityListItem, "aliases" | "entityId" | "kind">) {
   const alias = entity.aliases.find((value) => value.trim() && !RAW_ID.test(value.trim()));
@@ -392,6 +402,78 @@ function Detail({
   const pager = (shown: number, total: number) => (
     <Pager offset={detailOffset} limit={detailLimit} total={total} shown={shown} onChange={onPageChange} />
   );
+  const renderFact = (fact: (typeof facts.items)[number]) => {
+    const display = factDisplay(fact);
+    const label = factLabel(fact, sourceChecks[fact.factId]?.state, facts.items);
+    const coHolders = (fact.coHolders ?? []).filter((holder) => holder.alias && !RAW_ID.test(holder.alias));
+    return (
+      <WikiCard as="article" key={fact.factId}>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {display.kind && (
+            <WikiChip tone={factKindTone(display.kind)}>{enumLabel(t, "factKind", display.kind)}</WikiChip>
+          )}
+          {label !== "verified" && <FactLabelBadge label={label} />}
+          {display.claimStatus && display.claimStatus !== "asserted" && display.claimStatus !== "accepted" && (
+            <WikiChip tone="neutral">{enumLabel(t, "claimStatus", display.claimStatus)}</WikiChip>
+          )}
+          {perspective !== "gm" && holderState(fact) && (
+            <WikiChip tone="info">{enumLabel(t, "epistemicState", holderState(fact) ?? "unknown")}</WikiChip>
+          )}
+          <span className="ml-auto flex items-center gap-2">
+            <SessionChip record={fact} />
+            <WhenChip order={fact.validFromOrder} />
+          </span>
+        </div>
+        {display.label && (
+          <p className="mt-2 text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
+            {display.label}
+          </p>
+        )}
+        <p className={cn("text-sm leading-6 text-foreground", display.label ? "mt-0.5" : "mt-2")}>{display.text}</p>
+        {display.conditions.length > 0 && (
+          <div className="mt-2 rounded-lg bg-amber-400/5 px-3 py-2">
+            <p className="text-[0.6875rem] font-semibold uppercase tracking-wide text-amber-200/90">
+              {t("ui.game.campaignWiki.reader.onlyIf", { defaultValue: "Only if" })}
+            </p>
+            <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs leading-5 text-foreground/90">
+              {display.conditions.map((condition, index) => (
+                <li key={`${fact.factId}-condition-${index}`}>{condition}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {coHolders.length > 0 && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <span className="text-[0.6875rem] text-muted-foreground">{t("ui.game.campaignWiki.coHolders")}</span>
+            {coHolders.map((holder) => (
+              <EntityChipButton
+                key={holder.entityId}
+                entity={related.get(holder.entityId) ?? null}
+                name={holder.alias}
+                portraits={portraits}
+                onClick={() => onSelect(holder.entityId)}
+                suffix={
+                  holder.epistemicState !== "knows" ? (
+                    <span className="text-muted-foreground">
+                      ({enumLabel(t, "epistemicState", holder.epistemicState)})
+                    </span>
+                  ) : undefined
+                }
+              />
+            ))}
+          </div>
+        )}
+        <CampaignWikiEvidence
+          chatId={chatId}
+          sourceChatId={recordOrigin(fact).chatId ?? chatId}
+          evidence={fact.evidence}
+        />
+      </WikiCard>
+    );
+  };
+  const liveFacts = visibleFacts.filter((fact) => fact.status !== "retracted");
+  const withdrawnFacts = visibleFacts.filter((fact) => fact.status === "retracted");
+
   return (
     <article className="mx-auto w-full min-w-0 max-w-[62rem] space-y-5 pb-10 [overflow-wrap:anywhere]">
       <header className="flex flex-col gap-4 border-b border-border pb-5 sm:flex-row sm:items-start">
@@ -494,21 +576,26 @@ function Detail({
             {currentState.items.map((item) => {
               const sourceEvent = referencedEventById.get(item.sourceEventId);
               const valueRecord = wikiValueRecord(item.value);
-              const target = valueRecord && typeof valueRecord.entityId === "string" ? valueRecord.entityId : undefined;
+              const target =
+                valueRecord && typeof valueRecord.entityId === "string"
+                  ? valueRecord.entityId
+                  : typeof item.value === "string" && ENTITY_ID.test(item.value.trim())
+                    ? item.value.trim()
+                    : undefined;
               const targetName = target ? nameOf(target) : null;
               return (
                 <WikiCard key={item.stateId} className="p-3">
                   <p className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
                     {humanizeKey(item.property)}
                   </p>
-                  {target && targetName ? (
+                  {target ? (
                     <button
                       type="button"
                       onClick={() => onSelect(target)}
-                      className="mt-1 inline-flex items-center gap-1 text-sm font-semibold text-foreground hover:text-primary"
+                      className="mt-1 inline-flex items-center gap-1 text-left text-sm font-semibold text-foreground hover:text-primary"
                     >
-                      <MapPin size={13} />
-                      {targetName}
+                      <MapPin size={13} className="shrink-0" />
+                      {targetName ?? <EntityRefName chatId={chatId} entityId={target} />}
                     </button>
                   ) : (
                     <p className="mt-1 text-sm font-semibold text-foreground">{readableValue(item.value)}</p>
@@ -555,79 +642,18 @@ function Detail({
               })}
             />
           )}
-          {visibleFacts.map((fact) => {
-            const display = factDisplay(fact);
-            const label = factLabel(fact, sourceChecks[fact.factId]?.state, facts.items);
-            const coHolders = (fact.coHolders ?? []).filter((holder) => holder.alias && !RAW_ID.test(holder.alias));
-            return (
-              <WikiCard as="article" key={fact.factId}>
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {display.kind && (
-                    <WikiChip tone={factKindTone(display.kind)}>{enumLabel(t, "factKind", display.kind)}</WikiChip>
-                  )}
-                  {label !== "verified" && <FactLabelBadge label={label} />}
-                  {display.claimStatus && display.claimStatus !== "asserted" && display.claimStatus !== "accepted" && (
-                    <WikiChip tone="neutral">{enumLabel(t, "claimStatus", display.claimStatus)}</WikiChip>
-                  )}
-                  {perspective !== "gm" && holderState(fact) && (
-                    <WikiChip tone="info">{enumLabel(t, "epistemicState", holderState(fact) ?? "unknown")}</WikiChip>
-                  )}
-                  <span className="ml-auto flex items-center gap-2">
-                    <SessionChip record={fact} />
-                    <WhenChip order={fact.validFromOrder} />
-                  </span>
-                </div>
-                {display.label && (
-                  <p className="mt-2 text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
-                    {display.label}
-                  </p>
-                )}
-                <p className={cn("text-sm leading-6 text-foreground", display.label ? "mt-0.5" : "mt-2")}>
-                  {display.text}
-                </p>
-                {display.conditions.length > 0 && (
-                  <div className="mt-2 rounded-lg bg-amber-400/5 px-3 py-2">
-                    <p className="text-[0.6875rem] font-semibold uppercase tracking-wide text-amber-200/90">
-                      {t("ui.game.campaignWiki.reader.onlyIf", { defaultValue: "Only if" })}
-                    </p>
-                    <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs leading-5 text-foreground/90">
-                      {display.conditions.map((condition, index) => (
-                        <li key={`${fact.factId}-condition-${index}`}>{condition}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {coHolders.length > 0 && (
-                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                    <span className="text-[0.6875rem] text-muted-foreground">
-                      {t("ui.game.campaignWiki.coHolders")}
-                    </span>
-                    {coHolders.map((holder) => (
-                      <EntityChipButton
-                        key={holder.entityId}
-                        entity={related.get(holder.entityId) ?? null}
-                        name={holder.alias}
-                        portraits={portraits}
-                        onClick={() => onSelect(holder.entityId)}
-                        suffix={
-                          holder.epistemicState !== "knows" ? (
-                            <span className="text-muted-foreground">
-                              ({enumLabel(t, "epistemicState", holder.epistemicState)})
-                            </span>
-                          ) : undefined
-                        }
-                      />
-                    ))}
-                  </div>
-                )}
-                <CampaignWikiEvidence
-                  chatId={chatId}
-                  sourceChatId={recordOrigin(fact).chatId ?? chatId}
-                  evidence={fact.evidence}
-                />
-              </WikiCard>
-            );
-          })}
+          {liveFacts.map(renderFact)}
+          {withdrawnFacts.length > 0 && (
+            <details className="rounded-xl border border-border/60 px-3 py-2">
+              <summary className="cursor-pointer text-xs font-semibold text-muted-foreground">
+                {t("ui.game.campaignWiki.reader.withdrawnFacts", {
+                  defaultValue: "Withdrawn by the memory check ({{count}})",
+                  count: withdrawnFacts.length,
+                })}
+              </summary>
+              <div className="mt-2 space-y-2.5 opacity-80">{withdrawnFacts.map(renderFact)}</div>
+            </details>
+          )}
           {pager(facts.items.length, facts.total)}
         </section>
       )}
@@ -1045,6 +1071,8 @@ function useKindTotals(chatId: string) {
   const item = useCampaignMemoryEntities(chatId, { kind: "item", limit: 1 });
   const quest = useCampaignMemoryEntities(chatId, { kind: "quest", limit: 1 });
   const lore = useCampaignMemoryEntities(chatId, { kind: "lore", limit: 1 });
+  const persona = useCampaignMemoryEntities(chatId, { kind: "persona", limit: 1 });
+  const note = useCampaignMemoryEntities(chatId, { kind: "note", limit: 1 });
   const all = useCampaignMemoryEntities(chatId, { limit: 1 });
   return {
     all: all.data?.total,
@@ -1054,6 +1082,8 @@ function useKindTotals(chatId: string) {
     item: item.data?.total,
     quest: quest.data?.total,
     lore: lore.data?.total,
+    persona: persona.data?.total,
+    note: note.data?.total,
   };
 }
 
@@ -1119,14 +1149,14 @@ function Overview({
         <>
           <section
             aria-label={t("ui.game.campaignWiki.overviewCounts")}
-            className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6"
+            className="grid grid-cols-[repeat(auto-fill,minmax(7.5rem,1fr))] gap-2"
           >
             <WikiStat
               label={t("ui.game.campaignWiki.reader.allPages", { defaultValue: "All pages" })}
               value={count(totals.all)}
               icon={<Database size={12} />}
             />
-            {(["character", "location", "organization", "item", "quest", "lore"] as const)
+            {(["character", "persona", "location", "organization", "item", "quest", "lore", "note"] as const)
               .filter((kind) => totals[kind] !== 0)
               .map((kind) => (
                 <Tile key={kind} kind={kind} value={totals[kind]} />
@@ -1148,7 +1178,7 @@ function Overview({
                   </button>
                 }
               />
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(11.5rem,1fr))] gap-2">
                 {people.data.items.map((entity) => {
                   const name = displayEntityName(t, entity);
                   const sessions = entitySessionNumbers(entity);
@@ -1307,6 +1337,7 @@ export function CampaignWiki({
   const [editorDirty, setEditorDirty] = useState(false);
   const [campaignTimeline, setCampaignTimeline] = useState(false);
   const [navCollapsed, setNavCollapsed] = useState(false);
+  const kindTotals = useKindTotals(chatId);
   useEffect(() => onDirtyChange?.(editorDirty), [editorDirty, onDirtyChange]);
   const [importPreview, setImportPreview] = useState<CampaignMemoryImportPreview | null>(null);
   const [importOperationId, setImportOperationId] = useState<string | null>(null);
@@ -1543,8 +1574,9 @@ export function CampaignWiki({
             role="group"
             aria-label={t("ui.game.campaignWiki.filterByKind")}
           >
-            {KINDS.map((item) => {
+            {KINDS.filter((item) => item === kind || kindTotals[item] !== 0).map((item) => {
               const Icon = item === "all" ? null : ENTITY_KIND_ICONS[item];
+              const total = kindTotals[item];
               return (
                 <button
                   type="button"
@@ -1563,6 +1595,9 @@ export function CampaignWiki({
                 >
                   {Icon && <Icon size={12} />}
                   {kindLabel(t, item)}
+                  {typeof total === "number" && (
+                    <span className="font-normal tabular-nums text-muted-foreground">{total.toLocaleString()}</span>
+                  )}
                 </button>
               );
             })}
