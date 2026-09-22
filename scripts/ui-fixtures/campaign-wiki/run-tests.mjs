@@ -21,11 +21,12 @@ const shot = async (page, name, fullPage = false) => { await page.screenshot({ p
 const text = (page) => page.locator("body").innerText();
 // Pager text is "<from>–<to> of <total>"; the entity list pager comes before any detail pager in the DOM.
 const listTotal = async (page) => (await text(page)).match(/\d+–\d+ of 121/)?.[0] ?? "(no list total rendered)";
-const detailTotal = async (page) => (await text(page)).match(/\d+–\d+ of 101/)?.[0] ?? "(no detail total rendered)";
+const loadedText = async (page) => (await text(page)).match(/Showing \d+ of \d+ (matching )?facts/)?.[0] ?? "(no loaded count rendered)";
 const noOverflow = (page) => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
-const step = async (name, fn) => { try { await fn(); } catch (error) { record(`${name} (step aborted)`, false, String(error?.message ?? error).split("\n")[0]); } };
+const step = async (name, fn) => { try { await fn(); } catch (error) { record(`${name} (step aborted)`, false, String(error?.message ?? error).split("\n").slice(0, 4).join(" ")); } };
 const openList = async (page) => { await page.goto(base); await page.locator('[data-campaign-wiki-entity-list]').waitFor(WAIT); };
-const openDetail = async (page) => { await openList(page); await page.locator('[data-campaign-wiki-entity-list]').getByRole("button", { name: /Ariadne Vale/ }).click(); await page.getByText(/^holds the northern archive key$/i).first().waitFor(WAIT); };
+const openDetail = async (page, query = "") => { await page.goto(`${base}${query}`); await page.locator('[data-campaign-wiki-entity-list]').waitFor(WAIT); await page.locator('[data-campaign-wiki-entity-list]').getByRole("button", { name: /Ariadne Vale/ }).click(); await page.getByText(/^holds the northern archive key$/i).first().waitFor(WAIT); };
+const factRow = (page, name) => page.locator('[data-component="campaign-wiki-facts"]').getByRole("button", { name }).first();
 try {
   const desktop = await browser.newPage({ viewport: VIEWPORTS.desktop });
   await step("desktop list", async () => {
@@ -58,19 +59,83 @@ try {
   });
   await step("desktop detail", async () => {
     await openDetail(desktop);
-    record("detail content visible", /holds the northern archive key/i.test(await text(desktop)) && (await desktop.getByRole("tab", { name: /What they know|Who knows/ }).count()) > 0);
-    const total = await detailTotal(desktop);
-    record("detail page pagination", total === "1–20 of 101", total);
-    await desktop.getByRole("button", { name: "Next" }).last().click();
-    try { await desktop.getByText("recorded property 100", { exact: false }).waitFor(WAIT); } catch {}
-    const nextTotal = await detailTotal(desktop);
-    record("detail next page", nextTotal === "21–40 of 101" && /recorded property 20/i.test(await text(desktop)), nextTotal);
+    await shot(desktop, "desktop-detail-viewport");
+    await shot(desktop, "desktop-detail", true);
+    record("detail content visible", /holds the northern archive key/i.test(await text(desktop)) && (await desktop.getByRole("button", { name: /^(What they know|Who knows)/ }).count()) === 1);
+    const groups = await desktop.locator('[data-component="campaign-wiki-session-group"] > button[aria-expanded]').allInnerTexts();
+    record("facts grouped by session, newest first, with totals", groups.length === 4 && /Session 3\s*40 facts/.test(groups[0]) && /Session 2\s*30 facts/.test(groups[1]) && /Earlier\s*5 facts/.test(groups[3]), JSON.stringify(groups));
+    const expanded = await desktop.locator('[data-component="campaign-wiki-session-group"] > button[aria-expanded="true"]').count();
+    record("only the newest session starts open", expanded === 1, `open=${expanded}`);
+    const pinned = desktop.locator('[data-component="campaign-wiki-pinned"]');
+    record("pinned canon at the top", (await pinned.count()) === 1 && (await pinned.innerText()).includes("last sworn archivist"), await pinned.innerText().catch(() => ""));
+    const loaded = await loadedText(desktop);
+    record("newest session pages its facts", loaded === "Showing 20 of 40 facts", loaded);
+    await desktop.getByRole("button", { name: "Load more facts", exact: true }).first().click();
+    await desktop.getByText("Ariadne agreed to escort caravan 39.", { exact: true }).waitFor(WAIT);
+    record("load more appends the next page", (await desktop.getByRole("button", { name: "Load more facts", exact: true }).count()) === 0);
+    await desktop.getByRole("button", { name: /^Session 2/ }).click();
+    await desktop.getByText("Ariadne learned archive rule 45.", { exact: true }).waitFor(WAIT);
+    record("opening a session loads that session", (await text(desktop)).includes("Ariadne learned archive rule 45."));
+    record("withdrawn facts collapse into one line", (await desktop.getByRole("button", { name: /^1 withdrawn/ }).count()) === 1 && !(await text(desktop)).includes("born in the southern marshes"));
+  });
+  await step("desktop fact filters", async () => {
+    await openDetail(desktop);
+    await desktop.getByRole("group", { name: "Filter facts by kind" }).getByRole("button", { name: /^Commitment/ }).click();
+    await desktop.getByText("Ariadne promised to guard the gate until the thaw.", { exact: true }).waitFor(WAIT);
+    const body = await text(desktop);
+    record("kind chip filters on the server", !/holds the northern archive key/i.test(body) && body.includes("Ariadne agreed to escort caravan 11."), await loadedText(desktop));
+    await desktop.getByRole("group", { name: "Filter facts by kind" }).getByRole("button", { name: /^All/ }).click();
+    await desktop.getByPlaceholder(/^Search 101 facts$/).fill("caravan 60");
+    await desktop.getByText("Ariadne agreed to escort caravan 60.", { exact: true }).waitFor(WAIT);
+    const rows = await desktop.locator('[data-component="campaign-wiki-facts"] li button[aria-expanded]').count();
+    record("search finds a fact from a closed session", rows === 1, `rows=${rows}`);
+    await shot(desktop, "desktop-detail-search-viewport");
+  });
+  await step("desktop fact actions", async () => {
+    await openDetail(desktop);
+    await factRow(desktop, /promised to guard the gate/).click();
+    const details = desktop.locator('[data-component="campaign-wiki-fact-details"]').first();
+    await details.waitFor(WAIT);
+    record("expanded row shows its quote open", (await details.locator("details[open]").count()) === 1);
+    await shot(desktop, "desktop-detail-expanded-viewport");
+    await details.getByRole("button", { name: "Wrong", exact: true }).click();
+    await details.getByText("Mark as wrong? The memory will stop using it.", { exact: true }).waitFor(WAIT);
+    await details.getByRole("button", { name: "Mark as wrong", exact: true }).click();
+    await desktop.waitForFunction(() => window.__wikiMock.lastMutation?.recordId === "fact-6", undefined, WAIT);
+    const wrong = await desktop.evaluate(() => window.__wikiMock.lastMutation);
+    record("wrong sends the full fact patch", wrong.action === "update" && wrong.recordType === "fact" && wrong.expectedRevision === 1 && wrong.patch.status === "retracted" && wrong.patch.manualLock === true && wrong.patch.predicate === "continuity.record" && wrong.patch.value?.kind === "commitment" && Array.isArray(wrong.patch.evidence) && wrong.reason === "Marked wrong in the Campaign Wiki", JSON.stringify(wrong));
+    await desktop.getByRole("button", { name: /^2 withdrawn/ }).waitFor(WAIT);
+    record("wrong fact moves to withdrawn", !(await desktop.locator('[data-component="campaign-wiki-facts"]').innerText()).includes("promised to guard the gate"));
+
+    await factRow(desktop, /archive rule 10\./).click();
+    await desktop.locator('[data-component="campaign-wiki-fact-details"]').first().getByRole("button", { name: "Pin as canon", exact: true }).click();
+    await desktop.waitForFunction(() => window.__wikiMock.lastMutation?.recordId === "fact-10", undefined, WAIT);
+    const pin = await desktop.evaluate(() => window.__wikiMock.lastMutation);
+    record("pin sets value.pinned and the lock", pin.patch.value?.pinned === true && pin.patch.manualLock === true && pin.patch.value?.text === "Ariadne learned archive rule 10.", JSON.stringify(pin.patch));
+    await desktop.locator('[data-component="campaign-wiki-pinned"]').getByText("Ariadne learned archive rule 10.", { exact: true }).waitFor(WAIT);
+    record("pinned fact joins the pinned block", true);
+
+    await desktop.locator('[data-component="campaign-wiki-pinned"]').getByRole("button", { name: /last sworn archivist/ }).click();
+    await desktop.locator('[data-component="campaign-wiki-pinned"]').getByRole("button", { name: "Unpin", exact: true }).click();
+    await desktop.waitForFunction(() => window.__wikiMock.lastMutation?.recordId === "fact-5", undefined, WAIT);
+    const unpin = await desktop.evaluate(() => window.__wikiMock.lastMutation);
+    record("unpin clears the flag and the pin lock", unpin.patch.value?.pinned === false && unpin.patch.manualLock === false, JSON.stringify(unpin.patch));
+
+    await factRow(desktop, /Holds the northern archive key/).click();
+    await desktop.locator('[data-component="campaign-wiki-fact-details"]').first().getByRole("button", { name: "Correct", exact: true }).click();
+    await desktop.getByRole("heading", { name: "Edit campaign memory", exact: true }).waitFor(WAIT);
+    record("correct opens the editor", true);
+  });
+  await step("desktop legacy server fallback", async () => {
+    await openDetail(desktop, "?facts=legacy");
+    await desktop.waitForTimeout(600);
+    const groups = await desktop.locator('[data-component="campaign-wiki-facts"] section > button[aria-expanded]').allInnerTexts();
+    record("older server: facts still grouped by session", groups.length === 4 && /Session 3\s*39 facts/.test(groups[0]), JSON.stringify(groups));
   });
   await step("desktop related navigation", async () => {
     await openDetail(desktop);
-    await desktop.getByRole("tab", { name: /Connections/ }).click();
-    await desktop.getByRole("button", { name: "Allied with", exact: false }).waitFor(WAIT);
-    await desktop.getByRole("button", { name: "Allied with", exact: false }).click();
+    const infobox = desktop.locator('[data-component="campaign-wiki-infobox"]');
+    await infobox.getByRole("button", { name: /Allied with/ }).click();
     await desktop.getByRole("heading", { name: "Location 1", exact: true }).waitFor(WAIT);
     record("related entity click", (await text(desktop)).includes("Location 1"));
     await shot(desktop, "desktop-detail-related", true);
@@ -114,18 +179,25 @@ try {
     });
     await step(`mobile detail states @${tag}`, async () => {
       await openDetail(mobile);
-      await mobile.evaluate(() => { window.__wikiMock.failDetail = 1; });
-      await mobile.getByRole("button", { name: "Next", exact: true }).click();
+      await mobile.evaluate(() => { window.__wikiMock.failFactPage = 1; });
+      await mobile.getByRole("button", { name: "Load more facts", exact: true }).first().click();
       await mobile.getByText("Campaign memory could not be loaded.", { exact: true }).waitFor(WAIT);
-      rec("detail error state visible", (await text(mobile)).includes("Retry"));
+      rec("fact page error state visible", (await text(mobile)).includes("Retry"));
       await mobile.getByRole("button", { name: "Retry", exact: true }).click();
-      try { await mobile.getByText("Campaign memory could not be loaded.", { exact: true }).waitFor({ state: "detached", ...WAIT }); } catch {}
+      await mobile.getByText("Ariadne agreed to escort caravan 39.", { exact: true }).waitFor(WAIT);
       const body = await text(mobile);
-      const errorAt = body.indexOf("Campaign memory could not be loaded.");
-      const errorGone = errorAt === -1;
-      rec("detail retry recovers", errorGone && /recorded property \d+/i.test(body), `${await detailTotal(mobile)}; errorGone=${errorGone}; hasRecords=${/recorded property \d+/i.test(body)}${errorGone ? "" : `; context=${JSON.stringify(body.slice(Math.max(0, errorAt - 160), errorAt + 80))}`}`);
-      await shot(mobile, `mobile-detail-page-2-${tag}`, true);
-      await shot(mobile, `mobile-detail-page-2-viewport-${tag}`);
+      rec("fact page retry recovers", !body.includes("Campaign memory could not be loaded.") && body.includes("Ariadne agreed to escort caravan 39."));
+      await factRow(mobile, /promised to guard the gate/).click();
+      await mobile.locator('[data-component="campaign-wiki-fact-details"]').first().waitFor(WAIT);
+      await mobile.locator('[data-component="campaign-wiki-fact-details"]').first().scrollIntoViewIfNeeded();
+      await shot(mobile, `mobile-detail-expanded-viewport-${tag}`);
+      rec("mobile expanded row no horizontal overflow", await noOverflow(mobile));
+      await mobile.evaluate(() => { window.__wikiMock.failDetail = 1; });
+      await mobile.getByRole("button", { name: /^Session 2/ }).click();
+      await mobile.getByText("Campaign memory could not be loaded.", { exact: true }).waitFor(WAIT);
+      await mobile.getByRole("button", { name: "Retry", exact: true }).click();
+      await mobile.getByText("Ariadne learned archive rule 45.", { exact: true }).waitFor(WAIT);
+      rec("session group error and retry", true);
     });
     await mobile.close();
   }

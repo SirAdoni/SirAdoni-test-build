@@ -75,7 +75,7 @@ const REFERENCE_NAMES: Record<(typeof REFERENCE_KEYS)[number], string> = {
 };
 
 type ValueType = "string" | "number" | "boolean" | "json";
-type EditorTab = "entity" | "fact" | "correction";
+export type EditorTab = "entity" | "fact" | "correction";
 
 function operationId() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -188,12 +188,17 @@ export function CampaignWikiEditor({
   onClose,
   onReload,
   onDirtyChange,
+  initialFactId,
+  initialTab,
 }: {
   chatId: string;
   detail: CampaignMemoryEntityDetail;
   onClose: () => void;
   onReload: () => void;
   onDirtyChange: (dirty: boolean) => void;
+  /** Fact to open on (the reader's "Correct" action); defaults to the first fact of the page. */
+  initialFactId?: string;
+  initialTab?: EditorTab;
 }) {
   const { t, i18n } = useUiTranslation();
   const { entity, facts } = detail;
@@ -203,7 +208,7 @@ export function CampaignWikiEditor({
       defaultValue: "Untitled {{kind}}",
       kind: t(`ui.game.campaignWiki.kind.${entity.kind}`, { defaultValue: humanizeKey(entity.kind) }).toLowerCase(),
     });
-  const [tab, setTab] = useState<EditorTab>("entity");
+  const [tab, setTab] = useState<EditorTab>(initialTab ?? "entity");
   // The first alias is the page's display name; the rest are other names the story can use.
   const [name, setName] = useState(entity.aliases[0] ?? "");
   const [otherNames, setOtherNames] = useState(entity.aliases.slice(1).join("\n"));
@@ -214,7 +219,7 @@ export function CampaignWikiEditor({
   const [body, setBody] = useState(entityBody);
   const [manualLock, setManualLock] = useState(entity.manualLock);
   const [archived, setArchived] = useState(entity.status === "archived");
-  const [factId, setFactId] = useState(facts.items[0]?.factId ?? "");
+  const [factId, setFactId] = useState(initialFactId ?? facts.items[0]?.factId ?? "");
   const fact = useMemo(
     () => facts.items.find((item) => item.factId === factId) ?? facts.items[0],
     [factId, facts.items],

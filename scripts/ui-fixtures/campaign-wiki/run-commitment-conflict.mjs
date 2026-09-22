@@ -24,7 +24,7 @@ try {
   await page.locator("[data-campaign-wiki-entity-list]").waitFor();
   await page.locator("[data-campaign-wiki-entity-list]").getByRole("button", { name: /Ariadne Vale/ }).click();
   await page.getByRole("heading", { name: /Ariadne Vale/ }).waitFor();
-  await page.getByRole("tab", { name: /Promises & quests/ }).click();
+  await page.getByRole("button", { name: /^Promises & quests/ }).click();
   const region = page.getByRole("region", { name: /quests and commitments/i });
   await region.getByText(TITLE, { exact: true }).waitFor();
   const card = region.locator("li", { has: page.getByText(TITLE, { exact: true }) }).first();

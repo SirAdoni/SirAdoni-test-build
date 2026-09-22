@@ -111,11 +111,12 @@ try {
   await shot(desktop, "create-owner-linked-desktop");
 
   await openDetail(desktop);
-  // The fact with a matching source and a stale source; its quotes sit in a closed "From the story" disclosure.
+  // The fact with a matching source and a stale source: its row expands in place and shows the quotes open under "From the story".
+  await desktop.getByRole("button", { name: /Holds the northern archive key/ }).first().click();
   const evidence = desktop.locator("details").filter({ hasText: "The archive key is kept here." }).filter({ hasText: "Stale source quote" }).first();
   const evidenceSummary = evidence.locator("summary").first();
   record("evidence disclosure is labelled From the story", /^From the story/.test((await evidenceSummary.innerText()).trim()), await evidenceSummary.innerText());
-  await evidenceSummary.click();
+  if ((await evidence.getAttribute("open")) === null) await evidenceSummary.click();
   const reads = evidence.getByRole("button", { name: "Show full message", exact: true });
   await reads.first().click(); await desktop.getByText("matched source text", { exact: false }).waitFor();
   const body = await desktop.locator("body").innerText();

@@ -12,8 +12,8 @@ const { server, ready } = startFixtureServer(path.join(root, "server.mjs"));
 const { base } = await ready;
 const browser = await chromium.launch({ headless: true });
 const open = async (page) => { await page.goto(base); await page.locator('[data-campaign-wiki-entity-list]').waitFor(); await page.locator('[data-campaign-wiki-entity-list]').getByRole("button", { name: /Ariadne Vale/ }).click(); await page.getByRole("heading", { name: /Ariadne Vale/ }).waitFor(); };
-// Entity commitments now live on the page's "Promises & quests" tab.
-const openCommitmentsTab = async (page) => { await page.getByRole("tab", { name: /Promises & quests/ }).click(); };
+// Entity commitments open from the page's infobox ("On this page" > Promises & quests).
+const openCommitmentsTab = async (page) => { await page.getByRole("button", { name: /^Promises & quests/ }).click(); };
 const screenshots = [];
 const checks = [];
 const record = (name, pass, detail = "") => checks.push({ name, pass: Boolean(pass), detail });
@@ -43,7 +43,7 @@ try {
       record("commitments retry recovers", (await erroredCommitments.getByText("Keep the archive watch", { exact: true }).count()) === 1);
     }
     const current = page.getByRole("region", { name: "Current state", exact: true }).first(); await current.scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(out, `pulse8-current-state-${tag}.png`) }); screenshots.push(`pulse8-current-state-${tag}.png`);
-    await page.getByRole("tab", { name: /^Connections/ }).click(); const relationship = page.getByRole("region", { name: "Relationships", exact: true }).first(); await relationship.waitFor(); await relationship.scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(out, `pulse8-relationships-${tag}.png`) }); screenshots.push(`pulse8-relationships-${tag}.png`);
+    await page.getByRole("button", { name: /^Connections/ }).click(); const relationship = page.getByRole("region", { name: "Relationships", exact: true }).first(); await relationship.waitFor(); await relationship.scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(out, `pulse8-relationships-${tag}.png`) }); screenshots.push(`pulse8-relationships-${tag}.png`);
     await page.close();
   }
   checks.push({ name: "scrolled screenshots captured", pass: screenshots.length === Object.keys(VIEWPORTS).length * 2, detail: `${screenshots.length} screenshots` });

@@ -2,9 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   BookMarked,
-  CalendarClock,
   ChevronRight,
-  Clock3,
   Database,
   Eye,
   History,
@@ -14,8 +12,6 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
-  RotateCw,
-  ScrollText,
   Search,
   Sparkles,
   Users,
@@ -23,18 +19,14 @@ import {
 } from "lucide-react";
 import type {
   CampaignMemoryBacklink,
-  CampaignMemoryEntity,
   CampaignMemoryEntityDetail,
   CampaignMemoryEntityKind,
   CampaignMemoryFact,
-  CampaignMemoryJson,
-  CampaignMemoryPage,
 } from "@marinara-engine/shared";
 import type { CampaignMemoryBranchHeldRecordType } from "@marinara-engine/shared";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
 import { ApiError } from "../../lib/api-client";
-import { wikiValueRecord, wikiValueSummary } from "../../lib/campaign-wiki-value";
 import {
   useApplyCampaignMemoryImport,
   useCampaignMemoryEntities,
@@ -48,13 +40,33 @@ import {
   type CampaignMemoryMatchTier,
   type CampaignMemoryTimelineItem,
 } from "../../hooks/use-campaign-memory";
-import { useCharacters } from "../../hooks/use-characters";
 import { useChat } from "../../hooks/use-chats";
 import type { CampaignWikiNavigationProps } from "./CampaignWikiWindow";
 import { CampaignWikiEditor } from "./CampaignWikiEditor";
 import { CampaignWikiOwnerLink } from "./CampaignWikiOwnerLink";
 import { CampaignWikiEvidence } from "./CampaignWikiEvidence";
 import { CampaignWikiCommitments } from "./CampaignWikiCommitments";
+import { CampaignWikiFacts } from "./CampaignWikiFacts";
+import { CampaignWikiInfobox, type CampaignWikiView } from "./CampaignWikiInfobox";
+import {
+  EntityChipButton,
+  EntityRefName,
+  FactLabelBadge,
+  Pager,
+  RAW_ID,
+  SessionChip,
+  WhenChip,
+  WikiErrorState as ErrorState,
+  displayEntityName,
+  enumLabel,
+  kindLabel,
+  portraitFor,
+  readableValue,
+  stateTargetId,
+  useCharacterPortraits,
+  type FactLabel,
+  type TFn,
+} from "./CampaignWikiReaderParts";
 import {
   ENTITY_KIND_ICONS,
   EntityAvatar,
@@ -64,15 +76,12 @@ import {
   WikiSectionHeader,
   WikiSkeleton,
   WikiStat,
-  WikiTabs,
   entitySessionNumbers,
   factDisplay,
-  factKindTone,
   formatCaptureOrder,
   formatSessionRanges,
   humanizeKey,
   recordOrigin,
-  type WikiTone,
 } from "./campaign-wiki-ui";
 
 /**
@@ -84,8 +93,6 @@ interface CampaignWikiProps extends Partial<CampaignWikiNavigationProps> {
   chatId: string;
   onDirtyChange?: (dirty: boolean) => void;
 }
-
-type TFn = (key: string, options?: Record<string, unknown>) => string;
 
 const KINDS: Array<CampaignMemoryEntityKind | "all"> = [
   "all",
@@ -101,18 +108,6 @@ const KINDS: Array<CampaignMemoryEntityKind | "all"> = [
 
 const ENTITY_PAGE_SIZE = 40;
 
-function enumLabel(t: TFn, group: string, value: string) {
-  return t(`ui.game.campaignWiki.${group}.${value}`, { defaultValue: humanizeKey(value) });
-}
-
-function kindLabel(t: TFn, kind: CampaignMemoryEntityKind | "all") {
-  return enumLabel(t, "kind", kind);
-}
-
-const RAW_ID = /^(cme_|cmf_|cmk_|cmev_|cmt_|legacy-|gcb_|gch_|gcr_)[\w-]+$/iu;
-/** A stored value that is itself a wiki page id (current state often records a location this way). */
-const ENTITY_ID = /^(cme_|legacy-)[0-9a-f]{16,}$/iu;
-
 /** Event text for the reader; an id stored in place of a summary is never shown. */
 function eventSummary(t: TFn, summary: string | null | undefined): string {
   const text = summary?.trim();
@@ -121,33 +116,7 @@ function eventSummary(t: TFn, summary: string | null | undefined): string {
 }
 
 /** Name of a page that is not in the loaded detail; shows a neutral label until it arrives. */
-function EntityRefName({ chatId, entityId }: { chatId: string; entityId: string }) {
-  const { t } = useUiTranslation();
-  const detail = useCampaignMemoryEntity(chatId, entityId, { limit: 1 });
-  if (detail.data?.entity) return <>{displayEntityName(t, detail.data.entity)}</>;
-  return <>{detail.isError ? t("ui.game.campaignWiki.reader.unknownPage", { defaultValue: "Unknown page" }) : "…"}</>;
-}
-
-function displayEntityName(t: TFn, entity: Pick<CampaignMemoryEntityListItem, "aliases" | "entityId" | "kind">) {
-  const alias = entity.aliases.find((value) => value.trim() && !RAW_ID.test(value.trim()));
-  return alias || t("ui.game.campaignWiki.untitledEntity", { kind: kindLabel(t, entity.kind) });
-}
-
-/** The wiki page a stored state value points at, when the value is a page reference. */
-function stateTargetId(value: CampaignMemoryJson | undefined): string | undefined {
-  const record = wikiValueRecord(value);
-  if (record && typeof record.entityId === "string") return record.entityId;
-  return typeof value === "string" && ENTITY_ID.test(value.trim()) ? value.trim() : undefined;
-}
-
-/** Readable text for any stored value, never raw JSON. */
-function readableValue(value: CampaignMemoryJson | undefined): string {
-  return wikiValueSummary(value);
-}
-
 type SourceFreshness = "current" | "stale" | "legacy" | "manual";
-/** Reader vocabulary (plan): verified | pending | disputed | stale | legacy. Plain supersession keeps its own label. */
-type FactLabel = "verified" | "pending" | "disputed" | "stale" | "legacy" | "superseded";
 
 function factLabel(
   fact: CampaignMemoryFact,
@@ -168,153 +137,8 @@ function factLabel(
 
 const STALE_LABEL: FactLabel = "stale";
 
-const FACT_LABEL_TONE: Record<FactLabel, WikiTone> = {
-  verified: "success",
-  pending: "warning",
-  disputed: "danger",
-  stale: "danger",
-  legacy: "neutral",
-  superseded: "neutral",
-};
-
-function FactLabelBadge({ label }: { label: FactLabel }) {
-  const { t } = useUiTranslation();
-  return (
-    <WikiChip tone={FACT_LABEL_TONE[label]} title={t(`ui.game.campaignWiki.factLabelHint.${label}`)}>
-      {t(`ui.game.campaignWiki.factLabel.${label}`)}
-    </WikiChip>
-  );
-}
-
-function SessionChip({ record }: { record: unknown }) {
-  const { t } = useUiTranslation();
-  const origin = recordOrigin(record);
-  if (origin.sessionNumber === null) return null;
-  return (
-    <WikiChip
-      tone="neutral"
-      title={t("ui.game.campaignWiki.reader.sessionHint", {
-        defaultValue: "Recorded in session {{session}}",
-        session: origin.sessionNumber,
-      })}
-    >
-      {t("ui.game.campaignWiki.reader.sessionShort", { defaultValue: "S{{session}}", session: origin.sessionNumber })}
-    </WikiChip>
-  );
-}
-
-function WhenChip({ order }: { order: string | null | undefined }) {
-  const { i18n } = useUiTranslation();
-  const label = formatCaptureOrder(order, i18n.language);
-  if (!label) return null;
-  return (
-    <span className="inline-flex items-center gap-1 text-[0.6875rem] text-muted-foreground">
-      <Clock3 size={11} />
-      {label}
-    </span>
-  );
-}
-
-/** Portraits for library characters, keyed by character id. */
-function useCharacterPortraits(): Map<string, string> {
-  const characters = useCharacters();
-  return useMemo(() => {
-    const result = new Map<string, string>();
-    for (const row of (characters.data ?? []) as Array<{ id?: unknown; avatarPath?: unknown }>) {
-      if (typeof row.id === "string" && typeof row.avatarPath === "string" && row.avatarPath.trim()) {
-        result.set(row.id, row.avatarPath);
-      }
-    }
-    return result;
-  }, [characters.data]);
-}
-
-function portraitFor(entity: Pick<CampaignMemoryEntity, "owner">, portraits: Map<string, string>): string | null {
-  if (entity.owner.type === "existing" && entity.owner.store === "characters") {
-    return portraits.get(entity.owner.recordId) ?? null;
-  }
-  return null;
-}
-
-function EntityChipButton({
-  entity,
-  name,
-  onClick,
-  portraits,
-  suffix,
-}: {
-  entity: Pick<CampaignMemoryEntity, "entityId" | "kind" | "owner"> | null;
-  name: string;
-  onClick: () => void;
-  portraits: Map<string, string>;
-  suffix?: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="inline-flex min-h-8 max-w-full items-center gap-1.5 rounded-full border border-border bg-secondary/50 py-0.5 pl-0.5 pr-2.5 text-xs text-foreground transition-colors hover:border-primary/50 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-    >
-      <EntityAvatar
-        name={name}
-        kind={entity?.kind ?? "character"}
-        size={24}
-        imageUrl={entity ? portraitFor(entity, portraits) : null}
-      />
-      <span className="truncate">{name}</span>
-      {suffix}
-    </button>
-  );
-}
-
-function Pager({
-  offset,
-  limit,
-  total,
-  shown,
-  onChange,
-}: {
-  offset: number;
-  limit: number;
-  total: number;
-  shown: number;
-  onChange: (offset: number) => void;
-}) {
-  const { t } = useUiTranslation();
-  if (total <= limit && offset === 0) return null;
-  return (
-    <div className="mt-3 flex items-center justify-between gap-2 border-t border-border pt-3">
-      <p className="text-xs text-muted-foreground">
-        {t("ui.game.campaignWiki.reader.pageRange", {
-          defaultValue: "{{from}}–{{to}} of {{total}}",
-          from: total === 0 ? 0 : offset + 1,
-          to: Math.min(offset + shown, total),
-          total: total.toLocaleString(),
-        })}
-      </p>
-      <div className="flex gap-1.5">
-        <button
-          type="button"
-          disabled={offset === 0}
-          onClick={() => onChange(Math.max(0, offset - limit))}
-          className="min-h-9 rounded-lg border border-border px-3 text-xs font-semibold hover:bg-secondary disabled:opacity-40"
-        >
-          {t("ui.game.campaignWiki.previous")}
-        </button>
-        <button
-          type="button"
-          disabled={offset + shown >= total}
-          onClick={() => onChange(offset + limit)}
-          className="min-h-9 rounded-lg border border-border px-3 text-xs font-semibold hover:bg-secondary disabled:opacity-40"
-        >
-          {t("ui.game.campaignWiki.next")}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-type DetailTab = "story" | "knowledge" | "events" | "connections" | "timeline" | "commitments" | "details";
+/** Page size of the entity detail route (every section shares one offset; the server allows up to 100). */
+const DETAIL_PAGE_SIZE = 50;
 
 function Detail({
   detail,
@@ -322,6 +146,7 @@ function Detail({
   onSelect,
   onPageChange,
   onEdit,
+  onCorrectFact,
   portraits,
 }: {
   detail: CampaignMemoryEntityDetail;
@@ -330,12 +155,15 @@ function Detail({
   onSelect: (id: string) => void;
   onPageChange: (offset: number) => void;
   onEdit: () => void;
+  onCorrectFact: (fact: CampaignMemoryFactWithCoHolders) => void;
   portraits: Map<string, string>;
 }) {
   const { t } = useUiTranslation();
-  const { entity, knowledge, events, currentState, relationships, relatedEntities } = detail;
-  const facts = detail.facts as CampaignMemoryPage<CampaignMemoryFactWithCoHolders>;
-  const [tab, setTab] = useState<DetailTab>("story");
+  const { entity, knowledge, events, relationships, relatedEntities } = detail;
+  const facts = detail.facts.items as CampaignMemoryFactWithCoHolders[];
+  const factTotal = detail.facts.total;
+  const sourceChecks = detail.sourceChecks ?? {};
+  const [view, setView] = useState<CampaignWikiView>("facts");
   // Display-only perspective: "gm" shows everything; a holder id filters facts to what that holder knows.
   const [perspective, setPerspective] = useState("gm");
   const holders = useMemo(() => {
@@ -347,22 +175,14 @@ function Detail({
         epistemicState: "knows",
       });
     }
-    for (const fact of facts.items)
+    for (const fact of facts)
       for (const holder of fact.coHolders ?? []) if (!byId.has(holder.entityId)) byId.set(holder.entityId, holder);
     return [...byId.values()].filter((holder) => holder.alias && !RAW_ID.test(holder.alias));
-  }, [entity, facts.items, t]);
+  }, [entity, facts, t]);
   const holderState = (fact: CampaignMemoryFactWithCoHolders) =>
     perspective === entity.entityId
       ? knowledge.items.find((item) => item.factId === fact.factId)?.epistemicState
       : fact.coHolders?.find((holder) => holder.entityId === perspective)?.epistemicState;
-  const visibleFacts = (
-    perspective === "gm" ? facts.items : facts.items.filter((fact) => holderState(fact) !== undefined)
-  )
-    .slice()
-    .sort((left, right) => (right.validFromOrder ?? "").localeCompare(left.validFromOrder ?? ""));
-  const referencedEvents = detail.referencedEvents ?? [];
-  const referencedEventById = new Map(referencedEvents.map((item) => [item.eventId, item]));
-  const sourceChecks = detail.sourceChecks ?? {};
   const referencedFactById = new Map(detail.referencedFacts.map((fact) => [fact.factId, fact]));
   const related = new Map(relatedEntities.map((item) => [item.entityId, item]));
   const nameOf = (id: string) => {
@@ -370,583 +190,490 @@ function Detail({
     return found ? displayEntityName(t, found) : null;
   };
   const detailOffset = Math.max(
-    facts.offset,
+    detail.facts.offset,
     knowledge.offset,
     events.offset,
-    currentState.offset,
+    detail.currentState.offset,
     relationships.offset,
   );
-  const detailLimit = Math.max(facts.limit, knowledge.limit, events.limit, currentState.limit, relationships.limit);
+  const detailLimit = Math.max(
+    detail.facts.limit,
+    knowledge.limit,
+    events.limit,
+    detail.currentState.limit,
+    relationships.limit,
+  );
   const sessions = entitySessionNumbers(entity);
   const name = displayEntityName(t, entity);
   const KindIcon = ENTITY_KIND_ICONS[entity.kind];
   const otherAliases = entity.aliases.filter((alias) => alias !== name && !RAW_ID.test(alias));
   const body = (entity as { body?: string }).body;
-  const tabs = [
-    {
-      id: "story" as const,
-      label: t("ui.game.campaignWiki.reader.tabStory", { defaultValue: "Story" }),
-      count: facts.total,
-    },
-    {
-      id: "knowledge" as const,
-      label:
-        entity.kind === "character" || entity.kind === "persona"
-          ? t("ui.game.campaignWiki.reader.tabKnows", { defaultValue: "What they know" })
-          : t("ui.game.campaignWiki.reader.tabKnowledge", { defaultValue: "Who knows" }),
-      count: knowledge.total,
-    },
-    {
-      id: "events" as const,
-      label: t("ui.game.campaignWiki.reader.tabEvents", { defaultValue: "Events" }),
-      count: events.total,
-    },
-    {
-      id: "connections" as const,
-      label: t("ui.game.campaignWiki.reader.tabConnections", { defaultValue: "Connections" }),
-      count: relationships.total,
-    },
-    { id: "timeline" as const, label: t("ui.game.campaignWiki.timeline") },
-    {
-      id: "commitments" as const,
-      label: t("ui.game.campaignWiki.reader.tabCommitments", { defaultValue: "Promises & quests" }),
-    },
-    { id: "details" as const, label: t("ui.game.campaignWiki.reader.tabDetails", { defaultValue: "Details" }) },
-  ];
+  const person = entity.kind === "character" || entity.kind === "persona";
   const pager = (shown: number, total: number) => (
     <Pager offset={detailOffset} limit={detailLimit} total={total} shown={shown} onChange={onPageChange} />
   );
-  const renderFact = (fact: (typeof facts.items)[number]) => {
-    const display = factDisplay(fact);
-    const label = factLabel(fact, sourceChecks[fact.factId]?.state, facts.items);
-    const coHolders = (fact.coHolders ?? []).filter((holder) => holder.alias && !RAW_ID.test(holder.alias));
-    return (
-      <WikiCard as="article" key={fact.factId}>
-        <div className="flex flex-wrap items-center gap-1.5">
-          {display.kind && (
-            <WikiChip tone={factKindTone(display.kind)}>{enumLabel(t, "factKind", display.kind)}</WikiChip>
-          )}
-          {label !== "verified" && <FactLabelBadge label={label} />}
-          {display.claimStatus && display.claimStatus !== "asserted" && display.claimStatus !== "accepted" && (
-            <WikiChip tone="neutral">{enumLabel(t, "claimStatus", display.claimStatus)}</WikiChip>
-          )}
-          {perspective !== "gm" && holderState(fact) && (
-            <WikiChip tone="info">{enumLabel(t, "epistemicState", holderState(fact) ?? "unknown")}</WikiChip>
-          )}
-          <span className="ml-auto flex items-center gap-2">
-            <SessionChip record={fact} />
-            <WhenChip order={fact.validFromOrder} />
-          </span>
-        </div>
-        {display.label && (
-          <p className="mt-2 text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
-            {display.label}
-          </p>
-        )}
-        <p className={cn("text-sm leading-6 text-foreground", display.label ? "mt-0.5" : "mt-2")}>{display.text}</p>
-        {display.conditions.length > 0 && (
-          <div className="mt-2 rounded-lg bg-amber-400/5 px-3 py-2">
-            <p className="text-[0.6875rem] font-semibold uppercase tracking-wide text-amber-200/90">
-              {t("ui.game.campaignWiki.reader.onlyIf", { defaultValue: "Only if" })}
-            </p>
-            <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs leading-5 text-foreground/90">
-              {display.conditions.map((condition, index) => (
-                <li key={`${fact.factId}-condition-${index}`}>{condition}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {coHolders.length > 0 && (
-          <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            <span className="text-[0.6875rem] text-muted-foreground">{t("ui.game.campaignWiki.coHolders")}</span>
-            {coHolders.map((holder) => (
-              <EntityChipButton
-                key={holder.entityId}
-                entity={related.get(holder.entityId) ?? null}
-                name={holder.alias}
-                portraits={portraits}
-                onClick={() => onSelect(holder.entityId)}
-                suffix={
-                  holder.epistemicState !== "knows" ? (
-                    <span className="text-muted-foreground">
-                      ({enumLabel(t, "epistemicState", holder.epistemicState)})
-                    </span>
-                  ) : undefined
-                }
-              />
-            ))}
-          </div>
-        )}
-        <CampaignWikiEvidence
-          chatId={chatId}
-          sourceChatId={recordOrigin(fact).chatId ?? chatId}
-          evidence={fact.evidence}
-        />
-      </WikiCard>
-    );
+  const showView = (next: CampaignWikiView) => {
+    setView(next);
+    // One offset pages every section; a page from another view would skip or empty this one.
+    if (detailOffset > 0) onPageChange(0);
   };
-  const liveFacts = visibleFacts.filter((fact) => fact.status !== "retracted");
   // Stored events carry no prose; a fact citing the same message and quote says what happened.
   const factTextByEvidence = new Map<string, string>();
-  for (const fact of facts.items) {
+  for (const fact of facts) {
     if (fact.status === "retracted" || fact.status === "superseded") continue;
     for (const item of fact.evidence) {
       const key = `${item.messageId}|${item.quote ?? ""}`;
       if (!factTextByEvidence.has(key)) factTextByEvidence.set(key, factDisplay(fact).text);
     }
   }
-  const withdrawnFacts = visibleFacts.filter((fact) => fact.status === "retracted");
+  const meta = [
+    <span key="kind" className="inline-flex items-center gap-1">
+      <KindIcon size={13} aria-hidden="true" />
+      {kindLabel(t, entity.kind)}
+    </span>,
+    sessions.length > 0 &&
+      t("ui.game.campaignWiki.reader.sessions", {
+        defaultValue: "Sessions {{list}}",
+        list: formatSessionRanges(sessions),
+      }),
+    t("ui.game.campaignWiki.article.factCount", {
+      defaultValue: "{{formattedCount}} facts",
+      count: factTotal,
+      formattedCount: factTotal.toLocaleString(),
+    }),
+    knowledge.total > 0 &&
+      t("ui.game.campaignWiki.article.secretCount", {
+        defaultValue: "{{formattedCount}} secrets",
+        count: knowledge.total,
+        formattedCount: knowledge.total.toLocaleString(),
+      }),
+  ].filter(Boolean);
+  const viewTitle: Record<Exclude<CampaignWikiView, "facts">, string> = {
+    knowledge: person
+      ? t("ui.game.campaignWiki.reader.tabKnows", { defaultValue: "What they know" })
+      : t("ui.game.campaignWiki.reader.tabKnowledge", { defaultValue: "Who knows" }),
+    events: t("ui.game.campaignWiki.reader.tabEvents", { defaultValue: "Events" }),
+    connections: t("ui.game.campaignWiki.reader.tabConnections", { defaultValue: "Connections" }),
+    timeline: t("ui.game.campaignWiki.timeline"),
+    commitments: t("ui.game.campaignWiki.reader.tabCommitments", { defaultValue: "Promises & quests" }),
+    details: t("ui.game.campaignWiki.reader.tabDetails", { defaultValue: "Details" }),
+  };
+  const lead = (entity.summary || body) && (
+    <section className="space-y-3 [grid-area:lead]">
+      {entity.summary && <p className="text-[0.95rem] leading-7 text-foreground">{entity.summary}</p>}
+      {body && (
+        <div>
+          <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {t("ui.game.campaignWiki.notes")}
+          </h4>
+          <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-7 text-foreground">
+            {(entity as { body?: string }).body}
+          </pre>
+        </div>
+      )}
+    </section>
+  );
 
   return (
-    <article className="mx-auto w-full min-w-0 max-w-[62rem] space-y-5 pb-10 [overflow-wrap:anywhere]">
-      <header className="flex flex-col gap-4 border-b border-border pb-5 sm:flex-row sm:items-start">
-        <EntityAvatar
-          name={name}
-          kind={entity.kind}
-          size={72}
-          imageUrl={portraitFor(entity, portraits)}
-          className="shadow-[0_0_12px_color-mix(in_srgb,var(--primary)_22%,transparent)]"
-        />
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <WikiChip tone="accent" icon={<KindIcon size={11} />}>
-              {kindLabel(t, entity.kind)}
-            </WikiChip>
-            {sessions.length > 0 && (
-              <WikiChip tone="neutral" icon={<CalendarClock size={11} />}>
-                {t("ui.game.campaignWiki.reader.sessions", {
-                  defaultValue: "Sessions {{list}}",
-                  list: formatSessionRanges(sessions),
+    <article
+      className="@container mx-auto w-full min-w-0 max-w-[68rem] space-y-5 pb-10 [overflow-wrap:anywhere]"
+      data-component="campaign-wiki-article"
+    >
+      <header className="flex flex-col gap-4 border-b border-border pb-5 @xl:flex-row @xl:items-center">
+        <div className="flex min-w-0 flex-1 items-center gap-4">
+          <EntityAvatar
+            name={name}
+            kind={entity.kind}
+            size={88}
+            imageUrl={portraitFor(entity, portraits)}
+            className="shadow-[0_0_16px_color-mix(in_srgb,var(--primary)_24%,transparent)]"
+          />
+          <div className="min-w-0 flex-1">
+            <h2 className="text-2xl font-bold leading-tight text-foreground @xl:text-[1.75rem]">{name}</h2>
+            {otherAliases.length > 0 && (
+              <p className="mt-0.5 text-sm italic text-muted-foreground">
+                {t("ui.game.campaignWiki.reader.alsoKnownAs", {
+                  defaultValue: "Also known as {{names}}",
+                  names: otherAliases.join(", "),
                 })}
-              </WikiChip>
+              </p>
             )}
-            {entity.status === "archived" && (
-              <WikiChip tone="warning">{enumLabel(t, "recordStatus", "archived")}</WikiChip>
-            )}
-            {entity.manualLock && (
-              <WikiChip tone="info">
-                {t("ui.game.campaignWiki.reader.locked", { defaultValue: "Protected from automatic changes" })}
-              </WikiChip>
-            )}
-          </div>
-          <h2 className="mt-2 text-2xl font-bold leading-tight text-foreground">{name}</h2>
-          {otherAliases.length > 0 && (
-            <p className="mt-1 text-sm text-muted-foreground">
-              {t("ui.game.campaignWiki.reader.alsoKnownAs", {
-                defaultValue: "Also known as {{names}}",
-                names: otherAliases.join(", "),
-              })}
+            <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+              {meta.map((part, index) => (
+                <span key={index} className="inline-flex items-center gap-2">
+                  {index > 0 && <span aria-hidden="true">·</span>}
+                  {part}
+                </span>
+              ))}
             </p>
-          )}
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={onEdit}
-              className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-semibold hover:border-primary/50 hover:bg-secondary"
-            >
-              <Pencil size={13} />
-              {t("ui.game.campaignWiki.editor.edit")}
-            </button>
-            <CampaignWikiOwnerLink owner={entity.owner} fallbackName={name} />
-            {holders.length > 1 && (
-              <label className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border px-2 text-xs">
-                <Eye size={13} className="text-muted-foreground" />
-                <span className="sr-only">{t("ui.game.campaignWiki.perspective")}</span>
-                <select
-                  value={perspective}
-                  onChange={(event) => setPerspective(event.target.value)}
-                  title={t("ui.game.campaignWiki.perspectiveNote")}
-                  className="min-h-8 max-w-[12rem] bg-transparent text-xs outline-none"
-                >
-                  <option value="gm">{t("ui.game.campaignWiki.perspective.gm")}</option>
-                  {holders.map((holder) => (
-                    <option key={holder.entityId} value={holder.entityId}>
-                      {t("ui.game.campaignWiki.perspective.holder", { name: holder.alias })}
-                    </option>
-                  ))}
-                </select>
-              </label>
+            {(entity.status === "archived" || entity.manualLock) && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {entity.status === "archived" && (
+                  <WikiChip tone="warning">{enumLabel(t, "recordStatus", "archived")}</WikiChip>
+                )}
+                {entity.manualLock && (
+                  <WikiChip tone="info">
+                    {t("ui.game.campaignWiki.reader.locked", { defaultValue: "Protected from automatic changes" })}
+                  </WikiChip>
+                )}
+              </div>
             )}
           </div>
         </div>
+        <div className="flex flex-wrap items-center gap-2 @xl:max-w-[22rem] @xl:justify-end">
+          <button
+            type="button"
+            onClick={onEdit}
+            className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-semibold hover:border-primary/50 hover:bg-secondary"
+          >
+            <Pencil size={13} />
+            {t("ui.game.campaignWiki.editor.edit")}
+          </button>
+          <CampaignWikiOwnerLink owner={entity.owner} fallbackName={name} />
+          {holders.length > 1 && (
+            <label className="inline-flex min-h-9 max-w-full items-center gap-1.5 rounded-lg border border-border px-2 text-xs">
+              <Eye size={13} className="shrink-0 text-muted-foreground" />
+              <span className="sr-only">{t("ui.game.campaignWiki.perspective")}</span>
+              <select
+                value={perspective}
+                onChange={(event) => setPerspective(event.target.value)}
+                title={t("ui.game.campaignWiki.perspectiveNote")}
+                className="min-h-8 min-w-0 max-w-[12rem] bg-transparent text-xs outline-none"
+              >
+                <option value="gm">{t("ui.game.campaignWiki.perspective.gm")}</option>
+                {holders.map((holder) => (
+                  <option key={holder.entityId} value={holder.entityId}>
+                    {t("ui.game.campaignWiki.perspective.holder", { name: holder.alias })}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
       </header>
 
-      {(entity.summary || body) && (
-        <section className="space-y-3">
-          {entity.summary && <p className="text-[0.95rem] leading-7 text-foreground">{entity.summary}</p>}
-          {body && (
-            <div>
-              <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                {t("ui.game.campaignWiki.notes")}
-              </h4>
-              <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-7 text-foreground">
-                {(entity as { body?: string }).body}
-              </pre>
+      <div
+        className={cn(
+          "grid gap-5 @3xl:grid-cols-[minmax(0,1fr)_16rem] @3xl:grid-rows-[auto_1fr] @3xl:items-start",
+          lead
+            ? "[grid-template-areas:'lead'_'box'_'main'] @3xl:[grid-template-areas:'lead_box'_'main_box']"
+            : "[grid-template-areas:'box'_'main'] @3xl:[grid-template-areas:'main_box'_'main_box']",
+        )}
+      >
+        {lead}
+        <div className="min-w-0 [grid-area:box] @3xl:sticky @3xl:top-2">
+          <CampaignWikiInfobox
+            chatId={chatId}
+            detail={detail}
+            view={view}
+            onView={showView}
+            onSelect={onSelect}
+            portraits={portraits}
+            factTotal={factTotal}
+          />
+        </div>
+        <div className="min-w-0 space-y-4 [grid-area:main]">
+          {view !== "facts" && (
+            <div className="flex flex-wrap items-center gap-2 border-b border-border pb-2">
+              <button
+                type="button"
+                onClick={() => showView("facts")}
+                className="-ml-2 inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-xs font-semibold text-muted-foreground hover:bg-secondary hover:text-foreground"
+              >
+                <ArrowLeft size={14} aria-hidden="true" />
+                {t("ui.game.campaignWiki.article.allFacts", { defaultValue: "All facts" })}
+              </button>
+              <h3 className="text-base font-bold text-foreground">{viewTitle[view]}</h3>
             </div>
           )}
-        </section>
-      )}
 
-      {currentState.items.length > 0 && (
-        <section aria-label={t("ui.game.campaignWiki.currentState")}>
-          <WikiSectionHeader
-            title={t("ui.game.campaignWiki.reader.rightNow", { defaultValue: "Right now" })}
-            hint={t("ui.game.campaignWiki.reader.rightNowHint", {
-              defaultValue: "The latest state recorded in the story. It overrides older card text.",
-            })}
-          />
-          <div className="grid gap-2 sm:grid-cols-2">
-            {currentState.items.map((item) => {
-              const sourceEvent = referencedEventById.get(item.sourceEventId);
-              const target = stateTargetId(item.value);
-              const targetName = target ? nameOf(target) : null;
-              return (
-                <WikiCard key={item.stateId} className="p-3">
-                  <p className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
-                    {humanizeKey(item.property)}
-                  </p>
-                  {target ? (
-                    <button
-                      type="button"
-                      onClick={() => onSelect(target)}
-                      className="mt-1 inline-flex items-center gap-1 text-left text-sm font-semibold text-foreground hover:text-primary"
-                    >
-                      <MapPin size={13} className="shrink-0" />
-                      {targetName ?? <EntityRefName chatId={chatId} entityId={target} />}
-                    </button>
-                  ) : (
-                    <p className="mt-1 text-sm font-semibold text-foreground">{readableValue(item.value)}</p>
-                  )}
-                  <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                    <SessionChip record={item} />
-                    <WhenChip order={item.validAtOrder} />
-                    {sourceChecks[item.stateId]?.state === "stale" && <FactLabelBadge label={STALE_LABEL} />}
-                  </div>
-                  {sourceEvent && (
-                    <CampaignWikiEvidence
-                      chatId={chatId}
-                      sourceChatId={recordOrigin(sourceEvent).chatId ?? chatId}
-                      evidence={sourceEvent.evidence}
-                    />
-                  )}
-                </WikiCard>
-              );
-            })}
-          </div>
-        </section>
-      )}
-
-      <WikiTabs
-        tabs={tabs}
-        value={tab}
-        onChange={(next) => {
-          setTab(next);
-          // One offset pages every section; a page from another tab would skip or empty this one.
-          if (detailOffset > 0) onPageChange(0);
-        }}
-        label={t("ui.game.campaignWiki.reader.sections", { defaultValue: "Sections" })}
-      />
-
-      {tab === "story" && (
-        <section className="space-y-2.5" aria-label={t("ui.game.campaignWiki.facts")}>
-          {perspective !== "gm" && visibleFacts.length < facts.items.length && (
-            <p className="text-xs text-muted-foreground">
-              {t("ui.game.campaignWiki.perspectiveHidden", { count: facts.items.length - visibleFacts.length })}
-            </p>
-          )}
-          {visibleFacts.length === 0 && (
-            <WikiEmpty
-              icon={<ScrollText size={22} />}
-              title={t("ui.game.campaignWiki.reader.noFactsTitle", { defaultValue: "Nothing recorded yet" })}
-              hint={t("ui.game.campaignWiki.reader.noFactsHint", {
-                defaultValue: "Facts appear here once the story mentions this page and the memory review accepts them.",
-              })}
+          {view === "facts" && (
+            <CampaignWikiFacts
+              chatId={chatId}
+              entity={entity}
+              detail={detail}
+              labelFor={factLabel}
+              holderStateFor={holderState}
+              perspectiveActive={perspective !== "gm"}
+              related={related}
+              portraits={portraits}
+              onSelect={onSelect}
+              onCorrect={onCorrectFact}
             />
           )}
-          {liveFacts.map(renderFact)}
-          {withdrawnFacts.length > 0 && (
-            <details className="rounded-xl border border-border/60 px-3 py-2">
-              <summary className="cursor-pointer text-xs font-semibold text-muted-foreground">
-                {t("ui.game.campaignWiki.reader.withdrawnFacts", {
-                  defaultValue: "Withdrawn by the memory check ({{count}})",
-                  count: withdrawnFacts.length,
-                })}
-              </summary>
-              <div className="mt-2 space-y-2.5 opacity-80">{withdrawnFacts.map(renderFact)}</div>
-            </details>
-          )}
-          {pager(facts.items.length, facts.total)}
-        </section>
-      )}
 
-      {tab === "knowledge" && (
-        <section className="space-y-2.5" aria-label={t("ui.game.campaignWiki.knowledge")}>
-          {knowledge.items.length === 0 && (
-            <WikiEmpty
-              icon={<Users size={22} />}
-              title={t("ui.game.campaignWiki.reader.noKnowledgeTitle", { defaultValue: "No recorded knowledge" })}
-            />
-          )}
-          {knowledge.items.map((item) => {
-            const fact = item.factId ? referencedFactById.get(item.factId) : undefined;
-            const text = item.attributedClaim
-              ? readableValue(item.attributedClaim.value)
-              : fact
-                ? factDisplay(fact as CampaignMemoryFact).text
-                : t("ui.game.campaignWiki.knowledgeClaimUnavailable");
-            const holderName = nameOf(item.holderEntityId);
-            return (
-              <WikiCard as="article" key={item.knowledgeId}>
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {holderName && item.holderEntityId !== entity.entityId && (
-                    <EntityChipButton
-                      entity={related.get(item.holderEntityId) ?? null}
-                      name={holderName}
-                      portraits={portraits}
-                      onClick={() => onSelect(item.holderEntityId)}
-                    />
-                  )}
-                  <WikiChip
-                    tone={
-                      item.epistemicState === "knows"
-                        ? "success"
-                        : item.epistemicState === "unknown"
-                          ? "neutral"
-                          : "info"
-                    }
-                  >
-                    {enumLabel(t, "epistemicState", item.epistemicState)}
-                  </WikiChip>
-                  {item.confidence && item.confidence !== "high" && (
-                    <WikiChip tone="neutral">{enumLabel(t, "confidence", item.confidence)}</WikiChip>
-                  )}
-                  {sourceChecks[item.knowledgeId]?.state === "stale" && <FactLabelBadge label={STALE_LABEL} />}
-                  <span className="ml-auto flex items-center gap-2">
-                    <SessionChip record={item} />
-                    <WhenChip order={item.learnedAtOrder} />
-                  </span>
-                </div>
-                <p className="mt-2 text-sm leading-6 text-foreground">{text}</p>
-                <CampaignWikiEvidence
-                  chatId={chatId}
-                  sourceChatId={recordOrigin(item).chatId ?? chatId}
-                  evidence={item.learnedFrom}
+          {view === "knowledge" && (
+            <section className="space-y-2.5" aria-label={t("ui.game.campaignWiki.knowledge")}>
+              {knowledge.items.length === 0 && (
+                <WikiEmpty
+                  icon={<Users size={22} />}
+                  title={t("ui.game.campaignWiki.reader.noKnowledgeTitle", { defaultValue: "No recorded knowledge" })}
                 />
-              </WikiCard>
-            );
-          })}
-          {pager(knowledge.items.length, knowledge.total)}
-        </section>
-      )}
-
-      {tab === "events" && (
-        <section className="space-y-2.5" aria-label={t("ui.game.campaignWiki.events")}>
-          {events.items.length === 0 && (
-            <WikiEmpty
-              icon={<History size={22} />}
-              title={t("ui.game.campaignWiki.reader.noEventsTitle", { defaultValue: "No recorded events" })}
-            />
-          )}
-          {[...events.items]
-            .sort((left, right) => right.occurrenceOrder.localeCompare(left.occurrenceOrder))
-            .map((item) => {
-              const quote = item.evidence[0]?.quote;
-              const happened = item.evidence
-                .map((evidence) => factTextByEvidence.get(`${evidence.messageId}|${evidence.quote ?? ""}`))
-                .find(Boolean);
-              const participants = item.participantEntityIds.filter((id) => id !== entity.entityId);
-              const locationName = item.locationEntityId ? nameOf(item.locationEntityId) : null;
-              return (
-                <WikiCard as="article" key={item.eventId}>
-                  <div className="flex flex-wrap items-center gap-2">
-                    {item.campaignTime && <WikiChip tone="accent">{item.campaignTime}</WikiChip>}
-                    {locationName && item.locationEntityId && (
-                      <EntityChipButton
-                        entity={related.get(item.locationEntityId) ?? null}
-                        name={locationName}
-                        portraits={portraits}
-                        onClick={() => onSelect(item.locationEntityId!)}
-                      />
-                    )}
-                    <span className="ml-auto flex items-center gap-2">
-                      <SessionChip record={item} />
-                      <WhenChip order={item.occurrenceOrder} />
-                    </span>
-                  </div>
-                  {(happened || !quote) && (
-                    <p className="mt-2 text-sm leading-6 text-foreground">
-                      {happened || t("ui.game.campaignWiki.eventRecorded")}
-                    </p>
-                  )}
-                  {quote && (
-                    <p
-                      className={cn(
-                        "italic",
-                        happened
-                          ? "mt-1 text-xs leading-5 text-muted-foreground"
-                          : "mt-2 text-sm leading-6 text-foreground/90",
+              )}
+              {knowledge.items.map((item) => {
+                const fact = item.factId ? referencedFactById.get(item.factId) : undefined;
+                const text = item.attributedClaim
+                  ? readableValue(item.attributedClaim.value)
+                  : fact
+                    ? factDisplay(fact as CampaignMemoryFact).text
+                    : t("ui.game.campaignWiki.knowledgeClaimUnavailable");
+                const holderName = nameOf(item.holderEntityId);
+                return (
+                  <WikiCard as="article" key={item.knowledgeId}>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {holderName && item.holderEntityId !== entity.entityId && (
+                        <EntityChipButton
+                          entity={related.get(item.holderEntityId) ?? null}
+                          name={holderName}
+                          portraits={portraits}
+                          onClick={() => onSelect(item.holderEntityId)}
+                        />
                       )}
-                    >
-                      {t("ui.game.detail.value1", { value1: quote })}
-                    </p>
-                  )}
-                  {participants.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {participants.map((id) => {
-                        const participantName = nameOf(id);
-                        return participantName ? (
-                          <EntityChipButton
-                            key={id}
-                            entity={related.get(id) ?? null}
-                            name={participantName}
-                            portraits={portraits}
-                            onClick={() => onSelect(id)}
-                          />
-                        ) : null;
-                      })}
+                      <WikiChip
+                        tone={
+                          item.epistemicState === "knows"
+                            ? "success"
+                            : item.epistemicState === "unknown"
+                              ? "neutral"
+                              : "info"
+                        }
+                      >
+                        {enumLabel(t, "epistemicState", item.epistemicState)}
+                      </WikiChip>
+                      {item.confidence && item.confidence !== "high" && (
+                        <WikiChip tone="neutral">{enumLabel(t, "confidence", item.confidence)}</WikiChip>
+                      )}
+                      {sourceChecks[item.knowledgeId]?.state === "stale" && <FactLabelBadge label={STALE_LABEL} />}
+                      <span className="ml-auto flex items-center gap-2">
+                        <SessionChip record={item} />
+                        <WhenChip order={item.learnedAtOrder} />
+                      </span>
                     </div>
-                  )}
-                  {item.evidence.length > (quote ? 1 : 0) && (
+                    <p className="mt-2 text-sm leading-6 text-foreground">{text}</p>
                     <CampaignWikiEvidence
                       chatId={chatId}
                       sourceChatId={recordOrigin(item).chatId ?? chatId}
-                      evidence={quote ? item.evidence.slice(1) : item.evidence}
+                      evidence={item.learnedFrom}
                     />
-                  )}
-                </WikiCard>
-              );
-            })}
-          {pager(events.items.length, events.total)}
-        </section>
-      )}
+                  </WikiCard>
+                );
+              })}
+              {pager(knowledge.items.length, knowledge.total)}
+            </section>
+          )}
 
-      {tab === "connections" && (
-        <section className="space-y-2.5" aria-label={t("ui.game.campaignWiki.relationships")}>
-          {relationships.items.length === 0 && (
-            <WikiEmpty
-              icon={<Link2 size={22} />}
-              title={t("ui.game.campaignWiki.reader.noConnectionsTitle", { defaultValue: "No recorded connections" })}
+          {view === "events" && (
+            <section className="space-y-2.5" aria-label={t("ui.game.campaignWiki.events")}>
+              {events.items.length === 0 && (
+                <WikiEmpty
+                  icon={<History size={22} />}
+                  title={t("ui.game.campaignWiki.reader.noEventsTitle", { defaultValue: "No recorded events" })}
+                />
+              )}
+              {[...events.items]
+                .sort((left, right) => right.occurrenceOrder.localeCompare(left.occurrenceOrder))
+                .map((item) => {
+                  const quote = item.evidence[0]?.quote;
+                  const happened = item.evidence
+                    .map((evidence) => factTextByEvidence.get(`${evidence.messageId}|${evidence.quote ?? ""}`))
+                    .find(Boolean);
+                  const participants = item.participantEntityIds.filter((id) => id !== entity.entityId);
+                  const locationName = item.locationEntityId ? nameOf(item.locationEntityId) : null;
+                  return (
+                    <WikiCard as="article" key={item.eventId}>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {item.campaignTime && <WikiChip tone="accent">{item.campaignTime}</WikiChip>}
+                        {locationName && item.locationEntityId && (
+                          <EntityChipButton
+                            entity={related.get(item.locationEntityId) ?? null}
+                            name={locationName}
+                            portraits={portraits}
+                            onClick={() => onSelect(item.locationEntityId!)}
+                          />
+                        )}
+                        <span className="ml-auto flex items-center gap-2">
+                          <SessionChip record={item} />
+                          <WhenChip order={item.occurrenceOrder} />
+                        </span>
+                      </div>
+                      {(happened || !quote) && (
+                        <p className="mt-2 text-sm leading-6 text-foreground">
+                          {happened || t("ui.game.campaignWiki.eventRecorded")}
+                        </p>
+                      )}
+                      {quote && (
+                        <p
+                          className={cn(
+                            "italic",
+                            happened
+                              ? "mt-1 text-xs leading-5 text-muted-foreground"
+                              : "mt-2 text-sm leading-6 text-foreground/90",
+                          )}
+                        >
+                          {t("ui.game.detail.value1", { value1: quote })}
+                        </p>
+                      )}
+                      {participants.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {participants.map((id) => {
+                            const participantName = nameOf(id);
+                            return participantName ? (
+                              <EntityChipButton
+                                key={id}
+                                entity={related.get(id) ?? null}
+                                name={participantName}
+                                portraits={portraits}
+                                onClick={() => onSelect(id)}
+                              />
+                            ) : null;
+                          })}
+                        </div>
+                      )}
+                      {item.evidence.length > (quote ? 1 : 0) && (
+                        <CampaignWikiEvidence
+                          chatId={chatId}
+                          sourceChatId={recordOrigin(item).chatId ?? chatId}
+                          evidence={quote ? item.evidence.slice(1) : item.evidence}
+                        />
+                      )}
+                    </WikiCard>
+                  );
+                })}
+              {pager(events.items.length, events.total)}
+            </section>
+          )}
+
+          {view === "connections" && (
+            <section className="space-y-2.5" aria-label={t("ui.game.campaignWiki.relationships")}>
+              {relationships.items.length === 0 && (
+                <WikiEmpty
+                  icon={<Link2 size={22} />}
+                  title={t("ui.game.campaignWiki.reader.noConnectionsTitle", {
+                    defaultValue: "No recorded connections",
+                  })}
+                />
+              )}
+              <div className="grid gap-2 @xl:grid-cols-2">
+                {relationships.items.map((item: CampaignMemoryBacklink) => {
+                  const targetId = item.direction === "outgoing" ? item.targetEntityId : item.sourceEntityId;
+                  const target = related.get(targetId);
+                  const targetName = target ? displayEntityName(t, target) : null;
+                  if (!targetName) return null;
+                  return (
+                    <WikiCard as="article" key={item.relationshipId} className="p-3">
+                      <button
+                        type="button"
+                        onClick={() => onSelect(targetId)}
+                        className="flex w-full items-center gap-3 text-left"
+                      >
+                        <EntityAvatar
+                          name={targetName}
+                          kind={target?.kind ?? "character"}
+                          size={40}
+                          imageUrl={target ? portraitFor(target, portraits) : null}
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                            {item.label || humanizeKey(item.type)}
+                          </span>
+                          <span className="block truncate text-sm font-semibold text-foreground">{targetName}</span>
+                        </span>
+                        <ChevronRight size={15} className="shrink-0 text-muted-foreground" />
+                      </button>
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                        {item.status !== "active" && (
+                          <WikiChip tone={item.status === "ended" ? "neutral" : "warning"}>
+                            {enumLabel(t, "relationshipStatus", item.status)}
+                          </WikiChip>
+                        )}
+                        <SessionChip record={item} />
+                        <WhenChip order={item.effectiveFrom} />
+                      </div>
+                      <CampaignWikiEvidence
+                        chatId={chatId}
+                        sourceChatId={recordOrigin(item).chatId ?? chatId}
+                        evidence={item.evidence}
+                      />
+                    </WikiCard>
+                  );
+                })}
+              </div>
+              {pager(relationships.items.length, relationships.total)}
+            </section>
+          )}
+
+          {view === "timeline" && (
+            <CampaignWikiTimeline
+              chatId={chatId}
+              entityId={entity.kind === "location" ? undefined : entity.entityId}
+              locationId={entity.kind === "location" ? entity.entityId : undefined}
+              heading={t("ui.game.campaignWiki.timeline")}
+              onSelect={onSelect}
+              portraits={portraits}
             />
           )}
-          <div className="grid gap-2 sm:grid-cols-2">
-            {relationships.items.map((item: CampaignMemoryBacklink) => {
-              const targetId = item.direction === "outgoing" ? item.targetEntityId : item.sourceEntityId;
-              const target = related.get(targetId);
-              const targetName = target ? displayEntityName(t, target) : null;
-              if (!targetName) return null;
-              return (
-                <WikiCard as="article" key={item.relationshipId} className="p-3">
-                  <button
-                    type="button"
-                    onClick={() => onSelect(targetId)}
-                    className="flex w-full items-center gap-3 text-left"
-                  >
-                    <EntityAvatar
-                      name={targetName}
-                      kind={target?.kind ?? "character"}
-                      size={40}
-                      imageUrl={target ? portraitFor(target, portraits) : null}
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
-                        {item.label || humanizeKey(item.type)}
-                      </span>
-                      <span className="block truncate text-sm font-semibold text-foreground">{targetName}</span>
-                    </span>
-                    <ChevronRight size={15} className="shrink-0 text-muted-foreground" />
-                  </button>
-                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                    {item.status !== "active" && (
-                      <WikiChip tone={item.status === "ended" ? "neutral" : "warning"}>
-                        {enumLabel(t, "relationshipStatus", item.status)}
-                      </WikiChip>
-                    )}
-                    <SessionChip record={item} />
-                    <WhenChip order={item.effectiveFrom} />
+
+          {view === "commitments" && (
+            <CampaignWikiCommitments chatId={chatId} entityId={entity.entityId} onNavigate={onSelect} />
+          )}
+
+          {view === "details" && (
+            <section className="space-y-3">
+              <WikiCard>
+                <dl className="grid gap-x-6 gap-y-2 text-sm @xl:grid-cols-2">
+                  <div>
+                    <dt className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                      {t("ui.game.campaignWiki.reader.recordType", { defaultValue: "Type" })}
+                    </dt>
+                    <dd>{kindLabel(t, entity.kind)}</dd>
                   </div>
-                  <CampaignWikiEvidence
-                    chatId={chatId}
-                    sourceChatId={recordOrigin(item).chatId ?? chatId}
-                    evidence={item.evidence}
-                  />
-                </WikiCard>
-              );
-            })}
-          </div>
-          {pager(relationships.items.length, relationships.total)}
-        </section>
-      )}
-
-      {tab === "timeline" && (
-        <CampaignWikiTimeline
-          chatId={chatId}
-          entityId={entity.kind === "location" ? undefined : entity.entityId}
-          locationId={entity.kind === "location" ? entity.entityId : undefined}
-          heading={t("ui.game.campaignWiki.timeline")}
-          onSelect={onSelect}
-          portraits={portraits}
-        />
-      )}
-
-      {tab === "commitments" && (
-        <CampaignWikiCommitments chatId={chatId} entityId={entity.entityId} onNavigate={onSelect} />
-      )}
-
-      {tab === "details" && (
-        <section className="space-y-3">
-          <WikiCard>
-            <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-              <div>
-                <dt className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
-                  {t("ui.game.campaignWiki.reader.recordType", { defaultValue: "Type" })}
-                </dt>
-                <dd>{kindLabel(t, entity.kind)}</dd>
-              </div>
-              <div>
-                <dt className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
-                  {t("ui.game.campaignWiki.reader.recordStatus", { defaultValue: "Status" })}
-                </dt>
-                <dd>{enumLabel(t, "recordStatus", entity.status)}</dd>
-              </div>
-              <div>
-                <dt className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
-                  {t("ui.game.campaignWiki.reader.addedBy", { defaultValue: "Added by" })}
-                </dt>
-                <dd>{enumLabel(t, "actor", entity.provenance.actor)}</dd>
-              </div>
-              <div>
-                <dt className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
-                  {t("ui.game.campaignWiki.reader.updated", { defaultValue: "Last updated" })}
-                </dt>
-                <dd>{new Date(entity.updatedAt).toLocaleString()}</dd>
-              </div>
-              {entity.tags.length > 0 && (
-                <div className="sm:col-span-2">
-                  <dt className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
-                    {t("ui.game.campaignWiki.reader.tags", { defaultValue: "Tags" })}
-                  </dt>
-                  <dd className="mt-1 flex flex-wrap gap-1">
-                    {entity.tags.map((tag) => (
-                      <WikiChip key={tag}>{humanizeKey(tag)}</WikiChip>
-                    ))}
-                  </dd>
-                </div>
-              )}
-            </dl>
-          </WikiCard>
-          <details className="rounded-xl border border-border px-3 py-2">
-            <summary className="cursor-pointer text-xs text-muted-foreground">
-              {t("ui.game.campaignWiki.sourceDetails")}
-            </summary>
-            <p className="mt-2 break-all text-[0.6875rem] text-muted-foreground">
-              {t("ui.game.campaignWiki.sourceInfo", {
-                source: entity.provenance.source,
-                revision: entity.provenance.sourceRevision,
-              })}
-            </p>
-          </details>
-        </section>
-      )}
+                  <div>
+                    <dt className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                      {t("ui.game.campaignWiki.reader.recordStatus", { defaultValue: "Status" })}
+                    </dt>
+                    <dd>{enumLabel(t, "recordStatus", entity.status)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                      {t("ui.game.campaignWiki.reader.addedBy", { defaultValue: "Added by" })}
+                    </dt>
+                    <dd>{enumLabel(t, "actor", entity.provenance.actor)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                      {t("ui.game.campaignWiki.reader.updated", { defaultValue: "Last updated" })}
+                    </dt>
+                    <dd>{new Date(entity.updatedAt).toLocaleString()}</dd>
+                  </div>
+                  {entity.tags.length > 0 && (
+                    <div className="@xl:col-span-2">
+                      <dt className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                        {t("ui.game.campaignWiki.reader.tags", { defaultValue: "Tags" })}
+                      </dt>
+                      <dd className="mt-1 flex flex-wrap gap-1">
+                        {entity.tags.map((tag) => (
+                          <WikiChip key={tag}>{humanizeKey(tag)}</WikiChip>
+                        ))}
+                      </dd>
+                    </div>
+                  )}
+                </dl>
+              </WikiCard>
+              <details className="rounded-xl border border-border px-3 py-2">
+                <summary className="cursor-pointer text-xs text-muted-foreground">
+                  {t("ui.game.campaignWiki.sourceDetails")}
+                </summary>
+                <p className="mt-2 break-all text-[0.6875rem] text-muted-foreground">
+                  {t("ui.game.campaignWiki.sourceInfo", {
+                    source: entity.provenance.source,
+                    revision: entity.provenance.sourceRevision,
+                  })}
+                </p>
+              </details>
+            </section>
+          )}
+        </div>
+      </div>
     </article>
   );
 }
@@ -1378,6 +1105,8 @@ export function CampaignWiki({
   const [detailOffset, setDetailOffset] = useState(0);
   const [entityOffset, setEntityOffset] = useState(0);
   const [editing, setEditing] = useState(false);
+  // The reader's "Correct" action opens the editor on one fact (possibly from a later fact page).
+  const [correctingFact, setCorrectingFact] = useState<CampaignMemoryFactWithCoHolders | null>(null);
   const [editorDirty, setEditorDirty] = useState(false);
   const [campaignTimeline, setCampaignTimeline] = useState(false);
   const [navCollapsed, setNavCollapsed] = useState(false);
@@ -1443,7 +1172,7 @@ export function CampaignWiki({
     onSelectedEntityChange?.(id);
   };
   const entities = useCampaignMemoryEntities(chatId, { query, kind, offset: entityOffset, limit: ENTITY_PAGE_SIZE });
-  const detail = useCampaignMemoryEntity(chatId, selectedId, { offset: detailOffset });
+  const detail = useCampaignMemoryEntity(chatId, selectedId, { offset: detailOffset, limit: DETAIL_PAGE_SIZE });
   // Paging changes the query key; keep the loaded page on screen meanwhile so the open tab and perspective survive.
   const [keptDetail, setKeptDetail] = useState<CampaignMemoryEntityDetail | null>(null);
   if (detail.data && detail.data !== keptDetail) setKeptDetail(detail.data);
@@ -1787,7 +1516,22 @@ export function CampaignWiki({
               (editing ? (
                 <CampaignWikiEditor
                   chatId={chatId}
-                  detail={shownDetail}
+                  detail={
+                    correctingFact
+                      ? {
+                          ...shownDetail,
+                          facts: {
+                            ...shownDetail.facts,
+                            items: [
+                              correctingFact,
+                              ...shownDetail.facts.items.filter((fact) => fact.factId !== correctingFact.factId),
+                            ],
+                          },
+                        }
+                      : shownDetail
+                  }
+                  initialFactId={correctingFact?.factId}
+                  initialTab={correctingFact ? "correction" : undefined}
                   onClose={() => {
                     setEditing(false);
                     setEditorDirty(false);
@@ -1808,6 +1552,12 @@ export function CampaignWiki({
                   onSelect={selectEntity}
                   onPageChange={setDetailOffset}
                   onEdit={() => {
+                    setCorrectingFact(null);
+                    setEditorDirty(false);
+                    setEditing(true);
+                  }}
+                  onCorrectFact={(fact) => {
+                    setCorrectingFact(fact);
                     setEditorDirty(false);
                     setEditing(true);
                   }}
@@ -1903,22 +1653,5 @@ function CampaignMemoryBranchNotice({ chat }: { chat: ReturnType<typeof useChat>
         </ul>
       </details>
     </aside>
-  );
-}
-
-function ErrorState({ onRetry }: { onRetry: () => void }) {
-  const { t } = useUiTranslation();
-  return (
-    <div className="flex items-center justify-between gap-2 rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-3 text-xs text-destructive">
-      <span>{t("ui.game.campaignWiki.error")}</span>
-      <button
-        type="button"
-        onClick={onRetry}
-        className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-border px-2 text-muted-foreground hover:bg-secondary"
-      >
-        <RotateCw size={12} />
-        {t("ui.game.campaignWiki.retry")}
-      </button>
-    </div>
   );
 }

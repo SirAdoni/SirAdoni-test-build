@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   CampaignMemoryAuditPage,
   CampaignMemoryAuthoringPreview,
@@ -20,8 +20,29 @@ const campaignMemoryKeys = {
   all: ["campaign-memory"] as const,
   entities: (chatId: string, query: string, kind: CampaignMemoryEntityKind | "all", offset: number, limit: number) =>
     [...campaignMemoryKeys.all, "entities", chatId, query, kind, offset, limit] as const,
-  entity: (chatId: string, entityId: string, offset: number, limit: number) =>
-    [...campaignMemoryKeys.all, "entity", chatId, entityId, offset, limit] as const,
+  entity: (chatId: string, entityId: string, offset: number, limit: number, filters: CampaignMemoryFactFilters = {}) =>
+    [
+      ...campaignMemoryKeys.all,
+      "entity",
+      chatId,
+      entityId,
+      offset,
+      limit,
+      filters.factQuery ?? "",
+      filters.factKind ?? "",
+      filters.session ?? "",
+    ] as const,
+  entityFacts: (chatId: string, entityId: string, limit: number, filters: CampaignMemoryFactFilters = {}) =>
+    [
+      ...campaignMemoryKeys.all,
+      "entity-facts",
+      chatId,
+      entityId,
+      limit,
+      filters.factQuery ?? "",
+      filters.factKind ?? "",
+      filters.session ?? "",
+    ] as const,
   source: (chatId: string, messageId: string, sourceHash: string) =>
     [...campaignMemoryKeys.all, "source", chatId, messageId, sourceHash] as const,
   timeline: (chatId: string, entityId: string, locationId: string, cursor: string, limit: number) =>
@@ -130,17 +151,81 @@ export function useCampaignMemoryEntities(
   });
 }
 
+/**
+ * Optional fact filters on GET /memory/entities/:id, each sent only when set: `factQuery` is a case-insensitive
+ * substring over the predicate and the JSON value, `factKind` the continuity kind (or the predicate without its
+ * "continuity." prefix), `session` the fact's originSessionNumber. Older servers ignore them.
+ */
+export interface CampaignMemoryFactFilters {
+  factQuery?: string;
+  factKind?: string;
+  session?: number;
+}
+
+/**
+ * Entity detail as newer servers send it: `factSessions` / `factKinds` cover ALL facts of the entity regardless of
+ * filters and paging (factSessions newest first, factKinds largest first). Absent on older builds.
+ */
+export type CampaignMemoryEntityDetailWithSessions = CampaignMemoryEntityDetail & {
+  factSessions?: Array<{ sessionNumber: number | null; total: number }>;
+  factKinds?: Array<{ kind: string; total: number }>;
+};
+
+function factFilterParams(filters: CampaignMemoryFactFilters) {
+  return {
+    factQuery: filters.factQuery?.trim() || undefined,
+    factKind: filters.factKind || undefined,
+    session: filters.session === undefined ? undefined : String(filters.session),
+  };
+}
+
 export function useCampaignMemoryEntity(
   chatId: string | null,
   entityId: string | null,
-  options: { offset?: number; limit?: number; enabled?: boolean } = {},
+  options: { offset?: number; limit?: number; enabled?: boolean } & CampaignMemoryFactFilters = {},
 ) {
   const offset = options.offset ?? 0;
   const limit = options.limit ?? 20;
+  const filters = factFilterParams(options);
   return useQuery({
-    queryKey: campaignMemoryKeys.entity(chatId ?? "", entityId ?? "", offset, limit),
+    queryKey: campaignMemoryKeys.entity(chatId ?? "", entityId ?? "", offset, limit, options),
     queryFn: () =>
-      api.get<CampaignMemoryEntityDetail>(withParams(`/game/${chatId}/memory/entities/${entityId}`, { offset, limit })),
+      api.get<CampaignMemoryEntityDetailWithSessions>(
+        withParams(`/game/${chatId}/memory/entities/${entityId}`, { offset, limit, ...filters }),
+      ),
+    enabled: Boolean(chatId && entityId) && options.enabled !== false,
+    staleTime: 30_000,
+  });
+}
+
+/**
+ * Successive fact pages of one page entity (the detail route pages every section with one offset; only `facts` is
+ * read from the later pages). `initialPage` seeds the first page from an already loaded detail.
+ */
+export function useCampaignMemoryEntityFacts(
+  chatId: string | null,
+  entityId: string | null,
+  options: {
+    limit?: number;
+    enabled?: boolean;
+    initialPage?: CampaignMemoryEntityDetail;
+  } & CampaignMemoryFactFilters = {},
+) {
+  const limit = options.limit ?? 50;
+  const filters = factFilterParams(options);
+  const initialPage = options.initialPage;
+  return useInfiniteQuery({
+    queryKey: campaignMemoryKeys.entityFacts(chatId ?? "", entityId ?? "", limit, options),
+    queryFn: ({ pageParam }) =>
+      api.get<CampaignMemoryEntityDetailWithSessions>(
+        withParams(`/game/${chatId}/memory/entities/${entityId}`, { offset: pageParam, limit, ...filters }),
+      ),
+    initialPageParam: 0,
+    getNextPageParam: (last) => {
+      const next = last.facts.offset + last.facts.items.length;
+      return last.facts.items.length > 0 && next < last.facts.total ? next : undefined;
+    },
+    initialData: initialPage && initialPage.facts.offset === 0 ? { pages: [initialPage], pageParams: [0] } : undefined,
     enabled: Boolean(chatId && entityId) && options.enabled !== false,
     staleTime: 30_000,
   });
@@ -192,6 +277,62 @@ export function useApplyCampaignMemoryMutation(chatId: string | null) {
   const queryClient = useQueryClient();
   return useMutation<CampaignMemoryMutationRecord, unknown, CampaignMemoryAuthoringRequest>({
     mutationFn: (request) => api.post<CampaignMemoryMutationRecord>(`/game/${chatId}/memory/mutations`, request),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: campaignMemoryKeys.all });
+    },
+  });
+}
+
+/** Fact fields the write route accepts on update; the patch must carry the whole record, not only the changes. */
+function factUpdatePatch(fact: CampaignMemoryFact, changes: CampaignMemoryFactChanges) {
+  const evidence = fact.evidence
+    .filter((item) => item.messageId && item.quote?.trim())
+    .map((item) => ({
+      messageId: item.messageId,
+      quote: item.quote,
+      ...(typeof item.sourceHash === "string" && /^[a-f0-9]{64}$/iu.test(item.sourceHash)
+        ? { sourceHash: item.sourceHash }
+        : {}),
+    }));
+  return {
+    predicate: fact.predicate,
+    value: changes.value ?? fact.value,
+    conditions: fact.conditions.map((condition) => ({ kind: condition.kind, value: condition.value })),
+    status: changes.status ?? fact.status,
+    evidence,
+    manualLock: changes.manualLock ?? fact.manualLock,
+    ...(fact.validFromOrder ? { validFromOrder: fact.validFromOrder } : {}),
+    ...(fact.validToOrder ? { validToOrder: fact.validToOrder } : {}),
+    ...(fact.supersedesFactId ? { supersedesFactId: fact.supersedesFactId } : {}),
+  };
+}
+
+export type CampaignMemoryFactChanges = Partial<Pick<CampaignMemoryFact, "status" | "manualLock" | "value">>;
+
+export interface CampaignMemoryFactUpdateRequest {
+  fact: CampaignMemoryFact;
+  changes: CampaignMemoryFactChanges;
+  reason: string;
+  operationId: string;
+}
+
+/**
+ * Status / lock / pin change on one fact (pin as canon, unpin, mark wrong), sent as the full fact patch. `chatId` must be the fact's own session
+ * (recordWriteChatId). 409 means the fact changed since it was loaded.
+ */
+export function useUpdateCampaignMemoryFact(chatId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation<CampaignMemoryMutationRecord, unknown, CampaignMemoryFactUpdateRequest>({
+    mutationFn: ({ fact, changes, reason, operationId }) =>
+      api.post<CampaignMemoryMutationRecord>(`/game/${chatId}/memory/mutations`, {
+        operationId,
+        action: "update",
+        recordType: "fact",
+        recordId: fact.factId,
+        expectedRevision: fact.revision,
+        reason,
+        patch: factUpdatePatch(fact, changes),
+      } satisfies CampaignMemoryAuthoringRequest),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: campaignMemoryKeys.all });
     },
