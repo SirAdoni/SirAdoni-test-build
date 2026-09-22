@@ -50,6 +50,16 @@ export interface CampaignMemoryProjection {
   relationships: ProjectedRelationship[];
   /** Original entity id (any session) to the projected entity id. */
   entityIdMap: ReadonlyMap<string, string>;
+  /**
+   * Current-state values a later session replaced. A regenerate or continue at an earlier point needs the value
+   * that was current then; the context builder picks the newest value at or before its cutoff.
+   */
+  supersededStates: ProjectedCurrentState[];
+  /**
+   * A fact re-read in a later session is dropped in favour of the earliest copy; its id maps to the kept id, so a
+   * link or knowledge row that names the dropped copy still resolves.
+   */
+  factIdAlias: ReadonlyMap<string, string>;
 }
 
 type ChatRow = {
@@ -78,7 +88,7 @@ const PRIOR_SESSION_CACHE_MS = 60_000;
  */
 const MAX_CACHED_PROJECTIONS = 4;
 const MAX_CACHED_SESSION_MEMORIES = 24;
-const memoryCache = new Map<string, { at: number; memory: ChatMemory }>();
+const memoryCache = new Map<string, { at: number; generation: string | null; memory: ChatMemory }>();
 const sourceCache = new Map<string, { at: number; version: string; sources: Map<string, CampaignMemorySource> }>();
 
 /** Changes whenever a message in the chat is added, edited, swiped or deleted. */
@@ -113,6 +123,17 @@ function gameIdOf(row: ChatRow): string {
   return id || "";
 }
 
+function branchParentOf(row: ChatRow): string | undefined {
+  const parent = objectValue(row.metadata).branchParentChatId;
+  return typeof parent === "string" && parent.trim() ? parent.trim() : undefined;
+}
+
+/** A chat branch (chats.routes branch) carries its branch name and the chat it was forked from. */
+function isBranch(row: ChatRow): boolean {
+  const meta = objectValue(row.metadata);
+  return Boolean(branchParentOf(row) || (typeof meta.branchName === "string" && meta.branchName.trim()));
+}
+
 function nameKey(value: string): string {
   return value
     .normalize("NFKD")
@@ -137,7 +158,8 @@ export function campaignMemoryScopeEnabled(metadata: unknown): boolean {
 /**
  * The session chats to merge, oldest first, ending with the current chat. Only sessions up to the current one are
  * included, so reading an old session never shows its future. A session number shared by two chats (a branch) keeps
- * the most recently created one that is not newer than the current chat.
+ * the current chat's own lineage first, then the canonical session, then the most recently created branch, never one
+ * newer than the current chat.
  */
 export async function listCampaignSessionChats(db: DB, chatId: string): Promise<Array<{ id: string; sessionNumber?: number }>> {
   const current = (await db.select().from(chats).where(eq(chats.id, chatId)).limit(1))[0] as ChatRow | undefined;
@@ -150,6 +172,17 @@ export async function listCampaignSessionChats(db: DB, chatId: string): Promise<
     (row) => row.mode === "game" && gameIdOf(row) === gameId,
   );
   const currentNumber = sessionNumberOf(current);
+  // A branch is a "what if" copy that is always newer than the chat it forks, so newest-wins alone would let an
+  // abandoned branch replace the real session. Rank per session: the current chat's own lineage (a branch reads
+  // the history it forked from), then canonical sessions, and a branch only when nothing else holds that number.
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const lineage = new Set<string>();
+  for (let id = branchParentOf(current), hops = 0; id && hops < 64 && !lineage.has(id); hops += 1) {
+    lineage.add(id);
+    const parent = byId.get(id);
+    id = parent ? branchParentOf(parent) : undefined;
+  }
+  const rank = (row: ChatRow) => (lineage.has(row.id) ? 2 : isBranch(row) ? 0 : 1);
   const bySession = new Map<number, ChatRow>();
   for (const row of rows) {
     if (row.id === current.id) continue;
@@ -157,7 +190,8 @@ export async function listCampaignSessionChats(db: DB, chatId: string): Promise<
     const number = sessionNumberOf(row);
     if (number === undefined || (currentNumber !== undefined && number >= currentNumber)) continue;
     const kept = bySession.get(number);
-    if (!kept || row.createdAt > kept.createdAt) bySession.set(number, row);
+    if (!kept || rank(row) > rank(kept) || (rank(row) === rank(kept) && row.createdAt > kept.createdAt))
+      bySession.set(number, row);
   }
   const prior = [...bySession.entries()]
     .sort((a, b) => a[0] - b[0])
@@ -166,8 +200,14 @@ export async function listCampaignSessionChats(db: DB, chatId: string): Promise<
 }
 
 async function readChatMemory(db: DB, chatId: string, cache: boolean): Promise<ChatMemory> {
+  // Keyed by the memory tables' write counters as well as time: a writer that forgets to call
+  // forgetCampaignMemoryCache must not leave a rebuilt projection holding the old rows (and the projection cache
+  // would then pin them under the new generation). Chat rows are left out: every turn touches the current chat,
+  // which says nothing about an earlier session's memory.
+  const generation = memoryGeneration(db, MEMORY_ROW_TABLES);
   const cached = cache ? memoryCache.get(chatId) : undefined;
-  if (cached && Date.now() - cached.at < PRIOR_SESSION_CACHE_MS) return cached.memory;
+  if (cached && cached.generation === generation && Date.now() - cached.at < PRIOR_SESSION_CACHE_MS)
+    return cached.memory;
   const storage = createCampaignMemoryStorage(db);
   const scope = { chatId };
   const [entities, facts, knowledge, events, currentState, relationships] = await Promise.all([
@@ -179,12 +219,13 @@ async function readChatMemory(db: DB, chatId: string, cache: boolean): Promise<C
     storage.listRelationships(scope),
   ]);
   const memory = { entities, facts, knowledge, events, currentState, relationships };
-  if (cache) {
+  // A write while the rows were read leaves no generation to trust; the next read fetches them again.
+  if (cache && memoryGeneration(db, MEMORY_ROW_TABLES) === generation) {
     const now = Date.now();
     for (const [key, entry] of memoryCache) if (now - entry.at >= PRIOR_SESSION_CACHE_MS) memoryCache.delete(key);
     memoryCache.delete(chatId);
     if (memoryCache.size >= MAX_CACHED_SESSION_MEMORIES) memoryCache.delete(memoryCache.keys().next().value!);
-    memoryCache.set(chatId, { at: now, memory });
+    memoryCache.set(chatId, { at: now, generation, memory });
   }
   return memory;
 }
@@ -202,13 +243,7 @@ export function forgetCampaignMemoryCache(chatId?: string): void {
   }
 }
 
-function newerEntity(a: CampaignMemoryEntity, b: CampaignMemoryEntity): CampaignMemoryEntity {
-  if (a.status !== b.status) return a.status === "active" ? a : b;
-  return a.updatedAt >= b.updatedAt ? a : b;
-}
-
-const MEMORY_TABLES = [
-  "chats",
+const MEMORY_ROW_TABLES = [
   "campaign_memory_entities",
   "campaign_memory_facts",
   "campaign_memory_knowledge",
@@ -216,16 +251,17 @@ const MEMORY_TABLES = [
   "campaign_memory_current_state",
   "campaign_memory_relationships",
 ] as const;
+const MEMORY_TABLES = ["chats", ...MEMORY_ROW_TABLES] as const;
 const projectionCache = new Map<string, { generation: string; projection: CampaignMemoryProjection }>();
 
 /**
  * The store's per-table write counters: unchanged means no memory row and no chat row was written since, so a
  * projection built then is still exact. Null (no counters, e.g. inside a transaction) disables the cache.
  */
-function memoryGeneration(db: DB): string | null {
+function memoryGeneration(db: DB, tables: readonly string[] = MEMORY_TABLES): string | null {
   const store = (db as { _fileStore?: { getTableWriteGeneration?: (table: string) => number } })._fileStore;
   if (typeof store?.getTableWriteGeneration !== "function") return null;
-  return MEMORY_TABLES.map((table) => store.getTableWriteGeneration!(table)).join(".");
+  return tables.map((table) => store.getTableWriteGeneration!(table)).join(".");
 }
 
 /** Read-only campaign projection of every session up to and including `chatId`, reused until memory changes. */
@@ -283,6 +319,21 @@ async function buildCampaignMemoryProjection(db: DB, chatId: string): Promise<Ca
         ownedByName.set(nameGroupKey, owners);
       }
   }
+  // Two groups with rows in the same session chat were kept apart by that session's tracker, so they are two people
+  // even when their names match: never fold them into one page.
+  const ordersOf = new Map<string, Set<number>>();
+  for (const [key, group] of groups) ordersOf.set(key, new Set(group.map((item) => item.order)));
+  const sideBySide = (a: string, b: string) => {
+    const [small, large] = [ordersOf.get(a)!, ordersOf.get(b)!].sort((x, y) => x.size - y.size);
+    for (const order of small!) if (large!.has(order)) return true;
+    return false;
+  };
+  const fold = (key: string, target: string) => {
+    groups.get(target)!.push(...groups.get(key)!);
+    groups.delete(key);
+    for (const order of ordersOf.get(key)!) ordersOf.get(target)!.add(order);
+    ordersOf.delete(key);
+  };
   for (const [key, group] of [...groups]) {
     if (!foldable(key)) continue;
     const kind = group[0]!.entity.kind;
@@ -294,27 +345,43 @@ async function buildCampaignMemoryProjection(db: DB, chatId: string): Promise<Ca
       }
     if (candidates.size !== 1) continue;
     const target = [...candidates][0]!;
-    groups.get(target)!.push(...group);
-    groups.delete(key);
+    // No side-by-side check here: a tracked NPC with a library card's exact name in the same session is the tracker
+    // registering the card's character a second time (Countess Lisaveta had both in Sessions 7 to 9), not a
+    // namesake. The check still guards the one-word fold below, where "Ash" and "Ash Vale" can be two people.
+    fold(key, target);
   }
   // A tracked NPC first met under a single name ("Liveth") and later under the full name ("Liveth Corren") is the
-  // same person when exactly one other entity of that kind has a name starting with that word.
-  const namesOf = (group: GroupItem[]) =>
-    [...new Set(group.flatMap((item) => item.entity.aliases.map(nameKey)).filter(Boolean))];
+  // same person when exactly one other entity of that kind has a name starting with that word. Names are computed
+  // once per group and multi-word names indexed by first word, so a long campaign's pass stays linear. Folding only
+  // moves single-word names into the target, so the index stays exact while the pass runs.
+  const namesByGroup = new Map<string, string[]>();
+  const byFirstWord = new Map<string, Set<string>>();
+  for (const [key, group] of groups) {
+    const names = [...new Set(group.flatMap((item) => item.entity.aliases.map(nameKey)).filter(Boolean))];
+    namesByGroup.set(key, names);
+    const kind = group[0]!.entity.kind;
+    for (const name of names) {
+      const space = name.indexOf(" ");
+      if (space < 0) continue;
+      const indexKey = `${kind}\u0000${name.slice(0, space)}`;
+      const keys = byFirstWord.get(indexKey) ?? new Set<string>();
+      keys.add(key);
+      byFirstWord.set(indexKey, keys);
+    }
+  }
   for (const [key, group] of [...groups]) {
     if (!foldable(key) || !groups.has(key)) continue;
     const kind = group[0]!.entity.kind;
-    const names = namesOf(group);
+    const names = namesByGroup.get(key)!;
     if (!names.length || names.some((name) => name.includes(" "))) continue;
-    const candidates = [...groups].filter(
-      ([otherKey, other]) =>
-        otherKey !== key &&
-        other[0]!.entity.kind === kind &&
-        namesOf(other).some((name) => names.some((short) => name.startsWith(`${short} `))),
-    );
-    if (candidates.length !== 1) continue;
-    candidates[0]![1].push(...group);
-    groups.delete(key);
+    const candidates = new Set<string>();
+    for (const short of names)
+      for (const other of byFirstWord.get(`${kind}\u0000${short}`) ?? [])
+        if (other !== key && groups.has(other)) candidates.add(other);
+    if (candidates.size !== 1) continue;
+    const target = [...candidates][0]!;
+    if (sideBySide(key, target)) continue;
+    fold(key, target);
   }
   const entityIdMap = new Map<string, string>();
   const entities: ProjectedEntity[] = [];
@@ -324,7 +391,6 @@ async function buildCampaignMemoryProjection(db: DB, chatId: string): Promise<Ca
       [...ordered].reverse().find((item) => canonicalOwner(campaignEntityIdentity(item.entity))) ??
       [...ordered].reverse().find((item) => item.entity.owner.type === "existing") ??
       ordered[ordered.length - 1]!;
-    const best = ordered.reduce((acc, item) => newerEntity(acc, item.entity), ordered[0]!.entity);
     const aliases = [...new Set(ordered.flatMap((item) => item.entity.aliases))];
     const tags = [...new Set(ordered.flatMap((item) => item.entity.tags))];
     const summary = [...ordered].reverse().find((item) => item.entity.summary?.trim())?.entity.summary;
@@ -335,7 +401,12 @@ async function buildCampaignMemoryProjection(db: DB, chatId: string): Promise<Ca
     ];
     for (const item of ordered) entityIdMap.set(item.entity.entityId, anchor.entity.entityId);
     entities.push({
-      ...best,
+      // Every field describes the anchor row, the one the wiki writes to (recordId = anchor id, expectedRevision =
+      // this revision). Identity comes from the anchor too: a newer tracked-NPC row folded into a library card must
+      // not replace the card's owner, or party-speaker memory and scene presence stop resolving the person.
+      ...anchor.entity,
+      kind: anchor.entity.kind,
+      owner: anchor.entity.owner,
       entityId: anchor.entity.entityId,
       chatId,
       aliases: [anchor.entity.aliases[0], ...aliases].filter(
@@ -344,7 +415,8 @@ async function buildCampaignMemoryProjection(db: DB, chatId: string): Promise<Ca
       tags,
       ...(summary ? { summary } : {}),
       ...(body ? { body } : {}),
-      status: anyActive ? "active" : best.status,
+      // Archiving a page archives the anchor row; an earlier session's copy that is still active must not undo it.
+      status: anchor.entity.status === "archived" ? "archived" : anyActive ? "active" : anchor.entity.status,
       originChatId: anchor.entity.chatId,
       ...(anchor.sessionNumber !== undefined ? { originSessionNumber: anchor.sessionNumber } : {}),
       sessionNumbers,
@@ -360,6 +432,7 @@ async function buildCampaignMemoryProjection(db: DB, chatId: string): Promise<Ca
   const knowledge: ProjectedKnowledge[] = [];
   const events: ProjectedEvent[] = [];
   const stateByKey = new Map<string, ProjectedCurrentState>();
+  const supersededStates: ProjectedCurrentState[] = [];
   const relationshipByKey = new Map<string, ProjectedRelationship>();
   for (const { session, memory } of memories) {
     const origin = originOf(session.sessionNumber, session.id);
@@ -401,6 +474,7 @@ async function buildCampaignMemoryProjection(db: DB, chatId: string): Promise<Ca
       const kept = stateByKey.get(key);
       // Later sessions win; within a session the newer order wins.
       if (!kept || kept.originChatId !== session.id || projected.validAtOrder >= kept.validAtOrder) {
+        if (kept && kept.originChatId !== session.id) supersededStates.push(kept);
         stateByKey.set(key, projected);
       }
     }
@@ -420,7 +494,8 @@ async function buildCampaignMemoryProjection(db: DB, chatId: string): Promise<Ca
       }
     }
   }
-  // The same statement is often re-read in several sessions; keep the newest copy of an identical fact.
+  // The same statement is often re-read in several sessions; keep the copy from the session that first established
+  // it, so a regenerate at an earlier point in a later session still finds it (the re-read copy may be "future").
   const factByStatement = new Map<string, ProjectedFact>();
   const factIdAlias = new Map<string, string>();
   for (const fact of facts) {
@@ -431,7 +506,10 @@ async function buildCampaignMemoryProjection(db: DB, chatId: string): Promise<Ca
       factByStatement.set(`${key}\u0000${fact.factId}`, fact);
       continue;
     }
-    if (kept) factIdAlias.set(kept.factId, fact.factId);
+    if (kept) {
+      factIdAlias.set(fact.factId, kept.factId);
+      continue;
+    }
     factByStatement.set(key, fact);
   }
   const resolveFactId = (id: string): string => {
@@ -460,6 +538,8 @@ async function buildCampaignMemoryProjection(db: DB, chatId: string): Promise<Ca
     currentState: [...stateByKey.values()],
     relationships: [...relationshipByKey.values()],
     entityIdMap,
+    supersededStates,
+    factIdAlias,
   };
 }
 
@@ -532,7 +612,10 @@ export function createCampaignScopedMemoryReader(projection: CampaignMemoryProje
     },
     async getFact(scope: CampaignMemoryScope, factId: string): Promise<ProjectedFact | null> {
       check(scope);
-      return projection.facts.find((fact) => fact.factId === factId) ?? null;
+      // A re-read copy dropped by the cross-session dedupe resolves to the earliest copy that was kept.
+      let id = factId;
+      for (let hops = 0; hops < 64 && projection.factIdAlias.has(id); hops += 1) id = projection.factIdAlias.get(id)!;
+      return projection.facts.find((fact) => fact.factId === id) ?? null;
     },
     async listKnowledge(scope: CampaignMemoryScope): Promise<ProjectedKnowledge[]> {
       check(scope);
@@ -553,9 +636,17 @@ export function createCampaignScopedMemoryReader(projection: CampaignMemoryProje
     async listBacklinks(scope: CampaignMemoryScope, entityId: string): Promise<CampaignMemoryBacklink[]> {
       check(scope);
       const id = projection.entityIdMap.get(entityId) ?? entityId;
+      const outgoing = new Set(
+        projection.relationships
+          .filter((relationship) => relationship.sourceEntityId === id)
+          .map((relationship) => `${relationship.targetEntityId}|${relationship.type}`),
+      );
       return projection.relationships.flatMap((relationship): CampaignMemoryBacklink[] => {
         if (relationship.sourceEntityId === id)
           return [{ ...relationship, direction: "outgoing", label: relationship.type }];
+        // A mutual tie recorded from both sides ("lover-of" each way) is one relationship on this page.
+        if (relationship.targetEntityId === id && outgoing.has(`${relationship.sourceEntityId}|${relationship.type}`))
+          return [];
         if (relationship.targetEntityId === id)
           return [{ ...relationship, direction: "incoming", label: relationship.inverseLabel }];
         return [];

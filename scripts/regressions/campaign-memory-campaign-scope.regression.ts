@@ -60,6 +60,9 @@ try {
     entity("s3-mira", "s3", "characters", "card-mira", "Mira"),
     entity("s1-vigil", "s1", "characters", "card-vigil", "Vigil"),
     entity("s2-vigil-npc", "s2", "game-npcs", "npc:vigil", "Vigil"),
+    // The NPC tracker registered a card character a second time in the same session (Countess Lisaveta, S7 to S9).
+    entity("s1-lisa-card", "s1", "characters", "card-lisa", "Countess Lisaveta"),
+    entity("s1-lisa-npc", "s1", "game-npcs", "npc:lisa", "Countess Lisaveta"),
     entity("s1-liveth", "s1", "game-npcs", "npc:liveth", "Liveth"),
     entity("s2-liveth-corren", "s2", "game-npcs", "npc:liveth-corren", "Liveth Corren"),
     { ...entity("s1-tavern", "s1", "campaign-memory", "s1-tavern", "The Tavern"), kind: "location",
@@ -124,6 +127,9 @@ try {
   const vigil = projection.entities.filter((item: any) => item.aliases[0] === "Vigil");
   assert.equal(vigil.length, 1, "a tracked NPC folds into the library card of the same name");
   assert.equal(vigil[0].owner.store, "characters", "the library card is the canonical owner");
+  const lisa = projection.entities.filter((item: any) => item.aliases.includes("Countess Lisaveta"));
+  assert.equal(lisa.length, 1, "a tracked NPC with a card's exact name in the same session is the same person");
+  assert.equal(lisa[0].owner.store, "characters");
   const liveth = projection.entities.filter((item: any) => item.aliases.some((alias: string) => alias.startsWith("Liveth")));
   assert.equal(liveth.length, 1, "a one-word NPC name folds into the unique full name that starts with it");
   assert.deepEqual(liveth[0].sessionNumbers, [1, 2]);

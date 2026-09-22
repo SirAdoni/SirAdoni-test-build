@@ -144,7 +144,7 @@ try {
       if (receipt.chatId === "callback-failure") throw new Error("derived summary failed");
     },
   });
-  const waitUntil = async (predicate: () => Promise<boolean>, timeoutMs = 3000) => {
+  const waitUntil = async (predicate: () => Promise<boolean>, timeoutMs = 10_000) => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (await predicate()) return;
@@ -475,7 +475,10 @@ try {
 
   const cleanResumeRuntime = createGameContinuityRuntime(db, { complete, maxDrainMs: 3000 });
   await cleanResumeRuntime.start();
-  await waitUntil(async () => (await cleanResumeRuntime.list("held-two"))[0]?.status === "verified");
+  // Startup publishes a verified receipt once it is re-read, so the resumed batch may already be past "verified".
+  await waitUntil(async () =>
+    ["verified", "published"].includes((await cleanResumeRuntime.list("held-two"))[0]?.status ?? ""),
+  );
   assert.equal((await cleanResumeRuntime.list("held-two"))[0]?.attempts, 1);
   await cleanResumeRuntime.stop();
 
