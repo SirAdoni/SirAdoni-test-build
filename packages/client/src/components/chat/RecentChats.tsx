@@ -14,6 +14,7 @@ import { useChatStore } from "../../stores/chat.store";
 import { useTranslation } from "react-i18next";
 import { ChatModeIcon } from "./ChatModeIcon";
 import { CharacterPhoto } from "../ui/CharacterPhoto";
+import { AvatarImage } from "../characters/AvatarImage";
 import { useUIStore } from "../../stores/ui.store";
 
 const MODE_BADGE = {
@@ -274,16 +275,18 @@ export function RecentChats() {
               <CharacterPhoto
                 src={character.avatarUrl}
                 name={character.name}
-                className="h-14 w-14 shrink-0 rounded-full border-2 border-[var(--recent-chat-accent)]/60 bg-[var(--card)] object-cover shadow-lg shadow-black/30 md:h-20 md:w-20"
+                className="h-14 w-14 shrink-0 overflow-hidden rounded-full border-2 border-[var(--recent-chat-accent)]/60 bg-[var(--card)] object-cover shadow-lg shadow-black/30 md:h-20 md:w-20"
                 wrapperClassName="absolute bottom-2 right-2 inline-flex shrink-0 items-center gap-1 overflow-visible md:bottom-3 md:right-3"
                 onUpdate={() => openCharacterDetail(character.id)}
               >
-                <img
+                <AvatarImage
                   src={character.avatarUrl}
                   alt=""
                   className="h-full w-full object-cover"
                   style={getAvatarCropStyle(character.avatarCrop)}
                   loading="lazy"
+                  iconSize="1.5rem"
+                  fallbackClassName="text-[var(--recent-chat-accent)]"
                 />
               </CharacterPhoto>
             ) : (

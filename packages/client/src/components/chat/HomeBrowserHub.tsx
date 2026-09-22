@@ -797,7 +797,8 @@ function FeedModule({
         className={cn(
           "relative z-[1] flex min-w-0 items-end justify-between gap-3 pr-8",
           description ? "mb-1.5" : "mb-3",
-          onOpen && "pointer-events-none [&_button]:pointer-events-auto [&_a]:pointer-events-auto",
+          onOpen &&
+            "pointer-events-none [&_[role=button]]:pointer-events-auto [&_a]:pointer-events-auto [&_button]:pointer-events-auto",
         )}
       >
         <div className="min-w-0">
@@ -814,7 +815,8 @@ function FeedModule({
       <div
         className={cn(
           "relative z-[1] min-h-0 flex-1",
-          onOpen && "pointer-events-none [&_button]:pointer-events-auto [&_a]:pointer-events-auto",
+          onOpen &&
+            "pointer-events-none [&_[role=button]]:pointer-events-auto [&_a]:pointer-events-auto [&_button]:pointer-events-auto",
         )}
       >
         {children}
