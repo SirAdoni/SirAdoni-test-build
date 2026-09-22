@@ -38,6 +38,29 @@ export function displayEntityName(t: TFn, entity: Pick<CampaignMemoryEntityListI
   return alias || t("ui.game.campaignWiki.untitledEntity", { kind: kindLabel(t, entity.kind) });
 }
 
+/** Plural heading for a group of pages of one kind ("People", "Places", ...). */
+const KIND_SECTION_DEFAULTS: Record<CampaignMemoryEntityKind, string> = {
+  character: "People",
+  persona: "Player characters",
+  location: "Places",
+  organization: "Organizations",
+  item: "Items",
+  quest: "Quests",
+  lore: "Lore",
+  note: "Notes",
+};
+
+export function kindSectionLabel(t: TFn, kind: CampaignMemoryEntityKind) {
+  return t(`ui.game.campaignWiki.kindSection.${kind}`, { defaultValue: KIND_SECTION_DEFAULTS[kind] });
+}
+
+/** Event text for the reader; an id stored in place of a summary is never shown. */
+export function eventSummary(t: TFn, summary: string | null | undefined): string {
+  const text = summary?.trim();
+  const idsOnly = text?.split(/\s+/u).every((token) => RAW_ID.test(token));
+  return text && !idsOnly ? text : t("ui.game.campaignWiki.eventRecorded");
+}
+
 /** Name of a page that is not in the loaded detail; shows a neutral label until it arrives. */
 export function EntityRefName({ chatId, entityId }: { chatId: string; entityId: string }) {
   const { t } = useUiTranslation();

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import {
   BookOpen,
   Gem,
@@ -273,7 +273,13 @@ export function initialsOf(name: string): string {
   return letters.toUpperCase();
 }
 
-/** Initials in a softly tinted circle; the hue is stable per name. Characters are round, everything else rounded. */
+type AvatarImageState = "loading" | "loaded" | "error";
+
+/**
+ * Initials (people) or the kind icon in a softly tinted circle; the hue is stable per name. Characters are round,
+ * everything else rounded. A portrait fades in over the initials once it has loaded, so a slow or missing image
+ * never leaves an empty circle; a broken image falls back to the initials.
+ */
 export function EntityAvatar({
   name,
   kind,
@@ -290,6 +296,10 @@ export function EntityAvatar({
   const Icon = ENTITY_KIND_ICONS[kind] ?? BookOpen;
   const person = kind === "character" || kind === "persona";
   const hue = hueOf(name.toLowerCase());
+  // Keyed by URL: a new portrait starts over at "loading" without an effect.
+  const [image, setImage] = useState<{ url: string; state: AvatarImageState } | null>(null);
+  const imageState: AvatarImageState | "none" = !imageUrl ? "none" : image?.url === imageUrl ? image.state : "loading";
+  const settle = (state: AvatarImageState) => setImage({ url: imageUrl ?? "", state });
   const style = {
     width: size,
     height: size,
@@ -301,18 +311,47 @@ export function EntityAvatar({
     <span
       aria-hidden="true"
       style={style}
+      data-avatar-state={imageState}
       className={cn(
-        "inline-flex shrink-0 select-none items-center justify-center overflow-hidden border font-bold",
+        "relative inline-flex shrink-0 select-none items-center justify-center overflow-hidden border font-bold",
         person ? "rounded-full" : "rounded-lg",
         className,
       )}
     >
-      {imageUrl ? (
-        <img src={imageUrl} alt="" className="h-full w-full object-cover" loading="lazy" />
-      ) : person ? (
-        <span style={{ fontSize: Math.max(10, size * 0.36) }}>{initialsOf(name)}</span>
-      ) : (
-        <Icon size={Math.max(12, size * 0.45)} />
+      {imageState !== "loaded" &&
+        (person ? (
+          <span
+            data-avatar-fallback
+            className={cn("leading-none", imageState === "loading" && "animate-pulse")}
+            style={{ fontSize: Math.max(10, size * 0.36) }}
+          >
+            {initialsOf(name)}
+          </span>
+        ) : (
+          <Icon
+            data-avatar-fallback
+            className={cn(imageState === "loading" && "animate-pulse")}
+            size={Math.max(12, size * 0.45)}
+          />
+        ))}
+      {imageUrl && imageState !== "error" && (
+        <img
+          key={imageUrl}
+          src={imageUrl}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          ref={(node) => {
+            // A cached image can finish before React attaches onLoad.
+            if (node?.complete && imageState === "loading") settle(node.naturalWidth > 0 ? "loaded" : "error");
+          }}
+          onLoad={() => settle("loaded")}
+          onError={() => settle("error")}
+          className={cn(
+            "absolute inset-0 h-full w-full object-cover transition-opacity duration-300 motion-reduce:transition-none",
+            imageState === "loaded" ? "opacity-100" : "opacity-0",
+          )}
+        />
       )}
     </span>
   );

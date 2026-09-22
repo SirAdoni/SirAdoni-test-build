@@ -46,7 +46,7 @@ try {
   await desktop.getByRole("button", { name: "Apply reviewed change", exact: true }).click();
   await desktop.waitForTimeout(250);
   await desktop.getByRole("button", { name: "Apply reviewed change", exact: true }).click();
-  await desktop.getByText("Ariadne guards the northern archive.", { exact: true }).waitFor();
+  await desktop.locator('[data-component="campaign-wiki-article"]').getByText("Ariadne guards the northern archive.", { exact: true }).waitFor();
   const applyIds = await json(desktop, () => window.__wikiMock.mutationIds.slice(-2));
   record("apply retry reuses operation ID", applyIds.length === 2 && applyIds[0] === entityOp && applyIds[1] === entityOp, JSON.stringify(applyIds));
   await shot(desktop, "editor-desktop-viewport");
@@ -129,7 +129,7 @@ try {
   await nav.locator("select").first().selectOption({ label: "has archive count" });
   record("unsaved fact selection asks confirmation and retains draft", dialogs.length === 1 && await factValue.inputValue() === "draft value");
   await nav.locator("textarea").nth(3).fill("query refetch draft test");
-  await nav.getByPlaceholder("Search entities").fill("Ariadne");
+  await nav.getByPlaceholder("Search people, places, lore").fill("Ariadne");
   await nav.waitForTimeout(350);
   record("query refetch does not reset editor draft", (await nav.locator("textarea").nth(3).inputValue()) === "query refetch draft test");
   await nav.close();

@@ -53,9 +53,11 @@ function entity(id: string, index: number) {
     owner:
       index === 0
         ? { type: "existing" as const, store: "characters", recordId: "char-1" }
-        : index === 1
-          ? { type: "existing" as const, store: "personas", recordId: "persona-1" }
-          : { type: "registry" as const, store: "campaign-memory" as const, recordId: id },
+        : index === 3 || index === 6
+          ? { type: "existing" as const, store: "characters", recordId: `char-${index}` }
+          : index === 1
+            ? { type: "existing" as const, store: "personas", recordId: "persona-1" }
+            : { type: "registry" as const, store: "campaign-memory" as const, recordId: id },
     aliases: [index === 0 ? "Ariadne Vale" : `${kind[0].toUpperCase()}${kind.slice(1)} ${index}`],
     tags: ["fixture", kind],
     summary: index === 0 ? "Ariadne guards the northern archive." : `Recorded fixture ${index}.`,
@@ -70,6 +72,16 @@ function entity(id: string, index: number) {
 }
 
 const entities = Array.from({ length: 121 }, (_, index) => entity(`entity-${index}`, index));
+// ?dupes=1: three imported lore pages share one title, and Ariadne has several relationships to one page.
+const DUPES = new URL(window.location.href).searchParams.get("dupes") === "1";
+if (DUPES)
+  for (const index of [0, 1, 2])
+    entities.push({
+      ...entity(`entity-lore-${index}`, 2),
+      kind: "lore",
+      aliases: ["Game continuity 8"],
+      summary: `Imported continuity entry ${index}.`,
+    });
 const entity0 = entities[0];
 const factStates = [
   {
@@ -262,6 +274,26 @@ function detail(id: string, offset: number, params: URLSearchParams = new URLSea
             provenance,
             manualLock: false,
           },
+          ...(DUPES
+            ? [
+                { label: "Trusts", type: "trusts", status: "active" as const, direction: "outgoing" as const },
+                { label: "allied with", type: "allied", status: "active" as const, direction: "incoming" as const },
+                { label: "Owes", type: "owes", status: "proposed" as const, direction: "outgoing" as const },
+              ].map((extra, index) => ({
+                relationshipId: `rel-extra-${index}`,
+                chatId: "chat-demo",
+                sourceEntityId: extra.direction === "outgoing" ? id : target,
+                targetEntityId: extra.direction === "outgoing" ? target : id,
+                type: extra.type,
+                inverseLabel: extra.type,
+                status: extra.status,
+                label: extra.label,
+                direction: extra.direction,
+                evidence: [{ messageId: "msg-rel", quote: "Ariadne allies with Location 1.", sourceHash: "hash-rel" }],
+                provenance,
+                manualLock: false,
+              }))
+            : []),
         ]
       : [];
   const referencedEvents = [
@@ -444,9 +476,17 @@ async function main() {
       );
     }
     if (parsed.pathname === "/api/characters")
-      return new Response(JSON.stringify([{ id: "char-1", name: "Ariadne Character", avatarUrl: null }]), {
-        headers: { "Content-Type": "application/json" },
-      });
+      // char-3 has a slow portrait (initials until it loads), char-6 a missing one (falls back to initials).
+      return new Response(
+        JSON.stringify([
+          { id: "char-1", name: "Ariadne Character", avatarUrl: null },
+          { id: "char-3", name: "Character Three", avatarUrl: null, avatarPath: "/fixture-portrait-slow.svg" },
+          { id: "char-6", name: "Character Six", avatarUrl: null, avatarPath: "/fixture-portrait-missing.png" },
+        ]),
+        {
+          headers: { "Content-Type": "application/json" },
+        },
+      );
     if (parsed.pathname === "/api/characters/personas/list")
       return new Response(JSON.stringify([{ id: "persona-1", name: "Persona One", avatarUrl: null }]), {
         headers: { "Content-Type": "application/json" },
@@ -564,7 +604,9 @@ async function main() {
           campaignTime: "Day 3, dusk",
           location: { entityId: "entity-1", alias: "Location 1" },
           participants: [{ entityId: "entity-0", alias: "Ariadne Vale" }],
-          summary: "archive opened · key secured",
+          summary: "The archive opened after the eclipse and Ariadne secured the key.",
+          originChatId: "chat-demo",
+          originSessionNumber: 2,
           stateChanges: [{ entityId: "entity-0", key: "status", value: "watching the gate" }],
           sourceMessageId: "msg-event",
         },
@@ -574,7 +616,9 @@ async function main() {
           campaignTime: null,
           location: null,
           participants: [{ entityId: "entity-0", alias: "Ariadne Vale" }],
-          summary: "stale cause transition",
+          summary: "Ariadne kept watch at the gate while the old records were checked.",
+          originChatId: "chat-demo",
+          originSessionNumber: 3,
           stateChanges: [],
           sourceMessageId: "msg-event-stale",
         },
@@ -749,11 +793,26 @@ async function main() {
     const q = (parsed.searchParams.get("q") ?? "").toLowerCase();
     const kind = parsed.searchParams.get("kind");
     const offset = Number(parsed.searchParams.get("offset") ?? 0);
+    // Like the server: pages of at most `limit` (this mock caps at 20), kindTotals before the kind filter,
+    // sort=kind orders by kind then name.
+    const limit = Math.min(Number(parsed.searchParams.get("limit") ?? 20) || 20, 20);
+    const kindOrder = ["character", "persona", "location", "organization", "item", "quest", "lore", "note"];
+    const kindTotals = Object.fromEntries(kindOrder.map((value) => [value, 0])) as Record<string, number>;
+    for (const item of entities) kindTotals[item.kind] += 1;
     const filtered = entities.filter(
       (item) => (!q || item.aliases.some((alias) => alias.toLowerCase().includes(q))) && (!kind || item.kind === kind),
     );
+    if (parsed.searchParams.get("sort") === "kind")
+      filtered.sort((left, right) => kindOrder.indexOf(left.kind) - kindOrder.indexOf(right.kind));
+    const legacyList = new URL(window.location.href).searchParams.get("list") === "legacy";
     return new Response(
-      JSON.stringify({ items: filtered.slice(offset, offset + 20), total: filtered.length, offset, limit: 20 }),
+      JSON.stringify({
+        items: filtered.slice(offset, offset + limit),
+        total: filtered.length,
+        offset,
+        limit,
+        ...(legacyList ? {} : { kindTotals }),
+      }),
       { headers: { "Content-Type": "application/json" } },
     );
   };

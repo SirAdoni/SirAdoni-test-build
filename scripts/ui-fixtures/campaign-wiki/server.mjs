@@ -28,6 +28,12 @@ const files = { "/bundle.js": bundle, "/client.css": css, "/locales/en.json": lo
 const server = http.createServer((req, res) => {
   const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
   if (pathname === "/") return res.end(html);
+  // Portrait fixtures: a slow one (the rail must show initials until it arrives) and a missing one (falls back).
+  if (pathname === "/fixture-portrait-slow.svg") {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#7c5cc4"/><circle cx="32" cy="26" r="12" fill="#f0e8ff"/><rect x="14" y="42" width="36" height="22" rx="11" fill="#f0e8ff"/></svg>`;
+    setTimeout(() => { res.setHeader("Content-Type", "image/svg+xml"); res.setHeader("Cache-Control", "no-store"); res.end(svg); }, 1500);
+    return;
+  }
   const filename = files[pathname];
   const publicAsset = resolveClientPublicAsset(pathname);
   if (publicAsset) { res.setHeader("Content-Type", clientPublicContentType(publicAsset)); return fs.createReadStream(publicAsset).pipe(res); }

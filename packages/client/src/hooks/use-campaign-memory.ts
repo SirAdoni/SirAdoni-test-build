@@ -18,8 +18,14 @@ import { api } from "../lib/api-client";
 
 const campaignMemoryKeys = {
   all: ["campaign-memory"] as const,
-  entities: (chatId: string, query: string, kind: CampaignMemoryEntityKind | "all", offset: number, limit: number) =>
-    [...campaignMemoryKeys.all, "entities", chatId, query, kind, offset, limit] as const,
+  entities: (
+    chatId: string,
+    query: string,
+    kind: CampaignMemoryEntityKind | "all",
+    offset: number,
+    limit: number,
+    sort: CampaignMemoryEntitySort | "" = "",
+  ) => [...campaignMemoryKeys.all, "entities", chatId, query, kind, offset, limit, sort] as const,
   entity: (chatId: string, entityId: string, offset: number, limit: number, filters: CampaignMemoryFactFilters = {}) =>
     [
       ...campaignMemoryKeys.all,
@@ -52,6 +58,15 @@ const campaignMemoryKeys = {
 /** Search ranking tier reported per entity when a query is present (id > alias > prefix > text). */
 export type CampaignMemoryMatchTier = "id" | "alias" | "prefix" | "text";
 export type CampaignMemoryEntityListItem = CampaignMemoryEntity & { matchTier?: CampaignMemoryMatchTier };
+/** List order: `name` (server default) or `kind` (people, places, ... lore, notes; archived last; name order within). */
+export type CampaignMemoryEntitySort = "name" | "kind";
+/**
+ * Entity list page. Newer servers add `kindTotals`: pages per kind over the whole (unfiltered by kind) list, so one
+ * request can label every kind chip. Absent on older builds.
+ */
+export type CampaignMemoryEntityListPage = CampaignMemoryPage<CampaignMemoryEntityListItem> & {
+  kindTotals?: Partial<Record<CampaignMemoryEntityKind, number>>;
+};
 
 /** Another knowledge holder of the same fact, excluding the page entity. */
 export interface CampaignMemoryCoHolder {
@@ -128,6 +143,8 @@ export function useCampaignMemoryEntities(
     kind?: CampaignMemoryEntityKind | "all";
     offset?: number;
     limit?: number;
+    /** Sent only when set; older servers ignore it and answer in name order. */
+    sort?: CampaignMemoryEntitySort;
     enabled?: boolean;
   } = {},
 ) {
@@ -135,15 +152,17 @@ export function useCampaignMemoryEntities(
   const kind = options.kind ?? "all";
   const offset = options.offset ?? 0;
   const limit = options.limit ?? 20;
+  const sort = options.sort ?? "";
   return useQuery({
-    queryKey: campaignMemoryKeys.entities(chatId ?? "", query, kind, offset, limit),
+    queryKey: campaignMemoryKeys.entities(chatId ?? "", query, kind, offset, limit, sort),
     queryFn: () =>
-      api.get<CampaignMemoryPage<CampaignMemoryEntityListItem>>(
+      api.get<CampaignMemoryEntityListPage>(
         withParams(`/game/${chatId}/memory/entities`, {
           q: query,
           kind: kind === "all" ? undefined : kind,
           offset,
           limit,
+          sort: sort || undefined,
         }),
       ),
     enabled: Boolean(chatId) && options.enabled !== false,

@@ -109,13 +109,30 @@ export function CampaignWikiInfobox({
   const openPromises = (commitments.data?.items ?? []).filter(
     (item) => !item.historical && OPEN_COMMITMENT_STATES.has(item.state),
   );
-  const connections = relationships.items
-    .map((item: CampaignMemoryBacklink) => {
-      const targetId = item.direction === "outgoing" ? item.targetEntityId : item.sourceEntityId;
-      const target = related.get(targetId);
-      return target ? { item, targetId, target, name: displayEntityName(t as TFn, target) } : null;
-    })
-    .filter((row): row is NonNullable<typeof row> => row !== null);
+  // One row per connected page: several relationships to the same person read as one line of labels.
+  const connections: Array<{
+    targetId: string;
+    target: NonNullable<ReturnType<typeof related.get>>;
+    name: string;
+    labels: string[];
+  }> = [];
+  for (const item of relationships.items as CampaignMemoryBacklink[]) {
+    const targetId = item.direction === "outgoing" ? item.targetEntityId : item.sourceEntityId;
+    const target = related.get(targetId);
+    if (!target) continue;
+    let row = connections.find((existing) => existing.targetId === targetId);
+    if (!row) {
+      row = { targetId, target, name: displayEntityName(t as TFn, target), labels: [] };
+      connections.push(row);
+    }
+    const base = item.label || humanizeKey(item.type);
+    const label =
+      item.status !== "active"
+        ? `${base} (${enumLabel(t as TFn, "relationshipStatus", item.status).toLocaleLowerCase()})`
+        : base;
+    if (!row.labels.some((existing) => existing.toLocaleLowerCase() === label.toLocaleLowerCase()))
+      row.labels.push(label);
+  }
   const person = entity.kind === "character" || entity.kind === "persona";
   const contents: Array<{ id: CampaignWikiView; label: string; count?: number }> = [
     { id: "facts", label: t("ui.game.campaignWiki.facts"), count: factTotal },
@@ -175,7 +192,7 @@ export function CampaignWikiInfobox({
         <InfoboxSection
           title={t("ui.game.campaignWiki.reader.tabConnections", { defaultValue: "Connections" })}
           action={
-            relationships.total > INFOBOX_CONNECTIONS ? (
+            relationships.total > relationships.items.length || connections.length > INFOBOX_CONNECTIONS ? (
               <SeeAll
                 onClick={() => onView("connections")}
                 label={t("ui.game.campaignWiki.infobox.seeAllConnections", { defaultValue: "See all connections" })}
@@ -184,8 +201,8 @@ export function CampaignWikiInfobox({
           }
         >
           <ul className="space-y-0.5">
-            {connections.slice(0, INFOBOX_CONNECTIONS).map(({ item, targetId, target, name }) => (
-              <li key={item.relationshipId}>
+            {connections.slice(0, INFOBOX_CONNECTIONS).map(({ targetId, target, name, labels }) => (
+              <li key={targetId}>
                 <button
                   type="button"
                   onClick={() => onSelect(targetId)}
@@ -194,13 +211,8 @@ export function CampaignWikiInfobox({
                   <EntityAvatar name={name} kind={target.kind} size={30} imageUrl={portraitFor(target, portraits)} />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-semibold text-foreground">{name}</span>
-                    <span className="block truncate text-[0.6875rem] text-muted-foreground">
-                      {[
-                        item.label || humanizeKey(item.type),
-                        item.status !== "active" ? enumLabel(t as TFn, "relationshipStatus", item.status) : null,
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")}
+                    <span className="block truncate text-[0.6875rem] text-muted-foreground" title={labels.join(", ")}>
+                      {labels.join(", ")}
                     </span>
                   </span>
                 </button>

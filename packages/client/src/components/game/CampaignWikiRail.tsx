@@ -108,33 +108,40 @@ function writeOpenSections(value: Partial<Record<CampaignMemoryEntityKind, boole
   }
 }
 
-/** One page in the rail: portrait or initials, name, one muted line. */
+/** One page in the rail: portrait or initials, name, one muted line (kind · sessions). */
 export function CampaignWikiEntityRow({
   entity,
   active,
-  showKind,
   onSelect,
   portraits,
+  sameNameCount,
 }: {
   entity: CampaignMemoryEntityListItem;
   active: boolean;
-  showKind: boolean;
   onSelect: (id: string) => void;
   portraits: Map<string, string>;
+  /** Pages in this list sharing the name; shown as "N pages" on the collapsed row. */
+  sameNameCount?: number;
 }) {
   const { t } = useUiTranslation();
   const name = displayEntityName(t, entity);
   const sessions = entitySessionNumbers(entity);
   const meta = [
-    showKind && kindLabel(t, entity.kind),
+    kindLabel(t, entity.kind),
     sessions.length > 0 &&
       t("ui.game.campaignWiki.reader.sessions", {
         defaultValue: "Sessions {{list}}",
         list: formatSessionRanges(sessions),
       }),
     entity.status === "archived" && enumLabel(t, "recordStatus", "archived"),
+    sameNameCount !== undefined &&
+      sameNameCount > 1 &&
+      t("ui.game.campaignWiki.rail.samePages", {
+        defaultValue: "{{count}} pages",
+        count: sameNameCount,
+      }),
   ].filter(Boolean);
-  const line = meta.length > 0 ? meta.join(" · ") : entity.summary?.trim() || kindLabel(t, entity.kind);
+  const line = meta.join(" · ");
   return (
     <button
       type="button"
@@ -155,6 +162,119 @@ export function CampaignWikiEntityRow({
         <span className="block truncate text-[0.6875rem] leading-4 text-muted-foreground">{line}</span>
       </span>
     </button>
+  );
+}
+
+/** Pages of one kind with the same name, in first-seen order (imports often repeat a title many times). */
+function clusterByName(
+  items: CampaignMemoryEntityListItem[],
+  nameOf: (entity: CampaignMemoryEntityListItem) => string,
+): CampaignMemoryEntityListItem[][] {
+  const byKey = new Map<string, CampaignMemoryEntityListItem[]>();
+  for (const entity of items) {
+    const key = `${entity.kind}|${nameOf(entity).trim().toLocaleLowerCase()}`;
+    const list = byKey.get(key);
+    if (list) list.push(entity);
+    else byKey.set(key, [entity]);
+  }
+  return [...byKey.values()];
+}
+
+/** One row for many same-named pages; the toggle lists each page. */
+function SameNameCluster({
+  items,
+  selectedId,
+  onSelect,
+  portraits,
+}: {
+  items: CampaignMemoryEntityListItem[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  portraits: Map<string, string>;
+}) {
+  const { t } = useUiTranslation();
+  const containsSelected = items.some((entity) => entity.entityId === selectedId);
+  const [open, setOpen] = useState(containsSelected);
+  const first = items[0]!;
+  const label = t("ui.game.campaignWiki.rail.showSamePages", {
+    defaultValue: "Show all {{count}} pages named {{name}}",
+    count: items.length,
+    name: displayEntityName(t, first),
+  });
+  return (
+    <div data-campaign-wiki-same-name={items.length}>
+      <div className="flex items-center gap-0.5">
+        <div className="min-w-0 flex-1">
+          <CampaignWikiEntityRow
+            entity={first}
+            active={selectedId === first.entityId}
+            onSelect={onSelect}
+            portraits={portraits}
+            sameNameCount={items.length}
+          />
+        </div>
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          aria-expanded={open}
+          aria-label={label}
+          title={label}
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-secondary hover:text-foreground"
+        >
+          {open ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
+        </button>
+      </div>
+      {open && (
+        <div className="ml-5 space-y-px border-l border-border pl-1.5">
+          {items.slice(1).map((entity) => (
+            <CampaignWikiEntityRow
+              key={entity.entityId}
+              entity={entity}
+              active={selectedId === entity.entityId}
+              onSelect={onSelect}
+              portraits={portraits}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RailRows({
+  items,
+  selectedId,
+  onSelect,
+  portraits,
+}: {
+  items: CampaignMemoryEntityListItem[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  portraits: Map<string, string>;
+}) {
+  const { t } = useUiTranslation();
+  return (
+    <>
+      {clusterByName(items, (entity) => displayEntityName(t, entity)).map((cluster) =>
+        cluster.length === 1 ? (
+          <CampaignWikiEntityRow
+            key={cluster[0]!.entityId}
+            entity={cluster[0]!}
+            active={selectedId === cluster[0]!.entityId}
+            onSelect={onSelect}
+            portraits={portraits}
+          />
+        ) : (
+          <SameNameCluster
+            key={cluster[0]!.entityId}
+            items={cluster}
+            selectedId={selectedId}
+            onSelect={onSelect}
+            portraits={portraits}
+          />
+        ),
+      )}
+    </>
   );
 }
 
@@ -209,16 +329,7 @@ function RailSection({
         <div className="space-y-px pb-2">
           {list.isLoading && !page && <WikiSkeleton rows={3} className="px-1 [&>div]:h-10" />}
           {list.isError && !page && <ErrorState onRetry={() => void list.refetch()} />}
-          {items.map((entity) => (
-            <CampaignWikiEntityRow
-              key={entity.entityId}
-              entity={entity}
-              active={selectedId === entity.entityId}
-              showKind={false}
-              onSelect={onSelect}
-              portraits={portraits}
-            />
-          ))}
+          <RailRows items={items} selectedId={selectedId} onSelect={onSelect} portraits={portraits} />
           {total > items.length && page && (
             <div className="flex flex-wrap items-center gap-1 px-1 pt-0.5">
               {canGrow && (
@@ -385,16 +496,7 @@ export function CampaignWikiRail({
                 {t(`ui.game.campaignWiki.matchTier.${group.tier}`)}
               </p>
             )}
-            {group.items.map((entity) => (
-              <CampaignWikiEntityRow
-                key={entity.entityId}
-                entity={entity}
-                active={selectedId === entity.entityId}
-                showKind={kind === "all"}
-                onSelect={onSelect}
-                portraits={portraits}
-              />
-            ))}
+            <RailRows items={group.items} selectedId={selectedId} onSelect={onSelect} portraits={portraits} />
           </div>
         ))}
       </>
