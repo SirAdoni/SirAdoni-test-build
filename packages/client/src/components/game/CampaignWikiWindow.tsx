@@ -197,7 +197,7 @@ export function CampaignWikiWindow({ chatId, onClose, target = null }: CampaignW
     initialKind,
   };
   const historyButtonClass =
-    "inline-flex min-h-9 min-w-9 items-center justify-center rounded-md border border-[var(--border)] text-[var(--muted-foreground)] hover:bg-[var(--secondary)] disabled:opacity-40";
+    "inline-flex min-h-9 min-w-9 items-center justify-center gap-1.5 rounded-lg border border-border text-muted-foreground transition-colors hover:border-primary/50 hover:bg-secondary hover:text-foreground disabled:opacity-40";
 
   return (
     <Modal
@@ -211,28 +211,29 @@ export function CampaignWikiWindow({ chatId, onClose, target = null }: CampaignW
     >
       <div ref={setWrapper} className="flex h-full min-h-0 flex-col">
         <nav
-          className="mb-2 flex flex-wrap items-center gap-1"
+          className="mb-3 flex flex-wrap items-center gap-1.5 border-b border-border pb-3"
           aria-label={t("ui.game.campaignWiki.nav.label")}
           data-campaign-wiki-nav
         >
           <button
             type="button"
             onClick={close}
-            className="inline-flex min-h-9 items-center gap-1.5 rounded-md border border-[var(--border)] px-2.5 text-xs text-[var(--foreground)] hover:bg-[var(--secondary)]"
+            className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-semibold text-foreground transition-colors hover:border-primary/50 hover:bg-secondary"
           >
             <ArrowLeft size={14} aria-hidden="true" />
             {t("ui.game.campaignWiki.nav.backToRoleplay")}
           </button>
-          <div className="ml-auto flex gap-1">
+          <div className="ml-auto flex gap-1.5">
             <button
               type="button"
               onClick={() => setIndexOpen(true)}
               aria-label={t("ui.game.campaignIndex.open")}
               title={t("ui.game.campaignIndex.open")}
-              className={historyButtonClass}
+              className={`${historyButtonClass} px-2.5`}
               data-campaign-index-open
             >
               <DatabaseZap size={16} aria-hidden="true" />
+              <span className="hidden text-xs font-semibold sm:inline">{t("ui.game.campaignIndex.open")}</span>
             </button>
             <button
               type="button"

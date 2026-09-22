@@ -88,6 +88,24 @@ try {
     await page.close();
   }
 
+  // A typed condition value that does not fit its type is flagged inline, never coerced to null/false.
+  const typedCondition = await browser.newPage({ viewport: VIEWPORTS.desktop });
+  await openEditor(typedCondition);
+  await typedCondition.getByRole("button", { name: "Fact", exact: true }).click();
+  await typedCondition.locator("select").first().selectOption({ label: "has archive count" });
+  const conditionField = typedCondition.getByLabel(/When it applies/).first();
+  await conditionField.fill("threshold=third");
+  await typedCondition.locator("textarea").nth(3).fill("Bad typed condition");
+  const conditionError = typedCondition.getByText(/The value for "threshold" must be a number/);
+  const previewButton = typedCondition.getByRole("button", { name: "Review preview", exact: true });
+  record("invalid number condition shows inline error and blocks preview", (await conditionError.count()) === 1 && (await previewButton.isDisabled()), `errors=${await conditionError.count()} disabled=${await previewButton.isDisabled()}`);
+  await conditionField.fill("threshold=12");
+  await previewButton.click();
+  await typedCondition.waitForTimeout(300);
+  const typedMutation = await json(typedCondition, () => window.__wikiMock.lastMutation);
+  record("valid number condition is sent as a number", JSON.stringify(typedMutation?.patch?.conditions) === JSON.stringify([{ kind: "threshold", value: 12 }]), JSON.stringify(typedMutation?.patch));
+  await typedCondition.close();
+
   const conflict = await browser.newPage({ viewport: VIEWPORTS.desktop });
   await openEditor(conflict);
   const conflictSummary = conflict.locator("textarea").nth(2);

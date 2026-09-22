@@ -19,12 +19,13 @@ const screenshots = [];
 const record = (name, pass, detail = "") => checks.push({ name, pass: Boolean(pass), detail });
 const shot = async (page, name, fullPage = false) => { await page.screenshot({ path: path.join(out, `${name}.png`), fullPage }); screenshots.push(`${name}.png`); };
 const text = (page) => page.locator("body").innerText();
-const listTotal = async (page) => (await text(page)).match(/Showing \d+ of \d+ entities/)?.[0] ?? "(no list total rendered)";
-const detailTotal = async (page) => (await text(page)).match(/Showing \d+ of \d+ records/)?.[0] ?? "(no detail total rendered)";
+// Pager text is "<from>–<to> of <total>"; the entity list pager comes before any detail pager in the DOM.
+const listTotal = async (page) => (await text(page)).match(/\d+–\d+ of 121/)?.[0] ?? "(no list total rendered)";
+const detailTotal = async (page) => (await text(page)).match(/\d+–\d+ of 101/)?.[0] ?? "(no detail total rendered)";
 const noOverflow = (page) => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
 const step = async (name, fn) => { try { await fn(); } catch (error) { record(`${name} (step aborted)`, false, String(error?.message ?? error).split("\n")[0]); } };
 const openList = async (page) => { await page.goto(base); await page.locator('[data-campaign-wiki-entity-list]').waitFor(WAIT); };
-const openDetail = async (page) => { await openList(page); await page.locator('[data-campaign-wiki-entity-list]').getByRole("button", { name: /Ariadne Vale/ }).click(); await page.getByText("holds the northern archive key", { exact: true }).first().waitFor(WAIT); };
+const openDetail = async (page) => { await openList(page); await page.locator('[data-campaign-wiki-entity-list]').getByRole("button", { name: /Ariadne Vale/ }).click(); await page.getByText(/^holds the northern archive key$/i).first().waitFor(WAIT); };
 try {
   const desktop = await browser.newPage({ viewport: VIEWPORTS.desktop });
   await step("desktop list", async () => {
@@ -33,7 +34,7 @@ try {
     await shot(desktop, "desktop-list-viewport");
     record("desktop list renders", (await text(desktop)).includes("Ariadne Vale"));
     const total = await listTotal(desktop);
-    record("desktop list pagination", total === "Showing 20 of 121 entities", total);
+    record("desktop list pagination", total === "1–20 of 121", total);
     // CampaignWiki.tsx debounces searchText (250 ms) and that effect also resets entityOffset to 0,
     // so a Next click within 250 ms of mount is discarded. Let the mount-time debounce settle first.
     await desktop.waitForTimeout(400);
@@ -43,29 +44,31 @@ try {
     try { await desktop.getByText("Character 120", { exact: false }).waitFor(WAIT); } catch {}
     await shot(desktop, "desktop-list-after-next-viewport");
     const nextTotal = await listTotal(desktop);
-    record("desktop list next page", nextTotal === "Showing 40 of 121 entities" && (await text(desktop)).includes("Character 21"), `${nextTotal}; nextButtons=${nextCount}`);
+    record("desktop list next page", nextTotal === "21–40 of 121" && (await text(desktop)).includes("Character 21"), `${nextTotal}; nextButtons=${nextCount}`);
   });
   await step("desktop search and filter", async () => {
     await openList(desktop);
     await desktop.getByPlaceholder("Search entities").fill("Ariadne");
     await desktop.waitForTimeout(350);
-    record("search filters", (await text(desktop)).includes("Ariadne Vale") && !(await text(desktop)).includes("Location 1"));
+    const listText = await desktop.locator('[data-campaign-wiki-entity-list]').innerText();
+    record("search filters", listText.includes("Ariadne Vale") && !listText.includes("Location 1"));
     await desktop.getByRole("button", { name: "Location", exact: true }).click();
     await desktop.waitForTimeout(350);
-    record("kind filter applies", (await text(desktop)).includes("No campaign entities match this view."));
+    record("kind filter applies", (await text(desktop)).includes("No pages match"));
   });
   await step("desktop detail", async () => {
     await openDetail(desktop);
-    record("detail content visible", (await text(desktop)).includes("holds the northern archive key") && (await text(desktop)).includes("Knowledge and beliefs"));
+    record("detail content visible", /holds the northern archive key/i.test(await text(desktop)) && (await desktop.getByRole("tab", { name: /What they know|Who knows/ }).count()) > 0);
     const total = await detailTotal(desktop);
-    record("detail page pagination", total === "Showing 20 of 101 records", total);
+    record("detail page pagination", total === "1–20 of 101", total);
     await desktop.getByRole("button", { name: "Next" }).last().click();
     try { await desktop.getByText("recorded property 100", { exact: false }).waitFor(WAIT); } catch {}
     const nextTotal = await detailTotal(desktop);
-    record("detail next page", nextTotal === "Showing 40 of 101 records" && (await text(desktop)).includes("recorded property 20"), nextTotal);
+    record("detail next page", nextTotal === "21–40 of 101" && /recorded property 20/i.test(await text(desktop)), nextTotal);
   });
   await step("desktop related navigation", async () => {
     await openDetail(desktop);
+    await desktop.getByRole("tab", { name: /Connections/ }).click();
     await desktop.getByRole("button", { name: "Allied with", exact: false }).waitFor(WAIT);
     await desktop.getByRole("button", { name: "Allied with", exact: false }).click();
     await desktop.getByRole("heading", { name: "Location 1", exact: true }).waitFor(WAIT);
@@ -82,7 +85,7 @@ try {
     await step(`mobile detail and back @${tag}`, async () => {
       await openDetail(mobile);
       await mobile.getByRole("button", { name: "Back to entities", exact: true }).first().waitFor(WAIT);
-      rec("mobile detail and back control", (await text(mobile)).includes("holds the northern archive key"));
+      rec("mobile detail and back control", /holds the northern archive key/i.test(await text(mobile)));
       await shot(mobile, `mobile-detail-${tag}`, true);
       await shot(mobile, `mobile-detail-viewport-${tag}`);
       rec("mobile detail no horizontal overflow", await noOverflow(mobile));
@@ -97,7 +100,7 @@ try {
       rec("loading state visible", await mobile.getByText("Loading campaign memory...", { exact: true }).isVisible());
       await mobile.getByPlaceholder("Search entities").fill("No match");
       await mobile.waitForTimeout(800);
-      rec("empty state visible", (await text(mobile)).includes("No campaign entities match this view."));
+      rec("empty state visible", (await text(mobile)).includes("No pages match"));
       await mobile.evaluate(() => { window.__wikiMock.delayMs = 0; window.__wikiMock.failList = 1; });
       await mobile.getByPlaceholder("Search entities").fill("ErrorTrigger");
       await mobile.waitForTimeout(350);
@@ -120,7 +123,7 @@ try {
       const body = await text(mobile);
       const errorAt = body.indexOf("Campaign memory could not be loaded.");
       const errorGone = errorAt === -1;
-      rec("detail retry recovers", errorGone && /recorded property \d+/.test(body), `${await detailTotal(mobile)}; errorGone=${errorGone}; hasRecords=${/recorded property \d+/.test(body)}${errorGone ? "" : `; context=${JSON.stringify(body.slice(Math.max(0, errorAt - 160), errorAt + 80))}`}`);
+      rec("detail retry recovers", errorGone && /recorded property \d+/i.test(body), `${await detailTotal(mobile)}; errorGone=${errorGone}; hasRecords=${/recorded property \d+/i.test(body)}${errorGone ? "" : `; context=${JSON.stringify(body.slice(Math.max(0, errorAt - 160), errorAt + 80))}`}`);
       await shot(mobile, `mobile-detail-page-2-${tag}`, true);
       await shot(mobile, `mobile-detail-page-2-viewport-${tag}`);
     });

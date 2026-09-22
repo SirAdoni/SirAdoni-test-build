@@ -19,7 +19,7 @@ const wikiSource = readFileSync(
 );
 const relationshipBlock = wikiSource.slice(
   wikiSource.indexOf("{relationships.items.map"),
-  wikiSource.indexOf("</WikiSection>", wikiSource.indexOf("{relationships.items.map")),
+  wikiSource.indexOf("{pager(relationships.items.length", wikiSource.indexOf("{relationships.items.map")),
 );
 assert.equal(
   /<button[\s\S]*CampaignWikiEvidence[\s\S]*<\/button>/.test(relationshipBlock),

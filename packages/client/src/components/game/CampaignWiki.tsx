@@ -1,16 +1,29 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
+  BookMarked,
+  CalendarClock,
   ChevronRight,
+  Clock3,
   Database,
+  Eye,
   History,
+  Link2,
   Loader2,
+  MapPin,
   PanelLeftClose,
   PanelLeftOpen,
+  Pencil,
   RotateCw,
+  ScrollText,
   Search,
+  Sparkles,
+  Users,
+  X,
 } from "lucide-react";
 import type {
+  CampaignMemoryBacklink,
+  CampaignMemoryEntity,
   CampaignMemoryEntityDetail,
   CampaignMemoryEntityKind,
   CampaignMemoryFact,
@@ -33,13 +46,34 @@ import {
   type CampaignMemoryFactWithCoHolders,
   type CampaignMemoryImportPreview,
   type CampaignMemoryMatchTier,
+  type CampaignMemoryTimelineItem,
 } from "../../hooks/use-campaign-memory";
+import { useCharacters } from "../../hooks/use-characters";
 import { useChat } from "../../hooks/use-chats";
 import type { CampaignWikiNavigationProps } from "./CampaignWikiWindow";
 import { CampaignWikiEditor } from "./CampaignWikiEditor";
 import { CampaignWikiOwnerLink } from "./CampaignWikiOwnerLink";
 import { CampaignWikiEvidence } from "./CampaignWikiEvidence";
 import { CampaignWikiCommitments } from "./CampaignWikiCommitments";
+import {
+  ENTITY_KIND_ICONS,
+  EntityAvatar,
+  WikiCard,
+  WikiChip,
+  WikiEmpty,
+  WikiSectionHeader,
+  WikiSkeleton,
+  WikiStat,
+  WikiTabs,
+  entitySessionNumbers,
+  factDisplay,
+  factKindTone,
+  formatCaptureOrder,
+  formatSessionRanges,
+  humanizeKey,
+  recordOrigin,
+  type WikiTone,
+} from "./campaign-wiki-ui";
 
 /**
  * Navigation props are optional: standalone the reader owns its selection; under
@@ -50,6 +84,8 @@ interface CampaignWikiProps extends Partial<CampaignWikiNavigationProps> {
   chatId: string;
   onDirtyChange?: (dirty: boolean) => void;
 }
+
+type TFn = (key: string, options?: Record<string, unknown>) => string;
 
 const KINDS: Array<CampaignMemoryEntityKind | "all"> = [
   "all",
@@ -63,47 +99,26 @@ const KINDS: Array<CampaignMemoryEntityKind | "all"> = [
   "note",
 ];
 
-function valueText(value: CampaignMemoryJson | undefined): string {
+const ENTITY_PAGE_SIZE = 40;
+
+function enumLabel(t: TFn, group: string, value: string) {
+  return t(`ui.game.campaignWiki.${group}.${value}`, { defaultValue: humanizeKey(value) });
+}
+
+function kindLabel(t: TFn, kind: CampaignMemoryEntityKind | "all") {
+  return enumLabel(t, "kind", kind);
+}
+
+const RAW_ID = /^(cme_|cmf_|cmk_|cmev_|cmt_|legacy-|gcb_|gch_|gcr_)[\w-]+$/iu;
+
+function displayEntityName(t: TFn, entity: Pick<CampaignMemoryEntityListItem, "aliases" | "entityId" | "kind">) {
+  const alias = entity.aliases.find((value) => value.trim() && !RAW_ID.test(value.trim()));
+  return alias || t("ui.game.campaignWiki.untitledEntity", { kind: kindLabel(t, entity.kind) });
+}
+
+/** Readable text for any stored value, never raw JSON. */
+function readableValue(value: CampaignMemoryJson | undefined): string {
   return wikiValueSummary(value);
-}
-
-function WikiValue({ value }: { value: CampaignMemoryJson | undefined }) {
-  const { t } = useUiTranslation();
-  const record = wikiValueRecord(value);
-  return (
-    <div className="min-w-0 [overflow-wrap:anywhere]">
-      {valueText(value)}
-      {record && (
-        <details className="mt-1 text-xs text-[var(--muted-foreground)]">
-          <summary className="cursor-pointer">{t("ui.game.campaignWiki.rawRecord")}</summary>
-          <pre className="mt-1 max-w-full overflow-x-auto whitespace-pre-wrap break-all">
-            {JSON.stringify(record, null, 2)}
-          </pre>
-        </details>
-      )}
-    </div>
-  );
-}
-
-function enumLabel(t: (key: string, options?: Record<string, unknown>) => string, group: string, value: string) {
-  return t(`ui.game.campaignWiki.${group}.${value}`, { defaultValue: value });
-}
-
-function displayEntityName(
-  t: (key: string, options?: Record<string, unknown>) => string,
-  entity: Pick<CampaignMemoryEntityListItem, "aliases" | "entityId" | "kind">,
-) {
-  const alias = entity.aliases.find((value) => value.trim() && !/^cme_[a-f0-9-]+$/i.test(value.trim()));
-  return alias || t("ui.game.campaignWiki.untitledEntity", { kind: enumLabel(t, "kind", entity.kind) });
-}
-
-function PageTotal({ page, label }: { page: CampaignMemoryPage<unknown>; label: string }) {
-  const { t } = useUiTranslation();
-  return (
-    <p className="text-[0.625rem] text-[var(--muted-foreground)]">
-      {t("ui.game.campaignWiki.sectionTotal", { label, shown: page.items.length, total: page.total })}
-    </p>
-  );
 }
 
 type SourceFreshness = "current" | "stale" | "legacy" | "manual";
@@ -127,38 +142,155 @@ function factLabel(
   return "verified";
 }
 
+const STALE_LABEL: FactLabel = "stale";
+
+const FACT_LABEL_TONE: Record<FactLabel, WikiTone> = {
+  verified: "success",
+  pending: "warning",
+  disputed: "danger",
+  stale: "danger",
+  legacy: "neutral",
+  superseded: "neutral",
+};
+
 function FactLabelBadge({ label }: { label: FactLabel }) {
   const { t } = useUiTranslation();
-  const className =
-    label === "disputed" || label === "stale"
-      ? "border-[var(--destructive)] text-[var(--destructive)]"
-      : label === "verified"
-        ? "border-[var(--primary)] text-[var(--foreground)]"
-        : "border-[var(--border)] text-[var(--muted-foreground)]";
   return (
-    <span
-      role="status"
-      title={t(`ui.game.campaignWiki.factLabelHint.${label}`)}
-      className={`inline-flex rounded border px-1.5 py-0.5 text-[0.625rem] ${className}`}
-    >
+    <WikiChip tone={FACT_LABEL_TONE[label]} title={t(`ui.game.campaignWiki.factLabelHint.${label}`)}>
       {t(`ui.game.campaignWiki.factLabel.${label}`)}
-    </span>
+    </WikiChip>
   );
 }
 
-function SourceFreshnessBadge({ state }: { state: SourceFreshness }) {
+function SessionChip({ record }: { record: unknown }) {
   const { t } = useUiTranslation();
-  const label = t(`ui.game.campaignWiki.sourceFreshness.${state}`);
-  const className =
-    state === "stale"
-      ? "border-[var(--destructive)] text-[var(--destructive)]"
-      : "border-[var(--border)] text-[var(--muted-foreground)]";
+  const origin = recordOrigin(record);
+  if (origin.sessionNumber === null) return null;
   return (
-    <span role="status" className={`ml-2 inline-flex rounded border px-1.5 py-0.5 text-[0.625rem] ${className}`}>
+    <WikiChip
+      tone="neutral"
+      title={t("ui.game.campaignWiki.reader.sessionHint", {
+        defaultValue: "Recorded in session {{session}}",
+        session: origin.sessionNumber,
+      })}
+    >
+      {t("ui.game.campaignWiki.reader.sessionShort", { defaultValue: "S{{session}}", session: origin.sessionNumber })}
+    </WikiChip>
+  );
+}
+
+function WhenChip({ order }: { order: string | null | undefined }) {
+  const { i18n } = useUiTranslation();
+  const label = formatCaptureOrder(order, i18n.language);
+  if (!label) return null;
+  return (
+    <span className="inline-flex items-center gap-1 text-[0.6875rem] text-muted-foreground">
+      <Clock3 size={11} />
       {label}
     </span>
   );
 }
+
+/** Portraits for library characters, keyed by character id. */
+function useCharacterPortraits(): Map<string, string> {
+  const characters = useCharacters();
+  return useMemo(() => {
+    const result = new Map<string, string>();
+    for (const row of (characters.data ?? []) as Array<{ id?: unknown; avatarPath?: unknown }>) {
+      if (typeof row.id === "string" && typeof row.avatarPath === "string" && row.avatarPath.trim()) {
+        result.set(row.id, row.avatarPath);
+      }
+    }
+    return result;
+  }, [characters.data]);
+}
+
+function portraitFor(entity: Pick<CampaignMemoryEntity, "owner">, portraits: Map<string, string>): string | null {
+  if (entity.owner.type === "existing" && entity.owner.store === "characters") {
+    return portraits.get(entity.owner.recordId) ?? null;
+  }
+  return null;
+}
+
+function EntityChipButton({
+  entity,
+  name,
+  onClick,
+  portraits,
+  suffix,
+}: {
+  entity: Pick<CampaignMemoryEntity, "entityId" | "kind" | "owner"> | null;
+  name: string;
+  onClick: () => void;
+  portraits: Map<string, string>;
+  suffix?: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex min-h-8 max-w-full items-center gap-1.5 rounded-full border border-border bg-secondary/50 py-0.5 pl-0.5 pr-2.5 text-xs text-foreground transition-colors hover:border-primary/50 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+    >
+      <EntityAvatar
+        name={name}
+        kind={entity?.kind ?? "character"}
+        size={24}
+        imageUrl={entity ? portraitFor(entity, portraits) : null}
+      />
+      <span className="truncate">{name}</span>
+      {suffix}
+    </button>
+  );
+}
+
+function Pager({
+  offset,
+  limit,
+  total,
+  shown,
+  onChange,
+}: {
+  offset: number;
+  limit: number;
+  total: number;
+  shown: number;
+  onChange: (offset: number) => void;
+}) {
+  const { t } = useUiTranslation();
+  if (total <= limit && offset === 0) return null;
+  return (
+    <div className="mt-3 flex items-center justify-between gap-2 border-t border-border pt-3">
+      <p className="text-xs text-muted-foreground">
+        {t("ui.game.campaignWiki.reader.pageRange", {
+          defaultValue: "{{from}}–{{to}} of {{total}}",
+          from: total === 0 ? 0 : offset + 1,
+          to: Math.min(offset + shown, total),
+          total: total.toLocaleString(),
+        })}
+      </p>
+      <div className="flex gap-1.5">
+        <button
+          type="button"
+          disabled={offset === 0}
+          onClick={() => onChange(Math.max(0, offset - limit))}
+          className="min-h-9 rounded-lg border border-border px-3 text-xs font-semibold hover:bg-secondary disabled:opacity-40"
+        >
+          {t("ui.game.campaignWiki.previous")}
+        </button>
+        <button
+          type="button"
+          disabled={offset + shown >= total}
+          onClick={() => onChange(offset + limit)}
+          className="min-h-9 rounded-lg border border-border px-3 text-xs font-semibold hover:bg-secondary disabled:opacity-40"
+        >
+          {t("ui.game.campaignWiki.next")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+type DetailTab = "story" | "knowledge" | "events" | "connections" | "timeline" | "commitments" | "details";
 
 function Detail({
   detail,
@@ -166,6 +298,7 @@ function Detail({
   onSelect,
   onPageChange,
   onEdit,
+  portraits,
 }: {
   detail: CampaignMemoryEntityDetail;
   chatId: string;
@@ -173,10 +306,12 @@ function Detail({
   onSelect: (id: string) => void;
   onPageChange: (offset: number) => void;
   onEdit: () => void;
+  portraits: Map<string, string>;
 }) {
   const { t } = useUiTranslation();
   const { entity, knowledge, events, currentState, relationships, relatedEntities } = detail;
   const facts = detail.facts as CampaignMemoryPage<CampaignMemoryFactWithCoHolders>;
+  const [tab, setTab] = useState<DetailTab>("story");
   // Display-only perspective: "gm" shows everything; a holder id filters facts to what that holder knows.
   const [perspective, setPerspective] = useState("gm");
   const holders = useMemo(() => {
@@ -184,32 +319,32 @@ function Detail({
     if (entity.kind === "character" || entity.kind === "persona") {
       byId.set(entity.entityId, {
         entityId: entity.entityId,
-        alias: entity.aliases[0] || entity.entityId,
+        alias: entity.aliases[0] || "",
         epistemicState: "knows",
       });
     }
     for (const fact of facts.items)
       for (const holder of fact.coHolders ?? []) if (!byId.has(holder.entityId)) byId.set(holder.entityId, holder);
-    return [...byId.values()];
+    return [...byId.values()].filter((holder) => holder.alias && !RAW_ID.test(holder.alias));
   }, [entity, facts.items]);
   const holderState = (fact: CampaignMemoryFactWithCoHolders) =>
     perspective === entity.entityId
       ? knowledge.items.find((item) => item.factId === fact.factId)?.epistemicState
       : fact.coHolders?.find((holder) => holder.entityId === perspective)?.epistemicState;
-  const visibleFacts =
-    perspective === "gm" ? facts.items : facts.items.filter((fact) => holderState(fact) !== undefined);
+  const visibleFacts = (
+    perspective === "gm" ? facts.items : facts.items.filter((fact) => holderState(fact) !== undefined)
+  )
+    .slice()
+    .sort((left, right) => (right.validFromOrder ?? "").localeCompare(left.validFromOrder ?? ""));
   const referencedEvents = detail.referencedEvents ?? [];
   const referencedEventById = new Map(referencedEvents.map((item) => [item.eventId, item]));
   const sourceChecks = detail.sourceChecks ?? {};
-  const referencedFacts =
-    (
-      detail as CampaignMemoryEntityDetail & {
-        referencedFacts?: Array<{ factId: string; predicate: string; value: CampaignMemoryJson }>;
-      }
-    ).referencedFacts ?? [];
-  const referencedFactById = new Map(referencedFacts.map((fact) => [fact.factId, fact]));
+  const referencedFactById = new Map(detail.referencedFacts.map((fact) => [fact.factId, fact]));
   const related = new Map(relatedEntities.map((item) => [item.entityId, item]));
-  const detailTotal = Math.max(facts.total, knowledge.total, events.total, currentState.total, relationships.total);
+  const nameOf = (id: string) => {
+    const found = related.get(id) ?? (id === entity.entityId ? entity : undefined);
+    return found ? displayEntityName(t, found) : null;
+  };
   const detailOffset = Math.max(
     facts.offset,
     knowledge.offset,
@@ -218,307 +353,552 @@ function Detail({
     relationships.offset,
   );
   const detailLimit = Math.max(facts.limit, knowledge.limit, events.limit, currentState.limit, relationships.limit);
+  const sessions = entitySessionNumbers(entity);
+  const name = displayEntityName(t, entity);
+  const KindIcon = ENTITY_KIND_ICONS[entity.kind];
+  const otherAliases = entity.aliases.filter((alias) => alias !== name && !RAW_ID.test(alias));
+  const body = (entity as { body?: string }).body;
+  const tabs = [
+    {
+      id: "story" as const,
+      label: t("ui.game.campaignWiki.reader.tabStory", { defaultValue: "Story" }),
+      count: facts.total,
+    },
+    {
+      id: "knowledge" as const,
+      label:
+        entity.kind === "character" || entity.kind === "persona"
+          ? t("ui.game.campaignWiki.reader.tabKnows", { defaultValue: "What they know" })
+          : t("ui.game.campaignWiki.reader.tabKnowledge", { defaultValue: "Who knows" }),
+      count: knowledge.total,
+    },
+    {
+      id: "events" as const,
+      label: t("ui.game.campaignWiki.reader.tabEvents", { defaultValue: "Events" }),
+      count: events.total,
+    },
+    {
+      id: "connections" as const,
+      label: t("ui.game.campaignWiki.reader.tabConnections", { defaultValue: "Connections" }),
+      count: relationships.total,
+    },
+    { id: "timeline" as const, label: t("ui.game.campaignWiki.timeline") },
+    {
+      id: "commitments" as const,
+      label: t("ui.game.campaignWiki.reader.tabCommitments", { defaultValue: "Promises & quests" }),
+    },
+    { id: "details" as const, label: t("ui.game.campaignWiki.reader.tabDetails", { defaultValue: "Details" }) },
+  ];
+  const pager = (shown: number, total: number) => (
+    <Pager offset={detailOffset} limit={detailLimit} total={total} shown={shown} onChange={onPageChange} />
+  );
   return (
-    <div className="mx-auto w-full min-w-0 max-w-[80ch] space-y-5 pb-6 [overflow-wrap:anywhere]">
-      <header className="border-b border-[var(--border)] pb-3">
-        <p className="text-[0.625rem] uppercase tracking-wide text-[var(--muted-foreground)]">
-          {enumLabel(t, "kind", entity.kind)}
-        </p>
-        <h3 className="text-xl font-semibold tracking-tight text-[var(--foreground)]">
-          {displayEntityName(t, entity)}
-        </h3>
-        {entity.aliases.length > 1 && (
-          <p className="mt-1 text-xs text-[var(--muted-foreground)]">{entity.aliases.join(" · ")}</p>
-        )}
-        <CampaignWikiOwnerLink owner={entity.owner} fallbackName={entity.aliases[0] || entity.entityId} />
-        <button
-          type="button"
-          onClick={onEdit}
-          className="mt-3 min-h-10 rounded-md border border-[var(--border)] px-3 text-xs hover:bg-[var(--secondary)]"
-        >
-          {t("ui.game.campaignWiki.editor.edit")}
-        </button>
-        <details className="mt-2 text-[0.625rem] text-[var(--muted-foreground)]">
-          <summary className="cursor-pointer">{t("ui.game.campaignWiki.sourceDetails")}</summary>
-          <p className="mt-1 break-all">
-            {t("ui.game.campaignWiki.sourceInfo", {
-              source: entity.provenance.source,
-              revision: entity.provenance.sourceRevision,
-            })}
-          </p>
-        </details>
-      </header>
-      {entity.summary && (
-        <section>
-          <h4 className="mb-1 text-sm font-semibold">{t("ui.game.campaignWiki.summary")}</h4>
-          <p className="text-sm leading-7 text-[var(--foreground)]">{entity.summary}</p>
-        </section>
-      )}
-      {(entity as { body?: string }).body && (
-        <section>
-          <h4 className="mb-1 text-xs font-semibold">{t("ui.game.campaignWiki.notes")}</h4>
-          <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-7 text-[var(--foreground)]">
-            {(entity as { body?: string }).body}
-          </pre>
-        </section>
-      )}
-      {holders.length > 0 && (
-        <div className="rounded-md border border-[var(--border)] p-2 text-xs">
-          <label className="flex flex-wrap items-center gap-2">
-            <span className="font-semibold">{t("ui.game.campaignWiki.perspective")}</span>
-            <select
-              value={perspective}
-              onChange={(event) => setPerspective(event.target.value)}
-              className="min-h-9 min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--background)] px-2 text-xs"
-            >
-              <option value="gm">{t("ui.game.campaignWiki.perspective.gm")}</option>
-              {holders.map((holder) => (
-                <option key={holder.entityId} value={holder.entityId}>
-                  {t("ui.game.campaignWiki.perspective.holder", { name: holder.alias || holder.entityId })}
-                </option>
-              ))}
-            </select>
-          </label>
-          <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
-            {t("ui.game.campaignWiki.perspectiveNote")}
-          </p>
-        </div>
-      )}
-      <WikiSection title={t("ui.game.campaignWiki.facts")} page={facts}>
-        {perspective !== "gm" && visibleFacts.length < facts.items.length && (
-          <p className="text-xs text-[var(--muted-foreground)]">
-            {t("ui.game.campaignWiki.perspectiveHidden", { count: facts.items.length - visibleFacts.length })}
-          </p>
-        )}
-        {visibleFacts.map((fact) => (
-          <div key={fact.factId} className="rounded-md border border-[var(--border)] p-3 text-sm">
-            <div>
-              <strong>{fact.predicate}</strong>: <WikiValue value={fact.value} />
-            </div>
-            <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--muted-foreground)]">
-              <FactLabelBadge label={factLabel(fact, sourceChecks[fact.factId]?.state, facts.items)} />
-              <span>{t("ui.game.campaignWiki.status", { status: enumLabel(t, "factStatus", fact.status) })}</span>
-              {wikiValueRecord(fact.value)?.status !== undefined && (
-                <span>
-                  {t("ui.game.campaignWiki.claimStatus", { status: String(wikiValueRecord(fact.value)?.status) })}
-                </span>
-              )}
-              {sourceChecks[fact.factId] && <SourceFreshnessBadge state={sourceChecks[fact.factId].state} />}
-              {perspective !== "gm" && holderState(fact) && (
-                <span>{enumLabel(t, "epistemicState", holderState(fact) ?? "unknown")}</span>
-              )}
-              {fact.conditions.length
-                ? t("ui.characters.characterversionhistorypanel.value1", {
-                    value1: t("ui.game.campaignWiki.conditions", { count: fact.conditions.length }),
-                  })
-                : ""}
-            </p>
-            {fact.coHolders && fact.coHolders.length > 0 && (
-              <p className="mt-2 flex flex-wrap items-center gap-1 text-[0.625rem] text-[var(--muted-foreground)]">
-                <span>{t("ui.game.campaignWiki.coHolders")}</span>
-                {fact.coHolders.map((holder) => (
-                  <button
-                    type="button"
-                    key={holder.entityId}
-                    onClick={() => onSelect(holder.entityId)}
-                    className="min-h-8 rounded border border-[var(--border)] px-2 hover:bg-[var(--secondary)]"
-                  >
-                    {holder.alias || holder.entityId} · {enumLabel(t, "epistemicState", holder.epistemicState)}
-                  </button>
-                ))}
-              </p>
+    <article className="mx-auto w-full min-w-0 max-w-[62rem] space-y-5 pb-10 [overflow-wrap:anywhere]">
+      <header className="flex flex-col gap-4 border-b border-border pb-5 sm:flex-row sm:items-start">
+        <EntityAvatar
+          name={name}
+          kind={entity.kind}
+          size={72}
+          imageUrl={portraitFor(entity, portraits)}
+          className="shadow-[0_0_12px_color-mix(in_srgb,var(--primary)_22%,transparent)]"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <WikiChip tone="accent" icon={<KindIcon size={11} />}>
+              {kindLabel(t, entity.kind)}
+            </WikiChip>
+            {sessions.length > 0 && (
+              <WikiChip tone="neutral" icon={<CalendarClock size={11} />}>
+                {t("ui.game.campaignWiki.reader.sessions", {
+                  defaultValue: "Sessions {{list}}",
+                  list: formatSessionRanges(sessions),
+                })}
+              </WikiChip>
             )}
-            {fact.conditions.length > 0 && (
-              <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-[var(--muted-foreground)]">
-                {fact.conditions.map((condition, index) => (
-                  <li key={`${condition.kind}-${index}`}>
-                    {condition.kind}: <WikiValue value={condition.value} />
-                  </li>
-                ))}
-              </ul>
+            {entity.status === "archived" && (
+              <WikiChip tone="warning">{enumLabel(t, "recordStatus", "archived")}</WikiChip>
             )}
-            <CampaignWikiEvidence chatId={chatId} evidence={fact.evidence} />
+            {entity.manualLock && (
+              <WikiChip tone="info">
+                {t("ui.game.campaignWiki.reader.locked", { defaultValue: "Protected from automatic changes" })}
+              </WikiChip>
+            )}
           </div>
-        ))}
-      </WikiSection>
-      <WikiSection title={t("ui.game.campaignWiki.knowledge")} page={knowledge}>
-        {knowledge.items.map((item) => {
-          const fact = item.factId ? referencedFactById.get(item.factId) : undefined;
-          return (
-            <div key={item.knowledgeId} className="rounded-md border border-[var(--border)] p-3 text-sm">
-              <p>
-                <strong>{enumLabel(t, "epistemicState", item.epistemicState)}</strong>
-                {sourceChecks[item.knowledgeId] && (
-                  <SourceFreshnessBadge state={sourceChecks[item.knowledgeId].state} />
-                )}
-                {item.confidence
-                  ? t("ui.characters.characterversionhistorypanel.value1", {
-                      value1: enumLabel(t, "confidence", item.confidence),
-                    })
-                  : ""}
-              </p>
-              {item.attributedClaim ? (
-                <div className="mt-1 text-[var(--muted-foreground)]">
-                  {item.attributedClaim.predicate}: <WikiValue value={item.attributedClaim.value} />
-                </div>
-              ) : fact ? (
-                <div className="mt-1 text-[var(--muted-foreground)]">
-                  {fact.predicate}: <WikiValue value={fact.value} />
-                </div>
-              ) : item.factId ? (
-                <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-                  {t("ui.game.campaignWiki.knownFactReference", { factId: item.factId })}
-                </p>
-              ) : (
-                <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-                  {t("ui.game.campaignWiki.knowledgeClaimUnavailable")}
-                </p>
-              )}
-              <CampaignWikiEvidence chatId={chatId} evidence={item.learnedFrom} />
-            </div>
-          );
-        })}
-      </WikiSection>
-      <WikiSection title={t("ui.game.campaignWiki.currentState")} page={currentState}>
-        <div className="space-y-2">
-          {currentState.items.map((item) => (
-            <div key={item.stateId} className="rounded-md border border-[var(--border)] p-2 text-xs">
-              <strong>{item.property}</strong>: <WikiValue value={item.value} />
-              <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
-                {t("ui.game.campaignWiki.validAtCaptureOrder", { order: item.validAtOrder })}
-                {sourceChecks[item.stateId] && <SourceFreshnessBadge state={sourceChecks[item.stateId].state} />}
-              </p>
-              {(() => {
-                const sourceEvent = referencedEventById.get(item.sourceEventId);
-                return sourceEvent ? (
-                  <div className="mt-2 rounded border border-[var(--border)] p-2 text-[0.625rem]">
-                    <p className="font-medium">{t("ui.game.campaignWiki.stateCause")}</p>
-                    <p className="mt-1 whitespace-pre-wrap break-words text-[var(--muted-foreground)]">
-                      {sourceEvent.transitions.join(" · ") || t("ui.game.campaignWiki.eventRecorded")}
-                      {sourceChecks[sourceEvent.eventId] && (
-                        <SourceFreshnessBadge state={sourceChecks[sourceEvent.eventId].state} />
-                      )}
-                    </p>
-                    <CampaignWikiEvidence chatId={chatId} evidence={sourceEvent.evidence} />
-                  </div>
-                ) : (
-                  <p className="mt-2 text-[0.625rem] text-[var(--destructive)]">
-                    {t("ui.game.campaignWiki.stateCauseUnavailable")}
-                  </p>
-                );
-              })()}
-            </div>
-          ))}
-        </div>
-      </WikiSection>
-      <WikiSection title={t("ui.game.campaignWiki.events")} page={events}>
-        <div className="space-y-2">
-          {events.items.map((item) => (
-            <div key={item.eventId} className="rounded-md border border-[var(--border)] p-2 text-xs">
-              <p>{item.transitions.join(" · ") || t("ui.game.campaignWiki.eventRecorded")}</p>
-              <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
-                {item.campaignTime && (
-                  <span>{t("ui.game.campaignWiki.campaignTime", { time: item.campaignTime })}</span>
-                )}
-                <span className={item.campaignTime ? "ml-2" : ""}>
-                  {t("ui.game.campaignWiki.recordedAtCaptureOrder", { order: item.occurrenceOrder })}
-                </span>
-                {sourceChecks[item.eventId] && <SourceFreshnessBadge state={sourceChecks[item.eventId].state} />}
-              </p>
-              <CampaignWikiEvidence chatId={chatId} evidence={item.evidence} />
-            </div>
-          ))}
-        </div>
-      </WikiSection>
-      <CampaignWikiTimeline
-        chatId={chatId}
-        entityId={entity.kind === "location" ? undefined : entity.entityId}
-        locationId={entity.kind === "location" ? entity.entityId : undefined}
-        heading={t("ui.game.campaignWiki.timeline")}
-        onSelect={onSelect}
-      />
-      <CampaignWikiCommitments chatId={chatId} entityId={entity.entityId} onNavigate={onSelect} />
-      <WikiSection title={t("ui.game.campaignWiki.relationships")} page={relationships}>
-        <div className="space-y-1">
-          {relationships.items.map((item) => {
-            const targetId = item.direction === "outgoing" ? item.targetEntityId : item.sourceEntityId;
-            const target = related.get(targetId);
-            return (
-              <div key={item.relationshipId} className="rounded-md border border-[var(--border)] p-2">
-                <button
-                  type="button"
-                  onClick={() => onSelect(targetId)}
-                  className="flex min-h-10 w-full items-center justify-between text-left text-sm hover:bg-[var(--secondary)]"
+          <h2 className="mt-2 text-2xl font-bold leading-tight text-foreground">{name}</h2>
+          {otherAliases.length > 0 && (
+            <p className="mt-1 text-sm text-muted-foreground">
+              {t("ui.game.campaignWiki.reader.alsoKnownAs", {
+                defaultValue: "Also known as {{names}}",
+                names: otherAliases.join(", "),
+              })}
+            </p>
+          )}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={onEdit}
+              className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-semibold hover:border-primary/50 hover:bg-secondary"
+            >
+              <Pencil size={13} />
+              {t("ui.game.campaignWiki.editor.edit")}
+            </button>
+            <CampaignWikiOwnerLink owner={entity.owner} fallbackName={name} />
+            {holders.length > 1 && (
+              <label className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border px-2 text-xs">
+                <Eye size={13} className="text-muted-foreground" />
+                <span className="sr-only">{t("ui.game.campaignWiki.perspective")}</span>
+                <select
+                  value={perspective}
+                  onChange={(event) => setPerspective(event.target.value)}
+                  title={t("ui.game.campaignWiki.perspectiveNote")}
+                  className="min-h-8 max-w-[12rem] bg-transparent text-xs outline-none"
                 >
-                  <span>
-                    {item.label} · {target?.aliases[0] || targetId}
-                    <small className="mt-1 block text-xs text-[var(--muted-foreground)]">
-                      {item.type} · {enumLabel(t, "relationshipStatus", item.status)}
-                      {item.effectiveFrom &&
-                        t("ui.game.campaignWiki.relationshipEffectiveFrom", { order: item.effectiveFrom })}
-                      {item.effectiveTo &&
-                        t("ui.game.campaignWiki.relationshipEffectiveTo", { order: item.effectiveTo })}
-                      {sourceChecks[item.relationshipId] && (
-                        <SourceFreshnessBadge state={sourceChecks[item.relationshipId].state} />
-                      )}
-                    </small>
+                  <option value="gm">{t("ui.game.campaignWiki.perspective.gm")}</option>
+                  {holders.map((holder) => (
+                    <option key={holder.entityId} value={holder.entityId}>
+                      {t("ui.game.campaignWiki.perspective.holder", { name: holder.alias })}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
+        </div>
+      </header>
+
+      {(entity.summary || body) && (
+        <section className="space-y-3">
+          {entity.summary && <p className="text-[0.95rem] leading-7 text-foreground">{entity.summary}</p>}
+          {body && (
+            <div>
+              <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                {t("ui.game.campaignWiki.notes")}
+              </h4>
+              <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-7 text-foreground">
+                {(entity as { body?: string }).body}
+              </pre>
+            </div>
+          )}
+        </section>
+      )}
+
+      {currentState.items.length > 0 && (
+        <section aria-label={t("ui.game.campaignWiki.currentState")}>
+          <WikiSectionHeader
+            title={t("ui.game.campaignWiki.reader.rightNow", { defaultValue: "Right now" })}
+            hint={t("ui.game.campaignWiki.reader.rightNowHint", {
+              defaultValue: "The latest state recorded in the story. It overrides older card text.",
+            })}
+          />
+          <div className="grid gap-2 sm:grid-cols-2">
+            {currentState.items.map((item) => {
+              const sourceEvent = referencedEventById.get(item.sourceEventId);
+              const valueRecord = wikiValueRecord(item.value);
+              const target = valueRecord && typeof valueRecord.entityId === "string" ? valueRecord.entityId : undefined;
+              const targetName = target ? nameOf(target) : null;
+              return (
+                <WikiCard key={item.stateId} className="p-3">
+                  <p className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                    {humanizeKey(item.property)}
+                  </p>
+                  {target && targetName ? (
+                    <button
+                      type="button"
+                      onClick={() => onSelect(target)}
+                      className="mt-1 inline-flex items-center gap-1 text-sm font-semibold text-foreground hover:text-primary"
+                    >
+                      <MapPin size={13} />
+                      {targetName}
+                    </button>
+                  ) : (
+                    <p className="mt-1 text-sm font-semibold text-foreground">{readableValue(item.value)}</p>
+                  )}
+                  <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                    <SessionChip record={item} />
+                    <WhenChip order={item.validAtOrder} />
+                    {sourceChecks[item.stateId]?.state === "stale" && <FactLabelBadge label={STALE_LABEL} />}
+                  </div>
+                  {sourceEvent && (
+                    <CampaignWikiEvidence
+                      chatId={chatId}
+                      sourceChatId={recordOrigin(sourceEvent).chatId ?? chatId}
+                      evidence={sourceEvent.evidence}
+                    />
+                  )}
+                </WikiCard>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      <WikiTabs
+        tabs={tabs}
+        value={tab}
+        onChange={setTab}
+        label={t("ui.game.campaignWiki.reader.sections", { defaultValue: "Sections" })}
+      />
+
+      {tab === "story" && (
+        <section className="space-y-2.5" aria-label={t("ui.game.campaignWiki.facts")}>
+          {perspective !== "gm" && visibleFacts.length < facts.items.length && (
+            <p className="text-xs text-muted-foreground">
+              {t("ui.game.campaignWiki.perspectiveHidden", { count: facts.items.length - visibleFacts.length })}
+            </p>
+          )}
+          {visibleFacts.length === 0 && (
+            <WikiEmpty
+              icon={<ScrollText size={22} />}
+              title={t("ui.game.campaignWiki.reader.noFactsTitle", { defaultValue: "Nothing recorded yet" })}
+              hint={t("ui.game.campaignWiki.reader.noFactsHint", {
+                defaultValue: "Facts appear here once the story mentions this page and the memory review accepts them.",
+              })}
+            />
+          )}
+          {visibleFacts.map((fact) => {
+            const display = factDisplay(fact);
+            const label = factLabel(fact, sourceChecks[fact.factId]?.state, facts.items);
+            const coHolders = (fact.coHolders ?? []).filter((holder) => holder.alias && !RAW_ID.test(holder.alias));
+            return (
+              <WikiCard as="article" key={fact.factId}>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {display.kind && (
+                    <WikiChip tone={factKindTone(display.kind)}>{enumLabel(t, "factKind", display.kind)}</WikiChip>
+                  )}
+                  {label !== "verified" && <FactLabelBadge label={label} />}
+                  {display.claimStatus && display.claimStatus !== "asserted" && display.claimStatus !== "accepted" && (
+                    <WikiChip tone="neutral">{enumLabel(t, "claimStatus", display.claimStatus)}</WikiChip>
+                  )}
+                  {perspective !== "gm" && holderState(fact) && (
+                    <WikiChip tone="info">{enumLabel(t, "epistemicState", holderState(fact) ?? "unknown")}</WikiChip>
+                  )}
+                  <span className="ml-auto flex items-center gap-2">
+                    <SessionChip record={fact} />
+                    <WhenChip order={fact.validFromOrder} />
                   </span>
-                  <ChevronRight size={13} />
-                </button>
-                <CampaignWikiEvidence chatId={chatId} evidence={item.evidence} />
-              </div>
+                </div>
+                {display.label && (
+                  <p className="mt-2 text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                    {display.label}
+                  </p>
+                )}
+                <p className={cn("text-sm leading-6 text-foreground", display.label ? "mt-0.5" : "mt-2")}>
+                  {display.text}
+                </p>
+                {display.conditions.length > 0 && (
+                  <div className="mt-2 rounded-lg bg-amber-400/5 px-3 py-2">
+                    <p className="text-[0.6875rem] font-semibold uppercase tracking-wide text-amber-200/90">
+                      {t("ui.game.campaignWiki.reader.onlyIf", { defaultValue: "Only if" })}
+                    </p>
+                    <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs leading-5 text-foreground/90">
+                      {display.conditions.map((condition, index) => (
+                        <li key={`${fact.factId}-condition-${index}`}>{condition}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {coHolders.length > 0 && (
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    <span className="text-[0.6875rem] text-muted-foreground">
+                      {t("ui.game.campaignWiki.coHolders")}
+                    </span>
+                    {coHolders.map((holder) => (
+                      <EntityChipButton
+                        key={holder.entityId}
+                        entity={related.get(holder.entityId) ?? null}
+                        name={holder.alias}
+                        portraits={portraits}
+                        onClick={() => onSelect(holder.entityId)}
+                        suffix={
+                          holder.epistemicState !== "knows" ? (
+                            <span className="text-muted-foreground">
+                              ({enumLabel(t, "epistemicState", holder.epistemicState)})
+                            </span>
+                          ) : undefined
+                        }
+                      />
+                    ))}
+                  </div>
+                )}
+                <CampaignWikiEvidence
+                  chatId={chatId}
+                  sourceChatId={recordOrigin(fact).chatId ?? chatId}
+                  evidence={fact.evidence}
+                />
+              </WikiCard>
             );
           })}
-        </div>
-      </WikiSection>
-      <details className="rounded-md border border-[var(--border)] px-2 py-1.5">
-        <summary className="cursor-pointer text-[0.625rem] text-[var(--muted-foreground)]">
-          {t("ui.game.campaignWiki.provenance")}
-        </summary>
-        <p className="mt-2 text-[0.625rem] text-[var(--muted-foreground)]">
-          {entity.provenance.source} · {entity.provenance.sourceRevision} · {entity.provenance.actor}
-        </p>
-      </details>
-      {detailTotal > detailLimit && (
-        <div className="flex items-center justify-between gap-2 border-t border-[var(--border)] pt-3">
-          <p className="text-xs text-[var(--muted-foreground)]">
-            {t("ui.game.campaignWiki.detailTotal", {
-              shown: Math.min(
-                detailOffset +
-                  Math.max(
-                    facts.items.length,
-                    knowledge.items.length,
-                    events.items.length,
-                    currentState.items.length,
-                    relationships.items.length,
-                  ),
-                detailTotal,
-              ),
-              total: detailTotal,
-            })}
-          </p>
-          <div className="flex gap-1">
-            <button
-              type="button"
-              disabled={detailOffset === 0}
-              onClick={() => onPageChange(Math.max(0, detailOffset - detailLimit))}
-              className="min-h-9 rounded-md border border-[var(--border)] px-2 text-xs disabled:opacity-40"
-            >
-              {t("ui.game.campaignWiki.previous")}
-            </button>
-            <button
-              type="button"
-              disabled={detailOffset + detailLimit >= detailTotal}
-              onClick={() => onPageChange(detailOffset + detailLimit)}
-              className="min-h-9 rounded-md border border-[var(--border)] px-2 text-xs disabled:opacity-40"
-            >
-              {t("ui.game.campaignWiki.next")}
-            </button>
-          </div>
-        </div>
+          {pager(facts.items.length, facts.total)}
+        </section>
       )}
-    </div>
+
+      {tab === "knowledge" && (
+        <section className="space-y-2.5" aria-label={t("ui.game.campaignWiki.knowledge")}>
+          {knowledge.items.length === 0 && (
+            <WikiEmpty
+              icon={<Users size={22} />}
+              title={t("ui.game.campaignWiki.reader.noKnowledgeTitle", { defaultValue: "No recorded knowledge" })}
+            />
+          )}
+          {knowledge.items.map((item) => {
+            const fact = item.factId ? referencedFactById.get(item.factId) : undefined;
+            const text = item.attributedClaim
+              ? readableValue(item.attributedClaim.value)
+              : fact
+                ? factDisplay(fact as CampaignMemoryFact).text
+                : t("ui.game.campaignWiki.knowledgeClaimUnavailable");
+            const holderName = nameOf(item.holderEntityId);
+            return (
+              <WikiCard as="article" key={item.knowledgeId}>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {holderName && item.holderEntityId !== entity.entityId && (
+                    <EntityChipButton
+                      entity={related.get(item.holderEntityId) ?? null}
+                      name={holderName}
+                      portraits={portraits}
+                      onClick={() => onSelect(item.holderEntityId)}
+                    />
+                  )}
+                  <WikiChip
+                    tone={
+                      item.epistemicState === "knows"
+                        ? "success"
+                        : item.epistemicState === "unknown"
+                          ? "neutral"
+                          : "info"
+                    }
+                  >
+                    {enumLabel(t, "epistemicState", item.epistemicState)}
+                  </WikiChip>
+                  {item.confidence && item.confidence !== "high" && (
+                    <WikiChip tone="neutral">{enumLabel(t, "confidence", item.confidence)}</WikiChip>
+                  )}
+                  {sourceChecks[item.knowledgeId]?.state === "stale" && <FactLabelBadge label={STALE_LABEL} />}
+                  <span className="ml-auto flex items-center gap-2">
+                    <SessionChip record={item} />
+                    <WhenChip order={item.learnedAtOrder} />
+                  </span>
+                </div>
+                <p className="mt-2 text-sm leading-6 text-foreground">{text}</p>
+                <CampaignWikiEvidence
+                  chatId={chatId}
+                  sourceChatId={recordOrigin(item).chatId ?? chatId}
+                  evidence={item.learnedFrom}
+                />
+              </WikiCard>
+            );
+          })}
+          {pager(knowledge.items.length, knowledge.total)}
+        </section>
+      )}
+
+      {tab === "events" && (
+        <section className="space-y-2.5" aria-label={t("ui.game.campaignWiki.events")}>
+          {events.items.length === 0 && (
+            <WikiEmpty
+              icon={<History size={22} />}
+              title={t("ui.game.campaignWiki.reader.noEventsTitle", { defaultValue: "No recorded events" })}
+            />
+          )}
+          {[...events.items]
+            .sort((left, right) => right.occurrenceOrder.localeCompare(left.occurrenceOrder))
+            .map((item) => {
+              const quote = item.evidence[0]?.quote;
+              const participants = item.participantEntityIds.filter((id) => id !== entity.entityId);
+              const locationName = item.locationEntityId ? nameOf(item.locationEntityId) : null;
+              return (
+                <WikiCard as="article" key={item.eventId}>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {item.campaignTime && <WikiChip tone="accent">{item.campaignTime}</WikiChip>}
+                    {locationName && item.locationEntityId && (
+                      <EntityChipButton
+                        entity={related.get(item.locationEntityId) ?? null}
+                        name={locationName}
+                        portraits={portraits}
+                        onClick={() => onSelect(item.locationEntityId!)}
+                      />
+                    )}
+                    <span className="ml-auto flex items-center gap-2">
+                      <SessionChip record={item} />
+                      <WhenChip order={item.occurrenceOrder} />
+                    </span>
+                  </div>
+                  {quote && (
+                    <p className="mt-2 text-sm italic leading-6 text-foreground/90">
+                      {t("ui.game.detail.value1", { value1: quote })}
+                    </p>
+                  )}
+                  {participants.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {participants.map((id) => {
+                        const participantName = nameOf(id);
+                        return participantName ? (
+                          <EntityChipButton
+                            key={id}
+                            entity={related.get(id) ?? null}
+                            name={participantName}
+                            portraits={portraits}
+                            onClick={() => onSelect(id)}
+                          />
+                        ) : null;
+                      })}
+                    </div>
+                  )}
+                  {item.evidence.length > 1 && (
+                    <CampaignWikiEvidence
+                      chatId={chatId}
+                      sourceChatId={recordOrigin(item).chatId ?? chatId}
+                      evidence={item.evidence.slice(1)}
+                    />
+                  )}
+                </WikiCard>
+              );
+            })}
+          {pager(events.items.length, events.total)}
+        </section>
+      )}
+
+      {tab === "connections" && (
+        <section className="space-y-2.5" aria-label={t("ui.game.campaignWiki.relationships")}>
+          {relationships.items.length === 0 && (
+            <WikiEmpty
+              icon={<Link2 size={22} />}
+              title={t("ui.game.campaignWiki.reader.noConnectionsTitle", { defaultValue: "No recorded connections" })}
+            />
+          )}
+          <div className="grid gap-2 sm:grid-cols-2">
+            {relationships.items.map((item: CampaignMemoryBacklink) => {
+              const targetId = item.direction === "outgoing" ? item.targetEntityId : item.sourceEntityId;
+              const target = related.get(targetId);
+              const targetName = target ? displayEntityName(t, target) : null;
+              if (!targetName) return null;
+              return (
+                <WikiCard as="article" key={item.relationshipId} className="p-3">
+                  <button
+                    type="button"
+                    onClick={() => onSelect(targetId)}
+                    className="flex w-full items-center gap-3 text-left"
+                  >
+                    <EntityAvatar
+                      name={targetName}
+                      kind={target?.kind ?? "character"}
+                      size={40}
+                      imageUrl={target ? portraitFor(target, portraits) : null}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                        {item.label || humanizeKey(item.type)}
+                      </span>
+                      <span className="block truncate text-sm font-semibold text-foreground">{targetName}</span>
+                    </span>
+                    <ChevronRight size={15} className="shrink-0 text-muted-foreground" />
+                  </button>
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    {item.status !== "active" && (
+                      <WikiChip tone={item.status === "ended" ? "neutral" : "warning"}>
+                        {enumLabel(t, "relationshipStatus", item.status)}
+                      </WikiChip>
+                    )}
+                    <SessionChip record={item} />
+                    <WhenChip order={item.effectiveFrom} />
+                  </div>
+                  <CampaignWikiEvidence
+                    chatId={chatId}
+                    sourceChatId={recordOrigin(item).chatId ?? chatId}
+                    evidence={item.evidence}
+                  />
+                </WikiCard>
+              );
+            })}
+          </div>
+          {pager(relationships.items.length, relationships.total)}
+        </section>
+      )}
+
+      {tab === "timeline" && (
+        <CampaignWikiTimeline
+          chatId={chatId}
+          entityId={entity.kind === "location" ? undefined : entity.entityId}
+          locationId={entity.kind === "location" ? entity.entityId : undefined}
+          heading={t("ui.game.campaignWiki.timeline")}
+          onSelect={onSelect}
+          portraits={portraits}
+        />
+      )}
+
+      {tab === "commitments" && (
+        <CampaignWikiCommitments chatId={chatId} entityId={entity.entityId} onNavigate={onSelect} />
+      )}
+
+      {tab === "details" && (
+        <section className="space-y-3">
+          <WikiCard>
+            <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
+              <div>
+                <dt className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                  {t("ui.game.campaignWiki.reader.recordType", { defaultValue: "Type" })}
+                </dt>
+                <dd>{kindLabel(t, entity.kind)}</dd>
+              </div>
+              <div>
+                <dt className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                  {t("ui.game.campaignWiki.reader.recordStatus", { defaultValue: "Status" })}
+                </dt>
+                <dd>{enumLabel(t, "recordStatus", entity.status)}</dd>
+              </div>
+              <div>
+                <dt className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                  {t("ui.game.campaignWiki.reader.addedBy", { defaultValue: "Added by" })}
+                </dt>
+                <dd>{enumLabel(t, "actor", entity.provenance.actor)}</dd>
+              </div>
+              <div>
+                <dt className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                  {t("ui.game.campaignWiki.reader.updated", { defaultValue: "Last updated" })}
+                </dt>
+                <dd>{new Date(entity.updatedAt).toLocaleString()}</dd>
+              </div>
+              {entity.tags.length > 0 && (
+                <div className="sm:col-span-2">
+                  <dt className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                    {t("ui.game.campaignWiki.reader.tags", { defaultValue: "Tags" })}
+                  </dt>
+                  <dd className="mt-1 flex flex-wrap gap-1">
+                    {entity.tags.map((tag) => (
+                      <WikiChip key={tag}>{humanizeKey(tag)}</WikiChip>
+                    ))}
+                  </dd>
+                </div>
+              )}
+            </dl>
+          </WikiCard>
+          <details className="rounded-xl border border-border px-3 py-2">
+            <summary className="cursor-pointer text-xs text-muted-foreground">
+              {t("ui.game.campaignWiki.sourceDetails")}
+            </summary>
+            <p className="mt-2 break-all text-[0.6875rem] text-muted-foreground">
+              {t("ui.game.campaignWiki.sourceInfo", {
+                source: entity.provenance.source,
+                revision: entity.provenance.sourceRevision,
+              })}
+            </p>
+            <p className="mt-1 break-all text-[0.6875rem] text-muted-foreground">{entity.entityId}</p>
+          </details>
+        </section>
+      )}
+    </article>
   );
+}
+
+function groupTimelineByDay(items: CampaignMemoryTimelineItem[], locale: string | undefined) {
+  const groups: Array<{ key: string; label: string; items: CampaignMemoryTimelineItem[] }> = [];
+  for (const item of items) {
+    const label = item.campaignTime || formatCaptureOrder(item.occurrenceOrder, locale) || "";
+    const last = groups[groups.length - 1];
+    if (last && last.key === label) last.items.push(item);
+    else groups.push({ key: label, label, items: [item] });
+  }
+  return groups;
 }
 
 function CampaignWikiTimeline({
@@ -527,109 +907,109 @@ function CampaignWikiTimeline({
   locationId,
   heading,
   onSelect,
+  portraits,
 }: {
   chatId: string;
   entityId?: string;
   locationId?: string;
   heading: string;
   onSelect: (id: string) => void;
+  portraits: Map<string, string>;
 }) {
-  const { t } = useUiTranslation();
+  const { t, i18n } = useUiTranslation();
   // Cursor history: the last entry is the current page; Previous pops, Next pushes nextCursor.
   const [cursors, setCursors] = useState<string[]>([]);
   const timeline = useCampaignMemoryTimeline(chatId, { entityId, locationId, cursor: cursors[cursors.length - 1] });
   const page = timeline.data;
   const nextCursor = page?.nextCursor ?? null;
+  const groups = useMemo(() => groupTimelineByDay(page?.items ?? [], i18n.language), [page, i18n.language]);
   return (
-    <section className="space-y-2" aria-label={heading}>
-      <div className="flex items-center justify-between">
-        <h4 className="text-xs font-semibold text-[var(--foreground)]">{heading}</h4>
-        {cursors.length > 0 && (
-          <p className="text-[0.625rem] text-[var(--muted-foreground)]">
-            {t("ui.game.campaignWiki.timelinePage", { page: cursors.length + 1 })}
-          </p>
-        )}
-      </div>
+    <section className="space-y-3" aria-label={heading}>
+      <WikiSectionHeader
+        title={heading}
+        action={
+          cursors.length > 0 ? (
+            <span className="text-xs text-muted-foreground">
+              {t("ui.game.campaignWiki.timelinePage", { page: cursors.length + 1 })}
+            </span>
+          ) : undefined
+        }
+      />
       {timeline.isLoading && (
-        <div className="flex items-center gap-2 py-3 text-xs text-[var(--muted-foreground)]">
+        <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
           <Loader2 size={14} className="animate-spin" />
           {t("ui.game.campaignWiki.timelineLoading")}
         </div>
       )}
       {timeline.isError && <ErrorState onRetry={() => void timeline.refetch()} />}
       {page && page.items.length === 0 && (
-        <p className="text-xs text-[var(--muted-foreground)]">{t("ui.game.campaignWiki.timelineEmpty")}</p>
+        <WikiEmpty icon={<History size={22} />} title={t("ui.game.campaignWiki.timelineEmpty")} />
       )}
-      {page && page.items.length > 0 && (
-        <ol className="space-y-2">
-          {page.items.map((item) => {
-            const location = item.location;
-            return (
-              <li key={item.eventId} className="rounded-md border border-[var(--border)] p-2 text-xs">
-                <p className="break-words">{item.summary || t("ui.game.campaignWiki.eventRecorded")}</p>
-                <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
-                  <span>
-                    {item.campaignTime
-                      ? t("ui.game.campaignWiki.campaignTime", { time: item.campaignTime })
-                      : t("ui.game.campaignWiki.timelineUnknownTime")}
-                  </span>
-                  <span className="ml-2">
-                    {t("ui.game.campaignWiki.recordedAtCaptureOrder", { order: item.occurrenceOrder })}
-                  </span>
+      {groups.length > 0 && (
+        <ol className="relative space-y-5 border-l border-border pl-5">
+          {groups.map((group) => (
+            <li key={`${group.key}-${group.items[0]?.eventId}`} className="space-y-2">
+              {group.label && (
+                <p className="relative -ml-5 flex items-center gap-2 text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                  <span className="h-2.5 w-2.5 -translate-x-[5px] rounded-full border border-primary/60 bg-primary/40" />
+                  {group.label}
                 </p>
-                {(location || item.participants.length > 0) && (
-                  <p className="mt-1 flex flex-wrap items-center gap-1 text-[0.625rem] text-[var(--muted-foreground)]">
-                    {location && (
-                      <button
-                        type="button"
-                        onClick={() => onSelect(location.entityId)}
-                        className="min-h-8 rounded border border-[var(--border)] px-2 hover:bg-[var(--secondary)]"
-                      >
-                        {t("ui.game.campaignWiki.timelineLocation", { name: location.alias || location.entityId })}
-                      </button>
-                    )}
-                    {item.participants.length > 0 && <span>{t("ui.game.campaignWiki.timelineParticipants")}</span>}
-                    {item.participants.map((participant) => (
-                      <button
-                        type="button"
-                        key={participant.entityId}
-                        onClick={() => onSelect(participant.entityId)}
-                        className="min-h-8 rounded border border-[var(--border)] px-2 hover:bg-[var(--secondary)]"
-                      >
-                        {participant.alias || participant.entityId}
-                      </button>
-                    ))}
+              )}
+              {group.items.map((item) => (
+                <WikiCard as="article" key={item.eventId} className="p-3">
+                  <p className="text-sm leading-6 text-foreground">
+                    {item.summary || t("ui.game.campaignWiki.eventRecorded")}
                   </p>
-                )}
-                {item.stateChanges.length > 0 && (
-                  <div className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
-                    <p>{t("ui.game.campaignWiki.timelineStateChanges")}</p>
-                    <ul className="list-disc pl-4">
+                  {(item.location || item.participants.length > 0) && (
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                      {item.location && item.location.alias && (
+                        <EntityChipButton
+                          entity={null}
+                          name={item.location.alias}
+                          portraits={portraits}
+                          onClick={() => onSelect(item.location!.entityId)}
+                          suffix={<MapPin size={11} className="text-muted-foreground" />}
+                        />
+                      )}
+                      {item.participants
+                        .filter((participant) => participant.alias && !RAW_ID.test(participant.alias))
+                        .map((participant) => (
+                          <EntityChipButton
+                            key={participant.entityId}
+                            entity={null}
+                            name={participant.alias}
+                            portraits={portraits}
+                            onClick={() => onSelect(participant.entityId)}
+                          />
+                        ))}
+                    </div>
+                  )}
+                  {item.stateChanges.length > 0 && (
+                    <ul className="mt-2 space-y-0.5 text-xs text-muted-foreground">
                       {item.stateChanges.map((change, index) => (
-                        <li key={`${change.entityId}-${change.key}-${index}`} className="break-words">
-                          {change.entityId} · {change.key}: <WikiValue value={change.value} />
+                        <li key={`${change.entityId}-${change.key}-${index}`}>
+                          {humanizeKey(change.key)}: {readableValue(change.value)}
                         </li>
                       ))}
                     </ul>
+                  )}
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <SessionChip record={item} />
+                    {item.campaignTime && <WhenChip order={item.occurrenceOrder} />}
                   </div>
-                )}
-                {item.sourceMessageId && (
-                  <p className="mt-1 break-all text-[0.625rem] text-[var(--muted-foreground)]">
-                    {t("ui.game.campaignWiki.timelineSourceMessage", { id: item.sourceMessageId })}
-                  </p>
-                )}
-              </li>
-            );
-          })}
+                </WikiCard>
+              ))}
+            </li>
+          ))}
         </ol>
       )}
       {page && (cursors.length > 0 || nextCursor) && (
-        <div className="flex justify-end gap-1">
+        <div className="flex justify-end gap-1.5">
           <button
             type="button"
             disabled={cursors.length === 0}
             onClick={() => setCursors((current) => current.slice(0, -1))}
-            className="min-h-9 rounded-md border border-[var(--border)] px-2 text-xs disabled:opacity-40"
+            className="min-h-9 rounded-lg border border-border px-3 text-xs font-semibold hover:bg-secondary disabled:opacity-40"
           >
             {t("ui.game.campaignWiki.previous")}
           </button>
@@ -637,7 +1017,7 @@ function CampaignWikiTimeline({
             type="button"
             disabled={!nextCursor}
             onClick={() => nextCursor && setCursors((current) => [...current, nextCursor])}
-            className="min-h-9 rounded-md border border-[var(--border)] px-2 text-xs disabled:opacity-40"
+            className="min-h-9 rounded-lg border border-border px-3 text-xs font-semibold hover:bg-secondary disabled:opacity-40"
           >
             {t("ui.game.campaignWiki.next")}
           </button>
@@ -657,30 +1037,254 @@ function groupByMatchTier(items: CampaignMemoryEntityListItem[], query: string) 
   return groups.filter((group) => group.items.length > 0);
 }
 
-function WikiSection({
-  title,
-  page,
-  children,
+/** Entity totals per kind for the overview tiles (one tiny request each; cached by React Query). */
+function useKindTotals(chatId: string) {
+  const character = useCampaignMemoryEntities(chatId, { kind: "character", limit: 1 });
+  const location = useCampaignMemoryEntities(chatId, { kind: "location", limit: 1 });
+  const organization = useCampaignMemoryEntities(chatId, { kind: "organization", limit: 1 });
+  const item = useCampaignMemoryEntities(chatId, { kind: "item", limit: 1 });
+  const quest = useCampaignMemoryEntities(chatId, { kind: "quest", limit: 1 });
+  const lore = useCampaignMemoryEntities(chatId, { kind: "lore", limit: 1 });
+  const all = useCampaignMemoryEntities(chatId, { limit: 1 });
+  return {
+    all: all.data?.total,
+    character: character.data?.total,
+    location: location.data?.total,
+    organization: organization.data?.total,
+    item: item.data?.total,
+    quest: quest.data?.total,
+    lore: lore.data?.total,
+  };
+}
+
+function Overview({
+  chatId,
+  onSelect,
+  onShowKind,
+  onShowTimeline,
+  portraits,
+  tools,
 }: {
-  title: string;
-  page: CampaignMemoryPage<unknown>;
-  children: ReactNode;
+  chatId: string;
+  onSelect: (id: string) => void;
+  onShowKind: (kind: CampaignMemoryEntityKind) => void;
+  onShowTimeline: () => void;
+  portraits: Map<string, string>;
+  tools: ReactNode;
 }) {
   const { t } = useUiTranslation();
+  const totals = useKindTotals(chatId);
+  const people = useCampaignMemoryEntities(chatId, { kind: "character", limit: 12 });
+  const places = useCampaignMemoryEntities(chatId, { kind: "location", limit: 8 });
+  const count = (value: number | undefined) => (value === undefined ? "…" : value.toLocaleString());
+  const empty = totals.all === 0;
+  const Tile = ({ kind, value }: { kind: CampaignMemoryEntityKind; value: number | undefined }) => {
+    const Icon = ENTITY_KIND_ICONS[kind];
+    return (
+      <WikiStat
+        label={kindLabel(t, kind)}
+        value={count(value)}
+        icon={<Icon size={12} />}
+        onClick={() => onShowKind(kind)}
+      />
+    );
+  };
   return (
-    <section className="space-y-2">
-      <div className="flex items-center justify-between">
-        <h4 className="text-xs font-semibold text-[var(--foreground)]">{title}</h4>
-        <PageTotal page={page} label={title} />
-      </div>
-      {page.items.length ? (
-        children
+    <div data-campaign-wiki-overview className="mx-auto w-full max-w-[62rem] space-y-7 pb-10 pt-2">
+      <header>
+        <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.16em] text-primary">
+          <Sparkles size={13} />
+          {t("ui.game.campaignWiki.overviewEyebrow")}
+        </p>
+        <h2 className="mt-1 text-2xl font-bold tracking-tight">{t("ui.game.campaignWiki.title")}</h2>
+        <p className="mt-2 max-w-[65ch] text-sm leading-6 text-muted-foreground">
+          {t("ui.game.campaignWiki.reader.overviewIntro", {
+            defaultValue:
+              "Everything the story has established so far: who people are, where things happened, what was promised and who knows what. The GM reads this memory every turn.",
+          })}
+        </p>
+      </header>
+
+      {empty ? (
+        <WikiEmpty
+          icon={<Database size={26} />}
+          title={t("ui.game.campaignWiki.reader.emptyTitle", { defaultValue: "The wiki is empty" })}
+          hint={t("ui.game.campaignWiki.reader.emptyHint", {
+            defaultValue:
+              "Turn on continuity for this session, or index the campaign history, and pages will appear here as the story is read.",
+          })}
+          action={tools}
+        />
       ) : (
-        <p className="text-xs text-[var(--muted-foreground)]">{t("ui.game.campaignWiki.noRecords")}</p>
+        <>
+          <section
+            aria-label={t("ui.game.campaignWiki.overviewCounts")}
+            className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6"
+          >
+            <WikiStat
+              label={t("ui.game.campaignWiki.reader.allPages", { defaultValue: "All pages" })}
+              value={count(totals.all)}
+              icon={<Database size={12} />}
+            />
+            {(["character", "location", "organization", "item", "quest", "lore"] as const)
+              .filter((kind) => totals[kind] !== 0)
+              .map((kind) => (
+                <Tile key={kind} kind={kind} value={totals[kind]} />
+              ))}
+          </section>
+
+          {people.data && people.data.items.length > 0 && (
+            <section>
+              <WikiSectionHeader
+                title={t("ui.game.campaignWiki.reader.people", { defaultValue: "People" })}
+                count={people.data.total}
+                action={
+                  <button
+                    type="button"
+                    onClick={() => onShowKind("character")}
+                    className="min-h-8 rounded-lg px-2 text-xs font-semibold text-primary hover:bg-secondary"
+                  >
+                    {t("ui.game.campaignWiki.reader.seeAll", { defaultValue: "See all" })}
+                  </button>
+                }
+              />
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+                {people.data.items.map((entity) => {
+                  const name = displayEntityName(t, entity);
+                  const sessions = entitySessionNumbers(entity);
+                  return (
+                    <button
+                      type="button"
+                      key={entity.entityId}
+                      onClick={() => onSelect(entity.entityId)}
+                      className="flex min-w-0 items-center gap-2.5 rounded-xl border border-border bg-secondary/30 p-2.5 text-left transition-colors hover:border-primary/50 hover:bg-secondary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                    >
+                      <EntityAvatar
+                        name={name}
+                        kind={entity.kind}
+                        size={40}
+                        imageUrl={portraitFor(entity, portraits)}
+                      />
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-semibold">{name}</span>
+                        <span className="block truncate text-[0.6875rem] text-muted-foreground">
+                          {sessions.length
+                            ? t("ui.game.campaignWiki.reader.sessions", {
+                                defaultValue: "Sessions {{list}}",
+                                list: formatSessionRanges(sessions),
+                              })
+                            : entity.summary || kindLabel(t, entity.kind)}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          {places.data && places.data.items.length > 0 && (
+            <section>
+              <WikiSectionHeader
+                title={t("ui.game.campaignWiki.reader.places", { defaultValue: "Places" })}
+                count={places.data.total}
+                action={
+                  <button
+                    type="button"
+                    onClick={() => onShowKind("location")}
+                    className="min-h-8 rounded-lg px-2 text-xs font-semibold text-primary hover:bg-secondary"
+                  >
+                    {t("ui.game.campaignWiki.reader.seeAll", { defaultValue: "See all" })}
+                  </button>
+                }
+              />
+              <div className="flex flex-wrap gap-1.5">
+                {places.data.items.map((entity) => (
+                  <EntityChipButton
+                    key={entity.entityId}
+                    entity={entity}
+                    name={displayEntityName(t, entity)}
+                    portraits={portraits}
+                    onClick={() => onSelect(entity.entityId)}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+
+          <section>
+            <WikiSectionHeader
+              title={t("ui.game.campaignWiki.reader.recentEvents", { defaultValue: "Latest in the story" })}
+              action={
+                <button
+                  type="button"
+                  onClick={onShowTimeline}
+                  className="min-h-8 rounded-lg px-2 text-xs font-semibold text-primary hover:bg-secondary"
+                >
+                  {t("ui.game.campaignWiki.reader.fullTimeline", { defaultValue: "Full timeline" })}
+                </button>
+              }
+            />
+            <RecentEvents chatId={chatId} onSelect={onSelect} />
+          </section>
+
+          <section>
+            <CampaignWikiCommitments chatId={chatId} onNavigate={onSelect} />
+          </section>
+
+          <details className="rounded-xl border border-border px-3 py-2">
+            <summary className="cursor-pointer text-xs font-semibold text-muted-foreground">
+              {t("ui.game.campaignWiki.reader.tools", { defaultValue: "Tools" })}
+            </summary>
+            <div className="mt-3">{tools}</div>
+          </details>
+        </>
       )}
-    </section>
+    </div>
   );
 }
+
+function RecentEvents({ chatId, onSelect }: { chatId: string; onSelect: (id: string) => void }) {
+  const { t } = useUiTranslation();
+  const timeline = useCampaignMemoryTimeline(chatId, { limit: 6 });
+  if (timeline.isLoading) return <WikiSkeleton rows={3} />;
+  if (timeline.isError) return <ErrorState onRetry={() => void timeline.refetch()} />;
+  const items = timeline.data?.items ?? [];
+  if (!items.length) return <p className="text-xs text-muted-foreground">{t("ui.game.campaignWiki.timelineEmpty")}</p>;
+  return (
+    <ol className="space-y-1.5">
+      {items.map((item) => (
+        <li key={item.eventId} className="flex items-start gap-3 rounded-lg px-2 py-1.5 hover:bg-secondary/40">
+          <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-primary/70" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm leading-6 text-foreground">
+              {item.summary || t("ui.game.campaignWiki.eventRecorded")}
+            </p>
+            {item.participants.length > 0 && (
+              <p className="mt-0.5 flex flex-wrap gap-x-2 text-xs text-muted-foreground">
+                {item.participants
+                  .filter((participant) => participant.alias && !RAW_ID.test(participant.alias))
+                  .slice(0, 6)
+                  .map((participant) => (
+                    <button
+                      key={participant.entityId}
+                      type="button"
+                      onClick={() => onSelect(participant.entityId)}
+                      className="hover:text-primary"
+                    >
+                      {participant.alias}
+                    </button>
+                  ))}
+              </p>
+            )}
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+type ReaderView = "home" | "timeline";
 
 export function CampaignWiki({
   chatId,
@@ -692,6 +1296,7 @@ export function CampaignWiki({
 }: CampaignWikiProps) {
   const { t } = useUiTranslation();
   const chat = useChat(chatId);
+  const portraits = useCharacterPortraits();
   const [searchText, setSearchText] = useState(initialSearch ?? "");
   const [query, setQuery] = useState((initialSearch ?? "").trim());
   const [kind, setKind] = useState<CampaignMemoryEntityKind | "all">(initialKind ?? "all");
@@ -762,7 +1367,7 @@ export function CampaignWiki({
     externalSelectedRef.current = id;
     onSelectedEntityChange?.(id);
   };
-  const entities = useCampaignMemoryEntities(chatId, { query, kind, offset: entityOffset });
+  const entities = useCampaignMemoryEntities(chatId, { query, kind, offset: entityOffset, limit: ENTITY_PAGE_SIZE });
   const detail = useCampaignMemoryEntity(chatId, selectedId, { offset: detailOffset });
   const selected = useMemo(
     () => entities.data?.items.find((entity) => entity.entityId === selectedId),
@@ -770,19 +1375,8 @@ export function CampaignWiki({
   );
   const listError = entities.isError;
   const listGroups = useMemo(() => groupByMatchTier(entities.data?.items ?? [], query), [entities.data, query]);
-  const overviewGroups = useMemo(() => {
-    const groups = new Map<CampaignMemoryEntityKind, CampaignMemoryEntityListItem[]>();
-    for (const entity of entities.data?.items ?? []) {
-      const items = groups.get(entity.kind) ?? [];
-      items.push(entity);
-      groups.set(entity.kind, items);
-    }
-    return KINDS.filter((kind): kind is CampaignMemoryEntityKind => kind !== "all" && groups.has(kind)).map((kind) => ({
-      kind,
-      items: groups.get(kind) ?? [],
-    }));
-  }, [entities.data]);
   const reading = Boolean(selectedId) || campaignTimeline;
+  const view: ReaderView = campaignTimeline && !selectedId ? "timeline" : "home";
   const closeReading = () => {
     if (!confirmEditorExit()) return false;
     setSelectedId(null);
@@ -800,6 +1394,15 @@ export function CampaignWiki({
     setEditing(false);
     setEditorDirty(false);
     reportSelection(id);
+  };
+  const showKind = (next: CampaignMemoryEntityKind) => {
+    setKind(next);
+    setEntityOffset(0);
+    setNavCollapsed(false);
+  };
+  const showTimeline = () => {
+    if (!closeReading()) return;
+    setCampaignTimeline(true);
   };
   const previewImport = () => {
     const operationId =
@@ -831,34 +1434,72 @@ export function CampaignWiki({
         }
       });
   };
+  const importTools = (
+    <div className="space-y-2 text-xs text-muted-foreground">
+      <p>
+        {t("ui.game.campaignWiki.reader.importHint", {
+          defaultValue:
+            "Bring existing character cards, NPCs and lorebook entries into the wiki as pages. Nothing is overwritten.",
+        })}
+      </p>
+      <button
+        type="button"
+        onClick={previewImport}
+        disabled={importPreviewMutation.isPending || importApplyMutation.isPending}
+        className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-primary/60 px-3 font-semibold text-foreground hover:bg-primary/10 disabled:opacity-50"
+      >
+        <BookMarked size={13} />
+        {importPreviewMutation.isPending
+          ? t("ui.game.campaignWiki.importPreviewing")
+          : t("ui.game.campaignWiki.importExisting")}
+      </button>
+      {importError && (
+        <p className="text-destructive">
+          {importError === "sourceChanged"
+            ? t("ui.game.campaignWiki.importSourceChanged")
+            : t("ui.game.campaignWiki.importError")}
+        </p>
+      )}
+      {importPreview && (
+        <div className="space-y-2 rounded-lg border border-border p-3">
+          <p>{t("ui.game.campaignWiki.importSummary", { count: importPreview.manifest.counts.planned ?? 0 })}</p>
+          <button
+            type="button"
+            onClick={applyImport}
+            disabled={importApplyMutation.isPending}
+            className="min-h-9 rounded-lg bg-primary px-3 font-semibold text-primary-foreground disabled:opacity-50"
+          >
+            {importApplyMutation.isPending
+              ? t("ui.game.campaignWiki.importApplying")
+              : t("ui.game.campaignWiki.importApply")}
+          </button>
+        </div>
+      )}
+    </div>
+  );
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden text-[var(--foreground)]">
+    <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden text-foreground">
       <CampaignMemoryBranchNotice chat={chat} />
       <div className="flex min-h-0 flex-1 flex-col gap-3 md:flex-row">
         <section
           className={cn(
-            "flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto md:w-[22rem] md:shrink-0 md:flex-none md:pr-2",
+            "flex min-h-0 min-w-0 flex-1 flex-col md:w-[21rem] md:shrink-0 md:flex-none md:border-r md:border-border md:pr-3",
             reading && "hidden md:flex",
             navCollapsed && "md:hidden",
           )}
           aria-label={t("ui.game.campaignWiki.entities")}
         >
           <div className="mb-2 flex items-center gap-2">
-            <Database size={14} className="text-[var(--primary)]" />
-            <h3 className="min-w-0 flex-1 truncate text-sm font-semibold">{t("ui.game.campaignWiki.entities")}</h3>
+            <Database size={15} className="text-primary" />
+            <h3 className="min-w-0 flex-1 truncate text-sm font-bold">{t("ui.game.campaignWiki.entities")}</h3>
             <button
               type="button"
-              onClick={() => {
-                if (!closeReading()) return;
-                setCampaignTimeline(true);
-              }}
+              onClick={showTimeline}
               aria-pressed={campaignTimeline}
               title={t("ui.game.campaignWiki.campaignTimeline")}
               className={cn(
-                "inline-flex min-h-9 items-center gap-1 rounded-md border px-2 text-xs",
-                campaignTimeline
-                  ? "border-[var(--primary)] bg-[var(--secondary)]"
-                  : "border-[var(--border)] hover:bg-[var(--secondary)]",
+                "inline-flex min-h-9 items-center gap-1 rounded-lg border px-2.5 text-xs font-semibold",
+                campaignTimeline ? "border-primary/60 bg-primary/15" : "border-border hover:bg-secondary",
               )}
             >
               <History size={13} />
@@ -869,254 +1510,196 @@ export function CampaignWiki({
               onClick={() => setNavCollapsed(true)}
               aria-label={t("ui.game.campaignWiki.navCollapse")}
               title={t("ui.game.campaignWiki.navCollapse")}
-              className="hidden min-h-9 items-center rounded-md border border-[var(--border)] px-2 text-[var(--muted-foreground)] hover:bg-[var(--secondary)] md:inline-flex"
+              className="hidden min-h-9 items-center rounded-lg border border-border px-2 text-muted-foreground hover:bg-secondary md:inline-flex"
             >
               <PanelLeftClose size={14} />
             </button>
           </div>
           <label className="relative block">
-            <Search size={13} className="absolute left-2.5 top-2.5 text-[var(--muted-foreground)]" />
+            <Search
+              size={14}
+              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+            />
             <input
               value={searchText}
               onChange={(event) => setSearchText(event.target.value)}
               placeholder={t("ui.game.campaignWiki.searchPlaceholder")}
               aria-label={t("ui.game.campaignWiki.searchPlaceholder")}
-              className="min-h-10 w-full rounded-md border border-[var(--border)] bg-[var(--background)] py-2 pl-8 pr-2 text-sm outline-none focus:border-[var(--primary)]"
+              className="min-h-10 w-full rounded-lg border border-border bg-background py-2 pl-9 pr-9 text-sm outline-none transition-colors focus:border-primary"
             />
+            {searchText && (
+              <button
+                type="button"
+                onClick={() => setSearchText("")}
+                aria-label={t("ui.game.campaignWiki.reader.clearSearch", { defaultValue: "Clear search" })}
+                className="absolute right-1.5 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary"
+              >
+                <X size={13} />
+              </button>
+            )}
           </label>
           <div
-            className="mt-2 flex flex-wrap gap-1 pb-1"
+            className="mt-2 flex gap-1 overflow-x-auto pb-1.5 [scrollbar-width:thin]"
             role="group"
             aria-label={t("ui.game.campaignWiki.filterByKind")}
           >
-            {KINDS.map((item) => (
-              <button
-                type="button"
-                key={item}
-                onClick={() => {
-                  setKind(item);
-                  setEntityOffset(0);
-                }}
-                aria-pressed={kind === item}
-                className={cn(
-                  "min-h-9 shrink-0 rounded-md px-3 py-1 text-xs",
-                  kind === item
-                    ? "bg-[var(--primary)] text-[var(--primary-foreground)]"
-                    : "bg-[var(--secondary)] text-[var(--muted-foreground)]",
-                )}
-              >
-                {enumLabel(t, "kind", item)}
-              </button>
-            ))}
+            {KINDS.map((item) => {
+              const Icon = item === "all" ? null : ENTITY_KIND_ICONS[item];
+              return (
+                <button
+                  type="button"
+                  key={item}
+                  onClick={() => {
+                    setKind(item);
+                    setEntityOffset(0);
+                  }}
+                  aria-pressed={kind === item}
+                  className={cn(
+                    "inline-flex min-h-8 shrink-0 items-center gap-1 rounded-full border px-2.5 text-xs font-semibold transition-colors",
+                    kind === item
+                      ? "border-primary/60 bg-primary/15 text-foreground"
+                      : "border-border text-muted-foreground hover:bg-secondary hover:text-foreground",
+                  )}
+                >
+                  {Icon && <Icon size={12} />}
+                  {kindLabel(t, item)}
+                </button>
+              );
+            })}
           </div>
           {entities.isLoading && (
-            <div className="flex items-center gap-2 py-5 text-xs text-[var(--muted-foreground)]">
-              <Loader2 size={14} className="animate-spin" />
-              {t("ui.game.campaignWiki.loading")}
+            <div className="mt-2 space-y-2">
+              <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 size={13} className="animate-spin" />
+                {t("ui.game.campaignWiki.loading")}
+              </p>
+              <WikiSkeleton rows={6} />
             </div>
           )}
           {listError && <ErrorState onRetry={() => void entities.refetch()} />}
-          {!entities.isLoading && !listError && entities.data && (
-            <div className="space-y-3 py-5 text-xs text-[var(--muted-foreground)]">
-              {entities.data.items.length === 0 && <p>{t("ui.game.campaignWiki.empty")}</p>}
-              <button
-                type="button"
-                onClick={previewImport}
-                disabled={importPreviewMutation.isPending || importApplyMutation.isPending}
-                className="min-h-10 rounded-md border border-[var(--primary)] px-3 text-[var(--foreground)] disabled:opacity-50"
-              >
-                {importPreviewMutation.isPending
-                  ? t("ui.game.campaignWiki.importPreviewing")
-                  : t("ui.game.campaignWiki.importExisting")}
-              </button>
-              {importError && (
-                <p className="text-[var(--destructive)]">
-                  {importError === "sourceChanged"
-                    ? t("ui.game.campaignWiki.importSourceChanged")
-                    : t("ui.game.campaignWiki.importError")}
-                </p>
-              )}
-              {importPreview && (
-                <div className="space-y-2 rounded-md border border-[var(--border)] p-3">
-                  <p>
-                    {t("ui.game.campaignWiki.importSummary", { count: importPreview.manifest.counts.planned ?? 0 })}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={applyImport}
-                    disabled={importApplyMutation.isPending}
-                    className="min-h-10 rounded-md bg-[var(--primary)] px-3 text-[var(--primary-foreground)] disabled:opacity-50"
-                  >
-                    {importApplyMutation.isPending
-                      ? t("ui.game.campaignWiki.importApplying")
-                      : t("ui.game.campaignWiki.importApply")}
-                  </button>
-                </div>
-              )}
-            </div>
+          {!entities.isLoading && !listError && entities.data && entities.data.items.length === 0 && (
+            <p className="px-1 py-6 text-center text-xs text-muted-foreground">
+              {query
+                ? t("ui.game.campaignWiki.reader.noMatches", { defaultValue: "No pages match “{{query}}”.", query })
+                : t("ui.game.campaignWiki.empty")}
+            </p>
           )}
-          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1" data-campaign-wiki-entity-list>
+          <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-1" data-campaign-wiki-entity-list>
             {listGroups.map((group) => (
-              <div key={group.tier ?? "all"} className="space-y-1">
+              <div key={group.tier ?? "all"} className="space-y-0.5">
                 {group.tier && (
-                  <p className="px-1 pt-2 text-[0.625rem] uppercase tracking-wide text-[var(--muted-foreground)]">
+                  <p className="px-2 pb-1 pt-3 text-[0.625rem] font-semibold uppercase tracking-wide text-muted-foreground">
                     {t(`ui.game.campaignWiki.matchTier.${group.tier}`)}
                   </p>
                 )}
-                {group.items.map((entity) => (
-                  <button
-                    type="button"
-                    key={entity.entityId}
-                    onClick={() => selectEntity(entity.entityId)}
-                    className={cn(
-                      "flex min-h-10 w-full items-center justify-between rounded-md px-3 py-2 text-left transition-colors",
-                      selectedId === entity.entityId
-                        ? "bg-[var(--secondary)] text-[var(--primary)]"
-                        : "hover:bg-[var(--secondary)]",
-                    )}
-                  >
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-medium">{displayEntityName(t, entity)}</span>
-                      <span className="block text-xs text-[var(--muted-foreground)]">
-                        {enumLabel(t, "kind", entity.kind)} · {enumLabel(t, "recordStatus", entity.status)}
+                {group.items.map((entity) => {
+                  const name = displayEntityName(t, entity);
+                  const sessions = entitySessionNumbers(entity);
+                  const active = selectedId === entity.entityId;
+                  return (
+                    <button
+                      type="button"
+                      key={entity.entityId}
+                      onClick={() => selectEntity(entity.entityId)}
+                      aria-current={active ? "page" : undefined}
+                      className={cn(
+                        "flex min-h-12 w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors",
+                        active ? "bg-primary/15 text-foreground" : "hover:bg-secondary/70",
+                      )}
+                    >
+                      <EntityAvatar
+                        name={name}
+                        kind={entity.kind}
+                        size={34}
+                        imageUrl={portraitFor(entity, portraits)}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className={cn("block truncate text-sm font-semibold", active && "text-primary")}>
+                          {name}
+                        </span>
+                        <span className="block truncate text-[0.6875rem] text-muted-foreground">
+                          {kindLabel(t, entity.kind)}
+                          {sessions.length > 0 &&
+                            ` · ${t("ui.game.campaignWiki.reader.sessions", { defaultValue: "Sessions {{list}}", list: formatSessionRanges(sessions) })}`}
+                          {entity.status === "archived" && ` · ${enumLabel(t, "recordStatus", "archived")}`}
+                        </span>
                       </span>
-                    </span>
-                    <ChevronRight size={15} className="shrink-0 text-[var(--muted-foreground)]" />
-                  </button>
-                ))}
+                    </button>
+                  );
+                })}
               </div>
             ))}
           </div>
           {entities.data && entities.data.total > entities.data.items.length && (
-            <div className="mt-2 flex items-center justify-between gap-2">
-              <p className="text-xs text-[var(--muted-foreground)]">
-                {t("ui.game.campaignWiki.listTotal", {
-                  shown: Math.min(entityOffset + entities.data.items.length, entities.data.total),
-                  total: entities.data.total,
-                })}
-              </p>
-              <div className="flex gap-1">
-                <button
-                  type="button"
-                  disabled={entityOffset === 0}
-                  onClick={() => setEntityOffset(Math.max(0, entityOffset - (entities.data?.limit ?? 20)))}
-                  className="min-h-9 rounded-md border border-[var(--border)] px-2 text-xs disabled:opacity-40"
-                >
-                  {t("ui.game.campaignWiki.previous")}
-                </button>
-                <button
-                  type="button"
-                  disabled={entityOffset + entities.data.items.length >= entities.data.total}
-                  onClick={() => setEntityOffset(entityOffset + (entities.data?.limit ?? 20))}
-                  className="min-h-9 rounded-md border border-[var(--border)] px-2 text-xs disabled:opacity-40"
-                >
-                  {t("ui.game.campaignWiki.next")}
-                </button>
-              </div>
-            </div>
+            <Pager
+              offset={entityOffset}
+              limit={entities.data.limit || ENTITY_PAGE_SIZE}
+              total={entities.data.total}
+              shown={entities.data.items.length}
+              onChange={setEntityOffset}
+            />
           )}
         </section>
         <section
           className={cn("flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden", !reading && "hidden md:flex")}
           aria-live="polite"
         >
-          {reading && (
-            <button
-              type="button"
-              onClick={closeReading}
-              className="mb-3 inline-flex min-h-10 items-center gap-1 rounded-md px-2 text-xs text-[var(--muted-foreground)] hover:bg-[var(--secondary)] md:hidden"
-            >
-              <ArrowLeft size={14} />
-              {t("ui.game.campaignWiki.backToEntities")}
-            </button>
-          )}
-          {navCollapsed && (
-            <button
-              type="button"
-              onClick={() => setNavCollapsed(false)}
-              className="mb-3 hidden min-h-10 items-center gap-1 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--muted-foreground)] hover:bg-[var(--secondary)] md:inline-flex"
-            >
-              <PanelLeftOpen size={14} />
-              {t("ui.game.campaignWiki.navExpand")}
-            </button>
-          )}
-          <div className="min-h-0 flex-1 overflow-y-auto px-2 md:px-6 lg:px-10" data-campaign-wiki-scroll="reader">
-            {campaignTimeline && !selectedId && (
-              <CampaignWikiTimeline
+          <div className="flex items-center gap-2">
+            {reading && (
+              <button
+                type="button"
+                onClick={closeReading}
+                className="mb-2 inline-flex min-h-10 items-center gap-1 rounded-lg px-2 text-xs font-semibold text-muted-foreground hover:bg-secondary md:hidden"
+              >
+                <ArrowLeft size={14} />
+                {t("ui.game.campaignWiki.backToEntities")}
+              </button>
+            )}
+            {navCollapsed && (
+              <button
+                type="button"
+                onClick={() => setNavCollapsed(false)}
+                className="mb-2 hidden min-h-9 items-center gap-1 rounded-lg border border-border px-2.5 text-xs font-semibold text-muted-foreground hover:bg-secondary md:inline-flex"
+              >
+                <PanelLeftOpen size={14} />
+                {t("ui.game.campaignWiki.navExpand")}
+              </button>
+            )}
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-1 md:px-6 lg:px-10" data-campaign-wiki-scroll="reader">
+            {view === "timeline" && (
+              <div className="mx-auto w-full max-w-[62rem] space-y-8 pb-10 pt-2">
+                <CampaignWikiTimeline
+                  chatId={chatId}
+                  heading={t("ui.game.campaignWiki.campaignTimeline")}
+                  onSelect={selectEntity}
+                  portraits={portraits}
+                />
+                <CampaignWikiCommitments chatId={chatId} onNavigate={selectEntity} />
+              </div>
+            )}
+            {selectedId && detail.isLoading && (
+              <div className="mx-auto max-w-[62rem] space-y-3 pt-2">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 size={14} className="animate-spin" />
+                  {t("ui.game.campaignWiki.loadingDetail")}
+                </div>
+                <WikiSkeleton rows={5} />
+              </div>
+            )}
+            {selectedId && detail.isError && <ErrorState onRetry={() => void detail.refetch()} />}
+            {!reading && !selectedId && (
+              <Overview
                 chatId={chatId}
-                heading={t("ui.game.campaignWiki.campaignTimeline")}
                 onSelect={selectEntity}
+                onShowKind={showKind}
+                onShowTimeline={showTimeline}
+                portraits={portraits}
+                tools={importTools}
               />
             )}
-            {campaignTimeline && !selectedId && <CampaignWikiCommitments chatId={chatId} onNavigate={selectEntity} />}
-            {detail.isLoading && (
-              <div className="flex items-center gap-2 py-5 text-xs text-[var(--muted-foreground)]">
-                <Loader2 size={14} className="animate-spin" />
-                {t("ui.game.campaignWiki.loadingDetail")}
-              </div>
-            )}
-            {detail.isError && <ErrorState onRetry={() => void detail.refetch()} />}
-            {!reading && !selectedId && !detail.isLoading && (
-              <div data-campaign-wiki-overview className="mx-auto max-w-5xl space-y-6 py-4">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--primary)]">
-                    {t("ui.game.campaignWiki.overviewEyebrow")}
-                  </p>
-                  <h2 className="mt-1 text-2xl font-semibold tracking-tight">{t("ui.game.campaignWiki.title")}</h2>
-                  <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                    {t("ui.game.campaignWiki.overviewDescription")}
-                  </p>
-                </div>
-                {entities.data && (
-                  <div
-                    className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--muted-foreground)]"
-                    aria-label={t("ui.game.campaignWiki.overviewCounts")}
-                  >
-                    <span>
-                      {t("ui.game.campaignWiki.overviewLoadedLabel")}: {entities.data.items.length}
-                    </span>
-                    <span>
-                      {t("ui.game.campaignWiki.overviewIndexedLabel")}: {entities.data.total}
-                    </span>
-                  </div>
-                )}
-                <p className="text-sm text-[var(--muted-foreground)]">{t("ui.game.campaignWiki.selectEntity")}</p>
-                {overviewGroups.length > 0 && (
-                  <div className="grid gap-5 lg:grid-cols-2" data-campaign-wiki-overview-index>
-                    {overviewGroups.map((group) => (
-                      <section key={group.kind} className="min-w-0">
-                        <h3 className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-                          {enumLabel(t, "kind", group.kind)}
-                        </h3>
-                        <div className="divide-y divide-[var(--border)] rounded-md border border-[var(--border)]">
-                          {group.items.map((entity) => (
-                            <button
-                              type="button"
-                              key={entity.entityId}
-                              onClick={() => selectEntity(entity.entityId)}
-                              className="flex min-h-10 w-full items-start justify-between gap-3 px-3 py-2 text-left first:rounded-t-md last:rounded-b-md hover:bg-[var(--secondary)]"
-                            >
-                              <span className="min-w-0">
-                                <span className="block truncate text-sm font-medium">
-                                  {displayEntityName(t, entity)}
-                                </span>
-                                {entity.summary && (
-                                  <span className="mt-0.5 block truncate text-xs text-[var(--muted-foreground)]">
-                                    {entity.summary}
-                                  </span>
-                                )}
-                              </span>
-                              <ChevronRight size={14} className="mt-0.5 shrink-0 text-[var(--muted-foreground)]" />
-                            </button>
-                          ))}
-                        </div>
-                      </section>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-            {detail.data &&
+            {selectedId &&
+              detail.data &&
               (editing ? (
                 <CampaignWikiEditor
                   chatId={chatId}
@@ -1144,10 +1727,11 @@ export function CampaignWiki({
                     setEditorDirty(false);
                     setEditing(true);
                   }}
+                  portraits={portraits}
                 />
               ))}
             {selected && !detail.data && !detail.isLoading && !detail.isError && (
-              <p className="text-xs text-[var(--muted-foreground)]">{selected.summary}</p>
+              <p className="text-xs text-muted-foreground">{selected.summary}</p>
             )}
           </div>
         </section>
@@ -1170,18 +1754,16 @@ function CampaignMemoryBranchNotice({ chat }: { chat: ReturnType<typeof useChat>
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const branch = chat.data?.metadata?.campaignMemoryBranch;
   if (chat.isLoading && !chat.data) {
-    return (
-      <p className="text-[0.625rem] text-[var(--muted-foreground)]">{t("ui.game.campaignWiki.branchStatusLoading")}</p>
-    );
+    return <p className="text-[0.6875rem] text-muted-foreground">{t("ui.game.campaignWiki.branchStatusLoading")}</p>;
   }
   if (chat.isError && !branch) {
     return (
-      <div className="flex items-center justify-between gap-2 rounded-md border border-[var(--border)] px-3 py-2 text-xs text-[var(--muted-foreground)]">
+      <div className="flex items-center justify-between gap-2 rounded-lg border border-border px-3 py-2 text-xs text-muted-foreground">
         <span>{t("ui.game.campaignWiki.branchStatusError")}</span>
         <button
           type="button"
           onClick={() => void chat.refetch()}
-          className="min-h-8 rounded border border-[var(--border)] px-2 hover:bg-[var(--secondary)]"
+          className="min-h-8 rounded-lg border border-border px-2 hover:bg-secondary"
         >
           {t("ui.game.campaignWiki.retry")}
         </button>
@@ -1190,34 +1772,34 @@ function CampaignMemoryBranchNotice({ chat }: { chat: ReturnType<typeof useChat>
   }
   if (!branch?.held.length) return null;
   return (
-    <aside className="rounded-md border border-[var(--destructive)]/50 bg-[var(--destructive)]/5 px-3 py-2 text-xs">
+    <aside className="rounded-xl border border-destructive/50 bg-destructive/5 px-3 py-2 text-xs">
       {chat.isError && (
-        <div className="mb-2 flex items-center justify-between gap-2 text-[var(--destructive)]">
+        <div className="mb-2 flex items-center justify-between gap-2 text-destructive">
           <span>{t("ui.game.campaignWiki.branchStatusError")}</span>
           <button
             type="button"
             onClick={() => void chat.refetch()}
-            className="min-h-8 rounded border border-[var(--border)] px-2 text-[var(--muted-foreground)] hover:bg-[var(--secondary)]"
+            className="min-h-8 rounded-lg border border-border px-2 text-muted-foreground hover:bg-secondary"
           >
             {t("ui.game.campaignWiki.retry")}
           </button>
         </div>
       )}
-      <p className="font-medium">{t("ui.game.campaignWiki.branchHeldWarning")}</p>
-      <p className="mt-1 text-[var(--muted-foreground)]">{t("ui.game.campaignWiki.branchHeldSummary")}</p>
+      <p className="font-semibold">{t("ui.game.campaignWiki.branchHeldWarning")}</p>
+      <p className="mt-1 text-muted-foreground">{t("ui.game.campaignWiki.branchHeldSummary")}</p>
       <details
         className="mt-2"
         open={diagnosticsOpen}
         onToggle={(event) => setDiagnosticsOpen(event.currentTarget.open)}
       >
-        <summary className="cursor-pointer text-[var(--muted-foreground)]">
+        <summary className="cursor-pointer text-muted-foreground">
           {t("ui.game.campaignWiki.branchHeldRecords", { count: branch.held.length })}
         </summary>
         <ul className="mt-2 space-y-2">
           {branch.held.map((record, index) => (
             <li
               key={`${record.recordType}-${record.recordId}-${index}`}
-              className="rounded border border-[var(--border)] p-2"
+              className="rounded-lg border border-border p-2"
             >
               <strong>
                 {t(
@@ -1227,8 +1809,8 @@ function CampaignMemoryBranchNotice({ chat }: { chat: ReturnType<typeof useChat>
                   },
                 )}
               </strong>
-              <p className="mt-1 text-[var(--muted-foreground)]">{record.reason}</p>
-              <details className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
+              <p className="mt-1 text-muted-foreground">{record.reason}</p>
+              <details className="mt-1 text-[0.625rem] text-muted-foreground">
                 <summary className="cursor-pointer">{t("ui.game.campaignWiki.branchDiagnosticDetails")}</summary>
                 <code className="mt-1 block break-all">{record.recordId}</code>
               </details>
@@ -1243,12 +1825,12 @@ function CampaignMemoryBranchNotice({ chat }: { chat: ReturnType<typeof useChat>
 function ErrorState({ onRetry }: { onRetry: () => void }) {
   const { t } = useUiTranslation();
   return (
-    <div className="flex items-center justify-between gap-2 py-5 text-xs text-[var(--destructive)]">
+    <div className="flex items-center justify-between gap-2 rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-3 text-xs text-destructive">
       <span>{t("ui.game.campaignWiki.error")}</span>
       <button
         type="button"
         onClick={onRetry}
-        className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-[var(--muted-foreground)] hover:bg-[var(--secondary)]"
+        className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-border px-2 text-muted-foreground hover:bg-secondary"
       >
         <RotateCw size={12} />
         {t("ui.game.campaignWiki.retry")}

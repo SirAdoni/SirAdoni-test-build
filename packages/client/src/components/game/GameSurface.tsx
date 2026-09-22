@@ -1,4 +1,5 @@
 import { assignCombatTactics, combatTacticsSchema, extractNamedRoleNpcNames } from "@marinara-engine/shared";
+import type { ChatMetadata } from "@marinara-engine/shared";
 // ──────────────────────────────────────────────
 // Game: Main Surface (rendered by ChatArea when mode === "game")
 // ──────────────────────────────────────────────
@@ -12064,6 +12065,17 @@ function GameSurfaceComponent({
             : "absolute right-0 top-9 z-50 h-[min(42rem,calc(100dvh-6rem))] w-[min(42rem,calc(100vw-1.5rem))]",
         )}
         style={mobile ? getGameMobileFloatingPanelStyle(mobileSessionPanelAnchor) : undefined}
+        ref={
+          mobile
+            ? undefined
+            : (element: HTMLDivElement | null) => {
+                // Right-anchored to its button; when the toolbar sits on the left, pull it back on screen.
+                if (!element) return;
+                element.style.transform = "";
+                const left = element.getBoundingClientRect().left;
+                if (left < 12) element.style.transform = `translateX(${Math.round(12 - left)}px)`;
+              }
+        }
       >
         <div className={cn(NEUTRAL_PANEL_HEADER, "flex items-start gap-3")}>
           <div className="min-w-0 flex-1">
@@ -12125,6 +12137,8 @@ function GameSurfaceComponent({
           >
             <Suspense fallback={null}>
               <GameSessionHistory
+                chatId={activeChatId}
+                chatMetadata={chatMeta as unknown as ChatMetadata}
                 summaries={sessionSummaries}
                 currentSessionNumber={displaySessionNumber}
                 currentSessionDate={

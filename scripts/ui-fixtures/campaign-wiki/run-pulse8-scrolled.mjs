@@ -12,13 +12,15 @@ const { server, ready } = startFixtureServer(path.join(root, "server.mjs"));
 const { base } = await ready;
 const browser = await chromium.launch({ headless: true });
 const open = async (page) => { await page.goto(base); await page.locator('[data-campaign-wiki-entity-list]').waitFor(); await page.locator('[data-campaign-wiki-entity-list]').getByRole("button", { name: /Ariadne Vale/ }).click(); await page.getByRole("heading", { name: /Ariadne Vale/ }).waitFor(); };
+// Entity commitments now live on the page's "Promises & quests" tab.
+const openCommitmentsTab = async (page) => { await page.getByRole("tab", { name: /Promises & quests/ }).click(); };
 const screenshots = [];
 const checks = [];
 const record = (name, pass, detail = "") => checks.push({ name, pass: Boolean(pass), detail });
 try {
   for (const viewport of Object.values(VIEWPORTS)) {
     const tag = label(viewport);
-    const page = await browser.newPage({ viewport }); await open(page);
+    const page = await browser.newPage({ viewport }); await open(page); await openCommitmentsTab(page);
     const commitments = page.getByRole("region", { name: /quests and commitments/i });
     await commitments.getByText("Recover the archive key", { exact: true }).waitFor();
     record(`commitments initial items @${tag}`, (await commitments.getByText("Keep the archive watch", { exact: true }).count()) === 1 && (await commitments.getByText(/Proposed \(1\)/).count()) === 1 && (await commitments.getByText(/Active \(1\)/).count()) === 1);
@@ -32,6 +34,7 @@ try {
       await page.locator('[data-campaign-wiki-entity-list]').waitFor();
       await page.evaluate(() => { window.__wikiMock.failCommitments = 1; });
       await page.locator('[data-campaign-wiki-entity-list]').getByRole("button", { name: /Ariadne Vale/ }).click();
+      await page.getByRole("heading", { name: /Ariadne Vale/ }).waitFor(); await openCommitmentsTab(page);
       const erroredCommitments = page.getByRole("region", { name: /quests and commitments/i });
       await erroredCommitments.getByText("Commitments could not be loaded.", { exact: true }).waitFor();
       record("commitments error state renders", await erroredCommitments.getByRole("button", { name: "Reload", exact: true }).count() === 1);
@@ -39,8 +42,8 @@ try {
       await erroredCommitments.getByText("Recover the archive key", { exact: true }).waitFor();
       record("commitments retry recovers", (await erroredCommitments.getByText("Keep the archive watch", { exact: true }).count()) === 1);
     }
-    const current = page.getByText("Current state", { exact: true }).first(); await current.scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(out, `pulse8-current-state-${tag}.png`) }); screenshots.push(`pulse8-current-state-${tag}.png`);
-    const relationship = page.getByText("Relationships", { exact: true }).first(); await relationship.scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(out, `pulse8-relationships-${tag}.png`) }); screenshots.push(`pulse8-relationships-${tag}.png`);
+    const current = page.getByRole("region", { name: "Current state", exact: true }).first(); await current.scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(out, `pulse8-current-state-${tag}.png`) }); screenshots.push(`pulse8-current-state-${tag}.png`);
+    await page.getByRole("tab", { name: /^Connections/ }).click(); const relationship = page.getByRole("region", { name: "Relationships", exact: true }).first(); await relationship.waitFor(); await relationship.scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(out, `pulse8-relationships-${tag}.png`) }); screenshots.push(`pulse8-relationships-${tag}.png`);
     await page.close();
   }
   checks.push({ name: "scrolled screenshots captured", pass: screenshots.length === Object.keys(VIEWPORTS).length * 2, detail: `${screenshots.length} screenshots` });

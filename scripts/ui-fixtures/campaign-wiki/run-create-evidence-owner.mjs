@@ -59,17 +59,22 @@ try {
   await shot(desktop, "create-desktop-viewport");
 
   await openDetail(desktop);
-  const evidence = desktop.getByText("Evidence and source quotes", { exact: true }).first();
-  if (await evidence.count()) await evidence.click();
-  const reads = desktop.getByRole("button", { name: "Read source", exact: true });
+  // The fact with a matching source and a stale source; its quotes sit in a closed "From the story" disclosure.
+  const evidence = desktop.locator("details").filter({ hasText: "The archive key is kept here." }).filter({ hasText: "Stale source quote" }).first();
+  const evidenceSummary = evidence.locator("summary").first();
+  record("evidence disclosure is labelled From the story", /^From the story/.test((await evidenceSummary.innerText()).trim()), await evidenceSummary.innerText());
+  await evidenceSummary.click();
+  const reads = evidence.getByRole("button", { name: "Show full message", exact: true });
   await reads.first().click(); await desktop.getByText("matched source text", { exact: false }).waitFor();
   const body = await desktop.locator("body").innerText();
   const scriptCount = await desktop.locator("script").count();
   record("source opens escaped matching content", body.includes('<script>alert("xss")</script>') && body.includes("matched source text") && scriptCount === 1, `scriptCount=${scriptCount}`);
-  const closeSource = desktop.getByRole("button", { name: "Close source", exact: true });
-  if (await closeSource.count()) await closeSource.click();
-  const reads2 = desktop.getByRole("button", { name: "Read source", exact: true });
-  if (await reads2.count() > 1) { await reads2.nth(1).click(); await desktop.waitForTimeout(350); }
+  const closeSource = evidence.getByRole("button", { name: "Hide full message", exact: true });
+  record("full message can be hidden again", (await closeSource.count()) === 1, `hideButtons=${await closeSource.count()}`);
+  await closeSource.click();
+  const reads2 = evidence.getByRole("button", { name: "Show full message", exact: true });
+  record("both quotes offer the full message", (await reads2.count()) === 2, `showButtons=${await reads2.count()}`);
+  await reads2.nth(1).click(); await desktop.waitForTimeout(350);
   await desktop.waitForTimeout(350);
   const staleBody = await desktop.locator("body").innerText();
   record("stale source shows no changed source content", staleBody.includes("This source changed and is no longer available under the recorded hash.") && !staleBody.includes("matched source text") && !staleBody.includes('<script>alert("xss")</script>'), staleBody.slice(-700));
