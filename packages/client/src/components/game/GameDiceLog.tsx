@@ -195,9 +195,13 @@ export function GameDiceLog({ chatId }: { chatId: string }) {
         </p>
       )}
       {isError && (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <div className="flex items-center gap-2 text-xs text-destructive">
           <span>{t("ui.game.diceLog.loadFailed")}</span>
-          <button type="button" className="rounded border border-border px-2 py-0.5" onClick={() => void refetch()}>
+          <button
+            type="button"
+            className="rounded-md border border-border bg-secondary/50 px-2 py-0.5 text-foreground transition-colors hover:bg-secondary"
+            onClick={() => void refetch()}
+          >
             {t("ui.game.diceLog.retry")}
           </button>
         </div>

@@ -30,6 +30,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Selected characters can now have tags added, removed, or renamed in bulk from the library selection bar, with a review summary before applying. Each changed card is saved through its normal save path, so version history records the edit.
 - Added a command palette. Press Ctrl+K (Cmd+K on Mac) or tap the search button in the top bar to jump to chats, characters, personas, lorebooks, presets and Settings tabs, or run actions such as starting a new chat, switching light or dark mode and opening the chat guide. Recent picks come first.
 
+- The command palette now reaches the newer tools: Search all chats (typing anything also offers a search inside messages), Activity overview, Name generator, Find duplicate characters, and, where they apply, stats and Markdown or story export for the open chat, the dice log and campaign codex for the open game, and Check or Test for the open lorebook. Ctrl+Shift+F (Cmd+Shift+F on Mac) opens Search all chats.
+
 - Added a keyboard shortcuts list. Press ? while not typing, or pick Keyboard shortcuts in the command palette, to see every shortcut the app supports, grouped by where it works.
 
 - Added text snippets. Define triggers such as ;ooc in Settings > General > Text Snippets, then type the trigger followed by Space or Tab in the chat input to expand it. {{cursor}} sets where the caret lands, macros like {{char}} are filled in when you send, and Ctrl+Z undoes an expansion. Snippets can also be inserted from the Quick replies menu or the command palette, and sync with your other devices.

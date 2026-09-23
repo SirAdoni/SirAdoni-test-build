@@ -327,7 +327,16 @@ export function UsageDashboardSettings() {
       )}
 
       {summary.isError ? (
-        <p className="text-xs text-[var(--destructive)]">{t("usage.loadFailed")}</p>
+        <div className="flex items-center justify-between gap-2 text-xs text-[var(--destructive)]">
+          <span>{t("usage.loadFailed")}</span>
+          <button
+            type="button"
+            onClick={() => void summary.refetch()}
+            className="mari-chrome-control mari-chrome-control--compact shrink-0 px-3"
+          >
+            {t("usage.retry")}
+          </button>
+        </div>
       ) : !data ? (
         <p className="text-xs text-[var(--muted-foreground)]">{t("usage.loading")}</p>
       ) : (

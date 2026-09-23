@@ -235,6 +235,7 @@ import { CapabilityElement } from "../capabilities/CapabilityElement";
 import type { GameImagePromptOverride, GameImagePromptReviewItem } from "./GameImagePromptReviewModal";
 import { ChatHelpButton } from "../chat/ChatHelpButton";
 import { CHAT_HELP_CLOSE_EVENT, CHAT_HELP_OPEN_REQUEST_EVENT, readChatHelpEventMode } from "../../lib/chat-help-events";
+import { GAME_SESSION_PANEL_OPEN_EVENT, readGameSessionPanelTab } from "../../lib/game-session-panel-events";
 import { GameStoryboardBackgroundVisual, GameStoryboardInlineViewer } from "./GameStoryboardViewer";
 import { GameVolumeMixer } from "./GameVolumeMixer";
 import {
@@ -11260,6 +11261,25 @@ function GameSurfaceComponent({
     },
     [closeChatDrawers, dismissOtherFloatingWindows, readFloatingPanelAnchor, sessionPanelOpen, sessionPanelTab],
   );
+
+  // The command palette opens a Session panel tab (e.g. Tools for the dice log).
+  useEffect(() => {
+    const handleOpenRequest = (event: Event) => {
+      const tab = readGameSessionPanelTab(event);
+      if (!tab) return;
+      dismissOtherFloatingWindows();
+      closeChatDrawers();
+      setSessionPanelTab(tab);
+      setSessionPanelOpen(true);
+      setMobileSessionPanelAnchor(null);
+      setGameAssetsPanelOpen(false);
+      setMobileGameAssetsPanelAnchor(null);
+      // On phones the Session panel hangs off the actions menu.
+      if (window.innerWidth < 768) setMobileActionsOpen(true);
+    };
+    window.addEventListener(GAME_SESSION_PANEL_OPEN_EVENT, handleOpenRequest);
+    return () => window.removeEventListener(GAME_SESSION_PANEL_OPEN_EVENT, handleOpenRequest);
+  }, [closeChatDrawers, dismissOtherFloatingWindows]);
 
   const handleOpenGameAssetsPanel = useCallback(
     (event?: ReactMouseEvent<HTMLElement>) => {

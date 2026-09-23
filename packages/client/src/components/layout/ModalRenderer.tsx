@@ -3,6 +3,7 @@
 // ──────────────────────────────────────────────
 import { lazy, Suspense } from "react";
 import { useUIStore } from "../../stores/ui.store";
+import { openEditorFromPalette } from "../command-palette/palette-navigation";
 import {
   normalizeAvatarCrop,
   type LorebookCategory,
@@ -82,6 +83,9 @@ const ActivityOverviewModal = lazy(() =>
 );
 const NameGeneratorModal = lazy(() =>
   import("../modals/NameGeneratorModal").then((module) => ({ default: module.NameGeneratorModal })),
+);
+const CharacterDuplicatesModal = lazy(() =>
+  import("../characters/CharacterDuplicatesModal").then((module) => ({ default: module.CharacterDuplicatesModal })),
 );
 
 export function ModalRenderer() {
@@ -220,6 +224,19 @@ export function ModalRenderer() {
       break;
     case "name-generator":
       content = <NameGeneratorModal open onClose={closeModal} />;
+      break;
+    case "character-duplicates":
+      content = (
+        <CharacterDuplicatesModal
+          open
+          onClose={closeModal}
+          onOpenCharacter={(id) => {
+            closeModal();
+            // Opened from the palette over any screen, so an unsaved editor gets the usual prompt.
+            void openEditorFromPalette(() => useUIStore.getState().openCharacterDetail(id));
+          }}
+        />
+      );
       break;
     default:
       content = null;

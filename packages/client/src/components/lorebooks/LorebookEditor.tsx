@@ -80,6 +80,7 @@ import {
   Info,
 } from "lucide-react";
 import { cn, copyToClipboard } from "../../lib/utils";
+import { LOREBOOK_EDITOR_TOOL_EVENT, readLorebookEditorTool } from "../../lib/lorebook-editor-events";
 import { HelpTooltip } from "../ui/HelpTooltip";
 import { SettingsSwitch } from "../panels/settings/SettingControls";
 import { api } from "../../lib/api-client";
@@ -534,6 +535,23 @@ export function LorebookEditor() {
   // so each keystroke doesn't re-run match computation against potentially
   // hundreds of entries on every press.
   const [keywordPreviewOpen, setKeywordPreviewOpen] = useState(false);
+  // Bumped by the command palette's "Check lorebook" to open the lint panel.
+  const [lintOpenRequest, setLintOpenRequest] = useState(0);
+  useEffect(() => {
+    const handleToolRequest = (event: Event) => {
+      const tool = readLorebookEditorTool(event);
+      if (!tool) return;
+      if (tool === "check") setLintOpenRequest((value) => value + 1);
+      else setKeywordPreviewOpen(true);
+      window.requestAnimationFrame(() => {
+        contentRef.current
+          ?.querySelector<HTMLElement>(`[data-lorebook-tool="${tool}"]`)
+          ?.scrollIntoView({ block: "start", behavior: "smooth" });
+      });
+    };
+    window.addEventListener(LOREBOOK_EDITOR_TOOL_EVENT, handleToolRequest);
+    return () => window.removeEventListener(LOREBOOK_EDITOR_TOOL_EVENT, handleToolRequest);
+  }, [contentRef]);
   const [keywordPreviewText, setKeywordPreviewText] = useState("");
   const [keywordPreviewDebounced, setKeywordPreviewDebounced] = useState("");
   useEffect(() => {
@@ -2521,13 +2539,15 @@ export function LorebookEditor() {
             </section>
             <section data-editor-section="entries">
               <div className="space-y-3">
-                <LorebookLintPanel entries={entries} onJumpToEntry={jumpToEntry} />
+                <div data-lorebook-tool="check">
+                  <LorebookLintPanel entries={entries} onJumpToEntry={jumpToEntry} openRequest={lintOpenRequest} />
+                </div>
 
                 {/* Keyword test — collapsible authoring aid (issue #816).
                     Paste sample chat text or a paragraph and the editor
                     highlights which entries would activate. Honors keyword
                     matching rules only — see previewMatches memo for scope. */}
-                <div className="mari-editor-panel overflow-hidden">
+                <div className="mari-editor-panel overflow-hidden" data-lorebook-tool="test">
                   <button
                     type="button"
                     onClick={() => setKeywordPreviewOpen((open) => !open)}

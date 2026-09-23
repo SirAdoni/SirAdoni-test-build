@@ -40,6 +40,7 @@ import {
   type PaletteSection,
 } from "../../lib/command-palette";
 import { openSettingsTarget } from "../../lib/settings-targets";
+import { openGlobalSearch } from "../../lib/chat-insights";
 import { useChats } from "../../hooks/use-chats";
 import { useAllCharacterCatalog, usePersonas } from "../../hooks/use-characters";
 import { useLorebooks } from "../../hooks/use-lorebooks";
@@ -57,6 +58,8 @@ const SECTION_ICONS: Record<PaletteSection, LucideIcon> = {
   presets: FileText,
   settings: Settings2,
 };
+
+const SEARCH_CHATS_FOR_QUERY_ID = "action:search-chats-for-query";
 
 const SETTINGS_TABS = [
   { id: "general", labelKey: "settings.tabs.general.label" },
@@ -213,14 +216,22 @@ function PaletteContent({ onClose, inputRef }: { onClose: () => void; inputRef: 
     return [...visible, ...entityCommands];
   }, [entityCommands, registered]);
 
-  const results = useMemo(
-    () =>
-      rankCommands(allCommands, query, recents, {
-        limit: 60,
-        emptyQueryFallback: (command) => command.section === "actions",
-      }),
-    [allCommands, query, recents],
-  );
+  const results = useMemo(() => {
+    const ranked = rankCommands(allCommands, query, recents, {
+      limit: 60,
+      emptyQueryFallback: (command) => command.section === "actions",
+    });
+    // Any typed text can also be looked up inside messages, so the palette never dead-ends.
+    const text = query.trim();
+    if (!text) return ranked;
+    const searchMessages: PaletteCommand = {
+      id: SEARCH_CHATS_FOR_QUERY_ID,
+      section: "chats",
+      title: t("palette.actions.searchChatsFor", { query: text }),
+      run: () => openGlobalSearch(text),
+    };
+    return [...ranked, searchMessages];
+  }, [allCommands, query, recents, t]);
   const recentSet = useMemo(() => new Set(recents), [recents]);
   const showingRecents = !query.trim();
 
@@ -235,9 +246,12 @@ function PaletteContent({ onClose, inputRef }: { onClose: () => void; inputRef: 
   const runCommand = useCallback(
     (command: PaletteCommand | undefined) => {
       if (!command) return;
-      const nextRecents = pushRecent(recents, command.id);
-      setRecents(nextRecents);
-      writeRecents(nextRecents);
+      // The per-query message search is rebuilt for each query, so it is not a recent.
+      if (command.id !== SEARCH_CHATS_FOR_QUERY_ID) {
+        const nextRecents = pushRecent(recents, command.id);
+        setRecents(nextRecents);
+        writeRecents(nextRecents);
+      }
       onClose();
       // Let the dialog close and hand focus back before the action moves it.
       window.setTimeout(() => {

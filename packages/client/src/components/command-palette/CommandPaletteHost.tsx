@@ -8,15 +8,31 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type { Chat } from "@marinara-engine/shared";
-import { isPaletteShortcut, isShortcutsHelpKey, isTypingTarget, registerCommand } from "../../lib/command-palette";
+import { toast } from "sonner";
+import {
+  canOpenGlobalSearchFromShortcut,
+  isGlobalSearchShortcut,
+  isPaletteShortcut,
+  isShortcutsHelpKey,
+  isTypingTarget,
+  registerCommand,
+} from "../../lib/command-palette";
 import { requestChatHelp } from "../../lib/chat-help-events";
+import { openActivityOverview, openChatStats, openGlobalSearch } from "../../lib/chat-insights";
+import { requestGameSessionPanel } from "../../lib/game-session-panel-events";
+import { formatShortcutKey } from "../../lib/keyboard-shortcuts";
+import { requestLorebookEditorTool } from "../../lib/lorebook-editor-events";
+import { openCharacterDuplicates } from "../../lib/open-character-duplicates";
+import { openNameGenerator } from "../../lib/open-name-generator";
+import { countModalOverlays } from "../../lib/modal-overlay-registry";
+import { downloadCampaignCodex } from "../../hooks/use-game-tools";
 import {
   openSettingsTarget,
   TEXT_SNIPPETS_SETTINGS_CONTROL_ID,
   USAGE_DASHBOARD_SETTINGS_CONTROL_ID,
 } from "../../lib/settings-targets";
 import { requestSnippetPicker } from "../../hooks/use-snippet-expansion";
-import { chatKeys } from "../../hooks/use-chats";
+import { chatKeys, useExportChat } from "../../hooks/use-chats";
 import { textSnippetKeys } from "../../hooks/use-text-snippets";
 import { useLaunchNewChat } from "../chat/HomeNewChatLauncher";
 import { useCommandPaletteStore } from "../../stores/command-palette.store";
@@ -49,6 +65,9 @@ export function CommandPaletteHost() {
   // launch() is rebuilt every render; a ref keeps the registered actions stable.
   const launchRef = useRef(launch);
   launchRef.current = launch;
+  const exportChat = useExportChat();
+  const exportChatRef = useRef(exportChat.mutate);
+  exportChatRef.current = exportChat.mutate;
 
   useEffect(() => {
     if (paletteOpen) setPaletteLoaded(true);
@@ -63,6 +82,15 @@ export function CommandPaletteHost() {
       if (isPaletteShortcut(event)) {
         event.preventDefault();
         useCommandPaletteStore.getState().togglePalette();
+        return;
+      }
+      // Never swaps out a dialog the user is in the middle of, except the palette itself.
+      if (isGlobalSearchShortcut(event)) {
+        const palette = useCommandPaletteStore.getState();
+        if (!canOpenGlobalSearchFromShortcut(countModalOverlays(), palette.paletteOpen)) return;
+        event.preventDefault();
+        palette.closePalette();
+        openGlobalSearch();
         return;
       }
       if (isShortcutsHelpKey(event) && !isTypingTarget(event.target)) {
@@ -201,6 +229,100 @@ export function CommandPaletteHost() {
         title: t("palette.actions.characterLibrary"),
         keywords: ["characters", "cards"],
         run: () => useUIStore.getState().openCharacterLibrary(),
+      }),
+      // ── Tools that have their own opener ──
+      registerCommand({
+        id: "action:search-all-chats",
+        section: "actions",
+        title: t("chatInsights.search.open"),
+        keywords: ["find", "global search", "messages", "history"],
+        shortcut: `${formatShortcutKey("Mod")}+Shift+F`,
+        run: () => openGlobalSearch(),
+      }),
+      registerCommand({
+        id: "action:activity-overview",
+        section: "actions",
+        title: t("chatInsights.activity.open"),
+        keywords: ["statistics", "streak", "heatmap", "history"],
+        run: openActivityOverview,
+      }),
+      registerCommand({
+        id: "action:name-generator",
+        section: "actions",
+        title: t("ui.nameGenerator.title"),
+        keywords: ["names", "random", "fantasy", "npc"],
+        run: openNameGenerator,
+      }),
+      registerCommand({
+        id: "action:chat-stats",
+        section: "chats",
+        title: t("palette.actions.chatStats"),
+        subtitle: t("chatInsights.stats.open"),
+        keywords: ["statistics", "words", "messages", "count"],
+        when: () => activeChatMode() !== null,
+        run: () => {
+          const chatId = useChatStore.getState().activeChatId;
+          if (chatId) openChatStats(chatId);
+        },
+      }),
+      ...(["markdown", "html"] as const).map((format) =>
+        registerCommand({
+          id: `action:export-chat-${format}`,
+          section: "chats",
+          title: t(format === "markdown" ? "palette.actions.exportMarkdown" : "palette.actions.exportStory"),
+          subtitle: t(format === "markdown" ? "chatInsights.export.markdownTitle" : "chatInsights.export.htmlTitle"),
+          keywords: ["download", "save", "transcript", format === "markdown" ? "md" : "html"],
+          when: () => activeChatMode() !== null,
+          run: () => {
+            const chatId = useChatStore.getState().activeChatId;
+            if (chatId) exportChatRef.current({ chatId, format });
+          },
+        }),
+      ),
+      registerCommand({
+        id: "action:dice-log",
+        section: "actions",
+        title: t("palette.actions.diceLog"),
+        keywords: ["dice", "rolls", "game tools", "luck"],
+        // The Session panel lives on the game screen, which an open editor covers.
+        when: () => activeChatMode() === "game" && !useUIStore.getState().hasAnyDetailOpen(),
+        run: () => requestGameSessionPanel("tools"),
+      }),
+      registerCommand({
+        id: "action:campaign-codex",
+        section: "actions",
+        title: t("palette.actions.campaignCodex"),
+        keywords: ["export", "download", "wiki", "campaign memory", "game"],
+        when: () => activeChatMode() === "game",
+        run: async () => {
+          const chatId = useChatStore.getState().activeChatId;
+          if (!chatId) return;
+          try {
+            await downloadCampaignCodex(chatId, "md");
+          } catch (error) {
+            toast.error(error instanceof Error ? error.message : t("ui.game.tools.codexFailed"));
+          }
+        },
+      }),
+      ...(["check", "test"] as const).map((tool) =>
+        registerCommand({
+          id: `action:lorebook-${tool}`,
+          section: "lorebooks",
+          title: t(tool === "check" ? "palette.actions.checkLorebook" : "palette.actions.testLorebook"),
+          keywords:
+            tool === "check"
+              ? ["lint", "problems", "issues", "validate", "lorebook"]
+              : ["keyword test", "scanner", "activation", "lorebook"],
+          when: () => !!useUIStore.getState().lorebookDetailId,
+          run: () => requestLorebookEditorTool(tool),
+        }),
+      ),
+      registerCommand({
+        id: "action:character-duplicates",
+        section: "characters",
+        title: t("characters.duplicates.action"),
+        keywords: ["duplicates", "dedupe", "same", "cleanup", "library"],
+        run: openCharacterDuplicates,
       }),
       ...PANEL_COMMANDS.map(({ panel, labelKey, keywords }) =>
         registerCommand({

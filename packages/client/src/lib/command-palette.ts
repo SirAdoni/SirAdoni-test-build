@@ -202,6 +202,26 @@ export function isPaletteShortcut(event: KeyLike): boolean {
   return !/^[a-z]$/u.test(key) && event.code === "KeyK";
 }
 
+/**
+ * Ctrl+Shift+F (Cmd+Shift+F on macOS) opens Search All Chats. Matched like
+ * the palette shortcut, through `code` on non-Latin layouts.
+ */
+export function isGlobalSearchShortcut(event: KeyLike): boolean {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || !event.shiftKey || event.repeat) return false;
+  const key = event.key.toLowerCase();
+  if (key === "f") return true;
+  return !/^[a-z]$/u.test(key) && event.code === "KeyF";
+}
+
+/**
+ * Whether Ctrl/Cmd+Shift+F may open Search all chats while `openOverlays`
+ * `Modal`s are open. The palette is the only dialog it may replace, so the
+ * palette must be the only one open: a dialog under it would be swapped out.
+ */
+export function canOpenGlobalSearchFromShortcut(openOverlays: number, paletteOpen: boolean): boolean {
+  return openOverlays <= (paletteOpen ? 1 : 0);
+}
+
 /** "?" with no command modifiers (Shift is how most layouts type it). */
 export function isShortcutsHelpKey(event: KeyLike): boolean {
   return event.key === "?" && !event.ctrlKey && !event.metaKey && !event.altKey;

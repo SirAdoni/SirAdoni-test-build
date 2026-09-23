@@ -3,7 +3,7 @@
 // Runs the shared lint analyzer over the entries already loaded in the
 // editor. Collapsed by default; the analysis only runs while it is open.
 // ──────────────────────────────────────────────
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ListChecks } from "lucide-react";
 import {
@@ -27,11 +27,16 @@ const SEVERITY_DOT: Record<LorebookLintSeverity, string> = {
 interface Props {
   entries: LorebookEntry[];
   onJumpToEntry: (entryId: string) => void;
+  /** Opens the panel whenever it changes to a positive value (the command palette's "Check lorebook"). */
+  openRequest?: number;
 }
 
-export function LorebookLintPanel({ entries, onJumpToEntry }: Props) {
+export function LorebookLintPanel({ entries, onJumpToEntry, openRequest = 0 }: Props) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (openRequest > 0) setOpen(true);
+  }, [openRequest]);
   const [severityFilter, setSeverityFilter] = useState<LorebookLintSeverity | "all">("all");
   const [maxTokens, setMaxTokens] = useState(LOREBOOK_LINT_DEFAULT_MAX_ENTRY_TOKENS);
   const [maxTokensDraft, setMaxTokensDraft] = useState(String(LOREBOOK_LINT_DEFAULT_MAX_ENTRY_TOKENS));

@@ -25,6 +25,10 @@ export const KEYBOARD_SHORTCUT_GROUPS: readonly KeyboardShortcutGroup[] = [
     shortcuts: [
       // CommandPaletteHost
       { keys: [["Mod", "K"]], labelKey: "shortcuts.general.palette" },
+      // CommandPaletteHost (not while another dialog is open)
+      { keys: [["Mod", "Shift", "F"]], labelKey: "shortcuts.general.globalSearch" },
+      // CommandPalette
+      { keys: [["↑"], ["↓"], ["Enter"]], labelKey: "shortcuts.general.paletteNavigate" },
       // CommandPaletteHost (ignored while typing)
       { keys: [["?"]], labelKey: "shortcuts.general.help" },
       // Modal.tsx and every popover's Escape listener
@@ -45,6 +49,8 @@ export const KEYBOARD_SHORTCUT_GROUPS: readonly KeyboardShortcutGroup[] = [
       // slash, @mention and :emoji: completion lists
       { keys: [["↑"], ["↓"]], labelKey: "shortcuts.composer.completionMove" },
       { keys: [["Tab"], ["Enter"]], labelKey: "shortcuts.composer.completionAccept" },
+      // SnippetPicker
+      { keys: [["↑"], ["↓"], ["Enter"]], labelKey: "shortcuts.composer.snippetPicker" },
       // use-snippet-expansion
       { keys: [["Space"], ["Tab"]], labelKey: "shortcuts.composer.snippet" },
       { keys: [["Mod", "Z"]], labelKey: "shortcuts.composer.snippetUndo" },
@@ -61,6 +67,8 @@ export const KEYBOARD_SHORTCUT_GROUPS: readonly KeyboardShortcutGroup[] = [
       { keys: [["Esc"]], labelKey: "shortcuts.messages.cancelEdit" },
       // ChatMessageSearch
       { keys: [["Enter"]], labelKey: "shortcuts.messages.searchJump" },
+      // GlobalSearchModal
+      { keys: [["Enter"]], labelKey: "shortcuts.messages.globalSearchOpen" },
       // ChatImageLightbox
       { keys: [["←"], ["→"]], labelKey: "shortcuts.messages.lightbox" },
     ],

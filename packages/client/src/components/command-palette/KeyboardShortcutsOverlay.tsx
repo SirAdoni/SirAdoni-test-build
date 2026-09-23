@@ -14,7 +14,7 @@ export function KeyboardShortcutsOverlay() {
   const apple = useMemo(() => isApplePlatform(), []);
 
   return (
-    <Modal open={open} onClose={close} title={t("shortcuts.title")} width="max-w-2xl">
+    <Modal open={open} onClose={close} title={t("shortcuts.title")} width="max-w-2xl" mobileFullscreen>
       <div className="space-y-4">
         <p className="text-xs leading-relaxed text-[var(--muted-foreground)]">{t("shortcuts.intro")}</p>
         <div className="grid gap-4 md:grid-cols-2">

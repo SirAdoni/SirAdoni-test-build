@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const {
+  canOpenGlobalSearchFromShortcut,
   fuzzyScore,
+  isGlobalSearchShortcut,
   isPaletteShortcut,
   isShortcutsHelpKey,
   isTypingTarget,
@@ -131,6 +133,21 @@ assert.equal(isPaletteShortcut({ ...key("t", { ctrlKey: true }), code: "KeyK" })
 assert.equal(isPaletteShortcut({ ...key("k", { ctrlKey: true }), repeat: true }), false, "held key does not re-toggle");
 assert.ok(fuzzyScore("black", "Aria Blackwood")! > fuzzyScore("black", "Unblackened")!, "cached word pattern");
 assert.ok(fuzzyScore("wood", "Dark wood")! > fuzzyScore("wood", "Aria Blackwood")!, "pattern follows the new query");
+// Ctrl/Cmd+Shift+F opens Search all chats; plain Ctrl+F stays the browser's find.
+assert.equal(isGlobalSearchShortcut(key("F", { ctrlKey: true, shiftKey: true })), true);
+assert.equal(isGlobalSearchShortcut(key("f", { metaKey: true, shiftKey: true })), true);
+assert.equal(isGlobalSearchShortcut(key("f", { ctrlKey: true })), false, "Ctrl+F is left to the browser");
+assert.equal(isGlobalSearchShortcut(key("F", { ctrlKey: true, shiftKey: true, altKey: true })), false);
+assert.equal(isGlobalSearchShortcut({ ...key("כ", { ctrlKey: true, shiftKey: true }), code: "KeyF" }), true);
+// Windows AltGr arrives as Ctrl+Alt, so AltGr+Shift+F must not open search.
+assert.equal(isGlobalSearchShortcut({ ...key("F", { ctrlKey: true, shiftKey: true, altKey: true }), code: "KeyF" }), false);
+assert.equal(isGlobalSearchShortcut({ ...key("F", { ctrlKey: true, shiftKey: true }), repeat: true }), false);
+// It may replace only the palette: never a dialog underneath the palette, nor one open on its own.
+assert.equal(canOpenGlobalSearchFromShortcut(0, false), true, "nothing open");
+assert.equal(canOpenGlobalSearchFromShortcut(1, true), true, "only the palette is open");
+assert.equal(canOpenGlobalSearchFromShortcut(2, true), false, "palette opened over another dialog");
+assert.equal(canOpenGlobalSearchFromShortcut(1, false), false, "another dialog is open");
+assert.equal(isPaletteShortcut(key("F", { ctrlKey: true, shiftKey: true })), false);
 assert.equal(isShortcutsHelpKey(key("?", { shiftKey: true })), true);
 assert.equal(isShortcutsHelpKey(key("?", { ctrlKey: true })), false);
 
@@ -169,6 +186,10 @@ const source = (path: string) => readFileSync(new URL(`../../packages/client/src
 const bindings: Array<[string, RegExp]> = [
   ["components/command-palette/CommandPaletteHost.tsx", /isPaletteShortcut\(event\)/u],
   ["components/command-palette/CommandPaletteHost.tsx", /isShortcutsHelpKey\(event\) && !isTypingTarget/u],
+  ["components/command-palette/CommandPaletteHost.tsx", /isGlobalSearchShortcut\(event\)/u],
+  ["components/command-palette/CommandPalette.tsx", /event\.key === "ArrowDown"/u],
+  ["components/chat/SnippetPicker.tsx", /event\.key === "ArrowDown"/u],
+  ["components/modals/GlobalSearchModal.tsx", /event\.key === "Enter" && results\[0\]/u],
   ["components/chat/ChatArea.tsx", /event\.key !== "ArrowLeft" && event\.key !== "ArrowRight"/u],
   ["components/chat/ChatArea.tsx", /event\.key !== "ArrowUp"/u],
   ["components/chat/ConversationInput.tsx", /e\.key === "Enter" && \(e\.metaKey \|\| e\.ctrlKey\)/u],
@@ -191,8 +212,52 @@ const palette = source("components/command-palette/CommandPalette.tsx");
 assert.match(palette, /useAllCharacterCatalog\(\)/u, "palette reads the compact character catalog");
 assert.doesNotMatch(palette, /useCharacters\(\)/u, "palette does not load every full character card");
 
+// Wave-1 tools are reachable from the palette, each shown only where it applies.
+const host = source("components/command-palette/CommandPaletteHost.tsx");
+for (const id of [
+  "action:search-all-chats",
+  "action:activity-overview",
+  "action:name-generator",
+  "action:chat-stats",
+  "action:export-chat-${format}",
+  "action:dice-log",
+  "action:campaign-codex",
+  "action:lorebook-${tool}",
+  "action:character-duplicates",
+  "action:usage-dashboard",
+]) {
+  assert.ok(host.includes(`id: "${id}"`) || host.includes(`id: \`${id}\``), `${id} is registered`);
+}
+assert.match(host, /activeChatMode\(\) === "game"/u, "game tools need a game chat");
+assert.match(host, /lorebookDetailId/u, "lorebook tools need an open lorebook");
+for (const key of [
+  "palette.actions.chatStats",
+  "palette.actions.exportMarkdown",
+  "palette.actions.exportStory",
+  "palette.actions.diceLog",
+  "palette.actions.campaignCodex",
+  "palette.actions.checkLorebook",
+  "palette.actions.testLorebook",
+  "palette.actions.searchChatsFor",
+  "chatInsights.search.open",
+  "chatInsights.activity.open",
+  "ui.nameGenerator.title",
+  "characters.duplicates.action",
+]) {
+  assert.equal(typeof en[key], "string", `${key} is in en.json`);
+  assert.ok(!String(en[key]).includes("—"), `${key} has no em dash`);
+}
+assert.match(palette, /palette\.actions\.searchChatsFor/u, "typed text can always be searched inside messages");
+
 // Touch and mobile users need a visible way in, not only the key binding.
 const topBar = source("components/layout/TopBar.tsx");
 assert.match(topBar, /aria-keyshortcuts="Control\+K Meta\+K"/u, "touch users get a visible palette button");
+
+// The palette's "Find duplicate characters" opens over any editor; opening a card keeps the dirty-editor guard.
+assert.match(
+  source("components/layout/ModalRenderer.tsx"),
+  /openEditorFromPalette\(\(\) => useUIStore\.getState\(\)\.openCharacterDetail\(id\)\)/u,
+  "global duplicates modal guards unsaved editors",
+);
 
 console.log("command palette regression passed");
