@@ -701,7 +701,8 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
   const [exportText, setExportText] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
-  const [importError, setImportError] = useState(false);
+  const [importError, setImportError] = useState<"invalid" | "storage" | null>(null);
+  const [storageFull, setStorageFull] = useState(false);
 
   const save = () => {
     const next = addSavedLayout(
@@ -711,12 +712,14 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
       Date.now(),
       newLayoutId(),
     );
-    writeSavedLayouts(next);
-    setName("");
+    const saved = writeSavedLayouts(next);
+    setStorageFull(!saved);
+    if (saved) setName("");
   };
   const apply = (layout: SavedLayout) => {
-    applyLayoutAsStep(scopeId, layout.snapshot);
-    onApplied();
+    const applied = applyLayoutAsStep(scopeId, layout.snapshot);
+    setStorageFull(!applied);
+    if (applied) onApplied();
   };
   const copy = async (key: string, json: string) => {
     try {
@@ -732,19 +735,22 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
   const runImport = () => {
     const parsed = parseLayoutJson(importText);
     if (!parsed) {
-      setImportError(true);
+      setImportError("invalid");
       return;
     }
     let next = readSavedLayouts();
     for (const item of parsed) next = addSavedLayout(next, item.name, item.snapshot, Date.now(), newLayoutId());
-    writeSavedLayouts(next);
+    if (!writeSavedLayouts(next)) {
+      setImportError("storage");
+      return;
+    }
     setImportText("");
-    setImportError(false);
+    setImportError(null);
     setImportOpen(false);
   };
   const commitRename = () => {
     if (!renaming) return;
-    writeSavedLayouts(renameSavedLayout(readSavedLayouts(), renaming.id, renaming.value, Date.now()));
+    setStorageFull(!writeSavedLayouts(renameSavedLayout(readSavedLayouts(), renaming.id, renaming.value, Date.now())));
     setRenaming(null);
   };
   const iconButton =
@@ -779,6 +785,11 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
             {t("ui.game.layoutEditor.saveLayout")}
           </button>
         </form>
+        {storageFull && (
+          <p role="alert" className="mt-1 px-1 text-[0.6875rem] text-[var(--destructive)]">
+            {t("ui.game.layoutEditor.storageFull")}
+          </p>
+        )}
       </LayoutPopoverSection>
       <LayoutPopoverSection title={t("ui.game.layoutEditor.savedHeading")}>
         {layouts.length === 0 ? (
@@ -922,13 +933,15 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
               value={importText}
               onChange={(event) => {
                 setImportText(event.target.value);
-                setImportError(false);
+                setImportError(null);
               }}
               className="h-24 w-full resize-none rounded-md border border-[var(--marinara-chat-chrome-input-border,var(--marinara-chat-chrome-panel-border))] bg-transparent p-1.5 font-mono text-[0.625rem] text-[var(--marinara-chat-chrome-panel-text)] outline-none focus:border-[var(--marinara-chat-chrome-accent)]"
             />
             {importError && (
               <p role="alert" className="text-[0.6875rem] text-[var(--destructive)]">
-                {t("ui.game.layoutEditor.importError")}
+                {importError === "storage"
+                  ? t("ui.game.layoutEditor.importStorageFull")
+                  : t("ui.game.layoutEditor.importError")}
               </p>
             )}
             <button
@@ -952,8 +965,9 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
               return;
             }
             setConfirmReset(false);
-            applyLayoutAsStep(scopeId, { entries: {} });
-            onApplied();
+            const reset = applyLayoutAsStep(scopeId, { entries: {} });
+            setStorageFull(!reset);
+            if (reset) onApplied();
           }}
         >
           {confirmReset ? t("ui.game.layoutEditor.resetAllConfirm") : t("ui.game.layoutEditor.resetAll")}
