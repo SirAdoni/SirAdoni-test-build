@@ -338,7 +338,14 @@ export function SpriteOverlay({
           characterId={entry.characterId}
           placementKey={entry.placementKey}
           renderMode={entry.renderMode}
-          expression={states[entry.characterId]?.expression ?? "neutral"}
+          expression={
+            // Derive during render so the first frame after a speaker change already shows the saved pose.
+            // Game mode (full-body only) takes poses solely from spriteExpressions; chat mode keeps live
+            // agent and keyword results in `states` ahead of the saved value.
+            fullBodyOnly
+              ? (spriteExpressions?.[entry.characterId] ?? states[entry.characterId]?.expression ?? "neutral")
+              : (states[entry.characterId]?.expression ?? spriteExpressions?.[entry.characterId] ?? "neutral")
+          }
           transition={states[entry.characterId]?.transition ?? "crossfade"}
           placement={entry.placement}
           spriteCount={characterIds.length}
@@ -607,7 +614,10 @@ function CharacterSprite({
   if (!spriteUrl) return null;
 
   // Full-body stage changes should not blink when an agent explicitly returns `none`.
-  const variant = TRANSITION_VARIANTS[resolveSpriteTransition(renderMode, activeTransition)];
+  // On the render where the expression changes, the effect above has not yet stored the new
+  // transition; use the incoming one so the new image does not animate with the stale variant.
+  const effectiveTransition = prevExpressionRef.current !== expression ? transition : activeTransition;
+  const variant = TRANSITION_VARIANTS[resolveSpriteTransition(renderMode, effectiveTransition)];
 
   return (
     <div
