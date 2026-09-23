@@ -1200,7 +1200,8 @@ export function GameSetupWizard({
       );
 
       setStep(0);
-      setGameName(imported.gameName);
+      // maxLength only limits typing, so values from a shared file are clamped to the same limits here.
+      setGameName(imported.gameName.slice(0, 200));
       setGenres(importedGenres.length > 0 ? importedGenres : ["Fantasy"]);
       setCustomGenre("");
       setSetting(config.setting);
@@ -1215,13 +1216,13 @@ export function GameSetupWizard({
       setRating(config.rating);
       setLanguage(config.language?.trim() || "English");
       setAutoTranslate(config.autoTranslate === true);
-      setTranslationLanguage(config.translationOutputTargetLang?.trim() || "en");
+      setTranslationLanguage(config.translationOutputTargetLang?.trim().slice(0, 100) || "en");
       setGmMode(config.gmMode);
       setGmCharacterId(config.gmCharacterId ?? null);
       setPartyCharacterIds(config.partyCharacterIds);
       setPersonaId(config.personaId ?? null);
-      setPlayerGoals(config.playerGoals);
-      setPreferences(imported.preferences);
+      setPlayerGoals(config.playerGoals.slice(0, 2000));
+      setPreferences(imported.preferences.slice(0, 5000));
       setGmSearch("");
       setPartySearch("");
       setPartyFolderId("");
@@ -1286,10 +1287,10 @@ export function GameSetupWizard({
       setPromptPresetId(config.promptPresetId ?? null);
       setGamePresentation(importedStoryboardGamePrompt ? "anime" : "standard");
       setCustomGamePromptEnabled(Boolean(importedCustomPrompt));
-      setGameSystemPromptDraft(importedCustomPrompt || importedBasePrompt);
+      setGameSystemPromptDraft((importedCustomPrompt || importedBasePrompt).slice(0, 16000));
       setGameSystemPromptEdited(Boolean(importedCustomPrompt));
-      setGameSpecialInstructions(config.gameSpecialInstructions?.trim() || "");
-      const importedSpatialMapInstructions = config.spatialMapInstructions?.trim() || "";
+      setGameSpecialInstructions(config.gameSpecialInstructions?.trim().slice(0, 2000) || "");
+      const importedSpatialMapInstructions = config.spatialMapInstructions?.trim().slice(0, 4000) || "";
       const importedSpatialMapDraftOptions = resolveGameSpatialMapDraftOptions(
         config.spatialMapDraftSize,
         config.spatialMapTargetLocationCount,
@@ -1347,7 +1348,7 @@ export function GameSetupWizard({
     return {
       ...buildExperienceSetup(activeExperience, experienceSeed, isNewGame),
       genre: genres.join(", ").slice(0, 200) || "Fantasy",
-      setting: setting || `A ${(genres[0] ?? "fantasy").toLowerCase()} world`,
+      setting: setting.trim() || `A ${(genres[0] ?? "fantasy").toLowerCase()} world`,
       tone: tones.join(", ").slice(0, 200) || "Heroic",
       difficulty: normalizeGameDifficulty(difficulty),
       combatStyle,
@@ -1382,8 +1383,13 @@ export function GameSetupWizard({
       rating,
       gmMode,
       gmCharacterId: gmMode === "character" && gmCharacterId ? gmCharacterId : undefined,
-      partyCharacterIds,
-      playerGoals: playerGoals || "Have an adventure",
+      // The party picker hides the GM character, so a member later chosen as GM could not be removed
+      // from the party by hand. Never send the same character as both.
+      partyCharacterIds:
+        gmMode === "character" && gmCharacterId
+          ? partyCharacterIds.filter((id) => id !== gmCharacterId)
+          : partyCharacterIds,
+      playerGoals: playerGoals.trim() || "Have an adventure",
       personaId: personaId ?? undefined,
       sceneConnectionId: sceneModelValue && sceneModelValue !== "local" ? sceneModelValue : undefined,
       enableAgents: enableAgents || undefined,
@@ -1845,7 +1851,7 @@ export function GameSetupWizard({
                           type="text"
                           value={customGenre}
                           onChange={(e) => setCustomGenre(e.target.value)}
-                          onKeyDown={(e) => e.key === "Enter" && addCustomGenre()}
+                          onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && addCustomGenre()}
                           placeholder={localizeUi("ui.game.gamesetupwizard.addCustomGenre")}
                           className="flex-1 rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs text-[var(--foreground)] outline-none ring-1 ring-transparent transition-all placeholder:text-[var(--muted-foreground)] focus:ring-[var(--primary)]/40"
                         />
@@ -1942,7 +1948,7 @@ export function GameSetupWizard({
                           type="text"
                           value={customTone}
                           onChange={(e) => setCustomTone(e.target.value)}
-                          onKeyDown={(e) => e.key === "Enter" && addCustomTone()}
+                          onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && addCustomTone()}
                           placeholder={localizeUi("ui.game.gamesetupwizard.addCustomTone")}
                           className="flex-1 rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs text-[var(--foreground)] outline-none ring-1 ring-transparent transition-all placeholder:text-[var(--muted-foreground)] focus:ring-[var(--primary)]/40"
                         />
