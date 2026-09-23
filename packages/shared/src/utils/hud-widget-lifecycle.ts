@@ -18,6 +18,18 @@ const types = new Set<HudWidgetType>([
   ...EXTENDED_HUD_WIDGET_TYPES,
 ]);
 
+export const LIST_WIDGET_DEFAULT_MAX = 5;
+export const LIST_WIDGET_MAX_LIMIT = 30;
+
+/**
+ * How many entries a list widget keeps: its config.max (1-30), else 5. A long roster (expected arrivals,
+ * suspects) needs a raised limit; with the default 5, adding an 18-name list kept only the last five.
+ */
+export function listWidgetCapacity(config: { max?: unknown } | null | undefined): number {
+  const max = Number(config?.max);
+  return Number.isFinite(max) && max >= 1 ? Math.min(LIST_WIDGET_MAX_LIMIT, Math.round(max)) : LIST_WIDGET_DEFAULT_MAX;
+}
+
 /** Shared by live playback and branch restoration. Create never overwrites an existing widget. */
 export function applyHudWidgetLifecycle(widgets: HudWidget[], update: WidgetUpdate): HudWidget[] {
   const { widgetId, changes } = update;
@@ -43,7 +55,9 @@ export function applyHudWidgetLifecycle(widgets: HudWidget[], update: WidgetUpda
             ? { stats: [] }
             : changes.type === "inventory_grid"
               ? { slots: 12, contents: [] }
-              : { items: [] };
+              : typeof changes.max === "number" && Number.isFinite(changes.max)
+                ? { items: [], max: listWidgetCapacity({ max: changes.max }) }
+                : { items: [] };
   return [
     ...widgets,
     {

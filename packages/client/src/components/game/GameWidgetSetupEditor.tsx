@@ -5,6 +5,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Copy, Download, Plus, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import {
+  LIST_WIDGET_DEFAULT_MAX,
+  LIST_WIDGET_MAX_LIMIT,
+  listWidgetCapacity,
   EXTENDED_HUD_WIDGET_TYPES,
   EXTENDED_WIDGET_TEXT_FORMAT,
   defaultExtendedWidgetConfig,
@@ -194,7 +197,7 @@ function parseListItemsDraft(value: string): string[] {
     .split(/\r?\n/)
     .map((item) => item.trim())
     .filter(Boolean)
-    .slice(0, 5);
+    .slice(0, LIST_WIDGET_MAX_LIMIT);
 }
 
 function defaultWidgetConfig(type: HudWidgetType): HudWidgetConfig {
@@ -264,10 +267,15 @@ function normalizeConfig(
   }
 
   if (type === "list") {
-    return {
-      ...source,
-      items: Array.isArray(source.items) ? source.items.map((item) => String(item).trim()).filter(Boolean) : [],
-    };
+    const items = Array.isArray(source.items)
+      ? source.items
+          .map((item) => String(item).trim())
+          .filter(Boolean)
+          .slice(0, LIST_WIDGET_MAX_LIMIT)
+      : [];
+    // The limit grows to fit the entries typed here, so a hand-made roster is not trimmed on the next add.
+    const max = Math.max(listWidgetCapacity(source), items.length);
+    return { ...source, items, ...(max > LIST_WIDGET_DEFAULT_MAX ? { max } : {}) };
   }
 
   if (type === "inventory_grid") {

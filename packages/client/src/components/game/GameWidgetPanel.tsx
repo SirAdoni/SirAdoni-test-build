@@ -15,6 +15,8 @@ import {
   extendedWidgetConfigFromText,
   extendedWidgetConfigToText,
   isExtendedHudWidgetType,
+  LIST_WIDGET_MAX_LIMIT,
+  listWidgetCapacity,
   normalizeExtendedWidgetConfig,
   type HudWidget,
 } from "@marinara-engine/shared";
@@ -230,7 +232,10 @@ function buildUpdatedWidgetConfig(
       nextConfig.items = draft.items
         .split(/\r?\n/)
         .map((item) => item.trim())
-        .filter(Boolean);
+        .filter(Boolean)
+        .slice(0, LIST_WIDGET_MAX_LIMIT);
+      // The limit grows to fit the entries typed here, so the next GM add does not trim them back to 5.
+      if (nextConfig.items.length > listWidgetCapacity(nextConfig)) nextConfig.max = nextConfig.items.length;
       return nextConfig;
     case "timer":
       nextConfig.seconds = parseNumberDraft(

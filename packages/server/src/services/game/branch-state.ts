@@ -4,6 +4,7 @@ import {
   coerceWidgetValue,
   isExtendedHudWidgetType,
   leadingWidgetNumber,
+  listWidgetCapacity,
   type HudWidget,
   type WidgetUpdate,
 } from "@marinara-engine/shared";
@@ -159,16 +160,23 @@ export function restoreBranchHudLists(
           }
           return { ...widget, config };
         }
-        let items = [...(widget.config.items ?? [])];
+        const rawListMax = readWidgetParam(body, "max");
+        const listConfig =
+          rawListMax !== null && Number.isFinite(Number(rawListMax))
+            ? { ...widget.config, max: listWidgetCapacity({ max: Number(rawListMax) }) }
+            : widget.config;
+        let items = [...(listConfig.items ?? [])];
         if (remove) {
           const target = normalizeListItem(remove);
           items = items.filter((item) => normalizeListItem(item) !== target);
         }
         if (add) {
           const target = normalizeListItem(add);
-          items = [...items.filter((item) => normalizeListItem(item) !== target), add].slice(-5);
+          items = [...items.filter((item) => normalizeListItem(item) !== target), add].slice(
+            -listWidgetCapacity(listConfig),
+          );
         }
-        return { ...widget, config: { ...widget.config, items } };
+        return { ...widget, config: { ...listConfig, items } };
       });
     }
   }

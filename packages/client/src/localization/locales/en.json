@@ -9269,6 +9269,7 @@
   "ui.game.widgeteditormodal.thisStatBlockHasNoFieldsYetAddOne": "This stat block has no fields yet. Add one below.",
   "ui.game.widgeteditormodal.timerIsRunning": "Timer is running",
   "ui.game.widgeteditormodal.value": "Value",
+  "ui.game.widgets.listOverflow": "{{label}} keeps {{capacity}} entries, so {{dropped}} older ones were removed. Raise its limit by editing the widget.",
   "ui.game.wikitabs.value1K": "{{value1}}k",
   "ui.gameAssets.assetgrid.dropFilesHereToUpload": "Drop files here to upload",
   "ui.gameAssets.assetgrid.loadMore": "Load more",

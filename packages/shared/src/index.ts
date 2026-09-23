@@ -222,7 +222,12 @@ export * from "./features/ruleset-combat/index.js";
 
 export * from "./constants/request-timeouts.js";
 export * from "./utils/character-library-category.js";
-export { applyHudWidgetLifecycle } from "./utils/hud-widget-lifecycle.js";
+export {
+  applyHudWidgetLifecycle,
+  LIST_WIDGET_DEFAULT_MAX,
+  LIST_WIDGET_MAX_LIMIT,
+  listWidgetCapacity,
+} from "./utils/hud-widget-lifecycle.js";
 export * from "./utils/hud-widget-extended.js";
 export * from "./utils/game-calendar.js";
 export * from "./utils/game-feature-switches.js";
