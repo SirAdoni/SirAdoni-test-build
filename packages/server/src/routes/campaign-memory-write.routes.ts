@@ -14,6 +14,13 @@ import {
 import { logger } from "../lib/logger.js";
 import { campaignMemoryRelationshipKindError } from "../services/game/campaign-memory-relationship-kinds.js";
 import type { DB } from "../db/connection.js";
+import { eq } from "../db/file-query.js";
+import { campaignMemoryEntities, campaignMemoryFacts } from "../db/schema/index.js";
+import {
+  campaignEntityIdentity,
+  readCampaignMemoryProjection,
+  type CampaignMemoryProjection,
+} from "../services/game/campaign-memory-campaign-scope.js";
 import {
   applyCampaignMemoryLegacyImport,
   collectCampaignMemoryLegacySource,
@@ -129,49 +136,55 @@ const relationshipInput = z
   })
   .strict();
 
+// Patches carry only the fields the wiki changed: every field is optional and no create default fills a missing key,
+// or an edit of one field would reset the others (aliases, tags, status, lock) to their create defaults.
 const entityPatch = z
   .object({
-    aliases: entityInput.shape.aliases,
-    tags: entityInput.shape.tags,
+    aliases: entityInput.shape.aliases.removeDefault(),
+    tags: entityInput.shape.tags.removeDefault(),
     summary: entityInput.shape.summary,
     body: entityInput.shape.body,
-    attributes: entityInput.shape.attributes,
-    status: entityInput.shape.status,
-    manualLock: entityInput.shape.manualLock,
+    attributes: entityInput.shape.attributes.removeDefault(),
+    status: entityInput.shape.status.removeDefault(),
+    manualLock: entityInput.shape.manualLock.removeDefault(),
   })
+  .partial()
   .strict();
 const factPatch = z
   .object({
     predicate: factInput.shape.predicate,
     value: factInput.shape.value,
-    conditions: factInput.shape.conditions,
-    status: factInput.shape.status,
+    conditions: factInput.shape.conditions.removeDefault(),
+    status: factInput.shape.status.removeDefault(),
     validFromOrder: factInput.shape.validFromOrder,
     validToOrder: factInput.shape.validToOrder,
-    evidence: factInput.shape.evidence,
+    evidence: factInput.shape.evidence.removeDefault(),
     supersedesFactId: factInput.shape.supersedesFactId,
-    manualLock: factInput.shape.manualLock,
+    manualLock: factInput.shape.manualLock.removeDefault(),
   })
+  .partial()
   .strict();
 const knowledgePatch = z
   .object({
     epistemicState: knowledgeInput.shape.epistemicState,
-    learnedFrom: knowledgeInput.shape.learnedFrom,
+    learnedFrom: knowledgeInput.shape.learnedFrom.removeDefault(),
     learnedAtOrder: knowledgeInput.shape.learnedAtOrder,
     confidence: knowledgeInput.shape.confidence,
-    manualLock: knowledgeInput.shape.manualLock,
+    manualLock: knowledgeInput.shape.manualLock.removeDefault(),
   })
+  .partial()
   .strict();
 const relationshipPatch = z
   .object({
     type: relationshipInput.shape.type,
     inverseLabel: relationshipInput.shape.inverseLabel,
-    status: relationshipInput.shape.status,
+    status: relationshipInput.shape.status.removeDefault(),
     effectiveFrom: relationshipInput.shape.effectiveFrom,
     effectiveTo: relationshipInput.shape.effectiveTo,
-    evidence: relationshipInput.shape.evidence,
-    manualLock: relationshipInput.shape.manualLock,
+    evidence: relationshipInput.shape.evidence.removeDefault(),
+    manualLock: relationshipInput.shape.manualLock.removeDefault(),
   })
+  .partial()
   .strict();
 
 const rootSchema = z
@@ -226,6 +239,7 @@ function errorResponse(reply: FastifyReply, error: unknown) {
       ? 404
       : code === "CAMPAIGN_MEMORY_CAS_MISMATCH" ||
           code === "CAMPAIGN_MEMORY_LOCKED" ||
+          code === "CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE" ||
           code === "CAMPAIGN_MEMORY_CONFLICT" ||
           code === "CAMPAIGN_MEMORY_IDEMPOTENCY_CONFLICT"
         ? 409
@@ -352,6 +366,105 @@ function safeImportPreview(plan: Awaited<ReturnType<typeof planCampaignMemoryLeg
   };
 }
 
+/**
+ * The campaign wiki shows one page per person across every session (the projection's anchor id) and the facts of
+ * every session, but a write goes to one chat and storage accepts only references inside that chat. Swap each id
+ * from another session for the same record in the write chat: entities by the campaign projection that holds both
+ * sessions (so name folds count too), facts by the projection's re-read dedupe. When the write chat has no such
+ * record, say so plainly instead of the storage layer's bare INVALID_REFERENCE.
+ */
+async function mapCrossSessionReferences(db: DB, command: CampaignMemoryMutationCommand) {
+  const chatId = command.chatId;
+  const storage = createCampaignMemoryStorage(db);
+  const projections = new Map<string, CampaignMemoryProjection | null>();
+  // The projection of the later of the two sessions holds both; null when they are not sessions of one campaign.
+  const sharedProjection = async (otherChatId: string) => {
+    if (projections.has(otherChatId)) return projections.get(otherChatId)!;
+    let found: CampaignMemoryProjection | null = null;
+    for (const candidate of [otherChatId, chatId]) {
+      const projection = await readCampaignMemoryProjection(db, candidate);
+      if (projection.sessionChatIds.includes(chatId) && projection.sessionChatIds.includes(otherChatId)) {
+        found = projection;
+        break;
+      }
+    }
+    projections.set(otherChatId, found);
+    return found;
+  };
+  const crossSession = (message: string) =>
+    new CampaignMemoryMutationError("CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE", message);
+
+  const mapEntityId = async (entityId: string): Promise<string> => {
+    if (await storage.getEntity({ chatId }, entityId)) return entityId;
+    const foreignRow = (
+      await db.select().from(campaignMemoryEntities).where(eq(campaignMemoryEntities.entityId, entityId)).limit(1)
+    )[0] as { chatId: string } | undefined;
+    // Unknown everywhere: leave it for storage to reject as before.
+    if (!foreignRow || foreignRow.chatId === chatId) return entityId;
+    const foreign = await storage.getEntity({ chatId: foreignRow.chatId }, entityId);
+    if (!foreign) return entityId;
+    // Only another session of the same campaign is mapped; an unrelated chat's entity is rejected by storage as before.
+    const projection = await sharedProjection(foreignRow.chatId);
+    if (!projection) return entityId;
+    const identity = campaignEntityIdentity(foreign);
+    const local = await storage.listEntities({ chatId });
+    const anchor = projection?.entityIdMap.get(entityId);
+    const match =
+      local.find((entity) => campaignEntityIdentity(entity) === identity) ??
+      (anchor ? local.find((entity) => projection!.entityIdMap.get(entity.entityId) === anchor) : undefined);
+    if (match) return match.entityId;
+    const name = foreign.aliases[0] ?? entityId;
+    throw crossSession(
+      `${name} has no page in that session yet, so this record cannot be written there. Add ${name} to that session first.`,
+    );
+  };
+
+  const mapFactId = async (factId: string): Promise<string> => {
+    if (await storage.getFact({ chatId }, factId)) return factId;
+    const foreignRow = (
+      await db.select().from(campaignMemoryFacts).where(eq(campaignMemoryFacts.factId, factId)).limit(1)
+    )[0] as { chatId: string } | undefined;
+    if (!foreignRow || foreignRow.chatId === chatId) return factId;
+    const projection = await sharedProjection(foreignRow.chatId);
+    if (projection) {
+      const resolve = (id: string) => {
+        let current = id;
+        for (let hops = 0; hops < 64 && projection.factIdAlias.has(current); hops += 1)
+          current = projection.factIdAlias.get(current)!;
+        return current;
+      };
+      const kept = resolve(factId);
+      const match = (await storage.listFacts({ chatId })).find((fact) => resolve(fact.factId) === kept);
+      if (match) return match.factId;
+    }
+    // Knowledge and supersession must point at a fact of the write chat; a fact of another session has no copy here.
+    throw crossSession(
+      "That fact belongs to another session and has no copy in this one, so this record cannot be written here. Write it in the session the fact comes from.",
+    );
+  };
+
+  if (command.action === "update") {
+    if (command.recordType === "fact" && command.patch.supersedesFactId)
+      command.patch.supersedesFactId = await mapFactId(command.patch.supersedesFactId);
+    return;
+  }
+  if (command.recordType === "fact") {
+    command.input.subjectEntityId = await mapEntityId(command.input.subjectEntityId);
+    if (command.input.supersedesFactId) command.input.supersedesFactId = await mapFactId(command.input.supersedesFactId);
+  } else if (command.recordType === "knowledge") {
+    command.input.holderEntityId = await mapEntityId(command.input.holderEntityId);
+    if (command.input.attributedClaim)
+      command.input.attributedClaim = {
+        ...command.input.attributedClaim,
+        subjectEntityId: await mapEntityId(command.input.attributedClaim.subjectEntityId),
+      };
+    if (command.input.factId) command.input.factId = await mapFactId(command.input.factId);
+  } else if (command.recordType === "relationship") {
+    command.input.sourceEntityId = await mapEntityId(command.input.sourceEntityId);
+    command.input.targetEntityId = await mapEntityId(command.input.targetEntityId);
+  }
+}
+
 /** Relationship endpoints must exist in the request's chat scope and carry kinds the type permits. Storage re-checks this on write. */
 async function validateRelationshipEndpoints(db: DB, command: CampaignMemoryMutationCommand) {
   if (command.recordType !== "relationship") return;
@@ -390,6 +503,7 @@ async function execute(
   if (!parsed) return;
   try {
     const command = buildCommand(chatId, parsed);
+    await mapCrossSessionReferences(app.db, command);
     await validateRelationshipEndpoints(app.db, command);
     return mode === "preview"
       ? await previewCampaignMemoryMutation(app.db, command)

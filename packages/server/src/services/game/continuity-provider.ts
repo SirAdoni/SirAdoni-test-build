@@ -201,9 +201,14 @@ export const DEFAULT_CONTINUITY_STAGE_TIMEOUT_MS: Readonly<Record<ContinuityStag
   repair: 300_000,
 };
 
+/** Node fires any longer timer after 1 ms, so a huge "no timeout" value would abort every call at once. */
+const MAX_CONTINUITY_STAGE_TIMEOUT_MS = 2_147_483_647;
+
 function timeoutValue(value: unknown): number | undefined {
   const number = typeof value === "string" ? Number(value.trim()) : value;
-  return typeof number === "number" && Number.isFinite(number) && number > 0 ? Math.floor(number) : undefined;
+  return typeof number === "number" && Number.isFinite(number) && number > 0
+    ? Math.min(Math.floor(number), MAX_CONTINUITY_STAGE_TIMEOUT_MS)
+    : undefined;
 }
 
 /**
@@ -478,7 +483,9 @@ function usageOf(
  * Output budget per stage. The reviewer fills a checklist entry for every proposed record before its findings, so a
  * grouped archive batch of thirty records does not fit the 4,000 tokens that were enough before the checklist.
  */
-const CONTINUITY_STAGE_MAX_TOKENS: Record<ContinuityStage, number> = { extract: 8000, review: 12000, repair: 8000 };
+// Reasoning models spend part of this on thinking; 8000 cut extractions off mid-JSON (CONTINUITY_PROVIDER_FINISH_length,
+// 8 of 16 stage failures in one night), wasting the whole paid call.
+const CONTINUITY_STAGE_MAX_TOKENS: Record<ContinuityStage, number> = { extract: 16000, review: 20000, repair: 16000 };
 
 export async function completeContinuityStage(
   db: DB,

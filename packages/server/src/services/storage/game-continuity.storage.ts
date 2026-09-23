@@ -465,7 +465,16 @@ export function createGameContinuityStorage(db: DB) {
         }
         if (receipt.status !== "verified") throw new Error(`Receipt is not ready to publish: ${receipt.status}`);
         const entryIds = await callback(tx, receipt);
-        const next = { ...receipt, status: "published" as const, entryIds, updatedAt: now() };
+        // A receipt that failed to publish once and then published (a retry, a later backfill step) must not keep
+        // the old failure's code and text: the index and UI read errorCode as "this receipt has a problem".
+        const next = {
+          ...receipt,
+          status: "published" as const,
+          entryIds,
+          errorCode: undefined,
+          error: undefined,
+          updatedAt: now(),
+        };
         const history = parseHistory(row.history);
         await tx
           .update(gameContinuityBatches)
@@ -530,17 +539,21 @@ export function createGameContinuityStorage(db: DB) {
         if (!row) return null;
         const receipt = toReceipt(row);
         if (receipt.status !== "published") return null;
-        await callback(tx, receipt);
         const next = { ...receipt, sources, updatedAt: now() };
+        const history = parseHistory(row.history);
+        // An earlier extraction or review kept in history can quote a line the final records no longer cite.
+        // When the edit broke that quote the row cannot be rewritten against the new text; return null so the
+        // caller retires the receipt instead of throwing and leaving it published on the old text.
+        try {
+          validateHistory(history, next);
+        } catch {
+          return null;
+        }
+        await callback(tx, receipt);
         await tx
           .update(gameContinuityBatches)
           .set(
-            toRow(
-              next,
-              receipt.createdAt,
-              parseHistory(row.history),
-              mergeTelemetry(parseTelemetry(row.telemetry), telemetryOf(next)),
-            ),
+            toRow(next, receipt.createdAt, history, mergeTelemetry(parseTelemetry(row.telemetry), telemetryOf(next))),
           )
           .where(eq(gameContinuityBatches.id, id));
         return next;

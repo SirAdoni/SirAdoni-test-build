@@ -20,6 +20,10 @@ export interface CampaignMemoryPage<T> {
 /** Read-only wiki projection. Existing character/map/lore owners retain authority. */
 export interface CampaignMemoryEntityDetail {
   entity: CampaignMemoryEntity;
+  /** Every fact about the entity counted by session (newest first), independent of filters and paging. */
+  factSessions?: Array<{ sessionNumber: number | null; total: number }>;
+  /** Every fact about the entity counted by kind (most first), independent of filters and paging. */
+  factKinds?: Array<{ kind: string; total: number }>;
   facts: CampaignMemoryPage<CampaignMemoryFact>;
   knowledge: CampaignMemoryPage<CampaignMemoryKnowledge>;
   events: CampaignMemoryPage<CampaignMemoryEvent>;

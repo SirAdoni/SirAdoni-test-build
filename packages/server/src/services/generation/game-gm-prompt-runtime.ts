@@ -2,6 +2,7 @@ import { layoutNamedCards, type NamedCard } from "../game/named-card-cache.js";
 import { selectNamedCharacterIds } from "../game/named-characters.js";
 import {
   GAME_GM_BUILT_IN_PROMPT_TEMPLATES,
+  findGameNpcByNameDerivedId,
   normalizeAgentPromptTemplateOptions,
   normalizeTextForMatch,
   resolveGameSetupArtStylePrompt,
@@ -21,7 +22,7 @@ import { getMoraleTier, formatMoraleContext } from "../game/morale.service.js";
 import { sidecarModelService } from "../sidecar/sidecar-model.service.js";
 import { isInferenceAvailable as isSidecarInferenceAvailable } from "../sidecar/sidecar-inference.service.js";
 import { cardPromptText } from "../prompt/card-text.js";
-import { buildPartyNpcId, isPartyNpcId } from "./game-party-utils.js";
+import { isPartyNpcId } from "./game-party-utils.js";
 import type { DB } from "../../db/connection.js";
 import { logger } from "../../lib/logger.js";
 import {
@@ -48,7 +49,8 @@ type ChatsStore = {
   updateMetadata(chatId: string, metadata: Record<string, unknown>): Promise<unknown>;
 };
 
-const DEFAULT_CAMPAIGN_MEMORY_MAX_CHARACTERS = 6000;
+// Campaign scope merges every earlier session, so the block needs room for more than one scene of records.
+export const DEFAULT_CAMPAIGN_MEMORY_MAX_CHARACTERS = 10000;
 
 type ChatLike = {
   personaId?: string | null;
@@ -541,7 +543,7 @@ export async function injectGameGmPromptRuntime(args: {
 
   for (const npcId of partyCharIds) {
     if (!isPartyNpcId(npcId)) continue;
-    const npc = gameNpcs.find((candidate) => buildPartyNpcId(candidate.name) === npcId);
+    const npc = findGameNpcByNameDerivedId(npcId, gameNpcs, (candidate) => candidate.name);
     if (!npc) continue;
     const name = npc.name || "Unknown";
     partyNames.push(name);

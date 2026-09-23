@@ -10,6 +10,7 @@ import { logger } from "../lib/logger.js";
 import {
   applyCampaignMemoryMutation,
   CampaignMemoryMutationError,
+  findCampaignMemoryOperation,
 } from "../services/game/campaign-memory-mutations.js";
 import { readCampaignMemorySources } from "../services/game/campaign-memory-sources.js";
 import { compareCampaignMemoryMessageOrder } from "../services/game/campaign-memory-order.js";
@@ -193,6 +194,17 @@ export async function campaignMemoryCommitmentsRoutes(app: FastifyInstance) {
       try {
         const body = parsed.data;
         const scope = { chatId };
+        // A retry of a transition that already committed (the response was lost) replays its result. The
+        // revision and already-transitioned checks below would otherwise report the retry as a conflict.
+        if (body.operationId) {
+          const done = await findCampaignMemoryOperation(app.db, chatId, `${body.operationId}/create`);
+          if (done?.recordType === "fact") {
+            const createdFact = await storage.getFact(scope, done.recordId);
+            const replayed =
+              createdFact?.supersedesFactId === commitmentId ? await projected(chatId, done.recordId) : null;
+            if (replayed) return replayed;
+          }
+        }
         const current = await storage.getFact(scope, commitmentId);
         const read = current ? readCampaignMemoryCommitmentValue(current) : null;
         if (!current || !read)

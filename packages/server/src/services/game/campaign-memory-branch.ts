@@ -517,7 +517,9 @@ export async function projectCampaignMemoryBranch(
       };
       const unavailableEntities = new Set<string>();
       const ownerReader = createCampaignMemoryOwnerReader(tx);
-      for (const source of entities.filter((item) => requiredEntities().has(item.entityId))) {
+      // Built once: rebuilding the set per entity made branching a large campaign quadratic.
+      const required = requiredEntities();
+      for (const source of entities.filter((item) => required.has(item.entityId))) {
         const owner = source.owner;
         if (owner.type === "registry") {
           if (owner.store !== "campaign-memory" || owner.recordId !== source.entityId) {

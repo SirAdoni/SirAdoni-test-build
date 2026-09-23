@@ -1,6 +1,7 @@
 // ──────────────────────────────────────────────
 // Fastify App Factory
 // ──────────────────────────────────────────────
+import { forgetCampaignMemoryCache, warmCampaignMemoryCache } from "./services/game/campaign-memory-campaign-scope.js";
 import { structurePublishedContinuity } from "./services/game/continuity-structure.js";
 import { holdInjectUntilRegistered } from "./lib/fastify-inject-gate.js";
 import Fastify, { LogController, type FastifyBaseLogger, type FastifyInstance } from "fastify";
@@ -197,6 +198,7 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
   });
   const gameContinuity = createGameContinuityRuntime(db, {
     onPublished: async (receipt) => {
+      forgetCampaignMemoryCache(receipt.chatId);
       // Movements and relationships are read from the newly published records in the background; a failure
       // leaves the receipt unmarked so the structure backfill picks it up later.
       void structurePublishedContinuity(db, receipt.chatId, { receiptIds: [receipt.id] }).catch((error) =>
@@ -335,6 +337,13 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
   // ── Routes ──
   await registerRoutes(app);
   await Promise.all([app.sessionSummaryRefresh?.start(), gameContinuity.start()]);
+  // Hash earlier session transcripts once in the background, so the first GM turn after a restart stays fast.
+  const campaignWarmTimer = setTimeout(() => {
+    void warmCampaignMemoryCache(db).catch((error) =>
+      logger.warn({ err: error }, "[campaign-memory] background warm-up of earlier sessions failed"),
+    );
+  }, 15_000);
+  campaignWarmTimer.unref?.();
   await androidLocalLoginRoute(app);
 
   // Trusted downloaded server capabilities register while Fastify is still mutable.

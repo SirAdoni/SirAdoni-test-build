@@ -89,6 +89,20 @@ function isTransientCode(code: string): boolean {
 function isContextOverflow(code: string, message: string): boolean {
   return code === CONTINUITY_CONTEXT_OVERFLOW || (!code && OVERFLOW_MESSAGE.test(message));
 }
+/**
+ * The model ran out of output tokens before finishing its JSON (finish reason "length"). Retrying the same batch
+ * pays for the same cut-off answer again; a batch of several messages is split like a context overflow instead.
+ */
+function isOutputTruncated(error: unknown, message: string): boolean {
+  let item: unknown = error;
+  for (let depth = 0; item && depth < 6; depth += 1) {
+    const text = item instanceof Error ? item.message : String(item);
+    const detail = (item as { detail?: unknown }).detail;
+    if (/FINISH_length/u.test(text) || (typeof detail === "string" && /FINISH_length/u.test(detail))) return true;
+    item = (item as { cause?: unknown }).cause;
+  }
+  return /FINISH_length/u.test(message);
+}
 
 function objectValue(value: unknown): Record<string, unknown> {
   if (typeof value !== "string")
@@ -120,6 +134,32 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
   const gameStates = createGameStateStorage(db);
   const storage = createGameContinuityStorage(db);
   const pending: Array<{ id: string; chatId: string }> = [];
+  // Chats whose continuity has no usable extraction/review connection. Their work waits here instead of pausing
+  // every other chat: one misconfigured session must not stop the whole campaign's memory.
+  const parked = new Map<string, Array<{ id: string; chatId: string }>>();
+  let unparkTimer: ReturnType<typeof setTimeout> | null = null;
+  const UNPARK_DELAY_MS = 10 * 60_000;
+  const unparkAll = (): void => {
+    unparkTimer = null;
+    const items = [...parked.values()].flat();
+    parked.clear();
+    for (const item of items) if (!pending.some((candidate) => candidate.id === item.id)) pending.push(item);
+    if (items.length) void pump();
+  };
+  const park = (item: { id: string; chatId: string }): void => {
+    const list = parked.get(item.chatId) ?? [];
+    if (!list.length)
+      logger.warn(
+        { chatId: item.chatId, code: "CONTINUITY_CONNECTION_UNAVAILABLE" },
+        "[game-continuity] no extraction/review connection for this chat; its work waits until one is set",
+      );
+    if (!list.some((candidate) => candidate.id === item.id)) list.push(item);
+    parked.set(item.chatId, list);
+    if (!unparkTimer && !stopped) {
+      unparkTimer = setTimeout(unparkAll, UNPARK_DELAY_MS);
+      unparkTimer.unref?.();
+    }
+  };
   const activeChats = new Map<string, { mode: "shadow" | "active" | "backfill"; count: number }>();
   const activeIds = new Set<string>();
   const controllers = new Set<AbortController>();
@@ -175,6 +215,17 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
 
   const isHistoricalBackfill = (receipt: Pick<GameContinuityReceipt, "config">): boolean =>
     receipt.config.historicalBackfill !== undefined;
+  /** The receipt stamped with the chat's current continuity config, keeping the backfill manifest it belongs to. */
+  const refrozen = (
+    receipt: GameContinuityReceipt,
+    config: Awaited<ReturnType<typeof readContinuityConfig>>,
+  ): GameContinuityReceipt => ({
+    ...receipt,
+    configHash: config.hash,
+    config: receipt.config.historicalBackfill
+      ? { ...config.frozen, historicalBackfill: receipt.config.historicalBackfill }
+      : config.frozen,
+  });
 
   const publishActual = async (id: string, allowHistoricalBackfill = false): Promise<GameContinuityReceipt | null> => {
     const before = await storage.get(id);
@@ -208,6 +259,22 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
       }
     }
     return published;
+  };
+
+  /**
+   * Publish a verified receipt under the chat's current config. Publication does not depend on the extraction
+   * config, so a receipt verified under an older one is re-frozen first instead of being thrown away as
+   * CONTINUITY_CONFIG_CHANGED (which cost a full model re-read of text that was already checked).
+   */
+  const publishVerified = async (
+    receipt: GameContinuityReceipt,
+    config: Awaited<ReturnType<typeof readContinuityConfig>>,
+  ): Promise<GameContinuityReceipt | null> => {
+    const ready =
+      config.hash === receipt.configHash
+        ? receipt
+        : await storage.save({ ...refrozen(receipt, config), updatedAt: new Date().toISOString() });
+    return publishActual(ready.id, isHistoricalBackfill(ready));
   };
 
   const currentManifest = async (receipt: GameContinuityReceipt): Promise<boolean> => {
@@ -520,7 +587,10 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
         if (!stopped) logger.warn({ code, receiptId: id }, "[game-continuity] transient provider failure");
         return true;
       }
-      if (isContextOverflow(code, message)) {
+      if (
+        isContextOverflow(code, message) ||
+        (isOutputTruncated(error, message) && currentReceipt.sources.length > 1)
+      ) {
         try {
           await splitOverflowReceipt(currentReceipt);
         } catch (splitError) {
@@ -570,6 +640,9 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
   };
 
   let retiredConfigChanged = 0;
+  let refrozenConfigChanged = 0;
+  // Receipts per chat, read once per pump pass for the config-change sibling check.
+  const chatReceipts = new Map<string, GameContinuityReceipt[]>();
   async function pump(): Promise<void> {
     if (pumping || stopped) return;
     const pausedFor = providerPausedUntil - Date.now();
@@ -601,7 +674,7 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
           return (
             occupied.mode === "shadow" &&
             occupied.count < perChatLimit("shadow") &&
-            (await readContinuityConfig(db, candidate.chatId)).mode === "shadow"
+            (await readContinuityConfig(db, candidate.chatId).catch(() => null))?.mode === "shadow"
           );
         };
         let index = -1;
@@ -625,10 +698,56 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
           currentItem = null;
           continue;
         }
-        const queuedConfig = await readContinuityConfig(db, item.chatId, {
-          allowHistoricalBackfill: isHistoricalBackfill(queued),
-        });
+        let queuedConfig: Awaited<ReturnType<typeof readContinuityConfig>>;
+        try {
+          queuedConfig = await readContinuityConfig(db, item.chatId, {
+            allowHistoricalBackfill: isHistoricalBackfill(queued),
+          });
+        } catch (configError) {
+          const configMessage = configError instanceof Error ? configError.message : String(configError);
+          if (errorCodeOf(configError, configMessage) === "CONTINUITY_CONNECTION_UNAVAILABLE") {
+            park(item);
+            currentItem = null;
+            continue;
+          }
+          throw configError;
+        }
         if (queuedConfig.hash !== queued.configHash) {
+          // A receipt that holds no model result yet (nothing extracted, nothing reviewed) loses nothing by being
+          // read under the new configuration, so it is re-frozen and read now. Retiring it used to throw away the
+          // queue on every settings tweak and left the turns unread until a manual retry or backfill re-run.
+          // It is retired as before when another receipt already reads the same text under the current config
+          // (a reconcile or backfill re-run made one), so the text is not read twice.
+          if (queued.records.length === 0 && queued.dispositions.length === 0 && queued.review === null) {
+            let siblings = chatReceipts.get(item.chatId);
+            if (!siblings) {
+              siblings = await storage.list(item.chatId);
+              chatReceipts.set(item.chatId, siblings);
+            }
+            const superseded = siblings.some(
+              (candidate) =>
+                candidate.id !== queued.id &&
+                candidate.sourceHash === queued.sourceHash &&
+                candidate.configHash === queuedConfig.hash &&
+                candidate.status !== "stale" &&
+                candidate.status !== "failed",
+            );
+            if (!superseded) {
+              const next = await storage.save({
+                ...refrozen(queued, queuedConfig),
+                updatedAt: new Date().toISOString(),
+              });
+              siblings.splice(
+                siblings.findIndex((candidate) => candidate.id === next.id),
+                1,
+                next,
+              );
+              refrozenConfigChanged += 1;
+              pending.unshift(item);
+              currentItem = null;
+              continue;
+            }
+          }
           // A contract or settings change retires the whole backlog at once: one quiet write per receipt
           // and a single summary line, never a worker plus a warning for each of hundreds of receipts.
           try {
@@ -713,9 +832,33 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
         );
         retiredConfigChanged = 0;
       }
+      if (refrozenConfigChanged > 0) {
+        logger.info(
+          { refrozen: refrozenConfigChanged },
+          "[game-continuity] moved %d queued receipts with no model work onto the current continuity configuration",
+          refrozenConfigChanged,
+        );
+        refrozenConfigChanged = 0;
+      }
+      chatReceipts.clear();
       if (active === 0 && pending.length === 0) idleResolvers.splice(0).forEach((resolve) => resolve());
       if (retryAfterPause && !stopped) void pump();
     }
+  }
+
+  /**
+   * A row that must not be handed back for this id: a retired receipt, or a stale one (source changed, config
+   * changed, swiped away) whose text and config match again. Finding it returned the stale row unchanged, so the
+   * turn was never read and a retry did nothing; the caller moves on to the next revival id instead. A split
+   * parent is already replaced by its halves, and a receipt a campaign index cancelled is revived by the index.
+   */
+  function occupiesReceiptId(prior: GameContinuityReceipt | null | undefined): boolean {
+    if (!prior) return false;
+    if (prior.errorCode === CONTINUITY_SOURCE_RETIRED) return true;
+    if (prior.status !== "stale") return false;
+    const splitInto = (prior.config as { splitInto?: unknown }).splitInto;
+    if (Array.isArray(splitInto) && splitInto.length > 0) return false;
+    return !prior.configHash.startsWith("cancelled:");
   }
 
   async function enqueuePreparedBatches(input: {
@@ -734,8 +877,9 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
     // callers that invoke it directly.
     if (!input.prepared.some((message) => message.messageId === input.assistantMessageId)) return receipts;
     const batches = planContinuityTurnBatches(input.prepared, input.assistantMessageId, 8000);
-    await ensureContinuityHolderReferences(db, input.chatId);
-    const holderSnapshot = await captureContinuityHolderSnapshot(db, input.chatId);
+    // Taken only when a batch actually needs a new receipt: reconcile walks every committed turn on each boot and
+    // edit, and paying a durable holder write plus a snapshot for turns already published cost thousands of each.
+    let holderSnapshot: Awaited<ReturnType<typeof captureContinuityHolderSnapshot>> | null = null;
     for (const batch of batches) {
       const sources = batch.sources as GameContinuitySource[];
       const context = batch.context as GameContinuityContextSource[];
@@ -752,13 +896,30 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
         receipts.push(published);
         continue;
       }
+      // A receipt re-frozen onto the current config after a settings change keeps its old id, so the id below
+      // would miss it and queue the same text twice.
+      const inFlight = input.existing.find(
+        (candidate) =>
+          !isHistoricalBackfill(candidate) &&
+          candidate.sourceHash === sourceHash &&
+          candidate.configHash === input.config.hash &&
+          (resumable(candidate.status) || candidate.status === "verified"),
+      );
+      if (inFlight) {
+        receipts.push(inFlight);
+        continue;
+      }
       // A retired receipt keeps its id. If the same text comes back (an undone edit, a swipe back), read it
       // again under a new id instead of finding the retired row and leaving the turn with no memory.
       let id = `gcb_${hash({ chatId: input.chatId, sourceHash, configHash: input.config.hash }).slice(0, 40)}`;
       for (let revival = 1; revival <= 20; revival += 1) {
         const prior = input.existing.find((candidate) => candidate.id === id) ?? (await storage.get(id));
-        if (!prior || prior.errorCode !== CONTINUITY_SOURCE_RETIRED) break;
+        if (!occupiesReceiptId(prior)) break;
         id = `gcb_${hash({ chatId: input.chatId, sourceHash, configHash: input.config.hash, revival }).slice(0, 40)}`;
+      }
+      if (!holderSnapshot) {
+        await ensureContinuityHolderReferences(db, input.chatId);
+        holderSnapshot = await captureContinuityHolderSnapshot(db, input.chatId);
       }
       const receipt: GameContinuityReceipt = {
         id,
@@ -844,20 +1005,13 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
             await persistPublicationFailure(receipt, "CONTINUITY_CONFIG_UNAVAILABLE");
             continue;
           }
-          if (config.mode === "active" && config.hash === receipt.configHash) {
+          if (config.mode === "active") {
             try {
-              await publishActual(receipt.id);
+              await publishVerified(receipt, config);
             } catch (error) {
-              await persistPublicationFailure(receipt, error);
+              await persistPublicationFailure((await storage.get(receipt.id)) ?? receipt, error);
               logger.error(error, "[game-continuity] startup publication failed for receipt %s", receipt.id);
             }
-          } else if (config.mode === "active" && config.hash !== receipt.configHash) {
-            await storage.save({
-              ...receipt,
-              status: "stale",
-              errorCode: "CONTINUITY_CONFIG_CHANGED",
-              error: "Configuration changed after verification.",
-            });
           }
         } else if (resumable(receipt.status)) {
           if (receipt.attempts >= 3 && (receipt.errorCode || receipt.error))
@@ -870,7 +1024,16 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
           else enqueuePending(receipt);
         }
       }
-      for (const chat of await chats.list()) if (!stopped && chat.mode === "game") await this.reconcileChat(chat.id);
+      for (const chat of await chats.list()) {
+        if (stopped) break;
+        if (chat.mode !== "game") continue;
+        // One chat with malformed memory must not fail the Engine's boot or leave every later chat unreconciled.
+        try {
+          await this.reconcileChat(chat.id);
+        } catch (error) {
+          logger.warn({ err: error, chatId: chat.id }, "[game-continuity] startup reconcile failed for chat");
+        }
+      }
     },
     async reconcileChat(chatId: string, reconcileOptions: { changedMessageIds?: Iterable<string> } = {}) {
       if (stopped) return [];
@@ -882,16 +1045,22 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
         try {
           const current = prepareContinuitySources(await chats.listMessages(chatId), objectValue(chat.metadata));
           for (const receipt of findSourceChangedReceipts(await storage.list(chatId), current, changedMessageIds)) {
-            const reanchoredSources = planContinuityReanchor(receipt, current);
-            if (reanchoredSources) {
-              await reanchorContinuityReceipt(db, receipt.id, reanchoredSources);
-              continue;
+            // Each receipt on its own: one that cannot be rewritten no longer skips every receipt after it.
+            try {
+              const reanchoredSources = planContinuityReanchor(receipt, current);
+              // Storage refuses a reanchor its history cannot survive (null); that receipt is retired instead.
+              if (reanchoredSources && (await reanchorContinuityReceipt(db, receipt.id, reanchoredSources))) continue;
+              await retireContinuityReceipt(
+                db,
+                receipt.id,
+                "A message this receipt was read from was edited, deleted, hidden or swiped away.",
+              );
+            } catch (error) {
+              logger.warn(
+                { err: error, chatId, receiptId: receipt.id },
+                "[game-continuity] could not reanchor or retire a receipt for changed messages",
+              );
             }
-            await retireContinuityReceipt(
-              db,
-              receipt.id,
-              "A message this receipt was read from was edited, deleted, hidden or swiped away.",
-            );
           }
         } catch (error) {
           logger.warn({ err: error, chatId }, "[game-continuity] could not retire receipts for changed messages");
@@ -915,8 +1084,9 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
       const prepared = prepareContinuitySources(messages, chatMetadata);
       const existing = await storage.list(chatId);
       const activationAt = typeof config.activationAt === "string" ? Date.parse(config.activationAt) : Number.NaN;
-      for (const message of messages.filter((candidate) => candidate.role === "assistant")) {
-        const messageIndex = messages.indexOf(message);
+      for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
+        const message = messages[messageIndex]!;
+        if (message.role !== "assistant") continue;
         if (boundaryIndex >= 0 && messageIndex < boundaryIndex) continue;
         if (boundaryIndex < 0 && Number.isNaN(activationAt)) continue;
         if (boundaryIndex < 0 && !Number.isNaN(activationAt) && Date.parse(String(message.createdAt)) < activationAt)
@@ -939,6 +1109,9 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
     async stop() {
       stopped = true;
       pending.length = 0;
+      parked.clear();
+      if (unparkTimer) clearTimeout(unparkTimer);
+      unparkTimer = null;
       if (resumeTimer) clearTimeout(resumeTimer);
       resumeTimer = null;
       controllers.forEach((controller) => controller.abort());
@@ -957,7 +1130,24 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
     },
     async enqueueCommittedTurn(input: { chatId: string; sessionNumber?: number; assistantMessageId: string }) {
       if (stopped) return null;
-      const config = await readContinuityConfig(db, input.chatId);
+      let config: Awaited<ReturnType<typeof readContinuityConfig>>;
+      try {
+        config = await readContinuityConfig(db, input.chatId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (errorCodeOf(error, message) !== "CONTINUITY_CONNECTION_UNAVAILABLE") throw error;
+        // A missing continuity connection must not fail the player's send. The turn is queued by resumeChat
+        // (after the connection is set) or by the startup reconcile.
+        logger.warn(
+          {
+            chatId: input.chatId,
+            assistantMessageId: input.assistantMessageId,
+            code: "CONTINUITY_CONNECTION_UNAVAILABLE",
+          },
+          "[game-continuity] turn not queued: no extraction/review connection for this chat",
+        );
+        return null;
+      }
       if (config.mode === "off") return null;
       const chat = await chats.getById(input.chatId);
       if (!chat) return null;
@@ -993,9 +1183,9 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
       const prepared = prepareContinuitySources(messages, objectValue(chat.metadata));
       const preparedIds = new Set(prepared.map((source) => source.messageId));
       const resolvedAccepted: typeof messages = [];
-      for (const message of messages) {
-        const messageIndex = messages.indexOf(message);
-        if (messageIndex < fromIndex || messageIndex > toIndex || message.role !== "assistant") continue;
+      for (let messageIndex = fromIndex; messageIndex <= toIndex; messageIndex += 1) {
+        const message = messages[messageIndex]!;
+        if (message.role !== "assistant") continue;
         if (!preparedIds.has(message.id)) continue;
         const snapshot = await gameStates.getByMessage(message.id, message.activeSwipeIndex ?? 0);
         const followedByUser = messageIndex + 1 < messages.length && messages[messageIndex + 1]?.role === "user";
@@ -1039,8 +1229,28 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
             receipts.push(alreadyPublished);
             continue;
           }
+          // Same text already in flight for this backfill under the current config (re-frozen with its old id).
+          const inFlight = existing.find(
+            (candidate) =>
+              candidate.config.historicalBackfill?.id === input.backfillId &&
+              candidate.sourceHash === sourceHash &&
+              candidate.configHash === config.hash &&
+              (resumable(candidate.status) || candidate.status === "verified"),
+          );
+          if (inFlight) {
+            receipts.push(inFlight);
+            if (inFlight.status !== "verified") enqueuePending(inFlight);
+            continue;
+          }
+          // Re-running a range over a stale receipt of the same text reads it again under a new id.
+          let id = `gch_${hash({ chatId: input.chatId, sourceHash, configHash: config.hash }).slice(0, 40)}`;
+          for (let revival = 1; revival <= 20; revival += 1) {
+            const prior = existing.find((candidate) => candidate.id === id);
+            if (!occupiesReceiptId(prior)) break;
+            id = `gch_${hash({ chatId: input.chatId, sourceHash, configHash: config.hash, revival }).slice(0, 40)}`;
+          }
           const receipt: GameContinuityReceipt = {
-            id: `gch_${hash({ chatId: input.chatId, sourceHash, configHash: config.hash }).slice(0, 40)}`,
+            id,
             chatId: input.chatId,
             sessionNumber,
             sourceHash,
@@ -1082,10 +1292,34 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
           (receipt.config.historicalBackfill?.id === backfillId || explicitReceiptIds.has(receipt.id)),
       );
       const published: GameContinuityReceipt[] = [];
+      // One receipt that cannot publish (its source was edited, a fact conflicts) must not keep the rest of the
+      // manifest unpublished, nor make the campaign index job re-throw on every tick. It records why and stops.
+      let failed = 0;
       for (const receipt of receipts) {
-        const result = await publishActual(receipt.id, true);
-        if (result) published.push(result);
+        try {
+          const result = await publishActual(receipt.id, true);
+          if (result) published.push(result);
+        } catch (error) {
+          failed += 1;
+          logger.warn(
+            { err: error, chatId, backfillId, receiptId: receipt.id },
+            "[game-continuity] historical receipt could not publish",
+          );
+          try {
+            const latest = (await storage.get(receipt.id)) ?? receipt;
+            if (latest.status !== "published") await persistPublicationFailure(latest, error);
+          } catch (persistError) {
+            logger.error(persistError, "[game-continuity] could not record publication failure for %s", receipt.id);
+          }
+        }
       }
+      if (failed > 0)
+        logger.warn(
+          { chatId, backfillId, published: published.length, failed },
+          "[game-continuity] historical backfill published %d receipts; %d could not publish",
+          published.length,
+          failed,
+        );
       return published;
     },
     async list(chatId?: string) {
@@ -1095,11 +1329,42 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
     async retry(chatId: string, batchId?: string) {
       if (stopped) return null;
       const list = await storage.list(chatId);
+      // A stale historical batch belongs to its backfill manifest; rebuilding it from its last assistant turn made
+      // a live receipt (or nothing, with live continuity off) that the manifest never tracked.
+      const staleHistorical = (item: GameContinuityReceipt) => item.status === "stale" && isHistoricalBackfill(item);
       const target = batchId
         ? list.find((item) => item.id === batchId)
-        : list.find((item) => ["failed", "unresolved", "stale"].includes(item.status));
+        : list.find((item) => ["failed", "unresolved", "stale"].includes(item.status) && !staleHistorical(item));
       if (!target || target.status === "published") return target ?? null;
       if (resumable(target.status)) throw new Error("CONTINUITY_BUSY");
+      if (staleHistorical(target)) throw new Error("CONTINUITY_BACKFILL_RERUN_REQUIRED");
+      // A clean, reviewed receipt that only failed to publish (memory write, lorebook, publication step) needs no new
+      // model read: put it back to verified and publish it again.
+      if (
+        target.status === "failed" &&
+        target.records.length > 0 &&
+        target.review !== null &&
+        target.review.findings.length === 0 &&
+        /^CONTINUITY_(MEMORY_|PUBLICATION|LOREBOOK)/.test(target.errorCode ?? "")
+      ) {
+        const verified = await storage.save({
+          ...target,
+          status: "verified",
+          errorCode: undefined,
+          error: undefined,
+          updatedAt: new Date().toISOString(),
+        });
+        try {
+          const config = await readContinuityConfig(db, chatId, {
+            allowHistoricalBackfill: isHistoricalBackfill(verified),
+          });
+          return (await publishVerified(verified, config)) ?? verified;
+        } catch (error) {
+          await persistPublicationFailure((await storage.get(verified.id)) ?? verified, error);
+          logger.warn({ err: error, receiptId: verified.id }, "[game-continuity] publish-only retry failed");
+          return storage.get(verified.id);
+        }
+      }
       if (target.status === "stale") {
         const assistant = [...target.sources].reverse().find((source) => source.role.startsWith("assistant"));
         return assistant
@@ -1126,6 +1391,8 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
     },
     async resumeChat(chatId: string) {
       if (stopped) return [];
+      // A settings change may have supplied the missing connection; the rows are re-read below.
+      parked.delete(chatId);
       const receipts = await storage.list(chatId);
       for (const receipt of receipts) {
         if (isHistoricalBackfill(receipt) && receipt.status === "verified") continue;
@@ -1138,18 +1405,25 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
             logger.error(error, "[game-continuity] resume config resolution failed for receipt %s", receipt.id);
             continue;
           }
-          if (config.mode === "active" && config.hash === receipt.configHash) {
+          if (config.mode === "active") {
             try {
-              await publishActual(receipt.id);
+              await publishVerified(receipt, config);
             } catch (error) {
-              await persistPublicationFailure(receipt, error);
+              await persistPublicationFailure((await storage.get(receipt.id)) ?? receipt, error);
               logger.error(error, "[game-continuity] resume publication failed for receipt %s", receipt.id);
             }
           }
         } else if (resumable(receipt.status) && (receipt.attempts < 3 || (!receipt.errorCode && !receipt.error)))
           enqueuePending(receipt);
       }
-      return storage.list(chatId);
+      // Turns committed while the connection was missing never became receipts (enqueueCommittedTurn skips them);
+      // reconciling queues them now that the connection may be back.
+      try {
+        return await this.reconcileChat(chatId);
+      } catch (error) {
+        logger.warn({ err: error, chatId }, "[game-continuity] resume reconcile failed for chat");
+        return storage.list(chatId);
+      }
     },
     async config(chatId: string): Promise<GameContinuityMetadata> {
       const chat = await chats.getById(chatId);

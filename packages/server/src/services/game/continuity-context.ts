@@ -11,6 +11,8 @@ const OPEN_RECORD_STATUSES = new Set(["proposed", "accepted", "unresolved", "ass
 export interface GameContinuityPromptMetadata {
   mode: "off" | "active";
   includedReceiptIds: string[];
+  /** `${receiptId}:${recordId}` of every record rendered in the text; memory dedupes only against these. */
+  includedRecordKeys: string[];
   omittedRecordCount: number;
   pendingSourceMessageIds: string[];
   unresolvedSourceMessageIds: string[];
@@ -46,6 +48,7 @@ function empty(mode: "off" | "active" = "off"): GameContinuityPromptContext {
     metadata: {
       mode,
       includedReceiptIds: [],
+      includedRecordKeys: [],
       omittedRecordCount: 0,
       pendingSourceMessageIds: [],
       unresolvedSourceMessageIds: [],
@@ -90,11 +93,24 @@ export async function buildGameContinuityPromptContext(
   if (!chat || chat.mode !== "game" || config.mode !== "active") return empty("off");
 
   const state = await readGameContinuityState(db, chatId);
-  const messages = prepareContinuitySources(await chats.listMessages(chatId), metadata);
-  const requestedThroughIndex = options.throughMessageId
-    ? messages.findIndex((message) => message.messageId === options.throughMessageId)
-    : messages.length - 1;
-  const throughIndex = requestedThroughIndex;
+  const rawMessages = await chats.listMessages(chatId);
+  const messages = prepareContinuitySources(rawMessages, metadata);
+  // The boundary is resolved against the raw chat: a hidden, system, recap or empty message is not a prepared
+  // source, and looking it up there gave -1, which silently dropped every record. It now narrows the window to
+  // the sources before it. The before-conversation sentinel and unknown ids still give an empty window.
+  let throughIndex = messages.length - 1;
+  if (options.throughMessageId) {
+    const rawPosition = new Map(rawMessages.map((message, index) => [message.id, index]));
+    const boundary = rawPosition.get(options.throughMessageId);
+    throughIndex = -1;
+    if (boundary !== undefined)
+      for (let index = messages.length - 1; index >= 0; index -= 1) {
+        if ((rawPosition.get(messages[index]!.messageId) ?? Number.POSITIVE_INFINITY) <= boundary) {
+          throughIndex = index;
+          break;
+        }
+      }
+  }
   const messageIndex = new Map(messages.map((message, index) => [message.messageId, index]));
   const allowedSourceMessageIds = options.allowedSourceMessageIds ? new Set(options.allowedSourceMessageIds) : null;
   const eligibleSourceIds = new Set(
@@ -291,6 +307,7 @@ export async function buildGameContinuityPromptContext(
       metadata: {
         mode: "active",
         includedReceiptIds: [],
+        includedRecordKeys: [],
         omittedRecordCount: allRecords.length,
         pendingSourceMessageIds: [...pendingSourceMessageIds].sort(),
         unresolvedSourceMessageIds: [...unresolvedSourceMessageIds].sort(),
@@ -308,6 +325,7 @@ export async function buildGameContinuityPromptContext(
     metadata: {
       mode: "active",
       includedReceiptIds: [...includedReceiptIds],
+      includedRecordKeys: selectedRecords.map((record) => `${record.receiptId}:${record.id}`),
       omittedRecordCount,
       pendingSourceMessageIds: [...pendingSourceMessageIds].sort(),
       unresolvedSourceMessageIds: [...unresolvedSourceMessageIds].sort(),

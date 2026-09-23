@@ -349,6 +349,21 @@ function readJob(chat: ChatRow | undefined): CampaignIndexJob | null {
     : null;
 }
 
+/**
+ * The job of a game, wherever it is stored. A job lives on the first chat of the run's own scope, which is not
+ * the game's first chat when a run named only some sessions (or a chat without a session number sorts first),
+ * so reading `chats[0]` lost it: the scheduler never advanced it and the 409 guard let a second job start.
+ * The most recently updated job wins, which is always the live one.
+ */
+function readGameJob(chats: readonly ChatRow[]): CampaignIndexJob | null {
+  let best: CampaignIndexJob | null = null;
+  for (const chat of chats) {
+    const job = readJob(chat);
+    if (job && (!best || String(job.updatedAt) > String(best.updatedAt))) best = job;
+  }
+  return best;
+}
+
 function gameSummary(gameId: string, chats: ChatDescription[], job: CampaignIndexJob | null) {
   return {
     gameId,
@@ -437,7 +452,10 @@ async function pruneDeadManifests(app: FastifyInstance, chatId: string) {
 
 /** Enqueue every uncovered chunk of one chat; sub-ranges already held by a live manifest are reused. */
 async function enqueueChat(app: FastifyInstance, chatId: string): Promise<SessionProgress> {
-  const inventory = (await readContinuityInventory(app, chatId))!;
+  const inventory = await readContinuityInventory(app, chatId);
+  // A session deleted while the job ran has nothing left to index; asserting it crashed every later advance.
+  if (!inventory)
+    return { status: "skipped", reason: "chat_missing", backfillIds: [], acceptedTurns: 0, skippedSegments: 0 };
   const cover = coverage(inventory, await app.gameContinuity.list(chatId));
   if (!cover.range)
     return { status: "skipped", reason: "nothing_to_index", backfillIds: [], acceptedTurns: 0, skippedSegments: 0 };
@@ -462,7 +480,8 @@ async function enqueueChat(app: FastifyInstance, chatId: string): Promise<Sessio
   }
   const enqueued = out.backfillIds.length > skippedSegments;
   return {
-    status: enqueued ? "enqueued" : out.failed.length ? "failed" : "skipped",
+    // Any failed segment pauses the job: reporting "enqueued" moved past the session and left that range unindexed.
+    status: out.failed.length ? "failed" : enqueued ? "enqueued" : "skipped",
     ...(!enqueued && !out.failed.length ? { reason: "manifest_exists" } : {}),
     backfillIds: out.backfillIds,
     acceptedTurns: out.acceptedTurns,
@@ -484,7 +503,8 @@ async function chatTerminal(app: FastifyInstance, chatId: string) {
 }
 
 async function publishChat(app: FastifyInstance, chatId: string) {
-  const inventory = (await readContinuityInventory(app, chatId))!;
+  const inventory = await readContinuityInventory(app, chatId);
+  if (!inventory) return 0;
   let published = 0;
   for (const manifest of inventory.manifests) {
     if (!manifestSummary(manifest).publishable) continue;
@@ -501,6 +521,11 @@ async function persistJob(app: FastifyInstance, job: CampaignIndexJob) {
 
 const advancing = new Set<string>();
 
+/** The copy of this job currently persisted (null when the chat holding it is gone). */
+async function storedJob(app: FastifyInstance, job: CampaignIndexJob) {
+  return readJob((await createChatsStorage(app.db).getById(job.order[0]!)) ?? undefined);
+}
+
 /**
  * Move a job forward as far as the runtime allows: enqueue the current session's
  * chunks, wait (return) while any of its manifests is still being processed, publish
@@ -513,7 +538,15 @@ async function advanceJob(app: FastifyInstance, job: CampaignIndexJob) {
   const note = (chatId: string | null, event: string, detail?: unknown) =>
     job.history.push({ at: new Date().toISOString(), chatId, event, ...(detail === undefined ? {} : { detail }) });
   try {
+    let first = true;
     while (job.status === "running") {
+      // A cancel can land while an earlier session of this advance was enqueued; stop before starting another.
+      if (!first) {
+        // Only this job's own stored copy counts; a new run replacing a cancelled job has not persisted over it yet.
+        const stored = await storedJob(app, job);
+        if (stored?.jobId === job.jobId && stored.status === "cancelled") break;
+      }
+      first = false;
       const chatId = job.order[job.currentIndex];
       if (!chatId) {
         job.status = "done";
@@ -537,7 +570,10 @@ async function advanceJob(app: FastifyInstance, job: CampaignIndexJob) {
               acceptedTurns: 0,
               skippedSegments: 0,
             };
+        // Keep manifests recorded before a pause, so a later cancel still reaches their receipts.
+        const previousIds = session.backfillIds ?? [];
         Object.assign(session, progress);
+        session.backfillIds = [...new Set([...previousIds, ...progress.backfillIds])];
         status = progress.status;
         note(chatId, status, { acceptedTurns: session.acceptedTurns, backfillIds: session.backfillIds });
         if (status === "failed") {
@@ -556,6 +592,16 @@ async function advanceJob(app: FastifyInstance, job: CampaignIndexJob) {
       }
       job.currentIndex += 1;
     }
+    // The advance works on its own copy; writing it back over a cancellation that landed meanwhile restarted a
+    // job the user cancelled. Retire what this advance enqueued instead, and never overwrite a newer job.
+    const stored = await storedJob(app, job);
+    // A job started later replaced this one while it advanced; an older stored job (the one a new run replaces
+    // and has not persisted over yet) is overwritten as before.
+    if (stored && stored.jobId !== job.jobId && String(stored.startedAt) > String(job.startedAt)) return stored;
+    if (stored?.jobId === job.jobId && stored.status === "cancelled") {
+      job.status = "running";
+      return (await cancelJob(app, job)).job;
+    }
     await persistJob(app, job);
   } catch (error) {
     logger.error({ err: error, gameId: job.gameId, jobId: job.jobId }, "Campaign index job advance failed");
@@ -569,7 +615,7 @@ async function advanceJob(app: FastifyInstance, job: CampaignIndexJob) {
 export async function tickCampaignIndexJobs(app: FastifyInstance) {
   const games = (await listGames(app, {})) ?? [];
   for (const game of games) {
-    const job = readJob(game.chats[0]);
+    const job = readGameJob(game.chats);
     if (job?.status === "running") await advanceJob(app, job);
   }
 }
@@ -639,7 +685,10 @@ export async function campaignIndexRoutes(app: FastifyInstance) {
         // (avatars, status polls, the chat itself) keeps answering instead of freezing for the whole plan.
         await yieldToEventLoop();
       }
-      described.push(gameSummary(game.gameId, chats, readJob(game.chats[0])));
+      const whole = scope.chatIds
+        ? ((await listGames(app, { gameId: game.gameId }))?.[0]?.chats ?? game.chats)
+        : game.chats;
+      described.push(gameSummary(game.gameId, chats, readGameJob(whole)));
     }
     return described;
   };
@@ -672,8 +721,11 @@ export async function campaignIndexRoutes(app: FastifyInstance) {
     const { steps, ...scope } = parsed.data;
     const games = await listGames(app, scope);
     if (!games) return reply.status(404).send({ error: "Game not found" });
+    // A run may name only some sessions, but the game's job can be stored on any of its chats.
+    const wholeGame = async (game: (typeof games)[number]) =>
+      (await listGames(app, { gameId: game.gameId }))?.[0]?.chats ?? game.chats;
     for (const game of games) {
-      const job = readJob(game.chats[0]);
+      const job = readGameJob(await wholeGame(game));
       if (job?.status === "running")
         return reply.status(409).send({
           error: { code: "CAMPAIGN_INDEX_RUNNING", message: "Indexing is already running", jobId: job.jobId },
@@ -687,7 +739,7 @@ export async function campaignIndexRoutes(app: FastifyInstance) {
           owners.push(await registerOwners(app, chat.id));
           await yieldToEventLoop();
         }
-      const previous = readJob(game.chats[0]);
+      const previous = readGameJob(await wholeGame(game));
       const now = new Date().toISOString();
       const job: CampaignIndexJob =
         previous?.status === "paused"
@@ -718,7 +770,7 @@ export async function campaignIndexRoutes(app: FastifyInstance) {
     const parsed = cancelSchema.safeParse(request.body ?? {});
     if (!parsed.success) return reply.status(400).send({ error: "Invalid campaign index cancel request" });
     const games = await listGames(app, { gameId: parsed.data.gameId });
-    const job = games ? readJob(games[0]?.chats[0]) : null;
+    const job = games ? readGameJob(games[0]?.chats ?? []) : null;
     if (!job || (job.status !== "running" && job.status !== "paused"))
       return reply.status(404).send({ error: "No running campaign index job" });
     return cancelJob(app, job);

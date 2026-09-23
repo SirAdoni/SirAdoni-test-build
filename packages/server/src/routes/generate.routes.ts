@@ -732,6 +732,7 @@ import { injectCommittedTrackerContext } from "../services/generation/committed-
 import { loadPriorBeholderState } from "../services/agents/beholder-state.js";
 import {
   appendGameGmCampaignMemory,
+  DEFAULT_CAMPAIGN_MEMORY_MAX_CHARACTERS,
   injectGameGmPromptRuntime,
   resolveGameCharacterCardMacros,
 } from "../services/generation/game-gm-prompt-runtime.js";
@@ -4300,11 +4301,28 @@ export async function generateRoutes(app: FastifyInstance) {
           if (historicalMemoryCutoffOrder) {
             // Same GM memory block as a live turn, projected at the historical cutoff.
             try {
+              // The same budget, focus and receipt dedupe as a live turn; the continuity block below uses this cutoff.
+              const regeneratedIndex = input.regenerateMessageId
+                ? scopedMessages.findIndex((message) => message.id === input.regenerateMessageId)
+                : -1;
+              const continuityThroughMessageId = input.regenerateMessageId
+                ? (scopedMessages[regeneratedIndex - 1]?.id ?? "__before_conversation__")
+                : (input.continueMessageId ?? scopedMessages.at(-1)?.id);
               const historicalMemory = await buildCampaignMemoryContextFromStorage(app.db, {
                 chatId: input.chatId,
                 audience: { kind: "gm" },
-                maxCharacters: 6_000,
+                maxCharacters:
+                  typeof chatMeta.gameCampaignMemoryMaxCharacters === "number" &&
+                  chatMeta.gameCampaignMemoryMaxCharacters > 0
+                    ? chatMeta.gameCampaignMemoryMaxCharacters
+                    : DEFAULT_CAMPAIGN_MEMORY_MAX_CHARACTERS,
                 cutoffOrder: historicalMemoryCutoffOrder,
+                dedupeContinuityReceipts: true,
+                ...(continuityThroughMessageId ? { continuityThroughMessageId } : {}),
+                focusTexts: mappedMessages
+                  .filter((message) => message.contextKind === undefined || message.contextKind === "history")
+                  .slice(-4)
+                  .map((message) => (typeof message.content === "string" ? message.content : "")),
               });
               appendGameGmCampaignMemory(finalMessages, historicalMemory);
             } catch (err) {

@@ -1,3 +1,4 @@
+import { isPinnedFact } from "../services/game/campaign-memory-context.js";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import type {
@@ -22,6 +23,12 @@ import {
 import { createHash } from "node:crypto";
 import { logger } from "../lib/logger.js";
 import { readCampaignMemorySources, type CampaignMemorySource } from "../services/game/campaign-memory-sources.js";
+import {
+  createCampaignScopedMemoryReader,
+  readCampaignMemoryProjection,
+  readCampaignMemorySourcesForProjection,
+  type CampaignMemoryProjection,
+} from "../services/game/campaign-memory-campaign-scope.js";
 import { compareCampaignMemoryMessageOrder } from "../services/game/campaign-memory-order.js";
 import { chats } from "../db/schema/index.js";
 import { eq } from "../db/file-query.js";
@@ -39,12 +46,30 @@ const querySchema = z.object({
     .optional(),
   offset: z.coerce.number().int().min(0).default(0),
   limit: z.coerce.number().int().min(1).max(100).default(50),
+  /** Entity detail only: case-insensitive text match over a fact's predicate and value. */
+  factQuery: z.string().trim().max(200).optional(),
+  /** Entity detail only: a fact kind as listed in `factKinds`. */
+  factKind: z.string().trim().max(60).optional(),
+  /** Entity detail only: facts from this session number. */
+  session: z.coerce.number().int().min(1).optional(),
+  /** Entity list only: "kind" leads with people and places (ENTITY_KINDS order), then name. */
+  sort: z.enum(["name", "kind"]).optional(),
 });
 const timelineQuerySchema = z.object({
   entityId: z.string().trim().min(1).max(200).optional(),
   locationId: z.string().trim().min(1).max(200).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   cursor: z.string().trim().min(1).max(200).optional(),
+  /** "desc" pages newest first ("latest in the story"); the cursor follows the same direction. */
+  order: z.enum(["asc", "desc"]).default("asc"),
+});
+const factsQuerySchema = z.object({
+  /** Only facts the player pinned as canon (manualLock and value.pinned === true). */
+  pinned: z.enum(["true", "false"]).optional(),
+  /** Case-insensitive text match over the predicate and value. */
+  q: z.string().trim().max(200).optional(),
+  offset: z.coerce.number().int().min(0).default(0),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
 });
 const duplicatesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -233,8 +258,65 @@ function displayName(entity: CampaignMemoryEntity): string {
   return entity.aliases[0] || entity.summary || entity.entityId;
 }
 
+/** The session a fact was recorded in; null when it predates session numbering. */
+function factSessionOf(fact: CampaignMemoryFact): number | null {
+  const session = (fact as { originSessionNumber?: unknown }).originSessionNumber;
+  return typeof session === "number" ? session : null;
+}
+
+/** A continuity fact's record kind (decision, commitment, ...), else its predicate. */
+function factKindOf(fact: CampaignMemoryFact): string {
+  const kind = fact.value && typeof fact.value === "object" && !Array.isArray(fact.value) ? fact.value.kind : undefined;
+  return typeof kind === "string" && kind.trim() ? kind.trim() : fact.predicate.replace(/^continuity\./u, "");
+}
+
 function sortEntities(left: CampaignMemoryEntity, right: CampaignMemoryEntity): number {
-  return displayName(left).localeCompare(displayName(right)) || left.entityId.localeCompare(right.entityId);
+  const archived = Number(left.status === "archived") - Number(right.status === "archived");
+  return archived || displayName(left).localeCompare(displayName(right)) || left.entityId.localeCompare(right.entityId);
+}
+
+/** People and places first (ENTITY_KINDS order), archived last, then by name. */
+function sortEntitiesByKind(left: CampaignMemoryEntity, right: CampaignMemoryEntity): number {
+  const rank = (entity: CampaignMemoryEntity) => {
+    const index = (ENTITY_KINDS as readonly string[]).indexOf(entity.kind);
+    return index < 0 ? ENTITY_KINDS.length : index;
+  };
+  const archived = Number(left.status === "archived") - Number(right.status === "archived");
+  return archived || rank(left) - rank(right) || sortEntities(left, right);
+}
+
+/**
+ * Continuity publishes each reviewed batch into the Lorebook Keeper and registers the entry as a lore entity. Its
+ * facts and events already live in the memory tables under their real subjects, so the mirror page is an empty,
+ * unnamed row ("Untitled Lore"); a campaign with hundreds of batches would bury the wiki in them.
+ */
+async function hideEmptyContinuityMirrors(
+  reader: {
+    listFacts(scope: { chatId: string }): Promise<Array<{ subjectEntityId: string }>>;
+    listEvents(scope: { chatId: string }): Promise<Array<{ participantEntityIds: string[]; locationEntityId?: string | null }>>;
+    listKnowledge(scope: { chatId: string }): Promise<Array<{ holderEntityId: string }>>;
+  },
+  chatId: string,
+  entities: CampaignMemoryEntity[],
+): Promise<CampaignMemoryEntity[]> {
+  const mirror = (entity: CampaignMemoryEntity) =>
+    entity.kind === "lore" &&
+    entity.owner.store === "lorebook-entries" &&
+    // Unnamed, or named only after its lorebook entry ("Game continuity 8").
+    // Both live continuity and the legacy import created these; the name, not the source, marks a mirror.
+    entity.aliases.every((alias) => /^game continuity \d+$/iu.test(alias.trim()));
+  if (!entities.some(mirror)) return entities;
+  const [facts, events, knowledge] = await Promise.all([
+    reader.listFacts({ chatId }),
+    reader.listEvents({ chatId }),
+    reader.listKnowledge({ chatId }),
+  ]);
+  const used = new Set<string>([
+    ...facts.map((fact) => fact.subjectEntityId),
+    ...events.flatMap((event) => [...event.participantEntityIds, event.locationEntityId ?? ""]),
+    ...knowledge.map((item) => item.holderEntityId),
+  ]);
+  return entities.filter((entity) => !mirror(entity) || used.has(entity.entityId));
 }
 
 /** Events order by occurrence (source capture chronology), never by their ID; other records by ID. */
@@ -262,8 +344,61 @@ function entityRef(entities: ReadonlyMap<string, CampaignMemoryEntity>, entityId
   return { entityId, alias: entity ? displayName(entity) : entityId };
 }
 
-function eventSummary(event: CampaignMemoryEvent): string {
-  return event.transitions.join(" ");
+/**
+ * Events store only transition ids and evidence, so their readable text comes from what the same transition wrote:
+ * the facts citing the same quote, then the state it changed, then the quote itself. Never the ids.
+ */
+function eventSummaries(
+  events: CampaignMemoryEvent[],
+  facts: CampaignMemoryFact[],
+  currentState: CampaignMemoryCurrentState[],
+  entityById: ReadonlyMap<string, CampaignMemoryEntity>,
+): Map<string, string> {
+  const evidenceKey = (item: { messageId: string; quote: string }) => `${item.messageId}\u0000${item.quote.trim()}`;
+  const factsByEvidence = new Map<string, string[]>();
+  for (const fact of facts) {
+    if (DUPLICATE_EXCLUDED_STATUSES.has(fact.status)) continue;
+    const text = factText(fact);
+    if (!text) continue;
+    for (const item of fact.evidence) {
+      const list = factsByEvidence.get(evidenceKey(item)) ?? [];
+      if (!list.includes(text)) list.push(text);
+      factsByEvidence.set(evidenceKey(item), list);
+    }
+  }
+  const statesByEvent = new Map<string, string[]>();
+  for (const state of currentState) {
+    const entity = entityById.get(state.entityId);
+    const value = typeof state.value === "string" ? (entityById.get(state.value) ? displayName(entityById.get(state.value)!) : state.value) : JSON.stringify(state.value);
+    const list = statesByEvent.get(state.sourceEventId) ?? [];
+    list.push(`${entity ? displayName(entity) : state.entityId}: ${state.property} = ${value}`);
+    statesByEvent.set(state.sourceEventId, list);
+  }
+  const summaries = new Map<string, string>();
+  for (const event of events) {
+    const fromFacts = [...new Set(event.evidence.flatMap((item) => factsByEvidence.get(evidenceKey(item)) ?? []))];
+    const text = fromFacts.length
+      ? fromFacts.slice(0, 3).join("; ")
+      : (statesByEvent.get(event.eventId)?.join("; ") ?? event.evidence.find((item) => item.quote.trim())?.quote.trim() ?? "");
+    summaries.set(event.eventId, text);
+  }
+  return summaries;
+}
+
+function factText(fact: CampaignMemoryFact): string {
+  const value = fact.value as unknown;
+  if (typeof value === "string") return value.trim();
+  if (value && typeof value === "object" && typeof (value as { text?: unknown }).text === "string")
+    return ((value as { text: string }).text).trim();
+  return "";
+}
+
+function originFields(record: object): { originChatId?: string; originSessionNumber?: number } {
+  const origin = record as { originChatId?: unknown; originSessionNumber?: unknown };
+  return {
+    ...(typeof origin.originChatId === "string" ? { originChatId: origin.originChatId } : {}),
+    ...(typeof origin.originSessionNumber === "number" ? { originSessionNumber: origin.originSessionNumber } : {}),
+  };
 }
 
 function eventInvolves(event: CampaignMemoryEvent, entityId: string): boolean {
@@ -351,6 +486,20 @@ function errorResponse(reply: FastifyReply, error: unknown) {
 export async function campaignMemoryRoutes(app: FastifyInstance) {
   const storage = createCampaignMemoryStorage(app.db);
 
+  /**
+   * Read routes default to the whole campaign: every earlier session of the game merged into this chat
+   * (`?scope=session` reads this chat alone). Records keep `originChatId` so edits go to the chat that owns them.
+   */
+  async function memoryScope(req: { query?: unknown }, chatId: string) {
+    const requested = (req.query as { scope?: unknown } | undefined)?.scope;
+    if (requested === "session") return { reader: storage, projection: null as CampaignMemoryProjection | null };
+    const projection = await readCampaignMemoryProjection(app.db, chatId);
+    // A single-session projection is the chat's own memory; it is still used because it is cached between requests.
+    return { reader: createCampaignScopedMemoryReader(projection), projection };
+  }
+  const canonicalEntityId = (projection: CampaignMemoryProjection | null, entityId: string) =>
+    projection?.entityIdMap.get(entityId) ?? entityId;
+
   app.get("/:chatId/memory/sources/:messageId", async (req, reply) => {
     const params = sourceParamsSchema.safeParse(req.params);
     const query = sourceQuerySchema.safeParse(req.query ?? {});
@@ -362,12 +511,23 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
       const result = await app.db.transaction(async (tx) => {
         const chat = (await tx.select().from(chats).where(eq(chats.id, params.data.chatId)).limit(1))[0];
         if (!chat || chat.mode !== "game") return { kind: "unavailable" as const };
-        const source = (
+        let source = (
           await readCampaignMemorySources(tx, {
             chatId: params.data.chatId,
             messageIds: [params.data.messageId],
           })
         ).get(params.data.messageId);
+        // Campaign-scoped records cite messages of earlier sessions of the same game.
+        if (!source && (req.query as { scope?: unknown } | undefined)?.scope !== "session") {
+          const { listCampaignSessionChats } = await import("../services/game/campaign-memory-campaign-scope.js");
+          for (const session of await listCampaignSessionChats(tx, params.data.chatId)) {
+            if (session.id === params.data.chatId) continue;
+            source = (
+              await readCampaignMemorySources(tx, { chatId: session.id, messageIds: [params.data.messageId] })
+            ).get(params.data.messageId);
+            if (source) break;
+          }
+        }
         if (!source) return { kind: "unavailable" as const };
         if (source.sourceHash.toLowerCase() !== query.data.sourceHash.toLowerCase()) {
           return { kind: "changed" as const, sourceHash: source.sourceHash };
@@ -407,7 +567,12 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
       });
     const { chatId } = req.params as { chatId: string };
     try {
-      let entities = await storage.listEntities({ chatId });
+      const { reader } = await memoryScope(req, chatId);
+      let entities = await hideEmptyContinuityMirrors(reader, chatId, await reader.listEntities({ chatId }));
+      // Totals per kind over every listed page, before the kind filter, so one request can label every kind chip.
+      const kindTotals = Object.fromEntries(ENTITY_KINDS.map((kind) => [kind, 0])) as Record<string, number>;
+      for (const entity of entities) kindTotals[entity.kind] = (kindTotals[entity.kind] ?? 0) + 1;
+      const order = query.data.sort === "kind" ? sortEntitiesByKind : sortEntities;
       if (query.data.kind) entities = entities.filter((entity) => entity.kind === query.data.kind);
       if (query.data.owner) {
         const separator = query.data.owner.indexOf(":");
@@ -417,8 +582,8 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
       }
       const search = query.data.q?.toLocaleLowerCase();
       if (!search) {
-        entities.sort(sortEntities);
-        return page(entities, query.data.offset, query.data.limit);
+        entities.sort(order);
+        return { ...page(entities, query.data.offset, query.data.limit), kindTotals };
       }
       const ranked = entities.flatMap((entity) => {
         const tier = matchTier(entity, search);
@@ -426,9 +591,9 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
       });
       ranked.sort(
         (left, right) =>
-          MATCH_TIER_RANK[left.matchTier] - MATCH_TIER_RANK[right.matchTier] || sortEntities(left, right),
+          MATCH_TIER_RANK[left.matchTier] - MATCH_TIER_RANK[right.matchTier] || order(left, right),
       );
-      return page(ranked, query.data.offset, query.data.limit);
+      return { ...page(ranked, query.data.offset, query.data.limit), kindTotals };
     } catch (error) {
       return errorResponse(reply, error);
     }
@@ -440,9 +605,11 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
       return reply.status(400).send({
         error: { code: "INVALID_QUERY", message: "Invalid campaign memory query", details: query.error.flatten() },
       });
-    const { chatId, entityId } = req.params as { chatId: string; entityId: string };
+    const { chatId, entityId: requestedEntityId } = req.params as { chatId: string; entityId: string };
     try {
       const scope = { chatId };
+      const { reader: storage, projection } = await memoryScope(req, chatId);
+      const entityId = canonicalEntityId(projection, requestedEntityId);
       const entity = await storage.getEntity(scope, entityId);
       if (!entity)
         return reply
@@ -455,18 +622,47 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
         storage.listCurrentState(scope),
         storage.listBacklinks(scope, entityId),
         storage.listEntities(scope),
-        readCampaignMemorySources(app.db, { chatId }),
+        projection
+          ? readCampaignMemorySourcesForProjection(app.db, projection)
+          : readCampaignMemorySources(app.db, { chatId }),
       ]);
       const entityById = new Map(allEntities.map((item) => [item.entityId, item]));
+      const knowledgeByFact = new Map<string, typeof knowledge>();
+      for (const item of knowledge) {
+        if (!item.factId) continue;
+        const list = knowledgeByFact.get(item.factId) ?? [];
+        list.push(item);
+        knowledgeByFact.set(item.factId, list);
+      }
       const coHoldersOf = (factId: string) =>
-        knowledge
-          .filter((item) => item.factId === factId && item.holderEntityId !== entityId)
+        (knowledgeByFact.get(factId) ?? [])
+          .filter((item) => item.holderEntityId !== entityId)
           .map((item) => ({ ...entityRef(entityById, item.holderEntityId), epistemicState: item.epistemicState }))
           .sort((left, right) => left.alias.localeCompare(right.alias) || left.entityId.localeCompare(right.entityId));
       const withCoHolders = (item: CampaignMemoryFact) => ({ ...item, coHolders: coHoldersOf(item.factId) });
+      // Per-session and per-kind counts cover every fact about the entity, whatever the filters and page.
+      const entityFacts = facts.filter((item) => item.subjectEntityId === entityId);
+      const tally = <K,>(keyOf: (fact: CampaignMemoryFact) => K) => {
+        const counts = new Map<K, number>();
+        for (const fact of entityFacts) counts.set(keyOf(fact), (counts.get(keyOf(fact)) ?? 0) + 1);
+        return counts;
+      };
+      const factSessions = [...tally(factSessionOf)]
+        .map(([sessionNumber, total]) => ({ sessionNumber, total }))
+        .sort((left, right) => (right.sessionNumber ?? 0) - (left.sessionNumber ?? 0));
+      const factKinds = [...tally(factKindOf)]
+        .map(([kind, total]) => ({ kind, total }))
+        .sort((left, right) => right.total - left.total || left.kind.localeCompare(right.kind));
+      const factSearch = query.data.factQuery?.toLocaleLowerCase();
       const factPage = page(
-        facts
-          .filter((item) => item.subjectEntityId === entityId)
+        entityFacts
+          .filter((item) => !query.data.session || factSessionOf(item) === query.data.session)
+          .filter((item) => !query.data.factKind || factKindOf(item) === query.data.factKind)
+          .filter(
+            (item) =>
+              !factSearch ||
+              `${item.predicate} ${JSON.stringify(item.value)}`.toLocaleLowerCase().includes(factSearch),
+          )
           .sort(sortRecords)
           .map(withCoHolders),
         query.data.offset,
@@ -522,7 +718,8 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
       const relatedEntities = allEntities
         .filter((item) => item.entityId !== entityId && referenced.has(item.entityId))
         .sort(sortEntities);
-      const allFactRecords: EvidenceRecord[] = facts.map((item) => ({
+      const checkedFactIds = new Set(knowledgePage.items.flatMap((item) => (item.factId ? [item.factId] : [])));
+      const allFactRecords: EvidenceRecord[] = facts.filter((item) => checkedFactIds.has(item.factId)).map((item) => ({
         id: item.factId,
         evidence: item.evidence,
         manual: item.author === "user" || item.provenance.actor === "user",
@@ -554,7 +751,7 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
       const eventChecks = new Map(
         Object.entries(
           sourceChecks(
-            events.map((item) => ({
+            events.filter((item) => referencedEventIds.has(item.eventId)).map((item) => ({
               id: item.eventId,
               evidence: item.evidence,
               manual: item.provenance.actor === "user",
@@ -578,8 +775,13 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
           return check ? [[event.eventId, check] as const] : [];
         }),
       );
-      const detail: CampaignMemoryEntityDetail = {
+      const detail: CampaignMemoryEntityDetail & {
+        factSessions: Array<{ sessionNumber: number | null; total: number }>;
+        factKinds: Array<{ kind: string; total: number }>;
+      } = {
         entity,
+        factSessions,
+        factKinds,
         facts: factPage,
         knowledge: knowledgePage,
         events: eventPage,
@@ -607,8 +809,11 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
       return reply
         .status(400)
         .send({ error: { code: "INVALID_QUERY", message: "Invalid campaign memory section query" } });
-    const { chatId, entityId } = req.params as { chatId: string; entityId: string };
+    const { chatId, entityId: requestedEntityId } = req.params as { chatId: string; entityId: string };
     try {
+      // Inside the try: building the projection can fail (a missing chat), which must answer as an error response.
+      const { reader: storage, projection } = await memoryScope(req, chatId);
+      const entityId = canonicalEntityId(projection, requestedEntityId);
       const scope = { chatId };
       const entity = await storage.getEntity(scope, entityId);
       if (!entity)
@@ -647,17 +852,22 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
       });
     const { chatId } = req.params as { chatId: string };
     try {
+      const { reader: storage, projection } = await memoryScope(req, chatId);
       const scope = { chatId };
-      const [events, currentState, entities] = await Promise.all([
+      const [events, currentState, entities, facts] = await Promise.all([
         storage.listEvents(scope),
         storage.listCurrentState(scope),
         storage.listEntities(scope),
+        storage.listFacts(scope),
       ]);
-      const { entityId, locationId } = query.data;
+      // Events carry projected ids; a filter naming another session's copy of the entity must still match.
+      const entityId = query.data.entityId ? canonicalEntityId(projection, query.data.entityId) : undefined;
+      const locationId = query.data.locationId ? canonicalEntityId(projection, query.data.locationId) : undefined;
       const ordered = events
         .filter((event) => !entityId || eventInvolves(event, entityId))
         .filter((event) => !locationId || event.locationEntityId === locationId)
         .sort(sortRecords);
+      if (query.data.order === "desc") ordered.reverse();
       let start = 0;
       if (query.data.cursor) {
         const index = ordered.findIndex((event) => event.eventId === query.data.cursor);
@@ -678,6 +888,7 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
         list.push({ entityId: state.entityId, key: state.property, value: state.value });
         changesByEvent.set(state.sourceEventId, list);
       }
+      const summaries = eventSummaries(slice, facts, currentState, entityById);
       return {
         items: slice.map((event) => ({
           eventId: event.eventId,
@@ -685,13 +896,53 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
           campaignTime: event.campaignTime ?? null,
           location: event.locationEntityId ? entityRef(entityById, event.locationEntityId) : null,
           participants: event.participantEntityIds.map((id) => entityRef(entityById, id)),
-          summary: eventSummary(event),
+          summary: summaries.get(event.eventId) ?? "",
           stateChanges: (changesByEvent.get(event.eventId) ?? []).sort(
             (left, right) => left.entityId.localeCompare(right.entityId) || left.key.localeCompare(right.key),
           ),
           sourceMessageId: event.evidence[0]?.messageId ?? null,
+          // Campaign scope: the session the event was recorded in, so the timeline can group by session.
+          ...originFields(event),
         })),
         nextCursor: start + query.data.limit < ordered.length ? (slice.at(-1)?.eventId ?? null) : null,
+      };
+    } catch (error) {
+      return errorResponse(reply, error);
+    }
+  });
+
+  // Campaign-wide fact list, for the wiki's Canon page: newest session first, each with its subject's name.
+  app.get("/:chatId/memory/facts", async (req, reply) => {
+    const query = factsQuerySchema.safeParse(req.query ?? {});
+    if (!query.success)
+      return reply.status(400).send({
+        error: { code: "INVALID_QUERY", message: "Invalid campaign memory facts query", details: query.error.flatten() },
+      });
+    const { chatId } = req.params as { chatId: string };
+    try {
+      const { reader } = await memoryScope(req, chatId);
+      const [facts, entities] = await Promise.all([reader.listFacts({ chatId }), reader.listEntities({ chatId })]);
+      const entityById = new Map(entities.map((item) => [item.entityId, item]));
+      const search = query.data.q?.toLocaleLowerCase();
+      const matching = facts
+        .filter((fact) => query.data.pinned === undefined || isPinnedFact(fact) === (query.data.pinned === "true"))
+        .filter(
+          (fact) => !search || `${fact.predicate} ${JSON.stringify(fact.value)}`.toLocaleLowerCase().includes(search),
+        )
+        .sort(
+          (left, right) =>
+            (factSessionOf(right) ?? 0) - (factSessionOf(left) ?? 0) ||
+            String(right.validFromOrder ?? "").localeCompare(String(left.validFromOrder ?? "")) ||
+            left.factId.localeCompare(right.factId),
+        );
+      const result = page(matching, query.data.offset, query.data.limit);
+      return {
+        ...result,
+        items: result.items.map((fact) => ({
+          ...fact,
+          subject: entityRef(entityById, fact.subjectEntityId),
+          ...originFields(fact),
+        })),
       };
     } catch (error) {
       return errorResponse(reply, error);
@@ -701,6 +952,7 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
   app.get("/:chatId/memory/facts/:factId/dependents", async (req, reply) => {
     const { chatId, factId } = req.params as { chatId: string; factId: string };
     try {
+      const { reader: storage } = await memoryScope(req, chatId);
       const scope = { chatId };
       const fact = await storage.getFact(scope, factId);
       if (!fact)
@@ -720,9 +972,10 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
         .filter((event) => event.evidence.some((item) => citedMessages.has(item.messageId)))
         .sort(sortRecords);
       const dependentEventIds = new Set(dependentEvents.map((event) => event.eventId));
+      const summaries = eventSummaries(dependentEvents, await storage.listFacts(scope), currentState, entityById);
       return {
         knowledge: knowledge
-          .filter((item) => item.factId === factId)
+          .filter((item) => item.factId === fact.factId)
           .sort(sortRecords)
           .map((item) => ({
             knowledgeId: item.knowledgeId,
@@ -733,7 +986,7 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
           .filter((item) => dependentEventIds.has(item.sourceEventId))
           .sort(sortRecords)
           .map((item) => ({ entityId: item.entityId, key: item.property, causeEventId: item.sourceEventId })),
-        events: dependentEvents.map((event) => ({ eventId: event.eventId, summary: eventSummary(event) })),
+        events: dependentEvents.map((event) => ({ eventId: event.eventId, summary: summaries.get(event.eventId) ?? "" })),
       };
     } catch (error) {
       return errorResponse(reply, error);
@@ -741,8 +994,11 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
   });
 
   app.get("/:chatId/memory/entities/:entityId/references", async (req, reply) => {
-    const { chatId, entityId } = req.params as { chatId: string; entityId: string };
+    const { chatId, entityId: requestedEntityId } = req.params as { chatId: string; entityId: string };
     try {
+      // Inside the try: building the projection can fail (a missing chat), which must answer as an error response.
+      const { reader: storage, projection } = await memoryScope(req, chatId);
+      const entityId = canonicalEntityId(projection, requestedEntityId);
       const scope = { chatId };
       const entity = await storage.getEntity(scope, entityId);
       if (!entity)
@@ -867,10 +1123,20 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
       const linkedFactId = await app.db.transaction(
         async (tx) => {
           const txStorage = createCampaignMemoryStorage(tx);
+          // Another tab may have retired the kept fact since this group was read (its revision need not move
+          // when it was already linked); resolving onto it would leave every fact of the group superseded.
+          const keepNow = await txStorage.getFact(scope, keepFactId);
+          if (!keepNow)
+            throw new CampaignMemoryMutationError("CAMPAIGN_MEMORY_NOT_FOUND", `Fact ${keepFactId} not found`);
+          if (DUPLICATE_EXCLUDED_STATUSES.has(keepNow.status))
+            throw new CampaignMemoryMutationError(
+              "CAMPAIGN_MEMORY_CAS_MISMATCH",
+              `Kept fact ${keepFactId} is ${keepNow.status}; reload the duplicate group`,
+            );
           for (const factId of retireFactIds) {
             const fact = await txStorage.getFact(scope, factId);
             if (!fact) throw new CampaignMemoryMutationError("CAMPAIGN_MEMORY_NOT_FOUND", `Fact ${factId} not found`);
-            if (fact.subjectEntityId !== keep.subjectEntityId || fact.predicate !== keep.predicate)
+            if (fact.subjectEntityId !== keepNow.subjectEntityId || fact.predicate !== keepNow.predicate)
               throw new CampaignMemoryMutationError(
                 "CAMPAIGN_MEMORY_INVALID_VALUE",
                 `Fact ${factId} is not a duplicate of ${keepFactId}`,

@@ -76,11 +76,13 @@ export function buildRecapPrompt(
   summaries: SessionSummary[],
   latestEndingBeat?: string | null,
   rating: "sfw" | "nsfw" = "sfw",
+  verifiedMemory?: string | null,
 ): string {
   const latest = summaries[summaries.length - 1];
   if (!latest) return "";
 
   const cleanedEndingBeat = normalizeRecapBeat(latestEndingBeat);
+  const memory = verifiedMemory?.trim();
 
   return [
     `Write a faithful "Previously on..." recap for the players. Accuracy and continuity outrank drama, compression, or flourish.`,
@@ -117,6 +119,14 @@ export function buildRecapPrompt(
           `The final narrated beat immediately before the session ended was:`,
           cleanedEndingBeat,
           `This ending beat is subordinate context, not independent evidence. Use only details consistent with the authoritative summary and resume point; ignore any conflict rather than restoring rejected or corrected narration.`,
+        ]
+      : []),
+    ...(memory
+      ? [
+          ``,
+          `Verified campaign memory (facts reviewed against the transcript, tagged with the session they come from):`,
+          memory,
+          `Use this memory only to keep names, relationships, possessions and established facts exact. Where the summary contradicts it, follow the memory; do not recap memory facts the summary does not mention.`,
         ]
       : []),
     ``,

@@ -239,6 +239,16 @@ export function createCampaignMemoryStorage(
     if (!found[0] || found[0].mode !== "game")
       fail("CAMPAIGN_MEMORY_CHAT_NOT_FOUND", `Game chat ${chatId} does not exist`);
   }
+  /**
+   * Evidence an update leaves out is kept as stored. Re-checking it made any record whose cited message was later
+   * edited or deleted impossible to change (a status change, a lock, an undo). Evidence the patch supplies is always
+   * checked, so re-sending a stale stamp still has to be refreshed explicitly.
+   */
+  async function keepOrNormalizeEvidence<T>(scope: CampaignMemoryScope, stored: T, patched: unknown, database: DB) {
+    if (patched === undefined) return stored;
+    return normalizeEvidence(scope, patched, database);
+  }
+
   async function normalizeEvidence(scope: CampaignMemoryScope, value: unknown, database: DB = db) {
     return normalizeCampaignMemoryEvidence(scope, value, database);
   }
@@ -789,7 +799,7 @@ export function createCampaignMemoryStorage(
         oneOf(next.author, ACTORS, "fact.author");
         nonblank(next.predicate, "fact.predicate");
         nonblank(next.sourceRevision, "fact.sourceRevision");
-        next.evidence = await normalizeEvidence(scope, next.evidence, tx);
+        next.evidence = await keepOrNormalizeEvidence(scope, factFrom(row).evidence, patch.evidence, tx);
         provenance(next.provenance);
         await assertEntity(scope, next.subjectEntityId, tx);
         if (next.supersedesFactId)
@@ -937,7 +947,7 @@ export function createCampaignMemoryStorage(
         };
         oneOf(next.epistemicState, EPISTEMIC_STATES, "knowledge.epistemicState");
         if (next.attributedClaim) claim(next.attributedClaim);
-        next.learnedFrom = await normalizeEvidence(scope, next.learnedFrom, tx);
+        next.learnedFrom = await keepOrNormalizeEvidence(scope, knowledgeFrom(row).learnedFrom, patch.learnedFrom, tx);
         provenance(next.provenance);
         await assertEntity(scope, next.holderEntityId, tx, ["character", "persona"]);
         if (next.attributedClaim) await assertEntity(scope, next.attributedClaim.subjectEntityId, tx);
@@ -1274,7 +1284,7 @@ export function createCampaignMemoryStorage(
         oneOf(next.status, RELATIONSHIP_STATUSES, "relationship.status");
         nonblank(next.type, "relationship.type");
         nonblank(next.inverseLabel, "relationship.inverseLabel");
-        next.evidence = await normalizeEvidence(scope, next.evidence, tx);
+        next.evidence = await keepOrNormalizeEvidence(scope, relationshipFrom(row).evidence, patch.evidence, tx);
         provenance(next.provenance);
         await assertRelationshipEndpoints(scope, next, tx);
         await tx

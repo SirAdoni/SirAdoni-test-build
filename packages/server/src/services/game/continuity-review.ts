@@ -88,6 +88,154 @@ function text(value: unknown, field: string): string {
   if (typeof value !== "string" || !value.trim()) fail(`${field} must be a non-empty string`);
   return value;
 }
+/**
+ * Models copy quotes with typographic drift: curly quotes, dashes, ellipses, collapsed or doubled spaces, a stray
+ * surrounding quote mark. Find the exact source text the quote meant, so one drifted quote no longer fails a whole
+ * batch. Returns null when the quote is genuinely not in the source.
+ */
+export function locateContinuityQuote(quote: string, content: string): string | null {
+  if (!quote) return null;
+  if (content.includes(quote)) return quote;
+  const fold = (char: string): string =>
+    char === "\u2018" || char === "\u2019" || char === "\u201B" || char === "`"
+      ? "'"
+      : char === "\u201C" || char === "\u201D" || char === "\u201F"
+        ? '"'
+        : char === "\u2013" || char === "\u2014" || char === "\u2212"
+          ? "-"
+          : char === "\u2026"
+            ? "..."
+            : /\s/u.test(char)
+              ? " "
+              : char;
+  // Normalized source with a map from each normalized character back to its source index.
+  let folded = "";
+  const origin: number[] = [];
+  for (let index = 0; index < content.length; index += 1) {
+    const piece = fold(content[index]!);
+    if (piece === " " && folded.endsWith(" ")) continue;
+    for (const char of piece) {
+      folded += char;
+      origin.push(index);
+    }
+  }
+  const full = Array.from(quote).map(fold).join("").replace(/ +/gu, " ").trim();
+  for (const needle of [full, full.replace(/^["'.]+|["'.]+$/gu, "").trim()]) {
+    if (needle.length < 8) continue;
+    const at = folded.indexOf(needle);
+    if (at < 0) continue;
+    return content.slice(origin[at]!, origin[at + needle.length - 1]! + 1);
+  }
+  return null;
+}
+
+/**
+ * One record with a quote the model misquoted used to fail the whole batch after a paid extraction. Quotes are
+ * repaired against their source; evidence that still cannot be found is dropped, and a record left without any
+ * primary-source citation is dropped. The other records survive, and the reviewer still sees the sources.
+ */
+function salvageExtractionRecords(
+  records: unknown[],
+  sources: GameContinuitySource[],
+  context: GameContinuityContextSource[],
+  dropUnlocated: boolean,
+): unknown[] {
+  const contentOf = new Map<string, string>([...context, ...sources].map((source) => [source.messageId, source.content]));
+  const primaryIds = new Set(sources.map((source) => source.messageId));
+  return records.flatMap((raw) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [raw];
+    const record = raw as Record<string, unknown>;
+    if (!Array.isArray(record.evidence)) return [raw];
+    const evidence = record.evidence.flatMap((item) => {
+      if (!item || typeof item !== "object") return [item];
+      const entry = item as Record<string, unknown>;
+      const content = typeof entry.messageId === "string" ? contentOf.get(entry.messageId) : undefined;
+      if (content === undefined || typeof entry.quote !== "string") return [item];
+      const quote = locateContinuityQuote(entry.quote, content);
+      // Unlocated evidence is kept for the strict check to reject when records must not be dropped.
+      return quote ? [{ ...entry, quote }] : dropUnlocated ? [] : [item];
+    });
+    const primary = evidence.some(
+      (item) => item && typeof item === "object" && primaryIds.has(String((item as Record<string, unknown>).messageId)),
+    );
+    return primary || !dropUnlocated ? [{ ...record, evidence }] : [];
+  });
+}
+
+/**
+ * A disposition list that skips a primary message, repeats one, or names an unknown one used to fail the batch. A
+ * missing message is covered when a record cites it and otherwise has no durable facts; repeats and unknown ids are
+ * dropped (the first disposition for a message wins).
+ */
+function completeDispositions(
+  dispositions: unknown[],
+  sources: GameContinuitySource[],
+  cited: ReadonlySet<string>,
+): unknown[] {
+  const primaryIds = new Set(sources.map((source) => source.messageId));
+  const seen = new Set<string>();
+  const kept = dispositions.filter((item) => {
+    const id = item && typeof item === "object" ? (item as Record<string, unknown>).messageId : undefined;
+    if (typeof id !== "string" || !primaryIds.has(id) || seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+  for (const source of sources) {
+    if (seen.has(source.messageId)) continue;
+    kept.push(
+      cited.has(source.messageId)
+        ? { messageId: source.messageId, status: "covered", reason: "cited by an extracted record (no disposition returned)" }
+        : { messageId: source.messageId, status: "no_durable_facts", reason: "no record cites it (no disposition returned)" },
+    );
+  }
+  return kept;
+}
+
+/**
+ * Models sometimes return an optional list as null, a single string, a map, or with items that are blank, numbers or
+ * small objects ({"text": ...}, {"condition": {"description": ...}}); one such item used to fail the whole batch
+ * ("record.conditions must be an array of strings"). Missing lists are empty, blank items are dropped and the text of
+ * each item is unwrapped; an item with no text at all is left for the strict check to reject.
+ */
+function looseStringList(value: unknown): unknown {
+  // A single string, or a map of named conditions, reads as a list too.
+  const items = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? [value]
+      : value && typeof value === "object"
+        ? Object.values(value as Record<string, unknown>)
+        : value;
+  if (items === null || items === undefined) return [];
+  if (!Array.isArray(items)) return value;
+  return items.flatMap((item) => {
+    const text = looseText(item, 0);
+    if (text !== undefined) return text.trim() ? [text] : [];
+    if (item === null || item === undefined) return [];
+    return [item];
+  });
+}
+
+/** The text a model meant by one list item: a string, a number, or the first text field of a small object. */
+function looseText(item: unknown, depth: number): string | undefined {
+  if (typeof item === "string") return item;
+  if (typeof item === "number" || typeof item === "boolean") return String(item);
+  if (Array.isArray(item)) {
+    const parts = item.map((part) => looseText(part, depth + 1)).filter((part): part is string => Boolean(part?.trim()));
+    return parts.length ? parts.join("; ") : undefined;
+  }
+  if (!item || typeof item !== "object" || depth > 2) return undefined;
+  const record = item as Record<string, unknown>;
+  for (const field of ["text", "condition", "description", "value", "key", "name", "label", "content"]) {
+    const text = looseText(record[field], depth + 1);
+    if (text?.trim()) return text;
+  }
+  for (const nested of Object.values(record)) {
+    const text = looseText(nested, depth + 1);
+    if (text?.trim()) return text;
+  }
+  return undefined;
+}
 function stringList(value: unknown, field: string): string[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim()))
     fail(`${field} must be an array of strings`);
@@ -257,10 +405,10 @@ function validateRecord(
     kind: kind as GameContinuityRecord["kind"],
     text: text(record.text, "record.text"),
     subjects: stringList(record.subjects, "record.subjects"),
-    conditions: stringList(record.conditions, "record.conditions"),
+    conditions: stringList(looseStringList(record.conditions), "record.conditions"),
     status: status as GameContinuityRecord["status"],
     evidence: evidence as GameContinuityRecord["evidence"],
-    keys: stringList(record.keys, "record.keys"),
+    keys: stringList(looseStringList(record.keys), "record.keys"),
     ...(record.knowledge === undefined
       ? {}
       : { knowledge: validateKnowledge(record.knowledge, "record.knowledge", rejectUnknownHolders, holderSnapshots) }),
@@ -299,17 +447,44 @@ export function normalizeGameContinuityExtraction(
   batchId: string,
   context: GameContinuityContextSource[] = [],
   holderSnapshots: GameContinuityHolderSnapshot[] = [],
+  /** A fresh extraction drops a record whose quote is not in the source; a targeted repair must be rejected instead. */
+  options: { dropUnlocatedRecords?: boolean } = {},
 ): GameContinuityExtraction {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("extraction must be an object");
   const input = value as Record<string, unknown>;
   if (!Array.isArray(input.records)) fail("records must be an array");
-  const rawRecords = input.records.map((record) =>
+  const salvaged = salvageExtractionRecords(input.records, sources, context, options.dropUnlocatedRecords !== false);
+  const rawRecords = salvaged.map((record) =>
     validateRecord(record, [...sources, ...context], undefined, false, sources, true, holderSnapshots),
   );
   const records = rawRecords.map((record) => ({ ...record, id: createGameContinuityRecordId(batchId, record) }));
   if (new Set(records.map((record) => record.id)).size !== records.length) fail("duplicate deterministic record id");
+  // A model sometimes marks a message "covered" without producing a record that cites it. That used to fail the whole
+  // batch. When other primary messages are cited, the extractor found the batch's facts and the uncited message has
+  // none of its own (typically a request answered by another line), so it becomes no_durable_facts and the batch can
+  // still verify. Marking it unresolved instead wedged the batch: the repair loop cannot add a record for a message
+  // with no durable fact, so after three repairs it ended unresolved with its good records unpublished. Only when no
+  // record cites any primary message is the "covered" label unexplained, so it stays unresolved and is read again.
+  const cited = new Set(records.flatMap((record) => record.evidence.map((evidence) => evidence.messageId)));
+  const anyPrimaryCited = sources.some((source) => cited.has(source.messageId));
+  const dispositions = Array.isArray(input.dispositions)
+    ? completeDispositions(input.dispositions, sources, cited).map((item) => {
+        const disposition = item as Record<string, unknown> | null;
+        return disposition &&
+          typeof disposition === "object" &&
+          disposition.status === "covered" &&
+          typeof disposition.messageId === "string" &&
+          !cited.has(disposition.messageId)
+          ? {
+              ...disposition,
+              status: anyPrimaryCited ? "no_durable_facts" : "unresolved",
+              reason: `${typeof disposition.reason === "string" ? disposition.reason : ""} (marked covered, but no record cites it)`.trim(),
+            }
+          : item;
+      })
+    : input.dispositions;
   const extraction = validateGameContinuityExtraction(
-    { records, dispositions: input.dispositions },
+    { records, dispositions },
     sources,
     batchId,
     context,
@@ -445,9 +620,12 @@ export function normalizeGameContinuityReview(
       "CONTINUITY_INVALID: findings must be an array",
       `findings must be an array; finding recordIds may use only ${allowedRefs}.`,
     );
+  const reviewContent = new Map<string, string>(
+    [...context, ...sources].map((source) => [source.messageId, source.content]),
+  );
   let transformed: unknown[];
   try {
-    transformed = rawFindings.map((raw) => {
+    transformed = rawFindings.flatMap((raw): unknown[] => {
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("invalid review finding");
       const item = raw as Record<string, unknown>;
       if (!Array.isArray(item.recordIds)) throw new Error("finding.recordIds must be an array");
@@ -458,7 +636,14 @@ export function normalizeGameContinuityReview(
         if (records.some((record) => record.id === ref)) return ref;
         throw new Error(`unknown finding record reference ${ref}`);
       });
-      return { ...item, recordIds };
+      // A finding whose quote cannot be located is dropped rather than failing the whole review (and the batch).
+      const content = typeof item.messageId === "string" ? reviewContent.get(item.messageId) : undefined;
+      if (content !== undefined && typeof item.quote === "string") {
+        const quote = locateContinuityQuote(item.quote, content);
+        if (!quote) return [];
+        return [{ ...item, quote, recordIds }];
+      }
+      return [{ ...item, recordIds }];
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -468,7 +653,11 @@ export function normalizeGameContinuityReview(
     );
   }
   try {
-    return validateGameContinuityReview({ ...input, findings: transformed }, sources, records, context);
+    const cited = new Set(records.flatMap((record) => record.evidence.map((evidence) => evidence.messageId)));
+    const dispositions = Array.isArray(input.dispositions)
+      ? completeDispositions(input.dispositions, sources, cited)
+      : input.dispositions;
+    return validateGameContinuityReview({ ...input, findings: transformed, dispositions }, sources, records, context);
   } catch (error) {
     const detail = error instanceof Error ? error.message.replace(/^CONTINUITY_INVALID:\s*/, "") : String(error);
     throw new GameContinuityReviewProtocolError(
@@ -522,9 +711,12 @@ export function buildGameContinuityRepairPrompt(args: {
   playerCharacter?: { id: string; name: string };
   protocolFeedback?: string | null;
   knowledgeHolders?: GameContinuityHolderSnapshot[];
+  /** The extractor's own dispositions. Rendered for the repairer when they differ from the review's, which is the
+   * only way it learns which messages the extraction left unresolved. Defaults to the review's dispositions. */
+  extractionDispositions?: GameContinuityMessageDisposition[];
 }): string {
   return buildTargetedContinuityRepairPrompt({
-    extraction: { records: args.records, dispositions: args.review.dispositions },
+    extraction: { records: args.records, dispositions: args.extractionDispositions ?? args.review.dispositions },
     review: args.review,
     sources: args.sources,
     context: args.context,
@@ -587,6 +779,7 @@ export async function reviewGameContinuityWithRepairs(args: {
           sources: args.sources,
           context: args.context,
           records: extraction.records,
+          extractionDispositions: extraction.dispositions,
           review,
           instructions: args.instructions,
           repairInstructions: args.repairInstructions,

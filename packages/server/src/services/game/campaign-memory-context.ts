@@ -10,12 +10,15 @@ import type {
 import type { DB } from "../../db/connection.js";
 import { eq } from "../../db/file-query.js";
 import { chats } from "../../db/schema/index.js";
-import { createCampaignMemoryStorage } from "../storage/campaign-memory.storage.js";
 import { createLorebooksStorage } from "../storage/lorebooks.storage.js";
 import { resolveLorebookScopeExclusions } from "../lorebook/game-lorebook-scope.js";
 import { createCampaignMemoryOwnerReader } from "./campaign-memory-owners.js";
 import { parseCampaignMemoryMessageOrder } from "./campaign-memory-order.js";
-import { readCampaignMemorySources } from "./campaign-memory-sources.js";
+import {
+  readCampaignMemoryProjection,
+  readCampaignMemorySourcesForProjection,
+} from "./campaign-memory-campaign-scope.js";
+import { buildGameContinuityPromptContext } from "./continuity-context.js";
 import { readGameContinuityState } from "./continuity-state.js";
 import { logger } from "../../lib/logger.js";
 
@@ -58,6 +61,8 @@ export interface CampaignMemoryContextInput {
    * GM ordering only; this never asserts presence or grants a character audience any knowledge.
    */
   focusEntityIds?: readonly string[];
+  /** Recent scene text (lower relevance than named people): facts whose reviewed keywords appear in it rank higher. */
+  focusText?: string;
   /** Continuity records rendered as receipts on the same request; a matching fact is merged instead of repeated. */
   continuityReceiptRecords?: readonly CampaignMemoryContinuityReceiptRecord[];
 }
@@ -105,34 +110,34 @@ type Block = {
   entityRefs: readonly string[];
   order?: string;
   section?: "current_state";
+  /** A GM knowledge line that points at a fact line by id; if that line is not rendered, `standaloneText` is used. */
+  citesFactId?: string;
+  standaloneText?: string;
 };
 const RECENT_EVENT_WINDOW = 5;
 const CURRENT_STATE_HEADER = "[current_state]";
 
-function normalizedSubject(value: string): string {
-  return value.trim().normalize("NFKC").replace(/\s+/gu, " ").toLowerCase();
-}
-
-/** A fact duplicates a receipt record when every evidence message matches and the subject matches. */
+/**
+ * A fact duplicates a receipt record only through an exact provenance link: the same reviewed record of the same
+ * receipt, with every evidence message cited by that record. A same-subject fact from the same message is a
+ * different statement and stays in the block.
+ */
 function duplicateReceiptRecord(
   fact: CampaignMemoryFact,
-  subjectAliases: readonly string[],
   records: readonly CampaignMemoryContinuityReceiptRecord[],
 ): CampaignMemoryContinuityReceiptRecord | null {
   const messageIds = [...new Set(fact.evidence.map((item) => item.messageId))];
   if (!messageIds.length) return null;
   const factValue = objectValue(fact.value);
-  const factSubjects = new Set(
-    [...(Array.isArray(factValue.subjects) ? factValue.subjects : []), ...subjectAliases]
-      .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-      .map(normalizedSubject),
+  if (typeof factValue.recordId !== "string" || typeof factValue.receiptId !== "string") return null;
+  return (
+    records.find(
+      (record) =>
+        record.recordId === factValue.recordId &&
+        record.receiptId === factValue.receiptId &&
+        messageIds.every((id) => record.evidenceMessageIds.includes(id)),
+    ) ?? null
   );
-  for (const record of records) {
-    if (!messageIds.every((id) => record.evidenceMessageIds.includes(id))) continue;
-    if (factValue.recordId === record.recordId && factValue.receiptId === record.receiptId) return record;
-    if (record.subjects.some((subject) => factSubjects.has(normalizedSubject(subject)))) return record;
-  }
-  return null;
 }
 
 /** Evidence-backed common knowledge: a verified fact whose reviewed scope is world-wide. */
@@ -157,6 +162,82 @@ function before(a: string | undefined, cutoff: string | undefined): boolean {
 function value(value: unknown): string {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
+/** Continuity facts store an object with the reviewed sentence in `text`; show the sentence, not the envelope. */
+function readableValue(raw: unknown, nameOf: (id: string) => string): string {
+  const object = objectValue(raw);
+  if (typeof object.text === "string" && object.text.trim()) return object.text.trim();
+  if (typeof raw === "string") return nameOf(raw);
+  return value(raw);
+}
+/** "condition: x" reads as just "x"; other kinds (when, until, unless) keep their word. */
+function conditionText(kind: string, text: string): string {
+  const label = kind.replace(/^continuity\./u, "");
+  return label === "condition" ? text : `${label}: ${text}`;
+}
+/** A fact the player pinned as canon: `value.pinned === true` on a manually locked fact. */
+export function isPinnedFact(fact: Pick<CampaignMemoryFact, "value" | "manualLock">): boolean {
+  const value = fact.value as unknown;
+  return (
+    fact.manualLock === true &&
+    Boolean(value) &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (value as { pinned?: unknown }).pinned === true
+  );
+}
+
+/**
+ * How a retracted statement is recognised in its other copies: the same text read from the same messages. That
+ * matches its twin on another subject and a re-read of the same turn, but not the same words said again later
+ * (a rumour retracted in one scene must not hide the real event in another). Same key as continuity publication.
+ */
+function retractedKey(fact: Pick<CampaignMemoryFact, "value" | "evidence">): string {
+  const text = statementText(fact);
+  if (!text) return "";
+  const messageIds = [...new Set(fact.evidence.map((item) => item.messageId))].sort();
+  return `${text}|${messageIds.join(",")}`;
+}
+
+/** Normalized statement text of a fact, for recognising the same claim across copies. */
+function statementText(fact: Pick<CampaignMemoryFact, "value">): string {
+  const value = fact.value as unknown;
+  const text =
+    typeof value === "string"
+      ? value
+      : value && typeof value === "object" && typeof (value as { text?: unknown }).text === "string"
+        ? (value as { text: string }).text
+        : "";
+  return text.toLocaleLowerCase().replace(/\s+/gu, " ").trim();
+}
+
+function sessionTag(record: object): string {
+  const number = (record as { originSessionNumber?: unknown }).originSessionNumber;
+  return typeof number === "number" ? ` S${number}` : "";
+}
+function recordKey(fact: CampaignMemoryFact): string | null {
+  const object = objectValue(fact.value);
+  return typeof object.recordId === "string" && typeof object.receiptId === "string"
+    ? `${object.receiptId}\u0000${object.recordId}`
+    : null;
+}
+function keywordsOf(fact: CampaignMemoryFact): string[] {
+  const keys = objectValue(fact.value).keys;
+  return Array.isArray(keys) ? keys.filter((key): key is string => typeof key === "string" && key.trim().length >= 3) : [];
+}
+const sourceHashMemo = new WeakMap<object, Map<string, string>>();
+function sourceHash(sourceContents: object, messageId: string, content: string): string {
+  let memo = sourceHashMemo.get(sourceContents);
+  if (!memo) {
+    memo = new Map();
+    sourceHashMemo.set(sourceContents, memo);
+  }
+  let hash = memo.get(messageId);
+  if (hash === undefined) {
+    hash = createHash("sha256").update(content).digest("hex");
+    memo.set(messageId, hash);
+  }
+  return hash;
+}
 function fresh(
   evidence: readonly { messageId: string; quote: string; sourceHash?: string }[],
   sourceContents: CampaignMemoryContextInput["sourceContents"],
@@ -168,7 +249,7 @@ function fresh(
     const source = sourceContents[item.messageId];
     if (!source || source.chatId !== chatId) return "stale or cross-chat evidence";
     if (!item.sourceHash) return "legacy evidence has no verified source revision";
-    if (createHash("sha256").update(source.content).digest("hex") !== item.sourceHash) return "stale source revision";
+    if (sourceHash(sourceContents, item.messageId, source.content) !== item.sourceHash) return "stale source revision";
     if (!source.content.includes(item.quote)) return "stale evidence quote";
     if (cutoff) {
       const sourceOrder = source.captureOrder ? parseCampaignMemoryMessageOrder(source.captureOrder) : null;
@@ -203,8 +284,39 @@ export function buildCampaignMemoryContext(input: CampaignMemoryContextInput): C
   const entityById = new Map(
     input.entities.filter((entity) => entity.chatId === input.chatId).map((entity) => [entity.entityId, entity]),
   );
+  const nameOf = (id: string): string => entityById.get(id)?.aliases.find((alias) => alias.trim()) ?? id;
+  // Continuity publishes a record once per resolved subject and once more on its lore entity ("continuity.*").
+  // Render each reviewed record once; the extra copies stay eligible for knowledge attribution through their twin.
+  // The representative is chosen among eligible copies only (a subject copy before the lore fallback), so a held or
+  // superseded copy never hides a readable twin, and knowledge or world scope on any copy follows the rendered one.
+  const recordKeyOf = new Map<string, string>();
+  const recordCopies = new Map<string, CampaignMemoryFact[]>();
+  for (const fact of facts.values()) {
+    const key = recordKey(fact);
+    if (!key) continue;
+    recordKeyOf.set(fact.factId, key);
+    recordCopies.set(key, [...(recordCopies.get(key) ?? []), fact]);
+  }
+  const representative = new Map<string, string>();
+  const repOf = (factId: string): string => {
+    const key = recordKeyOf.get(factId);
+    return (key && representative.get(key)) ?? factId;
+  };
+  // A statement the user retracted and locked is false canon: every other copy of it (a twin, an earlier or later
+  // session's read) stays out of the block too.
+  const retractedCanon = new Set(
+    [...facts.values()]
+      .filter((fact) => fact.status === "retracted" && fact.manualLock)
+      .map(retractedKey)
+      .filter(Boolean),
+  );
+  const focusHaystack = ` ${(input.focusText ?? "").toLowerCase()} `;
+  const keywordHit = (fact: CampaignMemoryFact): boolean =>
+    focusHaystack.trim().length > 0 && keywordsOf(fact).some((key) => focusHaystack.includes(key.toLowerCase()));
+  const keywordFactIds = new Set<string>();
   const receiptRecords = audienceIsGm ? (input.continuityReceiptRecords ?? []) : [];
   const mergedIds: string[] = [];
+  const twinIds: string[] = [];
   const worldFactIds = new Set<string>();
 
   for (const fact of facts.values()) {
@@ -216,11 +328,15 @@ export function buildCampaignMemoryContext(input: CampaignMemoryContextInput): C
       exclusions.push({ id: fact.factId, reason: `fact status ${fact.status} is not readable` });
       continue;
     }
+    if (retractedCanon.size && retractedCanon.has(retractedKey(fact))) {
+      exclusions.push({ id: fact.factId, reason: "the user retracted this statement" });
+      continue;
+    }
     if ((cutoff && !fact.validFromOrder) || (fact.validFromOrder && !before(fact.validFromOrder, cutoff))) {
       exclusions.push({ id: fact.factId, reason: "fact is from the future" });
       continue;
     }
-    if (fact.validToOrder && cutoff && fact.validToOrder <= cutoff) {
+    if (fact.validToOrder && (!cutoff || fact.validToOrder <= cutoff)) {
       exclusions.push({ id: fact.factId, reason: "fact is no longer valid at cutoff" });
       continue;
     }
@@ -230,11 +346,23 @@ export function buildCampaignMemoryContext(input: CampaignMemoryContextInput): C
       continue;
     }
     eligibleFacts.set(fact.factId, fact);
+  }
+  for (const [key, copies] of recordCopies) {
+    const eligible = copies
+      .filter((copy) => eligibleFacts.has(copy.factId))
+      .sort(
+        (a, b) =>
+          Number(a.predicate.startsWith("continuity.")) - Number(b.predicate.startsWith("continuity.")) ||
+          a.factId.localeCompare(b.factId),
+      );
+    if (eligible[0]) representative.set(key, eligible[0].factId);
+  }
+  for (const fact of eligibleFacts.values()) {
     if (audienceIsGm) {
-      if (isWorldScopeFact(fact)) worldFactIds.add(fact.factId);
-      const duplicate = receiptRecords.length
-        ? duplicateReceiptRecord(fact, entityById.get(fact.subjectEntityId)?.aliases ?? [], receiptRecords)
-        : null;
+      // World scope is recorded on the lore fallback; the rendered copy carries it for every character.
+      const copies = recordCopies.get(recordKeyOf.get(fact.factId) ?? "") ?? [fact];
+      if (copies.some(isWorldScopeFact)) worldFactIds.add(fact.factId);
+      const duplicate = receiptRecords.length ? duplicateReceiptRecord(fact, receiptRecords) : null;
       if (duplicate) {
         // The receipt line already carries this text; keep the fact eligible for knowledge attribution.
         mergedIds.push(fact.factId);
@@ -245,15 +373,23 @@ export function buildCampaignMemoryContext(input: CampaignMemoryContextInput): C
         continue;
       }
       referencedEntityIds.add(fact.subjectEntityId);
+      if (repOf(fact.factId) !== fact.factId) {
+        twinIds.push(fact.factId);
+        exclusions.push({ id: fact.factId, reason: "same reviewed record as another rendered fact" });
+        continue;
+      }
       const conditions = fact.conditions.length
-        ? ` conditions=${fact.conditions.map((condition) => `${condition.kind}:${value(condition.value)}`).join(",")}`
+        ? ` (if ${fact.conditions.map((condition) => conditionText(condition.kind, readableValue(condition.value, nameOf))).join("; ")})`
         : "";
+      if (keywordHit(fact)) keywordFactIds.add(fact.factId);
+      const canon = isPinnedFact(fact);
       blocks.push({
         id: fact.factId,
-        priority: 0,
+        // Pinned canon outranks every relevance tier: the player marked it as always true.
+        priority: canon ? -0.5 : 0,
         entityRefs: [fact.subjectEntityId],
         order: fact.validFromOrder,
-        text: `[fact ${fact.factId}] ${fact.subjectEntityId}.${fact.predicate} = ${value(fact.value)}${conditions}`,
+        text: `[fact ${fact.factId}${sessionTag(fact)}${canon ? " canon" : ""}] ${nameOf(fact.subjectEntityId)}, ${fact.predicate.replace(/^continuity\./u, "")}: ${readableValue(fact.value, nameOf)}${conditions}`,
       });
     }
   }
@@ -284,22 +420,27 @@ export function buildCampaignMemoryContext(input: CampaignMemoryContextInput): C
       continue;
     }
     if (knowledge.factId) {
-      const fact = eligibleFacts.get(knowledge.factId);
+      const shownFactId = repOf(knowledge.factId);
+      const fact = eligibleFacts.get(knowledge.factId) ?? eligibleFacts.get(shownFactId);
       if (!fact) {
         exclusions.push({ id: knowledge.knowledgeId, reason: "knowledge references an unavailable fact" });
         continue;
       }
       referencedEntityIds.add(fact.subjectEntityId);
       const conditions = fact.conditions.length
-        ? ` conditions=${fact.conditions.map((condition) => `${condition.kind}:${value(condition.value)}`).join(",")}`
+        ? ` (if ${fact.conditions.map((condition) => conditionText(condition.kind, readableValue(condition.value, nameOf))).join("; ")})`
         : "";
       referencedEntityIds.add(knowledge.holderEntityId);
+      // The GM already reads the fact line; a character projection needs the sentence itself.
+      const sentence = `${nameOf(fact.subjectEntityId)}, ${fact.predicate.replace(/^continuity\./u, "")}: ${readableValue(fact.value, nameOf)}${conditions}`;
+      const prefix = `[knowledge ${knowledge.knowledgeId}${sessionTag(knowledge)}] ${nameOf(knowledge.holderEntityId)} ${knowledge.epistemicState}: `;
       blocks.push({
         id: knowledge.knowledgeId,
         priority: 0,
         entityRefs: [knowledge.holderEntityId, fact.subjectEntityId],
         order: knowledge.learnedAtOrder,
-        text: `[knowledge ${knowledge.knowledgeId} holder=${knowledge.holderEntityId}] ${fact.subjectEntityId}.${fact.predicate} = ${value(fact.value)}${conditions} (${knowledge.epistemicState})`,
+        text: prefix + (audienceIsGm ? `fact ${shownFactId}` : sentence),
+        ...(audienceIsGm ? { citesFactId: shownFactId, standaloneText: prefix + sentence } : {}),
       });
     } else if (knowledge.attributedClaim) {
       if (!entityIds.has(knowledge.attributedClaim.subjectEntityId)) {
@@ -314,7 +455,7 @@ export function buildCampaignMemoryContext(input: CampaignMemoryContextInput): C
         priority: 0,
         entityRefs: [knowledge.holderEntityId, claim.subjectEntityId],
         order: knowledge.learnedAtOrder,
-        text: `[claim ${knowledge.knowledgeId} holder=${knowledge.holderEntityId}] ${claim.subjectEntityId}.${claim.predicate} = ${value(claim.value)} (${knowledge.epistemicState})`,
+        text: `[claim ${knowledge.knowledgeId}${sessionTag(knowledge)}] ${nameOf(knowledge.holderEntityId)} ${knowledge.epistemicState}: ${nameOf(claim.subjectEntityId)}, ${claim.predicate.replace(/^continuity\./u, "")}: ${readableValue(claim.value, nameOf)}`,
       });
     } else {
       exclusions.push({ id: knowledge.knowledgeId, reason: "knowledge has no fact or attributed claim" });
@@ -322,16 +463,17 @@ export function buildCampaignMemoryContext(input: CampaignMemoryContextInput): C
   }
 
   for (const entity of input.entities.filter((item) => item.chatId === input.chatId && item.status === "active")) {
-    if (!referencedEntityIds.has(entity.entityId)) continue;
-    const aliases = entity.aliases.length ? ` aliases=${entity.aliases.join(",")}` : "";
+    if (!referencedEntityIds.has(entity.entityId) || entity.aliases.length < 2) continue;
     blocks.push({
       id: entity.entityId,
       priority: 2,
       entityRefs: [entity.entityId],
-      text: `[entity ${entity.entityId}${aliases}]`,
+      text: `[aka] ${entity.aliases[0]} = ${entity.aliases.slice(1).join(", ")}`,
     });
   }
   const validEvents = new Set<string>();
+  const eventParticipants = new Map<string, string[]>();
+  const recentEventRefs: Array<{ order: string; refs: string[] }> = [];
   const eventEntityIds = new Set<string>();
   for (const event of input.events.filter(
     (item) => item.chatId === input.chatId && before(item.occurrenceOrder, cutoff),
@@ -347,24 +489,24 @@ export function buildCampaignMemoryContext(input: CampaignMemoryContextInput): C
       continue;
     }
     validEvents.add(event.eventId);
+    eventParticipants.set(event.eventId, refs);
     for (const id of refs) eventEntityIds.add(id);
-    if (audienceIsGm)
-      blocks.push({
-        id: event.eventId,
-        priority: 1,
-        entityRefs: refs,
-        order: event.occurrenceOrder,
-        text: `[event ${event.eventId}] ${event.transitions.join("; ")}`,
-      });
+    // Events only anchor current state and recency; their readable text is already carried by the event facts.
+    recentEventRefs.push({ order: event.occurrenceOrder, refs });
   }
   // Current state overrides stale card text, so it renders ahead of facts. The GM sees every
   // present or referenced entity; a character sees only itself, entities its knowledge names,
   // and world-scope state.
   const presentIds = new Set(input.presentEntityIds ?? []);
   const focusIds = new Set(audienceIsGm ? (input.focusEntityIds ?? []) : []);
-  for (const state of input.currentState.filter(
-    (item) => item.chatId === input.chatId && before(item.validAtOrder, cutoff),
-  )) {
+  const stateAtCutoff = new Map<string, CampaignMemoryCurrentState>();
+  for (const state of input.currentState) {
+    if (state.chatId !== input.chatId || !before(state.validAtOrder, cutoff)) continue;
+    const key = `${state.entityId}\u0000${state.property}`;
+    const kept = stateAtCutoff.get(key);
+    if (!kept || state.validAtOrder > kept.validAtOrder) stateAtCutoff.set(key, state);
+  }
+  for (const state of stateAtCutoff.values()) {
     if (!validEvents.has(state.sourceEventId) || !entityIds.has(state.entityId)) {
       exclusions.push({ id: state.stateId, reason: "current state references an unavailable event or entity" });
       continue;
@@ -374,7 +516,9 @@ export function buildCampaignMemoryContext(input: CampaignMemoryContextInput): C
         focusIds.has(state.entityId) ||
         referencedEntityIds.has(state.entityId) ||
         eventEntityIds.has(state.entityId)
-      : state.entityId === characterEntityId || referencedEntityIds.has(state.entityId);
+      : state.entityId === characterEntityId ||
+        referencedEntityIds.has(state.entityId) ||
+        Boolean(characterEntityId && eventParticipants.get(state.sourceEventId)?.includes(characterEntityId));
     if (!known && !isWorldScopeState(state)) {
       exclusions.push({ id: state.stateId, reason: "current state entity is not present, referenced, or known" });
       continue;
@@ -385,7 +529,12 @@ export function buildCampaignMemoryContext(input: CampaignMemoryContextInput): C
       section: "current_state",
       entityRefs: [state.entityId],
       order: state.validAtOrder,
-      text: `${state.entityId}.${state.property} = ${value(state.value)} (since ${state.validAtOrder}, source event ${state.sourceEventId})`,
+      // A value carried over from an earlier session is the last known one, not a claim about this scene.
+      text:
+        (state as { originChatId?: string }).originChatId &&
+        (state as { originChatId?: string }).originChatId !== input.chatId
+          ? `${nameOf(state.entityId)}: last known ${state.property} = ${readableValue(state.value, nameOf)} (${sessionTag(state).trim()})`
+          : `${nameOf(state.entityId)}: ${state.property} = ${readableValue(state.value, nameOf)}`,
     });
   }
   if (audienceIsGm) {
@@ -411,7 +560,7 @@ export function buildCampaignMemoryContext(input: CampaignMemoryContextInput): C
         priority: 2,
         entityRefs: [relationship.sourceEntityId, relationship.targetEntityId],
         order: relationship.effectiveFrom,
-        text: `[relationship ${relationship.relationshipId}] ${relationship.sourceEntityId} ${relationship.type} ${relationship.targetEntityId}`,
+        text: `[relationship ${relationship.relationshipId}${sessionTag(relationship)}] ${nameOf(relationship.sourceEntityId)} ${relationship.type.replace(/-/gu, " ")} ${nameOf(relationship.targetEntityId)}`,
       });
     }
   }
@@ -420,21 +569,21 @@ export function buildCampaignMemoryContext(input: CampaignMemoryContextInput): C
   // Within a tier the newest source order wins; records without an order keep their ID order last.
   const present = presentIds;
   const recentParticipants = new Set<string>();
-  const eventIds = new Set(input.events.map((event) => event.eventId));
-  const newestEvents = blocks
-    .filter((block) => block.priority === 1 && eventIds.has(block.id))
-    .sort((a, b) => (b.order ?? "").localeCompare(a.order ?? ""))
+  const newestEvents = [...recentEventRefs]
+    .sort((a, b) => b.order.localeCompare(a.order))
     .slice(0, RECENT_EVENT_WINDOW);
-  for (const block of newestEvents) for (const ref of block.entityRefs) recentParticipants.add(ref);
+  for (const event of newestEvents) for (const ref of event.refs) recentParticipants.add(ref);
   // Present first, then whoever the scene is talking about, then participants of the newest events.
   const relevance = (block: Block): number =>
     block.entityRefs.some((ref) => present.has(ref))
       ? 0
       : block.entityRefs.some((ref) => focusIds.has(ref))
         ? 1
-        : block.entityRefs.some((ref) => recentParticipants.has(ref))
+        : keywordFactIds.has(block.id)
           ? 2
-          : 3;
+          : block.entityRefs.some((ref) => recentParticipants.has(ref))
+            ? 3
+            : 4;
   const orderRank = (a: Block, b: Block): number => {
     if (a.order && b.order) return b.order.localeCompare(a.order);
     if (a.order || b.order) return a.order ? -1 : 1;
@@ -446,6 +595,7 @@ export function buildCampaignMemoryContext(input: CampaignMemoryContextInput): C
   const max = Math.max(0, Math.floor(input.maxCharacters));
   const chosen: Block[] = [];
   const lines: string[] = [];
+  const lineOf = new Map<string, number>();
   let used = 0;
   let budgetOmitted = 0;
   let currentStateCount = 0;
@@ -461,8 +611,19 @@ export function buildCampaignMemoryContext(input: CampaignMemoryContextInput): C
     if (header) lines.push(CURRENT_STATE_HEADER);
     if (block.section === "current_state") currentStateCount += 1;
     lines.push(block.text);
+    lineOf.set(block.id, lines.length - 1);
     chosen.push(block);
     used += addition.length;
+  }
+  // A knowledge line cites its fact by id; when that fact line is not rendered (merged into a continuity receipt, or
+  // cut by the budget) the id points at nothing, so the line carries the sentence itself when the budget allows.
+  const renderedIds = new Set(chosen.map((block) => block.id));
+  for (const block of chosen) {
+    if (!block.citesFactId || !block.standaloneText || renderedIds.has(block.citesFactId)) continue;
+    const growth = block.standaloneText.length - block.text.length;
+    if (used + growth > max) continue;
+    lines[lineOf.get(block.id)!] = block.standaloneText;
+    used += growth;
   }
   const degraded = exclusions.some(
     ({ reason }) =>
@@ -499,7 +660,7 @@ export function buildCampaignMemoryContext(input: CampaignMemoryContextInput): C
         for (const item of includedKnowledge) {
           if (item.holderEntityId !== entity.entityId) continue;
           mayUse.add(item.knowledgeId);
-          if (item.factId && included.has(item.factId)) mayUse.add(item.factId);
+          if (item.factId && included.has(repOf(item.factId))) mayUse.add(repOf(item.factId));
         }
         for (const factId of worldFactIds) if (included.has(factId)) mayUse.add(factId);
         return {
@@ -536,6 +697,8 @@ type StorageContextInput = Omit<
   presence?: CampaignMemoryPresenceInput;
   /** Merge facts already rendered as continuity receipts on the same request (GM audience only). */
   dedupeContinuityReceipts?: boolean;
+  /** The continuity block's cutoff on this request (regenerate or continue); the latest message when omitted. */
+  continuityThroughMessageId?: string;
   /** Recent scene text; registered people and places it names are prioritised for the GM. */
   focusTexts?: readonly string[];
 };
@@ -590,11 +753,20 @@ export function resolvePresentEntityIds(
 async function readContinuityReceiptRecords(
   db: DB,
   chatId: string,
+  throughMessageId?: string,
 ): Promise<CampaignMemoryContinuityReceiptRecord[] | undefined> {
   try {
+    // Only a record the continuity block renders on this request carries a merged fact's text. Off or shadow mode,
+    // a record cut by the continuity budget, or one past the regenerate cutoff would leave the fact in neither block.
+    const rendered = await buildGameContinuityPromptContext(db, chatId, {
+      ...(throughMessageId ? { throughMessageId } : {}),
+    });
+    if (rendered.metadata.mode !== "active" || !rendered.text) return [];
+    const renderedKeys = new Set(rendered.metadata.includedRecordKeys);
+    if (!renderedKeys.size) return [];
     const state = await readGameContinuityState(db, chatId);
     return state.records
-      .filter((record) => record.evidence.length > 0)
+      .filter((record) => record.evidence.length > 0 && renderedKeys.has(`${record.receiptId}:${record.id}`))
       .map((record) => ({
         receiptId: record.receiptId,
         recordId: record.id,
@@ -615,23 +787,17 @@ export async function buildCampaignMemoryContextFromStorage(
   db: DB,
   input: StorageContextInput,
 ): Promise<CampaignMemoryContextResult> {
-  const { presence, dedupeContinuityReceipts, focusTexts, ...contextInput } = input;
+  const { presence, dedupeContinuityReceipts, focusTexts, continuityThroughMessageId: _through, ...contextInput } = input;
   const continuityReceiptRecords =
     dedupeContinuityReceipts && contextInput.audience.kind === "gm"
-      ? await readContinuityReceiptRecords(db, input.chatId)
+      ? await readContinuityReceiptRecords(db, input.chatId, input.continuityThroughMessageId)
       : undefined;
   return db.transaction(async (tx) => {
-    const storage = createCampaignMemoryStorage(tx);
-    const scope = { chatId: input.chatId };
-    const [entities, facts, knowledge, events, currentState, relationships, sourceRows] = await Promise.all([
-      storage.listEntities(scope),
-      storage.listFacts(scope),
-      storage.listKnowledge(scope),
-      storage.listEvents(scope),
-      storage.listCurrentState(scope),
-      storage.listRelationships(scope),
-      readCampaignMemorySources(tx, scope),
-    ]);
+    // Campaign scope: every earlier session of this game is merged into a read-only projection of this chat.
+    const projection = await readCampaignMemoryProjection(tx, input.chatId);
+    const { entities, facts, knowledge, events, relationships } = projection;
+    const currentState = [...projection.currentState, ...projection.supersededStates];
+    const sourceRows = await readCampaignMemorySourcesForProjection(tx, projection);
     const chat = (
       await tx
         .select({ mode: chats.mode, metadata: chats.metadata })
@@ -690,7 +856,9 @@ export async function buildCampaignMemoryContextFromStorage(
       relationships: visibleRelationships,
       sourceContents,
       ...(presence ? { presentEntityIds: resolvePresentEntityIds(visibleEntities, presence) } : {}),
-      ...(focusTexts?.length ? { focusEntityIds: resolveFocusEntityIds(visibleEntities, focusTexts) } : {}),
+      ...(focusTexts?.length
+        ? { focusEntityIds: resolveFocusEntityIds(visibleEntities, focusTexts), focusText: focusTexts.join("\n") }
+        : {}),
       ...(continuityReceiptRecords ? { continuityReceiptRecords } : {}),
     });
   });

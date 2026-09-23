@@ -22,6 +22,7 @@ import {
   type CampaignMemoryStateInput,
   type CampaignMemoryRelationshipInput,
 } from "../storage/campaign-memory.storage.js";
+import { forgetCampaignMemoryCache } from "./campaign-memory-campaign-scope.js";
 
 export type CampaignMemoryRecordType = "entity" | "fact" | "knowledge" | "event" | "current-state" | "relationship";
 type RecordByType = {
@@ -352,6 +353,12 @@ async function journalRow(db: DB, chatId: string, operationId: string) {
       .limit(1)
   )[0];
 }
+
+/** The record an already-committed operation wrote, so a route can replay it before its own precondition checks. */
+export async function findCampaignMemoryOperation(db: DB, chatId: string, operationId: string) {
+  const row = await journalRow(db, chatId, operationId);
+  return row ? { recordType: row.recordType, recordId: row.recordId } : null;
+}
 function replayResult(row: typeof campaignMemoryMutationJournal.$inferSelect, requestHash: string) {
   if (row.payloadHash !== requestHash)
     fail("CAMPAIGN_MEMORY_IDEMPOTENCY_CONFLICT", `Operation ${row.operationId} was already used with another payload`);
@@ -469,7 +476,7 @@ export async function applyCampaignMemoryMutation(
     expectedRevision: command.action === "update" ? command.expectedRevision : undefined,
     payload: command.action === "update" ? command.patch : command.input,
   });
-  return db.transaction(
+  const applied = (await db.transaction(
     async (tx) => {
       const existing = await journalRow(tx, command.chatId, command.operationId);
       if (existing) return replayResult(existing, requestHash) as RecordByType[CampaignMemoryRecordType];
@@ -505,7 +512,10 @@ export async function applyCampaignMemoryMutation(
       return result;
     },
     { durable: true },
-  ) as Promise<RecordByType[CampaignMemoryRecordType]>;
+  )) as RecordByType[CampaignMemoryRecordType];
+  // Later sessions' campaign projections embed this chat's memory; drop it once the write has committed.
+  forgetCampaignMemoryCache(command.chatId);
+  return applied;
 }
 
 /** Storage has no delete: a journaled create is neutralised with the schema's own "no canonical force" state. */
@@ -562,7 +572,7 @@ export async function compensateCampaignMemoryMutation(db: DB, command: Campaign
     evidence: command.evidence ?? [],
     action: "compensate",
   });
-  return db.transaction(
+  const compensated = await db.transaction(
     async (tx) => {
       const existing = await journalRow(tx, command.chatId, command.operationId);
       if (existing) return replayResult(existing, requestHash);
@@ -624,6 +634,17 @@ export async function compensateCampaignMemoryMutation(db: DB, command: Campaign
           delete patch.validAtOrder;
           delete patch.sourceEventId;
         }
+        // Mappers leave out empty optional fields, so `before` has no key for a field the update added
+        // (an effectiveTo, a summary, a factId). Clear those explicitly, or the restore keeps the new value.
+        for (const key of updateKeys[recordType]) {
+          if (recordType === "current-state" && (key === "validAtOrder" || key === "sourceEventId")) continue;
+          if (!(key in before)) patch[key] = undefined;
+        }
+        // Evidence the original update did not change is left out, so storage keeps it as stored instead of
+        // re-checking it against messages that may have been edited or deleted since.
+        const currentFields = currentRecord as unknown as Record<string, unknown>;
+        for (const key of ["evidence", "learnedFrom"])
+          if (key in patch && hash(patch[key]) === hash(currentFields[key])) delete patch[key];
       } else {
         patch = { ...NEUTRAL_CREATE_PATCH[recordType] };
       }
@@ -643,6 +664,8 @@ export async function compensateCampaignMemoryMutation(db: DB, command: Campaign
         storage,
         updateCommand as Extract<CampaignMemoryMutationCommand, { action: "update" }>,
       );
+      // Fields cleared above come back as undefined keys; drop them so the result has the mapper's shape.
+      if (isRecord(result)) for (const key of Object.keys(result)) if (result[key] === undefined) delete result[key];
       await tx.insert(campaignMemoryMutationJournal).values({
         journalId: randomUUID(),
         chatId: command.chatId,
@@ -663,6 +686,8 @@ export async function compensateCampaignMemoryMutation(db: DB, command: Campaign
     },
     { durable: true },
   );
+  forgetCampaignMemoryCache(command.chatId);
+  return compensated;
 }
 
 export async function previewCampaignMemoryMutation(db: DB, command: CampaignMemoryMutationCommand) {

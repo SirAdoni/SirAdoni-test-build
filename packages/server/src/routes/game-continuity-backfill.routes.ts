@@ -75,8 +75,8 @@ export async function startHistoricalBackfill(
   app: FastifyInstance,
   chatId: string,
   range: { fromMessageId: string; toMessageId: string },
+  id = backfillId(chatId, range.fromMessageId, range.toMessageId),
 ) {
-  const id = backfillId(chatId, range.fromMessageId, range.toMessageId);
   const result = await app.gameContinuity.enqueueHistoricalRange({ chatId, backfillId: id, ...range });
   const chats = createChatsStorage(app.db);
   await chats.patchMetadata(chatId, (metadata) => {
@@ -226,14 +226,20 @@ export async function gameContinuityBackfillRoutes(app: FastifyInstance) {
       );
       const retried: string[] = [];
       const skipped: Array<{ id: string; reason: string }> = [];
+      const stale: string[] = [];
       for (const receiptId of stringList(manifest.receiptIds)) {
         const receipt = receiptById.get(receiptId);
         if (!receipt) skipped.push({ id: receiptId, reason: "missing" });
         else if (!statuses.has(receipt.status)) skipped.push({ id: receiptId, reason: `status:${receipt.status}` });
         else if (parsed.data.errorCode && receipt.errorCode !== parsed.data.errorCode)
           skipped.push({ id: receiptId, reason: `errorCode:${receipt.errorCode ?? "none"}` });
-        else if (retried.length >= limit) skipped.push({ id: receiptId, reason: "limit" });
-        else {
+        else if (retried.length + stale.length >= limit) skipped.push({ id: receiptId, reason: "limit" });
+        else if (receipt.status === "stale") {
+          // A split parent is already replaced by its halves; never read it again.
+          const splitInto = (receipt.config as { splitInto?: unknown }).splitInto;
+          if (Array.isArray(splitInto) && splitInto.length > 0) skipped.push({ id: receiptId, reason: "split" });
+          else stale.push(receiptId);
+        } else {
           try {
             const result = await app.gameContinuity.retry(request.params.chatId, receiptId);
             if (result) retried.push(receiptId);
@@ -248,7 +254,34 @@ export async function gameContinuityBackfillRoutes(app: FastifyInstance) {
           }
         }
       }
-      return { backfillId: request.params.backfillId, retried, skipped };
+      // Stale batches are re-planned under the backfill's own config, once for the whole range. The runtime's
+      // retry rebuilt them as live receipts the manifest never tracked (or nothing, with live continuity off).
+      // The new receipts join this manifest, so coverage and the explicit publish step both see them.
+      const requeued: string[] = [];
+      if (stale.length) {
+        try {
+          const before = new Set(stringList(manifest.receiptIds));
+          const rerun = await startHistoricalBackfill(
+            app,
+            request.params.chatId,
+            {
+              fromMessageId: String(manifest.fromMessageId),
+              toMessageId: String(manifest.toMessageId),
+            },
+            request.params.backfillId,
+          );
+          for (const receipt of rerun.receipts) if (!before.has(receipt.id)) requeued.push(receipt.id);
+          retried.push(...stale);
+        } catch (error) {
+          const code = errorCode(error);
+          logger.warn(
+            { err: error, chatId: request.params.chatId, backfillId: request.params.backfillId, code },
+            "Historical continuity stale receipts could not be re-run",
+          );
+          for (const receiptId of stale) skipped.push({ id: receiptId, reason: code });
+        }
+      }
+      return { backfillId: request.params.backfillId, retried, requeued, skipped };
     },
   );
 

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { createChatsStorage } from "../storage/chats.storage.js";
 import { logger } from "../../lib/logger.js";
+import { forgetCampaignMemoryCache } from "./campaign-memory-campaign-scope.js";
 
 /**
  * Fire-and-forget bridge from chat message mutations (edit, delete, swipe,
@@ -36,6 +37,8 @@ export function createContinuityChangeNotifier(app: FastifyInstance, delayMs = 2
     /** `messageIds` names the messages whose text or visibility changed, so memory read from them can be retired. */
     notify(chatId: string, messageIds: Iterable<string> = []) {
       if (closed || !chatId) return;
+      // Later sessions read this chat through the campaign projection; drop its cached copy now.
+      forgetCampaignMemoryCache(chatId);
       const changed = changedMessages.get(chatId) ?? new Set<string>();
       for (const messageId of messageIds) if (messageId) changed.add(messageId);
       changedMessages.set(chatId, changed);

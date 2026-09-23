@@ -9,13 +9,16 @@ import type {
   GameContinuityReceipt,
 } from "@marinara-engine/shared";
 import type { DB } from "../../db/connection.js";
-import { and, eq } from "../../db/file-query.js";
+import { and, eq, inArray } from "../../db/file-query.js";
 import {
   campaignMemoryKnowledge,
   campaignMemoryMutationJournal,
+  chats,
   lorebookEntries,
   lorebooks,
 } from "../../db/schema/index.js";
+import { GAME_LOREBOOK_KEEPER_SOURCE_ID } from "../lorebook/game-lorebook-scope.js";
+import { campaignIdentity } from "./game-keeper-lorebook.js";
 import { logger } from "../../lib/logger.js";
 import { applyCampaignMemoryMutation } from "./campaign-memory-mutations.js";
 import {
@@ -43,6 +46,49 @@ function hash(value: unknown): string {
 
 function stable(value: unknown): string {
   return JSON.stringify(value);
+}
+
+/**
+ * How a retracted canon statement is recognised when it is read again: normalized text plus the sorted distinct
+ * evidence message ids. A re-read of the same turn matches whatever subject it resolves to (an unresolved subject
+ * files the statement under a new fallback entity on every read). The same sentence evidenced by a different
+ * message is a new claim and is not suppressed: keying on text alone dropped a real later event stated in the same
+ * words as a retracted rumour. campaign-memory-context.ts builds the same key; keep the two formats identical.
+ */
+function canonStatementKey(value: unknown, evidence: ReadonlyArray<{ messageId: string }>): string {
+  const text =
+    typeof value === "string"
+      ? value
+      : value && typeof value === "object" && typeof (value as { text?: unknown }).text === "string"
+        ? (value as { text: string }).text
+        : JSON.stringify(comparableFactValue(value));
+  const normalized = text.toLocaleLowerCase().replace(/\s+/gu, " ").trim();
+  const messageIds = [...new Set(evidence.map((item) => item.messageId))].sort();
+  return `${normalized}|${messageIds.join(",")}`;
+}
+
+async function loadUserRetractedStatements(
+  storage: {
+    listFacts(scope: { chatId: string }): Promise<
+      Array<{ value: unknown; evidence: ReadonlyArray<{ messageId: string }>; status: string; manualLock: boolean }>
+    >;
+  },
+  chatId: string,
+  cache: Map<string, Promise<Set<string>>>,
+): Promise<Set<string>> {
+  let pending = cache.get(chatId);
+  if (!pending) {
+    pending = storage.listFacts({ chatId }).then(
+      (facts) =>
+        new Set(
+          facts
+            .filter((fact) => fact.status === "retracted" && fact.manualLock)
+            .map((fact) => canonStatementKey(fact.value, fact.evidence)),
+        ),
+    );
+    cache.set(chatId, pending);
+  }
+  return pending;
 }
 
 function comparableFactValue(value: unknown): unknown {
@@ -257,6 +303,34 @@ const QUEST_STATUS: Record<GameContinuityRecord["status"], CampaignMemoryQuestSt
 };
 const PEOPLE: readonly CampaignMemoryEntityKind[] = ["character", "persona"];
 
+/**
+ * The count written next to the transferred item ("3 Silver Dagger", "3 of the Silver Dagger", "Silver Dagger x3"),
+ * else 1. The first number anywhere in the text was taken before, so "In 412 AS Alice gave Bob the Silver Dagger"
+ * moved 412 daggers.
+ */
+export function transferQuantity(text: string, alias: string | undefined): number {
+  if (!alias) return 1;
+  const wordsOf = (value: string) =>
+    normalizedHolderName(value)
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter(Boolean);
+  const words = wordsOf(text);
+  const aliasWords = wordsOf(alias);
+  const count = (word: string | undefined) => (word && /^\d+$/u.test(word) ? Number(word) : null);
+  for (let index = 0; aliasWords.length > 0 && index + aliasWords.length <= words.length; index += 1) {
+    if (!aliasWords.every((word, offset) => words[index + offset] === word)) continue;
+    let before = index - 1;
+    while (before >= 0 && (words[before] === "the" || words[before] === "of" || words[before] === "x")) before -= 1;
+    const leading = count(words[before]);
+    if (leading !== null) return leading;
+    const after = words[index + aliasWords.length];
+    if (after && /^x\d+$/u.test(after)) return Number(after.slice(1));
+    if (after === "x") return count(words[index + aliasWords.length + 1]) ?? 1;
+    return 1;
+  }
+  return 1;
+}
+
 function classifyRecord(record: GameContinuityRecord): CampaignMemoryTransitionClass | null {
   const markers = new Set([record.kind as string, ...record.keys].map(normalizedHolderName));
   const has = (set: Set<string>) => [...markers].some((marker) => set.has(marker));
@@ -264,8 +338,10 @@ function classifyRecord(record: GameContinuityRecord): CampaignMemoryTransitionC
   if (has(ITEM_MARKERS)) return "item-transfer";
   if (has(RELATIONSHIP_MARKERS)) return "relationship";
   if (has(QUEST_MARKERS)) return "quest";
-  if (record.status === "completed" && ARRIVAL_TEXT.test(record.text)) return "movement";
+  // A completed event stays an event: "reached an agreement", "entered into an alliance" are not arrivals.
+  // Explicit movement markers above still move anyone; arrival wording only moves non-event records.
   if (record.kind === "event" && record.status === "completed") return "event";
+  if (record.status === "completed" && ARRIVAL_TEXT.test(record.text)) return "movement";
   return null;
 }
 
@@ -375,7 +451,7 @@ async function deriveTransition(input: DeriveInput): Promise<DerivedTransition |
       } else if (orderedPeople.length === 1 && RECEIVE_TEXT.test(record.text)) receiver = orderedPeople[0]!.entityId;
       else if (orderedPeople.length === 1 && GIVE_TEXT.test(record.text)) giver = orderedPeople[0]!.entityId;
       else missing.push("cannot tell the giver from the receiver");
-      const quantity = Number(/\b(\d+)\b/u.exec(record.text)?.[1] ?? "1");
+      const quantity = transferQuantity(record.text, item.resolved?.alias);
       return {
         command: {
           ...base,
@@ -486,6 +562,29 @@ async function journalPendingTransition(
   return result;
 }
 
+/**
+ * Publication writes into the campaign's one Lorebook Keeper book, which is bound to the session chat that created
+ * it (usually Session 1). Every later session publishes into that same book, so requiring the book's own chat
+ * failed every receipt outside that session. The book belongs to the receipt's chat when it is that chat's book,
+ * or the Keeper book of the same campaign.
+ */
+async function continuityBookBelongsToChat(
+  tx: DB,
+  book: { chatId: string | null; sourceAgentId: string | null },
+  chatId: string,
+): Promise<boolean> {
+  if (book.chatId === chatId) return true;
+  if (!book.chatId || book.sourceAgentId !== GAME_LOREBOOK_KEEPER_SOURCE_ID) return false;
+  const rows = await tx.select().from(chats).where(inArray(chats.id, [book.chatId, chatId]));
+  const owner = rows.find((row) => row.id === book.chatId);
+  const current = rows.find((row) => row.id === chatId);
+  if (!owner || !current || owner.mode !== "game" || current.mode !== "game") return false;
+  return (
+    campaignIdentity(owner.id, objectValue(owner.metadata), owner.groupId) ===
+    campaignIdentity(current.id, objectValue(current.metadata), current.groupId)
+  );
+}
+
 export async function assertContinuityMemoryEntry(
   tx: DB,
   receipt: Pick<GameContinuityReceipt, "id" | "chatId">,
@@ -495,11 +594,12 @@ export async function assertContinuityMemoryEntry(
   const entry = entries[0];
   if (!entry) throw new Error("CONTINUITY_MEMORY_ENTRY_MISSING");
   const books = await tx
-    .select({ chatId: lorebooks.chatId })
+    .select({ chatId: lorebooks.chatId, sourceAgentId: lorebooks.sourceAgentId })
     .from(lorebooks)
     .where(eq(lorebooks.id, entry.lorebookId))
     .limit(1);
-  if (!books[0] || books[0].chatId !== receipt.chatId) throw new Error("CONTINUITY_MEMORY_ENTRY_CHAT_MISMATCH");
+  if (!books[0] || !(await continuityBookBelongsToChat(tx, books[0], receipt.chatId)))
+    throw new Error("CONTINUITY_MEMORY_ENTRY_CHAT_MISMATCH");
   const state = objectValue(entry.dynamicState);
   if (state.receiptId !== receipt.id) throw new Error("CONTINUITY_MEMORY_ENTRY_RECEIPT_MISMATCH");
   if (typeof state.publishedContentHash === "string" && hash(entry.content) !== state.publishedContentHash)
@@ -538,6 +638,7 @@ export async function publishContinuityMemory(
     origin: { sourceChatId: receipt.chatId, sourceRecordId: entry.id },
   };
   const memoryStorage = createCampaignMemoryStorage(tx);
+  const retractedCache = new Map<string, Promise<Set<string>>>();
   const chatEntities = await memoryStorage.listEntities({ chatId: receipt.chatId });
   const { resolveSubjects, resolveAliasIn } = await createSubjectResolver(tx, receipt, chatEntities);
   const entityKinds = new Map(chatEntities.map((entity) => [entity.entityId, entity.kind]));
@@ -739,15 +840,30 @@ export async function publishContinuityMemory(
     // Knowledge attaches to one fact per record: the fallback when it exists (legacy
     // knowledge IDs stay stable), otherwise the first per-subject fact.
     const primaryFact = publishedFacts.find((fact) => fact.factId === legacyFactId) ?? publishedFacts[0]!;
+    const userRetractedStatements = () => loadUserRetractedStatements(memoryStorage, receipt.chatId, retractedCache);
     let primaryLocked = false;
     for (const factInput of publishedFacts) {
       const factId = factInput.factId!;
       const existingFact = await memoryStorage.getFact({ chatId: receipt.chatId }, factId);
+      // A statement the user retracted and locked is canon that it is false: a re-read of the same text (a new
+      // receipt, a backfill, a repair) must not publish it again under a new fact id.
+      if (!existingFact && (await userRetractedStatements()).has(canonStatementKey(factInput.value, factInput.evidence))) {
+        if (factId === primaryFact.factId) primaryLocked = true;
+        continue;
+      }
       if (existingFact) {
         if (existingFact.manualLock) {
           if (factId === primaryFact.factId) primaryLocked = true;
           continue;
         }
+        // Relink superseded this fallback once every subject resolved. When a subject stops resolving (an alias
+        // turns ambiguous, the entity is archived) the fallback carries the record again; treating the status
+        // difference as a conflict failed the receipt on every later relink.
+        const revivable =
+          factId === legacyFactId &&
+          existingFact.status === "superseded" &&
+          existingFact.author !== "user" &&
+          factInput.status === "verified";
         if (
           existingFact.subjectEntityId !== factInput.subjectEntityId ||
           existingFact.predicate !== factInput.predicate ||
@@ -755,11 +871,23 @@ export async function publishContinuityMemory(
           stable(existingFact.evidence) !== stable(factInput.evidence) ||
           stable(comparableFactValue(existingFact.value)) !== stable(comparableFactValue(factInput.value)) ||
           stable(existingFact.conditions) !== stable(factInput.conditions) ||
-          existingFact.status !== factInput.status ||
+          (existingFact.status !== factInput.status && !revivable) ||
           existingFact.validFromOrder !== factInput.validFromOrder ||
           stable(existingFact.provenance) !== stable(factInput.provenance)
         )
           throw new Error(`CONTINUITY_MEMORY_FACT_CONFLICT: ${factId}`);
+        if (revivable)
+          await applyCampaignMemoryMutation(tx, {
+            chatId: receipt.chatId,
+            operationId: `continuity-relink:${receipt.id}:fallback-restore:${factId}:${existingFact.revision}`,
+            actor: publicationActor,
+            reason: "A subject of this record no longer resolves; the lore-entity fallback carries it again.",
+            recordType: "fact",
+            action: "update",
+            recordId: factId,
+            expectedRevision: existingFact.revision,
+            patch: { status: "verified" },
+          });
         continue;
       }
       await applyCampaignMemoryMutation(tx, {
