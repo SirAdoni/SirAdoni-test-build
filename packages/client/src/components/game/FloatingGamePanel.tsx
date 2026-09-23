@@ -1598,7 +1598,7 @@ function FloatingFrame({
             <div
               data-panel-size-badge
               aria-live="polite"
-              className="pointer-events-none rounded-md px-1.5 py-0.5 text-[0.625rem] font-semibold tabular-nums text-white shadow"
+              className="pointer-events-none rounded-md px-1.5 py-0.5 text-[0.625rem] font-semibold tabular-nums text-[var(--primary-foreground)] shadow"
               style={{ position: "absolute", right: 10, bottom: 10, zIndex: 26, background: EDIT_ACCENT }}
             >
               {sizeBadge}

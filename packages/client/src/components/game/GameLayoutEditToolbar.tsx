@@ -516,7 +516,7 @@ function LayoutToolbar({
           {hiddenCount > 0 && (
             <span
               data-layout-hidden-count
-              className="rounded-full bg-[var(--marinara-chat-chrome-accent)] px-1.5 text-[0.625rem] font-semibold leading-4 text-white"
+              className="rounded-full bg-[var(--marinara-chat-chrome-accent)] px-1.5 text-[0.625rem] font-semibold leading-4 text-[var(--primary-foreground)]"
             >
               {hiddenCount}
             </span>
@@ -550,7 +550,7 @@ function LayoutToolbar({
           data-layout-tool="done"
           onClick={onDone}
           title={t("ui.game.layoutEditor.doneHint")}
-          className="ml-0.5 flex h-7 items-center gap-1 rounded-lg bg-[var(--marinara-chat-chrome-accent)] px-2.5 text-[0.75rem] font-semibold text-white shadow-sm transition-[filter] hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--marinara-chat-chrome-accent)]"
+          className="ml-0.5 flex h-7 items-center gap-1 rounded-lg bg-[var(--marinara-chat-chrome-accent)] px-2.5 text-[0.75rem] font-semibold text-[var(--primary-foreground)] shadow-sm transition-[filter] hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--marinara-chat-chrome-accent)]"
         >
           <Check size={14} aria-hidden="true" />
           {t("ui.game.layoutEditor.done")}
@@ -659,7 +659,7 @@ function PanelsMenu({ scopeId }: { scopeId: string }) {
                         : "text-[var(--marinara-chat-chrome-highlight-text)]"
                     }`}
                   >
-                    {isHidden ? <EyeOff size={13} aria-hidden="true" /> : <Eye size={13} aria-hidden="true" />}
+                    {isHidden ? <EyeOff size={12} aria-hidden="true" /> : <Eye size={12} aria-hidden="true" />}
                   </button>
                 ) : (
                   <span
@@ -773,7 +773,7 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
           <button
             type="submit"
             data-layout-save
-            className="flex h-7 shrink-0 items-center gap-1 rounded-md bg-[var(--marinara-chat-chrome-accent)] px-2.5 text-xs font-semibold text-white hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--marinara-chat-chrome-accent)]"
+            className="flex h-7 shrink-0 items-center gap-1 rounded-md bg-[var(--marinara-chat-chrome-accent)] px-2.5 text-xs font-semibold text-[var(--primary-foreground)] hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--marinara-chat-chrome-accent)]"
           >
             <Save size={12} aria-hidden="true" />
             {t("ui.game.layoutEditor.saveLayout")}
@@ -832,7 +832,7 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
                   title={t("ui.game.layoutEditor.renameLayout", { name: layout.name })}
                   onClick={() => setRenaming({ id: layout.id, value: layout.name })}
                 >
-                  <Pencil size={11} aria-hidden="true" />
+                  <Pencil size={12} aria-hidden="true" />
                 </button>
                 <button
                   type="button"
@@ -846,9 +846,9 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
                   onClick={() => void copy(layout.id, exportLayoutJson(layout.name, layout.snapshot))}
                 >
                   {copied === layout.id ? (
-                    <Check size={11} aria-hidden="true" />
+                    <Check size={12} aria-hidden="true" />
                   ) : (
-                    <Copy size={11} aria-hidden="true" />
+                    <Copy size={12} aria-hidden="true" />
                   )}
                 </button>
                 <button
@@ -878,7 +878,7 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
                     setConfirmDelete(null);
                   }}
                 >
-                  <Trash2 size={11} aria-hidden="true" />
+                  <Trash2 size={12} aria-hidden="true" />
                   {confirmDelete === layout.id && <span>{t("ui.game.layoutEditor.deleteShort")}</span>}
                 </button>
               </li>
