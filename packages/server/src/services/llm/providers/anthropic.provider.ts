@@ -172,6 +172,7 @@ function splitAnthropicSystemMessages(messages: ChatMessage[], model: string) {
   const supportsHistorySystem = [
     "claude-opus-4-8",
     "claude-opus-5",
+    "claude-opus-5-5",
     "claude-fable-5",
     "claude-fable-5-1",
     "claude-mythos-5",
