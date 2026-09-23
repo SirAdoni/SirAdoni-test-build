@@ -298,5 +298,29 @@ assert.equal(
   ),
   null,
 );
+// Game turns may end on an injection placed after the user turn (a player canon check). The marker still goes on
+// the last completed assistant turn: without it the next turn re-wrote the whole history (61% cache, 2026-09-23).
+assert.equal(
+  selectHistoryBreakpointIndex([
+    { role: "system", content: "Lore", providerMetadata: { marinaraFullLoreContext: true } },
+    { role: "assistant", content: "Stable answer", contextKind: "history" },
+    { role: "user", content: "Weather and map", contextKind: "injection" },
+    { role: "user", content: "Current question", contextKind: "history" },
+    { role: "user", content: "Memory and continuity", contextKind: "injection" },
+    { role: "user", content: "Player canon check", contextKind: "injection" },
+  ]),
+  0,
+  "a tail that ends on an injection keeps the history marker",
+);
+// A completed user turn in the tail (two user history turns after the candidate) is not a mutable suffix.
+assert.equal(
+  selectHistoryBreakpointIndex([
+    { role: "system", content: "Lore", providerMetadata: { marinaraFullLoreContext: true } },
+    { role: "assistant", content: "Stable answer", contextKind: "history" },
+    { role: "user", content: "Earlier question", contextKind: "history" },
+    { role: "user", content: "Current question", contextKind: "history" },
+  ]),
+  null,
+);
 
 console.log("claude cache prefix regression passed");
