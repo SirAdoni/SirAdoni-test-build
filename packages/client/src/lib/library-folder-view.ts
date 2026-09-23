@@ -14,7 +14,7 @@ export type LibraryFolderNode = {
 
 export type LibraryFolderView = {
   tree: LibraryFolderTree<LibraryFolderNode>;
-  /** Items per folder including subfolders; limited to visible items while a filter is active. */
+  /** Items per folder including subfolders, counting only items the caller can show. */
   counts: Map<string, number>;
   /** Folders to render. While filtering, only folders with a visible item somewhere below them. */
   shownFolderIds: Set<string>;
@@ -32,7 +32,9 @@ export function buildLibraryFolderView(
   filterActive: boolean,
 ): LibraryFolderView {
   const tree = buildLibraryFolderTree(folders);
-  const counts = countLibraryFolderItems(folders, filterActive ? isItemVisible : undefined);
+  // Counts always go through isItemVisible: folders keep ids of deleted items and of items
+  // outside the panel's category, and a badge must never promise rows the folder cannot show.
+  const counts = countLibraryFolderItems(folders, isItemVisible);
   const shownFolderIds = new Set<string>();
   const revealedFolderIds = new Set<string>();
   for (const folder of folders) {

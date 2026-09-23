@@ -24,6 +24,7 @@ import {
   LibraryFolderTreeError,
 } from "../../packages/server/src/services/storage/library-folders.storage.js";
 import { createCharactersStorage } from "../../packages/server/src/services/storage/characters.storage.js";
+import { createLorebooksStorage } from "../../packages/server/src/services/storage/lorebooks.storage.js";
 
 // ── Pure tree rules ──
 {
@@ -129,6 +130,12 @@ import { createCharactersStorage } from "../../packages/server/src/services/stor
   assert.deepEqual([...searching.shownFolderIds].sort(), ["regions", "world"], "only folders holding a match show");
   assert.ok(searching.revealedFolderIds.has("world"), "a match deep inside opens its ancestors");
   assert.equal(searching.counts.get("world"), 1, "filtered counts only include visible items");
+
+  // Folders keep ids of deleted items and of items outside the panel's category or loaded rows;
+  // the badge must match the rows the folder can render even without a filter.
+  const stale = buildLibraryFolderView(folders, (id) => id !== "north", false);
+  assert.equal(stale.counts.get("world"), 2, "unfiltered counts skip items the panel cannot show");
+  assert.equal(stale.shownFolderIds.size, 3, "an unfiltered view still shows every folder");
 }
 
 // ── Stores ──
@@ -170,6 +177,18 @@ try {
   assert.equal(
     await folders.update("lorebooks", north!.id, { parentId: null }).then((folder) => folder?.parentId),
     null,
+  );
+
+  // Deleting a lorebook drops its id from every lorebook folder instead of leaving a stale member.
+  const lorebookStore = createLorebooksStorage(db);
+  const doomedBook = await lorebookStore.create({ name: "Doomed book" });
+  const keptBook = await lorebookStore.create({ name: "Kept book" });
+  await folders.moveItems("lorebooks", { itemIds: [doomedBook!.id, keptBook!.id], folderId: north!.id });
+  await lorebookStore.remove(doomedBook!.id);
+  assert.deepEqual(
+    (await folders.getById("lorebooks", north!.id))?.itemIds,
+    [keptBook!.id],
+    "a deleted lorebook leaves its folder",
   );
 
   // Concurrent folder moves: A under B and B under A must not both pass the cycle check.

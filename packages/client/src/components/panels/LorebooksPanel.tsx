@@ -351,8 +351,18 @@ export function LorebooksPanel() {
   );
   const folderedLorebookIds = folderView.folderedItemIds;
   const showFolderPaths = searchQuery.trim().length > 0;
-  // Grouping by campaign needs every lorebook, not just the first page.
-  useAutoLoadAllPages(lorebookPages, organizer.groupByCampaign);
+  // Tags are matched in the browser, and folders list members by id, so grouping by campaign,
+  // a tag filter, the full tag list and folders holding unloaded lorebooks need every page.
+  const folderMembersMissing = useMemo(() => {
+    if (!lorebookPages.hasNextPage) return false;
+    const loaded = new Set(lorebooks.map((lorebook) => lorebook.id));
+    return lorebookFolders.some((folder) => folder.itemIds.some((id) => !loaded.has(id)));
+  }, [lorebookFolders, lorebookPages.hasNextPage, lorebooks]);
+  useAutoLoadAllPages(
+    lorebookPages,
+    (organizer.groupByCampaign || !!activeTag || tagsExpanded || folderMembersMissing) &&
+      !lorebookPages.isFetchNextPageError,
+  );
 
   const rootLorebooks = useMemo(
     () => sorted.filter((lorebook) => !folderedLorebookIds.has(lorebook.id)),
@@ -611,8 +621,9 @@ export function LorebooksPanel() {
   );
 
   const handleRenameFolder = useCallback(
-    (folderId: string, name: string) => updateLorebookFolder.mutate({ id: folderId, name }),
-    [updateLorebookFolder],
+    (folderId: string, name: string) =>
+      updateLorebookFolder.mutate({ id: folderId, name }, { onError: showFolderError }),
+    [showFolderError, updateLorebookFolder],
   );
 
   const handleMoveFolder = useCallback(
@@ -637,11 +648,11 @@ export function LorebooksPanel() {
         tone: "destructive",
       }).then((ok) => {
         if (!ok) return;
-        deleteLorebookFolder.mutate(folder.id);
+        deleteLorebookFolder.mutate(folder.id, { onError: showFolderError });
         setFolderExpanded(folder.id, false);
       });
     },
-    [deleteLorebookFolder, folderNodes, folderView, localizeUi, setFolderExpanded],
+    [deleteLorebookFolder, folderNodes, folderView, localizeUi, setFolderExpanded, showFolderError],
   );
 
   const requestMoveFolder = useCallback(
@@ -663,9 +674,9 @@ export function LorebooksPanel() {
 
   const moveLorebooksToFolder = useCallback(
     (lorebookIds: string[], folderId: string | null) => {
-      moveLorebookItem.mutate({ itemIds: lorebookIds, folderId });
+      moveLorebookItem.mutate({ itemIds: lorebookIds, folderId }, { onError: showFolderError });
     },
-    [moveLorebookItem],
+    [moveLorebookItem, showFolderError],
   );
 
   const handleLorebookDrop = useCallback(

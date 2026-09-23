@@ -17,7 +17,11 @@ import {
   personas,
 } from "../../packages/server/src/db/schema/index.js";
 import { createLibraryCampaignsStorage } from "../../packages/server/src/services/storage/library-campaigns.storage.js";
-import { resolveLibraryCampaignFilter } from "../../packages/server/src/routes/library-campaigns.routes.js";
+import {
+  parseCatalogIdsQuery,
+  resolveLibraryCampaignFilter,
+  restrictLibraryIdFilter,
+} from "../../packages/server/src/routes/library-campaigns.routes.js";
 import { createCharacterCatalog } from "../../packages/server/src/services/storage/character-catalog.js";
 import { createLorebooksStorage } from "../../packages/server/src/services/storage/lorebooks.storage.js";
 import { campaignFilterRevision } from "../../packages/client/src/lib/library-campaign-filter.js";
@@ -239,6 +243,20 @@ try {
     campaignFilterRevision(await storage.list(), "lorebook", null),
     "the not-in-any-campaign key follows the union of all campaigns",
   );
+
+  // `ids=` on the character catalog: folder members beyond the loaded pages, still campaign-filtered.
+  assert.equal(parseCatalogIdsQuery(undefined), undefined);
+  assert.equal(parseCatalogIdsQuery(" , "), undefined, "an empty list filters nothing");
+  assert.deepEqual(parseCatalogIdsQuery("a, b,a,,c"), ["a", "b", "c"], "ids are trimmed and deduplicated");
+  assert.equal(parseCatalogIdsQuery(Array.from({ length: 150 }, (_, i) => `id${i}`).join(","))?.length, 100);
+  assert.deepEqual(restrictLibraryIdFilter(undefined, ["a"]), { include: ["a"] });
+  assert.deepEqual(restrictLibraryIdFilter({ include: ["a", "b"] }, ["b", "c"]), { include: ["b"] }, "intersects");
+  assert.deepEqual(
+    restrictLibraryIdFilter({ exclude: ["a"] }, ["a", "b"]),
+    { exclude: ["a"], include: ["a", "b"] },
+    "keeps the not-in-any-campaign exclusions",
+  );
+  assert.deepEqual(restrictLibraryIdFilter({ include: ["a"] }, undefined), { include: ["a"] });
 
   console.log("library campaigns regression passed");
 } finally {

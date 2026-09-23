@@ -16,6 +16,29 @@ import { createLibraryCampaignsStorage } from "../services/storage/library-campa
 
 export type LibraryCampaignIdFilter = { include?: string[]; exclude?: string[] };
 
+/** Most ids one `ids=` list query may name; the client asks in slices. */
+export const LIBRARY_IDS_QUERY_MAX = 100;
+
+/** Parse a comma-separated `ids` query value; undefined when absent or empty. */
+export function parseCatalogIdsQuery(value: unknown): string[] | undefined {
+  if (typeof value !== "string") return undefined;
+  const ids = Array.from(new Set(value.split(",").map((id) => id.trim()))).filter(
+    (id) => id.length > 0 && id.length <= 256,
+  );
+  return ids.length > 0 ? ids.slice(0, LIBRARY_IDS_QUERY_MAX) : undefined;
+}
+
+/** Narrow an id filter (a campaign filter or none) to `only`, keeping its exclusions. */
+export function restrictLibraryIdFilter(
+  filter: LibraryCampaignIdFilter | undefined,
+  only: string[] | undefined,
+): LibraryCampaignIdFilter | undefined {
+  if (!only) return filter;
+  if (!filter?.include) return { ...filter, include: only };
+  const allowed = new Set(filter.include);
+  return { ...filter, include: only.filter((id) => allowed.has(id)) };
+}
+
 /**
  * Turn a `campaign` list query value into an id filter: a campaign id keeps only
  * its items, LIBRARY_CAMPAIGN_NONE keeps only items in no campaign. Unknown or

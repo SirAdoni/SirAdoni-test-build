@@ -31,6 +31,7 @@ import { normalizeTimestampOverrides, type TimestampOverrides } from "../import/
 import { toPaginatedList } from "../../utils/list-pagination.js";
 import { createChatsStorage } from "./chats.storage.js";
 import { parseSourceMessageRefs } from "./lorebook-provenance.js";
+import { removeItemsFromLibraryFolders } from "./library-folders.storage.js";
 
 function normalizeLorebookEntryLimit(value: unknown): number {
   const parsed = typeof value === "number" ? value : Number(value);
@@ -654,6 +655,7 @@ export function createLorebooksStorage(db: DB) {
         await db.delete(lorebookCharacterLinks).where(eq(lorebookCharacterLinks.lorebookId, id));
         await db.delete(lorebookPersonaLinks).where(eq(lorebookPersonaLinks.lorebookId, id));
         await db.delete(lorebooks).where(eq(lorebooks.id, id));
+        await removeItemsFromLibraryFolders(db, "lorebooks", [id]);
         return entries.map((entry) => entry.id);
       }, id);
     },

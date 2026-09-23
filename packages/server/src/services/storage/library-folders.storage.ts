@@ -61,6 +61,27 @@ function mapFolder(row: LibraryFolderRow) {
   };
 }
 
+/** Drop deleted items from every folder of a scope, inside the caller's transaction when given one. */
+export async function removeItemsFromLibraryFolders(
+  db: Pick<DB, "select" | "update">,
+  scope: LibraryFolderScope,
+  itemIds: readonly string[],
+) {
+  if (itemIds.length === 0) return;
+  const removing = new Set(itemIds);
+  const rows = await db.select().from(libraryFolders).where(eq(libraryFolders.scope, scope));
+  const timestamp = now();
+  for (const row of rows) {
+    const current = parseItemIds(row.itemIds);
+    const next = current.filter((id) => !removing.has(id));
+    if (next.length === current.length) continue;
+    await db
+      .update(libraryFolders)
+      .set({ itemIds: JSON.stringify(next), updatedAt: timestamp })
+      .where(eq(libraryFolders.id, row.id));
+  }
+}
+
 export function createLibraryFoldersStorage(db: DB) {
   const listRows = (scope: LibraryFolderScope, handle: Pick<DB, "select"> = db) =>
     handle.select().from(libraryFolders).where(eq(libraryFolders.scope, scope)).orderBy(libraryFolders.sortOrder);

@@ -16,13 +16,14 @@ import { toast } from "sonner";
 import {
   fetchAllCharacterPages,
   flattenCharacterPages,
+  useCharacterCatalogByIds,
   useCharacterPages,
   useDeleteCharacter,
   useCharacterGroups,
   useCreateGroup,
   useUpdateGroup,
   useDeleteGroup,
-  useUpdateCharacter,
+  useBulkEditCharacterTags,
   useDuplicateCharacter,
 } from "../../hooks/use-characters";
 import { api } from "../../lib/api-client";
@@ -92,6 +93,7 @@ type GroupRow = {
   avatarPath: string | null;
   /** Parent group when this character folder is nested; null or absent = root. */
   parentId?: string | null;
+  createdAt?: string;
 };
 type ParsedCharacterRow = CharacterRow & { parsed: Record<string, any> };
 type ParsedGroupRow = GroupRow & { memberIds: string[] };
@@ -102,6 +104,15 @@ function getNextUnnamedFolderName(folders: Array<{ name: string }>) {
   let index = 2;
   while (names.has(`unnamed ${index}`)) index++;
   return `unnamed ${index}`;
+}
+
+function parseGroupMemberIds(value: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 function parseDroppedCharacterIds(payload: string): unknown {
@@ -186,7 +197,7 @@ export function CharactersPanel() {
   const { data: groups } = useCharacterGroups();
   const deleteCharacter = useDeleteCharacter();
   const duplicateCharacter = useDuplicateCharacter();
-  const updateCharacter = useUpdateCharacter();
+  const bulkEditTags = useBulkEditCharacterTags();
   const createGroup = useCreateGroup();
   const updateGroup = useUpdateGroup();
   const deleteGroup = useDeleteGroup();
@@ -220,7 +231,33 @@ export function CharactersPanel() {
     campaign: organizer.serverCampaignParam,
     campaignRevision: organizer.serverCampaignRevision,
   });
-  const characters = useMemo(() => flattenCharacterPages(characterPages.data), [characterPages.data]);
+  const pageCharacters = useMemo(() => flattenCharacterPages(characterPages.data), [characterPages.data]);
+  // Folder members can sit beyond the loaded pages; fetch just those rows (same filters) so a
+  // folder never shows a count with an empty body. Once every page is loaded nothing is missing.
+  const missingFolderMemberIds = useMemo(() => {
+    if (!groups || !characterPages.hasNextPage) return [];
+    const loaded = new Set(pageCharacters.map((row) => String(row.id)));
+    const missing = new Set<string>();
+    for (const group of groups as GroupRow[]) {
+      for (const id of parseGroupMemberIds(group.characterIds)) if (!loaded.has(id)) missing.add(id);
+    }
+    return [...missing];
+  }, [characterPages.hasNextPage, groups, pageCharacters]);
+  const folderMemberRows = useCharacterCatalogByIds({
+    ids: missingFolderMemberIds,
+    search: serverSearch,
+    sort,
+    favoriteFilter: serverFavoriteFilter,
+    category,
+    campaign: organizer.serverCampaignParam,
+    campaignRevision: organizer.serverCampaignRevision,
+  });
+  const characters = useMemo(() => {
+    const extra = folderMemberRows.data;
+    if (!extra?.length || missingFolderMemberIds.length === 0) return pageCharacters;
+    const loaded = new Set(pageCharacters.map((row) => String(row.id)));
+    return [...pageCharacters, ...extra.filter((row) => !loaded.has(row.id))];
+  }, [folderMemberRows.data, missingFolderMemberIds.length, pageCharacters]);
   const isLoading = characterPages.isLoading;
 
   const [draggedCharacterId, setDraggedCharacterId] = useState<string | null>(null);
@@ -355,10 +392,11 @@ export function CharactersPanel() {
       try {
         // Catalog rows carry the parsed tag list; raw /characters rows only hold it inside the data string.
         const allCharacters = (await fetchAllCharacterPages({ sort })).map(parseCharacterRow);
-        const affected = allCharacters.filter((c) => getCharacterTags(c).includes(tag));
-        for (const c of affected) {
-          const newTags = getCharacterTags(c).filter((t) => t !== tag);
-          await updateCharacter.mutateAsync({ id: c.id, data: { tags: newTags } });
+        const affectedIds = allCharacters.filter((c) => getCharacterTags(c).includes(tag)).map((c) => c.id);
+        // One bulk request instead of a PATCH (and a full list refetch) per character.
+        if (affectedIds.length > 0) {
+          const result = await bulkEditTags.mutateAsync({ ids: affectedIds, remove: [tag] });
+          if (result.failedIds.length > 0) throw new Error("Some characters kept the tag");
         }
         if (includedTags.has(tag)) {
           const next = new Set(includedTags);
@@ -376,7 +414,7 @@ export function CharactersPanel() {
     },
     [
       sort,
-      updateCharacter,
+      bulkEditTags,
       includedTags,
       excludedTags,
       setCharacterPanelIncludedTags,
@@ -478,19 +516,14 @@ export function CharactersPanel() {
 
   const parsedGroups = useMemo<ParsedGroupRow[]>(() => {
     if (!groups) return [];
-    return (groups as GroupRow[]).map((g) => {
-      const memberIds = (() => {
-        try {
-          return JSON.parse(g.characterIds);
-        } catch {
-          return [];
-        }
-      })() as string[];
-      return {
-        ...g,
-        memberIds,
-      };
-    });
+    // The server lists groups newest-updated first, so any rename or member change would
+    // make a folder jump to the top. Folders keep their creation order, like lorebook folders.
+    return (groups as GroupRow[])
+      .map((g) => ({ ...g, memberIds: parseGroupMemberIds(g.characterIds) }))
+      .sort(
+        (a, b) =>
+          (a.createdAt ?? "").localeCompare(b.createdAt ?? "") || a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
+      );
   }, [groups]);
 
   const visibleCharacterById = useMemo(
@@ -614,8 +647,8 @@ export function CharactersPanel() {
   );
 
   const handleRenameGroup = useCallback(
-    (groupId: string, name: string) => updateGroup.mutate({ id: groupId, name }),
-    [updateGroup],
+    (groupId: string, name: string) => updateGroup.mutate({ id: groupId, name }, { onError: showFolderError }),
+    [showFolderError, updateGroup],
   );
 
   const handleMoveFolder = useCallback(
@@ -642,10 +675,10 @@ export function CharactersPanel() {
         tone: "destructive",
       });
       if (!ok) return;
-      deleteGroup.mutate(folder.id);
+      deleteGroup.mutate(folder.id, { onError: showFolderError });
       setFolderExpanded(folder.id, false);
     },
-    [deleteGroup, folderNodes, folderView, localizeUi, setFolderExpanded],
+    [deleteGroup, folderNodes, folderView, localizeUi, setFolderExpanded, showFolderError],
   );
 
   const requestMoveFolder = useCallback(
@@ -700,10 +733,10 @@ export function CharactersPanel() {
           ? [draggedCharacterId]
           : [];
       if (ids.length === 0) return;
-      void moveCharactersToFolder(ids, folderId);
+      moveCharactersToFolder(ids, folderId).catch(showFolderError);
       setDraggedCharacterId(null);
     },
-    [draggedCharacterId, moveCharactersToFolder],
+    [draggedCharacterId, moveCharactersToFolder, showFolderError],
   );
 
   const finishCharacterTouchDrag = useCallback(
@@ -712,16 +745,18 @@ export function CharactersPanel() {
       const folderElement = target?.closest("[data-character-folder-id]") as HTMLElement | null;
       const rootElement = target?.closest("[data-character-folder-root]") as HTMLElement | null;
       if (folderElement?.dataset.characterFolderId) {
-        void moveCharactersToFolder(getDraggedCharacterIds(characterId), folderElement.dataset.characterFolderId);
+        moveCharactersToFolder(getDraggedCharacterIds(characterId), folderElement.dataset.characterFolderId).catch(
+          showFolderError,
+        );
       } else if (rootElement) {
-        void moveCharactersToFolder(getDraggedCharacterIds(characterId), null);
+        moveCharactersToFolder(getDraggedCharacterIds(characterId), null).catch(showFolderError);
       }
       setDraggedCharacterId(null);
       window.setTimeout(() => {
         suppressCharacterClickRef.current = false;
       }, 0);
     },
-    [getDraggedCharacterIds, moveCharactersToFolder],
+    [getDraggedCharacterIds, moveCharactersToFolder, showFolderError],
   );
 
   const cancelCharacterTouchDrag = useCallback((_characterId: string, wasActive: boolean) => {
@@ -968,11 +1003,12 @@ export function CharactersPanel() {
         <div className="mari-avatar-placeholder mari-avatar-placeholder--character relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg">
           <div className="absolute inset-0 overflow-hidden rounded-lg">
             {member.avatarPath ? (
-              <div onClick={(event) => event.stopPropagation()}>
+              <div className="absolute inset-0" onClick={(event) => event.stopPropagation()}>
                 <CharacterPhoto
                   src={member.avatarPath}
                   name={memberName}
                   className="block h-full w-full"
+                  wrapperClassName="absolute inset-0 block"
                   onUpdate={() => openCharacterDetailFromPanel(memberId)}
                   updateLabel={localizeUi("ui.game.npcsview.openCharacterCard")}
                 >
@@ -1155,7 +1191,7 @@ export function CharactersPanel() {
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                void moveCharactersToFolder([memberId], null);
+                moveCharactersToFolder([memberId], null).catch(showFolderError);
               }}
               className="mari-chrome-control flex h-5 min-h-5 w-5 items-center justify-center rounded-md p-0 text-[var(--muted-foreground)] active:scale-90"
               title={localizeUi("ui.panels.characterspanel.removeFromFolder")}
@@ -1268,11 +1304,12 @@ export function CharactersPanel() {
         <div className="mari-avatar-placeholder mari-avatar-placeholder--character relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm">
           {avatarUrl ? (
             <div className="absolute inset-0 overflow-hidden rounded-xl">
-              <div onClick={(event) => event.stopPropagation()}>
+              <div className="absolute inset-0" onClick={(event) => event.stopPropagation()}>
                 <CharacterPhoto
                   src={avatarUrl}
                   name={charName}
                   className="block h-full w-full"
+                  wrapperClassName="absolute inset-0 block"
                   onUpdate={() => openCharacterDetailFromPanel(char.id)}
                   updateLabel={localizeUi("ui.game.npcsview.openCharacterCard")}
                 >
@@ -1779,7 +1816,7 @@ export function CharactersPanel() {
         >
           {characterPages.isFetchingNextPage
             ? localizeUi("ui.characters.characterlibraryview.loading")
-            : localizeUi("ui.panels.characterspanel.loadMoreValue1Loaded", { value1: parsedCharacters.length })}
+            : localizeUi("ui.panels.characterspanel.loadMoreValue1Loaded", { value1: pageCharacters.length })}
         </PanelLoadMoreBar>
       )}
 

@@ -154,6 +154,56 @@ export function useCharacterPages(options: {
   });
 }
 
+/** Ids per `/characters/catalog?ids=` request; matches the server's page limit. */
+const CATALOG_IDS_PER_REQUEST = LIBRARY_PAGE_SIZE;
+
+/**
+ * Catalog rows for specific characters (such as folder members that sit beyond the
+ * loaded pages), filtered exactly like the panel's pages. Lives under the page key so
+ * every character edit that refreshes the pages refreshes these rows too.
+ */
+export function useCharacterCatalogByIds(options: {
+  ids: string[];
+  enabled?: boolean;
+  search?: string;
+  sort?: string;
+  favoriteFilter?: string;
+  category?: string;
+  campaign?: string;
+  campaignRevision?: string;
+}) {
+  const ids = Array.from(new Set(options.ids.filter((id) => id.trim().length > 0))).sort();
+  const search = (options.search ?? "").trim();
+  const sort = options.sort ?? "";
+  const favoriteFilter = options.favoriteFilter ?? "";
+  return useQuery({
+    queryKey: [
+      ...characterKeys.page(false, search, sort, favoriteFilter),
+      options.category ?? "all",
+      options.campaign ? `${options.campaign}#${options.campaignRevision ?? ""}` : "",
+      "by-ids",
+      ids.join(","),
+    ],
+    queryFn: async ({ signal }) => {
+      const items: CharacterCatalogEntry[] = [];
+      for (let start = 0; start < ids.length; start += CATALOG_IDS_PER_REQUEST) {
+        const slice = ids.slice(start, start + CATALOG_IDS_PER_REQUEST);
+        const params = new URLSearchParams({ limit: String(slice.length), offset: "0", ids: slice.join(",") });
+        if (search) params.set("search", search);
+        if (sort) params.set("sort", sort);
+        if (favoriteFilter) params.set("favoriteFilter", favoriteFilter);
+        if (options.category && options.category !== "all") params.set("category", options.category);
+        if (options.campaign) params.set("campaign", options.campaign);
+        const page = await api.get<CharacterCatalogPage>(`/characters/catalog?${params.toString()}`, { signal });
+        items.push(...page.items);
+      }
+      return items;
+    },
+    enabled: (options.enabled ?? true) && ids.length > 0,
+    staleTime: 5 * 60_000,
+  });
+}
+
 /** Compact character rows for surfaces that need search and navigation only. */
 export function useAllCharacterCatalog(enabled = true) {
   return useQuery({

@@ -35,7 +35,11 @@ import {
   type PersonaStorageRow,
 } from "../services/storage/characters.storage.js";
 import { LibraryFolderTreeError } from "../services/storage/library-folders.storage.js";
-import { resolveLibraryCampaignFilter } from "./library-campaigns.routes.js";
+import {
+  parseCatalogIdsQuery,
+  resolveLibraryCampaignFilter,
+  restrictLibraryIdFilter,
+} from "./library-campaigns.routes.js";
 import { createCharacterCatalog } from "../services/storage/character-catalog.js";
 import { encodePersonaCreate, encodePersonaUpdate, projectPersona } from "../services/personas/persona-projector.js";
 import { createCharacterGalleryStorage } from "../services/storage/character-gallery.storage.js";
@@ -968,6 +972,8 @@ export async function charactersRoutes(app: FastifyInstance) {
       favoriteFilter?: string;
       category?: string;
       campaign?: string;
+      /** Comma-separated ids: only these characters (still filtered), e.g. folder members beyond the loaded pages. */
+      ids?: string;
     };
   }>("/catalog", async (req) => {
     const page = parseLibraryPageQuery(req.query);
@@ -979,7 +985,10 @@ export async function charactersRoutes(app: FastifyInstance) {
       sort: page.sort,
       favoriteFilter: page.favoriteFilter,
       category: req.query.category === "characters" || req.query.category === "npcs" ? req.query.category : undefined,
-      ids: await resolveLibraryCampaignFilter(app.db, "character", req.query.campaign),
+      ids: restrictLibraryIdFilter(
+        await resolveLibraryCampaignFilter(app.db, "character", req.query.campaign),
+        parseCatalogIdsQuery(req.query.ids),
+      ),
     });
   });
 
