@@ -11393,6 +11393,7 @@
   "ui.panels.personaspanel.failedToExportPersonas": "Failed to export personas",
   "ui.panels.personaspanel.failedToLoadAllMatchingPersonas": "Failed to load all matching personas",
   "ui.panels.personaspanel.failedToRemoveTagFromSomePersonas": "Failed to remove tag from some personas",
+  "ui.panels.personaspanel.loadFailed": "Could not load your personas. Check that Marinara is running, then retry.",
   "ui.panels.personaspanel.noPersonasYetCreateOne": "No personas yet",
   "ui.panels.personaspanel.openPersonasLibrary": "Open Personas Library",
   "ui.panels.personaspanel.removeTagValue1FromAllPersonas": "Remove tag \"{{value1}}\" from all personas?",
