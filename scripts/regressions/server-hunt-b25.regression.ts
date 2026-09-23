@@ -144,7 +144,10 @@ try {
   const here = dirname(fileURLToPath(import.meta.url));
   const source = readFileSync(join(here, "../../packages/server/src/services/advanced-memory.ts"), "utf8");
   assert(!/prefixLength\+\+/.test(source), "the temporary prefix is not found by a one-message-at-a-time walk");
-  assert(/const middle = \(low \+ high\) >>> 1;/.test(source), "the temporary prefix uses a binary search");
+  assert(
+    /const middle = (?:\(low \+ high\) >>> 1|Math\.floor\(\(prefixLength \+ upper\) \/ 2\));/.test(source),
+    "the temporary prefix uses a binary search",
+  );
 
   console.log("server-hunt-b25 regression passed");
 } finally {

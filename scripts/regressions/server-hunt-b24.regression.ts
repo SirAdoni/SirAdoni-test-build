@@ -66,7 +66,8 @@ try {
 
   // ── 2. Google text travels in the body ─────────────────────────────────────
   {
-    const source = readFileSync(join(root, "packages/server/src/routes/translate.routes.ts"), "utf8");
+    // Upstream moved the provider calls from the route into the translation service.
+    const source = readFileSync(join(root, "packages/server/src/services/translation.service.ts"), "utf8");
     const google = source.slice(source.indexOf("async function translateWithGoogle"));
     assert.ok(!/searchParams\.set\("q"/.test(google), "Google text must not be put in the query string");
     assert.match(google, /method: "POST"/);
