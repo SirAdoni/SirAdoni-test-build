@@ -90,6 +90,27 @@ export function splitFullLorebookContext(
 }
 
 /** Providers whose request shape has a dedicated stable lore prefix. */
+/**
+ * The layout a real turn would send, for a prompt preview that has no pending player message yet. The real
+ * path reorders around the current user turn (generate.routes.ts prepareProviderMessages and the subscription
+ * normalizePromptCacheLayout), so this adds a placeholder turn, applies the same reordering for the chat mode
+ * and provider, and removes the placeholder: runtime blocks such as the World Maps spatial context end up where
+ * the next real request will carry them.
+ */
+export function layoutAsNextTurn<T extends PromptCacheLayoutMessage>(
+  messages: readonly T[],
+  options: { chatMode: string | null | undefined; provider: string | null | undefined },
+): T[] {
+  const placeholder = { role: "user", content: "", contextKind: "history" } as T;
+  const withTurn = [...messages, placeholder];
+  const ordered = supportsFullLorebookContext(options.provider)
+    ? normalizePromptCacheLayout(withTurn)
+    : options.chatMode === "game"
+      ? keepGameDialogueAdjacent(withTurn)
+      : withTurn;
+  return ordered.filter((message) => message !== placeholder);
+}
+
 export function supportsFullLorebookContext(provider: string | null | undefined): boolean {
   return provider === "openai_chatgpt" || provider === "claude_subscription";
 }

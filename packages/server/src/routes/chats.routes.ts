@@ -196,6 +196,7 @@ import {
 } from "../services/generation/roleplay-summary-runtime.js";
 import { resolveLorebookTokenBudget } from "../services/generation/lorebook-generation-runtime.js";
 import { resolveGameGmPromptTemplate } from "../services/generation/game-gm-prompt-runtime.js";
+import { layoutAsNextTurn } from "../services/generation/prompt-cache-layout.js";
 import {
   isBackgroundAutonomousCandidate,
   hasRoleplayDmThreadMarkers,
@@ -3942,14 +3943,21 @@ export async function chatsRoutes(app: FastifyInstance) {
           }
 
           return {
-            messages: toPeekPromptMessages(injectOwnerSpatialPrompt(assembled.messages, ownerSpatialProjection)),
+            messages: toPeekPromptMessages(
+              layoutAsNextTurn(injectOwnerSpatialPrompt(assembled.messages, ownerSpatialProjection), {
+                chatMode,
+                provider: connection?.provider,
+              }),
+            ),
             chatMode,
             parameters: assembled.parameters,
             source: "live_preview",
+            layout: "next-turn",
             exact: false,
             generationInfo: null,
             agentNote:
-              "No saved model request was available, so this is a live best-effort preview assembled without sending.",
+              "No saved model request was available, so this is a live best-effort preview assembled without sending. " +
+              "It uses the provider layout of a real turn (runtime context moved to the current turn); the next player message would follow the last line.",
           };
         }
       } catch (e) {
