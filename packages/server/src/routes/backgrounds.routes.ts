@@ -8,6 +8,7 @@ import { randomUUID } from "crypto";
 import { z } from "zod";
 import { DATA_DIR } from "../utils/data-dir.js";
 import { logDebugOverride } from "../lib/logger.js";
+import { orFallback } from "../lib/best-effort.js";
 import { isDebugAgentsEnabled } from "../config/runtime-config.js";
 import { buildAssetManifest, GAME_ASSETS_DIR, getAssetManifest } from "../services/game/asset-manifest.service.js";
 import {
@@ -496,9 +497,11 @@ export async function backgroundsRoutes(app: FastifyInstance) {
     const setupConfig = parseRecord(metadata.gameSetupConfig);
     const gameState =
       mode === "game"
-        ? await createGameStateStorage(app.db)
-            .getLatest(input.chatId)
-            .catch(() => null)
+        ? await orFallback(createGameStateStorage(app.db).getLatest(input.chatId), null, {
+            event: "storage.read.fallback",
+            stage: "game-state.latest",
+            chatId: input.chatId,
+          })
         : null;
     const imageSettings = await loadImageGenerationUserSettings(app.db);
     const imageFallback = await resolveImageConnectionFallback(connections, imgConn.id);

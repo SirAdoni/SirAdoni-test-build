@@ -31,6 +31,9 @@ import { hostname, networkInterfaces } from "node:os";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { STORAGE_MIGRATION_NOTICE_SETTINGS_KEY, type StorageMigrationNotice } from "@marinara-engine/shared";
 import { logger } from "../lib/logger.js";
+import { diagnosticDetails, getDiagnosticContext, runWithRootDiagnosticContext } from "../lib/diagnostics.js";
+import { registerWorkerGauge } from "../lib/worker-gauges.js";
+import { getRuntimeMemorySnapshot } from "../utils/runtime-memory.js";
 import { getFileStorageDir, getMaxResidentChatUnits } from "../config/runtime-config.js";
 import { persistentWriterHostId } from "./writer-host-identity.js";
 import * as schema from "./schema/index.js";
@@ -243,7 +246,35 @@ export type FileNativeStoreController = {
    * MUST give each scenario a distinct table name, or its second store will
    * silently exercise the boot loader instead of this method.
    */
-  registerTables: (tables: readonly unknown[]) => void;
+  registerTables: (tables: readonly unknown[]) => RegisterTablesResult;
+  /** What the boot load found and how long each step took; null before initialize() finishes. */
+  getBootStats: () => StorageBootStats | null;
+  /** Tables with changes not yet written to disk. */
+  getDirtyTables: () => string[];
+  /** In-memory row count per table (lazy tables count resident rows only). */
+  getTableSizes: () => Record<string, number>;
+};
+
+export type RegisterTablesResult = {
+  registered: string[];
+  rejected: Array<{ table?: string; index: number; reason: string }>;
+};
+
+export type StorageBootStats = {
+  elapsedMs: number;
+  phases: { leaseMs: number; migrateMs: number; loadMs: number; noticeMs: number; flushMs: number };
+  totalRows: number;
+  tables: Record<string, number>;
+  lazyShardFiles: number;
+  messageIndexSize: number;
+  bytesRead: number;
+  recoveredFromBackup: number;
+  quarantinedFiles: number;
+  malformedRows: number;
+  duplicateRows: number;
+  migratedTables: string[];
+  /** Number of tables loaded whole at boot (the rest load per chat unit). */
+  eager: number;
 };
 
 export type FileNativeDB = {
@@ -677,6 +708,14 @@ export function decodeShardKey(encoded: string): string | null {
 const FILE_BACKED_TABLE_SET = new Set<string>(FILE_BACKED_TABLES);
 const isWindows = process.platform === "win32";
 const warnedFlushFailures = new Set<string>();
+/** A flush slower than this, or writing more than FLUSH_SLOW_BYTES, logs storage.flush.slow at warn. */
+const FLUSH_SLOW_MS = 1_000;
+const FLUSH_SLOW_BYTES = 50 * 1024 * 1024;
+/** While flushes keep failing with the same code, at most one warn line per this window. */
+const FLUSH_FAILURE_REPEAT_MS = 30_000;
+/** A full-residency lease above either threshold logs at warn. */
+const FULL_RESIDENCY_SLOW_MS = 250;
+const FULL_RESIDENCY_LARGE_ROWS = 50_000;
 
 function migrateFileBackedRow(table: string, row: Row): Row {
   if (table === "noodle_accounts") return migrateLegacyNoodleAccountRow(row);
@@ -998,15 +1037,38 @@ function buildTableMetadata() {
 
 buildTableMetadata();
 
+/** The filesystem error code (ENOENT, EIO...) of a Node error, when it has one. */
+function errnoCode(err: unknown): string | undefined {
+  const code = err && typeof err === "object" && "code" in err ? (err as { code?: unknown }).code : undefined;
+  return typeof code === "string" ? code : undefined;
+}
+
+/** fsync failures that mean the disk itself is failing or full, not a filesystem that refuses fsync. */
+const FSYNC_ALWAYS_ERROR_CODES = new Set(["EIO", "ENOSPC"]);
+
 function warnFlushFailure(kind: "file" | "directory", path: string, err: unknown) {
-  const key = `${kind}:${path}`;
+  const errorCode = errnoCode(err);
+  const dir = kind === "directory" ? path : dirname(path);
+  const fields = { event: "storage.fsync", kind, dir, errorCode, outcome: "failed", err };
+  if (errorCode && FSYNC_ALWAYS_ERROR_CODES.has(errorCode)) {
+    logger.error(
+      fields,
+      "[file-storage] Failed to fsync %s %s (%s); the disk may be failing or full.",
+      kind,
+      path,
+      errorCode,
+    );
+    return;
+  }
+  // One warning per directory and code: a filesystem that rejects fsync rejects it for every file in it.
+  const key = `${kind}:${dir}:${errorCode ?? "unknown"}`;
   if (warnedFlushFailures.has(key)) {
-    logger.debug(err, "[file-storage] Failed to fsync %s %s", kind, path);
+    logger.debug(fields, "[file-storage] Failed to fsync %s %s", kind, path);
     return;
   }
   warnedFlushFailures.add(key);
   logger.warn(
-    err,
+    fields,
     "[file-storage] Failed to fsync %s %s; crash recovery may rely on the operating system write cache.",
     kind,
     path,
@@ -1101,23 +1163,77 @@ export async function renameWithTransientRetry(
   sleep: (milliseconds: number) => Promise<void> = (milliseconds) =>
     new Promise((resolve) => setTimeout(resolve, milliseconds)),
 ): Promise<void> {
+  const started = Date.now();
+  let lastErrorCode: string | undefined;
   for (let attempt = 0; ; attempt += 1) {
     try {
       await renameOperation(from, to);
+      if (attempt > 0) {
+        logger.warn(
+          {
+            event: "storage.rename.retry",
+            path: to,
+            attempt: attempt + 1,
+            elapsedMs: Date.now() - started,
+            errorCode: lastErrorCode,
+            outcome: "ok",
+          },
+          "[file-storage] Rename to %s succeeded after %d retries",
+          to,
+          attempt,
+        );
+      }
       return;
     } catch (error) {
+      lastErrorCode = errnoCode(error);
       if (
         platform !== "win32" ||
         !isTransientWindowsRenameError(error) ||
         attempt >= WINDOWS_RENAME_RETRY_DELAYS_MS.length
-      )
+      ) {
+        if (attempt > 0 && error && typeof error === "object") {
+          try {
+            (error as { attempt?: number }).attempt = attempt + 1;
+          } catch {
+            /* frozen error object: the attempt count is only a diagnostic */
+          }
+        }
         throw error;
+      }
       await sleep(WINDOWS_RENAME_RETRY_DELAYS_MS[attempt]!);
     }
   }
 }
 
-async function atomicWriteFile(path: string, content: string, options: { refreshBackup?: boolean } = {}) {
+/** What one flush wrote, filled by saveFileSnapshots, saveShardedTable and atomicWriteFile. */
+type FlushStats = {
+  filesWritten: number;
+  bytesWritten: number;
+  filesUnlinked: number;
+  tables: Set<string>;
+  /** The file being written or removed right now; names the file when the flush fails. */
+  currentPath?: string;
+  currentTable?: string;
+};
+
+function createFlushStats(): FlushStats {
+  return { filesWritten: 0, bytesWritten: 0, filesUnlinked: 0, tables: new Set() };
+}
+
+function logTmpCleanupFailure(path: string, err: unknown) {
+  logger.debug(
+    { event: "storage.tmp_cleanup", path, errorCode: errnoCode(err), outcome: "failed" },
+    "[file-storage] Could not remove temporary file %s",
+    path,
+  );
+}
+
+async function atomicWriteFile(
+  path: string,
+  content: string,
+  options: { refreshBackup?: boolean; stats?: FlushStats } = {},
+) {
+  if (options.stats) options.stats.currentPath = path;
   mkdirSync(dirname(path), { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
   const tmpPath = `${path}.tmp-${process.pid}-${Date.now()}`;
   const refreshBackup = options.refreshBackup ?? true;
@@ -1144,8 +1260,8 @@ async function atomicWriteFile(path: string, content: string, options: { refresh
       } catch (err) {
         try {
           if (existsSync(bakTmpPath)) await unlink(bakTmpPath);
-        } catch {
-          /* ignore */
+        } catch (cleanupErr) {
+          logTmpCleanupFailure(bakTmpPath, cleanupErr);
         }
         logger.error(
           err,
@@ -1158,11 +1274,15 @@ async function atomicWriteFile(path: string, content: string, options: { refresh
     await flushFile(tmpPath);
     await renameWithTransientRetry(tmpPath, path);
     await flushDirectory(dirname(path));
+    if (options.stats) {
+      options.stats.filesWritten += 1;
+      options.stats.bytesWritten += Buffer.byteLength(content);
+    }
   } catch (err) {
     try {
       if (existsSync(tmpPath)) await unlink(tmpPath);
-    } catch {
-      /* ignore */
+    } catch (cleanupErr) {
+      logTmpCleanupFailure(tmpPath, cleanupErr);
     }
     throw err;
   }
@@ -1173,26 +1293,28 @@ type ParseResult<T> = {
   recoveredFromBackup: boolean;
   recoveredFromFallback: boolean;
   unreadablePaths: string[];
+  /** Bytes of the file the value came from (0 when the fallback was used). */
+  byteLength: number;
 };
 
 type QuarantinedFile = QuarantinedStorageTable["files"][number];
 
-function describeStaleness(mainPath: string, backupPath: string): string {
+function describeStaleness(mainPath: string, backupPath: string): { ms: number | null; label: string } {
   try {
     const mainMs = statSync(mainPath).mtimeMs;
     const bakMs = statSync(backupPath).mtimeMs;
-    const deltaMs = Math.max(0, mainMs - bakMs);
-    if (deltaMs < 1000) return "less than a second";
-    const seconds = Math.floor(deltaMs / 1000);
-    if (seconds < 60) return `${seconds}s`;
+    const ms = Math.round(Math.max(0, mainMs - bakMs));
+    if (ms < 1000) return { ms, label: "less than a second" };
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60) return { ms, label: `${seconds}s` };
     const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}m`;
+    if (minutes < 60) return { ms, label: `${minutes}m` };
     const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h ${minutes % 60}m`;
+    if (hours < 24) return { ms, label: `${hours}h ${minutes % 60}m` };
     const days = Math.floor(hours / 24);
-    return `${days}d ${hours % 24}h`;
+    return { ms, label: `${days}d ${hours % 24}h` };
   } catch {
-    return "unknown";
+    return { ms: null, label: "unknown" };
   }
 }
 
@@ -1319,19 +1441,24 @@ function preserveMalformedRowSourceSync(path: string, table: string): Quarantine
  * applies to shape corruption identically.
  */
 function parseJsonFile<T>(path: string, fallback: T, validateRoot?: (value: unknown) => boolean): ParseResult<T> {
-  const read = (filePath: string): T => {
-    const value = JSON.parse(readFileSync(filePath, "utf8")) as T;
+  const read = (filePath: string): { value: T; byteLength: number } => {
+    const text = readFileSync(filePath, "utf8");
+    const value = JSON.parse(text) as T;
     if (validateRoot && !validateRoot(value)) {
       throw new Error(`Valid JSON with an unexpected root shape in ${filePath}`);
     }
-    return value;
+    return { value, byteLength: Buffer.byteLength(text) };
   };
+  // One structured line per recovery outcome (event storage.recover). Only file
+  // paths, codes and timings are logged, never file contents.
+  const recoverFields = { event: "storage.recover", path };
   if (!existsSync(path)) {
     const backupPath = `${path}.bak`;
     if (existsSync(backupPath)) {
       try {
-        const value = read(backupPath);
+        const { value, byteLength } = read(backupPath);
         logger.warn(
+          { ...recoverFields, backupPath, source: "missing-primary", outcome: "ok" },
           "[file-storage] %s is missing; recovering from %s. A fresh primary snapshot will be written on next save.",
           path,
           backupPath,
@@ -1341,10 +1468,18 @@ function parseJsonFile<T>(path: string, fallback: T, validateRoot?: (value: unkn
           recoveredFromBackup: true,
           recoveredFromFallback: false,
           unreadablePaths: [],
+          byteLength,
         };
       } catch (backupErr) {
         logger.error(
-          backupErr,
+          {
+            ...recoverFields,
+            backupPath,
+            source: "missing-primary",
+            outcome: "failed",
+            errorCode: "ME_STORAGE_CORRUPT",
+            err: backupErr,
+          },
           "[file-storage] %s is missing and backup %s could not be used; continuing with fallback data.",
           path,
           backupPath,
@@ -1354,60 +1489,94 @@ function parseJsonFile<T>(path: string, fallback: T, validateRoot?: (value: unkn
           recoveredFromBackup: false,
           recoveredFromFallback: true,
           unreadablePaths: [backupPath],
+          byteLength: 0,
         };
       }
     }
-    return { value: fallback, recoveredFromBackup: false, recoveredFromFallback: false, unreadablePaths: [] };
-  }
-  try {
     return {
-      value: read(path),
+      value: fallback,
       recoveredFromBackup: false,
       recoveredFromFallback: false,
       unreadablePaths: [],
+      byteLength: 0,
+    };
+  }
+  try {
+    const { value, byteLength } = read(path);
+    return {
+      value,
+      recoveredFromBackup: false,
+      recoveredFromFallback: false,
+      unreadablePaths: [],
+      byteLength,
     };
   } catch (err) {
     const backupPath = `${path}.bak`;
     if (existsSync(backupPath)) {
       const staleness = describeStaleness(path, backupPath);
       try {
-        const value = read(backupPath);
+        const { value, byteLength } = read(backupPath);
         logger.error(
-          err,
+          {
+            ...recoverFields,
+            backupPath,
+            source: "backup",
+            outcome: "ok",
+            stalenessMs: staleness.ms,
+            errorCode: "ME_STORAGE_CORRUPT",
+            err,
+          },
           "[file-storage] %s is corrupt; recovering from %s (backup is %s older). Edits made since the backup are unrecoverable.",
           path,
           backupPath,
-          staleness,
+          staleness.label,
         );
         return {
           value,
           recoveredFromBackup: true,
           recoveredFromFallback: false,
           unreadablePaths: [],
+          byteLength,
         };
       } catch (backupErr) {
+        // Both files failed: ONE line carries both errors.
         logger.error(
-          err,
+          {
+            ...recoverFields,
+            backupPath,
+            source: "fallback",
+            outcome: "failed",
+            stalenessMs: staleness.ms,
+            errorCode: "ME_STORAGE_CORRUPT",
+            err,
+            backupErr: diagnosticDetails(backupErr),
+          },
           "[file-storage] %s is corrupt and backup %s could not be used (backup is %s older); continuing with fallback data. Data in the primary and backup files is unrecoverable.",
           path,
           backupPath,
-          staleness,
+          staleness.label,
         );
-        logger.error(backupErr, "[file-storage] Backup %s parse failure while recovering %s.", backupPath, path);
         return {
           value: fallback,
           recoveredFromBackup: false,
           recoveredFromFallback: true,
           unreadablePaths: [path, backupPath],
+          byteLength: 0,
         };
       }
     }
     logger.error(
-      err,
+      { ...recoverFields, source: "fallback", outcome: "failed", errorCode: "ME_STORAGE_CORRUPT", err },
       "[file-storage] %s is corrupt and no usable backup exists; continuing with fallback data. Data in this file is unrecoverable.",
       path,
     );
-    return { value: fallback, recoveredFromBackup: false, recoveredFromFallback: true, unreadablePaths: [path] };
+    return {
+      value: fallback,
+      recoveredFromBackup: false,
+      recoveredFromFallback: true,
+      unreadablePaths: [path],
+      byteLength: 0,
+    };
   }
 }
 
@@ -2407,6 +2576,18 @@ class FileTableStore {
   private debounceTimer: NodeJS.Timeout | null = null;
   private safetyTimer: NodeJS.Timeout | null = null;
   private beforeExitHandler: (() => void) | null = null;
+  /** requestId of the write that armed the debounce timer, consumed by the next flush. */
+  private flushTriggeredByRequestId: string | undefined;
+  private consecutiveFlushFailures = 0;
+  private firstFlushFailureAt = 0;
+  private lastFlushFailureCode: string | undefined;
+  private lastFlushFailureLogAt = 0;
+  /** `${table}:${shardKey}` deferral warnings already written; repeats log at debug. */
+  private deferredFlushWarnings = new Set<string>();
+  private bootCounters = { bytesRead: 0, recoveredFromBackup: 0, malformedRows: 0, duplicateRows: 0 };
+  private bootLoadCounts: Record<string, number> = {};
+  private bootStats: StorageBootStats | null = null;
+  private unregisterGauge: (() => void) | null = null;
   // Rollback state for the active transaction lives in this AsyncLocalStorage so
   // it is bound to the transaction's own async call path. Writes from other
   // async call paths wait for the transaction to finish and are therefore never
@@ -2671,8 +2852,13 @@ class FileTableStore {
       }
     }
     mkdirSync(this.rootDir, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+    const bootStarted = performance.now();
+    const phaseMs = (since: number) => Math.round(performance.now() - since);
+    let stepStarted = bootStarted;
     await this.acquireWriterLease();
+    const phases = { leaseMs: phaseMs(stepStarted), migrateMs: 0, loadMs: 0, noticeMs: 0, flushMs: 0 };
     try {
+      stepStarted = performance.now();
       hardenPrivateStorageTree(this.rootDir);
 
       // Refuse newer-format data BEFORE any migration side effect: the
@@ -2681,21 +2867,28 @@ class FileTableStore {
       this.assertStorageFormatSupported();
 
       await this.migrateShardedTables();
+      phases.migrateMs = phaseMs(stepStarted);
 
+      stepStarted = performance.now();
       if (fileStoreManifestExists(this.rootDir) || tableSnapshotsExist(this.rootDir)) {
         await this.loadFileSnapshots();
       }
+      phases.loadMs = phaseMs(stepStarted);
 
       // AFTER the load (the row must land in the loaded table) and BEFORE the
       // startup flush persists it alongside the migrated shards.
+      stepStarted = performance.now();
       this.recordMigrationNotice();
+      phases.noticeMs = phaseMs(stepStarted);
 
+      stepStarted = performance.now();
       if (this.dirty || this.dirtyTables.size > 0) {
         await this.flush(true);
       }
+      phases.flushMs = phaseMs(stepStarted);
 
       this.installAutosave();
-      logger.info(`[file-storage] Using file-native storage at ${this.rootDir}`);
+      this.logBootStats(phaseMs(bootStarted), phases);
     } catch (err) {
       try {
         await this.releaseWriterLease();
@@ -2704,6 +2897,64 @@ class FileTableStore {
       }
       throw err;
     }
+  }
+
+  /** Builds the storage.load summary line and keeps it for getBootStats(). */
+  private logBootStats(elapsedMs: number, phases: StorageBootStats["phases"]) {
+    const tables = { ...this.bootLoadCounts };
+    let totalRows = 0;
+    for (const count of Object.values(tables)) totalRows += count;
+    let lazyShardFiles = 0;
+    for (const discovered of this.lazyDiscoveredShards.values()) lazyShardFiles += discovered.size;
+    let quarantinedFiles = 0;
+    for (const entry of this.quarantinedTables) quarantinedFiles += entry.files.length;
+    const stats: StorageBootStats = {
+      elapsedMs,
+      phases,
+      totalRows,
+      tables,
+      lazyShardFiles,
+      messageIndexSize: this.messageShardIndex.size,
+      bytesRead: this.bootCounters.bytesRead,
+      recoveredFromBackup: this.bootCounters.recoveredFromBackup,
+      quarantinedFiles,
+      malformedRows: this.bootCounters.malformedRows,
+      duplicateRows: this.bootCounters.duplicateRows,
+      migratedTables: [...this.migratedTables],
+      eager: FILE_BACKED_TABLES.filter((table) => !LAZY_UNIT_TABLES.has(table)).length,
+    };
+    this.bootStats = stats;
+    const healed =
+      stats.recoveredFromBackup > 0 || quarantinedFiles > 0 || stats.malformedRows > 0 || stats.duplicateRows > 0;
+    logger[healed ? "warn" : "info"](
+      { event: "storage.load", outcome: "ok", ...stats, ...getRuntimeMemorySnapshot() },
+      "[file-storage] Using file-native storage at %s (%d rows in %d ms)",
+      this.rootDir,
+      totalRows,
+      elapsedMs,
+    );
+  }
+
+  getBootStats(): StorageBootStats | null {
+    return this.bootStats;
+  }
+
+  getDirtyTables(): string[] {
+    return [...this.dirtyTables];
+  }
+
+  getTableSizes(): Record<string, number> {
+    const sizes: Record<string, number> = {};
+    for (const [table, rows] of this.tables) sizes[table] = rows.length;
+    return sizes;
+  }
+
+  /** parseJsonFile for the boot loader: also tallies bytes read and backup recoveries for storage.load. */
+  private bootParse<T>(path: string, fallback: T, validateRoot?: (value: unknown) => boolean): ParseResult<T> {
+    const result = parseJsonFile(path, fallback, validateRoot);
+    this.bootCounters.bytesRead += result.byteLength;
+    if (result.recoveredFromBackup) this.bootCounters.recoveredFromBackup += 1;
+    return result;
   }
 
   rows(table: Table | string) {
@@ -2768,10 +3019,19 @@ class FileTableStore {
           existsSync(path),
         );
         if (preservedSource) {
+          const restoreStarted = Date.now();
           await copyFile(preservedSource, monolithPath);
           if (process.platform !== "win32") await chmod(monolithPath, PRIVATE_FILE_MODE);
           monolithPresent = true;
           logger.warn(
+            {
+              event: "storage.migrate",
+              table,
+              stage: "restore-pre-shard",
+              rows: expectedRowCount,
+              elapsedMs: Date.now() - restoreStarted,
+              outcome: "ok",
+            },
             "[file-storage] Restoring %s from its preserved pre-shard backup because the manifest expects %d rows but no shard files exist",
             table,
             expectedRowCount,
@@ -2804,6 +3064,7 @@ class FileTableStore {
         const hasShardData = shardPrimaries.length > 0;
         if (sentinelPresent || !hasShardData) {
           logger.warn(
+            { event: "storage.migrate", table, stage: "retry", shardCount: shardPrimaries.length, outcome: "skipped" },
             "[file-storage] A previous %s shard migration did not complete; retrying from the untouched monolith",
             table,
           );
@@ -2840,7 +3101,7 @@ class FileTableStore {
           }
           this.quarantinedTables.push({ table, files });
           logger.error(
-            { table, files },
+            { table, quarantinedPaths: files.map((file) => ({ from: file.from, to: file.to })) },
             "[file-storage] Found a %s monolith alongside shards (written by an older build after the shard " +
               "migration). The shards are authoritative; the conflicting monolith was quarantined, never merged. " +
               "Recover any rows it holds manually if needed.",
@@ -2903,6 +3164,7 @@ class FileTableStore {
     migrationIndex: Map<string, string>,
   ) {
     const meta = getMeta(table);
+    const migrateStarted = Date.now();
     mkdirSync(dir, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
     await writeFile(sentinelPath, new Date().toISOString(), { encoding: "utf8", mode: PRIVATE_FILE_MODE });
 
@@ -2923,7 +3185,7 @@ class FileTableStore {
       const files = await quarantineUnrecoverableFiles(unreadablePaths, `table ${table} monolith`);
       if (files.length > 0) this.quarantinedTables.push({ table, files });
       logger.error(
-        { table, files: files.map((file) => file.to) },
+        { table, quarantinedPaths: files.map((file) => ({ from: file.from, to: file.to })) },
         "[file-storage] Monolith for %s was unrecoverable from primary and backup; quarantined the corrupt files and sharded an empty table. Preserved files require manual recovery.",
         table,
       );
@@ -2999,6 +3261,17 @@ class FileTableStore {
     this.dirty = true;
     this.migratedTables.push(table);
     logger.info(
+      {
+        event: "storage.migrate",
+        table,
+        stage: "shard",
+        rows: normalized.length,
+        shardCount: rowsByShard.size,
+        malformedRowCount,
+        elapsedMs: Date.now() - migrateStarted,
+        outcome: "ok",
+        heapUsedMiB: getRuntimeMemorySnapshot().heapUsedMiB,
+      },
       "[file-storage] Sharded %s: %d rows into %d ownership files (originals preserved as .pre-shard)",
       table,
       normalized.length,
@@ -3153,7 +3426,7 @@ class FileTableStore {
       releaseTransaction();
       if (this.pendingTransactionFlush) {
         this.pendingTransactionFlush = false;
-        if (!this.writesClosed) void this.flush();
+        if (!this.writesClosed) void this.flushInRootContext("commit", getDiagnosticContext().requestId);
       }
     }
   }
@@ -3502,10 +3775,15 @@ class FileTableStore {
     // healing write failed. Marks travel with the batch that consumes them.
     const recoveredPaths = this.backupRecoveredPaths;
     this.backupRecoveredPaths = new Set();
+    const triggeredByRequestId = this.flushTriggeredByRequestId;
+    this.flushTriggeredByRequestId = undefined;
     const flush = (async () => {
+      const stats = createFlushStats();
+      const started = Date.now();
       try {
-        await this.saveFileSnapshots(dirtyTables, dirtyShards, staleShards, recoveredPaths);
+        await this.saveFileSnapshots(dirtyTables, dirtyShards, staleShards, recoveredPaths, stats);
         this.lastFlushError = null;
+        this.logFlushSuccess(stats, Date.now() - started, triggeredByRequestId);
       } catch (err) {
         this.lastFlushError = err;
         this.dirty = true;
@@ -3523,7 +3801,16 @@ class FileTableStore {
           this.staleShardFiles.set(table, set);
         }
         for (const path of recoveredPaths) this.backupRecoveredPaths.add(path);
-        logger.error(err, "[file-storage] Failed to persist file-native storage");
+        let dirtyShardCount = 0;
+        for (const keys of dirtyShards.values()) dirtyShardCount += keys.size;
+        this.logFlushFailure(err, {
+          dirtyTables: [...dirtyTables],
+          dirtyShardCount,
+          elapsedMs: Date.now() - started,
+          table: stats.currentTable,
+          path: stats.currentPath,
+          triggeredByRequestId,
+        });
       }
     })();
     this.activeFlush = flush;
@@ -3538,6 +3825,103 @@ class FileTableStore {
     if (throwOnError && this.lastFlushError) throw this.lastFlushError;
   }
 
+  /** Runs a background flush in its own root context, so its lines never carry a stale request's ids. */
+  private flushInRootContext(stage: "debounce" | "safety" | "beforeExit" | "commit", triggeredByRequestId?: string) {
+    return runWithRootDiagnosticContext({ operation: "storage.flush", operationId: randomUUID(), stage }, () => {
+      if (triggeredByRequestId) this.flushTriggeredByRequestId ??= triggeredByRequestId;
+      return this.flush();
+    });
+  }
+
+  private logFlushSuccess(stats: FlushStats, elapsedMs: number, triggeredByRequestId: string | undefined) {
+    const fields = {
+      event: "storage.flush",
+      outcome: "ok",
+      elapsedMs,
+      filesWritten: stats.filesWritten,
+      bytesWritten: stats.bytesWritten,
+      filesUnlinked: stats.filesUnlinked,
+      tables: [...stats.tables],
+      ...(triggeredByRequestId ? { triggeredByRequestId } : {}),
+    };
+    if (elapsedMs > FLUSH_SLOW_MS || stats.bytesWritten > FLUSH_SLOW_BYTES) {
+      logger.warn(
+        { ...fields, event: "storage.flush.slow" },
+        "[file-storage] Slow flush: %d files, %d bytes in %d ms",
+        stats.filesWritten,
+        stats.bytesWritten,
+        elapsedMs,
+      );
+    } else {
+      logger.debug(fields, "[file-storage] Flushed %d files", stats.filesWritten);
+    }
+    if (this.consecutiveFlushFailures > 0) {
+      logger.info(
+        {
+          event: "storage.flush",
+          state: "recovered",
+          outcome: "ok",
+          attempt: this.consecutiveFlushFailures + 1,
+          failingForMs: Date.now() - this.firstFlushFailureAt,
+          lastErrorCode: this.lastFlushFailureCode,
+        },
+        "[file-storage] Storage writes recovered after %d failed flushes",
+        this.consecutiveFlushFailures,
+      );
+      this.consecutiveFlushFailures = 0;
+      this.firstFlushFailureAt = 0;
+      this.lastFlushFailureCode = undefined;
+      this.lastFlushFailureLogAt = 0;
+    }
+  }
+
+  /**
+   * The first failure of a streak logs at error. Later failures log at warn only
+   * when the error code changes or every 30 s, so a full disk cannot flood the log.
+   */
+  private logFlushFailure(
+    err: unknown,
+    details: {
+      dirtyTables: string[];
+      dirtyShardCount: number;
+      elapsedMs: number;
+      table?: string;
+      path?: string;
+      triggeredByRequestId?: string;
+    },
+  ) {
+    const now = Date.now();
+    const errorCode = errnoCode(err);
+    this.consecutiveFlushFailures += 1;
+    const attempt = this.consecutiveFlushFailures;
+    const { triggeredByRequestId, ...rest } = details;
+    const fields = {
+      event: "storage.flush",
+      outcome: "failed",
+      errorCode,
+      attempt,
+      ...rest,
+      ...(triggeredByRequestId ? { triggeredByRequestId } : {}),
+      err,
+    };
+    if (attempt === 1) {
+      this.firstFlushFailureAt = now;
+      this.lastFlushFailureCode = errorCode;
+      this.lastFlushFailureLogAt = now;
+      logger.error(fields, "[file-storage] Failed to persist file-native storage");
+      return;
+    }
+    const codeChanged = errorCode !== this.lastFlushFailureCode;
+    this.lastFlushFailureCode = errorCode;
+    if (!codeChanged && now - this.lastFlushFailureLogAt < FLUSH_FAILURE_REPEAT_MS) return;
+    this.lastFlushFailureLogAt = now;
+    logger.warn(
+      { ...fields, failingForMs: now - this.firstFlushFailureAt },
+      "[file-storage] Storage writes are still failing (attempt %d)",
+      attempt,
+    );
+  }
+
   close() {
     if (this.closePromise) return this.closePromise;
     this.writesClosed = true;
@@ -3546,6 +3930,8 @@ class FileTableStore {
   }
 
   private async finishClose() {
+    this.unregisterGauge?.();
+    this.unregisterGauge = null;
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
@@ -3618,10 +4004,35 @@ class FileTableStore {
    * without exercising this method at all. Per-instance registries are the
    * correct fix if the Engine ever runs several stores at once.
    */
-  registerTables(tables: readonly unknown[]) {
-    for (const candidate of tables) {
+  registerTables(tables: readonly unknown[]): RegisterTablesResult {
+    const result: RegisterTablesResult = { registered: [], rejected: [] };
+    // The activation's operationId and packageId come from the caller's diagnostic context.
+    const reject = (
+      level: "warn" | "error",
+      index: number,
+      reason: string,
+      table: string | undefined,
+      err: unknown,
+      msg: string,
+      ...args: unknown[]
+    ) => {
+      result.rejected.push({ ...(table !== undefined ? { table } : {}), index, reason });
+      logger[level](
+        { event: "package.tables", table, index, reason, outcome: "failed", ...(err !== undefined ? { err } : {}) },
+        msg,
+        ...args,
+      );
+    };
+    for (const [index, candidate] of tables.entries()) {
       if (!isFileTable(candidate)) {
-        logger.warn("[file-storage] Ignored a package table registration that is not a file table definition.");
+        reject(
+          "warn",
+          index,
+          "not a file table definition",
+          undefined,
+          undefined,
+          "[file-storage] Ignored a package table registration that is not a file table definition.",
+        );
         continue;
       }
       // isFileTable only proves the metadata symbol is present, not that it
@@ -3633,7 +4044,14 @@ class FileTableStore {
       try {
         name = tableNameOf(candidate);
       } catch (err) {
-        logger.error(err, "[file-storage] Ignored a package table registration with unreadable metadata.");
+        reject(
+          "error",
+          index,
+          "unreadable metadata",
+          undefined,
+          err,
+          "[file-storage] Ignored a package table registration with unreadable metadata.",
+        );
         continue;
       }
       // The one non-negotiable check. tableFilePath/shardDirPath join this name
@@ -3643,7 +4061,15 @@ class FileTableStore {
       // primitive outside the data directory.
       const rejection = fileBackedTableNameRejection(name);
       if (rejection) {
-        logger.error({ table: name }, "[file-storage] Rejected package table registration: %s", rejection);
+        reject(
+          "error",
+          index,
+          rejection,
+          name,
+          undefined,
+          "[file-storage] Rejected package table registration: %s",
+          rejection,
+        );
         continue;
       }
       if (tableMetasByName.has(name)) {
@@ -3653,11 +4079,18 @@ class FileTableStore {
         // redefining it would repoint live queries at foreign column metadata.
         const existing = tableMetasByName.get(name)!;
         if (existing.table !== candidate) {
-          logger.warn(
-            { table: name },
+          reject(
+            "warn",
+            index,
+            "name already registered by another definition",
+            name,
+            undefined,
             "[file-storage] A table named %s is already registered; keeping the existing definition.",
             name,
           );
+        } else {
+          // Re-registration of the same definition (package reload): the table is available.
+          result.registered.push(name);
         }
         continue;
       }
@@ -3665,7 +4098,15 @@ class FileTableStore {
       try {
         meta = buildFileTableMetadata(candidate, name);
       } catch (err) {
-        logger.error(err, "[file-storage] Package table %s has invalid metadata and was not registered.", name);
+        reject(
+          "error",
+          index,
+          "invalid metadata",
+          name,
+          err,
+          "[file-storage] Package table %s has invalid metadata and was not registered.",
+          name,
+        );
         continue;
       }
       if (!meta.primaryKey) {
@@ -3674,8 +4115,12 @@ class FileTableStore {
         // shard key" on its first insert — long after the package author could
         // connect the failure to the definition. Refuse it here, before the name
         // enters any registry.
-        logger.error(
-          { table: name },
+        reject(
+          "error",
+          index,
+          "table has no primary key column",
+          name,
+          undefined,
           "[file-storage] Rejected package table registration: table has no primary key column",
         );
         continue;
@@ -3692,11 +4137,13 @@ class FileTableStore {
       // shard-deletion gate requires before it will unlink an emptied shard.
       this.fullyResidentTables.add(name);
       this.tables.set(name, this.loadRegisteredTableRows(meta));
+      result.registered.push(name);
       logger.info(
-        { table: name, rows: this.tables.get(name)?.length ?? 0 },
+        { event: "package.tables", table: name, index, rows: this.tables.get(name)?.length ?? 0, outcome: "ok" },
         "[file-storage] Registered package table.",
       );
     }
+    return result;
   }
 
   /**
@@ -3742,7 +4189,11 @@ class FileTableStore {
           this.quarantinedTables.push({ table: meta.name, files });
           quarantinedAway = files.some((file) => file.from === path);
           logger.error(
-            { table: meta.name, shard: encoded, files },
+            {
+              table: meta.name,
+              shard: encoded,
+              quarantinedPaths: files.map((file) => ({ from: file.from, to: file.to })),
+            },
             "[file-storage] Shard was unrecoverable from primary and backup; quarantined corrupt files. Preserved files require manual recovery.",
           );
         }
@@ -3853,9 +4304,10 @@ class FileTableStore {
       }
     }
     if (this.debounceTimer) return;
+    const armedByRequestId = getDiagnosticContext().requestId;
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
-      void this.flush();
+      void this.flushInRootContext("debounce", armedByRequestId);
     }, SAVE_DEBOUNCE_MS);
     this.debounceTimer.unref?.();
   }
@@ -4142,6 +4594,7 @@ class FileTableStore {
       // Mark first: strays pointing back at this unit must not re-enqueue it.
       this.loadedUnits.add(key);
       const encoded = encodeShardKey(key);
+      if (this.deferredFlushWarnings.size > 0) this.clearDeferredFlushWarnings(key, encoded);
       for (const table of LAZY_UNIT_LOAD_ORDER) {
         if (this.fullyResidentTables.has(table)) continue;
         if (!this.lazyDiscoveredShards.get(table)?.has(encoded)) continue;
@@ -4183,6 +4636,8 @@ class FileTableStore {
   ensureTableLoaded(table: Table | string) {
     const meta = getMeta(table);
     if (!LAZY_UNIT_TABLES.has(meta.name) || this.fullyResidentTables.has(meta.name)) return;
+    const started = performance.now();
+    let shardsLoaded = 0;
     const discovered = this.lazyDiscoveredShards.get(meta.name);
     if (discovered && discovered.size > 0) {
       // loadShardFileSync's read-once set is the authoritative skip check —
@@ -4192,11 +4647,27 @@ class FileTableStore {
       for (const encoded of [...discovered]) {
         if (alreadyRead?.has(encoded)) continue;
         const rows = this.loadShardFileSync(meta.name, encoded);
+        shardsLoaded += 1;
         if (rows.length > 0) this.mergeLoadedRows(meta.name, rows, encoded);
       }
     }
     this.fullyResidentTables.add(meta.name);
-    logger.info("[file-storage] Lazy table %s is now fully resident (unbounded access)", meta.name);
+    const elapsedMs = Math.round(performance.now() - started);
+    const rows = this.tables.get(meta.name)?.length ?? 0;
+    const heavy = elapsedMs > FULL_RESIDENCY_SLOW_MS || rows > FULL_RESIDENCY_LARGE_ROWS;
+    logger[heavy ? "warn" : "info"](
+      {
+        event: "storage.lazy.full_residency",
+        table: meta.name,
+        shardsLoaded,
+        rows,
+        elapsedMs,
+        outcome: "ok",
+        ...getRuntimeMemorySnapshot(),
+      },
+      "[file-storage] Lazy table %s is now fully resident (unbounded access)",
+      meta.name,
+    );
   }
 
   /**
@@ -4254,7 +4725,7 @@ class FileTableStore {
         this.quarantinedTables.push({ table, files });
         if (files.some((file) => file.from === path)) known.delete(encoded);
         logger.error(
-          { table, shard: encoded, files },
+          { table, shard: encoded, quarantinedPaths: files.map((file) => ({ from: file.from, to: file.to })) },
           "[file-storage] Shard was unrecoverable from primary and backup; quarantined corrupt files. Preserved files require manual recovery.",
         );
       }
@@ -4733,7 +5204,7 @@ class FileTableStore {
     let declaredTableCounts: Record<string, number> | undefined;
     try {
       const path = manifestPath(this.rootDir);
-      const result = parseJsonFile<TableSnapshotManifest | null>(path, null);
+      const result = this.bootParse<TableSnapshotManifest | null>(path, null);
       // Forward version gate: refuse to load data written by a NEWER storage
       // format instead of silently misreading it. Honest scope note: this only
       // protects downgrades ONTO this build and later — the pre-#4708 builds
@@ -4781,10 +5252,11 @@ class FileTableStore {
         recoveredFromBackup,
         recoveredFromFallback,
         unreadablePaths,
-      } = parseJsonFile<Row[]>(path, [], Array.isArray);
+      } = this.bootParse<Row[]>(path, [], Array.isArray);
       const parsedRows = Array.isArray(rows) ? rows : [];
       const source = parsedRows.filter(isRowRecord);
       const malformedRowCount = parsedRows.length - source.length;
+      this.bootCounters.malformedRows += malformedRowCount;
       if (malformedRowCount > 0) {
         const sourcePath = recoveredFromBackup && existsSync(`${path}.bak`) ? `${path}.bak` : path;
         const files = await preserveMalformedRowSource(sourcePath, table);
@@ -4825,7 +5297,7 @@ class FileTableStore {
         if (files.length > 0) {
           this.quarantinedTables.push({ table, files });
           logger.error(
-            { table, files },
+            { table, quarantinedPaths: files.map((file) => ({ from: file.from, to: file.to })) },
             "[file-storage] Table %s was unrecoverable from primary and backup; quarantined corrupt files and started the table empty. Preserved files require manual recovery.",
             table,
           );
@@ -4877,10 +5349,11 @@ class FileTableStore {
           for (const fileName of dataFiles) {
             const encoded = fileName.slice(0, -".json".length);
             const path = join(dir, fileName);
-            const { value, recoveredFromFallback, unreadablePaths } = parseJsonFile<Row[]>(path, [], Array.isArray);
+            const { value, recoveredFromFallback, unreadablePaths } = this.bootParse<Row[]>(path, [], Array.isArray);
             const parsedRows = Array.isArray(value) ? value : [];
             const usableRows = parsedRows.filter(isRowRecord);
             if (parsedRows.length > 0 && usableRows.length === 0) {
+              this.bootCounters.malformedRows += parsedRows.length;
               const files = quarantineUnrecoverableFilesSync([path, `${path}.bak`], `table ${table} shard ${encoded}`);
               if (files.length > 0) this.quarantinedTables.push({ table, files });
               logger.error(
@@ -4898,7 +5371,7 @@ class FileTableStore {
               if (files.length > 0) {
                 this.quarantinedTables.push({ table, files });
                 logger.error(
-                  { table, shard: encoded, files },
+                  { table, shard: encoded, quarantinedPaths: files.map((file) => ({ from: file.from, to: file.to })) },
                   "[file-storage] Shard was unrecoverable from primary and backup; quarantined corrupt files. Preserved files require manual recovery.",
                 );
                 if (files.some((file) => file.from === path)) known.delete(encoded);
@@ -4947,10 +5420,11 @@ class FileTableStore {
           recoveredFromBackup,
           recoveredFromFallback,
           unreadablePaths,
-        } = parseJsonFile<Row[]>(path, [], Array.isArray);
+        } = this.bootParse<Row[]>(path, [], Array.isArray);
         const parsedRows = Array.isArray(rows) ? rows : [];
         const source = parsedRows.filter(isRowRecord);
         const malformedRowCount = parsedRows.length - source.length;
+        this.bootCounters.malformedRows += malformedRowCount;
         if (malformedRowCount > 0 && source.length === 0) {
           // EVERY row is malformed — the shard holds nothing usable.
           // Quarantine the files outright (move, not copy): a copy-preserved
@@ -4989,7 +5463,7 @@ class FileTableStore {
             this.quarantinedTables.push({ table, files });
             quarantinedAway = files.some((file) => file.from === path);
             logger.error(
-              { table, shard: encoded, files },
+              { table, shard: encoded, quarantinedPaths: files.map((file) => ({ from: file.from, to: file.to })) },
               "[file-storage] Shard was unrecoverable from primary and backup; quarantined corrupt files. Preserved files require manual recovery.",
             );
           }
@@ -5088,6 +5562,7 @@ class FileTableStore {
         deduped.push(row);
       }
       if (duplicateCount > 0) {
+        this.bootCounters.duplicateRows += duplicateCount;
         logger.warn(
           { table, duplicateCount },
           "[file-storage] Dropped duplicate %s rows found across shards; the affected shards will be rewritten.",
@@ -5130,7 +5605,34 @@ class FileTableStore {
     // This also transitively pulls in any unit whose rows were mis-filed into
     // the orphan shard, restoring the eager loader's self-heal for them.
     if (LAZY_UNIT_TABLES.size > 0) this.ensureUnitsLoaded([UNASSIGNED_SHARD_KEY]);
-    logger.info({ tables: counts }, `[file-storage] Loaded file-native data from ${this.rootDir}`);
+    // The per-table counts are part of the storage.load line written by initialize().
+    this.bootLoadCounts = counts;
+    logger.debug({ tables: counts }, `[file-storage] Loaded file-native data from ${this.rootDir}`);
+  }
+
+  /**
+   * Writes a flush deferral warning once per `${table}:${shardKey}`; repeats
+   * (the safety timer retries every cycle) go to debug.
+   */
+  private logFlushDeferred(table: string, shardKey: string, reason: "unit-unloaded" | "stale-not-resident") {
+    const key = `${table}:${shardKey}`;
+    const fields = { event: "storage.flush.deferred", table, shardKey, reason };
+    const msg =
+      reason === "unit-unloaded"
+        ? "[file-storage] Dirty shard key belongs to an unloaded unit; deferring its flush until the unit loads."
+        : "[file-storage] Stale shard file is no longer resident; deferring its rewrite until it reloads.";
+    if (this.deferredFlushWarnings.has(key)) {
+      logger.debug(fields, msg);
+      return;
+    }
+    this.deferredFlushWarnings.add(key);
+    logger.warn(fields, msg);
+  }
+
+  private clearDeferredFlushWarnings(rawKey: string, encoded: string) {
+    for (const entry of this.deferredFlushWarnings) {
+      if (entry.endsWith(`:${rawKey}`) || entry.endsWith(`:${encoded}`)) this.deferredFlushWarnings.delete(entry);
+    }
   }
 
   /**
@@ -5147,6 +5649,7 @@ class FileTableStore {
     dirtyKeys: Set<string>,
     stale: Set<string> | undefined,
     recoveredPaths: ReadonlySet<string>,
+    stats: FlushStats = createFlushStats(),
   ): Promise<number> {
     const known = this.knownShardFiles.get(table) ?? new Set<string>();
     this.knownShardFiles.set(table, known);
@@ -5190,8 +5693,13 @@ class FileTableStore {
       const serializedRows = serializeTableRows(table, shardRows);
       await this.testHooks?.beforeTableWrite?.(`${table}/${encoded}`, serializedRows);
       const path = shardFilePath(this.rootDir, table, encoded);
-      await atomicWriteFile(path, serializedRows, { refreshBackup: !recoveredPaths.has(path) });
+      stats.tables.add(table);
+      await atomicWriteFile(path, serializedRows, { refreshBackup: !recoveredPaths.has(path), stats });
       known.add(encoded);
+      if (this.deferredFlushWarnings.size > 0) {
+        this.deferredFlushWarnings.delete(`${table}:${key}`);
+        this.deferredFlushWarnings.delete(`${table}:${encoded}`);
+      }
       // Register the shard in the lazy discovery index too (#5592 PR-B):
       // discovery was boot-only, which was invisible while units never
       // unloaded — but an EVICTED unit reloads through this index, and a
@@ -5212,16 +5720,15 @@ class FileTableStore {
         // rows may no longer be resident and deleting the file plus its .bak
         // would destroy their only copy. Requeue the mark instead.
         if (!this.fullyResidentTables.has(table) && !this.loadedShardEncodings.get(table)?.has(encoded)) {
-          logger.warn(
-            { table, shard: encoded },
-            "[file-storage] Stale shard file is no longer resident; deferring its rewrite until it reloads.",
-          );
+          this.logFlushDeferred(table, encoded, "stale-not-resident");
           const requeued = this.staleShardFiles.get(table) ?? new Set<string>();
           requeued.add(encoded);
           this.staleShardFiles.set(table, requeued);
           continue;
         }
         const path = shardFilePath(this.rootDir, table, encoded);
+        stats.currentPath = path;
+        stats.tables.add(table);
         // Only a MISSING file is an acceptable unlink outcome: any other
         // failure (EBUSY/EPERM from a scanner holding the handle) must
         // propagate so the flush error path keeps the dirty/stale marks and
@@ -5229,8 +5736,10 @@ class FileTableStore {
         // while its rows reload on the next restart.
         await unlinkIgnoringMissing(path);
         await unlinkIgnoringMissing(`${path}.bak`);
+        stats.filesUnlinked += 1;
         known.delete(encoded);
         this.lazyDiscoveredShards.get(table)?.delete(encoded);
+        this.deferredFlushWarnings.delete(`${table}:${encoded}`);
       }
     }
     for (const key of effectiveDirty) {
@@ -5252,20 +5761,21 @@ class FileTableStore {
       // hang. The next flush from any real cause re-captures the key via the
       // dirtyShards swap; dropping it at process exit loses nothing.
       if (!this.fullyResidentTables.has(table) && !this.loadedUnits.has(key)) {
-        logger.warn(
-          { table, shardKey: key },
-          "[file-storage] Dirty shard key belongs to an unloaded unit; deferring its flush until the unit loads.",
-        );
+        this.logFlushDeferred(table, key, "unit-unloaded");
         const requeued = this.dirtyShards.get(table) ?? new Set<string>();
         requeued.add(key);
         this.dirtyShards.set(table, requeued);
         continue;
       }
       const encoded = encodeShardKey(key);
+      this.deferredFlushWarnings.delete(`${table}:${key}`);
       if (!known.has(encoded)) continue;
       const path = shardFilePath(this.rootDir, table, encoded);
+      stats.currentPath = path;
+      stats.tables.add(table);
       await unlinkIgnoringMissing(path);
       await unlinkIgnoringMissing(`${path}.bak`);
+      stats.filesUnlinked += 1;
       known.delete(encoded);
       this.lazyDiscoveredShards.get(table)?.delete(encoded);
     }
@@ -5281,12 +5791,34 @@ class FileTableStore {
     dirtyShards: Map<string, Set<string>>,
     staleShards: Map<string, Set<string>>,
     recoveredPaths: ReadonlySet<string>,
+    stats: FlushStats = createFlushStats(),
+  ) {
+    try {
+      await this.writeFileSnapshots(dirtyTables, dirtyShards, staleShards, recoveredPaths, stats);
+    } catch (err) {
+      // Name the file on the error so the single flush failure line says where it broke.
+      if (err && typeof err === "object" && Object.isExtensible(err)) {
+        const target = err as { table?: unknown; path?: unknown };
+        if (target.table === undefined && stats.currentTable) target.table = stats.currentTable;
+        if (target.path === undefined && stats.currentPath) target.path = stats.currentPath;
+      }
+      throw err;
+    }
+  }
+
+  private async writeFileSnapshots(
+    dirtyTables: Set<string>,
+    dirtyShards: Map<string, Set<string>>,
+    staleShards: Map<string, Set<string>>,
+    recoveredPaths: ReadonlySet<string>,
+    stats: FlushStats,
   ) {
     mkdirSync(join(this.rootDir, "tables"), { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
     const tables: Record<string, number> = {};
     const shards: Record<string, number> = {};
 
     for (const table of FILE_BACKED_TABLES) {
+      stats.currentTable = table;
       const rows = this.rows(table);
       if (LAZY_UNIT_TABLES.has(table) && !this.fullyResidentTables.has(table)) {
         // Partial residency makes rows.length a lie (#5592 Phase 2). The
@@ -5307,16 +5839,20 @@ class FileTableStore {
           dirtyShards.get(table) ?? new Set(),
           staleShards.get(table),
           recoveredPaths,
+          stats,
         );
         continue;
       }
       const path = tableFilePath(this.rootDir, table);
       if (dirtyTables.has(table) || !existsSync(path)) {
         const serializedRows = serializeTableRows(table, rows);
+        stats.currentPath = path;
+        stats.tables.add(table);
         await this.testHooks?.beforeTableWrite?.(table, serializedRows);
-        await atomicWriteFile(path, serializedRows, { refreshBackup: !recoveredPaths.has(path) });
+        await atomicWriteFile(path, serializedRows, { refreshBackup: !recoveredPaths.has(path), stats });
       }
     }
+    stats.currentTable = undefined;
 
     const manifest: TableSnapshotManifest = {
       version: STORAGE_VERSION,
@@ -5329,6 +5865,7 @@ class FileTableStore {
     const serializedManifest = JSON.stringify(manifest, null, 2);
     await atomicWriteFile(path, serializedManifest, {
       refreshBackup: !recoveredPaths.has(path),
+      stats,
     });
     // No whole-set clear: the captured marks die with this batch on success,
     // and marks added DURING this flush (lazy unit loads recovering shards
@@ -5337,14 +5874,31 @@ class FileTableStore {
 
   private installAutosave() {
     this.safetyTimer = setInterval(() => {
-      void this.flush();
+      void this.flushInRootContext("safety");
     }, SAFETY_SAVE_MS);
     this.safetyTimer.unref();
 
     this.beforeExitHandler = () => {
-      void this.flush();
+      void this.flushInRootContext("beforeExit");
     };
     process.on("beforeExit", this.beforeExitHandler);
+
+    this.unregisterGauge?.();
+    this.unregisterGauge = registerWorkerGauge("storage", () => this.sampleGauge());
+  }
+
+  /** Cheap numbers for runtime.memory and runtime.freeze lines. */
+  private sampleGauge(): Record<string, unknown> {
+    const topTables = Object.entries(this.getTableSizes())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([table, rows]) => ({ table, rows }));
+    return {
+      residentChatUnits: this.loadedUnits.size,
+      fullyResidentLazyTables: this.getFullyResidentLazyTables().size,
+      dirtyTableCount: this.dirtyTables.size,
+      topTables,
+    };
   }
 }
 
@@ -5475,6 +6029,9 @@ export async function createFileNativeDB(testHooks?: FileNativeStoreTestHooks): 
     getQuarantinedTables: () => store.getQuarantinedTables(),
     getTableWriteGeneration: (table) => store.getTableWriteGeneration(table),
     registerTables: (tables) => store.registerTables(tables),
+    getBootStats: () => store.getBootStats(),
+    getDirtyTables: () => store.getDirtyTables(),
+    getTableSizes: () => store.getTableSizes(),
     getResidentChatUnits: () => store.getResidentChatUnits(),
     getFullyResidentLazyTables: () => store.getFullyResidentLazyTables(),
     getResidentLazyRows: (table) => store.getResidentLazyRows(table),

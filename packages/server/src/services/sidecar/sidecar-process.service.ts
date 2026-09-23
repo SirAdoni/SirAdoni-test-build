@@ -1,6 +1,11 @@
 import { spawn, type ChildProcess } from "child_process";
 import { logger } from "../../lib/logger.js";
-import { createWriteStream, existsSync, readFileSync, writeFileSync, type WriteStream } from "fs";
+import { createDiagnostic, sanitizeDiagnosticText } from "../../lib/diagnostics.js";
+import { reportDiagnosticError } from "../../lib/diagnostic-operation.js";
+import { logEvent } from "../../lib/log-events.js";
+import { orFallback } from "../../lib/best-effort.js";
+import { registerWorkerGauge } from "../../lib/worker-gauges.js";
+import { createWriteStream, existsSync, readFileSync, renameSync, writeFileSync, type WriteStream } from "fs";
 import { createServer } from "net";
 import { dirname, join } from "path";
 import type { SidecarBackend } from "@marinara-engine/shared";
@@ -37,6 +42,43 @@ async function getFreePort(): Promise<number> {
 }
 
 type ManagedRuntimeInstall = SidecarRuntimeInstall | MlxRuntimeInstall;
+
+/** Facts about one spawned sidecar child for its spawn, ready and exit log lines. Never holds arguments or output text beyond the sanitized stderr tail. */
+type ChildLaunchMeta = {
+  backend: SidecarBackend;
+  variant: string;
+  plan?: string;
+  gpuLayers?: number;
+  port: number;
+  attempt: number;
+  maxAttempts: number;
+};
+type ChildState = ChildLaunchMeta & { startedAt: number; stderrLines: string[]; stderrPartial: string };
+
+const STDERR_RING_LINES = 40;
+const STDERR_TAIL_LOG_LINES = 20;
+const CRASH_WINDOW_MS = 5 * 60_000;
+
+function pushStderrLines(state: ChildState, chunk: unknown): void {
+  const text = state.stderrPartial + String(chunk);
+  const lines = text.split(/\r?\n/u);
+  state.stderrPartial = (lines.pop() ?? "").slice(-2_000);
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    state.stderrLines.push(line.length > 500 ? line.slice(0, 500) : line);
+  }
+  if (state.stderrLines.length > STDERR_RING_LINES) {
+    state.stderrLines.splice(0, state.stderrLines.length - STDERR_RING_LINES);
+  }
+}
+
+function stderrTailOf(state: ChildState | undefined): string | undefined {
+  if (!state) return undefined;
+  const lines = [...state.stderrLines];
+  if (state.stderrPartial.trim()) lines.push(state.stderrPartial);
+  const tail = lines.slice(-STDERR_TAIL_LOG_LINES).join("\n");
+  return tail ? sanitizeDiagnosticText(tail, 2_000) : undefined;
+}
 type SyncOptions = {
   suppressKnownFailure?: boolean;
   forceStart?: boolean;
@@ -93,6 +135,18 @@ class SidecarProcessService {
   private manuallyUnloaded = false;
   private syncLock: Promise<void> = Promise.resolve();
   private childErrors = new WeakMap<ChildProcess, Error>();
+  private childStates = new WeakMap<ChildProcess, ChildState>();
+
+  /** Cheap numbers for runtime.memory lines (worker gauge "sidecar"). */
+  sampleGauge(): Record<string, unknown> {
+    return {
+      running: this.child ? 1 : 0,
+      ready: this.ready,
+      starting: this.starting,
+      pid: this.child?.pid,
+      crashCount: this.unexpectedCrashCount,
+    };
+  }
 
   isReady(): boolean {
     return this.ready && this.baseUrl !== null;
@@ -573,15 +627,39 @@ class SidecarProcessService {
     return message.split(/\r?\n/u)[0]?.trim() || "The local sidecar server failed to start";
   }
 
-  private rememberStartupFailure(signature: string, runtimeVariant: string | null, error: unknown): void {
+  private rememberStartupFailure(
+    signature: string,
+    runtimeVariant: string | null,
+    error: unknown,
+    attemptedVariants: string[] = runtimeVariant ? [runtimeVariant] : [],
+  ): void {
     this.failedSignature = signature;
     this.failedRuntimeVariant = runtimeVariant;
     this.startupError = this.summarizeStartupError(error);
     sidecarModelService.setStatus("server_error");
+    reportDiagnosticError(error, { stage: "sidecar.start" }, undefined, {
+      event: "sidecar.start",
+      message: "[sidecar] Local sidecar server failed to start",
+      fields: { outcome: "failed", variant: runtimeVariant, attemptedVariants },
+    });
+  }
+
+  /** Keeps the previous run's side log as <log>.prev instead of discarding it. */
+  private rotateSideLog(): void {
+    const logPath = sidecarRuntimeService.getLogPath();
+    try {
+      if (existsSync(logPath)) renameSync(logPath, `${logPath}.prev`);
+    } catch (error) {
+      logger.debug(
+        { err: error, event: "sidecar.start", stage: "side-log-rotate", errorCode: createDiagnostic(error).code },
+        "[sidecar] Could not rotate the side log; truncating it instead",
+      );
+    }
+    writeFileSync(logPath, "", "utf-8");
   }
 
   private async startUnlocked(runtime: ManagedRuntimeInstall, modelRef: string): Promise<void> {
-    writeFileSync(sidecarRuntimeService.getLogPath(), "", "utf-8");
+    this.rotateSideLog();
     this.starting = true;
     try {
       if (this.isMlxRuntime(runtime)) {
@@ -620,9 +698,13 @@ class SidecarProcessService {
         lastError = error instanceof Error ? error : new Error("The local sidecar server failed to start");
 
         const nextRuntime: ManagedRuntimeInstall | null = this.usesGpuRuntime(activeRuntime)
-          ? await this.ensureRuntimeInstalled("llama_cpp", {
-              excludeVariants: [...attemptedVariants],
-            }).catch(() => null)
+          ? await orFallback(
+              this.ensureRuntimeInstalled("llama_cpp", {
+                excludeVariants: [...attemptedVariants],
+              }),
+              null,
+              { event: "sidecar.start", stage: "runtime-fallback", variant: activeRuntime.variant },
+            )
           : null;
 
         if (nextRuntime && !this.isMlxRuntime(nextRuntime) && !attemptedVariants.has(nextRuntime.variant)) {
@@ -636,7 +718,7 @@ class SidecarProcessService {
           continue;
         }
 
-        this.rememberStartupFailure(runtimeSignature, activeRuntime.variant, lastError);
+        this.rememberStartupFailure(runtimeSignature, activeRuntime.variant, lastError, [...attemptedVariants]);
         throw lastError;
       }
     }
@@ -645,6 +727,7 @@ class SidecarProcessService {
       this.buildRuntimeSignature("llama_cpp", runtime, modelPath),
       runtime.variant,
       lastError ?? new Error("The local sidecar server failed to start"),
+      [...attemptedVariants],
     );
     throw lastError ?? new Error("The local sidecar server failed to start");
   }
@@ -678,7 +761,15 @@ class SidecarProcessService {
         stdio: ["ignore", "pipe", "pipe"],
       });
 
-      this.bindChild(child, logStream, `http://127.0.0.1:${port}`, signature);
+      this.bindChild(child, logStream, `http://127.0.0.1:${port}`, signature, {
+        backend: "llama_cpp",
+        variant: runtime.variant,
+        plan: plan.label,
+        gpuLayers: plan.gpuLayers,
+        port,
+        attempt: attempt + 1,
+        maxAttempts: startupPlans.length,
+      });
 
       try {
         await this.waitForReady(this.baseUrl!, child, "llama_cpp");
@@ -729,7 +820,13 @@ class SidecarProcessService {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    this.bindChild(child, logStream, `http://127.0.0.1:${port}`, signature);
+    this.bindChild(child, logStream, `http://127.0.0.1:${port}`, signature, {
+      backend: "mlx",
+      variant: runtime.variant,
+      port,
+      attempt: 1,
+      maxAttempts: 1,
+    });
 
     try {
       await this.waitForReady(this.baseUrl!, child, "mlx");
@@ -747,7 +844,13 @@ class SidecarProcessService {
     }
   }
 
-  private bindChild(child: ChildProcess, logStream: WriteStream, baseUrl: string, signature: string): void {
+  private bindChild(
+    child: ChildProcess,
+    logStream: WriteStream,
+    baseUrl: string,
+    signature: string,
+    meta: ChildLaunchMeta,
+  ): void {
     this.child = child;
     this.logStream = logStream;
     this.baseUrl = baseUrl;
@@ -755,16 +858,41 @@ class SidecarProcessService {
     this.currentSignature = signature;
     this.intentionalStop = false;
 
+    const state: ChildState = { ...meta, startedAt: Date.now(), stderrLines: [], stderrPartial: "" };
+    this.childStates.set(child, state);
+    // Arguments stay in the side log; the main log gets the launch facts only.
+    logEvent("info", "sidecar.spawn", {
+      pid: child.pid,
+      backend: meta.backend,
+      variant: meta.variant,
+      plan: meta.plan,
+      gpuLayers: meta.gpuLayers,
+      port: meta.port,
+      attempt: meta.attempt,
+      maxAttempts: meta.maxAttempts,
+    });
+
     child.stdout?.on("data", (chunk) => {
       logStream.write(chunk);
     });
     child.stderr?.on("data", (chunk) => {
       logStream.write(chunk);
+      pushStderrLines(state, chunk);
     });
     child.on("error", (error) => {
       const spawnError = error instanceof Error ? error : new Error(String(error));
       this.childErrors.set(child, spawnError);
       logStream.write(`[sidecar] process error: ${spawnError.message}\n`);
+      logger.warn(
+        {
+          err: spawnError,
+          event: "sidecar.spawn",
+          outcome: "failed",
+          errorCode: createDiagnostic(spawnError).code,
+          variant: meta.variant,
+        },
+        "[sidecar] Sidecar process error",
+      );
 
       if (this.child === child) {
         this.startupError = spawnError.message;
@@ -780,6 +908,13 @@ class SidecarProcessService {
   }
 
   private markReady(): void {
+    const child = this.child;
+    const state = child ? this.childStates.get(child) : undefined;
+    logEvent("info", "sidecar.ready", {
+      pid: child?.pid,
+      variant: state?.variant,
+      elapsedMs: state ? Date.now() - state.startedAt : undefined,
+    });
     this.ready = true;
     this.clearStartupFailure();
     sidecarModelService.setStatus("ready");
@@ -903,15 +1038,25 @@ class SidecarProcessService {
     this.intentionalStop = false;
     this.cleanupChildState(child);
 
+    const state = this.childStates.get(child);
+    logEvent(
+      wasIntentional ? "info" : "warn",
+      "sidecar.exit",
+      {
+        pid: child.pid,
+        exitCode: code,
+        signal,
+        uptimeMs: state ? Date.now() - state.startedAt : undefined,
+        variant: state?.variant,
+        expected: wasIntentional,
+        ...(wasIntentional ? {} : { stderrTail: stderrTailOf(state) }),
+      },
+      wasIntentional ? "[sidecar] Local sidecar server exited" : "[sidecar] Local sidecar server exited unexpectedly",
+    );
+
     if (wasIntentional) {
       return;
     }
-
-    logger.error(
-      "[sidecar] Local sidecar server exited unexpectedly (code=%s, signal=%s)",
-      code ?? "null",
-      signal ?? "null",
-    );
 
     if (this.starting) {
       return;
@@ -919,7 +1064,7 @@ class SidecarProcessService {
 
     const now = Date.now();
     const withinRepeatedCrashWindow =
-      this.unexpectedCrashWindowStartedAt > 0 && now - this.unexpectedCrashWindowStartedAt < 5 * 60_000;
+      this.unexpectedCrashWindowStartedAt > 0 && now - this.unexpectedCrashWindowStartedAt < CRASH_WINDOW_MS;
     if (!withinRepeatedCrashWindow) {
       this.unexpectedCrashWindowStartedAt = now;
       this.unexpectedCrashCount = 1;
@@ -928,6 +1073,12 @@ class SidecarProcessService {
     }
 
     if (this.unexpectedCrashCount > 1) {
+      logEvent(
+        "error",
+        "sidecar.crashloop",
+        { crashCount: this.unexpectedCrashCount, windowMs: CRASH_WINDOW_MS, variant: state?.variant },
+        "[sidecar] Local sidecar server crashed repeatedly; auto-restart stopped",
+      );
       this.startupError = "The local sidecar server crashed repeatedly after startup";
       sidecarModelService.setStatus("server_error");
       return;
@@ -943,3 +1094,4 @@ class SidecarProcessService {
 }
 
 export const sidecarProcessService = new SidecarProcessService();
+registerWorkerGauge("sidecar", () => sidecarProcessService.sampleGauge());

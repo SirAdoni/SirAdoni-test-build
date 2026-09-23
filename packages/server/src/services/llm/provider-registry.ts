@@ -12,6 +12,22 @@ import { withConnectionDefaultParameters } from "./connection-default-provider.j
 import { withConnectionAdmissionProvider } from "../generation/connection-admission.js";
 import { withRateLimitAwareProvider } from "./rate-limit-aware-provider.js";
 import { withDiagnosticProvider } from "./diagnostic-provider.js";
+import { logger } from "../../lib/logger.js";
+import { sanitizeDiagnosticText } from "../../lib/diagnostics.js";
+
+const warnedUnknownProviders = new Set<string>();
+
+/** Warns once per unknown provider value; the connection still runs as an OpenAI-compatible custom endpoint. */
+function warnUnknownProvider(provider: string, connectionId: string | undefined): void {
+  const value = sanitizeDiagnosticText(String(provider), 80);
+  if (warnedUnknownProviders.has(value)) return;
+  if (warnedUnknownProviders.size >= 100) return;
+  warnedUnknownProviders.add(value);
+  logger.warn(
+    { event: "llm.provider.unknown", provider: value, connectionId },
+    "Unknown provider type; treating the connection as an OpenAI-compatible custom endpoint",
+  );
+}
 
 export function normalizeCohereOpenAIBaseUrl(baseUrl: string): string {
   const trimmed = baseUrl.replace(/\/+$/, "");
@@ -53,6 +69,11 @@ export function createLLMProvider(
   defaultParameters?: unknown,
   /** Configured connection ID for direct foreground calls. Fallback wrappers admit their providers separately. */
   connectionId?: string,
+  /**
+   * When false, `connectionId` only tags diagnostic lines and the caller adds admission and
+   * rate-limit wrappers itself (the connection-fallback legs do).
+   */
+  admitConnection = true,
 ): BaseLLMProvider {
   const normalizedMaxContext =
     typeof maxContext === "number" && Number.isFinite(maxContext) && maxContext > 0
@@ -160,6 +181,7 @@ export function createLLMProvider(
       );
       break;
     default:
+      warnUnknownProvider(provider, connectionId);
       resolved = new OpenAIProvider(
         baseUrl,
         apiKey,
@@ -173,8 +195,8 @@ export function createLLMProvider(
       break;
   }
   const diagnostic = withDiagnosticProvider(resolved, provider, connectionId);
-  const configured = withConnectionDefaultParameters(diagnostic, defaultParameters);
-  if (!connectionId) return configured;
+  const configured = withConnectionDefaultParameters(diagnostic, defaultParameters, connectionId);
+  if (!connectionId || !admitConnection) return configured;
   // Pace + pause/resume outside the admission (concurrency) gate so a proxy 429 retries the same
   // connection before any fallback decision, and the per-connection throttle applies to everyone.
   return withRateLimitAwareProvider(withConnectionAdmissionProvider(configured, connectionId), connectionId);

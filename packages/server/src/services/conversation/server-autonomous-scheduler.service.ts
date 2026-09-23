@@ -1,5 +1,9 @@
 import type { FastifyInstance } from "fastify";
+import { randomUUID } from "node:crypto";
+import { createDiagnostic, runWithRootDiagnosticContext, wasDiagnosticReported } from "../../lib/diagnostics.js";
+import { logRecovered, logRepeated } from "../../lib/log-events.js";
 import { logger } from "../../lib/logger.js";
+import { registerWorkerGauge } from "../../lib/worker-gauges.js";
 import { createChatsStorage } from "../storage/chats.storage.js";
 import {
   clearGenerationInProgress,
@@ -107,6 +111,47 @@ function parseSsePayload(payload: string): { done: boolean; discarded: boolean; 
   return { done, discarded, error };
 }
 
+/** Failure details for one backoff line. Only ids and codes, never the response body. */
+export type AutonomousFailureInfo = {
+  statusCode?: number;
+  errorCode?: string;
+  causeErrorId?: string;
+  causeRequestId?: string;
+  err?: unknown;
+};
+
+/**
+ * Reads the error handler's JSON body ({ error, code, errorId, requestId }) of a
+ * failed inject. Returns the message for backoff classification plus the ids that
+ * point at the one full log line the failing request already wrote.
+ */
+export function parseAutonomousErrorBody(payload: string): {
+  message: string;
+  errorCode?: string;
+  causeErrorId?: string;
+  causeRequestId?: string;
+} {
+  try {
+    const body = JSON.parse(payload) as { error?: unknown; code?: unknown; errorId?: unknown; requestId?: unknown };
+    if (body && typeof body === "object") {
+      return {
+        message: typeof body.error === "string" ? body.error : "",
+        ...(typeof body.code === "string" ? { errorCode: body.code } : {}),
+        ...(typeof body.errorId === "string" ? { causeErrorId: body.errorId } : {}),
+        ...(typeof body.requestId === "string" ? { causeRequestId: body.requestId } : {}),
+      };
+    }
+  } catch {
+    // Not JSON: the status code still classifies the failure.
+  }
+  return { message: "" };
+}
+
+/** Backoff lines stay at warn for the first two attempts and whenever the error text changes; repeats drop to debug. */
+export function autonomousBackoffLevel(attempt: number, errorChanged: boolean): "warn" | "debug" {
+  return attempt < 3 || errorChanged ? "warn" : "debug";
+}
+
 function isHardGenerationFailure(error: string, statusCode?: number): boolean {
   if (statusCode !== undefined) {
     return statusCode >= 400 && statusCode < 500 && statusCode !== 408 && statusCode !== 409 && statusCode !== 429;
@@ -197,10 +242,17 @@ export function startServerAutonomousScheduler(app: FastifyInstance) {
   };
 
   const clearFailureBackoff = (chatId: string) => {
+    const previous = failureBackoffByChat.get(chatId);
+    if (!previous) return;
     failureBackoffByChat.delete(chatId);
+    logger.info(
+      { event: "autonomous.backoff", chatId, state: "recovered", attempt: previous.attempts },
+      "[autonomous-scheduler] chat generating again after failures",
+    );
   };
 
-  const recordFailureBackoff = (chatId: string, error: string, statusCode?: number) => {
+  const recordFailureBackoff = (chatId: string, error: string, info: AutonomousFailureInfo = {}) => {
+    const { statusCode } = info;
     const previous = failureBackoffByChat.get(chatId);
     const attempts = (previous?.attempts ?? 0) + 1;
     const hardFailure = isHardGenerationFailure(error, statusCode);
@@ -216,12 +268,24 @@ export function startServerAutonomousScheduler(app: FastifyInstance) {
       lastError: error,
       hardFailure,
     });
-    logger.warn(
-      "[autonomous-scheduler] Pausing retries for chat %s for %d seconds after %s failure: %s",
-      chatId,
-      Math.ceil(delayMs / 1000),
-      hardFailure ? "hard" : "transient",
-      error,
+    const thrown = info.err !== undefined ? createDiagnostic(info.err) : undefined;
+    const errorCode = info.errorCode ?? thrown?.code;
+    const causeErrorId = info.causeErrorId ?? thrown?.errorId;
+    const includeErr = info.err !== undefined && !wasDiagnosticReported(info.err);
+    logger[autonomousBackoffLevel(attempts, previous !== undefined && previous.lastError !== error)](
+      {
+        event: "autonomous.backoff",
+        chatId,
+        attempt: attempts,
+        hardFailure,
+        delayMs,
+        ...(statusCode !== undefined ? { statusCode } : {}),
+        ...(errorCode ? { errorCode } : {}),
+        ...(causeErrorId ? { causeErrorId } : {}),
+        ...(info.causeRequestId ? { causeRequestId: info.causeRequestId } : {}),
+        ...(includeErr ? { err: info.err } : {}),
+      },
+      "[autonomous-scheduler] generation failed; pausing chat",
     );
   };
 
@@ -231,6 +295,7 @@ export function startServerAutonomousScheduler(app: FastifyInstance) {
     schedule: WeekSchedule | null,
     chatMeta: Record<string, unknown>,
     claimedAt?: number,
+    requestId?: string,
   ): Promise<boolean> => {
     const promptTimeZone = resolveConversationTimeZone(chatMeta);
     const promptNow = toZonedWallClockDate(new Date(), promptTimeZone);
@@ -242,6 +307,7 @@ export function startServerAutonomousScheduler(app: FastifyInstance) {
     const response = await app.inject({
       method: "POST",
       url: "/api/generate",
+      ...(requestId ? { headers: { "x-request-id": requestId } } : {}),
       payload: {
         chatId,
         connectionId: null,
@@ -263,21 +329,20 @@ export function startServerAutonomousScheduler(app: FastifyInstance) {
 
     if (response.statusCode !== 200) {
       clearGenerationInProgress(chatId, claimedAt);
-      recordFailureBackoff(chatId, response.payload.slice(0, 300), response.statusCode);
-      logger.warn(
-        "[autonomous-scheduler] Generate failed for chat %s with status %d: %s",
-        chatId,
-        response.statusCode,
-        response.payload.slice(0, 300),
-      );
+      const body = parseAutonomousErrorBody(response.payload);
+      recordFailureBackoff(chatId, body.message || `status ${response.statusCode}`, {
+        statusCode: response.statusCode,
+        errorCode: body.errorCode,
+        causeErrorId: body.causeErrorId,
+        causeRequestId: body.causeRequestId ?? requestId,
+      });
       return false;
     }
 
     const result = parseSsePayload(response.payload);
     if (result.error) {
       clearGenerationInProgress(chatId, claimedAt);
-      recordFailureBackoff(chatId, result.error);
-      logger.warn("[autonomous-scheduler] Generate failed for chat %s: %s", chatId, result.error);
+      recordFailureBackoff(chatId, result.error, requestId ? { causeRequestId: requestId } : {});
       return false;
     }
     if (!result.done) {
@@ -305,6 +370,7 @@ export function startServerAutonomousScheduler(app: FastifyInstance) {
     chatMeta: Record<string, unknown>,
     claimedAt: number | undefined,
     delayMs: number,
+    requestId?: string,
   ) => {
     const timer = setTimeout(() => {
       void (async () => {
@@ -331,7 +397,14 @@ export function startServerAutonomousScheduler(app: FastifyInstance) {
             return;
           }
           const currentMeta = currentChat ? parseMetadata(currentChat.metadata) : chatMeta;
-          const generated = await generateAutonomousMessage(chatId, characterId, schedule, currentMeta, claimedAt);
+          const generated = await generateAutonomousMessage(
+            chatId,
+            characterId,
+            schedule,
+            currentMeta,
+            claimedAt,
+            requestId,
+          );
           if (generated) {
             logger.info("[autonomous-scheduler] Generated autonomous message for chat %s (after delay)", chatId);
           }
@@ -346,7 +419,16 @@ export function startServerAutonomousScheduler(app: FastifyInstance) {
     timer.unref?.();
   };
 
-  const evaluateChat = async (chat: RawChat) => {
+  // Each evaluation is its own root operation, so its lines never carry a stale
+  // requestId, and the generate inject's x-request-id points back to it.
+  const evaluateChat = (chat: RawChat) => {
+    const operationId = randomUUID();
+    return runWithRootDiagnosticContext({ operation: "autonomous.scheduler", operationId, chatId: chat.id }, () =>
+      evaluateChatInContext(chat, operationId),
+    );
+  };
+
+  const evaluateChatInContext = async (chat: RawChat, operationId: string) => {
     if (runningChats.has(chat.id)) return;
     if (delayedChats.has(chat.id)) return;
     if (isChatOnFailureBackoff(chat.id)) return;
@@ -362,6 +444,7 @@ export function startServerAutonomousScheduler(app: FastifyInstance) {
       const checkResponse = await app.inject({
         method: "POST",
         url: "/api/conversation/autonomous/check",
+        headers: { "x-request-id": `auto-check-${operationId}` },
         payload: {
           chatId: chat.id,
           userStatus: "idle",
@@ -371,11 +454,13 @@ export function startServerAutonomousScheduler(app: FastifyInstance) {
       });
 
       if (checkResponse.statusCode !== 200) {
-        logger.warn(
-          "[autonomous-scheduler] Eligibility check failed for chat %s with status %d",
-          chat.id,
-          checkResponse.statusCode,
-        );
+        const body = parseAutonomousErrorBody(checkResponse.payload);
+        recordFailureBackoff(chat.id, body.message || `eligibility status ${checkResponse.statusCode}`, {
+          statusCode: checkResponse.statusCode,
+          errorCode: body.errorCode,
+          causeErrorId: body.causeErrorId,
+          causeRequestId: body.causeRequestId ?? `auto-check-${operationId}`,
+        });
         return;
       }
 
@@ -410,19 +495,33 @@ export function startServerAutonomousScheduler(app: FastifyInstance) {
         const delayMs = getBusyDelay(status, schedule);
         if (delayMs > 0) {
           delayedChats.add(chat.id);
-          scheduleDelayedGeneration(chat.id, characterId, schedule, freshMeta, generationStartedAt, delayMs);
+          scheduleDelayedGeneration(
+            chat.id,
+            characterId,
+            schedule,
+            freshMeta,
+            generationStartedAt,
+            delayMs,
+            `auto-${operationId}`,
+          );
           return;
         }
       }
 
-      const generated = await generateAutonomousMessage(chat.id, characterId, schedule, freshMeta, generationStartedAt);
+      const generated = await generateAutonomousMessage(
+        chat.id,
+        characterId,
+        schedule,
+        freshMeta,
+        generationStartedAt,
+        `auto-${operationId}`,
+      );
       if (generated) {
         logger.info("[autonomous-scheduler] Generated autonomous message for chat %s", chat.id);
       }
     } catch (err) {
       clearGenerationInProgress(chat.id, generationStartedAt);
-      recordFailureBackoff(chat.id, err instanceof Error ? err.message : String(err));
-      logger.warn(err, "[autonomous-scheduler] Failed while evaluating chat %s", chat.id);
+      recordFailureBackoff(chat.id, err instanceof Error ? err.message : String(err), { err });
     } finally {
       runningChats.delete(chat.id);
     }
@@ -476,16 +575,28 @@ export function startServerAutonomousScheduler(app: FastifyInstance) {
       // write the chats table, so recording it from an inconclusive sweep
       // could leave the scheduler dormant with enabled chats (#4705).
       idleSweepGeneration = concludeAutonomousSweep({ inconclusive, sawEligible, generation });
+      logRecovered("autonomous.poll", {}, "[autonomous-scheduler] poll working again");
     } catch (err) {
-      logger.warn(err, "[autonomous-scheduler] Poll failed");
+      logRepeated(
+        "autonomous.poll",
+        "warn",
+        { event: "autonomous.poll", outcome: "failed", err },
+        "[autonomous-scheduler] Poll failed",
+      );
     } finally {
       polling = false;
       scheduleNext();
     }
   };
 
+  const unregisterGauge = registerWorkerGauge("autonomous", () => ({
+    runningChats: runningChats.size,
+    backedOff: failureBackoffByChat.size,
+  }));
+
   const stop = () => {
     stopped = true;
+    unregisterGauge();
     if (pollTimer) clearTimeout(pollTimer);
     pollTimer = null;
   };

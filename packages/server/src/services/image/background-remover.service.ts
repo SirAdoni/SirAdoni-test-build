@@ -4,7 +4,8 @@ import { mkdtemp, rm } from "fs/promises";
 import { tmpdir } from "os";
 import { delimiter, join } from "path";
 import { promisify } from "util";
-import { logger } from "../../lib/logger.js";
+import { describeChildFailure } from "../../lib/child-process-diagnostics.js";
+import { logRepeated } from "../../lib/log-events.js";
 import { DATA_DIR } from "../../utils/data-dir.js";
 
 const execFileAsync = promisify(execFile);
@@ -187,6 +188,32 @@ export function getBackgroundRemoverStatus(): BackgroundRemoverStatus {
   };
 }
 
+/**
+ * Logs one `sprite.cleanup.fallback` line for a failed backgroundremover run.
+ * Repeats of the same failure (same errorCode and first message line) are
+ * counted by logRepeated instead of written again.
+ */
+function logBackgroundRemoverFailure(
+  error: unknown,
+  opts: { command: string; startedAt: number; action: "model_cache_retry" | "builtin"; workDir: string },
+  msg: string,
+): void {
+  const { fields } = describeChildFailure(error, {
+    command: opts.command,
+    timeoutMs: backgroundRemoverTimeoutMs(),
+    startedAt: opts.startedAt,
+  });
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  // The per-run temp directory would make every key unique, so it is replaced before keying.
+  const firstLine = (message.split(/\r?\n/, 1)[0] ?? "").split(opts.workDir).join("<tmp>").slice(0, 200);
+  logRepeated(
+    `backgroundremover:${opts.action}:${fields.errorCode}:${firstLine}`,
+    "warn",
+    { event: "sprite.cleanup.fallback", engine: "backgroundremover", action: opts.action, ...fields },
+    msg,
+  );
+}
+
 export async function tryRemoveBackgroundWithBackgroundRemover(
   input: Buffer,
   options: { required?: boolean } = {},
@@ -215,26 +242,33 @@ export async function tryRemoveBackgroundWithBackgroundRemover(
   const workDir = await mkdtemp(join(tmpdir(), "marinara-bgrem-"));
   const inputPath = join(workDir, "input.png");
   const outputPath = join(workDir, "output.png");
+  let runStartedAt = Date.now();
 
   try {
     mkdirSync(RUNTIME_DIR, { recursive: true });
     mkdirSync(MODEL_DIR, { recursive: true });
     writeFileSync(inputPath, input);
 
-    const runBackgroundRemover = () =>
-      execFileAsync(command.command, [...command.argsPrefix, "-i", inputPath, "-o", outputPath], {
+    const runBackgroundRemover = () => {
+      runStartedAt = Date.now();
+      return execFileAsync(command.command, [...command.argsPrefix, "-i", inputPath, "-o", outputPath], {
         timeout: backgroundRemoverTimeoutMs(),
         maxBuffer: 1024 * 1024 * 8,
         windowsHide: true,
         env: backgroundRemoverEnv(),
       });
+    };
 
     try {
       await runBackgroundRemover();
     } catch (error) {
       if (!isCorruptedManagedModelError(error)) throw error;
 
-      logger.warn(error, "backgroundremover model cache was corrupt; deleting managed cache and retrying once");
+      logBackgroundRemoverFailure(
+        error,
+        { command: command.command, startedAt: runStartedAt, action: "model_cache_retry", workDir },
+        "backgroundremover model cache was corrupt; deleting managed cache and retrying once",
+      );
       clearManagedModelCache();
       rmSync(outputPath, { force: true });
       await runBackgroundRemover();
@@ -249,7 +283,11 @@ export async function tryRemoveBackgroundWithBackgroundRemover(
     if (engine === "backgroundremover" || options.required) {
       throw error;
     }
-    logger.warn(error, "backgroundremover failed; falling back to built-in sprite cleanup");
+    logBackgroundRemoverFailure(
+      error,
+      { command: command.command, startedAt: runStartedAt, action: "builtin", workDir },
+      "backgroundremover failed; falling back to built-in sprite cleanup",
+    );
     return null;
   } finally {
     try {

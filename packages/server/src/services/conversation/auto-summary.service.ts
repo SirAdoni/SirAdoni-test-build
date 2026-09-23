@@ -5,6 +5,7 @@
 
 import type { DaySummaryEntry, WeekSummaryEntry } from "@marinara-engine/shared";
 import type { BaseLLMProvider } from "../llm/base-provider.js";
+import { createDiagnostic } from "../../lib/diagnostics.js";
 import { tryParseJsonRecord } from "../../lib/json-repair.js";
 import { stripConversationPromptTimestamps } from "./transcript-sanitize.js";
 import { formatZonedConversationDate, toZonedWallClockDate } from "./timezone.js";
@@ -30,6 +31,35 @@ export function countConversationMessagesAfterSummaryAnchor(
   return messages.slice(anchorIndex + 1).filter(isConversationMessage).length;
 }
 
+/**
+ * One failed bucket. `errorId` and `errorCode` let callers log one summary line
+ * (event conversation.summary) instead of a line per bucket. `error` stays for the
+ * API response the client already reads.
+ */
+export interface ConversationSummaryFailedDay {
+  date: string;
+  error: string;
+  errorId: string;
+  errorCode: string;
+}
+
+export interface ConversationSummaryFailedWeek {
+  weekKey: string;
+  error: string;
+  errorId: string;
+  errorCode: string;
+}
+
+/** Thrown when a summary call runs past its budget; classifies as ME_TIMEOUT. */
+export class SummaryTimeoutError extends Error {
+  readonly timeoutMs: number;
+  constructor(timeoutMs: number) {
+    super("Summary timeout");
+    this.name = "TimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
 export interface ConversationSummaryRunResult {
   daySummaries: Record<string, DaySummaryEntry>;
   weekSummaries: Record<string, WeekSummaryEntry>;
@@ -37,8 +67,8 @@ export interface ConversationSummaryRunResult {
   newlyConsolidatedWeeks: Record<string, WeekSummaryEntry>;
   summaryFailures: ConversationSummaryFailures;
   summaryFailureMetadataChanged: boolean;
-  failedDays: Array<{ date: string; error: string }>;
-  failedWeeks: Array<{ weekKey: string; error: string }>;
+  failedDays: ConversationSummaryFailedDay[];
+  failedWeeks: ConversationSummaryFailedWeek[];
   missingDayCount: number;
   processedDayCount: number;
   remainingMissingDayCount: number;
@@ -225,10 +255,14 @@ function buildDayBuckets(
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Summary timeout")), ms)),
-  ]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new SummaryTimeoutError(ms)), ms);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 function cleanJsonishResponse(raw: string): string {
@@ -452,6 +486,33 @@ function recordSummaryFailure(
   };
 }
 
+/**
+ * The one warn line fields for a summary run with failures, shared by the generate
+ * path and the summaries route. Returns null when nothing failed. Only dates, week
+ * keys, ids and codes: never the error text or transcript.
+ */
+export function conversationSummaryFailureFields(
+  chatId: string,
+  run: Pick<
+    ConversationSummaryRunResult,
+    "failedDays" | "failedWeeks" | "processedDayCount" | "remainingMissingDayCount"
+  >,
+): Record<string, unknown> | null {
+  if (run.failedDays.length === 0 && run.failedWeeks.length === 0) return null;
+  const all = [...run.failedDays, ...run.failedWeeks];
+  return {
+    event: "conversation.summary",
+    chatId,
+    outcome: "failed",
+    failedDays: run.failedDays.map((failure) => failure.date),
+    failedWeeks: run.failedWeeks.map((failure) => failure.weekKey),
+    errorCodes: [...new Set(all.map((failure) => failure.errorCode))],
+    sampleErrorId: all[0]?.errorId,
+    processedDayCount: run.processedDayCount,
+    remainingMissingDayCount: run.remainingMissingDayCount,
+  };
+}
+
 export async function generateMissingConversationSummaries(
   options: GenerateMissingConversationSummariesOptions,
 ): Promise<ConversationSummaryRunResult> {
@@ -485,8 +546,8 @@ export async function generateMissingConversationSummaries(
 
   const newlyGeneratedDays: Record<string, DaySummaryEntry> = {};
   const newlyConsolidatedWeeks: Record<string, WeekSummaryEntry> = {};
-  const failedDays: Array<{ date: string; error: string }> = [];
-  const failedWeeks: Array<{ weekKey: string; error: string }> = [];
+  const failedDays: ConversationSummaryFailedDay[] = [];
+  const failedWeeks: ConversationSummaryFailedWeek[] = [];
 
   for (const bucket of bucketsToProcess) {
     try {
@@ -501,7 +562,8 @@ export async function generateMissingConversationSummaries(
       }
     } catch (error) {
       const message = errorMessage(error);
-      failedDays.push({ date: bucket.date, error: message });
+      const reference = createDiagnostic(error);
+      failedDays.push({ date: bucket.date, error: message, errorId: reference.errorId, errorCode: reference.code });
       summaryFailures.days[bucket.date] = recordSummaryFailure(
         summaryFailures.days[bucket.date],
         message,
@@ -566,7 +628,8 @@ export async function generateMissingConversationSummaries(
       }
     } catch (error) {
       const message = errorMessage(error);
-      failedWeeks.push({ weekKey, error: message });
+      const reference = createDiagnostic(error);
+      failedWeeks.push({ weekKey, error: message, errorId: reference.errorId, errorCode: reference.code });
       summaryFailures.weeks[weekKey] = recordSummaryFailure(
         summaryFailures.weeks[weekKey],
         message,

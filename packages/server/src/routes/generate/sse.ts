@@ -1,6 +1,8 @@
 import type { FastifyReply } from "fastify";
+import type { DiagnosticReference } from "@marinara-engine/shared";
 import { reportDiagnosticError } from "../../lib/diagnostic-operation.js";
 import { sanitizeDiagnosticText } from "../../lib/diagnostics.js";
+import { routeLabel } from "../../lib/http-diagnostics.js";
 
 type SsePayload = Record<string, unknown>;
 
@@ -60,13 +62,30 @@ export function sendSseEvent(reply: FastifyReply, payload: SsePayload): boolean 
         : rawData && typeof rawData === "object" && typeof (rawData as Record<string, unknown>).error === "string"
           ? String((rawData as Record<string, unknown>).error)
           : `SSE ${String(payload.type)} failed`;
+    // Callers should use emitSseFailure, which reports the real error. This fallback
+    // keeps a durable record for an error event that arrived without a reference.
     const reference =
       existingReference ??
-      reportDiagnosticError(new Error(message), {
-        requestId: reply.request.id,
-        operation: reply.request.routeOptions.url ?? reply.request.url.split(/[?#]/, 1)[0] ?? reply.request.url,
-        stage: "stream",
-      });
+      reportDiagnosticError(
+        new Error(message),
+        {
+          requestId: reply.request.id,
+          operation: `${reply.request.method ?? "SSE"} ${routeLabel(reply.request)}`,
+          stage: "stream",
+        },
+        undefined,
+        {
+          level: "warn",
+          event: "sse.unreferenced_error",
+          fields: {
+            sseType: payload.type,
+            agentType:
+              rawData && typeof rawData === "object" && !Array.isArray(rawData)
+                ? (rawData as Record<string, unknown>).agentType
+                : undefined,
+          },
+        },
+      );
     const visibleError = (value: string) => {
       const safe = sanitizeDiagnosticText(value);
       return safe.includes(reference.errorId) ? safe : `${safe} [${reference.code} ${reference.errorId}]`;
@@ -97,11 +116,54 @@ export function sendSseEvent(reply: FastifyReply, payload: SsePayload): boolean 
       error,
       {
         requestId: reply.request.id,
-        operation: reply.request.routeOptions.url ?? reply.request.url.split(/[?#]/, 1)[0],
+        operation: `${reply.request.method ?? "SSE"} ${routeLabel(reply.request)}`,
         stage: "stream-write",
       },
       "ME_STREAM_WRITE",
     );
     return false;
   }
+}
+
+export interface SseFailureOptions {
+  /** SSE event type. Default "error". */
+  type?: "error" | "agent_error";
+  /** Event data. Default: the sanitized error message. */
+  data?: unknown;
+  agentType?: string;
+  agentName?: string;
+  retryTarget?: string;
+  /** Log level. Default: levelFor(code), so a cancellation logs info. */
+  level?: "info" | "warn" | "error";
+  /** Event name for the log line, for example "generation.abort" or "agent.run". */
+  event: string;
+  message?: string;
+  /** Extra log fields. Never prompt text or message content. */
+  fields?: Record<string, unknown>;
+}
+
+/**
+ * Reports `error` once and sends it to the client as an SSE error event that
+ * carries the same code and errorId. An error the caller already logged keeps
+ * its errorId and only adds a debug `diagnostic.rethrown` line.
+ */
+export function emitSseFailure(reply: FastifyReply, error: unknown, opts: SseFailureOptions): DiagnosticReference {
+  const reference = reportDiagnosticError(error, { stage: "stream" }, undefined, {
+    level: opts.level,
+    event: opts.event,
+    message: opts.message ?? opts.event,
+    fields: { ...(opts.agentType ? { agentType: opts.agentType } : {}), ...opts.fields },
+  });
+  const safeMessage = sanitizeDiagnosticText(
+    error instanceof Error ? error.message : typeof error === "string" ? error : "Unexpected error",
+  );
+  sendSseEvent(reply, {
+    type: opts.type ?? "error",
+    data: opts.data ?? safeMessage,
+    ...reference,
+    ...(opts.agentType ? { agentType: opts.agentType } : {}),
+    ...(opts.agentName ? { agentName: opts.agentName } : {}),
+    ...(opts.retryTarget ? { retryTarget: opts.retryTarget } : {}),
+  });
+  return reference;
 }

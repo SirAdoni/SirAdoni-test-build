@@ -2,6 +2,7 @@
 // File Storage Connection
 // ──────────────────────────────────────────────
 import { logger } from "../lib/logger.js";
+import { startup } from "../lib/startup-timeline.js";
 import { createFileNativeDB, type FileNativeDB, type FileNativeStoreController } from "./file-backed-store.js";
 
 type DbCleanup = () => void | Promise<void>;
@@ -13,6 +14,8 @@ let fileStore: FileNativeStoreController | null = null;
 async function createStorage(): Promise<DB> {
   const db = await createFileNativeDB();
   fileStore = db._fileStore;
+  const bootStats = fileStore.getBootStats();
+  if (bootStats) startup.record("storage", bootStats);
   dbCleanup = async () => {
     await fileStore?.close();
     fileStore = null;
@@ -42,7 +45,11 @@ export async function closeDB() {
   try {
     await activePromise;
   } catch (err) {
-    logger.error(err, "[db] Failed to initialize database before shutdown");
+    // initialize() already reported this failure; shutdown only notes that there was nothing to close.
+    logger.debug(
+      { event: "storage.close", stage: "awaitInit", outcome: "skipped", err },
+      "[db] Database never finished initializing; nothing to close",
+    );
     dbCleanup = null;
     return;
   }
@@ -53,10 +60,19 @@ export async function closeDB() {
     return;
   }
 
+  const dirtyTables = fileStore?.getDirtyTables() ?? [];
+  const started = Date.now();
   try {
     await cleanup();
+    logger.info(
+      { event: "storage.close", outcome: "ok", elapsedMs: Date.now() - started, dirtyTables },
+      "[db] Database closed",
+    );
   } catch (err) {
-    logger.error(err, "[db] Failed to close database");
+    logger.error(
+      { event: "storage.close", outcome: "failed", elapsedMs: Date.now() - started, dirtyTables, err },
+      "[db] Failed to close database",
+    );
   }
 }
 

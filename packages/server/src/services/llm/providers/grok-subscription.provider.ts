@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { BaseLLMProvider, type ChatMessage, type ChatOptions, type LLMUsage } from "../base-provider.js";
 import { isDebugAgentsEnabled } from "../../../config/runtime-config.js";
 import { logger, logDebugOverride } from "../../../lib/logger.js";
+import { logEvent } from "../../../lib/log-events.js";
 import { DATA_DIR } from "../../../utils/data-dir.js";
 import { estimateTextTokens } from "@marinara-engine/shared";
 
@@ -405,6 +406,13 @@ export class GrokSubscriptionProvider extends BaseLLMProvider {
       maxContext,
     );
     logDebugOverride(debugOverrideEnabled, "[debug/grok-subscription] final prompt:\n%s", prompt);
+    logEvent("debug", "llm.request.capture", {
+      provider: "grok_subscription",
+      model: cliModel || "(cli default)",
+      bodyBytes: Buffer.byteLength(prompt, "utf8"),
+      messageCount: contextFit.messages.length,
+      toolCount: 0,
+    });
 
     try {
       let result: GrokCliCommandResult;
@@ -455,7 +463,8 @@ export class GrokSubscriptionProvider extends BaseLLMProvider {
         finishReason: "stop",
       };
     } catch (err) {
-      logger.error(err, "Grok CLI request failed for model %s", cliModel || "(cli default)");
+      // The caller reports the failure once; attach the CLI model so that report names it.
+      if (err instanceof Error) Object.assign(err, { cliModel: cliModel || "(cli default)" });
       throw err;
     }
   }

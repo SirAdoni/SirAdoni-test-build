@@ -42,6 +42,7 @@ import {
   type CustomAgentContextSources,
 } from "@marinara-engine/shared";
 import { getAgentCallTimeoutMs, getMaxToolRounds, isDebugAgentsEnabled } from "../../config/runtime-config.js";
+import { createDiagnostic, markDiagnosticReported, wasDiagnosticReported } from "../../lib/diagnostics.js";
 import { logger, logDebugOverride } from "../../lib/logger.js";
 import { repairJsonText } from "../../lib/json-repair.js";
 import { LOCAL_SIDECAR_MODEL } from "../llm/local-sidecar.js";
@@ -674,6 +675,49 @@ function debugUsage(usage?: LLMUsage): Partial<AgentCallDebugEvent> {
   return fields;
 }
 
+/** Prompt size for structured lines: counts only, never the text itself. */
+function promptChars(messages: ChatMessage[]): number {
+  let total = 0;
+  for (const message of messages) total += typeof message.content === "string" ? message.content.length : 0;
+  return total;
+}
+
+/**
+ * One line per failed agent or batch outcome. A failure an inner layer already
+ * logged in full drops to warn with only its errorId; an unreported one logs at
+ * error with `err`, then is marked reported so the next layer (or the next agent
+ * of the same rejected group) does not repeat the stack.
+ */
+export function logAgentFailure(
+  reason: unknown,
+  fields: {
+    event?: "agent.run" | "agent.batch";
+    agentType?: string;
+    agentTypes?: string[];
+    agentId?: string;
+    phase?: string;
+    model?: string;
+    elapsedMs: number;
+  },
+  msg = "[agent-pipeline] agent failed",
+): void {
+  const reported = wasDiagnosticReported(reason);
+  const reference = createDiagnostic(reason);
+  markDiagnosticReported(reason);
+  const { event = "agent.run", ...rest } = fields;
+  logger[reported ? "warn" : "error"](
+    {
+      event,
+      ...rest,
+      outcome: "failed",
+      errorId: reference.errorId,
+      errorCode: reference.code,
+      ...(reported ? {} : { err: reason }),
+    },
+    msg,
+  );
+}
+
 function emitAgentDebug(context: AgentContext, event: AgentCallDebugEvent): void {
   const debugOverrideEnabled = Boolean(context.agentDebug) || isDebugAgentsEnabled();
   if ((event.stage === "request" || event.stage === "retry_request") && event.messages) {
@@ -824,11 +868,21 @@ export async function executeAgent(
     }
 
     // Call LLM (streaming to avoid proxy timeouts, no tools)
-    logger.info(`[agent] ${config.type} (${config.name}) — ${model}`);
-    for (const msg of messages) {
-      logger.debug(`[agent] [${msg.role}] ${msg.content}`);
-    }
-    logger.debug(`[agent] ═══ END PROMPT — temperature=${temperature} maxTokens=${maxTokens} ═══\n`);
+    // Counts only here; the full prompt goes to logs/prompt-debug through emitAgentDebug (logDebugOverride).
+    logger.debug(
+      {
+        event: "agent.run",
+        state: "running",
+        agentType: config.type,
+        model,
+        messageCount: messages.length,
+        promptChars: promptChars(messages),
+        temperature,
+        maxTokens,
+      },
+      "[agent] %s started",
+      config.type,
+    );
     emitAgentDebug(context, {
       stage: "request",
       ...agentDebugBase(config, model, temperature, maxTokens),
@@ -860,8 +914,19 @@ export async function executeAgent(
 
     if (!responseText && result.content) responseText = result.content;
     responseText = responseText.trim();
-    logger.info(`[agent] ${config.type} done (${responseText.length} chars, ${Date.now() - startTime}ms)`);
-    logger.debug(`[agent] ${config.type} raw response: ${responseText.slice(0, 500)}`);
+    logger.info(
+      {
+        event: "agent.run",
+        agentType: config.type,
+        model,
+        elapsedMs: Date.now() - startTime,
+        outputChars: responseText.length,
+        totalTokens: result.usage?.totalTokens ?? 0,
+        outcome: "ok",
+      },
+      "[agent] %s done",
+      config.type,
+    );
     emitAgentDebug(context, {
       stage: "response",
       ...agentDebugBase(config, model, temperature, maxTokens),
@@ -918,7 +983,6 @@ export async function executeAgent(
         responseText.length,
         Date.now() - startTime,
       );
-      logger.debug("[agent] %s JSON retry raw response: %s", config.type, responseText.slice(0, 500));
       emitAgentDebug(context, {
         stage: "retry_response",
         ...agentDebugBase(config, model, temperature, maxTokens),
@@ -989,7 +1053,11 @@ async function executeBeholderLanePasses(args: {
 }): Promise<AgentResult> {
   const { config, context, provider, model, lanePrompts, temperature, maxTokens, streamResponses, startTime } = args;
 
-  logger.info(`[agent] ${config.type} (${config.name}) — ${model} — ${BEHOLDER_PASS_LANES.length} passes`);
+  logger.debug(
+    { event: "agent.run", state: "running", agentType: config.type, model, passes: BEHOLDER_PASS_LANES.length },
+    "[agent] %s started",
+    config.type,
+  );
 
   // Bounded dispatch, not Promise.all: each lane's timeout budget starts when
   // agentCallSignal builds it, so launching all five at once would let a lane
@@ -999,11 +1067,20 @@ async function executeBeholderLanePasses(args: {
     AGENT_BATCH_FALLBACK_MAX_CONCURRENT,
     async (lane) => {
       const messages = prepareAgentProviderMessages(buildBeholderMessages(config, lanePrompts[lane], context));
-      logger.debug(`[agent] ═══ ${config.type} [${lane}] PROMPT ═══`);
-      for (const msg of messages) {
-        logger.debug(`[agent] [${msg.role}] ${msg.content}`);
-      }
-      logger.debug(`[agent] ═══ END ${lane} PROMPT — temperature=${temperature} maxTokens=${maxTokens} ═══\n`);
+      logger.debug(
+        {
+          event: "agent.run",
+          state: "running",
+          agentType: config.type,
+          lane,
+          model,
+          messageCount: messages.length,
+          promptChars: promptChars(messages),
+        },
+        "[agent] %s pass %s started",
+        config.type,
+        lane,
+      );
       emitAgentDebug(context, {
         stage: "request",
         ...agentDebugBase(config, model, temperature, maxTokens),
@@ -1032,7 +1109,6 @@ async function executeBeholderLanePasses(args: {
       });
       if (!laneText && result.content) laneText = result.content;
       laneText = laneText.trim();
-      logger.debug(`[agent] ${config.type} [${lane}] raw response: ${laneText.slice(0, 500)}`);
       emitAgentDebug(context, {
         stage: "response",
         ...agentDebugBase(config, model, temperature, maxTokens),
@@ -1127,7 +1203,19 @@ async function executeBeholderLanePasses(args: {
   }
 
   logger.info(
-    `[agent] ${config.type} done (${laneResponses.length}/${BEHOLDER_PASS_LANES.length} passes, changed=${merged.changed}, ${Date.now() - startTime}ms)`,
+    {
+      event: "agent.run",
+      agentType: config.type,
+      model,
+      elapsedMs: Date.now() - startTime,
+      passesOk: laneResponses.length,
+      passes: BEHOLDER_PASS_LANES.length,
+      changed: merged.changed,
+      totalTokens,
+      outcome: "ok",
+    },
+    "[agent] %s done",
+    config.type,
   );
   const structured = resolveStructuredAgentResult(config, context, merged);
   return {
@@ -1432,7 +1520,11 @@ export async function executeAgentBatch(
     return groupedResults;
   }
 
-  logger.info(`[agent-batch] Batching ${configs.length} agents: [${configs.map((c) => c.type).join(", ")}]`);
+  logger.debug(
+    { event: "agent.batch", state: "running", agentTypes: configs.map((c) => c.type), model },
+    "[agent-batch] batching %d agents",
+    configs.length,
+  );
 
   const startTime = Date.now();
   const perAgentTokens = configs.map((c) => normalizeAgentMaxTokens(c.settings.maxTokens));
@@ -1491,11 +1583,19 @@ export async function executeAgentBatch(
       capSuffix,
     );
 
-    logger.debug(`\n[agent-batch] ═══ BATCH PROMPT — [${configs.map((c) => c.type).join(", ")}] — ${model} ═══`);
-    for (const msg of messages) {
-      logger.debug(`[agent-batch] [${msg.role}] ${msg.content}`);
-    }
-    logger.debug(`[agent-batch] ═══ END BATCH PROMPT — temperature=${temperature} maxTokens=${batchMaxTokens} ═══\n`);
+    // Counts only here; the full prompt goes to logs/prompt-debug through emitAgentDebug (logDebugOverride).
+    logger.debug(
+      {
+        event: "agent.batch",
+        agentTypes: configs.map((c) => c.type),
+        model,
+        messageCount: messages.length,
+        promptChars: promptChars(messages),
+        temperature,
+        maxTokens: batchMaxTokens,
+      },
+      "[agent-batch] prompt built",
+    );
     emitAgentDebug(context, {
       stage: "request",
       agentId: "__batch__",
@@ -1546,8 +1646,18 @@ export async function executeAgentBatch(
     const durationMs = Date.now() - startTime;
     const totalTokens = result.usage?.totalTokens ?? 0;
 
-    logger.info(`[agent-batch] Got response (${responseText.length} chars, ${durationMs}ms, ${totalTokens} tokens)`);
-    logger.debug(`[agent-batch] ${responseText}`);
+    logger.info(
+      {
+        event: "agent.batch",
+        agentTypes: configs.map((c) => c.type),
+        model,
+        elapsedMs: durationMs,
+        outputChars: responseText.length,
+        totalTokens,
+        outcome: "ok",
+      },
+      "[agent-batch] got response",
+    );
     emitAgentDebug(context, {
       stage: "response",
       agentId: "__batch__",
@@ -1598,7 +1708,17 @@ export async function executeAgentBatch(
           retries.push(entry.value);
         } else {
           // Individual retry also failed — produce error result
-          logger.error(entry.reason, "[agent-batch] Individual retry FAILED for %s", failed[i]!.type);
+          logAgentFailure(
+            entry.reason,
+            {
+              event: "agent.run",
+              agentType: failed[i]!.type,
+              agentId: failed[i]!.id,
+              model,
+              elapsedMs: Date.now() - startTime,
+            },
+            "[agent-batch] individual retry failed",
+          );
           retries.push(
             makeError(failed[i]!, entry.reason instanceof Error ? entry.reason.message : "Retry failed", startTime),
           );
@@ -1625,7 +1745,11 @@ export async function executeAgentBatch(
       error: errMsg,
       batchedAgentTypes: configs.map((config) => config.type),
     });
-    logger.error(err, "[agent-batch] Batch call FAILED: %s", errMsg);
+    logAgentFailure(
+      err,
+      { event: "agent.batch", agentTypes: configs.map((c) => c.type), model, elapsedMs: Date.now() - startTime },
+      "[agent-batch] batch call failed",
+    );
     return configs.map((c) => makeError(c, errMsg, startTime));
   }
 }

@@ -7,6 +7,7 @@ import type { SidecarDownloadProgress, SidecarRuntimeInfo } from "@marinara-engi
 import { getDataDir } from "../../utils/data-dir.js";
 import { assertInsideDir } from "../../utils/security.js";
 import { downloadFileWithProgress, isAbortError, retry } from "./sidecar-download.js";
+import { describeChildFailure } from "../../lib/child-process-diagnostics.js";
 import { MLX_RUNTIME_MANIFEST, serializeMlxRuntimeManifestStamp } from "./runtime-integrity-manifest.js";
 
 const MLX_RUNTIME_DIR = join(getDataDir(), "sidecar-runtime", "mlx");
@@ -425,13 +426,14 @@ class MlxRuntimeService {
       writeFileSync(MLX_UV_STAMP_PATH, `${uvManifestStamp()}\n`, "utf-8");
     } catch (error) {
       if (isAbortError(error) || this.cancelRequested) {
-        throw new Error("Install aborted");
+        throw new Error("Install aborted", { cause: error });
       }
 
       throw new Error(
         error instanceof Error
           ? `Failed to install the verified uv runtime.\n${error.message}`
           : "Failed to install the verified uv runtime.",
+        { cause: error },
       );
     } finally {
       rmSync(archivePath, { force: true });
@@ -485,6 +487,7 @@ class MlxRuntimeService {
           retries: 2,
           baseDelayMs: 500,
           shouldRetry: (error) => !isAbortError(error),
+          label,
         },
       );
     } catch (error) {
@@ -492,6 +495,7 @@ class MlxRuntimeService {
       if (/(?:file size|SHA-256) mismatch/iu.test(message)) {
         throw new Error(
           `The ${label} download no longer matches the Engine-approved runtime manifest. Update or reinstall Marinara Engine before retrying; do not bypass the integrity check. Original verification error: ${message}`,
+          { cause: error },
         );
       }
       throw error;
@@ -507,6 +511,7 @@ class MlxRuntimeService {
       stdin?: string;
     },
   ): Promise<void> {
+    const startedAt = Date.now();
     await new Promise<void>((resolve, reject) => {
       const child = spawn(command, args, {
         cwd: options.cwd,
@@ -520,6 +525,12 @@ class MlxRuntimeService {
       this.activeChild = child;
 
       let combinedOutput = "";
+      // Keeps the user-facing message and attaches the classified child facts
+      // (errorCode, exitCode, signal, elapsedMs, stderrTail) for the log line.
+      const failWith = (source: unknown, message: string) => {
+        const { fields } = describeChildFailure(source, { command, startedAt, stderr: combinedOutput });
+        reject(Object.assign(new Error(message, { cause: source }), fields));
+      };
       if (options.stdin !== undefined) {
         child.stdin?.on("error", () => {
           // Ignore broken pipes if the child exits early.
@@ -535,7 +546,7 @@ class MlxRuntimeService {
 
       child.on("error", (error) => {
         this.activeChild = null;
-        reject(error);
+        failWith(error, error.message);
       });
       child.on("close", (code, signal) => {
         this.activeChild = null;
@@ -551,7 +562,7 @@ class MlxRuntimeService {
 
         const reason = signal ? `signal ${signal}` : `exit ${code ?? "null"}`;
         const details = combinedOutput.trim();
-        reject(new Error(details ? `${command} ${reason}\n${details}` : `${command} ${reason}`));
+        failWith({ exitCode: code, signal }, details ? `${command} ${reason}\n${details}` : `${command} ${reason}`);
       });
     });
   }

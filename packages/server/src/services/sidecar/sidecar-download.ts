@@ -5,6 +5,8 @@ import { Readable } from "stream";
 import { pipeline as streamPipeline } from "stream/promises";
 import type { SidecarDownloadProgress } from "@marinara-engine/shared";
 import { sanitizeApiError } from "../llm/base-provider.js";
+import { createDiagnostic } from "../../lib/diagnostics.js";
+import { logEvent } from "../../lib/log-events.js";
 
 const USER_AGENT = "MarinaraEngine";
 
@@ -15,6 +17,27 @@ export function isAbortError(error: unknown): boolean {
 
   const message = error instanceof Error ? error.message : String(error);
   return /abort/i.test(message);
+}
+
+export type DownloadErrorCode = "ME_DOWNLOAD_HTTP" | "ME_DOWNLOAD_SIZE" | "ME_DOWNLOAD_SHA";
+
+/** Tags a download failure with its errorCode so the log line and the rethrown error agree. */
+function downloadError(message: string, errorCode: DownloadErrorCode): Error {
+  return Object.assign(new Error(message), { errorCode });
+}
+
+function errorCodeOf(error: unknown): string {
+  const tagged = (error as { errorCode?: unknown } | null)?.errorCode;
+  return typeof tagged === "string" ? tagged : createDiagnostic(error).code;
+}
+
+/** Host only: a download URL can carry a signed path or query, so it is never logged whole. */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "invalid-url";
+  }
 }
 
 export interface DownloadFileOptions {
@@ -52,6 +75,8 @@ export async function retry<T>(
     retries: number;
     baseDelayMs: number;
     shouldRetry?: (error: unknown) => boolean;
+    /** Names the download in the retry log line. */
+    label?: string;
   },
 ): Promise<T> {
   const shouldRetry = options.shouldRetry ?? (() => true);
@@ -68,6 +93,13 @@ export async function retry<T>(
         throw error;
       }
       const delayMs = options.baseDelayMs * 2 ** (attempt - 1);
+      logEvent("warn", "sidecar.download.retry", {
+        label: options.label,
+        attempt,
+        maxAttempts: options.retries,
+        delayMs,
+        errorCode: errorCodeOf(error),
+      });
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
@@ -94,81 +126,99 @@ export async function downloadFileWithProgress(options: DownloadFileOptions): Pr
     // Best-effort cleanup for stale destination files.
   }
 
-  const response = await fetch(options.url, {
-    signal: options.signal,
-    headers: {
-      "User-Agent": USER_AGENT,
-      ...(options.headers ?? {}),
-    },
-  });
-
-  if (!response.ok) {
-    const raw = await response.text().catch(() => "");
-    throw new Error(`HTTP ${response.status}: ${sanitizeApiError(raw || response.statusText)}`);
-  }
-
-  if (!response.body) {
-    throw new Error("Download response had no body");
-  }
-
-  const total = Number.parseInt(response.headers.get("content-length") || "0", 10) || 0;
-  const contentEncoding = response.headers.get("content-encoding")?.trim().toLowerCase() ?? "";
-  const expectedBytes =
-    typeof options.expectedBytes === "number" && options.expectedBytes > 0 ? options.expectedBytes : total;
-  const canValidateSize = expectedBytes > 0 && (!contentEncoding || contentEncoding === "identity");
-  const sha256 = expectedSha256 ? createHash("sha256") : null;
+  const startedAt = Date.now();
+  const host = hostOf(options.url);
+  const label = options.progress.label;
   let downloaded = 0;
-  let lastReportTime = Date.now();
-  let lastReportBytes = 0;
-
-  const reader = response.body.getReader();
-  const writable = createWriteStream(tempPath);
-
-  const readable = new Readable({
-    async read() {
-      try {
-        const { done, value } = await reader.read();
-        if (done) {
-          this.push(null);
-          return;
-        }
-
-        downloaded += value.byteLength;
-        sha256?.update(value);
-        const now = Date.now();
-        if (now - lastReportTime >= 250) {
-          const elapsedSeconds = (now - lastReportTime) / 1000;
-          const speed = elapsedSeconds > 0 ? (downloaded - lastReportBytes) / elapsedSeconds : 0;
-          options.onProgress?.({
-            ...options.progress,
-            status: "downloading",
-            downloaded,
-            total: total || expectedBytes,
-            speed,
-          });
-          lastReportTime = now;
-          lastReportBytes = downloaded;
-        }
-
-        this.push(value);
-      } catch (error) {
-        this.destroy(error as Error);
-      }
-    },
+  logEvent("info", "sidecar.download.file", {
+    state: "running",
+    host,
+    label,
+    expectedBytes: options.expectedBytes ?? undefined,
+    shaExpected: !!expectedSha256,
   });
 
   try {
+    const response = await fetch(options.url, {
+      signal: options.signal,
+      headers: {
+        "User-Agent": USER_AGENT,
+        ...(options.headers ?? {}),
+      },
+    });
+
+    if (!response.ok) {
+      const raw = await response.text().catch(() => "");
+      throw downloadError(
+        `HTTP ${response.status}: ${sanitizeApiError(raw || response.statusText)}`,
+        "ME_DOWNLOAD_HTTP",
+      );
+    }
+
+    if (!response.body) {
+      throw downloadError("Download response had no body", "ME_DOWNLOAD_HTTP");
+    }
+
+    const total = Number.parseInt(response.headers.get("content-length") || "0", 10) || 0;
+    const contentEncoding = response.headers.get("content-encoding")?.trim().toLowerCase() ?? "";
+    const expectedBytes =
+      typeof options.expectedBytes === "number" && options.expectedBytes > 0 ? options.expectedBytes : total;
+    const canValidateSize = expectedBytes > 0 && (!contentEncoding || contentEncoding === "identity");
+    const sha256 = expectedSha256 ? createHash("sha256") : null;
+    let lastReportTime = Date.now();
+    let lastReportBytes = 0;
+
+    const reader = response.body.getReader();
+    const writable = createWriteStream(tempPath);
+
+    const readable = new Readable({
+      async read() {
+        try {
+          const { done, value } = await reader.read();
+          if (done) {
+            this.push(null);
+            return;
+          }
+
+          downloaded += value.byteLength;
+          sha256?.update(value);
+          const now = Date.now();
+          if (now - lastReportTime >= 250) {
+            const elapsedSeconds = (now - lastReportTime) / 1000;
+            const speed = elapsedSeconds > 0 ? (downloaded - lastReportBytes) / elapsedSeconds : 0;
+            options.onProgress?.({
+              ...options.progress,
+              status: "downloading",
+              downloaded,
+              total: total || expectedBytes,
+              speed,
+            });
+            lastReportTime = now;
+            lastReportBytes = downloaded;
+          }
+
+          this.push(value);
+        } catch (error) {
+          this.destroy(error as Error);
+        }
+      },
+    });
+
     await streamPipeline(readable, writable);
     const writtenBytes = statSync(tempPath).size;
     if (canValidateSize && writtenBytes !== expectedBytes) {
-      throw new Error(
+      throw downloadError(
         `Downloaded file size mismatch: expected ${expectedBytes} bytes, received ${writtenBytes} bytes.`,
+        "ME_DOWNLOAD_SIZE",
       );
     }
     if (expectedSha256) {
       const actualSha256 = sha256!.digest("hex");
       if (actualSha256 !== expectedSha256) {
-        throw new Error(`Downloaded file SHA-256 mismatch: expected ${expectedSha256}, received ${actualSha256}.`);
+        throw downloadError(
+          `Downloaded file SHA-256 mismatch: expected ${expectedSha256}, received ${actualSha256}.`,
+          "ME_DOWNLOAD_SHA",
+        );
       }
     }
     renameSync(tempPath, options.destPath);
@@ -179,12 +229,34 @@ export async function downloadFileWithProgress(options: DownloadFileOptions): Pr
       total: expectedBytes || writtenBytes || downloaded,
       speed: 0,
     });
+    logEvent("info", "sidecar.download.file", {
+      outcome: "ok",
+      host,
+      label,
+      bytes: writtenBytes,
+      elapsedMs: Date.now() - startedAt,
+      shaVerified: !!expectedSha256,
+    });
   } catch (error) {
     try {
       if (existsSync(tempPath)) unlinkSync(tempPath);
     } catch {
       // Best-effort cleanup on failure.
     }
-    throw error;
+    const cancelled = isAbortError(error) || options.signal?.aborted === true;
+    const errorCode = cancelled ? "ME_CANCELLED" : errorCodeOf(error);
+    logEvent("warn", "sidecar.download.file", {
+      err: cancelled ? undefined : error,
+      outcome: cancelled ? "cancelled" : "failed",
+      host,
+      label,
+      downloadedBytes: downloaded,
+      elapsedMs: Date.now() - startedAt,
+      errorCode,
+    });
+    // Abort errors pass through untouched so callers can still recognise them.
+    if (cancelled) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw Object.assign(new Error(message, { cause: error }), { errorCode });
   }
 }

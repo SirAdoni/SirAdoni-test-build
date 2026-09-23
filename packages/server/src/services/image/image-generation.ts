@@ -41,11 +41,15 @@ import {
   supportsNovelAiCharacterPrompts,
 } from "./character-prompts.js";
 import { isImageLocalUrlsEnabled } from "../../config/runtime-config.js";
-import { runMediaGenerationRequest, type MediaGenerationPermitProfile } from "./image-generation-queue.js";
+import {
+  providerResponseShape,
+  runMediaGenerationRequest,
+  type MediaGenerationPermitProfile,
+} from "./image-generation-queue.js";
 import { generateRunPodComfyUI } from "./runpod-comfyui.service.js";
 import { logger, logDebugOverride } from "../../lib/logger.js";
-import { reportDiagnosticError } from "../../lib/diagnostic-operation.js";
-import { getDiagnosticContext } from "../../lib/diagnostics.js";
+import { createDiagnostic } from "../../lib/diagnostics.js";
+import { logEvent } from "../../lib/log-events.js";
 import {
   assertInsideDir,
   normalizeLoopbackUrl,
@@ -374,55 +378,38 @@ export async function generateImage(
 ): Promise<ImageGenResult> {
   const startedAt = Date.now();
   const provider = resolveImageBackend(source, baseUrl, serviceHint, request.model);
-  const context = getDiagnosticContext();
-  logger.info(
-    {
-      ...context,
-      operation: "image.generation",
-      stage: "start",
-      provider,
-      model: request.model,
-      promptCharacters: request.prompt.length,
-      suppliedReferenceCount: request.referenceImages?.length ?? (request.referenceImage ? 1 : 0),
-      width: request.width,
-      height: request.height,
-    },
-    "Image generation started",
-  );
+  const base = { kind: "image" as const, provider, model: request.model };
+  logEvent("debug", "media.generate", {
+    ...base,
+    state: "running",
+    promptCharacters: request.prompt.length,
+    suppliedReferenceCount: request.referenceImages?.length ?? (request.referenceImage ? 1 : 0),
+    width: request.width,
+    height: request.height,
+  });
   try {
     const result = await generateImageWithFallback(source, baseUrl, apiKey, serviceHint, request);
-    logger.info(
-      {
-        ...context,
-        operation: "image.generation",
-        stage: "success",
-        provider,
-        model: request.model,
-        elapsedMs: Date.now() - startedAt,
-      },
-      "Image generation completed",
-    );
+    const effective = result.effectiveConnection;
+    logEvent("info", "media.generate", {
+      ...base,
+      outcome: "ok",
+      elapsedMs: Date.now() - startedAt,
+      fallbackUsed: !!effective,
+      effectiveProvider: effective ? effective.provider : provider,
+      effectiveModel: effective ? effective.model : request.model,
+    });
     return result;
   } catch (error) {
-    const diagnostic = reportDiagnosticError(error, {
-      ...context,
-      operation: "image.generation",
-      stage: request.signal?.aborted ? "cancelled" : "failure",
-      provider,
-      model: request.model,
+    // The caller (job, route or agent) owns the one failure line; this is the pointer to it.
+    const reference = createDiagnostic(error);
+    const cancelled = request.signal?.aborted === true || reference.code === "ME_CANCELLED";
+    logEvent("debug", "media.generate", {
+      ...base,
+      outcome: cancelled ? "cancelled" : "failed",
+      elapsedMs: Date.now() - startedAt,
+      errorCode: reference.code,
+      errorId: reference.errorId,
     });
-    logger.warn(
-      {
-        ...context,
-        diagnostic,
-        operation: "image.generation",
-        stage: request.signal?.aborted ? "cancelled" : "failure",
-        provider,
-        model: request.model,
-        elapsedMs: Date.now() - startedAt,
-      },
-      "Image generation failed",
-    );
     throw error;
   }
 }
@@ -607,11 +594,21 @@ async function generateImageWithFallback(
     }
     const fallback = request.fallback;
     if (!fallback || request.signal?.aborted || isConnectionAdmissionFailure(error)) throw error;
-    logger.warn(
-      error,
-      "[illustrator-fallback] Primary image generation failed; retrying with connection %s (%s)",
-      fallback.connectionId,
-      fallback.model,
+    const primaryFailure = createDiagnostic(error);
+    logEvent(
+      "warn",
+      "media.fallback",
+      {
+        kind: "image",
+        fromProvider: resolvedSource,
+        fromModel: request.model,
+        toConnectionId: fallback.connectionId,
+        toModel: fallback.model,
+        errorId: primaryFailure.errorId,
+        errorCode: primaryFailure.code,
+        err: error,
+      },
+      "Primary image generation failed; retrying with the fallback connection",
     );
     try {
       await (request.onFallback ?? notifyGenerationFallback)({
@@ -3431,11 +3428,18 @@ async function generateOpenRouter(baseUrl: string, apiKey: string, request: Imag
   const message = choice?.message;
   const imageUrl = extractImageUrlFromMessage(message);
   if (!imageUrl) {
-    logger.warn(
-      "[image-gen] OpenRouter response had no extractable image. model=%s finish_reason=%s shape=%s",
-      request.model ?? "(default)",
-      choice?.finish_reason ?? "(none)",
-      JSON.stringify(message ?? data).slice(0, 800),
+    logEvent(
+      "warn",
+      "provider.response.unexpected",
+      {
+        kind: "image",
+        provider: "openrouter",
+        model: request.model,
+        finishReason: choice?.finish_reason ?? null,
+        ...providerResponseShape(message ?? data),
+        bodyBytes: buffer.length,
+      },
+      "OpenRouter image response had no extractable image",
     );
     const content =
       message && typeof message === "object" && typeof (message as Record<string, unknown>).content === "string"

@@ -1,6 +1,8 @@
 import type { ChatMode } from "@marinara-engine/shared";
 import { getAgentCallTimeoutMs } from "../../config/runtime-config.js";
 import { logger } from "../../lib/logger.js";
+import { createDiagnostic } from "../../lib/diagnostics.js";
+import { logRecovered, logRepeated } from "../../lib/log-events.js";
 import { getCapabilityService } from "../capability-packages/capability-service-registry.service.js";
 import { withLlmRequestTimeout } from "../llm/base-provider.js";
 
@@ -25,8 +27,19 @@ export interface LongTermMemoryRuntimeService {
   }): Promise<void>;
 }
 
-function runtimeService() {
-  return getCapabilityService<LongTermMemoryRuntimeService>(SERVICE_KEY);
+function runtimeService(chatId?: string) {
+  const service = getCapabilityService<LongTermMemoryRuntimeService>(SERVICE_KEY);
+  if (!service) {
+    logRepeated(
+      "ltm:service-missing",
+      "warn",
+      { event: "package.service.missing", packageId: "long-term-memory", serviceKey: SERVICE_KEY, chatId },
+      "Long-term memory runtime not registered; recall skipped",
+    );
+  } else {
+    logRecovered("ltm:service-missing", { packageId: "long-term-memory", serviceKey: SERVICE_KEY });
+  }
+  return service;
 }
 
 export async function withLongTermMemoryRuntimeTimeout<T>(
@@ -36,7 +49,9 @@ export async function withLongTermMemoryRuntimeTimeout<T>(
 ): Promise<T> {
   const timeoutController = new AbortController();
   const combinedSignal = signal ? AbortSignal.any([signal, timeoutController.signal]) : timeoutController.signal;
-  const timeoutError = new Error(`Long-term memory operation timed out after ${timeoutMs} ms`);
+  const timeoutError = Object.assign(new Error(`Long-term memory operation timed out after ${timeoutMs} ms`), {
+    name: "TimeoutError",
+  });
   let rejectOnAbort: (() => void) | undefined;
   const aborted = new Promise<never>((_, reject) => {
     rejectOnAbort = () => {
@@ -57,8 +72,9 @@ export async function withLongTermMemoryRuntimeTimeout<T>(
 export async function recallLongTermMemory(
   input: Parameters<LongTermMemoryRuntimeService["recall"]>[0],
 ): Promise<{ text: string; receipt?: LongTermMemoryRecallReceipt } | null> {
-  const service = runtimeService();
+  const service = runtimeService(input.chatId);
   if (!service) return null;
+  const started = Date.now();
   try {
     const recall = await withLongTermMemoryRuntimeTimeout(
       getAgentCallTimeoutMs(),
@@ -66,10 +82,31 @@ export async function recallLongTermMemory(
       input.signal,
     );
     const text = recall?.text.trim().slice(0, MAX_RECALL_CHARACTERS) ?? "";
+    // Only the size of the recall is logged, never its text.
+    logger.debug(
+      {
+        event: "ltm.recall",
+        chatId: input.chatId,
+        elapsedMs: Date.now() - started,
+        outcome: "ok",
+        recalledChars: text.length,
+      },
+      "Long-term memory recall finished",
+    );
     return text ? { text, receipt: recall?.receipt ?? null } : null;
   } catch (error) {
     if (input.signal?.aborted) return null;
-    logger.warn(error, "Long-term memory recall failed; continuing without recalled context");
+    logger.warn(
+      {
+        event: "ltm.recall",
+        chatId: input.chatId,
+        elapsedMs: Date.now() - started,
+        outcome: "failed",
+        errorCode: createDiagnostic(error).code,
+        err: error,
+      },
+      "Long-term memory recall failed; continuing without recalled context",
+    );
     return null;
   }
 }
@@ -77,7 +114,7 @@ export async function recallLongTermMemory(
 export async function recordLongTermMemoryPromptAccepted(
   input: Parameters<LongTermMemoryRuntimeService["recordPromptAccepted"]>[0],
 ): Promise<void> {
-  const service = runtimeService();
+  const service = runtimeService(input.chatId);
   if (!service) return;
   try {
     await withLongTermMemoryRuntimeTimeout(getAgentCallTimeoutMs(), () => service.recordPromptAccepted(input));

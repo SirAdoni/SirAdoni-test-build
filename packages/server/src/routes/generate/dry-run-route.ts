@@ -97,7 +97,8 @@ import {
 import { filterPromptMessagesForCharacterAudience } from "../../services/generation/prompt-message-scope.js";
 import { applyAllSegmentEdits } from "../../services/game/segment-edits.js";
 import { applyRegexScriptsToPromptMessages } from "../../services/regex/regex-application.js";
-import { sendSseEvent, startSseReply } from "./sse.js";
+import { emitSseFailure, sendSseEvent, startSseReply } from "./sse.js";
+import { replyWithDiagnostic } from "../../lib/http-diagnostics.js";
 import {
   appendReadableAttachmentsToContent,
   postProcessMessages,
@@ -1996,16 +1997,20 @@ export async function registerDryRunRoute(app: FastifyInstance) {
         });
       }
     } catch (err) {
-      logger.error(err, "[dryRun] Advanced Memory preparation failed");
-      const message = err instanceof Error ? err.message : "Dry run memory preparation failed";
       if (streaming && !returnPrompt) {
         startSseReply(reply, { "X-Accel-Buffering": "no" });
-        sendSseEvent(reply, { type: "error", data: message });
+        emitSseFailure(reply, err, {
+          event: "dry_run.memory.failed",
+          message: "Dry run Advanced Memory preparation failed",
+        });
         sendSseEvent(reply, { type: "done", data: "" });
         reply.raw.end();
         return;
       }
-      return reply.status(500).send({ error: message });
+      return replyWithDiagnostic(reply, 500, err, {
+        message: err instanceof Error ? undefined : "Dry run memory preparation failed",
+        event: "dry_run.memory.failed",
+      });
     }
     const fit = advancedContext
       ? { messages: advancedContext.providerMessages, maxTokensForSend: advancedContext.maxTokens }
@@ -2157,9 +2162,10 @@ export async function registerDryRunRoute(app: FastifyInstance) {
           sendSseEvent(reply, { type: "done", data: "" });
           return;
         }
-        logger.error(err, "[dryRun] Streaming generation failed");
-        const message = err instanceof Error ? err.message : "Dry run generation failed";
-        sendSseEvent(reply, { type: "error", data: message });
+        emitSseFailure(reply, err, {
+          event: "dry_run.generation.failed",
+          message: "Dry run streaming generation failed",
+        });
         sendSseEvent(reply, { type: "done", data: "" });
       } finally {
         completed = true;
@@ -2231,9 +2237,10 @@ export async function registerDryRunRoute(app: FastifyInstance) {
       if (abortController.signal.aborted || (err && typeof err === "object" && (err as any).name === "AbortError")) {
         return reply.send({ aborted: true, runId });
       }
-      logger.error(err, "[dryRun] Generation failed");
-      const message = err instanceof Error ? err.message : "Dry run generation failed";
-      return reply.status(500).send({ error: message, runId });
+      return replyWithDiagnostic(reply, 500, err, {
+        message: err instanceof Error ? undefined : "Dry run generation failed",
+        body: { runId },
+      });
     } finally {
       completed = true;
       reply.raw.off("close", onClose);

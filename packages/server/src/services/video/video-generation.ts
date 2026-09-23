@@ -6,7 +6,9 @@ import { newId } from "../../utils/id-generator.js";
 import { logger, logDebugOverride } from "../../lib/logger.js";
 import { assertInsideDir, safeFetch } from "../../utils/security.js";
 import { notifyGenerationFallback, type GenerationFallbackNotifier } from "../generation/fallback-notification.js";
-import { runMediaGenerationRequest } from "../image/image-generation-queue.js";
+import { pollProviderTask, providerResponseShape, runMediaGenerationRequest } from "../image/image-generation-queue.js";
+import { createDiagnostic } from "../../lib/diagnostics.js";
+import { logEvent } from "../../lib/log-events.js";
 import {
   COMFYUI_MAX_REFERENCE_IMAGES,
   numberedComfyReferencePlaceholder,
@@ -128,6 +130,66 @@ export async function generateVideo(
   serviceHint: string,
   request: VideoGenerationRequest,
 ): Promise<VideoGenerationResult> {
+  const startedAt = Date.now();
+  const provider = normalizeVideoService(serviceHint || source) || source;
+  const base = {
+    kind: "video" as const,
+    provider,
+    model: request.model,
+    durationSeconds: request.durationSeconds,
+    aspectRatio: request.aspectRatio,
+    hasReference: !!request.referenceImage,
+  };
+  const trace: VideoFallbackTrace = { fallbackUsed: false };
+  logEvent("debug", "media.generate", { ...base, state: "running" });
+  try {
+    const result = await generateVideoWithFallback(source, baseUrl, apiKey, serviceHint, request, trace);
+    logEvent("info", "media.generate", {
+      ...base,
+      outcome: "ok",
+      elapsedMs: Date.now() - startedAt,
+      videoBytes: Math.floor((result.base64.length * 3) / 4),
+      fallbackUsed: trace.fallbackUsed,
+      effectiveProvider: trace.effectiveProvider ?? provider,
+      effectiveModel: trace.effectiveModel ?? request.model,
+    });
+    return result;
+  } catch (error) {
+    // The caller (job, route or agent) owns the one failure line; this is the pointer to it.
+    const reference = createDiagnostic(error);
+    const cancelled = request.signal?.aborted === true || reference.code === "ME_CANCELLED";
+    logEvent("debug", "media.generate", {
+      ...base,
+      outcome: cancelled ? "cancelled" : "failed",
+      elapsedMs: Date.now() - startedAt,
+      errorCode: reference.code,
+      errorId: reference.errorId,
+      fallbackUsed: trace.fallbackUsed,
+    });
+    throw error;
+  }
+}
+
+interface VideoFallbackTrace {
+  fallbackUsed: boolean;
+  effectiveProvider?: string;
+  effectiveModel?: string;
+}
+
+function resolveVideoGenerationService(source: string, serviceHint: string): string {
+  return normalizeVideoService(source) === "swarmui" || normalizeVideoService(source) === "nanogpt"
+    ? normalizeVideoService(source)
+    : normalizeVideoService(serviceHint || source);
+}
+
+async function generateVideoWithFallback(
+  source: string,
+  baseUrl: string,
+  apiKey: string,
+  serviceHint: string,
+  request: VideoGenerationRequest,
+  trace: VideoFallbackTrace,
+): Promise<VideoGenerationResult> {
   // The request deadline begins when the queued task starts; queue wait time is
   // governed separately by the shared media-generation queue.
   // The fallback hop runs AFTER the primary's queued task returns, so the primary
@@ -137,6 +199,7 @@ export async function generateVideo(
   let primaryStarted = false;
   try {
     return await runMediaGenerationRequest({
+      kind: "video",
       connectionKey: request.connectionKey ?? `${serviceHint || source}:${baseUrl}`,
       queue: request.queue === true,
       signal: request.signal,
@@ -150,12 +213,25 @@ export async function generateVideo(
     // Queue wait failures (timeout, abort) never reached the provider and keep
     // their previous behaviour of not triggering a fallback.
     if (!fallback || !primaryStarted || request.signal?.aborted) throw error;
-    logger.warn(
-      error,
-      "[video-fallback] Primary video generation failed; retrying with connection %s (%s)",
-      fallback.connectionId,
-      fallback.model,
+    const primaryFailure = createDiagnostic(error);
+    logEvent(
+      "warn",
+      "media.fallback",
+      {
+        kind: "video",
+        fromProvider: resolveVideoGenerationService(source, serviceHint),
+        fromModel: request.model,
+        toConnectionId: fallback.connectionId,
+        toModel: fallback.model,
+        errorId: primaryFailure.errorId,
+        errorCode: primaryFailure.code,
+        err: error,
+      },
+      "Primary video generation failed; retrying with the fallback connection",
     );
+    trace.fallbackUsed = true;
+    trace.effectiveProvider = normalizeVideoService(fallback.serviceHint || fallback.source) || fallback.source;
+    trace.effectiveModel = fallback.model;
     try {
       await (request.onFallback ?? notifyGenerationFallback)({
         category: "video",
@@ -185,10 +261,7 @@ async function generateVideoUnqueued(
   serviceHint: string,
   request: VideoGenerationRequest,
 ): Promise<VideoGenerationResult> {
-  const resolvedService =
-    normalizeVideoService(source) === "swarmui" || normalizeVideoService(source) === "nanogpt"
-      ? normalizeVideoService(source)
-      : normalizeVideoService(serviceHint || source);
+  const resolvedService = resolveVideoGenerationService(source, serviceHint);
   const primaryRequest = { ...request, fallback: undefined };
   if (resolvedService === "gemini_omni") {
     return await withVideoGenerationDeadline(request.signal, VIDEO_GEN_TIMEOUT, (signal) =>
@@ -292,6 +365,7 @@ export async function saveVideoToDisk(chatId: string, base64: string): Promise<s
     if (!isMp4Buffer(buffer)) throw new Error("Provider returned data that is not a valid MP4 file");
     await writeFile(tempPath, buffer);
     await rename(tempPath, filePath);
+    logEvent("debug", "media.generate", { kind: "video", stage: "save", chatId, videoBytes: buffer.length });
   } catch (error) {
     await unlink(tempPath).catch(() => undefined);
     throw error;
@@ -850,7 +924,17 @@ async function generateGeminiOmniVideo(
 
   const video = extractMp4(json);
   if (!video) {
-    logger.debug("[video-gen/gemini-omni] response without MP4: %s", text.slice(0, 2000));
+    logEvent(
+      "warn",
+      "provider.response.unexpected",
+      { kind: "video", provider: "gemini_omni", model: request.model, ...providerResponseShape(json, text) },
+      "Gemini Omni response had no MP4 payload",
+    );
+    logDebugOverride(
+      request.debugMode === true,
+      "[video-gen/gemini-omni] response without MP4: %s",
+      text.slice(0, 2000),
+    );
     throw new Error("Gemini Omni response did not include a video/mp4 payload");
   }
   const buffer = Buffer.from(stripDataUrl(video), "base64");
@@ -905,55 +989,79 @@ async function generateGoogleVeoVideo(
   }
   const pollUrl = buildGoogleVeoOperationUrl(baseUrl, operationName);
 
-  while (true) {
-    await delayWithSignal(GOOGLE_VEO_POLL_INTERVAL_MS, request.signal);
-    const polled = await safeFetch(pollUrl, {
-      method: "GET",
-      headers: googleVeoHeaders(apiKey),
-      signal: request.signal,
-      policy: {
-        allowLocal: false,
-        allowLoopback: false,
-        allowMdns: false,
-        allowedProtocols: ["https:"],
-      },
-      maxResponseBytes: 2 * 1024 * 1024,
-      decodeCompressedResponse: true,
-    });
-    const pollText = await polled.text();
-    if (!polled.ok) {
-      throw new Error(`Google Veo polling returned ${polled.status}: ${formatProviderError(pollText)}`);
-    }
-    let pollJson: unknown;
-    try {
-      pollJson = JSON.parse(pollText) as unknown;
-    } catch {
-      throw new Error(`Google Veo polling returned non-JSON response: ${pollText.slice(0, 300)}`);
-    }
-    const pollRecord = asRecord(pollJson);
-    if (pollRecord.done !== true) continue;
-    const operationError = pollRecord.error;
-    if (operationError) {
-      throw new Error(`Google Veo generation failed: ${formatOperationError(operationError)}`);
-    }
-    const inlineVideo = extractMp4(pollJson);
-    if (inlineVideo) {
-      const buffer = Buffer.from(stripDataUrl(inlineVideo), "base64");
-      if (!isMp4Buffer(buffer)) throw new Error("Google Veo returned a non-MP4 video payload");
-      return { base64: buffer.toString("base64"), mimeType: "video/mp4", ext: "mp4" };
-    }
-    const videoUri = findVideoUri(pollJson);
-    if (!videoUri) {
-      const reason = summarizeGoogleVeoMissingVideoReason(pollJson);
-      logger.warn("[video-gen/google-veo] completed response without video URI: %s", pollText.slice(0, 2000));
-      throw new Error(
-        reason
-          ? `Google Veo completed without a downloadable video: ${reason}`
-          : "Google Veo response did not include a downloadable video",
-      );
-    }
-    return downloadGoogleVeoVideo(videoUri, apiKey, request.signal);
+  const done = await pollProviderTask<{ pollJson: unknown; pollText: string }>({
+    provider: "google_veo",
+    taskId: operationName,
+    intervalMs: GOOGLE_VEO_POLL_INTERVAL_MS,
+    deadlineMs: VIDEO_GEN_TIMEOUT,
+    wait: (ms) => delayWithSignal(ms, request.signal),
+    poll: async () => {
+      const polled = await safeFetch(pollUrl, {
+        method: "GET",
+        headers: googleVeoHeaders(apiKey),
+        signal: request.signal,
+        policy: {
+          allowLocal: false,
+          allowLoopback: false,
+          allowMdns: false,
+          allowedProtocols: ["https:"],
+        },
+        maxResponseBytes: 2 * 1024 * 1024,
+        decodeCompressedResponse: true,
+      });
+      const pollText = await polled.text();
+      if (!polled.ok) {
+        throw new Error(`Google Veo polling returned ${polled.status}: ${formatProviderError(pollText)}`);
+      }
+      let pollJson: unknown;
+      try {
+        pollJson = JSON.parse(pollText) as unknown;
+      } catch {
+        throw new Error(`Google Veo polling returned non-JSON response: ${pollText.slice(0, 300)}`);
+      }
+      const pollRecord = asRecord(pollJson);
+      if (pollRecord.done !== true) return { providerStatus: "running", done: false };
+      const operationError = pollRecord.error;
+      if (operationError) {
+        throw new Error(`Google Veo generation failed: ${formatOperationError(operationError)}`);
+      }
+      return { providerStatus: "done", done: true, value: { pollJson, pollText } };
+    },
+  });
+  const { pollJson, pollText } = done;
+  const inlineVideo = extractMp4(pollJson);
+  if (inlineVideo) {
+    const buffer = Buffer.from(stripDataUrl(inlineVideo), "base64");
+    if (!isMp4Buffer(buffer)) throw new Error("Google Veo returned a non-MP4 video payload");
+    return { base64: buffer.toString("base64"), mimeType: "video/mp4", ext: "mp4" };
   }
+  const videoUri = findVideoUri(pollJson);
+  if (!videoUri) {
+    const reason = summarizeGoogleVeoMissingVideoReason(pollJson);
+    logEvent(
+      "warn",
+      "provider.response.unexpected",
+      {
+        kind: "video",
+        provider: "google_veo",
+        model,
+        providerTaskId: operationName,
+        ...providerResponseShape(pollJson, pollText),
+      },
+      "Google Veo completed without a video URI",
+    );
+    logDebugOverride(
+      request.debugMode === true,
+      "[video-gen/google-veo] completed response without video URI: %s",
+      pollText.slice(0, 2000),
+    );
+    throw new Error(
+      reason
+        ? `Google Veo completed without a downloadable video: ${reason}`
+        : "Google Veo response did not include a downloadable video",
+    );
+  }
+  return downloadGoogleVeoVideo(videoUri, apiKey, request.signal);
 }
 
 async function generateXaiVideo(
@@ -1011,49 +1119,54 @@ async function generateXaiVideo(
   }
 
   const pollUrl = buildXaiVideosUrl(baseUrl, `videos/${encodeURIComponent(requestId)}`);
-  while (true) {
-    await delayWithSignal(XAI_POLL_INTERVAL_MS, request.signal);
-    const polled = await safeFetch(pollUrl, {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      signal: request.signal,
-      policy: {
-        allowLocal: false,
-        allowLoopback: false,
-        allowMdns: false,
-        allowedProtocols: ["https:"],
-      },
-      maxResponseBytes: 2 * 1024 * 1024,
-      decodeCompressedResponse: true,
-    });
-    const pollText = await polled.text();
-    if (!polled.ok) {
-      throw new Error(`xAI video polling returned ${polled.status}: ${formatProviderError(pollText)}`);
-    }
-    let pollJson: unknown;
-    try {
-      pollJson = JSON.parse(pollText) as unknown;
-    } catch {
-      throw new Error(`xAI video polling returned non-JSON response: ${pollText.slice(0, 300)}`);
-    }
-    const pollRecord = asRecord(pollJson);
-    const status = readString(pollRecord.status)?.toLowerCase();
-    if (status === "done") {
-      const video = pollRecord.video;
-      const url = video && typeof video === "object" ? readString((video as Record<string, unknown>).url) : null;
-      if (!url) throw new Error("xAI video response did not include a video URL");
-      return downloadXaiVideo(url, request.signal);
-    }
-    if (status === "failed" || status === "expired") {
-      throw new Error(`xAI video generation ${status}`);
-    }
-    if (status && status !== "pending") {
-      logger.debug("[video-gen/xai] continuing after unknown status: %s", status);
-    }
-  }
+  const videoUrl = await pollProviderTask<string>({
+    provider: "xai",
+    taskId: requestId,
+    intervalMs: XAI_POLL_INTERVAL_MS,
+    deadlineMs: VIDEO_GEN_TIMEOUT,
+    wait: (ms) => delayWithSignal(ms, request.signal),
+    poll: async () => {
+      const polled = await safeFetch(pollUrl, {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        signal: request.signal,
+        policy: {
+          allowLocal: false,
+          allowLoopback: false,
+          allowMdns: false,
+          allowedProtocols: ["https:"],
+        },
+        maxResponseBytes: 2 * 1024 * 1024,
+        decodeCompressedResponse: true,
+      });
+      const pollText = await polled.text();
+      if (!polled.ok) {
+        throw new Error(`xAI video polling returned ${polled.status}: ${formatProviderError(pollText)}`);
+      }
+      let pollJson: unknown;
+      try {
+        pollJson = JSON.parse(pollText) as unknown;
+      } catch {
+        throw new Error(`xAI video polling returned non-JSON response: ${pollText.slice(0, 300)}`);
+      }
+      const pollRecord = asRecord(pollJson);
+      const status = readString(pollRecord.status)?.toLowerCase();
+      if (status === "done") {
+        const video = pollRecord.video;
+        const url = video && typeof video === "object" ? readString((video as Record<string, unknown>).url) : null;
+        if (!url) throw new Error("xAI video response did not include a video URL");
+        return { providerStatus: status, done: true, value: url };
+      }
+      if (status === "failed" || status === "expired") {
+        throw new Error(`xAI video generation ${status}`);
+      }
+      return { providerStatus: status ?? null, done: false };
+    },
+  });
+  return downloadXaiVideo(videoUrl, request.signal);
 }
 
 async function generateOpenRouterVideo(
@@ -1123,45 +1236,50 @@ async function generateOpenRouterVideo(
     throw new Error("OpenRouter video generation response did not include a job id");
   }
 
-  while (true) {
-    await delayWithSignal(OPENROUTER_POLL_INTERVAL_MS, request.signal);
-    const polled = await safeFetch(pollingUrl, {
-      method: "GET",
-      headers: openRouterHeaders(apiKey),
-      signal: request.signal,
-      policy: {
-        allowLocal: false,
-        allowLoopback: false,
-        allowMdns: false,
-        allowedProtocols: ["https:"],
-      },
-      maxResponseBytes: 2 * 1024 * 1024,
-      decodeCompressedResponse: true,
-    });
-    const pollText = await polled.text();
-    if (!polled.ok) {
-      throw new Error(`OpenRouter video polling returned ${polled.status}: ${formatProviderError(pollText)}`);
-    }
-    let pollJson: unknown;
-    try {
-      pollJson = JSON.parse(pollText) as unknown;
-    } catch {
-      throw new Error(`OpenRouter video polling returned non-JSON response: ${pollText.slice(0, 300)}`);
-    }
-    const pollRecord = asRecord(pollJson);
-    const status = readString(pollRecord.status)?.toLowerCase();
-    if (status === "completed") {
-      const url = readFirstString(pollRecord.unsigned_urls) ?? buildOpenRouterContentUrl(baseUrl, jobId);
-      return downloadOpenRouterVideo(url, apiKey, request.signal);
-    }
-    if (status === "failed" || status === "cancelled" || status === "expired") {
-      const error = readString(pollRecord.error);
-      throw new Error(`OpenRouter video generation ${status}${error ? `: ${error}` : ""}`);
-    }
-    if (status && status !== "pending" && status !== "in_progress") {
-      logger.debug("[video-gen/openrouter] continuing after unknown status: %s", status);
-    }
-  }
+  const videoUrl = await pollProviderTask<string>({
+    provider: "openrouter",
+    taskId: jobId,
+    intervalMs: OPENROUTER_POLL_INTERVAL_MS,
+    deadlineMs: VIDEO_GEN_TIMEOUT,
+    wait: (ms) => delayWithSignal(ms, request.signal),
+    poll: async () => {
+      const polled = await safeFetch(pollingUrl, {
+        method: "GET",
+        headers: openRouterHeaders(apiKey),
+        signal: request.signal,
+        policy: {
+          allowLocal: false,
+          allowLoopback: false,
+          allowMdns: false,
+          allowedProtocols: ["https:"],
+        },
+        maxResponseBytes: 2 * 1024 * 1024,
+        decodeCompressedResponse: true,
+      });
+      const pollText = await polled.text();
+      if (!polled.ok) {
+        throw new Error(`OpenRouter video polling returned ${polled.status}: ${formatProviderError(pollText)}`);
+      }
+      let pollJson: unknown;
+      try {
+        pollJson = JSON.parse(pollText) as unknown;
+      } catch {
+        throw new Error(`OpenRouter video polling returned non-JSON response: ${pollText.slice(0, 300)}`);
+      }
+      const pollRecord = asRecord(pollJson);
+      const status = readString(pollRecord.status)?.toLowerCase();
+      if (status === "completed") {
+        const url = readFirstString(pollRecord.unsigned_urls) ?? buildOpenRouterContentUrl(baseUrl, jobId);
+        return { providerStatus: status, done: true, value: url };
+      }
+      if (status === "failed" || status === "cancelled" || status === "expired") {
+        const error = readString(pollRecord.error);
+        throw new Error(`OpenRouter video generation ${status}${error ? `: ${error}` : ""}`);
+      }
+      return { providerStatus: status ?? null, done: false };
+    },
+  });
+  return downloadOpenRouterVideo(videoUrl, apiKey, request.signal);
 }
 
 export function parseNanoGptVideoModels(value: unknown): Array<{ id: string; name: string }> {
@@ -1279,51 +1397,56 @@ async function generateNanoGptVideo(
 
   const pollUrl = new URL(buildNanoGptVideoUrl(baseUrl, "video/status"));
   pollUrl.searchParams.set("requestId", requestId);
-  while (true) {
-    await delayWithSignal(NANOGPT_POLL_INTERVAL_MS, request.signal);
-    const polled = await safeFetch(pollUrl.toString(), {
-      method: "GET",
-      headers: nanoGptHeaders(apiKey),
-      signal: request.signal,
-      policy: {
-        allowLocal: false,
-        allowLoopback: false,
-        allowMdns: false,
-        allowedProtocols: ["https:"],
-      },
-      maxResponseBytes: 2 * 1024 * 1024,
-      decodeCompressedResponse: true,
-    });
-    const pollText = await polled.text();
-    if (!polled.ok) {
-      throw new Error(`NanoGPT video polling returned ${polled.status}: ${formatProviderError(pollText)}`);
-    }
-    let pollJson: unknown;
-    try {
-      pollJson = JSON.parse(pollText) as unknown;
-    } catch {
-      throw new Error(`NanoGPT video polling returned non-JSON response: ${pollText.slice(0, 300)}`);
-    }
-    const pollRecord = asRecord(pollJson);
-    const data = asRecord(pollRecord.data);
-    const status = (readString(data.status) ?? readString(pollRecord.status))?.toUpperCase();
-    if (status === "COMPLETED") {
-      const url = findVideoUri(data.output) ?? findVideoUri(pollRecord.output);
-      if (!url) throw new Error("NanoGPT completed without a downloadable video URL");
-      return downloadNanoGptVideo(url, request.signal);
-    }
-    if (status === "FAILED" || status === "CANCELED" || status === "CANCELLED") {
-      const reason =
-        readString(data.userFriendlyError) ??
-        readString(data.error) ??
-        readString(data.message) ??
-        readString(pollRecord.error);
-      throw new Error(`NanoGPT video generation ${status.toLowerCase()}${reason ? `: ${reason}` : ""}`);
-    }
-    if (status && status !== "IN_QUEUE" && status !== "IN_PROGRESS" && status !== "PENDING") {
-      logger.debug("[video-gen/nanogpt] continuing after unknown status: %s", status);
-    }
-  }
+  const videoUrl = await pollProviderTask<string>({
+    provider: "nanogpt",
+    taskId: requestId,
+    intervalMs: NANOGPT_POLL_INTERVAL_MS,
+    deadlineMs: VIDEO_GEN_TIMEOUT,
+    wait: (ms) => delayWithSignal(ms, request.signal),
+    poll: async () => {
+      const polled = await safeFetch(pollUrl.toString(), {
+        method: "GET",
+        headers: nanoGptHeaders(apiKey),
+        signal: request.signal,
+        policy: {
+          allowLocal: false,
+          allowLoopback: false,
+          allowMdns: false,
+          allowedProtocols: ["https:"],
+        },
+        maxResponseBytes: 2 * 1024 * 1024,
+        decodeCompressedResponse: true,
+      });
+      const pollText = await polled.text();
+      if (!polled.ok) {
+        throw new Error(`NanoGPT video polling returned ${polled.status}: ${formatProviderError(pollText)}`);
+      }
+      let pollJson: unknown;
+      try {
+        pollJson = JSON.parse(pollText) as unknown;
+      } catch {
+        throw new Error(`NanoGPT video polling returned non-JSON response: ${pollText.slice(0, 300)}`);
+      }
+      const pollRecord = asRecord(pollJson);
+      const data = asRecord(pollRecord.data);
+      const status = (readString(data.status) ?? readString(pollRecord.status))?.toUpperCase();
+      if (status === "COMPLETED") {
+        const url = findVideoUri(data.output) ?? findVideoUri(pollRecord.output);
+        if (!url) throw new Error("NanoGPT completed without a downloadable video URL");
+        return { providerStatus: status, done: true, value: url };
+      }
+      if (status === "FAILED" || status === "CANCELED" || status === "CANCELLED") {
+        const reason =
+          readString(data.userFriendlyError) ??
+          readString(data.error) ??
+          readString(data.message) ??
+          readString(pollRecord.error);
+        throw new Error(`NanoGPT video generation ${status.toLowerCase()}${reason ? `: ${reason}` : ""}`);
+      }
+      return { providerStatus: status ?? null, done: false };
+    },
+  });
+  return downloadNanoGptVideo(videoUrl, request.signal);
 }
 
 async function generateSeedanceVideo(
@@ -1356,7 +1479,10 @@ async function generateSeedanceVideo(
   const maxAttempts = 2;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     if (attempt > 1) {
-      logger.warn("[video-gen/seedance] Retrying failed generation after opaque provider task failure");
+      logger.warn(
+        { event: "job.progress", kind: "video", provider: "seedance", attempt, maxAttempts },
+        "Seedance: retrying after an opaque provider task failure",
+      );
     }
     const started = await safeFetch(startUrl, {
       method: "POST",
@@ -1389,63 +1515,99 @@ async function generateSeedanceVideo(
     }
 
     const pollUrl = buildSeedanceUrl(baseUrl, `v1/tasks/${encodeURIComponent(taskId)}`);
-    while (true) {
-      await delayWithSignal(SEEDANCE_POLL_INTERVAL_MS, request.signal);
-      const polled = await safeFetch(pollUrl, {
-        method: "GET",
-        headers: seedanceHeaders(apiKey),
-        signal: request.signal,
-        policy: {
-          allowLocal: false,
-          allowLoopback: false,
-          allowMdns: false,
-          allowedProtocols: ["https:"],
+    let videoUrl: string;
+    try {
+      videoUrl = await pollProviderTask<string>({
+        provider: "seedance",
+        taskId,
+        intervalMs: SEEDANCE_POLL_INTERVAL_MS,
+        deadlineMs: VIDEO_GEN_TIMEOUT,
+        wait: (ms) => delayWithSignal(ms, request.signal),
+        poll: async () => {
+          const polled = await safeFetch(pollUrl, {
+            method: "GET",
+            headers: seedanceHeaders(apiKey),
+            signal: request.signal,
+            policy: {
+              allowLocal: false,
+              allowLoopback: false,
+              allowMdns: false,
+              allowedProtocols: ["https:"],
+            },
+            maxResponseBytes: 2 * 1024 * 1024,
+            decodeCompressedResponse: true,
+          });
+          const pollText = await polled.text();
+          if (!polled.ok) {
+            throw new Error(`Seedance video polling returned ${polled.status}: ${formatProviderError(pollText)}`);
+          }
+          let pollJson: unknown;
+          try {
+            pollJson = JSON.parse(pollText) as unknown;
+          } catch {
+            throw new Error(`Seedance video polling returned non-JSON response: ${pollText.slice(0, 300)}`);
+          }
+          const status = readSeedanceStatus(pollJson);
+          if (status && ["completed", "succeeded", "success", "done"].includes(status)) {
+            const url = findVideoUri(pollJson);
+            if (!url) {
+              logEvent(
+                "warn",
+                "provider.response.unexpected",
+                {
+                  kind: "video",
+                  provider: "seedance",
+                  model,
+                  providerTaskId: taskId,
+                  ...providerResponseShape(pollJson, pollText),
+                },
+                "Seedance completed without a video URL",
+              );
+              logDebugOverride(
+                request.debugMode === true,
+                "[video-gen/seedance] completed response without video URL: %s",
+                pollText.slice(0, 2000),
+              );
+              throw new Error("Seedance response did not include a downloadable video");
+            }
+            return { providerStatus: status, done: true, value: url };
+          }
+          if (status && ["failed", "error", "cancelled", "canceled", "expired"].includes(status)) {
+            const errorMessage = formatSeedanceOperationError(pollJson);
+            logDebugOverride(
+              request.debugMode === true,
+              "[video-gen/seedance] task %s failed attempt %d/%d status=%s response=%s",
+              taskId,
+              attempt,
+              maxAttempts,
+              status,
+              compactJsonForLog(pollJson, 2000),
+            );
+            if (attempt < maxAttempts && isRetryableSeedanceTaskFailure(status, errorMessage)) {
+              throw new SeedanceRetryableTaskFailure(status, errorMessage);
+            }
+            throw new Error(`Seedance video generation ${status}: ${errorMessage}`);
+          }
+          return { providerStatus: status ?? null, done: false };
         },
-        maxResponseBytes: 2 * 1024 * 1024,
-        decodeCompressedResponse: true,
       });
-      const pollText = await polled.text();
-      if (!polled.ok) {
-        throw new Error(`Seedance video polling returned ${polled.status}: ${formatProviderError(pollText)}`);
-      }
-      let pollJson: unknown;
-      try {
-        pollJson = JSON.parse(pollText) as unknown;
-      } catch {
-        throw new Error(`Seedance video polling returned non-JSON response: ${pollText.slice(0, 300)}`);
-      }
-      const status = readSeedanceStatus(pollJson);
-      if (status && ["completed", "succeeded", "success", "done"].includes(status)) {
-        const url = findVideoUri(pollJson);
-        if (!url) {
-          logger.warn("[video-gen/seedance] completed response without video URL: %s", pollText.slice(0, 2000));
-          throw new Error("Seedance response did not include a downloadable video");
-        }
-        return downloadSeedanceVideo(url, baseUrl, apiKey, request.signal);
-      }
-      if (status && ["failed", "error", "cancelled", "canceled", "expired"].includes(status)) {
-        const errorMessage = formatSeedanceOperationError(pollJson);
-        logger.warn(
-          "[video-gen/seedance] task %s failed attempt %d/%d status=%s reason=%s response=%s",
-          taskId,
-          attempt,
-          maxAttempts,
-          status,
-          errorMessage,
-          compactJsonForLog(pollJson, 2000),
-        );
-        if (attempt < maxAttempts && isRetryableSeedanceTaskFailure(status, errorMessage)) {
-          break;
-        }
-        throw new Error(`Seedance video generation ${status}: ${errorMessage}`);
-      }
-      if (status && !["pending", "queued", "processing", "running", "in_progress"].includes(status)) {
-        logger.debug("[video-gen/seedance] continuing after unknown status: %s", status);
-      }
+    } catch (error) {
+      // pollProviderTask already wrote the failed job.progress line for this attempt.
+      if (error instanceof SeedanceRetryableTaskFailure) continue;
+      throw error;
     }
+    return downloadSeedanceVideo(videoUrl, baseUrl, apiKey, request.signal);
   }
 
   throw new Error("Seedance video generation failed after retrying an opaque provider task failure");
+}
+
+/** A Seedance task failure that one more attempt may fix; caught by the retry loop. */
+class SeedanceRetryableTaskFailure extends Error {
+  constructor(status: string, reason: string) {
+    super(`Seedance video generation ${status}: ${reason}`);
+    this.name = "SeedanceRetryableTaskFailure";
+  }
 }
 
 async function generateAtlasCloudVideo(

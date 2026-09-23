@@ -22,7 +22,7 @@
 //
 import { randomUUID } from "node:crypto";
 import { isClaudeAdaptiveOnlyNoSamplingModel, shouldSuppressUnknownModelParameters } from "@marinara-engine/shared";
-import { BaseLLMProvider, type ChatMessage, type ChatOptions, type LLMUsage } from "../base-provider.js";
+import { BaseLLMProvider, LLMHttpError, type ChatMessage, type ChatOptions, type LLMUsage } from "../base-provider.js";
 import { supportsAnthropicThinkingDisable } from "./anthropic.provider.js";
 import { logger } from "../../../lib/logger.js";
 import { isClaudeSubscriptionResumeEnabled } from "../../../config/runtime-config.js";
@@ -773,16 +773,24 @@ export class ClaudeSubscriptionProvider extends BaseLLMProvider {
         throw claudeSdkResultError({ subtype: "assistant_error", error: assistantErrorCode });
       }
     } catch (err) {
+      // A cancelled request is not a failure: rethrow it unchanged and log nothing.
+      if (options.signal?.aborted) throw err;
       logClaudeCacheFailure(diagnosticAttempt, err);
-      logger.error(
-        err,
-        "Claude Agent SDK query failed for model %s (session=%s)",
-        options.model,
-        resumeSessionId ?? "fold-path",
-      );
+      // The caller reports the failure once. The wrapper is typed so the retry layer
+      // sees the SDK's HTTP status, and it carries the session for that report.
+      const inner = err && typeof err === "object" ? (err as { status?: unknown; terminal_reason?: unknown }) : {};
+      const innerStatus =
+        typeof inner.status === "number" && Number.isInteger(inner.status) && inner.status >= 400 && inner.status <= 599
+          ? inner.status
+          : undefined;
+      const terminalReason =
+        typeof inner.terminal_reason === "string" && inner.terminal_reason ? inner.terminal_reason : undefined;
       const friendly = formatClaudeSdkError(err);
-      const wrapped = new Error(`Claude (Subscription) request failed: ${friendly}`);
-      Object.assign(wrapped, { cause: err });
+      const wrapped = new LLMHttpError(`Claude (Subscription) request failed: ${friendly}`, {
+        status: innerStatus ?? 502,
+        providerCode: terminalReason ?? (err instanceof Error ? err.name : typeof err),
+      });
+      Object.assign(wrapped, { cause: err, sdkSession: resumeSessionId ?? "fold-path" });
       throw wrapped;
     } finally {
       if (options.signal) options.signal.removeEventListener("abort", onUpstreamAbort);

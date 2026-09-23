@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────
 // Routes: Text-to-Speech
 // ──────────────────────────────────────────────
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import type { DB } from "../db/connection.js";
 import { z } from "zod";
 import { createHash, randomUUID } from "crypto";
@@ -29,6 +29,9 @@ import { encryptApiKey, decryptApiKey } from "../utils/crypto.js";
 import { getChatGenerationTimeoutMs, isTtsLocalUrlsEnabled } from "../config/runtime-config.js";
 import { safeFetch } from "../utils/security.js";
 import { logger, logDebugOverride } from "../lib/logger.js";
+import { createDiagnostic } from "../lib/diagnostics.js";
+import { replyWithDiagnostic } from "../lib/http-diagnostics.js";
+import { logEvent } from "../lib/log-events.js";
 import { buildAssetManifest, GAME_ASSETS_DIR } from "../services/game/asset-manifest.service.js";
 import { createLLMProvider } from "../services/llm/provider-registry.js";
 import { resolveBaseUrl } from "../services/generation/connection-base-url.js";
@@ -1479,30 +1482,59 @@ export async function ttsRoutes(app: FastifyInstance) {
   });
 
   /**
+   * Replies to a failed /speak request and writes its one `tts.speak` line.
+   * The error is classified up front with `code`, so replyWithDiagnostic keeps it.
+   * Fields never include the text, speaker, tone or instructions.
+   */
+  const replySpeakFailure = (
+    reply: FastifyReply,
+    status: number,
+    error: unknown,
+    code: string,
+    fields: Record<string, unknown>,
+    opts: { message?: string; detail?: string } = {},
+  ) => {
+    createDiagnostic(error, { stage: "tts.speak" }, code);
+    return replyWithDiagnostic(reply, status, error, {
+      message: opts.message,
+      event: "tts.speak",
+      body: opts.detail !== undefined ? { detail: opts.detail } : undefined,
+      fields: { ...fields, outcome: "failed", errorCode: code },
+    });
+  };
+
+  /**
    * POST /api/tts/speak
    * Proxies a TTS request to the configured provider and streams the audio back.
    */
   app.post("/speak", async (req, reply) => {
+    const speakStartedAt = Date.now();
     const { text, speaker, tone, voice, audioConnectionId } = speakSchema.parse(req.body);
 
     const cfg = await resolveAudioConfig(storage, connections, audioConnectionId);
+    const preflightFailure = (message: string) =>
+      replySpeakFailure(reply, 400, new Error(message), "ME_VALIDATION", {
+        provider: cfg.source,
+        textChars: text.length,
+        elapsedMs: Date.now() - speakStartedAt,
+      });
 
     if (!cfg.enabled) {
-      return reply.status(400).send({ error: "TTS is not enabled" });
+      return preflightFailure("TTS is not enabled");
     }
 
     if (cfg.source === "elevenlabs" && !cfg.apiKey) {
-      return reply.status(400).send({ error: "ElevenLabs API key is not configured" });
+      return preflightFailure("ElevenLabs API key is not configured");
     }
 
     if (cfg.source === "xai" && !cfg.apiKey) {
-      return reply.status(400).send({ error: "xAI API key is not configured" });
+      return preflightFailure("xAI API key is not configured");
     }
 
     const requestVoice = resolveTTSRequestVoice(cfg.voice, voice);
 
     if (cfg.source === "elevenlabs" && !requestVoice) {
-      return reply.status(400).send({ error: "ElevenLabs voice is not selected" });
+      return preflightFailure("ElevenLabs voice is not selected");
     }
 
     const base = configuredBaseUrl(cfg);
@@ -1519,11 +1551,24 @@ export async function ttsRoutes(app: FastifyInstance) {
         : configuredModel;
     const normalizedModel = model.toLowerCase();
     const nanoGptElevenLabsModel = useNanoGptSpeech && isNanoGptElevenLabsModel(model);
+    const speakFields = () => ({
+      provider: cfg.source,
+      model,
+      voiceSet: !!requestVoice,
+      textChars: text.length,
+      elapsedMs: Date.now() - speakStartedAt,
+    });
     if (cfg.source === "elevenlabs" && ELEVENLABS_NON_TTS_MODELS.has(normalizedModel)) {
-      return reply.status(400).send({
-        error: `ElevenLabs model "${model}" cannot generate text-to-speech`,
-        detail: `That model is for Text to Voice / voice design. Use "eleven_v3" for Eleven v3 speech, or "eleven_multilingual_v2", "eleven_flash_v2_5", or "eleven_turbo_v2_5" for regular TTS.`,
-      });
+      return replySpeakFailure(
+        reply,
+        400,
+        new Error(`ElevenLabs model "${model}" cannot generate text-to-speech`),
+        "ME_VALIDATION",
+        speakFields(),
+        {
+          detail: `That model is for Text to Voice / voice design. Use "eleven_v3" for Eleven v3 speech, or "eleven_multilingual_v2", "eleven_flash_v2_5", or "eleven_turbo_v2_5" for regular TTS.`,
+        },
+      );
     }
 
     const audioFormat = cfg.source === "elevenlabs" || useXaiSpeech ? "mp3" : (cfg.audioFormat ?? "mp3");
@@ -1624,17 +1669,23 @@ export async function ttsRoutes(app: FastifyInstance) {
         decodeCompressedResponse: cfg.source === "elevenlabs",
       });
     } catch (err: unknown) {
-      const msg =
-        err instanceof Error && err.name === "TimeoutError" ? "TTS request timed out" : "TTS provider unreachable";
-      req.log.error(err, "TTS provider request failed");
-      return reply.status(502).send({ error: msg });
+      const timedOut = err instanceof Error && err.name === "TimeoutError";
+      return replySpeakFailure(reply, 502, err, timedOut ? "ME_TIMEOUT" : "ME_NETWORK", speakFields(), {
+        message: timedOut ? "TTS request timed out" : "TTS provider unreachable",
+      });
     }
 
     if (!providerRes.ok) {
       const body = await providerRes.text().catch(() => "");
-      return reply
-        .status(502)
-        .send({ error: `TTS provider returned ${providerRes.status}`, detail: readProviderErrorDetail(body) });
+      const providerStatus = providerRes.status;
+      return replySpeakFailure(
+        reply,
+        502,
+        new Error(`TTS provider returned ${providerStatus}`),
+        "ME_PROVIDER_ERROR",
+        { ...speakFields(), providerStatus },
+        { detail: readProviderErrorDetail(body) },
+      );
     }
 
     const contentType = providerRes.headers.get("content-type");
@@ -1642,19 +1693,35 @@ export async function ttsRoutes(app: FastifyInstance) {
     try {
       audioBuffer = await providerRes.arrayBuffer();
     } catch (error: unknown) {
-      logger.error(error, "Failed to read TTS provider response body");
-      return reply.status(502).send({ error: "TTS provider response could not be read" });
+      return replySpeakFailure(
+        reply,
+        502,
+        error,
+        "ME_PROVIDER_ERROR",
+        { ...speakFields(), providerStatus: providerRes.status },
+        { message: "TTS provider response could not be read" },
+      );
     }
 
     const responseContentType = resolveTTSAudioResponseContentType(contentType, new Uint8Array(audioBuffer));
     if (!responseContentType) {
       const body = new TextDecoder().decode(audioBuffer);
-      return reply.status(502).send({
-        error: "TTS provider returned a non-audio response",
-        detail: readProviderErrorDetail(body) || `Content-Type: ${contentType || "missing"}`,
-      });
+      return replySpeakFailure(
+        reply,
+        502,
+        new Error("TTS provider returned a non-audio response"),
+        "ME_PROVIDER_ERROR",
+        { ...speakFields(), providerStatus: providerRes.status, audioBytes: audioBuffer.byteLength },
+        { detail: readProviderErrorDetail(body) || `Content-Type: ${contentType || "missing"}` },
+      );
     }
 
+    logEvent(
+      "info",
+      "tts.speak",
+      { ...speakFields(), outcome: "ok", providerStatus: providerRes.status, audioBytes: audioBuffer.byteLength },
+      "TTS speech generated",
+    );
     reply.header("Content-Type", responseContentType);
     reply.header("Content-Length", String(audioBuffer.byteLength));
     return reply.send(Buffer.from(audioBuffer));

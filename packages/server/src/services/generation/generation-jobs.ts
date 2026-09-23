@@ -4,8 +4,17 @@ import { join, resolve } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { DATA_DIR } from "../../utils/data-dir.js";
 import { logger } from "../../lib/logger.js";
+import type { DiagnosticReference } from "@marinara-engine/shared";
 import { reportDiagnosticError } from "../../lib/diagnostic-operation.js";
-import { getDiagnosticContext, withDiagnosticContext } from "../../lib/diagnostics.js";
+import {
+  createDiagnostic,
+  getDiagnosticContext,
+  markDiagnosticReported,
+  runWithRootDiagnosticContext,
+} from "../../lib/diagnostics.js";
+import { logEvent, type EventFields, type JobKind, type JobState } from "../../lib/log-events.js";
+import { registerWorkerGauge } from "../../lib/worker-gauges.js";
+import { getRuntimeMemorySnapshot } from "../../utils/runtime-memory.js";
 
 export type GenerationJobStatus = "running" | "completed" | "failed" | "cancelled" | "interrupted";
 export interface GenerationJobMetadata {
@@ -88,6 +97,62 @@ function validMetadata(value: unknown, id: string): value is GenerationJobMetada
     typeof item.resultAvailable === "boolean"
   );
 }
+/** A job result above this size logs warn `job.result.large`. */
+const LARGE_RESULT_BYTES = 32 * 1024 * 1024;
+const TERMINAL_JOB_STATES = new Set<JobState>(["completed", "failed", "cancelled", "expired"]);
+
+/**
+ * Maps a stored job kind (gallery-image, sprite-sheet, tts...) to the shared
+ * JobKind vocabulary used on `job.state` lines. Unknown kinds return undefined
+ * and are logged only as `jobKind`.
+ */
+export function mediaKindOf(kind: string): JobKind | undefined {
+  if (kind === "gallery-scene-video" || kind === "sprite-animated-expressions") return "video";
+  if (kind === "sprite-sheet") return "sprite";
+  if (kind === "gallery-image" || kind === "gallery-selfie" || kind === "scene-background") return "image";
+  if (kind.startsWith("character-")) return "image";
+  if (kind === "illustrator") return "illustration";
+  if (kind === "tts") return "tts";
+  return undefined;
+}
+
+function memoryFields(): { memory: { heapUsedMiB: number; rssMiB: number } } {
+  const { heapUsedMiB, rssMiB } = getRuntimeMemorySnapshot();
+  return { memory: { heapUsedMiB, rssMiB } };
+}
+
+type JobStateExtra = EventFields & {
+  timeoutMs?: number;
+  resultBytes?: number;
+  reason?: string;
+  diagnostic?: DiagnosticReference;
+};
+
+/**
+ * Writes one `job.state` line for a job. Info for accepted, running, completed,
+ * cancelled and recovered; warn for failed and expired. Terminal states add a
+ * small memory snapshot. elapsedMs counts from the job's createdAt.
+ */
+export function logJobState(metadata: GenerationJobMetadata, state: JobState, extra: JobStateExtra = {}): void {
+  const createdAt = Date.parse(metadata.createdAt);
+  const kind = mediaKindOf(metadata.kind);
+  logEvent(
+    state === "failed" || state === "expired" ? "warn" : "info",
+    "job.state",
+    {
+      state,
+      jobId: metadata.id,
+      ...(kind ? { kind } : {}),
+      jobKind: metadata.kind,
+      ...(metadata.chatId ? { chatId: metadata.chatId } : {}),
+      ...(Number.isFinite(createdAt) ? { elapsedMs: Math.max(0, Date.now() - createdAt) } : {}),
+      ...(TERMINAL_JOB_STATES.has(state) ? memoryFields() : {}),
+      ...extra,
+    },
+    `Generation job ${state}`,
+  );
+}
+
 function abortError(message: string): Error {
   const error = new Error(message);
   error.name = "AbortError";
@@ -118,14 +183,33 @@ export class GenerationJobsStore implements GenerationJobs {
   private pruning: Promise<void> | null = null;
   private pruneAgain = false;
   private lastPruneAt = 0;
+  private readonly unregisterGauge: () => void;
   private observer: GenerationJobObserver | null = null;
 
   constructor(app?: FastifyInstance, options: GenerationJobsOptions = {}) {
     // Tests may provide a complete isolated job directory.
     this.root = resolve(options.dataDir ?? join(DATA_DIR, "generation-jobs"));
     this.shutdownWaitMs = Math.max(0, options.shutdownWaitMs ?? 3_500);
+    this.unregisterGauge = registerWorkerGauge("mediaJobs", () => this.gauge());
     this.ready = this.initialize();
     if (app) app.addHook("onClose", async () => this.close());
+  }
+
+  /** Cheap sample for runtime.memory lines: how many jobs run and how old the oldest is. */
+  private gauge(): Record<string, unknown> {
+    let running = 0;
+    let oldest = Number.POSITIVE_INFINITY;
+    for (const record of this.jobs.values()) {
+      if (record.metadata.status !== "running") continue;
+      running++;
+      const createdAt = Date.parse(record.metadata.createdAt);
+      if (Number.isFinite(createdAt)) oldest = Math.min(oldest, createdAt);
+    }
+    return {
+      running,
+      tracked: this.jobs.size,
+      oldestMs: running > 0 && Number.isFinite(oldest) ? Date.now() - oldest : 0,
+    };
   }
 
   private async initialize(): Promise<void> {
@@ -142,10 +226,9 @@ export class GenerationJobsStore implements GenerationJobs {
           metadata.status = "interrupted";
           metadata.updatedAt = new Date().toISOString();
           metadata.error = "Generation was interrupted by server restart";
-          const reference = reportDiagnosticError(
+          const reference = createDiagnostic(
             new Error(metadata.error),
             {
-              ...getDiagnosticContext(),
               operation: "generation.job",
               operationId: metadata.id,
               stage: "recovery",
@@ -157,7 +240,21 @@ export class GenerationJobsStore implements GenerationJobs {
           metadata.errorCode = reference.code;
           metadata.errorId = reference.errorId;
           if (reference.requestId) metadata.requestId = reference.requestId;
-          await this.persistMetadata(metadata);
+          try {
+            await this.persistMetadata(metadata);
+          } catch (error) {
+            logger.error(
+              { event: "job.state", state: "failed", stage: "recovery", jobId: metadata.id, err: error },
+              "Unable to persist interrupted generation job",
+            );
+            continue;
+          }
+          logJobState(metadata, "recovered", {
+            outcome: "cancelled",
+            errorCode: reference.code,
+            errorId: reference.errorId,
+            reason: "restart",
+          });
         }
       } catch (error) {
         logger.warn({ err: error, file: entry.name }, "Unable to recover generation job metadata");
@@ -267,6 +364,8 @@ export class GenerationJobsStore implements GenerationJobs {
       if (index >= MAX_RETAINED_JOBS) {
         await removeFile(`${metadata.id}.result.json`);
         await removeFile(`${metadata.id}.json`);
+        // An interrupted job nobody collected is dropped here; finished jobs age out silently.
+        if (metadata.status === "interrupted") logJobState(metadata, "expired", { reason: "pruned" });
       } else if (resultIds.has(metadata.id) || metadata.resultAvailable) {
         await removeFile(`${metadata.id}.result.json`);
         if (metadata.resultAvailable) {
@@ -338,11 +437,16 @@ export class GenerationJobsStore implements GenerationJobs {
     await this.persistMetadata(record.metadata);
   }
 
-  private recordFailure(metadata: GenerationJobMetadata, error: unknown, stage: string, code?: string): void {
-    const reference = reportDiagnosticError(
+  /** Stores the failure's correlation fields on the metadata without logging; the job.state line logs it. */
+  private recordFailure(
+    metadata: GenerationJobMetadata,
+    error: unknown,
+    stage: string,
+    code?: string,
+  ): DiagnosticReference {
+    const reference = createDiagnostic(
       error,
       {
-        ...getDiagnosticContext(),
         operation: "generation.job",
         operationId: metadata.id,
         stage,
@@ -354,6 +458,7 @@ export class GenerationJobsStore implements GenerationJobs {
     metadata.errorCode = reference.code;
     metadata.errorId = reference.errorId;
     if (reference.requestId) metadata.requestId = reference.requestId;
+    return reference;
   }
 
   async run<T>(options: GenerationJobRunOptions, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
@@ -411,27 +516,32 @@ export class GenerationJobsStore implements GenerationJobs {
     workSettledRecord = record;
     this.jobs.set(id, record);
     const startedAt = Date.now();
-    logger.info(
-      {
-        operation: "generation.job",
-        operationId: id,
-        stage: "start",
-        jobId: id,
-        kind: options.kind,
-        chatId: metadata.chatId,
-      },
-      "Generation job started",
-    );
+    const timeout = Math.max(1, options.timeoutMs);
+    const requestId = getDiagnosticContext().requestId;
+    logJobState(metadata, "accepted", { timeoutMs: timeout, ...(requestId ? { requestId } : {}) });
     try {
       await this.persistMetadata(metadata);
     } catch (error) {
-      this.recordFailure(metadata, error, "persist-start", "ME_STORAGE");
+      const reference = this.recordFailure(metadata, error, "persist-start", "ME_STORAGE");
+      // Persistence failures are the one job failure logged at error.
+      reportDiagnosticError(
+        error,
+        { operation: "generation.job", stage: "persist-start", jobId: id, chatId: metadata.chatId ?? undefined },
+        "ME_STORAGE",
+        {
+          event: "job.state",
+          level: "error",
+          message: "Unable to persist generation job start",
+          fields: { state: "failed", outcome: "failed", jobKind: options.kind, errorId: reference.errorId },
+        },
+      );
       this.jobs.delete(id);
       throw error;
     }
     if (this.closing) {
       await this.update(record, "interrupted", "Generation was interrupted by server shutdown", false);
       this.jobs.delete(id);
+      logJobState(metadata, "cancelled", { outcome: "cancelled", reason: "shutdown", timeoutMs: timeout });
       throw abortError("Generation job store is closing");
     }
     if (record.controller.signal.aborted || record.metadata.status !== "running") {
@@ -440,7 +550,7 @@ export class GenerationJobsStore implements GenerationJobs {
       throw abortError(record.metadata.error ?? "Generation job cancelled");
     }
     this.notify({ type: "accepted", metadata });
-    const timeout = Math.max(1, options.timeoutMs);
+    logJobState(metadata, "running", { timeoutMs: timeout });
     let timeoutTriggered = false;
     const abortPromise = new Promise<never>((_, reject) => {
       record.controller.signal.addEventListener(
@@ -459,10 +569,12 @@ export class GenerationJobsStore implements GenerationJobs {
       timeoutTriggered = true;
       record.controller.abort();
     }, timeout);
+    // A root context: the job outlives the request that scheduled it, so it must not carry its requestId or stage.
     const workPromise = Promise.resolve().then(() =>
-      withDiagnosticContext(
+      runWithRootDiagnosticContext(
         {
-          ...getDiagnosticContext(),
+          // Kept as "generation.job" (not `job.${kind}`): diagnostic-generation.regression.ts pins it.
+          // The kind is on every job.state line as kind and jobKind.
           operation: "generation.job",
           operationId: id,
           stage: "work",
@@ -483,51 +595,44 @@ export class GenerationJobsStore implements GenerationJobs {
           throw abortError(record.metadata.error ?? "Generation job cancelled");
         const serialized = value === undefined ? "null" : JSON.stringify(value);
         if (serialized === undefined) throw new Error("Generation result is not JSON serializable");
+        const resultBytes = Buffer.byteLength(serialized);
+        if (resultBytes > LARGE_RESULT_BYTES) {
+          logEvent("warn", "job.result.large", {
+            jobId: id,
+            jobKind: options.kind,
+            resultBytes,
+            limitBytes: LARGE_RESULT_BYTES,
+            ...memoryFields(),
+          });
+        }
         await this.atomicWrite(join(this.root, `${id}.result.json`), serialized);
         if (record.metadata.status !== "running" || record.controller.signal.aborted)
           throw abortError(record.metadata.error ?? "Generation job cancelled");
         await this.update(record, "completed", null, true);
         completedValue = value;
-        logger.info(
-          {
-            operation: "generation.job",
-            operationId: id,
-            stage: "success",
-            jobId: id,
-            kind: options.kind,
-            chatId: metadata.chatId,
-            elapsedMs: Date.now() - startedAt,
-          },
-          "Generation job completed",
-        );
+        logJobState(metadata, "completed", { outcome: "ok", timeoutMs: timeout, resultBytes });
         return value;
       } catch (error) {
         const failure = error instanceof Error ? error : new Error(String(error));
         if (record.metadata.status === "running") {
-          this.recordFailure(
+          const cancelled = !timeoutTriggered && record.controller.signal.aborted;
+          const reference = this.recordFailure(
             record.metadata,
             failure,
-            timeoutTriggered ? "timeout" : record.controller.signal.aborted ? "cancelled" : "failed",
-            timeoutTriggered ? "ME_TIMEOUT" : record.controller.signal.aborted ? "ME_CANCELLED" : undefined,
+            timeoutTriggered ? "timeout" : cancelled ? "cancelled" : "failed",
+            timeoutTriggered ? "ME_TIMEOUT" : cancelled ? "ME_CANCELLED" : undefined,
           );
-          await this.update(
-            record,
-            timeoutTriggered ? "failed" : record.controller.signal.aborted ? "cancelled" : "failed",
-            failure.message,
-            false,
-          );
-          logger.warn(
-            {
-              operation: "generation.job",
-              operationId: id,
-              stage: timeoutTriggered ? "timeout" : record.controller.signal.aborted ? "cancelled" : "failure",
-              jobId: id,
-              kind: options.kind,
-              chatId: metadata.chatId,
-              elapsedMs: Date.now() - startedAt,
-            },
-            "Generation job failed",
-          );
+          await this.update(record, cancelled ? "cancelled" : "failed", failure.message, false);
+          // The one line for this failure: it carries err, so outer layers only log a pointer.
+          logJobState(metadata, cancelled ? "cancelled" : "failed", {
+            outcome: cancelled ? "cancelled" : "failed",
+            errorCode: timeoutTriggered ? "ME_TIMEOUT" : reference.code,
+            errorId: reference.errorId,
+            diagnostic: reference,
+            timeoutMs: timeout,
+            ...(cancelled ? {} : { err: failure }),
+          });
+          markDiagnosticReported(failure);
         }
         throw failure;
       } finally {
@@ -585,16 +690,28 @@ export class GenerationJobsStore implements GenerationJobs {
     if (!record || record.metadata.status !== "running") return false;
     record.metadata.status = "cancelled";
     record.metadata.error = "Generation job cancelled";
-    this.recordFailure(record.metadata, abortError(record.metadata.error), "cancelled", "ME_CANCELLED");
+    const reference = this.recordFailure(
+      record.metadata,
+      abortError(record.metadata.error),
+      "cancelled",
+      "ME_CANCELLED",
+    );
     const statusWrite = this.update(record, "cancelled", "Generation job cancelled", false);
     record.statusWrite = statusWrite;
     record.controller.abort();
     await statusWrite;
+    logJobState(record.metadata, "cancelled", {
+      outcome: "cancelled",
+      errorCode: reference.code,
+      errorId: reference.errorId,
+      reason: "user",
+    });
     return true;
   }
   async close(): Promise<void> {
     if (this.closing) return;
     this.closing = true;
+    this.unregisterGauge();
     await this.ready;
     if (this.pruning) await this.pruning;
     const records = [...this.jobs.values()];
@@ -602,7 +719,7 @@ export class GenerationJobsStore implements GenerationJobs {
       if (record.metadata.status === "running") {
         record.controller.abort();
         try {
-          this.recordFailure(
+          const reference = this.recordFailure(
             record.metadata,
             abortError("Generation was interrupted by server shutdown"),
             "interrupted",
@@ -615,6 +732,12 @@ export class GenerationJobsStore implements GenerationJobs {
             false,
           );
           await record.statusWrite;
+          logJobState(record.metadata, "cancelled", {
+            outcome: "cancelled",
+            errorCode: reference.code,
+            errorId: reference.errorId,
+            reason: "shutdown",
+          });
         } catch (error) {
           logger.error({ err: error, id: record.metadata.id }, "Unable to persist interrupted generation job");
         }

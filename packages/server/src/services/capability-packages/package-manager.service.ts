@@ -35,6 +35,7 @@ import {
 import { DATA_DIR } from "../../utils/data-dir.js";
 import { safeFetch } from "../../utils/security.js";
 import { logger } from "../../lib/logger.js";
+import { sanitizeDiagnosticText } from "../../lib/diagnostics.js";
 import { getBuildBranch } from "../../config/build-info.js";
 import { sidecarSpeechService } from "../sidecar/sidecar-speech.service.js";
 
@@ -285,6 +286,20 @@ function inside(root: string, candidate: string): string {
   const target = resolve(candidate);
   if (target !== base && !target.startsWith(`${base}${sep}`)) throw new Error("Package contains an unsafe path");
   return target;
+}
+
+/** A rollback either restores the previous runtime or says why it could not. */
+export type RuntimeRollbackResult =
+  | { restored: { installed: InstalledCapabilityPackage; serverEntrypoint: string }; reason?: undefined }
+  | {
+      restored: null;
+      reason: "no-previous-version" | "previous-manifest-missing" | "previous-blocked" | "previous-manifest-invalid";
+      detail: string;
+    };
+
+/** The errorId a failed activation appends to its persisted message as a trailing "[id]". */
+export function persistedErrorId(message: string | null | undefined): string | null {
+  return message?.match(/\[([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\]\s*$/i)?.[1] ?? null;
 }
 
 function runtimeBlockReason(installed: InstalledCapabilityPackage): string | null {
@@ -1280,6 +1295,8 @@ export const capabilityPackageManager = {
       capabilityApi: installed.manifest.schemaVersion === 2 ? installed.manifest.capabilityApi : null,
       builtAgainst: installed.manifest.schemaVersion === 2 ? installed.manifest.builtAgainst : null,
       issue: installed.status === "error" || installed.readiness === "error" ? "runtime_error" : null,
+      // Only the reference id, never the stored message: /api/health must not echo package error text.
+      errorId: persistedErrorId(installed.error ?? installed.readinessError ?? null),
     }));
   },
 
@@ -1320,6 +1337,37 @@ export const capabilityPackageManager = {
           join(VERSIONS, installed.id, installed.version, normalizeArchivePath(installed.manifest.entrypoints.server!)),
         ),
       }));
+  },
+
+  /** Installed packages runtimePackages() leaves out, and why, so startup can say so once. */
+  async runtimePackageSkips(): Promise<
+    Array<{
+      packageId: string;
+      version: string;
+      reason: "persisted-error" | "no-server-entrypoint";
+      storedError?: string;
+    }>
+  > {
+    const registry = await readRegistry();
+    const skips: Array<{
+      packageId: string;
+      version: string;
+      reason: "persisted-error" | "no-server-entrypoint";
+      storedError?: string;
+    }> = [];
+    for (const installed of registry.packages) {
+      if (!installed.manifest.entrypoints.server) {
+        skips.push({ packageId: installed.id, version: installed.version, reason: "no-server-entrypoint" });
+      } else if (installed.status === "error") {
+        skips.push({
+          packageId: installed.id,
+          version: installed.version,
+          reason: "persisted-error",
+          ...(installed.error ? { storedError: installed.error } : {}),
+        });
+      }
+    }
+    return skips;
   },
 
   async verifiedRuntimeFiles(installed: InstalledCapabilityPackage) {
@@ -1639,46 +1687,90 @@ export const capabilityPackageManager = {
     });
   },
 
-  async rollbackRuntime(packageId: string) {
-    const restored = await withRegistryLock(async () => {
-      const registry = await readRegistry();
-      const index = registry.packages.findIndex((installed) => installed.id === packageId);
-      const current = index >= 0 ? registry.packages[index] : undefined;
-      if (!current?.previousVersion) return null;
-      const previousManifestFile = inside(
-        VERSIONS,
-        join(VERSIONS, current.id, current.previousVersion, "manifest.json"),
-      );
-      if (!existsSync(previousManifestFile)) return null;
-      const manifest = capabilityPackageManifestSchema.parse(JSON.parse(await readFile(previousManifestFile, "utf8")));
-      const restored: InstalledCapabilityPackage = {
-        ...current,
-        version: current.previousVersion,
-        manifest,
-        status: "active",
-        error: null,
-        readiness: "pending",
-        readinessError: null,
-        previousVersion: undefined,
-        previousManifest: undefined,
-      };
-      if (runtimeBlockReason(restored)) return null;
-      registry.packages[index] = restored;
-      await writeRegistry(registry.packages);
-      return restored;
-    });
-    if (!restored) return null;
+  async rollbackRuntime(packageId: string): Promise<RuntimeRollbackResult> {
+    const outcome = await withRegistryLock(
+      async (): Promise<
+        | { restored: InstalledCapabilityPackage; failure?: undefined }
+        | { restored: null; failure: Extract<RuntimeRollbackResult, { restored: null }> }
+      > => {
+        const registry = await readRegistry();
+        const index = registry.packages.findIndex((installed) => installed.id === packageId);
+        const current = index >= 0 ? registry.packages[index] : undefined;
+        if (!current?.previousVersion) {
+          return {
+            restored: null,
+            failure: { restored: null, reason: "no-previous-version", detail: "no previous version is recorded" },
+          };
+        }
+        const previousManifestFile = inside(
+          VERSIONS,
+          join(VERSIONS, current.id, current.previousVersion, "manifest.json"),
+        );
+        if (!existsSync(previousManifestFile)) {
+          return {
+            restored: null,
+            failure: {
+              restored: null,
+              reason: "previous-manifest-missing",
+              detail: `manifest for ${current.previousVersion} is missing`,
+            },
+          };
+        }
+        let manifest: InstalledCapabilityPackage["manifest"];
+        try {
+          manifest = capabilityPackageManifestSchema.parse(JSON.parse(await readFile(previousManifestFile, "utf8")));
+        } catch (error) {
+          return {
+            restored: null,
+            failure: {
+              restored: null,
+              reason: "previous-manifest-invalid",
+              detail: sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), 300),
+            },
+          };
+        }
+        const restored: InstalledCapabilityPackage = {
+          ...current,
+          version: current.previousVersion,
+          manifest,
+          status: "active",
+          error: null,
+          readiness: "pending",
+          readinessError: null,
+          previousVersion: undefined,
+          previousManifest: undefined,
+        };
+        const blockReason = runtimeBlockReason(restored);
+        if (blockReason) {
+          return {
+            restored: null,
+            failure: { restored: null, reason: "previous-blocked", detail: sanitizeDiagnosticText(blockReason, 300) },
+          };
+        }
+        registry.packages[index] = restored;
+        await writeRegistry(registry.packages);
+        return { restored };
+      },
+    );
+    if (!outcome.restored) return outcome.failure;
+    const restored = outcome.restored;
     const manifest = restored.manifest;
     const server = manifest.entrypoints.server;
     return server
       ? {
-          installed: restored,
-          serverEntrypoint: inside(
-            VERSIONS,
-            join(VERSIONS, restored.id, restored.version, normalizeArchivePath(server)),
-          ),
+          restored: {
+            installed: restored,
+            serverEntrypoint: inside(
+              VERSIONS,
+              join(VERSIONS, restored.id, restored.version, normalizeArchivePath(server)),
+            ),
+          },
         }
-      : null;
+      : {
+          restored: null,
+          reason: "previous-manifest-invalid",
+          detail: `version ${restored.version} has no server entrypoint`,
+        };
   },
 
   async migrateLegacyAvailability(legacyInstall: boolean) {

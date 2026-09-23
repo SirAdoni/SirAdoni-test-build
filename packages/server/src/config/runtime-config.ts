@@ -790,13 +790,16 @@ export function loadTlsOptions() {
       key: readFileSync(tlsPaths.keyPath),
     };
   } catch (err) {
-    throw new Error(
+    const tlsError = new Error(
       `Failed to load TLS certificate/key files.\n` +
         `  SSL_CERT=${process.env.SSL_CERT}\n` +
         `  SSL_KEY=${process.env.SSL_KEY}\n` +
         `  ${err instanceof Error ? err.message : String(err)}\n` +
         `Please ensure the paths are correct and the files are readable.`,
+      { cause: err },
     );
+    tlsError.name = "TlsConfigError";
+    throw tlsError;
   }
 }
 
@@ -808,9 +811,30 @@ export function isAutoCreateDefaultConnectionDisabled(value = process.env.AUTO_C
   return isDisabledFlag(value);
 }
 
+/**
+ * Writes the one `startup.config` line: where data, files, .env and logs live and
+ * the switches that change how the server runs. Paths and flags only, never values
+ * read from .env. The name is kept because index.ts calls it.
+ */
 export function logStorageDiagnostics(logger: { info(...args: any[]): void } = sharedLogger) {
-  logger.info("[storage] DATA_DIR=%s", getDataDir());
-  logger.info("[storage] FILE_STORAGE_DIR=%s", getFileStorageDir());
+  const envPath = getEnvFilePath();
+  logger.info(
+    {
+      event: "startup.config",
+      dataDir: getDataDir(),
+      fileStorageDir: getFileStorageDir(),
+      envPath,
+      envFileExists: existsSync(envPath),
+      logDir: getLogDirectory(),
+      logFileLevel: getLogFileLevel(),
+      consoleLevel: getLogLevel(),
+      eagerStorage: process.env.MARINARA_EAGER_STORAGE === "1" || process.env.MARINARA_EAGER_STORAGE === "true",
+      lite: process.env.MARINARA_LITE === "true" || process.env.MARINARA_LITE === "1",
+      tls: getTlsFilePaths() !== null,
+      nodeEnv: getNodeEnv(),
+    },
+    "[startup] Configuration resolved",
+  );
 }
 
 /** Kept beside the active .env, so server-wide preferences survive profile changes. */

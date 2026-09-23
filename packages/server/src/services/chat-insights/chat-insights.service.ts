@@ -30,6 +30,7 @@ import { chats, characters, messages } from "../../db/schema/index.js";
 import { eq, inArray } from "../../db/file-query.js";
 import { createCharactersStorage } from "../storage/characters.storage.js";
 import { resolveChatUserIdentity } from "../chat-user-identity.js";
+import { orFallback } from "../../lib/best-effort.js";
 import { applySegmentEdits, collectSegmentOverlays } from "../game/segment-edits.js";
 
 type ChatRow = typeof chats.$inferSelect;
@@ -296,7 +297,11 @@ export async function computeStoredChatStats(db: DB, chat: ChatRow, params: Chat
   const rows = await listChatMessages(db, chat.id);
   const names = createCharacterNameCache(db);
   await names.load([...parseIdList(chat.characterIds), ...rows.map((row) => row.characterId ?? "").filter(Boolean)]);
-  const identity = await resolveChatUserIdentity(createCharactersStorage(db), chat).catch(() => null);
+  const identity = await orFallback(resolveChatUserIdentity(createCharactersStorage(db), chat), null, {
+    event: "storage.read.fallback",
+    stage: "chat-user-identity",
+    chatId: chat.id,
+  });
   const userName = identity?.name?.trim() || "You";
   const primaryCharacter = names.get(parseIdList(chat.characterIds)[0]) ?? chat.name;
 

@@ -25,6 +25,8 @@ import {
   type UtilitySidecarUpdateCheck,
 } from "@marinara-engine/shared";
 import { logger } from "../../lib/logger.js";
+import { sanitizeDiagnosticText } from "../../lib/diagnostics.js";
+import { logEvent, logRepeated } from "../../lib/log-events.js";
 import { getDataDir } from "../../utils/data-dir.js";
 import { buildLlamaArgs, buildLlamaStartupPlans } from "../sidecar/sidecar-launch-plan.js";
 import { downloadFileWithProgress, fetchJson } from "../sidecar/sidecar-download.js";
@@ -140,6 +142,30 @@ function modelFilePath(modelId: string, file: string): string {
   return assertInsideUtilityDir(join(modelDirPath(modelId), file));
 }
 
+const STDERR_RING_LINES = 40;
+
+/** Keeps the last `max` non-empty lines of a child's output; the tail is sanitized before it is logged. */
+function createLineRing(max: number) {
+  const lines: string[] = [];
+  let partial = "";
+  return {
+    push(chunk: unknown): void {
+      const parts = (partial + String(chunk)).split(/\r?\n/u);
+      partial = (parts.pop() ?? "").slice(-2_000);
+      for (const line of parts) {
+        if (!line.trim()) continue;
+        lines.push(line.length > 500 ? line.slice(0, 500) : line);
+      }
+      if (lines.length > max) lines.splice(0, lines.length - max);
+    },
+    tail(count: number): string | undefined {
+      const all = partial.trim() ? [...lines, partial] : lines;
+      const text = all.slice(-count).join("\n");
+      return text ? sanitizeDiagnosticText(text, 2_000) : undefined;
+    },
+  };
+}
+
 export class UtilitySidecarService {
   private config: UtilitySidecarConfig = { ...UTILITY_SIDECAR_DEFAULT_CONFIG };
   private child: ChildProcess | null = null;
@@ -151,6 +177,8 @@ export class UtilitySidecarService {
   private starting: Promise<void> | null = null;
   /** In-progress shutdown, so a start cannot race a process that is still exiting. */
   private stopping: Promise<void> | null = null;
+  /** Children this service asked to stop, so their exit is logged as expected. */
+  private expectedExits = new WeakSet<ChildProcess>();
   /** Models whose file is being replaced; start() refuses them until the swap is done. */
   private installing = new Set<string>();
 
@@ -468,21 +496,34 @@ export class UtilitySidecarService {
     return this.getStatus();
   }
 
+  /** One warn per distinct reason (repeats are counted, not written). */
+  private logStartProblem(outcome: "skipped" | "failed", reason: string, modelId: string | null): void {
+    logRepeated(
+      `utility_sidecar.start:${outcome}:${reason}:${modelId ?? ""}`,
+      "warn",
+      { event: "utility_sidecar.start", outcome, reason, modelId },
+      outcome === "skipped" ? "[utility-sidecar] Start skipped" : "[utility-sidecar] Start failed",
+    );
+  }
+
   private async start(): Promise<void> {
     this.startupError = null;
     const modelId = this.config.activeModelId;
     const installed = modelId ? installedModel(this.config.models, modelId) : null;
     if (!modelId || !installed) {
       this.startupError = "No utility model selected";
+      this.logStartProblem("skipped", "no-model-selected", modelId);
       return;
     }
     if (this.installing.has(modelId)) {
       this.startupError = "The utility model is being updated";
+      this.logStartProblem("skipped", "model-installing", modelId);
       return;
     }
     const modelPath = modelFilePath(modelId, installed.file);
     if (!existsSync(modelPath)) {
       this.startupError = "The selected utility model is not on disk";
+      this.logStartProblem("skipped", "model-missing", modelId);
       return;
     }
 
@@ -493,6 +534,7 @@ export class UtilitySidecarService {
     const runtime = sidecarRuntimeService.getCurrentInstall();
     if (!runtime?.serverPath) {
       this.startupError = "The local runtime is not installed yet — install it from the main sidecar first";
+      this.logStartProblem("skipped", "runtime-missing", modelId);
       return;
     }
 
@@ -521,11 +563,31 @@ export class UtilitySidecarService {
       });
 
       const child = spawn(runtime.serverPath, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+      const startedAt = Date.now();
+      // Both pipes are always drained: an unread pipe fills its OS buffer and then
+      // blocks llama-server on its next write. Only a bounded stderr tail is kept.
+      const stderrRing = createLineRing(STDERR_RING_LINES);
+      child.stdout?.on("data", () => {});
+      child.stderr?.on("data", (chunk) => stderrRing.push(chunk));
       this.child = child;
       this.port = port;
       this.runningModelId = modelId;
-      child.on("exit", (code) => {
-        logger.info(`[utility-sidecar] llama-server exited (${code})`);
+      child.on("exit", (code, signal) => {
+        const expected = this.expectedExits.has(child);
+        logEvent(
+          expected ? "info" : "warn",
+          "utility_sidecar.exit",
+          {
+            pid: child.pid,
+            exitCode: code,
+            signal,
+            modelId,
+            uptimeMs: Date.now() - startedAt,
+            expected,
+            ...(expected ? {} : { stderrTail: stderrRing.tail(20) }),
+          },
+          expected ? "[utility-sidecar] llama-server exited" : "[utility-sidecar] llama-server exited unexpectedly",
+        );
         if (this.child === child) {
           this.child = null;
           this.port = null;
@@ -561,6 +623,7 @@ export class UtilitySidecarService {
         logger.warn(`[utility-sidecar] ${plan.label} failed (${this.startupError ?? "no reason given"}); trying CPU`);
       }
     }
+    this.logStartProblem("failed", "not-ready", modelId);
   }
 
   private async waitUntilAnswering(port: number, timeoutMs = 120_000): Promise<void> {
@@ -606,6 +669,7 @@ export class UtilitySidecarService {
     this.port = null;
     this.runningModelId = null;
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    this.expectedExits.add(child);
 
     this.stopping = (async () => {
       const exited = new Promise<void>((done) => {

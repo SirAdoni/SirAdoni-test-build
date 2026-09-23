@@ -28,7 +28,8 @@ import {
 } from "../../services/generation/model-access-policy.js";
 import { resolveMemoryRecallEmbeddingSource } from "../../services/memory-recall-embedding.js";
 import { logger } from "../../lib/logger.js";
-import { sendSseEvent, startSseKeepalive, startSseReply } from "./sse.js";
+import { emitSseFailure, sendSseEvent, startSseKeepalive, startSseReply } from "./sse.js";
+import { replyWithDiagnostic } from "../../lib/http-diagnostics.js";
 import { createReplyFallbackNotifier } from "./fallback-notification.js";
 import {
   createLocalSidecarGenerationConnection,
@@ -369,8 +370,7 @@ export async function registerRawRoute(app: FastifyInstance) {
         if (abortController.signal.aborted || isAbortError(err)) {
           sendSseEvent(reply, { type: "aborted", data: "" });
         } else {
-          logger.error(err, "[raw] Streaming generation failed");
-          sendSseEvent(reply, { type: "error", data: err instanceof Error ? err.message : "Raw generation failed" });
+          emitSseFailure(reply, err, { event: "raw.generation.failed", message: "Raw streaming generation failed" });
         }
         sendSseEvent(reply, { type: "done", data: "" });
       } finally {
@@ -393,8 +393,10 @@ export async function registerRawRoute(app: FastifyInstance) {
       if (abortController.signal.aborted || isAbortError(err)) {
         return reply.send({ aborted: true, runId });
       }
-      logger.error(err, "[raw] Generation failed");
-      return reply.status(500).send({ error: err instanceof Error ? err.message : "Raw generation failed", runId });
+      return replyWithDiagnostic(reply, 500, err, {
+        message: err instanceof Error ? undefined : "Raw generation failed",
+        body: { runId },
+      });
     } finally {
       req.raw.off("close", onClose);
       activeRawRuns.delete(runId);

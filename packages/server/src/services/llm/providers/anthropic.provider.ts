@@ -3,9 +3,8 @@
 // ──────────────────────────────────────────────
 import {
   BaseLLMProvider,
+  LLMHttpError,
   llmFetch,
-  llmHttpErrorFromResponse,
-  sanitizeApiError,
   type ChatCompletionResult,
   type ChatMessage,
   type ChatOptions,
@@ -19,7 +18,9 @@ import {
   shouldSuppressUnknownModelParameters,
 } from "@marinara-engine/shared";
 import { logger, logDebugOverride } from "../../../lib/logger.js";
+import { logEvent } from "../../../lib/log-events.js";
 import { isDebugAgentsEnabled } from "../../../config/runtime-config.js";
+import { llmHttpErrorFromResponseBody, parseToolArgumentsLogged, SseFrameStats } from "../provider-error.js";
 
 const DEFAULT_CACHING_AT_DEPTH = 5;
 
@@ -134,13 +135,22 @@ function formatAnthropicStreamError(error: unknown): string {
   return "Anthropic stream error";
 }
 
-function parseToolArguments(value: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return isRecord(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
+/**
+ * Stream `event: error` frames become typed errors so the retry layer can see
+ * overload (529) and rate limits (429). Anything else is a 502 from the provider.
+ */
+function anthropicStreamError(error: unknown): LLMHttpError {
+  const type = isRecord(error) && typeof error.type === "string" && error.type.trim() ? error.type.trim() : undefined;
+  const status = type === "overloaded_error" ? 529 : type === "rate_limit_error" ? 429 : 502;
+  return new LLMHttpError(`Anthropic stream error: ${formatAnthropicStreamError(error)}`, {
+    status,
+    ...(type ? { providerCode: type } : {}),
+  });
+}
+
+/** Empty arguments mean "no arguments" and fold to {} silently; bad JSON folds to {} with one warn. */
+function parseToolArguments(value: string, toolName: string): Record<string, unknown> {
+  return value.trim() ? parseToolArgumentsLogged(value, toolName, "anthropic") : {};
 }
 
 function formatAnthropicTools(tools: LLMToolDefinition[] | undefined): Array<Record<string, unknown>> | undefined {
@@ -287,7 +297,7 @@ function formatAnthropicPayloadMessages(messages: ChatMessage[]): AnthropicMessa
           type: "tool_use",
           id: call.id,
           name: call.function.name,
-          input: parseToolArguments(call.function.arguments),
+          input: parseToolArguments(call.function.arguments, call.function.name),
         });
       }
       payload.push({ role: "assistant", content });
@@ -497,6 +507,14 @@ export class AnthropicProvider extends BaseLLMProvider {
       "[debug/anthropic] final tool request:\n%j",
       body,
     );
+    const serializedBody = JSON.stringify(body);
+    logEvent("debug", "llm.request.capture", {
+      provider: "anthropic",
+      model: options.model,
+      bodyBytes: Buffer.byteLength(serializedBody, "utf8"),
+      messageCount: Array.isArray(body.messages) ? body.messages.length : 0,
+      toolCount: Array.isArray(body.tools) ? body.tools.length : 0,
+    });
     const response = await llmFetch(url, {
       method: "POST",
       headers: {
@@ -505,17 +523,13 @@ export class AnthropicProvider extends BaseLLMProvider {
         ...(this.apiKey.trim() ? { "x-api-key": this.apiKey.trim() } : {}),
         "anthropic-version": "2023-06-01",
       },
-      body: JSON.stringify(body),
+      body: serializedBody,
       bufferResponse: !useStream,
       ...(options.signal ? { signal: options.signal } : {}),
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw llmHttpErrorFromResponse(
-        `Anthropic API error ${response.status}: ${sanitizeApiError(errorText)}`,
-        response,
-      );
+      throw await llmHttpErrorFromResponseBody("Anthropic API error", response);
     }
 
     if (!useStream) {
@@ -568,6 +582,7 @@ export class AnthropicProvider extends BaseLLMProvider {
     }
 
     const decoder = new TextDecoder();
+    const frames = new SseFrameStats();
     let buffer = "";
     let currentBlockType = "text"; // track whether we're in a thinking or text block
     let content = "";
@@ -612,15 +627,17 @@ export class AnthropicProvider extends BaseLLMProvider {
             };
             usage?: { output_tokens?: number };
           };
+          frames.frame();
           try {
             event = JSON.parse(data) as typeof event;
           } catch {
-            // Skip malformed lines
+            // Skip malformed lines; report() warns once at the end of the stream.
+            frames.bad(Buffer.byteLength(data, "utf8"));
             continue;
           }
 
           if (event.type === "error") {
-            throw new Error(`Anthropic stream error: ${formatAnthropicStreamError(event.error)}`);
+            throw anthropicStreamError(event.error);
           }
           if (event.type === "message_start" && event.message?.usage) {
             inputTokens = event.message.usage.input_tokens ?? 0;
@@ -666,6 +683,7 @@ export class AnthropicProvider extends BaseLLMProvider {
         if (done || finished) break;
       }
     } finally {
+      frames.report("anthropic", options.model);
       if (options.signal) options.signal.removeEventListener("abort", onAbort);
       // Release the upstream socket on early completion, provider errors, and
       // rejected token callbacks, not only when the body reaches its end.
@@ -681,7 +699,7 @@ export class AnthropicProvider extends BaseLLMProvider {
         name: block.name,
         // An accumulated empty string means the model opened the block and sent no
         // arguments; parseToolArguments folds that to `{}` the same as invalid JSON.
-        input: parseToolArguments(block.partialJson),
+        input: parseToolArguments(block.partialJson, block.name),
       });
       if (call) toolCalls.push(call);
     }
@@ -857,11 +875,7 @@ export class AnthropicProvider extends BaseLLMProvider {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw llmHttpErrorFromResponse(
-        `Anthropic API error ${response.status}: ${sanitizeApiError(errorText)}`,
-        response,
-      );
+      throw await llmHttpErrorFromResponseBody("Anthropic API error", response);
     }
 
     if (!options.stream) {
@@ -909,6 +923,7 @@ export class AnthropicProvider extends BaseLLMProvider {
     }
 
     const decoder = new TextDecoder();
+    const frames = new SseFrameStats();
     let buffer = "";
     let currentBlockType = "text"; // track whether we're in a thinking or text block
     let inputTokens = 0;
@@ -939,15 +954,17 @@ export class AnthropicProvider extends BaseLLMProvider {
             delta?: { type: string; text?: string; thinking?: string; stop_reason?: string | null };
             usage?: { output_tokens?: number };
           };
+          frames.frame();
           try {
             event = JSON.parse(data) as typeof event;
           } catch {
-            // Skip malformed lines
+            // Skip malformed lines; report() warns once at the end of the stream.
+            frames.bad(Buffer.byteLength(data, "utf8"));
             continue;
           }
 
           if (event.type === "error") {
-            throw new Error(`Anthropic stream error: ${formatAnthropicStreamError(event.error)}`);
+            throw anthropicStreamError(event.error);
           }
           // Capture input token count from message_start
           if (event.type === "message_start" && event.message?.usage) {
@@ -996,6 +1013,7 @@ export class AnthropicProvider extends BaseLLMProvider {
         if (done) break;
       }
     } finally {
+      frames.report("anthropic", options.model);
       if (options.signal) options.signal.removeEventListener("abort", onAbort);
     }
     if (!emittedText && !sawStopReason && !options.signal?.aborted) {

@@ -6,6 +6,7 @@ import { extname } from "node:path";
 import { resolveStoredGalleryFile } from "./gallery-file-lifecycle.js";
 import { isAllowedImageBuffer } from "../../utils/security.js";
 import { imageReferencePayloadKey } from "./image-reference-utils.js";
+import { orFallback } from "../../lib/best-effort.js";
 
 type CharacterRowLike = {
   id: string;
@@ -468,7 +469,10 @@ export async function resolveIllustratorCharacterReferences(args: {
     0,
     Math.min(args.maxReferences ?? MAX_ILLUSTRATOR_REFERENCE_IMAGES, MAX_IMAGE_REFERENCES_PER_REQUEST),
   );
-  const allRows = await args.charactersStore.list().catch(() => []);
+  const allRows = await orFallback(args.charactersStore.list(), [], {
+    event: "storage.read.fallback",
+    stage: "characters.list",
+  });
   const allSources = allRows
     .map((row, index) => characterRowToSource(row, index + args.chatCharacters.length))
     .filter((source): source is CharacterReferenceSource => Boolean(source));

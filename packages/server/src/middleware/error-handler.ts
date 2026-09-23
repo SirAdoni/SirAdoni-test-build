@@ -5,13 +5,34 @@ import type { FastifyError, FastifyReply, FastifyRequest } from "fastify";
 import { ZodError } from "zod";
 import { reportDiagnosticError } from "../lib/diagnostic-operation.js";
 import { formatDiagnosticError, sanitizeDiagnosticText } from "../lib/diagnostics.js";
+import { routeLabel } from "../lib/http-diagnostics.js";
 
 export function errorHandler(error: FastifyError, request: FastifyRequest, reply: FastifyReply) {
-  const reference = reportDiagnosticError(error, {
-    requestId: request.id,
-    operation: request.routeOptions.url ?? request.url.split(/[?#]/, 1)[0] ?? request.url,
-    stage: "http",
-  });
+  const zod = error instanceof ZodError;
+  const status = zod ? 400 : error.statusCode || 500;
+  const route = routeLabel(request);
+  // One line per failed request: error for 5xx, warn for client errors (validation, 404, 413).
+  const reference = reportDiagnosticError(
+    error,
+    { requestId: request.id, operation: `${request.method} ${route}`, stage: "http" },
+    undefined,
+    {
+      level: status >= 500 ? "error" : "warn",
+      event: "request.error",
+      message: `${request.method} ${route} -> ${status}`,
+      fields: {
+        method: request.method,
+        route,
+        statusCode: status,
+        ...(zod
+          ? {
+              issueCount: (error as ZodError).errors.length,
+              firstIssuePath: (error as ZodError).errors[0]?.path.join("."),
+            }
+          : {}),
+      },
+    },
+  );
   const safeMessage = formatDiagnosticError(error, reference);
   // Zod validation errors → 400
   if (error instanceof ZodError) {

@@ -31,7 +31,14 @@ type RequestAttempt = {
   bodyFingerprint: string;
   serializedBody: string;
   baseLog: Record<string, unknown>;
+  /** Date.now() when the attempt began; the HTTP result and transport lines carry elapsedMs from it. */
+  startedAt: number;
 };
+
+/** Per-item input batch lines are debug unless MARINARA_CACHE_DIAGNOSTICS=1 (read per call). */
+function perItemLevel(): "info" | "debug" {
+  return process.env.MARINARA_CACHE_DIAGNOSTICS === "1" ? "info" : "debug";
+}
 
 const MAX_INPUT_ITEMS = 512;
 const INPUT_BATCH_SIZE = 24;
@@ -62,12 +69,12 @@ function integerOrUndefined(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
-function inputItemSummary(item: unknown, index: number, prefixHash: string): Record<string, unknown> {
+function inputItemKind(item: unknown): string {
   const record = item && typeof item === "object" && !Array.isArray(item) ? (item as Record<string, unknown>) : {};
   const type = typeof record.type === "string" ? record.type : undefined;
   const role = typeof record.role === "string" ? record.role : undefined;
   const candidate = type ?? role ?? "";
-  const kind = [
+  return [
     "function_call",
     "function_call_output",
     "message",
@@ -79,9 +86,12 @@ function inputItemSummary(item: unknown, index: number, prefixHash: string): Rec
   ].includes(candidate)
     ? candidate
     : "unknown";
+}
+
+function inputItemSummary(item: unknown, index: number, prefixHash: string): Record<string, unknown> {
   return {
     index,
-    kind,
+    kind: inputItemKind(item),
     itemHash: hashValue(item),
     prefixHash,
   };
@@ -132,6 +142,12 @@ export function beginResponsesRequestAttempt(
     input: input.length,
     tools: Array.isArray(body.tools) ? body.tools.length : undefined,
   };
+  // Aggregates for the one info line per attempt: how many input items of each kind.
+  const inputKinds: Record<string, number> = {};
+  for (const item of retainedInput) {
+    const kind = inputItemKind(item);
+    inputKinds[kind] = (inputKinds[kind] ?? 0) + 1;
+  }
   const baseLog: Record<string, unknown> = {
     cacheRequestId: randomUUID(),
     route,
@@ -142,16 +158,19 @@ export function beginResponsesRequestAttempt(
     inputOmittedCount: Math.max(0, input.length - retainedInput.length),
     inputAggregateHash: hashValue(input),
     requestFields,
+    inputKinds,
+    inputBatchCount: Math.ceil(retainedInput.length / INPUT_BATCH_SIZE),
     requestedModel: safeIdentifier(body.model, MAX_MODEL_LENGTH),
     requestedServiceTier: responseString(body.service_tier, 32, ALLOWED_SERVICE_TIERS),
   };
   logger.info(baseLog, "OpenAI Responses request attempt");
 
-  for (let start = 0; start < retainedInput.length; start += INPUT_BATCH_SIZE) {
+  const detailLevel = perItemLevel();
+  for (let start = 0; start < retainedInput.length && logger.isLevelEnabled(detailLevel); start += INPUT_BATCH_SIZE) {
     const entries = retainedInput
       .slice(start, start + INPUT_BATCH_SIZE)
       .map((item, offset) => inputItemSummary(item, start + offset, prefixHashes[start + offset]!));
-    logger.info(
+    logger[detailLevel](
       {
         cacheRequestId: baseLog.cacheRequestId,
         bodyFingerprint: baseLog.bodyFingerprint,
@@ -168,6 +187,7 @@ export function beginResponsesRequestAttempt(
     bodyFingerprint: baseLog.bodyFingerprint as string,
     serializedBody,
     baseLog,
+    startedAt: Date.now(),
   };
 }
 
@@ -185,20 +205,22 @@ export async function fetchResponsesWithDiagnostics(
         bodyFingerprint: attempt.bodyFingerprint,
         httpStatus: response.status,
         ok: response.ok,
+        elapsedMs: Date.now() - attempt.startedAt,
       },
       "OpenAI Responses HTTP result",
     );
     return { response, attempt };
   } catch (error) {
-    logger.info(
+    logger.warn(
       {
         cacheRequestId: attempt.cacheRequestId,
         bodyFingerprint: attempt.bodyFingerprint,
         errorName: error instanceof Error ? error.name : typeof error,
-        errorCode: safeIdentifier(
+        transportCode: safeIdentifier(
           error && typeof error === "object" ? (error as { code?: unknown }).code : undefined,
           64,
         ),
+        elapsedMs: Date.now() - attempt.startedAt,
       },
       "OpenAI Responses transport failure",
     );

@@ -4,8 +4,8 @@
 import { createHash, createSign } from "crypto";
 import {
   BaseLLMProvider,
+  LLMHttpError,
   llmFetch,
-  llmHttpErrorFromResponse,
   sanitizeApiError,
   type ChatCompletionResult,
   type ChatMessage,
@@ -17,7 +17,9 @@ import {
 import { shouldSuppressUnknownModelParameters } from "@marinara-engine/shared";
 import { getEmbeddingRequestTimeoutMs, isDebugAgentsEnabled } from "../../../config/runtime-config.js";
 import { logDebugOverride } from "../../../lib/logger.js";
+import { logEvent } from "../../../lib/log-events.js";
 import { decodePossiblyCompressedBody } from "../../../utils/security.js";
+import { llmHttpErrorFromResponseBody, parseToolArgumentsLogged, safeHost, SseFrameStats } from "../provider-error.js";
 
 /** A single Gemini response part (text, thought summary, or signature-only). */
 interface GeminiFunctionCall {
@@ -193,9 +195,7 @@ async function fetchServiceAccountAccessToken(serviceAccount: GoogleServiceAccou
   });
 
   if (!response.ok) {
-    throw new Error(
-      `Google service account auth failed ${response.status}: ${sanitizeApiError(await response.text())}`,
-    );
+    throw await llmHttpErrorFromResponseBody("Google service account auth failed", response);
   }
 
   const json = (await response.json()) as { access_token?: string; expires_in?: number };
@@ -301,6 +301,36 @@ function formatGeminiApiError(error: GeminiApiError | undefined): string | null 
   return "unknown Gemini API error";
 }
 
+/**
+ * A Gemini `error` payload (a 200 body or a stream frame) as a typed error: the
+ * numeric code when it is an HTTP status, otherwise 502, with the Gemini status
+ * string (RESOURCE_EXHAUSTED, UNAVAILABLE, ...) as providerCode.
+ */
+function geminiPayloadError(prefix: string, error: GeminiApiError | undefined): LLMHttpError | null {
+  const formatted = formatGeminiApiError(error);
+  if (!formatted) return null;
+  const code = typeof error?.code === "number" && error.code >= 400 && error.code <= 599 ? error.code : 502;
+  const providerCode = typeof error?.status === "string" && error.status.trim() ? error.status.trim() : undefined;
+  return new LLMHttpError(`${prefix}: ${formatted}`, { status: code, ...(providerCode ? { providerCode } : {}) });
+}
+
+/** A prompt the provider refused to process carries code GEMINI_PROMPT_BLOCKED. */
+function geminiPromptBlockedError(blockReason: string): Error {
+  return Object.assign(new Error(`Gemini blocked the prompt (${blockReason})`), { code: "GEMINI_PROMPT_BLOCKED" });
+}
+
+/**
+ * Builds the typed HTTP error from a body that was already read and decompressed.
+ * The helper reads the replayed body; the original URL supplies the host.
+ */
+async function geminiHttpError(label: string, response: Response, decodedText: string): Promise<LLMHttpError> {
+  const replay = new Response(decodedText, { status: response.status, headers: response.headers });
+  const err = await llmHttpErrorFromResponseBody(label, replay);
+  const host = safeHost(response.url);
+  if (host) Object.assign(err, { host });
+  return err;
+}
+
 function geminiEmbeddingContent(text: string): { parts: Array<{ text: string }> } {
   return { parts: [{ text: text.trim() ? text : " " }] };
 }
@@ -377,11 +407,11 @@ function assertGeminiUsableResponse(
   candidate: GeminiCandidate | undefined,
   hasOutput: boolean,
 ): void {
-  const apiError = formatGeminiApiError(payload.error);
-  if (apiError) throw new Error(`Gemini API error: ${apiError}`);
+  const apiError = geminiPayloadError("Gemini API error", payload.error);
+  if (apiError) throw apiError;
 
   const blockReason = formatGeminiPromptBlock(payload.promptFeedback);
-  if (blockReason) throw new Error(`Gemini blocked the prompt (${blockReason})`);
+  if (blockReason) throw geminiPromptBlockedError(blockReason);
 
   if (!candidate) throw new Error("Gemini returned no candidates. The prompt may have been blocked or filtered.");
 
@@ -391,13 +421,9 @@ function assertGeminiUsableResponse(
   if (!hasOutput) throw new Error("Gemini returned no content.");
 }
 
-function parseToolArguments(value: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return isRecord(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
+/** Empty arguments mean "no arguments" and fold to {} silently; bad JSON folds to {} with one warn. */
+function parseToolArguments(value: string, toolName: string): Record<string, unknown> {
+  return value.trim() ? parseToolArgumentsLogged(value, toolName, "google") : {};
 }
 
 function sanitizeGeminiSchema(value: unknown, depth = 0): unknown {
@@ -516,7 +542,11 @@ function formatGoogleContents(
       for (const call of message.tool_calls) {
         emittedToolIds.add(call.id);
         parts.push({
-          functionCall: { id: call.id, name: call.function.name, args: parseToolArguments(call.function.arguments) },
+          functionCall: {
+            id: call.id,
+            name: call.function.name,
+            args: parseToolArguments(call.function.arguments, call.function.name),
+          },
         });
       }
       contents.push({ role: "model", parts });
@@ -673,6 +703,14 @@ export class GoogleProvider extends BaseLLMProvider {
       "[debug/gemini] final tool request:\n%j",
       body,
     );
+    const serializedBody = JSON.stringify(body);
+    logEvent("debug", "llm.request.capture", {
+      provider: this.providerKind,
+      model: options.model,
+      bodyBytes: Buffer.byteLength(serializedBody, "utf8"),
+      messageCount: Array.isArray(body.contents) ? body.contents.length : 0,
+      toolCount: Array.isArray(body.tools) ? body.tools.length : 0,
+    });
     const authHeaders =
       this.providerKind === "google_vertex"
         ? await googleAuthHeadersForVertex(this.apiKey)
@@ -683,7 +721,7 @@ export class GoogleProvider extends BaseLLMProvider {
     const response = await llmFetch(url, {
       method: "POST",
       headers: { ...this.customRequestHeaders, "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify(body),
+      body: serializedBody,
       ...(options.signal ? { signal: options.signal } : {}),
     });
 
@@ -692,7 +730,7 @@ export class GoogleProvider extends BaseLLMProvider {
     if (!response.ok) {
       const errorText = await readDecodedText();
       const label = this.providerKind === "google_vertex" ? "Vertex AI Gemini API" : "Gemini API";
-      throw llmHttpErrorFromResponse(`${label} error ${response.status}: ${sanitizeApiError(errorText)}`, response);
+      throw await geminiHttpError(`${label} error`, response, errorText);
     }
 
     if (!useStream) {
@@ -736,6 +774,7 @@ export class GoogleProvider extends BaseLLMProvider {
     }
 
     const decoder = new TextDecoder();
+    const frames = new SseFrameStats();
     let buffer = "";
     let streamUsage: LLMUsage | undefined;
 
@@ -764,18 +803,20 @@ export class GoogleProvider extends BaseLLMProvider {
           const data = trimmed.slice(5).trimStart();
 
           let parsed: GeminiResponsePayload;
+          frames.frame();
           try {
             parsed = JSON.parse(data) as GeminiResponsePayload;
           } catch {
-            // Skip malformed lines
+            // Skip malformed lines; report() warns once at the end of the stream.
+            frames.bad(Buffer.byteLength(data, "utf8"));
             continue;
           }
 
-          const apiError = formatGeminiApiError(parsed.error);
-          if (apiError) throw new Error(`Gemini API streaming error: ${apiError}`);
+          const apiError = geminiPayloadError("Gemini API streaming error", parsed.error);
+          if (apiError) throw apiError;
 
           const blockReason = formatGeminiPromptBlock(parsed.promptFeedback);
-          if (blockReason) throw new Error(`Gemini blocked the prompt (${blockReason})`);
+          if (blockReason) throw geminiPromptBlockedError(blockReason);
 
           if (parsed.usageMetadata) streamUsage = geminiUsage(parsed.usageMetadata);
 
@@ -823,6 +864,7 @@ export class GoogleProvider extends BaseLLMProvider {
         if (done) break;
       }
     } finally {
+      frames.report(this.providerKind, options.model);
       if (options.signal) options.signal.removeEventListener("abort", onAbort);
       await reader.cancel().catch(() => {});
     }
@@ -998,7 +1040,7 @@ export class GoogleProvider extends BaseLLMProvider {
     if (!response.ok) {
       const errorText = await readDecodedText();
       const label = this.providerKind === "google_vertex" ? "Vertex AI Gemini API" : "Gemini API";
-      throw llmHttpErrorFromResponse(`${label} error ${response.status}: ${sanitizeApiError(errorText)}`, response);
+      throw await geminiHttpError(`${label} error`, response, errorText);
     }
 
     // ── Non-streaming path (also used for proxy thinking turns) ──
@@ -1044,6 +1086,7 @@ export class GoogleProvider extends BaseLLMProvider {
     }
 
     const decoder = new TextDecoder();
+    const frames = new SseFrameStats();
     let buffer = "";
     let streamUsage: LLMUsage | undefined;
 
@@ -1070,18 +1113,20 @@ export class GoogleProvider extends BaseLLMProvider {
           const data = trimmed.slice(5).trimStart();
 
           let parsed: GeminiResponsePayload;
+          frames.frame();
           try {
             parsed = JSON.parse(data) as GeminiResponsePayload;
           } catch {
-            // Skip malformed lines
+            // Skip malformed lines; report() warns once at the end of the stream.
+            frames.bad(Buffer.byteLength(data, "utf8"));
             continue;
           }
 
-          const apiError = formatGeminiApiError(parsed.error);
-          if (apiError) throw new Error(`Gemini API streaming error: ${apiError}`);
+          const apiError = geminiPayloadError("Gemini API streaming error", parsed.error);
+          if (apiError) throw apiError;
 
           const blockReason = formatGeminiPromptBlock(parsed.promptFeedback);
-          if (blockReason) throw new Error(`Gemini blocked the prompt (${blockReason})`);
+          if (blockReason) throw geminiPromptBlockedError(blockReason);
 
           if (parsed.usageMetadata) {
             streamUsage = geminiUsage(parsed.usageMetadata);
@@ -1117,6 +1162,7 @@ export class GoogleProvider extends BaseLLMProvider {
         if (done) break;
       }
     } finally {
+      frames.report(this.providerKind, options.model);
       if (options.signal) options.signal.removeEventListener("abort", onAbort);
       await reader.cancel().catch(() => {});
     }
@@ -1180,11 +1226,7 @@ export class GoogleProvider extends BaseLLMProvider {
       });
 
       if (!response.ok) {
-        const body = await response.text().catch(() => "");
-        throw llmHttpErrorFromResponse(
-          `${label} batch embedding request failed (${response.status}): ${sanitizeApiError(body)}`,
-          response,
-        );
+        throw await llmHttpErrorFromResponseBody(`${label} batch embedding request failed`, response);
       }
       return parseGeminiBatchEmbeddingResponse((await response.json()) as GeminiEmbeddingPayload, texts.length);
     }
@@ -1204,11 +1246,7 @@ export class GoogleProvider extends BaseLLMProvider {
       });
 
       if (!response.ok) {
-        const body = await response.text().catch(() => "");
-        throw llmHttpErrorFromResponse(
-          `${label} embedding request failed (${response.status}): ${sanitizeApiError(body)}`,
-          response,
-        );
+        throw await llmHttpErrorFromResponseBody(`${label} embedding request failed`, response);
       }
       embeddings.push(parseGeminiEmbeddingResponse((await response.json()) as GeminiEmbeddingPayload));
     }

@@ -13,6 +13,7 @@ import {
 } from "../../services/lorebook/embeddings.js";
 import { embedMemoryRecallTexts, type MemoryRecallEmbeddingOptions } from "../../services/memory-recall.js";
 import {
+  conversationSummaryFailureFields,
   formatConversationDateKey,
   generateMissingConversationSummaries,
   parseConversationDateKey,
@@ -296,18 +297,8 @@ export async function prepareConversationPromptHistory(args: {
     maxMissingDays: 2,
   });
 
-  for (const failure of summaryRun.failedDays) {
-    logger.warn(
-      { chatId: args.chatId, date: failure.date, err: failure.error },
-      "[conversation-summary] failed to generate day summary",
-    );
-  }
-  for (const failure of summaryRun.failedWeeks) {
-    logger.warn(
-      { chatId: args.chatId, weekKey: failure.weekKey, err: failure.error },
-      "[conversation-summary] failed to consolidate week summary",
-    );
-  }
+  const summaryFailure = conversationSummaryFailureFields(args.chatId, summaryRun);
+  if (summaryFailure) logger.warn(summaryFailure, "[conversation-summary] some summaries failed");
 
   const hasNewSummaries =
     Object.keys(summaryRun.newlyGeneratedDays).length > 0 || Object.keys(summaryRun.newlyConsolidatedWeeks).length > 0;

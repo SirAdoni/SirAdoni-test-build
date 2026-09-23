@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { APP_VERSION, type ModelParameterCapabilities, type StoredEffortLevel } from "@marinara-engine/shared";
 import { logger } from "../../lib/logger.js";
 import { safeFetch } from "../../utils/security.js";
+import { LLMHttpError, sanitizeApiError } from "./base-provider.js";
 
 export const OPENAI_CHATGPT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
 
@@ -179,6 +180,22 @@ function authFromJson(auth: CodexAuthJson, authFilePath: string, refreshed: bool
   };
 }
 
+/** A typed HTTP failure with a sanitized, bounded body excerpt; the OAuth `error` string becomes providerCode. */
+async function authHttpError(label: string, res: Response): Promise<LLMHttpError> {
+  const text = await res.text().catch(() => "");
+  let parsed: JsonRecord | null = null;
+  try {
+    parsed = asRecord(JSON.parse(text));
+  } catch {
+    parsed = null;
+  }
+  const code = parsed?.error;
+  return new LLMHttpError(`${label} (${res.status}): ${sanitizeApiError(text, 200)}`, {
+    status: res.status,
+    providerCode: typeof code === "string" ? code : undefined,
+  });
+}
+
 async function refreshAuth(auth: CodexAuthJson, authFilePath: string): Promise<OpenAIChatGPTAuth> {
   const tokens = auth.tokens;
   const refreshToken = stringValue(tokens?.refresh_token);
@@ -186,6 +203,7 @@ async function refreshAuth(auth: CodexAuthJson, authFilePath: string): Promise<O
     throw new Error(`Codex ChatGPT access token is stale, but no refresh token is available. Run \`codex login\`.`);
   }
 
+  const startedAt = Date.now();
   const res = await safeFetch(REFRESH_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -200,8 +218,7 @@ async function refreshAuth(auth: CodexAuthJson, authFilePath: string): Promise<O
   });
 
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Failed to refresh Codex ChatGPT login (${res.status}): ${text.slice(0, 200)}`);
+    throw await authHttpError("Failed to refresh Codex ChatGPT login", res);
   }
 
   const response = (await res.json()) as JsonRecord;
@@ -229,7 +246,15 @@ async function refreshAuth(auth: CodexAuthJson, authFilePath: string): Promise<O
     await unlink(tmpPath).catch(() => {});
     throw err;
   }
-  logger.info("[openai-chatgpt] Refreshed local Codex ChatGPT auth token");
+  logger.debug(
+    {
+      event: "llm.auth.refresh",
+      outcome: "ok",
+      elapsedMs: Date.now() - startedAt,
+      expiresInS: typeof response.expires_in === "number" ? response.expires_in : undefined,
+    },
+    "Refreshed local Codex ChatGPT auth token",
+  );
 
   return authFromJson(auth, authFilePath, true);
 }
@@ -320,8 +345,7 @@ export async function fetchOpenAIChatGPTModels(
   });
 
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`ChatGPT model catalog returned ${res.status}: ${text.slice(0, 200)}`);
+    throw await authHttpError("ChatGPT model catalog request failed", res);
   }
 
   const json = (await res.json()) as JsonRecord;

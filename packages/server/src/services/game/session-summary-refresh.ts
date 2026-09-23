@@ -5,7 +5,8 @@ import { eq } from "../../db/file-query.js";
 import { chats as chatsTable, messages } from "../../db/schema/index.js";
 import { createChatsStorage } from "../storage/chats.storage.js";
 import { logger as sharedLogger } from "../../lib/logger.js";
-import { createDiagnostic, sanitizeDiagnosticText } from "../../lib/diagnostics.js";
+import { createDiagnostic, runWithRootDiagnosticContext, sanitizeDiagnosticText } from "../../lib/diagnostics.js";
+import { registerWorkerGauge } from "../../lib/worker-gauges.js";
 import {
   evaluateSessionSummaryRefreshInTransaction,
   hashSessionSummaryValue,
@@ -93,7 +94,21 @@ export function createSessionSummaryRefreshService(db: DB, options: SessionSumma
   let active = 0;
   let pumping = false;
   const maxConcurrent = Math.max(1, options.maxConcurrent ?? 2);
-  const log = options.logger ?? sharedLogger;
+  const timeoutMs = options.timeoutMs ?? 600_000;
+  /** job.state lines. An injected logger only has warn, so it receives the warn and error lines and no debug. */
+  const logJob = (level: "debug" | "warn" | "error", fields: Record<string, unknown>, message: string): void => {
+    const line = { event: "job.state", jobKind: "session-summary", ...fields };
+    if (options.logger) {
+      if (level !== "debug") options.logger.warn(line, message);
+      return;
+    }
+    sharedLogger[level](line, message);
+  };
+  const unregisterGauge = registerWorkerGauge("sessionSummary", () => ({
+    pending: pending.length,
+    active,
+    retryScheduled: retryTimers.size,
+  }));
 
   const enqueue = (chatId: string, sessionNumber: number) => {
     const key = `${chatId}:${sessionNumber}`;
@@ -228,12 +243,55 @@ export function createSessionSummaryRefreshService(db: DB, options: SessionSumma
     const maxAttempts = descriptor.maxAttempts ?? options.maxAttempts ?? 3;
     const controller = new AbortController();
     controllers.add(controller);
-    const timer = setTimeout(
-      () => controller.abort(new Error("SESSION_SUMMARY_REFRESH_TIMEOUT")),
-      options.timeoutMs ?? 600_000,
-    );
+    const startedAt = Date.now();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort(
+        Object.assign(new Error("SESSION_SUMMARY_REFRESH_TIMEOUT"), { name: "TimeoutError", code: "ETIMEDOUT" }),
+      );
+    }, timeoutMs);
+    // An abort that ends the attempt without an exception still gets one line: a stop is a quiet
+    // cancellation, a timeout is a failed attempt.
+    const logAborted = (): void => {
+      if (stopped || !timedOut) {
+        logJob(
+          "debug",
+          {
+            jobId: key,
+            chatId,
+            sessionNumber,
+            attempt: attempts,
+            maxAttempts,
+            state: "cancelled",
+            outcome: "cancelled",
+          },
+          "[game/session-summary-refresh] refresh stopped",
+        );
+        return;
+      }
+      logJob(
+        "warn",
+        {
+          jobId: key,
+          chatId,
+          sessionNumber,
+          attempt: attempts,
+          maxAttempts,
+          state: "failed",
+          outcome: "failed",
+          errorCode: "ME_TIMEOUT",
+          timeoutMs,
+          elapsedMs: Date.now() - startedAt,
+        },
+        "[game/session-summary-refresh] refresh timed out",
+      );
+    };
     try {
-      if (stopped || controller.signal.aborted) return;
+      if (stopped || controller.signal.aborted) {
+        logAborted();
+        return;
+      }
       const draft = await options.generate({
         chatId,
         sessionNumber,
@@ -242,7 +300,10 @@ export function createSessionSummaryRefreshService(db: DB, options: SessionSumma
         continuityEvidence,
         signal: controller.signal,
       });
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted) {
+        logAborted();
+        return;
+      }
       const refreshed = validateSessionSummaryRefreshDraft(draft, sessionNumber, previous);
       await db.transaction(
         async (tx) => {
@@ -322,15 +383,30 @@ export function createSessionSummaryRefreshService(db: DB, options: SessionSumma
         { durable: true },
       );
     } catch (error) {
-      createDiagnostic(
+      const reference = createDiagnostic(
         error,
         { operation: "game.session-summary", stage: "background-refresh", chatId },
         "SESSION_SUMMARY_REFRESH_FAILED",
       );
       if (stopped) {
-        log.warn(error, "[game/session-summary-refresh] refresh stopped for %s", key);
+        logJob(
+          "debug",
+          {
+            jobId: key,
+            chatId,
+            sessionNumber,
+            attempt: attempts,
+            maxAttempts,
+            state: "cancelled",
+            outcome: "cancelled",
+            errorId: reference.errorId,
+          },
+          "[game/session-summary-refresh] refresh stopped",
+        );
         return;
       }
+      // What the descriptor recorded for this failure; stays null when a newer claim replaced it meanwhile.
+      let recorded: { attempts: number; failed: boolean; nextRetryAt?: string } | null = null;
       await chats.patchMetadata(chatId, (current) => {
         const currentDescriptors = descriptors(current.gameSessionSummaryRefreshes);
         const currentDescriptor = currentDescriptors[String(sessionNumber)];
@@ -348,6 +424,7 @@ export function createSessionSummaryRefreshService(db: DB, options: SessionSumma
           nextAttempts >= maxAttempts
             ? undefined
             : new Date(Date.now() + (options.retryDelayMs ?? 30_000)).toISOString();
+        recorded = { attempts: nextAttempts, failed: nextAttempts >= maxAttempts, nextRetryAt };
         return {
           gameSessionSummaryRefreshes: {
             ...currentDescriptors,
@@ -365,7 +442,29 @@ export function createSessionSummaryRefreshService(db: DB, options: SessionSumma
       const latest = await chats.getById(chatId);
       const next = latest ? descriptors(latest.metadata)[String(sessionNumber)] : undefined;
       if (next?.status === "pending" && next.nextRetryAt) scheduleRetry(chatId, sessionNumber, next.nextRetryAt);
-      log.warn(error, "[game/session-summary-refresh] refresh failed for %s", key);
+      const outcome = recorded as { attempts: number; failed: boolean; nextRetryAt?: string } | null;
+      const failed = outcome ? outcome.failed : attempts >= maxAttempts;
+      logJob(
+        failed ? "error" : "warn",
+        {
+          jobId: key,
+          chatId,
+          sessionNumber,
+          attempt: outcome?.attempts ?? attempts,
+          maxAttempts,
+          state: failed ? "failed" : "progress",
+          ...(failed ? { outcome: "failed" } : {}),
+          willRetry: !failed && Boolean(outcome?.nextRetryAt),
+          nextRetryAt: outcome?.nextRetryAt,
+          descriptorUpdated: outcome !== null,
+          timedOut,
+          elapsedMs: Date.now() - startedAt,
+          errorCode: "SESSION_SUMMARY_REFRESH_FAILED",
+          errorId: reference.errorId,
+          err: error,
+        },
+        "[game/session-summary-refresh] refresh attempt failed",
+      );
     } finally {
       clearTimeout(timer);
       controllers.delete(controller);
@@ -385,14 +484,30 @@ export function createSessionSummaryRefreshService(db: DB, options: SessionSumma
         const chatId = key.slice(0, key.lastIndexOf(":"));
         activeChats.add(chatId);
         active += 1;
-        const flight = process(key)
+        const flight = runWithRootDiagnosticContext({ operation: "game.session-summary", jobId: key, chatId }, () =>
+          process(key),
+        )
           .catch((error) => {
-            createDiagnostic(
+            const reference = createDiagnostic(
               error,
               { operation: "game.session-summary", stage: "background-refresh-flight", chatId },
               "SESSION_SUMMARY_REFRESH_FAILED",
             );
-            log.warn(error, "[game/session-summary-refresh] flight failed for %s", key);
+            // The claim or the failure bookkeeping itself threw, so the attempt count is unknown here.
+            logJob(
+              "error",
+              {
+                jobId: key,
+                chatId,
+                stage: "background-refresh-flight",
+                state: "failed",
+                outcome: "failed",
+                errorCode: "SESSION_SUMMARY_REFRESH_FAILED",
+                errorId: reference.errorId,
+                err: error,
+              },
+              "[game/session-summary-refresh] refresh flight failed",
+            );
           })
           .finally(() => {
             activeChats.delete(chatId);
@@ -444,6 +559,7 @@ export function createSessionSummaryRefreshService(db: DB, options: SessionSumma
     },
     async stop() {
       stopped = true;
+      unregisterGauge();
       pending.length = 0;
       retryTimers.forEach((timer) => clearTimeout(timer));
       retryTimers.clear();

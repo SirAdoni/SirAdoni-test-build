@@ -15,6 +15,8 @@
 // scale in the extension sandbox (shouldGrantSandboxResumeGrace).
 
 import { logger } from "./logger.js";
+import { sampleWorkerGauges } from "./worker-gauges.js";
+import { getRuntimeMemorySnapshot } from "../utils/runtime-memory.js";
 
 export const FREEZE_DETECTOR_INTERVAL_MS = 60_000;
 /** A tick this many times later than scheduled counts as a suspension. */
@@ -55,11 +57,22 @@ export function startFreezeDetector(intervalMs: number = FREEZE_DETECTOR_INTERVA
     const now = Date.now();
     const suspendedMs = classifyTickGap(now, lastTickAt, intervalMs);
     if (suspendedMs !== null) {
-      lastFreeze = { detectedAt: new Date(now).toISOString(), gapMs: now - lastTickAt, suspendedMs };
+      const gapMs = now - lastTickAt;
+      lastFreeze = { detectedAt: new Date(now).toISOString(), gapMs, suspendedMs };
       logger.warn(
-        "Process was suspended for ~%d s (timer gap %d ms). Either the host OS froze or slept the server, or the server itself stalled that long — on Android/Termux check the wake lock and battery exemptions, and compare the memory figures in /api/health.",
+        {
+          event: "runtime.freeze",
+          gapMs,
+          suspendedMs,
+          memory: getRuntimeMemorySnapshot(),
+          workers: sampleWorkerGauges(),
+        },
+        "[runtime] Process was suspended or stalled",
+      );
+      logger.debug(
+        { event: "runtime.freeze", gapMs, suspendedMs },
+        "Process was suspended for ~%d s. Either the host OS froze or slept the server, or the server itself stalled that long. On Android/Termux check the wake lock and battery exemptions, and compare the memory figures in /api/health.",
         Math.round(suspendedMs / 1000),
-        now - lastTickAt,
       );
     }
     lastTickAt = now;

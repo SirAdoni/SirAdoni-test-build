@@ -20,11 +20,58 @@ import { createCharactersStorage } from "../storage/characters.storage.js";
 import { DATA_DIR } from "../../utils/data-dir.js";
 import { getFileTimestampOverrides, parseTrustedTimestamp } from "./import-timestamps.js";
 import { normalizeTextForMatch } from "@marinara-engine/shared";
+import { logger } from "../../lib/logger.js";
+import { createDiagnostic } from "../../lib/diagnostics.js";
+import { logEvent } from "../../lib/log-events.js";
 
 const BG_DIR = join(DATA_DIR, "backgrounds");
 const BG_EXTS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"]);
 
 // ─── Helpers ───
+
+/**
+ * Counts files the folder scan could not read. Each skip is a debug line; the
+ * scan ends with one warn summary per directory that had skips. Only file
+ * names are logged, never card names or file content.
+ */
+function createScanSkipTracker() {
+  const skipsByDirectory = new Map<string, number>();
+  return {
+    skip(directory: string, filePath: string, err: unknown) {
+      skipsByDirectory.set(directory, (skipsByDirectory.get(directory) ?? 0) + 1);
+      logger.debug(
+        {
+          event: "import.st.item",
+          stage: "scan",
+          directory,
+          fileName: basename(filePath),
+          errorCode: createDiagnostic(err).code,
+          err,
+        },
+        "[st-import] Skipped unreadable file during scan",
+      );
+    },
+    summarize() {
+      for (const [directory, skippedCount] of skipsByDirectory) {
+        logEvent(
+          "warn",
+          "import.st",
+          { stage: "scan", outcome: "skipped", directory, skippedCount },
+          "[st-import] Folder scan skipped unreadable files",
+        );
+      }
+    },
+  };
+}
+
+function logImportItemFailure(stage: string, itemIndex: number, filePath: string, err: unknown) {
+  logEvent(
+    "warn",
+    "import.st.item",
+    { stage, itemIndex, fileName: basename(filePath), errorCode: createDiagnostic(err).code, err },
+    "[st-import] Item import failed",
+  );
+}
 
 const CHARA_KEYWORDS = new Set(["ccv3", "chara"]);
 
@@ -244,6 +291,7 @@ export async function scanSTFolder(rootPath: string): Promise<STBulkScanResult> 
   const lorebooks: STBulkScanResult["lorebooks"] = [];
   const backgrounds: STBulkScanResult["backgrounds"] = [];
   const personas: STBulkScanResult["personas"] = [];
+  const scanSkips = createScanSkipTracker();
 
   // 1. Characters — JSON and PNG files in characters/
   const charDir = join(dataDir, "characters");
@@ -266,8 +314,8 @@ export async function scanSTFolder(rootPath: string): Promise<STBulkScanResult> 
             format: "json",
             modifiedAt: parseTrustedTimestamp(fileInfo.mtime),
           });
-        } catch {
-          // skip
+        } catch (err) {
+          scanSkips.skip("characters", fullPath, err);
         }
       } else if (ext === ".png") {
         try {
@@ -285,8 +333,8 @@ export async function scanSTFolder(rootPath: string): Promise<STBulkScanResult> 
               modifiedAt: parseTrustedTimestamp(fileInfo.mtime),
             });
           }
-        } catch {
-          // skip
+        } catch (err) {
+          scanSkips.skip("characters", fullPath, err);
         }
       }
     }
@@ -316,8 +364,8 @@ export async function scanSTFolder(rootPath: string): Promise<STBulkScanResult> 
             modifiedAt: parseTrustedTimestamp(fileInfo.mtime),
           });
         }
-      } catch {
-        // skip
+      } catch (err) {
+        scanSkips.skip("chats", f, err);
       }
     }
   }
@@ -338,8 +386,8 @@ export async function scanSTFolder(rootPath: string): Promise<STBulkScanResult> 
           modifiedAt: parseTrustedTimestamp(fileInfo.mtime),
           ...(isConfidentBuiltinPreset(f) ? { isBuiltin: true } : {}),
         });
-      } catch {
-        // skip
+      } catch (err) {
+        scanSkips.skip(folder, f, err);
       }
     }
   }
@@ -359,8 +407,8 @@ export async function scanSTFolder(rootPath: string): Promise<STBulkScanResult> 
           name: String(name),
           modifiedAt: parseTrustedTimestamp(fileInfo.mtime),
         });
-      } catch {
-        // skip
+      } catch (err) {
+        scanSkips.skip("worlds", f, err);
       }
     }
   }
@@ -413,8 +461,8 @@ export async function scanSTFolder(rootPath: string): Promise<STBulkScanResult> 
             groupMetaMap.set(String(chatId), metadata);
           }
         }
-      } catch {
-        // skip
+      } catch (err) {
+        scanSkips.skip("groups", f, err);
       }
     }
 
@@ -469,8 +517,9 @@ export async function scanSTFolder(rootPath: string): Promise<STBulkScanResult> 
       const settings = JSON.parse(await readFile(settingsPath, "utf-8"));
       stPersonaNames = settings?.power_user?.personas ?? {};
       stPersonaDescs = settings?.power_user?.persona_descriptions ?? {};
-    } catch {
-      // skip – import avatars with filename-based names
+    } catch (err) {
+      // Import avatars with filename-based names.
+      scanSkips.skip("settings", settingsPath, err);
     }
   }
 
@@ -503,6 +552,7 @@ export async function scanSTFolder(rootPath: string): Promise<STBulkScanResult> 
     break;
   }
 
+  scanSkips.summarize();
   return { success: true, dataDir, characters, chats, groupChats, presets, lorebooks, backgrounds, personas };
 }
 
@@ -564,8 +614,15 @@ export async function runSTBulkImport(
   db: DB,
   onProgress?: (progress: ImportProgress) => void,
 ): Promise<STBulkImportResult> {
+  const started = Date.now();
   const scanResult = await scanSTFolder(rootPath);
   if (!scanResult.success || !scanResult.dataDir) {
+    logEvent(
+      "warn",
+      "import.st",
+      { stage: "scan", outcome: "failed", elapsedMs: Date.now() - started, imported: {}, errorCount: 0 },
+      "[st-import] SillyTavern folder scan failed",
+    );
     return {
       success: false,
       error: scanResult.error ?? "Scan failed",
@@ -621,6 +678,7 @@ export async function runSTBulkImport(
         }
       } catch (err) {
         errors.push(`Character "${ch.name}": ${(err as Error).message}`);
+        logImportItemFailure("characters", idx - 1, ch.path, err);
       }
     }
   }
@@ -628,6 +686,7 @@ export async function runSTBulkImport(
   // Build a name → characterId map for linking chats to characters
   // We look at ALL characters in DB (including ones just imported)
   const charNameToId = new Map<string, string>();
+  let unparsedCharacterRows = 0;
   try {
     const allChars = await db.select().from(charactersTable);
     for (const ch of allChars) {
@@ -636,11 +695,24 @@ export async function runSTBulkImport(
         const name = normalizeTextForMatch(data?.name);
         if (name) charNameToId.set(name, ch.id);
       } catch {
-        // skip
+        // A stored card with unparseable data cannot be linked by name; the rest still link.
+        unparsedCharacterRows++;
       }
     }
-  } catch {
+    if (unparsedCharacterRows > 0) {
+      logger.debug(
+        { event: "import.st", stage: "linkIndex", unparsedCharacterRows },
+        "[st-import] Some stored characters could not be indexed for chat linking",
+      );
+    }
+  } catch (err) {
     // DB read failed, continue without linking
+    logEvent(
+      "warn",
+      "import.st",
+      { stage: "linkIndex", outcome: "failed", err },
+      "[st-import] Could not index characters for chat linking",
+    );
   }
 
   // Also index by character card filename.
@@ -702,6 +774,7 @@ export async function runSTBulkImport(
         imported.chats++;
       } catch (err) {
         errors.push(`Chat "${ct.characterName}": ${(err as Error).message}`);
+        logImportItemFailure("chats", idx - 1, ct.path, err);
       }
     }
   }
@@ -741,6 +814,7 @@ export async function runSTBulkImport(
         imported.groupChats++;
       } catch (err) {
         errors.push(`Group chat "${gc.groupName}": ${(err as Error).message}`);
+        logImportItemFailure("groupChats", idx - 1, gc.path, err);
       }
     }
   }
@@ -759,6 +833,7 @@ export async function runSTBulkImport(
         imported.presets++;
       } catch (err) {
         errors.push(`Preset "${pr.name}": ${(err as Error).message}`);
+        logImportItemFailure("presets", idx - 1, pr.path, err);
       }
     }
   }
@@ -780,6 +855,7 @@ export async function runSTBulkImport(
         imported.lorebooks++;
       } catch (err) {
         errors.push(`Lorebook "${lb.name}": ${(err as Error).message}`);
+        logImportItemFailure("lorebooks", idx - 1, lb.path, err);
       }
     }
   }
@@ -802,6 +878,7 @@ export async function runSTBulkImport(
         imported.backgrounds++;
       } catch (err) {
         errors.push(`Background "${bg.name}": ${(err as Error).message}`);
+        logImportItemFailure("backgrounds", idx - 1, bg.path, err);
       }
     }
   }
@@ -829,9 +906,18 @@ export async function runSTBulkImport(
         imported.personas++;
       } catch (err) {
         errors.push(`Persona "${p.name}": ${(err as Error).message}`);
+        logImportItemFailure("personas", idx - 1, p.path, err);
       }
     }
   }
 
+  logEvent(
+    errors.length > 0 ? "warn" : "info",
+    "import.st",
+    { outcome: "ok", elapsedMs: Date.now() - started, imported: { ...imported }, errorCount: errors.length },
+    errors.length > 0
+      ? "[st-import] SillyTavern import finished with errors"
+      : "[st-import] SillyTavern import finished",
+  );
   return { success: true, imported, errors };
 }

@@ -3,10 +3,18 @@
 import pino from "pino";
 import type { EventEmitter } from "node:events";
 import { writeSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { join } from "node:path";
 import { isatty } from "node:tty";
 import pretty from "pino-pretty";
 import { RotatingFileSink } from "./rotating-sink.js";
-import { createDiagnostic, getDiagnosticContext, sanitizeDiagnosticValue } from "./diagnostics.js";
+import {
+  createDiagnostic,
+  getDiagnosticContext,
+  markDiagnosticReported,
+  sanitizeDiagnosticText,
+  sanitizeDiagnosticValue,
+} from "./diagnostics.js";
 import {
   getLogDirectory,
   getLogFileKeep,
@@ -82,7 +90,17 @@ function levelNumber(value: string, fallback: number): number {
 const fileThreshold = () => levelNumber(getLogFileLevel(), 30);
 let consoleThreshold = levelNumber(getLogLevel(), 40);
 let sink: RotatingFileSink | undefined;
+let promptSink: RotatingFileSink | undefined;
+let droppedLines = 0;
+let lastWriteFailureAt = 0;
+let suppressedWriteFailures = 0;
 let consoleSink: ReturnType<typeof pretty> | undefined;
+// One id per process start. Every line carries it, so two runs that reuse a pid never blur together.
+const bootId = randomBytes(4).toString("hex");
+export function getBootId(): string {
+  return bootId;
+}
+
 function combinedLevel(): pino.Level {
   return (pino.levels.labels[Math.min(fileThreshold(), consoleThreshold)] ?? "fatal") as pino.Level;
 }
@@ -90,6 +108,7 @@ function combinedLevel(): pino.Level {
 export const logger = pino(
   {
     level: combinedLevel(),
+    base: { pid: process.pid, bootId },
     serializers: { err: (value: unknown) => value },
     mixin: () => sanitizeDiagnosticValue(getDiagnosticContext()) as Record<string, unknown>,
     hooks: {
@@ -100,17 +119,30 @@ export const logger = pino(
             ? (first as Record<string, unknown>)
             : undefined;
         const originalError = first instanceof Error ? first : (fields?.err ?? fields?.error);
-        const debug = level <= 20 || fields?.debugPrompt === true;
-        const args = input.map((value) => sanitizeDiagnosticValue(value, 0, new WeakSet(), debug));
+        // Only an explicit debugPrompt line may carry prompt text; the debug level alone no longer unredacts it.
+        const unredacted = fields?.debugPrompt === true;
+        const args = input.map((value) => sanitizeDiagnosticValue(value, 0, new WeakSet(), unredacted));
+        // A caller-specific code (EADDRINUSE, SPATIAL_OWNER_TURN, ...) moves to errorCode; `code` keeps the ME_* class.
+        const explicit =
+          typeof fields?.errorCode === "string"
+            ? fields.errorCode
+            : typeof fields?.code === "string" && !/^ME_/.test(fields.code)
+              ? fields.code
+              : undefined;
         if ((level >= 50 || originalError instanceof Error) && !fields?.diagnostic && !fields?.errorId) {
           const reference = createDiagnostic(
             originalError ?? new Error(typeof first === "string" ? first : String(input[1] ?? "Logged failure")),
+            undefined,
+            explicit && /^ME_/.test(explicit) ? explicit : undefined,
           );
           const metadata = { ...reference, diagnostic: reference };
-          if (first instanceof Error) args[0] = { err: args[0], ...metadata };
-          else if (fields) args[0] = { ...(args[0] as Record<string, unknown>), ...metadata };
-          else args.unshift(metadata);
+          const errorCode =
+            (typeof fields?.errorCode === "string" ? fields.errorCode : undefined) ?? explicit ?? reference.code;
+          if (first instanceof Error) args[0] = { err: args[0], ...metadata, errorCode };
+          else if (fields) args[0] = { ...(args[0] as Record<string, unknown>), ...metadata, errorCode };
+          else args.unshift({ ...metadata, errorCode });
         }
+        if (level >= 50 && originalError && typeof originalError === "object") markDiagnosticReported(originalError);
         method.apply(this, args as Parameters<pino.LogFn>);
       },
     },
@@ -119,17 +151,38 @@ export const logger = pino(
     write(chunk: string) {
       // Lazy initialization avoids the runtime-config/logger import cycle and
       // resolves DATA_DIR only after the .env file has been loaded.
+      let droppedLevel: number | null = null;
       try {
         const parsed = JSON.parse(chunk) as Record<string, unknown>;
         const severity = Number(parsed.level);
-        const safe = sanitizeDiagnosticValue(parsed, 0, new WeakSet(), severity <= 20 || parsed.debugPrompt === true);
+        droppedLevel = Number.isFinite(severity) ? severity : null;
+        const debugPrompt = parsed.debugPrompt === true;
+        const safe = sanitizeDiagnosticValue(parsed, 0, new WeakSet(), debugPrompt);
         const line = `${JSON.stringify(safe)}\n`;
-        if (severity >= fileThreshold()) {
+        if (debugPrompt) {
+          // Prompt text never reaches the main files that problem views and lookup_error read.
+          promptSink ??= new RotatingFileSink({
+            directory: join(getLogDirectory(), "prompt-debug"),
+            prefix: "prompt-debug",
+            runId: bootId,
+            maxBytes: getLogFileMaxBytes(),
+            keep: 3,
+          });
+          promptSink.write(line);
+        } else if (severity >= fileThreshold()) {
           sink ??= new RotatingFileSink({
             directory: getLogDirectory(),
+            runId: bootId,
             maxBytes: getLogFileMaxBytes(),
             keep: getLogFileKeep(),
           });
+          if (droppedLines > 0) {
+            const count = droppedLines;
+            droppedLines = 0;
+            sink.write(
+              `${JSON.stringify({ level: 40, time: Date.now(), pid: process.pid, bootId, event: "log.dropped", count, msg: "Log lines were dropped after a write failure" })}\n`,
+            );
+          }
           sink.write(line);
         }
         if (severity >= consoleThreshold) {
@@ -138,10 +191,25 @@ export const logger = pino(
             consoleSink.write(line);
           } else process.stderr.write(line);
         }
-      } catch {
+      } catch (error) {
         // Never replay an unsanitized line or throw from error reporting itself.
+        droppedLines++;
+        const now = Date.now();
+        if (now - lastWriteFailureAt < 30_000) {
+          suppressedWriteFailures++;
+          return;
+        }
+        lastWriteFailureAt = now;
+        const suppressedCount = suppressedWriteFailures;
+        suppressedWriteFailures = 0;
         try {
-          process.stderr.write('{"level":50,"code":"ME_LOG_WRITE","msg":"Diagnostic output unavailable"}\n');
+          const reason = sanitizeDiagnosticText(
+            error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+            200,
+          ).slice(0, 200);
+          process.stderr.write(
+            `${JSON.stringify({ level: 50, time: now, bootId, errorCode: "ME_LOG_WRITE", event: "log.write_failed", reason, droppedLevel, suppressedCount })}\n`,
+          );
         } catch {
           /* stderr unavailable */
         }

@@ -1,7 +1,7 @@
 import { LOCAL_SIDECAR_CONNECTION_ID, PROVIDERS, localAuthProviderBaseUrl } from "@marinara-engine/shared";
 import { createHash } from "node:crypto";
 import type { DB } from "../db/connection.js";
-import { logger } from "../lib/logger.js";
+import { logRecovered, logRepeated } from "../lib/log-events.js";
 import { isLocalEmbedderAvailable } from "./local-embedder.js";
 import { getLocalSidecarProvider, LOCAL_SIDECAR_MODEL } from "./llm/local-sidecar.js";
 import { createLLMProvider } from "./llm/provider-registry.js";
@@ -185,7 +185,10 @@ export async function resolveMemoryRecallEmbeddingSource(
 
   if (embeddingConnId === LOCAL_SIDECAR_CONNECTION_ID) {
     if (!isLocalSidecarEmbeddingSupported()) {
-      logger.warn(
+      logRepeated(
+        "ltm.recall:sidecar-unsupported",
+        "warn",
+        { event: "ltm.recall", stage: "embed", outcome: "skipped", source: "sidecar" },
         "[memory-recall] Local sidecar was selected for embeddings, but sidecar embeddings require an enabled llama.cpp local model",
       );
       return null;
@@ -194,22 +197,31 @@ export async function resolveMemoryRecallEmbeddingSource(
     const provider = getLocalSidecarProvider();
     const label = "Local Model sidecar";
     const configuredModelRef = sidecarModelService.getConfiguredModelRef() ?? LOCAL_SIDECAR_MODEL;
+    const spaceId = createMemoryRecallEmbeddingSpaceId(
+      "sidecar",
+      configuredModelRef,
+      sidecarModelService.getResolvedBackend(),
+    );
+    const repeatKey = `ltm.recall:embed:${spaceId}`;
     return {
-      spaceId: createMemoryRecallEmbeddingSpaceId(
-        "sidecar",
-        configuredModelRef,
-        sidecarModelService.getResolvedBackend(),
-      ),
+      spaceId,
       label,
       async embed(texts: string[], signal?: AbortSignal, inputType: MemoryRecallEmbeddingInputType = "document") {
         try {
-          return await provider.embed(
+          const vectors = await provider.embed(
             formatMemoryRecallEmbeddingTexts(texts, configuredModelRef, inputType),
             LOCAL_SIDECAR_MODEL,
             signal,
           );
+          logRecovered(repeatKey, { source: label }, "[memory-recall] embedding source working again");
+          return vectors;
         } catch (err) {
-          logger.warn(err, "[memory-recall] Configured embedding source %s failed", label);
+          logRepeated(
+            repeatKey,
+            "warn",
+            { event: "ltm.recall", stage: "embed", outcome: "failed", source: label, model: LOCAL_SIDECAR_MODEL, err },
+            "[memory-recall] Configured embedding source failed",
+          );
           return null;
         }
       },
@@ -249,24 +261,42 @@ export async function resolveMemoryRecallEmbeddingSource(
     embeddingConnection.id,
   );
   const label = `${embeddingConnection.name || embeddingConnection.provider} (${embeddingModel})`;
+  const spaceId = createMemoryRecallEmbeddingSpaceId(
+    "remote",
+    embeddingModel,
+    embeddingConnection.provider,
+    embeddingBaseUrl,
+  );
+  const repeatKey = `ltm.recall:embed:${spaceId}`;
 
   return {
-    spaceId: createMemoryRecallEmbeddingSpaceId(
-      "remote",
-      embeddingModel,
-      embeddingConnection.provider,
-      embeddingBaseUrl,
-    ),
+    spaceId,
     label,
     async embed(texts: string[], signal?: AbortSignal, inputType: MemoryRecallEmbeddingInputType = "document") {
       try {
-        return await provider.embed(
+        const vectors = await provider.embed(
           formatMemoryRecallEmbeddingTexts(texts, embeddingModel, inputType),
           embeddingModel,
           signal,
         );
+        logRecovered(repeatKey, { source: label }, "[memory-recall] embedding source working again");
+        return vectors;
       } catch (err) {
-        logger.warn(err, "[memory-recall] Configured embedding source %s failed", label);
+        logRepeated(
+          repeatKey,
+          "warn",
+          {
+            event: "ltm.recall",
+            stage: "embed",
+            outcome: "failed",
+            source: label,
+            provider: embeddingConnection.provider,
+            model: embeddingModel,
+            connectionId: embeddingConnection.id,
+            err,
+          },
+          "[memory-recall] Configured embedding source failed",
+        );
         return null;
       }
     },

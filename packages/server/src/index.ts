@@ -4,19 +4,36 @@
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import { execFileSync } from "node:child_process";
+import { APP_VERSION } from "@marinara-engine/shared";
 import { buildApp } from "./app.js";
 import { StorageWriterLeaseError } from "./db/file-backed-store.js";
-import { logger } from "./lib/logger.js";
+import { getBootId, logger } from "./lib/logger.js";
 import { startFreezeDetector, stopFreezeDetector } from "./lib/freeze-detector.js";
 import { finalizeSessionExit, noteSessionExitKind, startSessionPostmortem } from "./lib/session-postmortem.js";
 import { armShutdownDeadline } from "./lib/shutdown-deadline.js";
-import { getHost, getPort, getServerProtocol, loadTlsOptions, logStorageDiagnostics } from "./config/runtime-config.js";
+import {
+  getDataDir,
+  getFileStorageDir,
+  getHost,
+  getLogFileLevel,
+  getLogLevel,
+  getPort,
+  getServerProtocol,
+  loadTlsOptions,
+  logStorageDiagnostics,
+} from "./config/runtime-config.js";
 import { logCsrfTrustSummary } from "./middleware/csrf-protection.js";
 import { startEnvWatcher } from "./config/env-watcher.js";
 import { migrateTaskbarShortcuts } from "./services/setup/taskbar-shortcut-migration.js";
 import { sidecarProcessService } from "./services/sidecar/sidecar-process.service.js";
-import { startRuntimeMemoryMonitor } from "./utils/runtime-memory.js";
+import { getRuntimeMemoryPeaks, getRuntimeMemorySnapshot, startRuntimeMemoryMonitor } from "./utils/runtime-memory.js";
 import { reportDiagnosticError } from "./lib/diagnostic-operation.js";
+import { createDiagnostic, wasDiagnosticReported } from "./lib/diagnostics.js";
+import { startup } from "./lib/startup-timeline.js";
+import { checkBuildIntegrity, type BuildIntegrity } from "./lib/build-integrity.js";
+import { getBuildCommit, getBuildLabel } from "./config/build-info.js";
+
+const RUNTIME = import.meta.url.includes("/dist/") ? "dist" : "tsx";
 
 function isAddressInUseError(err: unknown): err is NodeJS.ErrnoException {
   return err instanceof Error && "code" in err && err.code === "EADDRINUSE";
@@ -33,13 +50,12 @@ function scheduleTaskbarShortcutMigration() {
 }
 
 function logFatalProcessError(reason: unknown, message: string): void {
-  const reference = reportDiagnosticError(reason, { operation: "process", stage: "fatal" });
-  if (reason instanceof Error) {
-    logger.error(reason, "%s [%s %s]", message, reference.code, reference.errorId);
-    return;
-  }
-
-  logger.error({ reason, ...reference }, message);
+  reportDiagnosticError(reason, { operation: "process", stage: "fatal" }, undefined, {
+    level: "fatal",
+    event: "process.fatal",
+    message,
+    fields: { uptimeS: Math.round(process.uptime()), commit: getBuildCommit() },
+  });
 }
 
 function stopDevelopmentWatcherAfterLeaseConflict(error: unknown): void {
@@ -69,15 +85,34 @@ function stopDevelopmentWatcherAfterLeaseConflict(error: unknown): void {
 }
 
 async function main() {
+  logger.info(
+    {
+      event: "startup.build",
+      version: APP_VERSION,
+      commit: getBuildCommit(),
+      build: getBuildLabel(),
+      runtime: RUNTIME,
+      node: process.version,
+      pid: process.pid,
+      bootId: getBootId(),
+      heapLimitMiB: getRuntimeMemorySnapshot().heapLimitMiB,
+    },
+    "[startup] Marinara Engine %s starting",
+    getBuildLabel(),
+  );
+  await startup.phase("build.integrity", () => startup.record("buildIntegrity", checkBuildIntegrity()), {
+    optional: true,
+  });
   const tls = loadTlsOptions();
   logStorageDiagnostics();
+  // Started before buildApp so the startup memory peak is captured.
+  let stopRuntimeMemoryMonitor: () => void = startRuntimeMemoryMonitor();
   const app = await buildApp(tls ?? undefined);
   const envWatcher = startEnvWatcher();
   const protocol = tls ? "https" : getServerProtocol();
   const port = getPort();
   const host = getHost();
   let isShuttingDown = false;
-  let stopRuntimeMemoryMonitor: () => void = () => undefined;
 
   const reapSidecar = () => {
     sidecarProcessService.killCurrentChildForProcessExit();
@@ -130,6 +165,13 @@ async function main() {
   process.on("unhandledRejection", (reason) => {
     fatalExit(reason, "[process] Unhandled rejection; closing gracefully before exit");
   });
+  process.on("warning", (w) => {
+    logger.warn(
+      { event: "process.warning", errorCode: w.name, code: (w as NodeJS.ErrnoException).code, err: w },
+      "Node process warning: %s",
+      w.name,
+    );
+  });
 
   const shutdown = async (signal: NodeJS.Signals) => {
     if (isShuttingDown) {
@@ -144,16 +186,21 @@ async function main() {
     // expires on a connection-wait and escalates to a write-dropping SIGKILL.
     armShutdownDeadline(app, signal);
 
+    const shutdownStarted = Date.now();
     try {
       envWatcher.stop();
       stopRuntimeMemoryMonitor();
       stopFreezeDetector();
       await app.close();
-      logger.info("Shutdown complete");
+      logger.info({ event: "shutdown.complete", signal, elapsedMs: Date.now() - shutdownStarted }, "Shutdown complete");
       process.exit(0);
     } catch (err) {
-      const reference = reportDiagnosticError(err, { operation: "shutdown", stage: "shutdown" });
-      logger.error(err, "Shutdown failed [%s %s]", reference.code, reference.errorId);
+      reportDiagnosticError(err, { operation: "shutdown", stage: "shutdown" }, undefined, {
+        level: "error",
+        event: "shutdown.complete",
+        message: "Shutdown failed",
+        fields: { signal, outcome: "failed", elapsedMs: Date.now() - shutdownStarted },
+      });
       process.exit(1);
     }
   };
@@ -172,10 +219,9 @@ async function main() {
 
   try {
     await app.listen({ port, host });
-    logger.info(`Marinara Engine server listening on ${protocol}://${host}:${port}`);
+    logStartupReady(`${protocol}://${host}:${port}`);
     startFreezeDetector();
     startSessionPostmortem();
-    stopRuntimeMemoryMonitor = startRuntimeMemoryMonitor();
     logCsrfTrustSummary();
     scheduleTaskbarShortcutMigration();
   } catch (err) {
@@ -185,22 +231,81 @@ async function main() {
     }
 
     if (isAddressInUseError(err)) {
-      logger.error(
-        err,
-        "Port %d is already in use. Marinara Engine could not start. Close the app using that port or set PORT to another value, for example PORT=7869 bash ./start.sh on macOS/Linux or set PORT=7869 && start.bat in Windows cmd.",
-        port,
-      );
+      reportDiagnosticError(err, { operation: "startup", stage: "listen" }, undefined, {
+        level: "fatal",
+        event: "startup.failed",
+        message: `Port ${port} is already in use. Marinara Engine could not start. Close the app using that port or set PORT to another value, for example PORT=7869 bash ./start.sh on macOS/Linux or set PORT=7869 && start.bat in Windows cmd.`,
+        fields: { stage: "listen", errorCode: "EADDRINUSE", port },
+      });
     } else {
-      const reference = reportDiagnosticError(err, { operation: "startup", stage: "listen" });
-      logger.error(err, "Startup listen failed [%s %s]", reference.code, reference.errorId);
+      reportDiagnosticError(err, { operation: "startup", stage: "listen" }, undefined, {
+        level: "fatal",
+        event: "startup.failed",
+        message: "[startup] Listen failed",
+        fields: { stage: "listen" },
+      });
     }
     process.exit(1);
   }
 }
 
+/** One startup.ready line: the startup summary plus where the server runs. Warn when a package failed or the build is stale. */
+function logStartupReady(url: string): void {
+  startup.record("memory", { ...getRuntimeMemorySnapshot(), ...getRuntimeMemoryPeaks() });
+  const summary = startup.summary();
+  const packages = summary.packages as { activated?: unknown[]; failed?: unknown[] } | undefined;
+  const buildIntegrity = summary.buildIntegrity as BuildIntegrity | undefined;
+  const failedCount = packages?.failed?.length ?? 0;
+  const activeCount = packages?.activated?.length ?? 0;
+  const buildStale = buildIntegrity?.stale === true;
+  const level = failedCount > 0 || buildStale ? "warn" : "info";
+  logger[level](
+    {
+      ...summary,
+      event: "startup.ready",
+      version: APP_VERSION,
+      commit: getBuildCommit(),
+      runtime: RUNTIME,
+      node: process.version,
+      url,
+      buildStale,
+      dataDir: getDataDir(),
+      fileStorageDir: getFileStorageDir(),
+      logLevel: { console: getLogLevel(), file: getLogFileLevel() },
+    },
+    "Marinara Engine ready on %s in %d ms (%d packages active, %d failed)",
+    url,
+    summary.elapsedMs,
+    activeCount,
+    failedCount,
+  );
+}
+
 main().catch((err) => {
-  const reference = reportDiagnosticError(err, { operation: "startup", stage: "bootstrap" });
-  logger.error(err, "[startup] Unhandled error during server bootstrap [%s %s]", reference.code, reference.errorId);
+  const stage = startup.stageOf(err) ?? startup.currentStage ?? "bootstrap";
+  if (wasDiagnosticReported(err)) {
+    // The phase already wrote the full error; this line only says the boot stopped there.
+    const ref = createDiagnostic(err);
+    logger.fatal(
+      {
+        event: "startup.failed",
+        stage,
+        errorId: ref.errorId,
+        errorCode: ref.code,
+        elapsedMs: Math.round(process.uptime() * 1000),
+        completedPhases: startup.phases.filter((phase) => phase.outcome === "ok").length,
+      },
+      "[startup] Bootstrap failed in phase %s",
+      stage,
+    );
+  } else {
+    reportDiagnosticError(
+      err,
+      { operation: "startup", operationId: getBootId(), stage },
+      err instanceof StorageWriterLeaseError ? "ME_STORAGE_LEASE" : undefined,
+      { level: "fatal", event: "startup.failed", message: `[startup] Bootstrap failed in phase ${stage}` },
+    );
+  }
   stopDevelopmentWatcherAfterLeaseConflict(err);
   process.exit(1);
 });

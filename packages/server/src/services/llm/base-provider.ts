@@ -2,8 +2,7 @@
 // LLM Provider — Abstract Base
 // ──────────────────────────────────────────────
 import { logger } from "../../lib/logger.js";
-import { reportDiagnosticError } from "../../lib/diagnostic-operation.js";
-import { diagnosticDetails, getDiagnosticContext } from "../../lib/diagnostics.js";
+import { createDiagnostic, getDiagnosticContext } from "../../lib/diagnostics.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
   getChatGenerationTimeoutMs,
@@ -11,6 +10,7 @@ import {
   isProviderLocalUrlsEnabled,
 } from "../../config/runtime-config.js";
 import { requestHeadersWithIdentityEncoding, safeFetch, type SafeFetchOptions } from "../../utils/security.js";
+import { providerRequestIdFrom, safeHost } from "./provider-error.js";
 import {
   estimateTextTokens,
   sliceTextToTokenBudget,
@@ -43,31 +43,80 @@ export function withLlmResolvedAddressOffset<T>(offset: number, operation: () =>
  * Drop-in replacement for `fetch()` that uses a custom undici dispatcher
  * with provider-oriented timeout settings. Use this for all outgoing LLM requests.
  */
-export function llmFetch(
+export async function llmFetch(
   url: string | URL,
   init?: RequestInit &
     Pick<SafeFetchOptions, "agentOptions" | "bufferResponse" | "decodeCompressedResponse" | "resolvedAddressOffset">,
 ): Promise<Response> {
   const bufferResponse = init?.bufferResponse ?? false;
   const requestTimeoutMs = llmRequestTimeout.getStore();
-  return safeFetch(url, {
-    ...(init ?? {}),
-    headers: requestHeadersWithIdentityEncoding(init?.headers),
-    policy: {
-      allowLocal: isProviderLocalUrlsEnabled(),
-      allowLoopback: true,
-      allowMdns: true,
-      allowedProtocols: ["https:", "http:"],
-      flagName: "PROVIDER_LOCAL_URLS_ENABLED",
-    },
-    maxResponseBytes: 50 * 1024 * 1024,
-    agentOptions:
-      init?.agentOptions ??
-      (requestTimeoutMs ? { bodyTimeout: requestTimeoutMs, headersTimeout: requestTimeoutMs } : llmAgentOptions()),
-    bufferResponse,
-    decodeCompressedResponse: init?.decodeCompressedResponse ?? bufferResponse,
-    resolvedAddressOffset: init?.resolvedAddressOffset ?? llmResolvedAddressOffset.getStore() ?? 0,
-  });
+  const agentOptions =
+    init?.agentOptions ??
+    (requestTimeoutMs ? { bodyTimeout: requestTimeoutMs, headersTimeout: requestTimeoutMs } : llmAgentOptions());
+  // Host and method only: the path and query can carry keys or ids and are never logged.
+  const host = safeHost(String(url));
+  const method = (init?.method ?? "GET").toUpperCase();
+  const startedAt = Date.now();
+  let res: Response;
+  try {
+    res = await safeFetch(url, {
+      ...(init ?? {}),
+      headers: requestHeadersWithIdentityEncoding(init?.headers),
+      policy: {
+        allowLocal: isProviderLocalUrlsEnabled(),
+        allowLoopback: true,
+        allowMdns: true,
+        allowedProtocols: ["https:", "http:"],
+        flagName: "PROVIDER_LOCAL_URLS_ENABLED",
+      },
+      maxResponseBytes: 50 * 1024 * 1024,
+      agentOptions,
+      bufferResponse,
+      decodeCompressedResponse: init?.decodeCompressedResponse ?? bufferResponse,
+      resolvedAddressOffset: init?.resolvedAddressOffset ?? llmResolvedAddressOffset.getStore() ?? 0,
+    });
+  } catch (err) {
+    const elapsedMs = Date.now() - startedAt;
+    const errorCode = transportErrorCode(err);
+    // No err object here: the caller reports the failure once, with the stack.
+    logger.warn({ event: "llm.http", outcome: "failed", host, method, errorCode, elapsedMs }, "LLM request failed");
+    // Cancellations keep their own type so abort detection further up still recognises them.
+    if (init?.signal?.aborted || isAbortLikeName(err)) throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    throw Object.assign(new Error(`LLM transport failed: ${msg}`, { cause: err }), {
+      name: "LLMTransportError",
+      host,
+      elapsedMs,
+      timeoutMs: (agentOptions as { headersTimeout?: number } | undefined)?.headersTimeout,
+    });
+  }
+  const elapsedMs = Date.now() - startedAt;
+  const record = {
+    event: "llm.http",
+    host,
+    method,
+    httpStatus: res.status,
+    elapsedMs,
+    providerRequestId: providerRequestIdFrom(res.headers),
+  };
+  if (res.ok) logger.debug(record, "LLM request answered");
+  else logger.warn({ ...record, outcome: "failed" }, "LLM request answered with an error status");
+  return res;
+}
+
+function transportErrorCode(err: unknown): string | undefined {
+  let current: unknown = err;
+  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth++) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string" && code) return code;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+function isAbortLikeName(err: unknown): boolean {
+  const name = err && typeof err === "object" ? (err as { name?: unknown }).name : undefined;
+  return name === "AbortError" || name === "TimeoutError";
 }
 
 export function yieldToEventLoop(): Promise<void> {
@@ -787,13 +836,19 @@ export abstract class BaseLLMProvider {
 
   protected logContextTrim(result: ContextFitResult, model: string): void {
     if (!result.trimmed || !result.inputBudget) return;
-    logger.warn(
-      "[LLM context] Trimmed prompt for %s from ~%d to ~%d tokens (budget ~%d, maxContext=%d)",
-      model,
-      result.estimatedTokensBefore,
-      result.estimatedTokensAfter,
-      result.inputBudget!,
-      result.maxContext!,
+    const droppedTokens = Math.max(0, result.estimatedTokensBefore - result.estimatedTokensAfter);
+    const heavy = result.estimatedTokensBefore > 0 && droppedTokens / result.estimatedTokensBefore > 0.3;
+    logger[heavy ? "warn" : "info"](
+      {
+        event: "llm.context.trim",
+        model,
+        estimatedTokensBefore: result.estimatedTokensBefore,
+        estimatedTokensAfter: result.estimatedTokensAfter,
+        inputBudget: result.inputBudget,
+        maxContext: result.maxContext,
+        droppedTokens,
+      },
+      "Trimmed the prompt to fit the context window",
     );
   }
 
@@ -838,40 +893,30 @@ export abstract class BaseLLMProvider {
       ...getDiagnosticContext(),
       operation: "llm.completion",
       stage: "completion",
-      provider: this.constructor.name,
+      providerClass: this.constructor.name,
       model: options.model,
     };
     let content = "";
     const useStream = options.stream ?? !!options.onToken;
     const gen = this.chat(messages, { ...options, stream: useStream });
     const returnPartialOnStreamFailure = (error: unknown): ChatCompletionResult => {
-      if (!content) {
-        const diagnostic = reportDiagnosticError(error, context);
-        logger.error(
-          {
-            ...diagnostic,
-            diagnostic,
-            operation: context.operation,
-            stage: "completion",
-            provider: context.provider,
-            model: context.model,
-            elapsedMs: Date.now() - startedAt,
-            error: diagnosticDetails(error),
-          },
-          "LLM completion failed",
-        );
-        throw error;
-      }
-      const diagnostic = reportDiagnosticError(error, { ...context, stage: "partial-stream" });
+      // DiagnosticProvider owns the one failure line for a failed call, so a failure with no
+      // content is only rethrown here.
+      if (!content) throw error;
+      const diagnostic = createDiagnostic(error, { ...context, stage: "partial-stream" });
       logger.warn(
         {
-          diagnostic,
+          event: "llm.call",
           operation: context.operation,
           stage: "partial-stream",
-          provider: context.provider,
+          outcome: "failed",
+          degraded: true,
+          providerClass: context.providerClass,
           model: context.model,
           elapsedMs: Date.now() - startedAt,
-          error: diagnosticDetails(error),
+          outputLength: content.length,
+          errorId: diagnostic.errorId,
+          errorCode: diagnostic.code,
         },
         "LLM stream failed after partial content; returning partial completion",
       );
@@ -888,12 +933,8 @@ export abstract class BaseLLMProvider {
       while (!result.done) {
         content += result.value;
         if (options.onToken) {
-          try {
-            await options.onToken(result.value);
-          } catch (error) {
-            reportDiagnosticError(error, { ...context, stage: "partial-stream" });
-            throw error;
-          }
+          // A callback failure propagates to DiagnosticProvider, which reports it once.
+          await options.onToken(result.value);
         }
         try {
           result = await gen.next();
@@ -908,7 +949,10 @@ export abstract class BaseLLMProvider {
       // return the way `yield*` would, so an `onToken` throw would leave the stream suspended
       // and an admission wrapper around it would never run its finally, leaking the slot.
       await gen.return(undefined).catch((closeError: unknown) => {
-        logger.warn(closeError, "Failed to close the completion stream");
+        logger.warn(
+          { event: "llm.stream.close", outcome: "failed", err: closeError },
+          "Failed to close the completion stream",
+        );
       });
     }
   }

@@ -15,6 +15,7 @@ import {
 } from "../tools/tool-executor.js";
 import { resolveSpotifyCredentials, spotifyHasScope } from "../spotify/spotify.service.js";
 import { logger } from "../../lib/logger.js";
+import { orFallback } from "../../lib/best-effort.js";
 import { semanticShortlistLorebookEntries, type LorebookEmbeddingOptions } from "../lorebook/embeddings.js";
 import {
   agentWriteApprovalRequired,
@@ -672,7 +673,11 @@ function createLorebookEntryWriter(
     // envelope (mirroring the structured lorebook_update gate) so the user approves
     // the write before it touches the lorebook DB.
     if (options.requireApproval) {
-      const existingEntries = await lorebooksStore.listEntries(writableLorebookId).catch(() => []);
+      const existingEntries = await orFallback(lorebooksStore.listEntries(writableLorebookId), [], {
+        event: "storage.read.fallback",
+        stage: "lorebook.entries",
+        chatId: options.chatId,
+      });
       return {
         requiresApproval: true,
         approval: buildLorebookWriteApprovalProposal({

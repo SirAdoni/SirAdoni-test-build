@@ -64,6 +64,8 @@ import type { ConversationStatusOverride } from "@marinara-engine/shared";
 import { MESSAGE_MARK_EXTRA_KEYS } from "@marinara-engine/shared";
 import { resolveConversationTimeZone } from "../conversation/timezone.js";
 import { logger } from "../../lib/logger.js";
+import { withDiagnosticContext } from "../../lib/diagnostics.js";
+import { parseStoredJson, type StoredJsonLocation } from "./stored-json.js";
 import {
   compactLorebookScanInExtra,
   lorebookScanHasContent,
@@ -175,17 +177,10 @@ export async function withMessageExtraPatchQueue<T>(messageId: string, operation
   return withPatchQueue(messageExtraPatchQueues, messageId, operation);
 }
 
-function parseMetadata(raw: unknown): MetadataPatch {
+function parseMetadata(raw: unknown, chatId = "unknown"): MetadataPatch {
   if (!raw) return {};
-  if (typeof raw === "string") {
-    try {
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === "object" ? (parsed as MetadataPatch) : {};
-    } catch {
-      return {};
-    }
-  }
-  return typeof raw === "object" ? (raw as MetadataPatch) : {};
+  const parsed = parseStoredJson<unknown>(raw, {}, { table: "chats", rowId: chatId, field: "metadata" });
+  return parsed && typeof parsed === "object" ? (parsed as MetadataPatch) : {};
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -577,18 +572,17 @@ function serializeJsonField(value: unknown, fallback: Record<string, unknown>) {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
 
-function parseExtraRecord(value: unknown): Record<string, unknown> {
+function parseExtraRecord(
+  value: unknown,
+  where: StoredJsonLocation = { table: "messages", rowId: "unknown", field: "extra" },
+): Record<string, unknown> {
   if (!value) return {};
-  if (typeof value === "string") {
-    try {
-      const parsed = JSON.parse(value);
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
-    } catch {
-      return {};
-    }
-  }
-  return typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  const parsed = parseStoredJson<unknown>(value, {}, where);
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
 }
+
+const messageExtraAt = (rowId: string): StoredJsonLocation => ({ table: "messages", rowId, field: "extra" });
+const swipeExtraAt = (rowId: string): StoredJsonLocation => ({ table: "message_swipes", rowId, field: "extra" });
 
 function freshSwipeMessageExtra(value: unknown): Record<string, unknown> {
   const current = parseExtraRecord(value);
@@ -744,19 +738,24 @@ export function createChatsStorage(db: DB) {
         await withPatchQueue(messageExtraPatchQueues, messageId, async () => {
           if (messageId !== keepMessageId) {
             const message = await readMessage(messageId);
-            const compacted = message ? compactLorebookScanInExtra(parseExtraRecord(message.extra)) : null;
+            const compacted = message
+              ? compactLorebookScanInExtra(parseExtraRecord(message.extra, messageExtraAt(message.id)))
+              : null;
             if (compacted)
               await db.update(messages).set({ extra: JSON.stringify(compacted) }).where(eq(messages.id, messageId));
           }
           for (const swipe of await readSwipes(messageId)) {
-            const compacted = compactLorebookScanInExtra(parseExtraRecord(swipe.extra));
+            const compacted = compactLorebookScanInExtra(parseExtraRecord(swipe.extra, swipeExtraAt(swipe.id)));
             if (compacted)
               await db.update(messageSwipes).set({ extra: JSON.stringify(compacted) }).where(eq(messageSwipes.id, swipe.id));
           }
         });
       }
     } catch (error) {
-      logger.warn(error, "[chats] Could not compact older lorebook scans for chat %s", chatId);
+      logger.warn(
+        { err: error, chatId, event: "chat.lorebook.compact", stage: "compact" },
+        "[chats] Could not compact older lorebook scans",
+      );
     }
   }
   const receipts = (extra: unknown) =>
@@ -823,12 +822,14 @@ export function createChatsStorage(db: DB) {
     if (!swipe) throw new RoleplayInterruptionConflictError("The response swipe no longer exists.");
     await db
       .update(messageSwipes)
-      .set({ extra: JSON.stringify({ ...parseExtraRecord(swipe.extra), ...swipeExtraPatch(extra) }) })
+      .set({
+        extra: JSON.stringify({ ...parseExtraRecord(swipe.extra, swipeExtraAt(swipe.id)), ...swipeExtraPatch(extra) }),
+      })
       .where(eq(messageSwipes.id, swipe.id));
     if (owner.activeSwipeIndex === swipeIndex)
       await db
         .update(messages)
-        .set({ extra: JSON.stringify({ ...parseExtraRecord(owner.extra), ...extra }) })
+        .set({ extra: JSON.stringify({ ...parseExtraRecord(owner.extra, messageExtraAt(owner.id)), ...extra }) })
         .where(eq(messages.id, owner.id));
   }
 
@@ -929,7 +930,7 @@ export function createChatsStorage(db: DB) {
     metadata: unknown;
   }): Promise<boolean> {
     if (chat.mode !== "game") return false;
-    const meta = parseMetadata(chat.metadata);
+    const meta = parseMetadata(chat.metadata, chat.id);
     const hasGameId = typeof meta.gameId === "string" && meta.gameId.trim().length > 0;
     return hasGameId || (await hasGameDeletePayload(chat.id));
   }
@@ -1259,7 +1260,10 @@ export function createChatsStorage(db: DB) {
       try {
         await unlinkGalleryFileIfUnreferenced({ db, filePath });
       } catch (error) {
-        logger.warn(error, "Failed to remove gallery file after deleting chat %s", chatId);
+        logger.warn(
+          { err: error, chatId, event: "chat.delete.cleanup", stage: "gallery" },
+          "[chats] Failed to remove gallery file after deleting chat",
+        );
       }
     }
 
@@ -1272,7 +1276,10 @@ export function createChatsStorage(db: DB) {
             try {
               return await galleryFileHasReferences(db, filePath);
             } catch (error) {
-              logger.warn(error, "Failed to check gallery references after deleting chat %s", chatId);
+              logger.warn(
+                { err: error, chatId, event: "chat.delete.cleanup", stage: "gallery_references" },
+                "[chats] Failed to check gallery references after deleting chat",
+              );
               return true;
             }
           }),
@@ -1287,7 +1294,10 @@ export function createChatsStorage(db: DB) {
       try {
         rmSync(directory, { recursive: true, force: true });
       } catch (error) {
-        logger.warn(error, "Failed to remove files after deleting chat %s", chatId);
+        logger.warn(
+          { err: error, chatId, event: "chat.delete.cleanup", stage: "directories" },
+          "[chats] Failed to remove files after deleting chat",
+        );
       }
     }
   }
@@ -1322,7 +1332,7 @@ export function createChatsStorage(db: DB) {
         input.mode === "conversation"
           ? (
               await db
-                .select({ metadata: chats.metadata })
+                .select({ id: chats.id, metadata: chats.metadata })
                 .from(chats)
                 .where(eq(chats.mode, "conversation"))
                 .orderBy(desc(chats.updatedAt))
@@ -1330,7 +1340,7 @@ export function createChatsStorage(db: DB) {
             )[0]
           : undefined;
       const conversationTimeZone = recentConversation
-        ? resolveConversationTimeZone(parseMetadata(recentConversation.metadata))
+        ? resolveConversationTimeZone(parseMetadata(recentConversation.metadata, recentConversation.id))
         : undefined;
       const inheritedSchedules =
         input.mode === "conversation" ? await collectConversationSchedules(input.characterIds) : {};
@@ -1378,7 +1388,7 @@ export function createChatsStorage(db: DB) {
       const chat = await this.getById(id);
       if (!chat || chat.mode !== "conversation") return { schedules: {}, statusOverrides: {} };
 
-      const meta = parseMetadata(chat.metadata);
+      const meta = parseMetadata(chat.metadata, chat.id);
       const characterIds = parseCharacterIds(chat.characterIds);
 
       // Hoist before the opt-in gate, so a chat that is switched off does not
@@ -1424,7 +1434,7 @@ export function createChatsStorage(db: DB) {
       const chat = await this.getById(id);
       if (!chat || chat.mode !== "conversation") return {};
 
-      const meta = parseMetadata(chat.metadata);
+      const meta = parseMetadata(chat.metadata, chat.id);
       if (!areConversationSchedulesEnabled(meta)) return {};
 
       const characterIds = parseCharacterIds(chat.characterIds);
@@ -1600,7 +1610,7 @@ export function createChatsStorage(db: DB) {
           .from(chats)
           .where(eq(chats.id, id));
         if (!row) return null;
-        const ordinal = nextWriteOrdinal(row.writeOrdinalCounter, parseMetadata(row.metadata));
+        const ordinal = nextWriteOrdinal(row.writeOrdinalCounter, parseMetadata(row.metadata, id));
         // Counter only — allocating an ordinal is not a user-visible chat edit, so it must not
         // reorder the chat list the way a touched updatedAt would.
         await db.update(chats).set({ writeOrdinalCounter: ordinal }).where(eq(chats.id, id));
@@ -1649,7 +1659,7 @@ export function createChatsStorage(db: DB) {
         const existing = await this.getById(id);
         if (!existing) return null;
 
-        const current = parseMetadata(existing.metadata);
+        const current = parseMetadata(existing.metadata, existing.id);
         // #5406: fingerprint BEFORE the updater runs. `{ ...current }` is a shallow copy, so an
         // updater that mutates a nested value in place mutates `current`'s value too and the
         // post-hoc comparison would see two identical objects and skip the stamp.
@@ -1713,7 +1723,7 @@ export function createChatsStorage(db: DB) {
         const existing = await this.getById(id);
         if (!existing) return null;
 
-        const current = parseMetadata(existing.metadata);
+        const current = parseMetadata(existing.metadata, existing.id);
         const before = fingerprintMetadata(current);
         const { metadata: raw, characterIds } = await updater({ ...current });
         const patch = stripOrdinalMirrorKey(raw);
@@ -1784,7 +1794,7 @@ export function createChatsStorage(db: DB) {
             if (allChats.some((chat) => !lockedIds.has(chat.id))) return false;
             const removedEntryIds = new Set(await remove());
             for (const chat of allChats) {
-              const metadata = parseMetadata(chat.metadata);
+              const metadata = parseMetadata(chat.metadata, chat.id);
               const hasBook =
                 lorebookId &&
                 ["activeLorebookIds", "excludedLorebookIds"].some(
@@ -1815,29 +1825,33 @@ export function createChatsStorage(db: DB) {
     },
 
     async remove(id: string) {
-      const galleryFilePaths = await db.transaction((tx) => removeChatDatabaseRecords(tx, id));
-      await cleanupDeletedChatFiles(id, galleryFilePaths);
+      return withDiagnosticContext({ chatId: id, operation: "chat.delete" }, async () => {
+        const galleryFilePaths = await db.transaction((tx) => removeChatDatabaseRecords(tx, id));
+        await cleanupDeletedChatFiles(id, galleryFilePaths);
+      });
     },
 
     /** Atomically remove a marked Roleplay DM thread only while it is still empty. */
     async removeEmptyRoleplayDmChat(id: string): Promise<boolean> {
-      const galleryFilePaths = await db.transaction(async (tx) => {
-        const rows = await tx.select().from(chats).where(eq(chats.id, id)).limit(1);
-        const chat = rows[0];
-        if (!chat) return null;
-        const metadata = parseMetadata(chat.metadata);
-        if (metadata.roleplayDmThread !== true && typeof metadata.dmOriginChatId !== "string") return null;
-        const existingMessages = await tx
-          .select({ id: messages.id })
-          .from(messages)
-          .where(eq(messages.chatId, id))
-          .limit(1);
-        if (existingMessages.length > 0) return null;
-        return removeChatDatabaseRecords(tx, id);
+      return withDiagnosticContext({ chatId: id, operation: "chat.delete" }, async () => {
+        const galleryFilePaths = await db.transaction(async (tx) => {
+          const rows = await tx.select().from(chats).where(eq(chats.id, id)).limit(1);
+          const chat = rows[0];
+          if (!chat) return null;
+          const metadata = parseMetadata(chat.metadata, chat.id);
+          if (metadata.roleplayDmThread !== true && typeof metadata.dmOriginChatId !== "string") return null;
+          const existingMessages = await tx
+            .select({ id: messages.id })
+            .from(messages)
+            .where(eq(messages.chatId, id))
+            .limit(1);
+          if (existingMessages.length > 0) return null;
+          return removeChatDatabaseRecords(tx, id);
+        });
+        if (!galleryFilePaths) return false;
+        await cleanupDeletedChatFiles(id, galleryFilePaths);
+        return true;
       });
-      if (!galleryFilePaths) return false;
-      await cleanupDeletedChatFiles(id, galleryFilePaths);
-      return true;
     },
 
     /** Delete all chats in a group (all branches). */
@@ -1852,7 +1866,9 @@ export function createChatsStorage(db: DB) {
       });
 
       for (const chat of deletedChats) {
-        await cleanupDeletedChatFiles(chat.id, chat.galleryFilePaths);
+        await withDiagnosticContext({ chatId: chat.id, operation: "chat.delete" }, () =>
+          cleanupDeletedChatFiles(chat.id, chat.galleryFilePaths),
+        );
       }
     },
 
@@ -2201,7 +2217,9 @@ export function createChatsStorage(db: DB) {
         if (!owner) return { message: null, restoredMessages: [] };
         if (options.swipeIndex !== undefined && options.swipeIndex !== owner.activeSwipeIndex)
           throw new RoleplayInterruptionConflictError("The selected response swipe changed.");
-        const activity = getRoleplayCommandActivity(parseExtraRecord(owner.extra)).map((item) => ({ ...item }));
+        const activity = getRoleplayCommandActivity(parseExtraRecord(owner.extra, messageExtraAt(owner.id))).map(
+          (item) => ({ ...item }),
+        );
         const restoredMessages: MessageRow[] = [];
         for (let index = 0; index < activity.length; index++) {
           if (options.activityIndex !== undefined && options.activityIndex !== index) continue;
@@ -2288,8 +2306,8 @@ export function createChatsStorage(db: DB) {
       for (const owner of rows) {
         for (const swipe of await readSwipes(owner.id)) {
           const extra = {
-            ...parseExtraRecord(swipe.extra),
-            ...(swipe.index === owner.activeSwipeIndex ? parseExtraRecord(owner.extra) : {}),
+            ...parseExtraRecord(swipe.extra, swipeExtraAt(swipe.id)),
+            ...(swipe.index === owner.activeSwipeIndex ? parseExtraRecord(owner.extra, messageExtraAt(owner.id)) : {}),
           };
           const activity = getRoleplayCommandActivity(extra).map((item) => ({ ...item }));
           let changed = false;
@@ -2356,7 +2374,7 @@ export function createChatsStorage(db: DB) {
             if (activeSwipe) {
               const swipePatch: Record<string, unknown> = { content };
               if (clearCommandContent) {
-                const swipeExtra = parseExtraRecord(activeSwipe.extra);
+                const swipeExtra = parseExtraRecord(activeSwipe.extra, swipeExtraAt(activeSwipe.id));
                 // Clear only a raw copy this swipe itself carries, and never a
                 // command-only carrier's.
                 if (
@@ -2383,7 +2401,7 @@ export function createChatsStorage(db: DB) {
       const updated = await withPatchQueue(messageExtraPatchQueues, id, async () => {
         const msg = await this.getMessage(id);
         if (!msg) return null;
-        const existing = parseExtraRecord(msg.extra);
+        const existing = parseExtraRecord(msg.extra, messageExtraAt(msg.id));
         const merged = { ...existing, ...partial };
         await db
           .update(messages)
@@ -2393,7 +2411,7 @@ export function createChatsStorage(db: DB) {
         const swipes = await this.getSwipes(id);
         const activeSwipe = swipes.find((s: any) => s.index === msg.activeSwipeIndex);
         if (activeSwipe) {
-          const swipeExtra = parseExtraRecord(activeSwipe.extra);
+          const swipeExtra = parseExtraRecord(activeSwipe.extra, swipeExtraAt(activeSwipe.id));
           await db
             .update(messageSwipes)
             .set({ extra: JSON.stringify({ ...swipeExtra, ...swipeExtraPatch(partial) }) })
@@ -2415,14 +2433,14 @@ export function createChatsStorage(db: DB) {
         const targetSwipe = swipes.find((s: any) => s.index === swipeIndex);
         if (!targetSwipe) return null;
 
-        const swipeExtra = parseExtraRecord(targetSwipe.extra);
+        const swipeExtra = parseExtraRecord(targetSwipe.extra, swipeExtraAt(targetSwipe.id));
         await db
           .update(messageSwipes)
           .set({ extra: JSON.stringify({ ...swipeExtra, ...swipeExtraPatch(partial) }) })
           .where(and(eq(messageSwipes.messageId, id), eq(messageSwipes.id, targetSwipe.id)));
 
         if (msg.activeSwipeIndex === swipeIndex) {
-          const msgExtra = parseExtraRecord(msg.extra);
+          const msgExtra = parseExtraRecord(msg.extra, messageExtraAt(msg.id));
           await db
             .update(messages)
             .set({ extra: JSON.stringify({ ...msgExtra, ...partial }) })
@@ -2442,14 +2460,14 @@ export function createChatsStorage(db: DB) {
         const swipes = await this.getSwipes(id);
         const targetSwipe = swipes.find((swipe: any) => swipe.index === swipeIndex);
         if (!targetSwipe) return false;
-        const swipeExtra = parseExtraRecord(targetSwipe.extra);
+        const swipeExtra = parseExtraRecord(targetSwipe.extra, swipeExtraAt(targetSwipe.id));
         if (swipeExtra[key] && typeof swipeExtra[key] === "object") return false;
         await db
           .update(messageSwipes)
           .set({ extra: JSON.stringify({ ...swipeExtra, [key]: value }) })
           .where(and(eq(messageSwipes.messageId, id), eq(messageSwipes.id, targetSwipe.id)));
         if (msg.activeSwipeIndex === swipeIndex) {
-          const messageExtra = parseExtraRecord(msg.extra);
+          const messageExtra = parseExtraRecord(msg.extra, messageExtraAt(msg.id));
           await db
             .update(messages)
             .set({ extra: JSON.stringify({ ...messageExtra, [key]: value }) })
@@ -2474,76 +2492,81 @@ export function createChatsStorage(db: DB) {
      */
     async bulkSetHiddenFromAI(chatId: string, messageIds: string[], hidden: boolean): Promise<string[]> {
       if (messageIds.length === 0) return [];
-      const uniqueIds = Array.from(new Set(messageIds));
-      const scopedRows: { id: string; extra: string | null }[] = [];
-      const CHUNK = 500;
-      for (let i = 0; i < uniqueIds.length; i += CHUNK) {
-        const batch = uniqueIds.slice(i, i + CHUNK);
-        const batchRows = await db
-          .select({ id: messages.id, extra: messages.extra })
-          .from(messages)
-          .where(and(eq(messages.chatId, chatId), inArray(messages.id, batch)));
-        scopedRows.push(...batchRows);
-      }
+      return withDiagnosticContext({ chatId, operation: "chat.messages.hide" }, async () => {
+        const uniqueIds = Array.from(new Set(messageIds));
+        const scopedRows: { id: string; extra: string | null }[] = [];
+        const CHUNK = 500;
+        for (let i = 0; i < uniqueIds.length; i += CHUNK) {
+          const batch = uniqueIds.slice(i, i + CHUNK);
+          const batchRows = await db
+            .select({ id: messages.id, extra: messages.extra })
+            .from(messages)
+            .where(and(eq(messages.chatId, chatId), inArray(messages.id, batch)));
+          scopedRows.push(...batchRows);
+        }
 
-      const seen = new Set<string>();
-      const flipped: string[] = [];
-      try {
-        for (const row of scopedRows) {
-          if (seen.has(row.id)) continue;
-          seen.add(row.id);
-          // State read immediately before the write — the moment-of-mutation truth
-          // that decides whether THIS call flips the message into the target state.
-          let wasHidden = false;
-          try {
-            const parsed = typeof row.extra === "string" ? JSON.parse(row.extra) : (row.extra ?? {});
-            wasHidden = (parsed as { hiddenFromAI?: unknown } | null)?.hiddenFromAI === true;
-          } catch {
-            wasHidden = false;
-          }
-          await this.updateMessageExtra(row.id, { hiddenFromAI: hidden });
-          // Mirror what the single-message /extra route does: propagate the flag to
-          // all swipe rows so setActiveSwipe() cannot clobber it. Done for every
-          // scoped row (idempotent when already in the target state) so swipe
-          // consistency never depends on whether the main row happened to flip.
-          const swipes = await this.getSwipes(row.id);
-          for (const swipe of swipes) {
-            await this.updateSwipeExtra(row.id, swipe.index, { hiddenFromAI: hidden });
-          }
-          if (wasHidden !== hidden) flipped.push(row.id);
-        }
-      } catch (err) {
-        // A write failed partway through. The rows we did not reach are untouched,
-        // and rows already in the target state were never flipped, so the only
-        // partial state is the `flipped` set. Undo exactly those so the call is
-        // all-or-nothing and a caller never records ownership of a half-applied
-        // batch. (db.transaction() is intentionally avoided in this store — see the
-        // bounded bulk-insert path above — so this
-        // compensating undo is the atomicity mechanism.) A clean undo preserves
-        // the original error. A failed undo is surfaced as a compound failure so
-        // callers never mistake a partially restored batch for a clean rollback.
-        const undoErrors: unknown[] = [];
-        for (const id of flipped) {
-          try {
-            await this.updateMessageExtra(id, { hiddenFromAI: !hidden });
-            const swipes = await this.getSwipes(id);
-            for (const swipe of swipes) {
-              await this.updateSwipeExtra(id, swipe.index, { hiddenFromAI: !hidden });
+        const seen = new Set<string>();
+        const flipped: string[] = [];
+        try {
+          for (const row of scopedRows) {
+            if (seen.has(row.id)) continue;
+            seen.add(row.id);
+            // State read immediately before the write — the moment-of-mutation truth
+            // that decides whether THIS call flips the message into the target state.
+            let wasHidden = false;
+            try {
+              const parsed = typeof row.extra === "string" ? JSON.parse(row.extra) : (row.extra ?? {});
+              wasHidden = (parsed as { hiddenFromAI?: unknown } | null)?.hiddenFromAI === true;
+            } catch {
+              wasHidden = false;
             }
-          } catch (undoErr) {
-            undoErrors.push(undoErr);
-            logger.error(undoErr, "bulkSetHiddenFromAI: failed to undo partial hide for message %s", id);
+            await this.updateMessageExtra(row.id, { hiddenFromAI: hidden });
+            // Mirror what the single-message /extra route does: propagate the flag to
+            // all swipe rows so setActiveSwipe() cannot clobber it. Done for every
+            // scoped row (idempotent when already in the target state) so swipe
+            // consistency never depends on whether the main row happened to flip.
+            const swipes = await this.getSwipes(row.id);
+            for (const swipe of swipes) {
+              await this.updateSwipeExtra(row.id, swipe.index, { hiddenFromAI: hidden });
+            }
+            if (wasHidden !== hidden) flipped.push(row.id);
           }
+        } catch (err) {
+          // A write failed partway through. The rows we did not reach are untouched,
+          // and rows already in the target state were never flipped, so the only
+          // partial state is the `flipped` set. Undo exactly those so the call is
+          // all-or-nothing and a caller never records ownership of a half-applied
+          // batch. (db.transaction() is intentionally avoided in this store — see the
+          // bounded bulk-insert path above — so this
+          // compensating undo is the atomicity mechanism.) A clean undo preserves
+          // the original error. A failed undo is surfaced as a compound failure so
+          // callers never mistake a partially restored batch for a clean rollback.
+          const undoErrors: unknown[] = [];
+          for (const id of flipped) {
+            try {
+              await this.updateMessageExtra(id, { hiddenFromAI: !hidden });
+              const swipes = await this.getSwipes(id);
+              for (const swipe of swipes) {
+                await this.updateSwipeExtra(id, swipe.index, { hiddenFromAI: !hidden });
+              }
+            } catch (undoErr) {
+              undoErrors.push(undoErr);
+              logger.error(
+                { err: undoErr, chatId, messageId: id, event: "chat.messages.hide", stage: "rollback" },
+                "[chats] bulkSetHiddenFromAI: failed to undo partial hide for message",
+              );
+            }
+          }
+          if (undoErrors.length > 0) {
+            throw new AggregateError(
+              [err, ...undoErrors],
+              `bulkSetHiddenFromAI failed and rollback failed for ${undoErrors.length} of ${flipped.length} flipped messages`,
+            );
+          }
+          throw err;
         }
-        if (undoErrors.length > 0) {
-          throw new AggregateError(
-            [err, ...undoErrors],
-            `bulkSetHiddenFromAI failed and rollback failed for ${undoErrors.length} of ${flipped.length} flipped messages`,
-          );
-        }
-        throw err;
-      }
-      return flipped;
+        return flipped;
+      });
     },
 
     /**
@@ -2670,7 +2693,7 @@ export function createChatsStorage(db: DB) {
         const swipes = await this.listSwipesByMessageIds(inScopeIds);
         const swipesByMessageId = new Map<string, typeof swipes>();
         for (const swipe of swipes) {
-          parseExtraRecord(swipe.extra);
+          parseExtraRecord(swipe.extra, swipeExtraAt(swipe.id));
           const messageSwipesForId = swipesByMessageId.get(swipe.messageId) ?? [];
           messageSwipesForId.push(swipe);
           swipesByMessageId.set(swipe.messageId, messageSwipesForId);
@@ -2685,7 +2708,7 @@ export function createChatsStorage(db: DB) {
                 messagePersonaSnapshot: messageExtra.personaSnapshot,
                 swipes: (swipesByMessageId.get(id) ?? []).map((swipe) => ({
                   index: swipe.index,
-                  personaSnapshot: parseExtraRecord(swipe.extra).personaSnapshot,
+                  personaSnapshot: parseExtraRecord(swipe.extra, swipeExtraAt(swipe.id)).personaSnapshot,
                 })),
               },
             ] as const;
@@ -2732,7 +2755,10 @@ export function createChatsStorage(db: DB) {
               await updateMessageSnapshot(id, backup.messagePersonaSnapshot);
             } catch (rollbackError) {
               rollbackErrors.push(rollbackError);
-              logger.error(rollbackError, "reassignMessagePersonaSnapshots: failed to restore message %s", id);
+              logger.error(
+                { err: rollbackError, messageId: id, event: "chat.persona.reassign", stage: "rollback" },
+                "[chats] reassignMessagePersonaSnapshots: failed to restore message",
+              );
             }
             for (const swipe of backup.swipes) {
               try {
@@ -2740,10 +2766,14 @@ export function createChatsStorage(db: DB) {
               } catch (rollbackError) {
                 rollbackErrors.push(rollbackError);
                 logger.error(
-                  rollbackError,
-                  "reassignMessagePersonaSnapshots: failed to restore swipe %s[%d]",
-                  id,
-                  swipe.index,
+                  {
+                    err: rollbackError,
+                    messageId: id,
+                    swipeIndex: swipe.index,
+                    event: "chat.persona.reassign",
+                    stage: "rollback",
+                  },
+                  "[chats] reassignMessagePersonaSnapshots: failed to restore swipe",
                 );
               }
             }
@@ -2769,7 +2799,7 @@ export function createChatsStorage(db: DB) {
       return withPatchQueue(messageExtraPatchQueues, id, async () => {
         const msg = await this.getMessage(id);
         if (!msg) return null;
-        const existing = parseExtraRecord(msg.extra);
+        const existing = parseExtraRecord(msg.extra, messageExtraAt(msg.id));
         const attachments = Array.isArray(existing.attachments) ? existing.attachments : [];
         const merged = { ...existing, attachments: [...attachments, attachment] };
         await db
@@ -2785,7 +2815,7 @@ export function createChatsStorage(db: DB) {
       return withPatchQueue(messageExtraPatchQueues, id, async () => {
         const msg = await this.getMessage(id);
         if (!msg || (msg.activeSwipeIndex ?? 0) !== swipeIndex) return null;
-        const existing = parseExtraRecord(msg.extra);
+        const existing = parseExtraRecord(msg.extra, messageExtraAt(msg.id));
         const attachments = Array.isArray(existing.attachments) ? existing.attachments : [];
         const merged = { ...existing, attachments: [...attachments, attachment] };
         await db
@@ -2820,68 +2850,73 @@ export function createChatsStorage(db: DB) {
 
     async removeMessages(ids: string[], chatId?: string) {
       if (ids.length === 0) return;
-      const earliestByChat = new Map<string, string>();
-      const removedEntryIds: string[] = [];
-      const finishDeletion = async () => {
-        if (removedEntryIds.length > 0) await this.pruneLorebookChatMetadata(async () => removedEntryIds);
-        for (const [affectedChatId, createdAt] of earliestByChat) {
-          await invalidateMemoryChunksFrom(db, affectedChatId, createdAt);
-          await refreshChatLastMessageAt(affectedChatId);
-        }
-      };
-      const CHUNK = 500;
-      try {
-        for (let i = 0; i < ids.length; i += CHUNK) {
-          const chunk = ids.slice(i, i + CHUNK);
-          // Per-chunk queue acquisition (#5599): each message's delete is
-          // ordered against its in-flight edits; cross-chunk atomicity was
-          // never promised by this bulk path.
-          const removed = await withInterruptionQueue(chunk, async (locked) => {
-            const condition = chatId
-              ? and(inArray(messages.id, chunk), eq(messages.chatId, chatId))
-              : inArray(messages.id, chunk);
-            const existingRows = await db
-              .select({
-                id: messages.id,
-                chatId: messages.chatId,
-                createdAt: messages.createdAt,
-                extra: messages.extra,
-              })
-              .from(messages)
-              .where(condition);
-            // Undo newest effects first when a whole interrupted exchange is removed.
-            for (const row of existingRows
-              .filter((row) => receipts(row.extra).some((receipt) => !receipt.restored))
-              .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)))
-              await reconcileEffects(await readMessage(row.id), true, locked);
-            await deleteGameStateForMessages(
-              existingRows.map((row) => row.id),
-              existingRows.map((row) => row.chatId),
-            );
-            await db.delete(messages).where(condition);
-            // Cascade only the ids this scoped deletion actually removed — a
-            // requested id excluded by the chatId filter (or nonexistent) keeps
-            // its message, so its lore must keep its anchors too.
-            return {
-              rows: existingRows,
-              // ponytail: one lore scan per 500-message chunk keeps deletion atomic;
-              // index source refs if large history deletions outgrow this path.
-              entryIds: await cascadeAgentLorebookEntriesForMessages(existingRows.map((row) => row.id)),
-            };
-          });
-          removedEntryIds.push(...removed.entryIds);
-          for (const row of removed.rows) {
-            const current = earliestByChat.get(row.chatId);
-            if (!current || row.createdAt < current) earliestByChat.set(row.chatId, row.createdAt);
+      return withDiagnosticContext({ ...(chatId ? { chatId } : {}), operation: "chat.messages.delete" }, async () => {
+        const earliestByChat = new Map<string, string>();
+        const removedEntryIds: string[] = [];
+        const finishDeletion = async () => {
+          if (removedEntryIds.length > 0) await this.pruneLorebookChatMetadata(async () => removedEntryIds);
+          for (const [affectedChatId, createdAt] of earliestByChat) {
+            await invalidateMemoryChunksFrom(db, affectedChatId, createdAt);
+            await refreshChatLastMessageAt(affectedChatId);
           }
+        };
+        const CHUNK = 500;
+        try {
+          for (let i = 0; i < ids.length; i += CHUNK) {
+            const chunk = ids.slice(i, i + CHUNK);
+            // Per-chunk queue acquisition (#5599): each message's delete is
+            // ordered against its in-flight edits; cross-chunk atomicity was
+            // never promised by this bulk path.
+            const removed = await withInterruptionQueue(chunk, async (locked) => {
+              const condition = chatId
+                ? and(inArray(messages.id, chunk), eq(messages.chatId, chatId))
+                : inArray(messages.id, chunk);
+              const existingRows = await db
+                .select({
+                  id: messages.id,
+                  chatId: messages.chatId,
+                  createdAt: messages.createdAt,
+                  extra: messages.extra,
+                })
+                .from(messages)
+                .where(condition);
+              // Undo newest effects first when a whole interrupted exchange is removed.
+              for (const row of existingRows
+                .filter((row) => receipts(row.extra).some((receipt) => !receipt.restored))
+                .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)))
+                await reconcileEffects(await readMessage(row.id), true, locked);
+              await deleteGameStateForMessages(
+                existingRows.map((row) => row.id),
+                existingRows.map((row) => row.chatId),
+              );
+              await db.delete(messages).where(condition);
+              // Cascade only the ids this scoped deletion actually removed — a
+              // requested id excluded by the chatId filter (or nonexistent) keeps
+              // its message, so its lore must keep its anchors too.
+              return {
+                rows: existingRows,
+                // ponytail: one lore scan per 500-message chunk keeps deletion atomic;
+                // index source refs if large history deletions outgrow this path.
+                entryIds: await cascadeAgentLorebookEntriesForMessages(existingRows.map((row) => row.id)),
+              };
+            });
+            removedEntryIds.push(...removed.entryIds);
+            for (const row of removed.rows) {
+              const current = earliestByChat.get(row.chatId);
+              if (!current || row.createdAt < current) earliestByChat.set(row.chatId, row.createdAt);
+            }
+          }
+        } catch (error) {
+          await finishDeletion().catch((cleanupError) => {
+            logger.error(
+              { err: cleanupError, event: "chat.messages.delete", stage: "lore_cleanup" },
+              "[chats] Failed to clean up lore after partial message deletion",
+            );
+          });
+          throw error;
         }
-      } catch (error) {
-        await finishDeletion().catch((cleanupError) => {
-          logger.error(cleanupError, "Failed to clean up lore after partial message deletion");
-        });
-        throw error;
-      }
-      await finishDeletion();
+        await finishDeletion();
+      });
     },
 
     async getSwipes(messageId: string) {
@@ -2911,7 +2946,7 @@ export function createChatsStorage(db: DB) {
         // so its thinking/generationInfo isn't lost when we switch away
         // (skip when silent — greeting swipes don't need backfill)
         if (!silent && msg) {
-          const msgExtra = parseExtraRecord(msg.extra);
+          const msgExtra = parseExtraRecord(msg.extra, messageExtraAt(msg.id));
           const activeSwipe = existing.find((s: any) => s.index === msg.activeSwipeIndex);
           if (activeSwipe) {
             await db
@@ -2956,7 +2991,7 @@ export function createChatsStorage(db: DB) {
         // Before switching, save current message content and extra onto the outgoing swipe.
         const msg = await this.getMessage(messageId);
         if (msg) {
-          const msgExtra = parseExtraRecord(msg.extra);
+          const msgExtra = parseExtraRecord(msg.extra, messageExtraAt(msg.id));
           const outgoingSwipe = swipes.find((s: any) => s.index === msg.activeSwipeIndex);
           if (outgoingSwipe) {
             await db
@@ -2994,7 +3029,7 @@ export function createChatsStorage(db: DB) {
         if (!target || swipes.length <= 1) return null;
 
         const remaining = swipes.filter((s: any) => s.index !== index);
-        const currentExtra = parseExtraRecord(msg.extra);
+        const currentExtra = parseExtraRecord(msg.extra, messageExtraAt(msg.id));
 
         const activeSwipeRemoved = msg.activeSwipeIndex === index;
         if (activeSwipeRemoved) await reconcileEffects(msg, true, locked);

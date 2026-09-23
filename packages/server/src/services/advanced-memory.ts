@@ -22,7 +22,8 @@ import {
 import type { DB } from "../db/connection.js";
 import { and, eq } from "../db/file-query.js";
 import { advancedMemoryRecords } from "../db/schema/advanced-memory.js";
-import { logger, logDebugOverride } from "../lib/logger.js";
+import { logRecovered, logRepeated } from "../lib/log-events.js";
+import { logDebugOverride } from "../lib/logger.js";
 import { tryParseJsonRecord } from "../lib/json-repair.js";
 import { newId, now } from "../utils/id-generator.js";
 import { createChatsStorage, withChatMetadataPatchQueue } from "./storage/chats.storage.js";
@@ -891,6 +892,7 @@ export function createAdvancedMemoryService(db: DB) {
         signal: options.signal,
         inputType: "document",
       });
+      logRecovered(`ltm.recall:document:${space}`, { source: space }, "[advanced-memory] embeddings working again");
       if (vectors[0]?.length) {
         record.embedding = vectors[0];
         record.embeddingSpaceId = space;
@@ -898,7 +900,12 @@ export function createAdvancedMemoryService(db: DB) {
       }
     } catch (error) {
       abortIfNeeded(options.signal);
-      logger.warn(error, "[advanced-memory] Embedding unavailable; retaining bounded textual memory");
+      logRepeated(
+        `ltm.recall:document:${space}`,
+        "warn",
+        { event: "ltm.recall", stage: "embed.document", outcome: "failed", source: space, err: error },
+        "[advanced-memory] Embedding unavailable; retaining bounded textual memory",
+      );
     }
   }
 
@@ -2009,9 +2016,20 @@ export function createAdvancedMemoryService(db: DB) {
             signal: input.signal,
           })
         )[0];
+        logRecovered(
+          `ltm.recall:query:${vectorSpace}`,
+          { source: vectorSpace },
+          "[advanced-memory] query embeddings working again",
+        );
       } catch (error) {
         abortIfNeeded(input.signal);
-        logger.warn(error, "[advanced-memory] Query embedding failed; using bounded lexical recall");
+        const source = vectorSpace ?? "unresolved";
+        logRepeated(
+          `ltm.recall:query:${source}`,
+          "warn",
+          { event: "ltm.recall", stage: "embed.query", outcome: "failed", source, chatId: ctx.chatId, err: error },
+          "[advanced-memory] Query embedding failed; using bounded lexical recall",
+        );
       }
     }
     const recentEligible = eligible.slice(-20);

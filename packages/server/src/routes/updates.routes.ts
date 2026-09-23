@@ -3,6 +3,10 @@
 // ──────────────────────────────────────────────
 import type { FastifyInstance } from "fastify";
 import { logger } from "../lib/logger.js";
+import { reportDiagnosticError } from "../lib/diagnostic-operation.js";
+import { logEvent, type Outcome } from "../lib/log-events.js";
+import { verifyDistAgainstMeta } from "../lib/build-integrity.js";
+import { describeChildFailure } from "../lib/child-process-diagnostics.js";
 import { APP_VERSION } from "@marinara-engine/shared";
 import { execFile } from "child_process";
 import { existsSync, readFileSync } from "fs";
@@ -675,7 +679,31 @@ async function resolvePinnedPnpmRunner(root: string): Promise<PnpmRunner> {
   );
 }
 
-function describePnpmFailure(err: unknown, args: string[], timeout: number): Error {
+type UpdateStep = "fetch" | "format-check" | "stash" | "checkout" | "install" | "build" | "verify";
+
+/** Exit code of a failed git or pnpm child, when the error carries one. */
+function stepExitCode(err: unknown): number | undefined {
+  const source = (err && typeof err === "object" ? err : {}) as { exitCode?: unknown; code?: unknown };
+  if (typeof source.exitCode === "number") return source.exitCode;
+  return typeof source.code === "number" ? source.code : undefined;
+}
+
+/** A specific errorCode an update helper attached (ME_UPDATE_BUILD_STALE, ME_CHILD_*), if any. */
+function stepErrorCode(err: unknown): string | undefined {
+  const value = err && typeof err === "object" ? (err as { errorCode?: unknown }).errorCode : undefined;
+  return typeof value === "string" ? value : undefined;
+}
+
+function logAlreadyUpToDate(oldHead: string, targetHead: string) {
+  logEvent(
+    "info",
+    "update.apply",
+    { outcome: "skipped", oldHead, newHead: targetHead, alreadyUpToDate: true },
+    "[Update] Already on the latest version",
+  );
+}
+
+function describePnpmFailure(err: unknown, args: string[], timeout: number, startedAt = Date.now()): Error {
   const execError = err as NodeJS.ErrnoException & {
     killed?: boolean;
     signal?: string | null;
@@ -701,13 +729,18 @@ function describePnpmFailure(err: unknown, args: string[], timeout: number): Err
   if (outputTail) {
     parts.push(`Output: ${outputTail}`);
   }
-  return new Error(parts.join(" "));
+  // The text above is what the user sees; the classified fields (errorCode,
+  // exitCode, signal, timedOut, elapsedMs) ride on the error for the log line.
+  const { fields } = describeChildFailure(err, { command: "pnpm", timeoutMs: timeout, startedAt });
+  const { stderrTail: _stderrTail, ...childFields } = fields;
+  return Object.assign(new Error(parts.join(" "), { cause: err }), childFields);
 }
 
 async function runPinnedPnpm(root: string, args: string[], baseTimeout: number) {
   const runner = await resolvePinnedPnpmRunner(root);
   const timeout = updateStepTimeout(baseTimeout);
   const invocation = commandInvocation(runner.command, [...runner.prefixArgs, ...PNPM_NONINTERACTIVE_ARGS, ...args]);
+  const startedAt = Date.now();
   try {
     await execFileAsync(invocation.command, invocation.args, {
       windowsHide: true,
@@ -716,7 +749,7 @@ async function runPinnedPnpm(root: string, args: string[], baseTimeout: number) 
       maxBuffer: PNPM_OUTPUT_MAX_BUFFER,
     });
   } catch (err) {
-    throw describePnpmFailure(err, args, timeout);
+    throw describePnpmFailure(err, args, timeout, startedAt);
   }
   return { runner, pnpmVersion: getPinnedPnpmVersion(root) };
 }
@@ -733,6 +766,42 @@ async function runPinnedBuild(root: string) {
     ["--filter", "@marinara-engine/server", "--filter", "@marinara-engine/client", "--parallel", "run", "build"],
     300_000,
   );
+}
+
+/**
+ * Checks the fresh dist against the build-meta.json the build just wrote: every
+ * src module must have its dist file and the built commit must be the update
+ * target. Logs one `update.build.verify` line and throws ME_UPDATE_BUILD_STALE
+ * on a mismatch, so a partial build is never announced as a successful update.
+ */
+function verifyPinnedBuild(root: string, targetHead: string) {
+  const verify = verifyDistAgainstMeta(resolve(root, "packages", "server"), targetHead);
+  const stale = verify.outcome === "failed" || !verify.commitMatches;
+  const outcome: Outcome = stale ? "failed" : verify.outcome;
+  logEvent(
+    stale ? "warn" : "info",
+    "update.build.verify",
+    {
+      outcome,
+      buildCommit: verify.commit,
+      targetHead,
+      commitMatches: verify.commitMatches,
+      missingCount: verify.missingCount,
+      missingSample: verify.missingInDist,
+      ...(stale ? { errorCode: "ME_UPDATE_BUILD_STALE" } : {}),
+    },
+    stale ? "[Update] Built dist does not match the update target" : "[Update] Built dist verified",
+  );
+  if (stale) {
+    const detail = !verify.commitMatches
+      ? `the build reports commit ${verify.commit ?? "unknown"} instead of ${targetHead}`
+      : verify.missingCount > 0
+        ? `${verify.missingCount} server modules are missing from dist`
+        : "the build metadata is missing or unreadable";
+    throw Object.assign(new Error(`The rebuilt server does not match the update: ${detail}.`), {
+      errorCode: "ME_UPDATE_BUILD_STALE",
+    });
+  }
 }
 
 async function resolveLatestReleaseFromGitHub(signal: AbortSignal) {
@@ -1035,6 +1104,39 @@ export async function updatesRoutes(app: FastifyInstance) {
     }
     updateApplyInProgress = true;
     let shutdownScheduled = false;
+    // Filled in as the apply advances, so every step line and the failure line
+    // carry the same heads and name the step that was running.
+    const heads: { oldHead?: string; targetHead?: string } = {};
+    let currentStep: UpdateStep | undefined;
+    const logUpdateStep = async <T>(step: UpdateStep, fn: () => Promise<T>): Promise<T> => {
+      currentStep = step;
+      const startedAt = Date.now();
+      try {
+        const result = await fn();
+        logEvent(
+          "info",
+          "update.step",
+          { step, channel: channel.id, ...heads, elapsedMs: Date.now() - startedAt, outcome: "ok" },
+          `[Update] ${step} finished`,
+        );
+        return result;
+      } catch (err) {
+        logEvent(
+          "warn",
+          "update.step",
+          {
+            step,
+            channel: channel.id,
+            ...heads,
+            elapsedMs: Date.now() - startedAt,
+            outcome: "failed",
+            exitCode: stepExitCode(err),
+          },
+          `[Update] ${step} failed`,
+        );
+        throw err;
+      }
+    };
 
     try {
       currentBranch = await getCurrentBranch(root);
@@ -1096,12 +1198,14 @@ export async function updatesRoutes(app: FastifyInstance) {
       if (!oldHead) {
         throw new Error("Could not read the current git commit.");
       }
+      heads.oldHead = oldHead;
 
-      await fetchUpdateRef(root, channel);
+      await logUpdateStep("fetch", () => fetchUpdateRef(root, channel));
       const targetHead = await resolveGitRef(root, channel.targetRef);
       if (!targetHead) {
         throw new Error(`Could not resolve ${channel.targetRef}.`);
       }
+      heads.targetHead = targetHead;
       if (!body.targetCommit || body.targetCommit !== targetHead) {
         return reply.status(409).send({
           error: "Update target commit confirmation does not match the latest checked target",
@@ -1113,7 +1217,7 @@ export async function updatesRoutes(app: FastifyInstance) {
       // on-disk data — it would silently show empty chat history and could
       // write a conflicting old-format file. No override here: manual
       // downgrade steps live in docs/TROUBLESHOOTING.md.
-      const formatCheck = await checkTargetStorageFormat(root, targetHead);
+      const formatCheck = await logUpdateStep("format-check", () => checkTargetStorageFormat(root, targetHead));
       if (!formatCheck.verified) {
         return reply.status(409).send({
           error:
@@ -1134,67 +1238,69 @@ export async function updatesRoutes(app: FastifyInstance) {
       }
 
       // Step 0: stash local tracked changes so the update does not fail.
-      const updateStash = await createUpdateStash(root);
+      const updateStash = await logUpdateStep("stash", () => createUpdateStash(root));
 
       // Step 1: move to the latest selected channel commit.
       // Installer-created release checkouts are shallow detached HEADs, so
       // they cannot reliably merge a remote-tracking branch. A detached
       // checkout is expected there; normal main-branch clones still fast-forward.
       const shouldAttachStagingBranch = channel.id === "staging" && currentBranch !== channel.branch;
-      try {
-        if (oldHead !== targetHead || shouldAttachStagingBranch) {
-          if (currentBranch === channel.branch) {
-            await execFileAsync("git", ["merge", "--ff-only", targetHead], {
-              windowsHide: true,
-              cwd: root,
-              timeout: 60_000,
-            });
-          } else if (channel.id === "staging") {
-            await checkoutOrCreateUpdateBranch(root, channel, targetHead);
-          } else {
-            await execFileAsync("git", ["checkout", "--detach", targetHead], {
-              windowsHide: true,
-              cwd: root,
-              timeout: 60_000,
-            });
-          }
-        }
-
-        const newHead = await resolveGitRef(root, "HEAD");
-        if (!newHead) {
-          throw new Error("Could not read the updated git commit.");
-        }
-        if (newHead !== targetHead) {
-          throw new Error(`Update target mismatch: expected ${channel.targetRef} at ${targetHead}, got ${newHead}.`);
-        }
-      } catch (movementErr) {
-        const branchLabel = currentBranch ? ` branch "${currentBranch}"` : " current checkout";
-        const message = movementErr instanceof Error ? movementErr.message : String(movementErr);
+      await logUpdateStep("checkout", async () => {
         try {
-          await restoreOriginalCheckout(root, currentBranch, oldHead);
-        } catch (rollbackErr) {
-          const rollbackMessage = rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr);
-          throw new Error(
-            `Could not update the${branchLabel} to ${channel.targetRef}: ${message}. Restoring the original checkout also failed: ${rollbackMessage}`,
-          );
-        }
-        if (updateStash) {
+          if (oldHead !== targetHead || shouldAttachStagingBranch) {
+            if (currentBranch === channel.branch) {
+              await execFileAsync("git", ["merge", "--ff-only", targetHead], {
+                windowsHide: true,
+                cwd: root,
+                timeout: 60_000,
+              });
+            } else if (channel.id === "staging") {
+              await checkoutOrCreateUpdateBranch(root, channel, targetHead);
+            } else {
+              await execFileAsync("git", ["checkout", "--detach", targetHead], {
+                windowsHide: true,
+                cwd: root,
+                timeout: 60_000,
+              });
+            }
+          }
+
+          const newHead = await resolveGitRef(root, "HEAD");
+          if (!newHead) {
+            throw new Error("Could not read the updated git commit.");
+          }
+          if (newHead !== targetHead) {
+            throw new Error(`Update target mismatch: expected ${channel.targetRef} at ${targetHead}, got ${newHead}.`);
+          }
+        } catch (movementErr) {
+          const branchLabel = currentBranch ? ` branch "${currentBranch}"` : " current checkout";
+          const message = movementErr instanceof Error ? movementErr.message : String(movementErr);
           try {
-            await restoreUpdateStash(root, updateStash);
-          } catch (restoreErr) {
-            const restoreMessage = restoreErr instanceof Error ? restoreErr.message : String(restoreErr);
+            await restoreOriginalCheckout(root, currentBranch, oldHead);
+          } catch (rollbackErr) {
+            const rollbackMessage = rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr);
             throw new Error(
-              `Could not update the${branchLabel} to ${channel.targetRef}: ${message}. Recovery also failed: ${restoreMessage}`,
+              `Could not update the${branchLabel} to ${channel.targetRef}: ${message}. Restoring the original checkout also failed: ${rollbackMessage}`,
             );
           }
+          if (updateStash) {
+            try {
+              await restoreUpdateStash(root, updateStash);
+            } catch (restoreErr) {
+              const restoreMessage = restoreErr instanceof Error ? restoreErr.message : String(restoreErr);
+              throw new Error(
+                `Could not update the${branchLabel} to ${channel.targetRef}: ${message}. Recovery also failed: ${restoreMessage}`,
+              );
+            }
+          }
+          throw new Error(`Could not update the${branchLabel} to ${channel.targetRef}: ${message}`);
         }
-        throw new Error(`Could not update the${branchLabel} to ${channel.targetRef}: ${message}`);
-      }
 
-      // Restore stashed changes after successful pull
-      if (updateStash) {
-        await restoreUpdateStash(root, updateStash);
-      }
+        // Restore stashed changes after successful pull
+        if (updateStash) {
+          await restoreUpdateStash(root, updateStash);
+        }
+      });
 
       const alreadyUpToDate = oldHead === targetHead;
 
@@ -1210,9 +1316,17 @@ export async function updatesRoutes(app: FastifyInstance) {
           try {
             const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf-8"));
             if ((pkg.version as string) === APP_VERSION) {
+              logAlreadyUpToDate(oldHead, targetHead);
               return { status: "already_up_to_date", message: "Already on the latest version." };
             }
-          } catch {
+          } catch (pkgErr) {
+            logEvent(
+              "warn",
+              "update.apply",
+              { stage: "package-version", outcome: "skipped", oldHead, targetHead, err: pkgErr },
+              "[Update] Could not read package.json version; treating the checkout as already up to date",
+            );
+            logAlreadyUpToDate(oldHead, targetHead);
             return { status: "already_up_to_date", message: "Already on the latest version." };
           }
         }
@@ -1221,10 +1335,12 @@ export async function updatesRoutes(app: FastifyInstance) {
 
       // Step 2: pnpm install. Channel switches (stable <-> staging) force a
       // near-full dependency reinstall, so this step gets a generous budget.
-      await runPinnedPnpm(root, PNPM_UPDATE_INSTALL_ARGS, 300_000);
+      await logUpdateStep("install", () => runPinnedPnpm(root, PNPM_UPDATE_INSTALL_ARGS, 300_000));
 
-      // Step 3: Rebuild all packages
-      await runPinnedBuild(root);
+      // Step 3: Rebuild all packages, then check dist really is the target build.
+      await logUpdateStep("build", () => runPinnedBuild(root));
+      await logUpdateStep("verify", async () => verifyPinnedBuild(root, targetHead));
+      currentStep = undefined;
 
       // Step 4: Signal exit so the user can relaunch with the new version.
       // Send response first, then schedule exit.
@@ -1232,6 +1348,12 @@ export async function updatesRoutes(app: FastifyInstance) {
         status: "updated",
         message: "Update applied successfully. Please relaunch the app to use the new version.",
       };
+      logEvent(
+        "info",
+        "update.apply",
+        { outcome: "ok", channel: channel.id, oldHead, newHead: targetHead, alreadyUpToDate },
+        "[Update] Update applied",
+      );
 
       // Give Fastify time to flush the response and clear the file-backed
       // store's write-back debounce window (SAVE_DEBOUNCE_MS = 750ms), then
@@ -1245,13 +1367,13 @@ export async function updatesRoutes(app: FastifyInstance) {
             // bypasses onClose/beforeExit and silently drops debounced writes.
             // #5506 diagnostics: name this ending so the next startup reports
             // an update restart instead of an external kill.
+            logger.info("[Update] Shutting down after update...");
             noteSessionExitKind("restart");
             // #5838: the update relaunch relies on an external launcher
             // either way, so a close stuck on open connections or a hung
             // flush must not leave the old process running forever.
             armShutdownDeadline(app, "update restart");
             await app.close();
-            logger.info("[Update] Shutting down after update...");
             process.exit(0);
           } catch (err) {
             // Flush/close failed: log it (process is being torn down for a
@@ -1267,11 +1389,25 @@ export async function updatesRoutes(app: FastifyInstance) {
       return result;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
+      const specificCode = stepErrorCode(err);
+      const reference = reportDiagnosticError(err, { operation: "update.apply", stage: currentStep }, undefined, {
+        event: "update.apply",
+        message: "[Update] Update failed",
+        fields: {
+          outcome: "failed",
+          channel: channel.id,
+          ...heads,
+          ...(specificCode ? { errorCode: specificCode } : {}),
+        },
+      });
       const pnpmDescriptor = getPinnedPnpmDescriptor(root);
       const pnpmVersion = getPinnedPnpmVersion(root);
       const manualPnpmCommand = `corepack pnpm@${pnpmDescriptor}`;
       return reply.status(500).send({
         error: `Update failed: ${message}`,
+        errorId: reference.errorId,
+        code: reference.code,
+        ...(specificCode ? { errorCode: specificCode } : {}),
         hint: `You can try running the update manually: ${getManualGitApplyCommand(channel, serverPlatform, manualPnpmCommand)}. If Corepack cannot launch pnpm ${pnpmVersion}, install the pinned version with npm install -g pnpm@${pnpmVersion} and rerun the command.`,
       });
     } finally {

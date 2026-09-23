@@ -54,6 +54,11 @@ import { requirePrivilegedAccess } from "../middleware/privileged-gate.js";
 import { BACKUP_RATE_LIMIT } from "../middleware/rate-limit.js";
 import { assertInsideDir, safeCompareString } from "../utils/security.js";
 import { logger } from "../lib/logger.js";
+import { runWithRootDiagnosticContext } from "../lib/diagnostics.js";
+import { reportDiagnosticError } from "../lib/diagnostic-operation.js";
+import { logEvent } from "../lib/log-events.js";
+import { logSuppressed } from "../lib/best-effort.js";
+import { getRuntimeMemorySnapshot } from "../utils/runtime-memory.js";
 import { crc32Buffer, finishCrc32, updateCrc32State } from "../utils/crc32.js";
 import { ENCRYPTED_WEBHOOK_PREFIX, encryptCustomToolWebhookUrl } from "../utils/custom-tool-webhook.js";
 import {
@@ -321,6 +326,7 @@ type ProfileImportWarning =
   | ProfileNoodleImportWarning
   | { type: "missing_asset"; path: string; message: string }
   | { type: "skipped_asset"; path: string; message: string }
+  | { type: "legacy_items_skipped"; path: string; message: string }
   | {
       type:
         | "connection_credentials_quarantined"
@@ -1237,6 +1243,23 @@ function buildProfileImportAssetInputs(
   });
 }
 
+type ProfileImportProgressFacts = {
+  importStage: string;
+  table?: string;
+  completedItems: number;
+  tableCounts: Record<string, number>;
+};
+
+/** Records where a profile import stopped on the thrown error, so the one failure line can say it. */
+function attachProfileImportProgress(error: unknown, facts: ProfileImportProgressFacts) {
+  if (!error || typeof error !== "object" || !Object.isExtensible(error)) return;
+  try {
+    Object.assign(error, facts);
+  } catch {
+    // A frozen or exotic error object keeps its original shape; the failure is still reported.
+  }
+}
+
 async function importProfileStorageSnapshot(
   app: FastifyInstance,
   snapshot: ProfileStorageSnapshot,
@@ -1279,6 +1302,8 @@ async function importProfileStorageSnapshot(
     let files = 0;
     let committed = false;
     let rollbackFailed = false;
+    let importStage = "plan";
+    let currentTable: string | undefined;
     try {
       await app.db.transaction(async (tx) => {
         const localStockPresetId =
@@ -1290,7 +1315,9 @@ async function importProfileStorageSnapshot(
         );
         const connectionPlans = await planProfileApiConnectionImports(tx, plannedSnapshot.tables.api_connections ?? []);
         addProfileImportSecurityWarnings(warnings, buildProfileImportSecuritySummary(plannedSnapshot, connectionPlans));
+        importStage = "tables";
         for (const tableName of FILE_BACKED_TABLES) {
+          currentTable = tableName;
           const table = profileTableObjects.get(tableName);
           const rows = plannedSnapshot.tables[tableName];
           if (!table || !Array.isArray(rows) || rows.length === 0) {
@@ -1339,30 +1366,50 @@ async function importProfileStorageSnapshot(
           }
         }
 
+        currentTable = undefined;
+        importStage = "assets";
         await promoteStagedProfileAssets(stagedAssets);
         for (const asset of stagedAssets.assets) {
           files++;
           completedItems++;
           emit("files", `Restoring ${asset.path}`, files);
         }
+        importStage = "flush";
         await flushDB();
       });
       committed = true;
+      importStage = "reloadExtensions";
       if ((tableCounts.installed_extensions ?? 0) > 0) {
         await personalServerExtensionRuntime.reloadAll();
       }
       return buildProfileImportStats(tableCounts, files);
     } catch (error) {
+      attachProfileImportProgress(error, {
+        importStage,
+        table: currentTable,
+        completedItems,
+        tableCounts: { ...tableCounts },
+      });
       try {
         await rollbackPromotedProfileAssets(stagedAssets);
       } catch (rollbackError) {
         rollbackFailed = true;
-        logger.error(
-          rollbackError,
-          "[backup] Asset rollback failed; preserving recovery files at %s",
-          stagedAssets.rootDir,
+        logEvent(
+          "warn",
+          "profile.import.rollback",
+          { outcome: "failed", recoveryDir: stagedAssets.rootDir },
+          "[backup] Asset rollback failed; preserving recovery files",
         );
-        throw new AggregateError([error, rollbackError], "Profile import and asset rollback both failed");
+        const aggregate = new AggregateError([error, rollbackError], "Profile import and asset rollback both failed");
+        // The cause lets createDiagnostic reuse the import failure's errorId.
+        (aggregate as AggregateError & { cause?: unknown }).cause = error;
+        attachProfileImportProgress(aggregate, {
+          importStage,
+          table: currentTable,
+          completedItems,
+          tableCounts: { ...tableCounts },
+        });
+        throw aggregate;
       }
       throw error;
     } finally {
@@ -2755,27 +2802,20 @@ async function hydrateProfileArchiveStorageSnapshot(
     }
     const rows = await readProfileArchiveTableRows(zip, entry, descriptor, tableName);
     tables[tableName] = rows;
-    const memoryUsage = process.memoryUsage();
-    const heapMiB = Math.round(memoryUsage.heapUsed / (1024 * 1024));
-    const rssMiB = Math.round(memoryUsage.rss / (1024 * 1024));
+    const memory = getRuntimeMemorySnapshot();
     logger.debug(
-      "[backup] Hydrated profile table %s (%d rows); heap=%d MiB, rss=%d MiB",
-      tableName,
-      rows.length,
-      heapMiB,
-      rssMiB,
+      { stage: "hydrate", table: tableName, rowCount: rows.length, ...memory },
+      "[backup] Hydrated profile table",
     );
     // Hydration currently re-materializes tables; retain peak visibility until imports can consume table streams.
     if (
       !memoryWarningLogged &&
-      Math.max(memoryUsage.heapUsed, memoryUsage.rss) >= PROFILE_IMPORT_MEMORY_WARNING_BYTES
+      Math.max(memory.heapUsedMiB, memory.rssMiB) * 1024 * 1024 >= PROFILE_IMPORT_MEMORY_WARNING_BYTES
     ) {
       memoryWarningLogged = true;
       logger.warn(
-        "[backup] Profile import hydration exceeded 512 MiB after table %s; heap=%d MiB, rss=%d MiB",
-        tableName,
-        heapMiB,
-        rssMiB,
+        { stage: "hydrate", table: tableName, ...memory },
+        "[backup] Profile import hydration exceeded 512 MiB",
       );
     }
   }
@@ -3214,7 +3254,40 @@ async function writeFullBackupArchive(
   return { omittedEntries: [...omittedEntries] };
 }
 
+const AUTOMATIC_BACKUP_STAGE = Symbol("automaticBackupStage");
+
+/** The automatic backup stage a thrown error came from (flush, archive, rotate or prune). */
+function automaticBackupStageOf(error: unknown): string | undefined {
+  return error && typeof error === "object"
+    ? ((error as { [AUTOMATIC_BACKUP_STAGE]?: string })[AUTOMATIC_BACKUP_STAGE] ?? undefined)
+    : undefined;
+}
+
+/** Thrown when the disk cannot hold the next automatic archive; the run is skipped, not failed. */
+class AutomaticBackupNoSpaceError extends Error {
+  constructor(
+    message: string,
+    readonly freeBytes: number,
+    readonly requiredBytes: number,
+  ) {
+    super(message);
+    this.name = "AutomaticBackupNoSpaceError";
+  }
+}
+
 async function writeAutomaticBackup(app: FastifyInstance, retentionCount: number) {
+  const progress = { stage: "flush" };
+  try {
+    return await writeAutomaticBackupStages(app, retentionCount, progress);
+  } catch (error) {
+    if (error && typeof error === "object" && Object.isExtensible(error)) {
+      (error as { [AUTOMATIC_BACKUP_STAGE]?: string })[AUTOMATIC_BACKUP_STAGE] = progress.stage;
+    }
+    throw error;
+  }
+}
+
+async function writeAutomaticBackupStages(app: FastifyInstance, retentionCount: number, progress: { stage: string }) {
   await flushDB();
   const backupsRoot = getBackupsRoot();
   const workingDir = await mkdtemp(join(tmpdir(), "marinara-automatic-backup-"));
@@ -3223,6 +3296,7 @@ async function writeAutomaticBackup(app: FastifyInstance, retentionCount: number
   const legacyPreviousPath = join(backupsRoot, `${AUTOMATIC_BACKUP_FILENAME}.previous`);
   let archivedPreviousPath: string | null = null;
   try {
+    progress.stage = "archive";
     await mkdir(backupsRoot, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
     await hardenPrivateBackupTree(backupsRoot);
     await rm(pendingPath, { force: true });
@@ -3241,14 +3315,14 @@ async function writeAutomaticBackup(app: FastifyInstance, retentionCount: number
         const freeBytes = await statfs(backupsRoot)
           .then((fsStat) => Number(fsStat.bavail) * Number(fsStat.bsize))
           .catch((error) => {
-            const logError = error instanceof Error ? error : new Error(String(error));
-            logger.warn(logError, "[backup] Could not read free disk space; writing the automatic backup unchecked");
+            logSuppressed(error, { event: "backup.automatic", stage: "freeSpace" });
             return null;
           });
         const error = freeBytes === null ? null : automaticBackupFreeSpaceError(freeBytes, archiveBytes);
-        if (error) throw new Error(error);
+        if (error && freeBytes !== null) throw new AutomaticBackupNoSpaceError(error, freeBytes, archiveBytes);
       },
     );
+    progress.stage = "rotate";
     const hadPreviousBackup = existsSync(finalPath);
     try {
       if (hadPreviousBackup) {
@@ -3262,13 +3336,21 @@ async function writeAutomaticBackup(app: FastifyInstance, retentionCount: number
       await rename(pendingPath, finalPath);
     } catch (error) {
       if (hadPreviousBackup && archivedPreviousPath && !existsSync(finalPath) && existsSync(archivedPreviousPath)) {
-        await rename(archivedPreviousPath, finalPath).catch(() => {});
+        await rename(archivedPreviousPath, finalPath).catch((restoreError: unknown) =>
+          logSuppressed(restoreError, { event: "backup.automatic", stage: "restorePrevious" }),
+        );
       }
       throw error;
     }
+    const archiveBytes = await stat(finalPath).then(
+      (fileStat) => fileStat.size,
+      () => undefined,
+    );
+    progress.stage = "prune";
     return {
       removedBackups: await pruneAutomaticBackupFiles(backupsRoot, retentionCount),
       omittedEntries,
+      archiveBytes,
     };
   } finally {
     await rm(pendingPath, { force: true }).catch(() => {});
@@ -3282,13 +3364,31 @@ function getBackupErrorMessage(err: unknown, fallback: string) {
   return fallback;
 }
 
-function sendBackupRouteError(reply: FastifyReply, err: unknown, operation: string) {
+function backupOperationSlug(operation: string) {
+  return operation
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+/** Logs a backup route failure once and returns its reference, so the reply and the log line share an errorId. */
+function reportBackupFailure(err: unknown, operation: string, stage?: string) {
+  const slug = backupOperationSlug(operation);
+  return reportDiagnosticError(err, { operation: `backup.${slug}`, ...(stage ? { stage } : {}) }, undefined, {
+    event: "backup.failed",
+    message: `[backup] ${operation} failed`,
+  });
+}
+
+function sendBackupRouteError(reply: FastifyReply, err: unknown, operation: string, stage?: string) {
   const message = getBackupErrorMessage(err, `${operation} failed. Check the server logs for details.`);
-  const logError = err instanceof Error ? err : new Error(message);
-  logger.error(logError, "[backup] %s failed", operation);
+  const ref = reportBackupFailure(err, operation, stage);
   return reply.status(500).send({
     error: `${operation} failed`,
     message,
+    errorId: ref.errorId,
+    code: ref.code,
   });
 }
 
@@ -3308,6 +3408,8 @@ export async function backupRoutes(app: FastifyInstance) {
     size?: number;
     omittedCount?: number;
     error?: string;
+    errorId?: string;
+    errorCode?: string;
     downloadToken: string;
   };
   const backupDownloadJobs = new Map<string, BackupDownloadJob>();
@@ -3325,7 +3427,10 @@ export async function backupRoutes(app: FastifyInstance) {
         if (job.status === "preparing") {
           if (job.createdAt < cutoff && !job.stallWarningIssued) {
             job.stallWarningIssued = true;
-            logger.warn("[backup] Asynchronous backup download job %s is still preparing after one hour", jobId);
+            logger.warn(
+              { event: "job.state", operation: "backup.download", jobId, elapsedMs: Date.now() - job.createdAt },
+              "[backup] Asynchronous backup download job is still preparing after one hour",
+            );
           }
           continue;
         }
@@ -3400,9 +3505,23 @@ export async function backupRoutes(app: FastifyInstance) {
         Date.now() - lastBackupMs >= automaticBackupPeriodMs(settings.frequency);
       if (!due) return;
 
-      const { removedBackups, omittedEntries } = await withAutomaticBackupLifecycleLock(() =>
+      await runWithRootDiagnosticContext({ operation: "backup.automatic", operationId: randomUUID() }, () =>
+        runAutomaticBackup(settings),
+      );
+    } catch (error) {
+      reportBackupFailure(error, "Automatic backup settings", "loadSettings");
+    } finally {
+      automaticBackupRunning = false;
+    }
+  };
+  const runAutomaticBackup = async (settings: AutomaticBackupSettings) => {
+    const started = Date.now();
+    const progress = { stage: "flush" };
+    try {
+      const { removedBackups, omittedEntries, archiveBytes } = await withAutomaticBackupLifecycleLock(() =>
         writeAutomaticBackup(app, settings.retentionCount),
       );
+      progress.stage = "saveSettings";
       const current = await loadAutomaticBackupSettings();
       await saveAutomaticBackupSettings({
         ...current,
@@ -3410,24 +3529,49 @@ export async function backupRoutes(app: FastifyInstance) {
         lastError: null,
         lastOmittedEntries: omittedEntries,
       });
-      if (omittedEntries.length > 0) {
-        logger.warn(
-          "[backup] Automatic backup completed with %d omitted file(s); see RESTORE.txt in the archive",
-          omittedEntries.length,
-        );
-      }
-      logger.info("[backup] Automatic backup completed; pruned %d expired automatic archive(s)", removedBackups.length);
+      logEvent(
+        omittedEntries.length > 0 ? "warn" : "info",
+        "backup.automatic",
+        {
+          outcome: "ok",
+          elapsedMs: Date.now() - started,
+          archiveBytes,
+          omittedCount: omittedEntries.length,
+          prunedCount: removedBackups.length,
+        },
+        omittedEntries.length > 0
+          ? "[backup] Automatic backup completed with omitted files; see RESTORE.txt in the archive"
+          : "[backup] Automatic backup completed",
+      );
     } catch (error) {
+      progress.stage = automaticBackupStageOf(error) ?? progress.stage;
       const message = getBackupErrorMessage(error, "Automatic backup failed");
       try {
         const current = await loadAutomaticBackupSettings();
         await saveAutomaticBackupSettings({ ...current, lastError: message });
       } catch (settingsError) {
-        logger.error(settingsError, "[backup] Could not persist the automatic backup failure state");
+        logSuppressed(settingsError, { event: "backup.automatic", stage: "saveFailureState" });
       }
-      logger.error(error, "[backup] Automatic backup failed");
-    } finally {
-      automaticBackupRunning = false;
+      if (error instanceof AutomaticBackupNoSpaceError) {
+        logEvent(
+          "warn",
+          "backup.automatic",
+          {
+            outcome: "skipped",
+            stage: progress.stage,
+            elapsedMs: Date.now() - started,
+            freeBytes: error.freeBytes,
+            requiredBytes: error.requiredBytes,
+          },
+          "[backup] Automatic backup skipped: not enough free disk space",
+        );
+        return;
+      }
+      reportDiagnosticError(error, { stage: progress.stage }, undefined, {
+        event: "backup.automatic",
+        message: "[backup] Automatic backup failed",
+        fields: { outcome: "failed", stage: progress.stage, elapsedMs: Date.now() - started },
+      });
     }
   };
 
@@ -3583,24 +3727,46 @@ export async function backupRoutes(app: FastifyInstance) {
     };
     backupDownloadJobs.set(jobId, job);
 
-    job.workPromise = (async () => {
+    job.workPromise = runWithRootDiagnosticContext({ operation: "backup.download", jobId }, async () => {
+      let stage = "flush";
+      logEvent("info", "job.state", { state: "running" }, "[backup] Backup download job started");
       try {
         await flushDB();
+        stage = "archive";
         const { omittedEntries } = await writeFullBackupArchive(app, archivePath, backupName, tempDir);
+        stage = "stat";
         const archiveStat = await stat(archivePath);
         job.status = "ready";
         job.completedAt = Date.now();
         job.size = archiveStat.size;
         job.omittedCount = omittedEntries.length;
+        logEvent(
+          "info",
+          "job.state",
+          {
+            state: "completed",
+            outcome: "ok",
+            elapsedMs: job.completedAt - job.createdAt,
+            archiveBytes: archiveStat.size,
+            omittedCount: omittedEntries.length,
+          },
+          "[backup] Backup download job completed",
+        );
       } catch (error) {
         job.status = "failed";
         job.completedAt = Date.now();
         job.error = getBackupErrorMessage(error, "Backup download failed");
-        logger.error(error, "[backup] Asynchronous backup download failed");
+        const ref = reportDiagnosticError(error, { stage }, undefined, {
+          event: "job.state",
+          message: "[backup] Asynchronous backup download failed",
+          fields: { state: "failed", outcome: "failed", stage, elapsedMs: job.completedAt - job.createdAt },
+        });
+        job.errorId = ref.errorId;
+        job.errorCode = ref.code;
       } finally {
         if (activeBackupDownloadJobId === jobId) activeBackupDownloadJobId = null;
       }
-    })();
+    });
     void job.workPromise;
 
     return reply.status(202).send({ jobId, status: job.status });
@@ -3623,7 +3789,12 @@ export async function backupRoutes(app: FastifyInstance) {
               downloadUrl: buildPreparedBackupDownloadUrl(req.params.jobId, job.downloadToken),
             }
           : {}),
-        ...(job.status === "failed" ? { error: job.error ?? "Backup download failed" } : {}),
+        ...(job.status === "failed"
+          ? {
+              error: job.error ?? "Backup download failed",
+              ...(job.errorId ? { errorId: job.errorId, code: job.errorCode } : {}),
+            }
+          : {}),
       });
     },
   );
@@ -3855,6 +4026,22 @@ export async function backupRoutes(app: FastifyInstance) {
         const themes = createThemesStorage(app.db);
 
         const stats = { characters: 0, personas: 0, lorebooks: 0, presets: 0, agents: 0, themes: 0 };
+        const skipped: Record<string, number> = {};
+        const legacyImportStarted = Date.now();
+        // Logs only the section and index of a skipped item, never its name or content.
+        const skipLegacyItem = (section: string, index: number, err: unknown) => {
+          skipped[section] = (skipped[section] ?? 0) + 1;
+          logSuppressed(err, { event: "profile.import.skip", stage: section, itemIndex: index });
+        };
+        const addLegacySkipWarnings = () => {
+          for (const [section, count] of Object.entries(skipped)) {
+            addProfileImportWarning(warnings, {
+              type: "legacy_items_skipped",
+              path: section,
+              message: `Skipped ${count} ${section.replace(/_/g, " ")} that could not be imported.`,
+            });
+          }
+        };
         addLegacyProfileThemeSecurityWarning(data, warnings);
         let completedItems = 0;
         const emitLegacyProgress = (phase: string, label: string) => {
@@ -3870,7 +4057,7 @@ export async function backupRoutes(app: FastifyInstance) {
 
         // Import characters
         if (Array.isArray(data.characters)) {
-          for (const c of data.characters) {
+          for (const [itemIndex, c] of data.characters.entries()) {
             try {
               emitLegacyProgress("characters", "Importing characters");
               const charData = typeof c.data === "string" ? JSON.parse(c.data) : c.data;
@@ -3892,8 +4079,8 @@ export async function backupRoutes(app: FastifyInstance) {
                 }
               }
               stats.characters++;
-            } catch {
-              /* skip failed entries */
+            } catch (err) {
+              skipLegacyItem("characters", itemIndex, err);
             }
             completedItems++;
             emitLegacyProgress("characters", "Importing characters");
@@ -3902,7 +4089,7 @@ export async function backupRoutes(app: FastifyInstance) {
 
         // Import personas
         if (Array.isArray(data.personas)) {
-          for (const p of data.personas) {
+          for (const [itemIndex, p] of data.personas.entries()) {
             try {
               emitLegacyProgress("personas", "Importing personas");
               const created = await chars.createPersona(
@@ -3966,8 +4153,8 @@ export async function backupRoutes(app: FastifyInstance) {
                   logger.warn(err, "[backup] Skipped optional avatar restoration for imported Persona %s", created.id);
                 }
               }
-            } catch {
-              /* skip */
+            } catch (err) {
+              skipLegacyItem("personas", itemIndex, err);
             }
             completedItems++;
             emitLegacyProgress("personas", "Importing personas");
@@ -3976,7 +4163,7 @@ export async function backupRoutes(app: FastifyInstance) {
 
         // Import lorebooks + entries
         if (Array.isArray(data.lorebooks)) {
-          for (const lb of data.lorebooks) {
+          for (const [itemIndex, lb] of data.lorebooks.entries()) {
             try {
               emitLegacyProgress("lorebooks", "Importing lorebooks");
               const created = await lbs.create(
@@ -4081,8 +4268,8 @@ export async function backupRoutes(app: FastifyInstance) {
                 }
               }
               stats.lorebooks++;
-            } catch {
-              /* skip */
+            } catch (err) {
+              skipLegacyItem("lorebooks", itemIndex, err);
             }
             completedItems++;
             emitLegacyProgress("lorebooks", "Importing lorebooks");
@@ -4091,7 +4278,7 @@ export async function backupRoutes(app: FastifyInstance) {
 
         // Import presets with full hierarchy (groups, sections, choice blocks)
         if (Array.isArray(data.presets)) {
-          for (const p of data.presets) {
+          for (const [itemIndex, p] of data.presets.entries()) {
             try {
               emitLegacyProgress("presets", "Importing presets");
               const existing = await presets.getById(p.id);
@@ -4119,7 +4306,7 @@ export async function backupRoutes(app: FastifyInstance) {
                   // Import groups — two passes to handle parent→child ordering
                   if (Array.isArray(p.groups)) {
                     // Pass 1: create all groups without parent references
-                    for (const g of p.groups) {
+                    for (const [groupIndex, g] of p.groups.entries()) {
                       try {
                         const newGroup = await presets.createGroup({
                           presetId: newPresetId,
@@ -4129,19 +4316,19 @@ export async function backupRoutes(app: FastifyInstance) {
                           enabled: g.enabled === "true" || g.enabled === true,
                         });
                         if (newGroup) groupIdMap.set(g.id, (newGroup as any).id);
-                      } catch {
-                        /* skip individual group */
+                      } catch (err) {
+                        skipLegacyItem("preset_groups", groupIndex, err);
                       }
                     }
                     // Pass 2: fix parent references using the fully-populated map
-                    for (const g of p.groups) {
+                    for (const [groupIndex, g] of p.groups.entries()) {
                       if (g.parentGroupId && groupIdMap.has(g.id) && groupIdMap.has(g.parentGroupId)) {
                         try {
                           await presets.updateGroup(groupIdMap.get(g.id)!, {
                             parentGroupId: groupIdMap.get(g.parentGroupId)!,
                           });
-                        } catch {
-                          /* skip */
+                        } catch (err) {
+                          skipLegacyItem("preset_group_links", groupIndex, err);
                         }
                       }
                     }
@@ -4149,7 +4336,7 @@ export async function backupRoutes(app: FastifyInstance) {
 
                   // Import sections
                   if (Array.isArray(p.sections)) {
-                    for (const s of p.sections) {
+                    for (const [sectionIndex, s] of p.sections.entries()) {
                       try {
                         await presets.createSection({
                           presetId: newPresetId,
@@ -4167,15 +4354,15 @@ export async function backupRoutes(app: FastifyInstance) {
                           injectionOrder: s.injectionOrder ?? 100,
                           forbidOverrides: s.forbidOverrides === "true" || s.forbidOverrides === true,
                         });
-                      } catch {
-                        /* skip individual section */
+                      } catch (err) {
+                        skipLegacyItem("preset_sections", sectionIndex, err);
                       }
                     }
                   }
 
                   // Import choice blocks
                   if (Array.isArray(p.choices)) {
-                    for (const cb of p.choices) {
+                    for (const [choiceIndex, cb] of p.choices.entries()) {
                       try {
                         await presets.createChoiceBlock({
                           presetId: newPresetId,
@@ -4189,8 +4376,8 @@ export async function backupRoutes(app: FastifyInstance) {
                             cb.displayMode === "buttons" || cb.displayMode === "listbox" ? cb.displayMode : "auto",
                           optionSort: cb.optionSort === "alphabetical" ? "alphabetical" : "manual",
                         });
-                      } catch {
-                        /* skip individual choice block */
+                      } catch (err) {
+                        skipLegacyItem("preset_choices", choiceIndex, err);
                       }
                     }
                   }
@@ -4198,8 +4385,8 @@ export async function backupRoutes(app: FastifyInstance) {
                   stats.presets++;
                 }
               }
-            } catch {
-              /* skip */
+            } catch (err) {
+              skipLegacyItem("presets", itemIndex, err);
             }
             completedItems++;
             emitLegacyProgress("presets", "Importing presets");
@@ -4208,7 +4395,7 @@ export async function backupRoutes(app: FastifyInstance) {
 
         // Import agent configs
         if (Array.isArray(data.agents)) {
-          for (const a of data.agents) {
+          for (const [itemIndex, a] of data.agents.entries()) {
             try {
               emitLegacyProgress("agents", "Importing agents");
               // Only import if this agent type doesn't already exist
@@ -4227,8 +4414,8 @@ export async function backupRoutes(app: FastifyInstance) {
                 });
                 stats.agents++;
               }
-            } catch {
-              /* skip */
+            } catch (err) {
+              skipLegacyItem("agents", itemIndex, err);
             }
             completedItems++;
             emitLegacyProgress("agents", "Importing agents");
@@ -4237,7 +4424,7 @@ export async function backupRoutes(app: FastifyInstance) {
 
         // Import synced custom themes
         if (Array.isArray(data.themes)) {
-          for (const theme of data.themes) {
+          for (const [itemIndex, theme] of data.themes.entries()) {
             try {
               emitLegacyProgress("themes", "Importing themes");
               const duplicate = await themes.findDuplicate(theme.name ?? "", theme.css ?? "");
@@ -4252,15 +4439,31 @@ export async function backupRoutes(app: FastifyInstance) {
               if (!duplicate && syncedTheme) {
                 stats.themes++;
               }
-            } catch {
-              /* skip */
+            } catch (err) {
+              skipLegacyItem("themes", itemIndex, err);
             }
             completedItems++;
             emitLegacyProgress("themes", "Importing themes");
           }
         }
 
-        const payload = { success: true, imported: stats, warnings };
+        addLegacySkipWarnings();
+        const skippedTotal = Object.values(skipped).reduce((sum, count) => sum + count, 0);
+        logEvent(
+          skippedTotal > 0 ? "warn" : "info",
+          "profile.import",
+          {
+            outcome: "ok",
+            format: "legacy",
+            elapsedMs: Date.now() - legacyImportStarted,
+            imported: { ...stats },
+            skipped: { ...skipped },
+          },
+          skippedTotal > 0
+            ? "[backup] Legacy profile import finished with skipped items"
+            : "[backup] Legacy profile import finished",
+        );
+        const payload = { success: true, imported: stats, skipped, warnings };
         if (wantsProgressStream) {
           sendEvent({ type: "done", data: payload });
           reply.raw.end();
@@ -4270,15 +4473,13 @@ export async function backupRoutes(app: FastifyInstance) {
       } catch (err) {
         if (wantsProgressStream) {
           const message = getBackupErrorMessage(err, "Profile import failed. Check the server logs for details.");
-          if (!(err instanceof ProfileImportRequestError)) {
-            const logError = err instanceof Error ? err : new Error(message);
-            logger.error(logError, "[backup] Profile import failed");
-          }
+          const ref = err instanceof ProfileImportRequestError ? null : reportBackupFailure(err, "Profile import");
           sendEvent({
             type: "error",
             data: {
               error: err instanceof ProfileImportRequestError ? "Invalid profile export" : "Profile import failed",
               message,
+              ...(ref ? { errorId: ref.errorId, code: ref.code } : {}),
             },
           });
           reply.raw.end();

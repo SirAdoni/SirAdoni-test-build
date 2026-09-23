@@ -29,6 +29,7 @@ import { getCharacterLibraryCategory } from "@marinara-engine/shared";
 import { withAvatarFileLifecycleLock } from "../image/avatar-file-lifecycle.js";
 import { deletePrivateNotebookRowsForCharacter } from "../private-notebook.service.js";
 import { assertCharacterGroupParent, removeCharacterGroupKeepingContents } from "./character-folders.js";
+import { parseStoredJson, reportStoredJsonCorrupt } from "./stored-json.js";
 
 function resolveTimestamps(overrides?: TimestampOverrides | null) {
   const normalized = normalizeTimestampOverrides(overrides);
@@ -240,7 +241,8 @@ function readCharacterListRow(row: CharacterRow): CharacterListRow {
       favorite: !!parsed.extensions?.fav,
       category: getCharacterLibraryCategory(parsed),
     };
-  } catch {
+  } catch (error) {
+    reportStoredJsonCorrupt(row.data, { table: "characters", rowId: row.id, field: "data" }, error);
     return { row, name: "Unknown", favorite: false, category: "characters" };
   }
 }
@@ -288,7 +290,8 @@ function getCharacterSummaryFromRow(row: typeof characters.$inferSelect) {
       avatarCrop: extensions.avatarCrop ?? null,
       conversationStatus: typeof extensions.conversationStatus === "string" ? extensions.conversationStatus : undefined,
     };
-  } catch {
+  } catch (error) {
+    reportStoredJsonCorrupt(row.data, { table: "characters", rowId: row.id, field: "data" }, error);
     return {
       id: row.id,
       name: "Unknown",
@@ -854,14 +857,16 @@ export function createCharactersStorage(db: DB) {
         // party/setup branches below are no-ops for the other modes.
         const memberChats = await tx.select().from(chats);
         for (const chat of memberChats) {
-          let memberIds: unknown;
-          let metadata: Record<string, unknown>;
-          try {
-            memberIds = JSON.parse(chat.characterIds);
-            metadata = JSON.parse(chat.metadata);
-          } catch {
-            continue;
-          }
+          const memberIds = parseStoredJson<unknown>(chat.characterIds, undefined, {
+            table: "chats",
+            rowId: chat.id,
+            field: "characterIds",
+          });
+          const metadata = parseStoredJson<Record<string, unknown> | undefined>(chat.metadata, undefined, {
+            table: "chats",
+            rowId: chat.id,
+            field: "metadata",
+          });
           if (!Array.isArray(memberIds) || !metadata || typeof metadata !== "object" || Array.isArray(metadata))
             continue;
           const config = metadata.gameSetupConfig;

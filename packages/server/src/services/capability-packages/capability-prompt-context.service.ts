@@ -6,7 +6,8 @@
 // collector. It may also declare which built-in game systems it replaces; undeclared stays built-in.
 // ──────────────────────────────────────────────
 
-import { logger } from "../../lib/logger.js";
+import { createDiagnostic } from "../../lib/diagnostics.js";
+import { logRecovered, logRepeated } from "../../lib/log-events.js";
 
 /** Read-only view of the turn handed to each contributor. */
 export interface CapabilityPromptContextRequest {
@@ -60,6 +61,18 @@ export function getCapabilityPromptContextPackageIds(): string[] {
   return [...contributorsByPackage.keys()];
 }
 
+/** The package's registry status and readiness for a failure line, or "unknown" when the registry can't say. */
+async function packageStatusOf(packageId: string): Promise<string> {
+  try {
+    // Loaded lazily: the package manager is heavy and only a failing contributor needs it.
+    const { capabilityPackageManager } = await import("./package-manager.service.js");
+    const installed = (await capabilityPackageManager.diagnostics()).find((item) => item.id === packageId);
+    return installed ? `${installed.status}/${installed.readiness}` : "not-installed";
+  } catch {
+    return "unknown";
+  }
+}
+
 /** Register (or replace) the contributor for a package. Returns a releaser for deactivation. */
 export function registerCapabilityPromptContext(
   packageId: string,
@@ -92,7 +105,10 @@ export function withDeadline<T>(value: Promise<T> | T, label: string, timeoutMs 
   return Promise.race([
     Promise.resolve(value),
     new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => reject(new Error(`${label} exceeded ${timeoutMs}ms`)), timeoutMs);
+      timer = setTimeout(
+        () => reject(Object.assign(new Error(`${label} exceeded ${timeoutMs}ms`), { name: "TimeoutError" })),
+        timeoutMs,
+      );
       timer.unref?.();
     }),
   ]).finally(() => clearTimeout(timer)) as Promise<T>;
@@ -113,8 +129,10 @@ export async function collectCapabilityPromptContext(
   const activeExperienceId =
     typeof request.chatMeta.gameExperienceId === "string" ? request.chatMeta.gameExperienceId : null;
   for (const [packageId, contribute] of contributorsByPackage) {
+    const started = Date.now();
     try {
       const contribution = await withDeadline(contribute(request), `prompt-context contributor ${packageId}`);
+      logRecovered(`prompt-context:${packageId}`, { packageId, chatId: request.chatId });
       if (contribution === null || contribution === undefined) continue;
       const text = typeof contribution === "string" ? contribution : contribution.text;
       if (typeof text === "string" && text.trim().length > 0) {
@@ -132,8 +150,25 @@ export async function collectCapabilityPromptContext(
         provides.inventory = true;
       }
     } catch (error) {
-      // Non-fatal by design: a broken contributor costs its own context, not the player's turn.
-      logger.warn(error, "[capability] prompt-context contributor failed for %s", packageId);
+      // Non-fatal by design: a broken contributor costs its own context, not the player's turn. It fails
+      // every turn while broken, so repeats inside the window are counted instead of written.
+      const errorCode = createDiagnostic(error).code;
+      logRepeated(
+        `prompt-context:${packageId}`,
+        "warn",
+        {
+          event: "package.contribute",
+          packageId,
+          chatId: request.chatId,
+          elapsedMs: Date.now() - started,
+          timedOut: errorCode === "ME_TIMEOUT",
+          errorCode,
+          outcome: "failed",
+          packageStatus: await packageStatusOf(packageId),
+          err: error,
+        },
+        "[capability] prompt-context contributor failed",
+      );
     }
   }
   return { blocks, packageBlocks, provides };

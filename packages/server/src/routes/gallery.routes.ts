@@ -96,6 +96,8 @@ import {
   validateVideoAssetFile,
 } from "../utils/media-file-security.js";
 import { logger, logDebugOverride } from "../lib/logger.js";
+import { replyWithDiagnostic } from "../lib/http-diagnostics.js";
+import { logEvent } from "../lib/log-events.js";
 
 const GALLERY_DIR = join(DATA_DIR, "gallery");
 const SPRITES_DIR = join(DATA_DIR, "sprites");
@@ -1080,8 +1082,10 @@ export async function galleryRoutes(app: FastifyInstance) {
       if (err instanceof GallerySceneVideoRequestError || err instanceof SceneVideoPromptReviewError) {
         return reply.status(err.statusCode).send({ error: err.message });
       }
-      logger.warn(err, "[gallery/generate-scene-video/preview] Failed to prepare scene video prompt");
-      return reply.status(500).send({ error: "Scene video prompt preview failed" });
+      return replyWithDiagnostic(reply, 500, err, {
+        message: "Scene video prompt preview failed",
+        fields: { kind: "video", chatId: input.chatId, stage: "gallery.scene_video.preview" },
+      });
     }
   });
 
@@ -1208,9 +1212,10 @@ export async function galleryRoutes(app: FastifyInstance) {
         },
       );
     } catch (err) {
-      logger.warn(err, "[gallery/generate-scene-video] Scene video generation failed for chat %s", input.chatId);
-      const message = err instanceof Error ? err.message : "Scene video generation failed";
-      return reply.status(502).send({ error: message });
+      return replyWithDiagnostic(reply, 502, err, {
+        message: err instanceof Error ? err.message : "Scene video generation failed",
+        fields: { kind: "video", chatId: input.chatId, provider: source, model, stage: "gallery.scene_video" },
+      });
     }
   });
 
@@ -1339,9 +1344,10 @@ export async function galleryRoutes(app: FastifyInstance) {
         );
         imagePrompt = (promptResult.content ?? "").trim();
       } catch (err) {
-        logger.warn(err, "[gallery/selfie] Failed to build selfie image prompt for chat %s", chatId);
-        const message = err instanceof Error ? err.message : "Failed to build selfie prompt";
-        return reply.status(502).send({ error: message });
+        return replyWithDiagnostic(reply, 502, err, {
+          message: err instanceof Error ? err.message : "Failed to build selfie prompt",
+          fields: { kind: "image", chatId, model: promptRuntime.model, stage: "gallery.selfie.prompt" },
+        });
       }
     }
 
@@ -1498,12 +1504,17 @@ export async function galleryRoutes(app: FastifyInstance) {
               logger.warn(error, "[gallery/selfie] Variant %d failed for chat %s", index + 1, chatId),
           });
           const savedImages = [];
+          const fallbackUsed = imageResults.some((imageResult) => !!imageResult.effectiveConnection);
+          let effectiveProvider: string | undefined;
+          let effectiveModel: string | undefined;
           let lastSaveError: unknown = null;
           for (const imageResult of imageResults) {
             const renderedPrompt = imageResult.effectivePrompt ?? providerPrompt;
             const effectiveImageProvider =
               imageResult.effectiveConnection?.provider ?? imageConn.provider ?? "image_generation";
             const effectiveImageModel = imageResult.effectiveConnection?.model || imageModel || "unknown";
+            effectiveProvider ??= effectiveImageProvider;
+            effectiveModel ??= effectiveImageModel;
             let savedFilePath: string | null = null;
             let savedImage: Awaited<ReturnType<typeof storage.create>> = null;
             try {
@@ -1552,11 +1563,20 @@ export async function galleryRoutes(app: FastifyInstance) {
           if (!image) {
             throw lastSaveError instanceof Error ? lastSaveError : new Error("Image provider did not return a selfie");
           }
-          logger.info(
-            "[gallery/selfie] Generated %d selfie image(s) for %s in chat %s",
-            savedImages.length,
-            characterName,
-            chatId,
+          logEvent(
+            "info",
+            "media.generate",
+            {
+              kind: "image",
+              stage: "gallery.selfie",
+              chatId,
+              outcome: "ok",
+              imageCount: savedImages.length,
+              fallbackUsed,
+              effectiveProvider,
+              effectiveModel,
+            },
+            "Generated conversation selfie",
           );
           return {
             ...image,
@@ -1565,9 +1585,10 @@ export async function galleryRoutes(app: FastifyInstance) {
         },
       );
     } catch (err) {
-      logger.warn(err, "[gallery/selfie] Selfie generation failed for chat %s", chatId);
-      const message = err instanceof Error ? err.message : "Selfie generation failed";
-      return reply.status(502).send({ error: message });
+      return replyWithDiagnostic(reply, 502, err, {
+        message: err instanceof Error ? err.message : "Selfie generation failed",
+        fields: { kind: "image", chatId, model: imageModel, stage: "gallery.selfie" },
+      });
     }
   });
 
@@ -1623,8 +1644,10 @@ export async function galleryRoutes(app: FastifyInstance) {
       if (err instanceof GalleryImageRequestError) {
         return reply.status(err.statusCode).send({ error: err.message });
       }
-      logger.warn(err, "[gallery/generate-image] Failed to preview Gallery image requests for chat %s", chatId);
-      return reply.status(500).send({ error: "Gallery image prompt preview failed" });
+      return replyWithDiagnostic(reply, 500, err, {
+        message: "Gallery image prompt preview failed",
+        fields: { kind: "image", chatId, stage: "gallery.image.preview" },
+      });
     }
   });
 
@@ -1642,8 +1665,10 @@ export async function galleryRoutes(app: FastifyInstance) {
       if (err instanceof GalleryImageRequestError) {
         return reply.status(err.statusCode).send({ error: err.message });
       }
-      logger.warn(err, "[gallery/generate-image] Failed to compile Gallery image request for chat %s", chatId);
-      return reply.status(500).send({ error: "Gallery image prompt compilation failed" });
+      return replyWithDiagnostic(reply, 500, err, {
+        message: "Gallery image prompt compilation failed",
+        fields: { kind: "image", chatId, stage: "gallery.image.compile" },
+      });
     }
 
     context.debugLog("[debug/gallery/generate-image] prompt:\n%s", compiledPrompt.prompt);
@@ -1701,7 +1726,20 @@ export async function galleryRoutes(app: FastifyInstance) {
             });
             if (!image) throw new Error("Generated Gallery image metadata could not be saved");
             metadataSaved = true;
-            logger.info("[gallery/generate-image] Generated Gallery image for chat %s", chatId);
+            logEvent(
+              "info",
+              "media.generate",
+              {
+                kind: "image",
+                stage: "gallery.image",
+                chatId,
+                outcome: "ok",
+                fallbackUsed: !!generated.effectiveConnection,
+                effectiveProvider: effectiveImageProvider,
+                effectiveModel: effectiveImageModel,
+              },
+              "Generated Gallery image",
+            );
             return { ...image, url: buildGalleryImageUrl(image, chatId) };
           } catch (err) {
             if (savedFilePath && !metadataSaved) {
@@ -1720,9 +1758,9 @@ export async function galleryRoutes(app: FastifyInstance) {
         },
       );
     } catch (err) {
-      logger.warn(err, "[gallery/generate-image] Image generation failed for chat %s", chatId);
-      return reply.status(502).send({
-        error: err instanceof Error ? err.message : "Gallery image generation failed",
+      return replyWithDiagnostic(reply, 502, err, {
+        message: err instanceof Error ? err.message : "Gallery image generation failed",
+        fields: { kind: "image", chatId, model: context.imageModel, stage: "gallery.image" },
       });
     }
   });

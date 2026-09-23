@@ -1,5 +1,5 @@
 import { safeFetch } from "../../utils/security.js";
-import { logger } from "../../lib/logger.js";
+import { pollProviderTask } from "../image/image-generation-queue.js";
 
 export type AtlasCloudGenerationKind = "image" | "video";
 
@@ -232,28 +232,30 @@ export async function runAtlasCloudPrediction(args: {
   if (!started.id) throw new Error(`Atlas Cloud ${args.kind} generation response did not include a prediction ID`);
 
   const pollUrl = buildAtlasCloudUrl(args.baseUrl, `prediction/${encodeURIComponent(started.id)}`);
-  while (true) {
-    await delayWithSignal(ATLAS_CLOUD_POLL_INTERVAL_MS, args.signal);
-    const polledResponse = await atlasFetch(pollUrl, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${args.apiKey}` },
-      signal: args.signal,
-    });
-    const prediction = parseAtlasCloudPrediction(await readJsonResponse(polledResponse, "prediction polling"));
-    if (prediction.status && COMPLETE_STATUSES.has(prediction.status)) {
-      if (prediction.output) return prediction.output;
-      throw new Error(`Atlas Cloud ${args.kind} generation completed without an output`);
-    }
-    if (prediction.status && FAILED_STATUSES.has(prediction.status)) {
-      throw new Error(
-        `Atlas Cloud ${args.kind} generation ${prediction.status}${prediction.error ? `: ${prediction.error}` : ""}`,
-      );
-    }
-    if (
-      prediction.status &&
-      !["pending", "queued", "processing", "running", "in_progress"].includes(prediction.status)
-    ) {
-      logger.debug("[atlas-cloud] continuing after unknown prediction status: %s", prediction.status);
-    }
-  }
+  // Unknown statuses keep polling; pollProviderTask logs each status change at debug.
+  return pollProviderTask<string>({
+    provider: "atlas",
+    taskId: started.id,
+    kind: args.kind,
+    intervalMs: ATLAS_CLOUD_POLL_INTERVAL_MS,
+    wait: (ms) => delayWithSignal(ms, args.signal),
+    poll: async () => {
+      const polledResponse = await atlasFetch(pollUrl, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${args.apiKey}` },
+        signal: args.signal,
+      });
+      const prediction = parseAtlasCloudPrediction(await readJsonResponse(polledResponse, "prediction polling"));
+      if (prediction.status && COMPLETE_STATUSES.has(prediction.status)) {
+        if (prediction.output) return { providerStatus: prediction.status, done: true, value: prediction.output };
+        throw new Error(`Atlas Cloud ${args.kind} generation completed without an output`);
+      }
+      if (prediction.status && FAILED_STATUSES.has(prediction.status)) {
+        throw new Error(
+          `Atlas Cloud ${args.kind} generation ${prediction.status}${prediction.error ? `: ${prediction.error}` : ""}`,
+        );
+      }
+      return { providerStatus: prediction.status, done: false };
+    },
+  });
 }
