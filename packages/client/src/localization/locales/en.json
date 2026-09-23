@@ -7922,6 +7922,8 @@
   "ui.game.gamecombatui.theGameMasterIsAdjudicatingYourManeuver": "The Game Master is adjudicating your maneuver...",
   "ui.game.gamecombatui.weakensAnEnemy": "Weakens an enemy",
   "ui.game.gamecombatui.yourTurn": "Your turn",
+  "ui.game.gamedicelog.d20Rates": "Nat 20 {{high}}%, nat 1 {{low}}% (fair 5%)",
+  "ui.game.gamedicelog.mostRolled": "Most rolled d{{sides}} x{{count}}: avg {{average}} (fair {{expected}})",
   "ui.game.gamegridmap.clickToSelect": " (click to select)",
   "ui.game.gamegridmap.undiscovered": "Undiscovered",
   "ui.game.gamegridmap.value1Value2Value3": "{{value1}}: {{value2}}{{value3}}",
