@@ -17,8 +17,9 @@ import {
   isTypingTarget,
   registerCommand,
 } from "../../lib/command-palette";
+import { requestChatChapters } from "../../lib/chat-chapters-events";
 import { requestChatHelp } from "../../lib/chat-help-events";
-import { openActivityOverview, openChatStats, openGlobalSearch } from "../../lib/chat-insights";
+import { openActivityOverview, openChatStats, openGlobalSearch, openReadingMode } from "../../lib/chat-insights";
 import { requestGameSessionPanel } from "../../lib/game-session-panel-events";
 import { formatShortcutKey } from "../../lib/keyboard-shortcuts";
 import { requestLorebookEditorTool } from "../../lib/lorebook-editor-events";
@@ -34,7 +35,9 @@ import {
 } from "../../lib/settings-targets";
 import { requestSnippetPicker } from "../../hooks/use-snippet-expansion";
 import { openRandomTables } from "../../lib/open-random-tables";
-import { chatKeys, useExportChat } from "../../hooks/use-chats";
+import { openPrepBoard } from "../../lib/open-prep-board";
+import { openInitiativeTracker } from "../../lib/open-initiative-tracker";
+import { chatKeys, useChat, useChatChapters, useExportChat } from "../../hooks/use-chats";
 import { textSnippetKeys } from "../../hooks/use-text-snippets";
 import { useLaunchNewChat } from "../chat/HomeNewChatLauncher";
 import { useCommandPaletteStore } from "../../stores/command-palette.store";
@@ -210,6 +213,20 @@ export function CommandPaletteHost() {
         },
       }),
       registerCommand({
+        id: "action:go-to-chapter",
+        section: "chats",
+        title: t("palette.actions.goToChapter"),
+        keywords: ["chapters", "table of contents", "toc", "scene", "jump"],
+        when: () => activeChatMode() !== null,
+        run: () => {
+          const chatId = useChatStore.getState().activeChatId;
+          if (!chatId) return;
+          // Game mode keeps its chapters in the campaign log.
+          if (activeChatMode() === "game") openGameLog({ chatId, focusChapters: true });
+          else requestChatChapters(chatId);
+        },
+      }),
+      registerCommand({
         id: "action:insert-snippet",
         section: "actions",
         title: t("palette.actions.insertSnippet"),
@@ -226,6 +243,22 @@ export function CommandPaletteHost() {
         title: t("palette.actions.randomTables"),
         keywords: ["oracle", "roll", "table", "random", "yes no", "dice", "gm"],
         run: () => openRandomTables(),
+      }),
+      registerCommand({
+        id: "action:prep-board",
+        section: "actions",
+        title: t("palette.actions.prepBoard"),
+        keywords: ["gm", "prep", "plan", "planning", "secrets", "clues", "lazy dm", "session", "notes"],
+        when: () => activeChatMode() === "game",
+        run: () => openPrepBoard(),
+      }),
+      registerCommand({
+        id: "action:initiative-tracker",
+        section: "actions",
+        title: t("palette.actions.initiativeTracker"),
+        keywords: ["initiative", "encounter", "combat", "turn order", "round", "fight", "gm"],
+        when: () => activeChatMode() === "game",
+        run: () => openInitiativeTracker(),
       }),
       registerCommand({
         id: "action:manage-snippets",
@@ -288,6 +321,18 @@ export function CommandPaletteHost() {
         run: () => {
           const chatId = useChatStore.getState().activeChatId;
           if (chatId) openChatStats(chatId);
+        },
+      }),
+      registerCommand({
+        id: "action:reading-mode",
+        section: "chats",
+        title: t("palette.actions.readingMode"),
+        subtitle: t("readingMode.open"),
+        keywords: ["read", "reader", "book", "story", "focus", "distraction free"],
+        when: () => activeChatMode() === "roleplay",
+        run: () => {
+          const chatId = useChatStore.getState().activeChatId;
+          if (chatId) openReadingMode(chatId);
         },
       }),
       ...(["markdown", "html"] as const).map((format) =>
@@ -364,6 +409,7 @@ export function CommandPaletteHost() {
 
   return (
     <>
+      {paletteOpen && <ChapterPaletteCommands />}
       {paletteLoaded && (
         <Suspense fallback={null}>
           <CommandPalette />
@@ -376,4 +422,33 @@ export function CommandPaletteHost() {
       )}
     </>
   );
+}
+
+/** While the palette is open, one "Go to chapter: <title>" command per chapter of the active chat. */
+function ChapterPaletteCommands() {
+  const { t } = useTranslation();
+  const chatId = useChatStore((s) => s.activeChatId);
+  const { data: chat } = useChat(chatId);
+  const { data: chapters } = useChatChapters(chatId, !!chat);
+  const isGame = chat?.mode === "game";
+
+  useEffect(() => {
+    if (!chatId || !chapters?.length) return;
+    const unregisters = chapters.map((chapter, index) =>
+      registerCommand({
+        id: `chapter:${chatId}:${chapter.messageId}`,
+        section: "chats",
+        title: t("palette.actions.goToChapterItem", { number: index + 1, title: chapter.title }),
+        subtitle: chapter.summary ?? t("ui.chat.chatmessagesearch.messageNumber", { number: chapter.messageNumber }),
+        keywords: ["chapter", "go to chapter", "toc", "scene"],
+        run: () => {
+          if (isGame) openGameLog({ chatId, messageId: chapter.messageId, messageNumber: chapter.messageNumber });
+          else useChatStore.getState().requestGotoMessage(chatId, chapter.messageNumber);
+        },
+      }),
+    );
+    return () => unregisters.forEach((unregister) => unregister());
+  }, [chapters, chatId, isGame, t]);
+
+  return null;
 }

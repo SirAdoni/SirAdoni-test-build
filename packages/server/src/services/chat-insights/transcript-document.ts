@@ -10,6 +10,13 @@ export interface TranscriptDocumentEntry {
   content: string;
   createdAt?: string | null;
   thinking?: string | null;
+  /** A user-marked chapter starts at this entry; exports render it as a heading. */
+  chapter?: TranscriptChapter | null;
+}
+
+export interface TranscriptChapter {
+  title: string;
+  summary?: string | null;
 }
 
 export interface TranscriptDocumentInput {
@@ -64,6 +71,18 @@ export function describeTranscriptDateRange(entries: readonly TranscriptDocument
   return start === end ? start : `${start} to ${end}`;
 }
 
+/** Chapters of the document in reading order, with the anchor id each HTML heading gets. */
+export function listTranscriptChapters(
+  entries: readonly TranscriptDocumentEntry[],
+): Array<{ id: string; index: number; chapter: TranscriptChapter }> {
+  const out: Array<{ id: string; index: number; chapter: TranscriptChapter }> = [];
+  entries.forEach((entry, index) => {
+    const title = entry.chapter?.title?.trim();
+    if (title) out.push({ id: `chapter-${out.length + 1}`, index, chapter: { ...entry.chapter, title } });
+  });
+  return out;
+}
+
 // ── Markdown ──
 
 function escapeMarkdownInline(value: string): string {
@@ -75,7 +94,14 @@ export function renderTranscriptMarkdown(input: TranscriptDocumentInput): string
   const lines: string[] = [`# ${escapeMarkdownInline(input.title.trim() || "Chat")}`, ""];
   if (range) lines.push(`_${range}_`, "");
   lines.push("---", "");
-  for (const entry of input.entries) {
+  const chapterAt = new Map(listTranscriptChapters(input.entries).map((item) => [item.index, item.chapter]));
+  input.entries.forEach((entry, index) => {
+    const chapter = chapterAt.get(index);
+    if (chapter) {
+      lines.push(`## ${escapeMarkdownInline(chapter.title)}`, "");
+      if (chapter.summary?.trim())
+        lines.push(`_${escapeMarkdownInline(chapter.summary.trim().replace(/\s+/gu, " "))}_`, "");
+    }
     lines.push(`### ${escapeMarkdownInline(entry.speaker)}`, "");
     lines.push(entry.content.trim(), "");
     if (entry.thinking?.trim()) {
@@ -83,7 +109,7 @@ export function renderTranscriptMarkdown(input: TranscriptDocumentInput): string
       const thinking = entry.thinking.trim().replace(/<\/(details|summary)\s*>/giu, "&lt;/$1&gt;");
       lines.push("<details><summary>Thinking</summary>", "", thinking, "", "</details>", "");
     }
-  }
+  });
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
@@ -151,17 +177,42 @@ h1{font-size:2rem;line-height:1.2;margin:0 0 .35rem;font-weight:600}
 .turn.narrator .text{font-style:italic}
 code{font:.9em ui-monospace,Consolas,monospace;background:var(--user);padding:0 .25em;border-radius:.25em}
 details{margin-top:.5rem;color:var(--muted);font-size:.9em}
+.toc{margin:0 0 2rem;padding:1rem 1.25rem;border:1px solid var(--line);border-radius:.6rem;background:var(--paper);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+.toc h2{margin:0 0 .5rem;font-size:.8rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.toc ol{margin:0;padding-left:1.4rem}
+.toc li{margin:.2rem 0}
+.toc a{color:var(--accent);text-decoration:none}
+.toc a:hover{text-decoration:underline}
+.toc .sum{display:block;color:var(--muted);font-size:13px}
+.chapter{margin:2.5rem 0 .25rem;padding-top:1.5rem;border-top:2px solid var(--line);font-size:1.45rem;line-height:1.25;font-weight:600;scroll-margin-top:1rem}
+.chapter.lead{margin-top:0;padding-top:0;border-top:0}
+.chapter-summary{margin:0 0 .5rem;color:var(--muted);font-style:italic}
 footer{margin-top:2.5rem;color:var(--muted);font:12px/1.4 system-ui,sans-serif;text-align:center}
 @media (max-width:480px){body{font-size:16px}main{padding:2rem 1rem 3rem}.avatar{flex-basis:2rem;width:2rem;height:2rem}}
-@media print{:root{--bg:#fff;--paper:#fff;--ink:#000;--muted:#555;--line:#ccc;--user:#f3f3f3;--accent:#333}body{font-size:12pt}main{max-width:none;padding:0}details{display:none}}
+@media print{:root{--bg:#fff;--paper:#fff;--ink:#000;--muted:#555;--line:#ccc;--user:#f3f3f3;--accent:#333}body{font-size:12pt}main{max-width:none;padding:0}details{display:none}.chapter{break-after:avoid;page-break-after:avoid}}
 `;
 
 export function renderTranscriptHtml(input: TranscriptDocumentInput): string {
   const title = input.title.trim() || "Chat";
   const formatDate = input.formatDate ?? defaultFormatDate;
   const range = describeTranscriptDateRange(input.entries);
+  const chapters = listTranscriptChapters(input.entries);
+  const chapterAt = new Map(chapters.map((item) => [item.index, item]));
+  const toc =
+    chapters.length > 0
+      ? `<nav class="toc" aria-labelledby="toc-title"><h2 id="toc-title">Contents</h2><ol>${chapters
+          .map(
+            ({ id, chapter }) =>
+              `<li><a href="#${id}">${escapeHtml(chapter.title)}</a>${chapter.summary?.trim() ? `<span class="sum">${escapeHtml(chapter.summary.trim())}</span>` : ""}</li>`,
+          )
+          .join("")}</ol></nav>\n`
+      : "";
   const turns = input.entries
-    .map((entry) => {
+    .map((entry, index) => {
+      const chapterItem = chapterAt.get(index);
+      const chapterHtml = chapterItem
+        ? `<h2 class="chapter${index === 0 ? " lead" : ""}" id="${chapterItem.id}">${escapeHtml(chapterItem.chapter.title)}</h2>${chapterItem.chapter.summary?.trim() ? `<p class="chapter-summary">${escapeHtml(chapterItem.chapter.summary.trim())}</p>` : ""}\n`
+        : "";
       const avatar = input.avatars?.get(entry.speakerKey);
       const avatarHtml =
         avatar && SAFE_AVATAR_URI.test(avatar)
@@ -174,7 +225,7 @@ export function renderTranscriptHtml(input: TranscriptDocumentInput): string {
         ? `<details><summary>Thinking</summary>${renderStoryBody(entry.thinking)}</details>`
         : "";
       const roleClass = ["user", "assistant", "narrator"].includes(entry.role) ? entry.role : "assistant";
-      return `<article class="turn ${roleClass}">${avatarHtml}<div class="body"><div class="meta"><span class="name">${escapeHtml(entry.speaker)}</span>${time}</div><div class="text">${renderStoryBody(entry.content)}</div>${thinking}</div></article>`;
+      return `${chapterHtml}<article class="turn ${roleClass}">${avatarHtml}<div class="body"><div class="meta"><span class="name">${escapeHtml(entry.speaker)}</span>${time}</div><div class="text">${renderStoryBody(entry.content)}</div>${thinking}</div></article>`;
     })
     .join("\n");
 
@@ -190,7 +241,7 @@ export function renderTranscriptHtml(input: TranscriptDocumentInput): string {
 <body>
 <main>
 <header><h1>${escapeHtml(title)}</h1>${range ? `<p class="range">${escapeHtml(range)}</p>` : ""}</header>
-${turns}
+${toc}${turns}
 <footer>Exported from Marinara Engine${input.generatedAt ? ` on ${escapeHtml(formatDay(input.generatedAt))}` : ""}</footer>
 </main>
 </body>

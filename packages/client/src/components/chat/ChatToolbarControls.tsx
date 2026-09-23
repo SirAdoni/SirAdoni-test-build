@@ -10,6 +10,7 @@ import {
 import { MoreHorizontal } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { CHAT_SUMMARY_OPEN_REQUEST_EVENT, requestChatSummaryOpen } from "../../lib/chat-floating-ui-events";
+import { CHAT_CHAPTERS_OPEN_EVENT, readChatChaptersRequest, requestChatChapters } from "../../lib/chat-chapters-events";
 import { CHAT_HELP_CLOSE_EVENT, CHAT_HELP_OPEN_REQUEST_EVENT, readChatHelpEventMode } from "../../lib/chat-help-events";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 import { NEUTRAL_PANEL_SHELL } from "../ui/neutral-surface-styles";
@@ -202,6 +203,7 @@ export function ChatToolbarMenu({
   const btnRef = useRef<HTMLDivElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
   const pendingSummaryChatIdRef = useRef<string | null>(null);
+  const pendingChaptersChatIdRef = useRef<string | null>(null);
   const neededDesktopWidthRef = useRef(0);
   const lastViewportWidthRef = useRef(typeof window === "undefined" ? 0 : window.innerWidth);
   const [pos, setPos] = useState<{ top: number; right: number }>({ top: 0, right: 0 });
@@ -323,6 +325,31 @@ export function ChatToolbarMenu({
     if (!open || !chatId) return;
     pendingSummaryChatIdRef.current = null;
     requestAnimationFrame(() => requestChatSummaryOpen(chatId));
+  }, [open]);
+
+  // "Go to chapter" targets the search button; on phones it lives in this overflow menu,
+  // so open the menu first and ask again once the button is mounted.
+  useEffect(() => {
+    const handleChaptersRequest = (event: Event) => {
+      const chatId = readChatChaptersRequest(event);
+      const root = rootRef.current;
+      if (!chatId || !root || root.getBoundingClientRect().width <= 0 || open) return;
+      const hasVisibleSearchAction = Array.from(
+        document.querySelectorAll<HTMLElement>('button[data-chat-toolbar-panel-action="search"]'),
+      ).some((action) => action.getBoundingClientRect().width > 0);
+      if (hasVisibleSearchAction) return;
+      pendingChaptersChatIdRef.current = chatId;
+      setOpen(true);
+    };
+    window.addEventListener(CHAT_CHAPTERS_OPEN_EVENT, handleChaptersRequest);
+    return () => window.removeEventListener(CHAT_CHAPTERS_OPEN_EVENT, handleChaptersRequest);
+  }, [open]);
+
+  useEffect(() => {
+    const chatId = pendingChaptersChatIdRef.current;
+    if (!open || !chatId) return;
+    pendingChaptersChatIdRef.current = null;
+    requestAnimationFrame(() => requestChatChapters(chatId));
   }, [open]);
 
   return (

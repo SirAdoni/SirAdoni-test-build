@@ -1,5 +1,5 @@
 // ──────────────────────────────────────────────
-// Message marks: bookmark, pin to context, private note
+// Message marks: bookmark, pin to context, private note, chapter start
 // ──────────────────────────────────────────────
 import {
   MAX_BOOKMARK_LABEL_LENGTH,
@@ -7,6 +7,7 @@ import {
   MAX_PRIVATE_NOTE_LENGTH,
   isMessagePinnedToContext,
   readMessageBookmark,
+  readMessageChapter,
   readMessagePrivateNote,
 } from "@marinara-engine/shared";
 import { useQueryClient } from "@tanstack/react-query";
@@ -15,10 +16,12 @@ import { useEffect, useId, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { useUpdateMessageExtra } from "../../hooks/use-chats";
+import { chatKeys, useUpdateMessageExtra } from "../../hooks/use-chats";
+import { campaignLogKeys } from "../../hooks/use-game-tools";
 import { ApiError } from "../../lib/api-client";
 import { cn } from "../../lib/utils";
 import { MESSAGE_ACTION_ICON_SIZE, MessageActionButton, useMessageActionMenu } from "./MessageActionButton";
+import { ChapterMenuSection } from "./MessageChapters";
 
 type MarkableMessage = { id: string; chatId: string; extra?: unknown };
 
@@ -35,7 +38,8 @@ export function readMessageMarks(message: { extra?: unknown }) {
   const bookmark = readMessageBookmark(message.extra);
   const pinned = isMessagePinnedToContext(message.extra);
   const note = readMessagePrivateNote(message.extra);
-  return { bookmark, pinned, note, any: !!bookmark || pinned || !!note };
+  const chapter = readMessageChapter(message.extra);
+  return { bookmark, pinned, note, chapter, any: !!bookmark || pinned || !!note || !!chapter };
 }
 
 function useSaveMessageMarks(message: MarkableMessage) {
@@ -46,7 +50,13 @@ function useSaveMessageMarks(message: MarkableMessage) {
     updateExtra.mutate(
       { messageId: message.id, extra },
       {
-        onSuccess: () => qc.invalidateQueries({ queryKey: ["chat-message-search", message.chatId] }),
+        onSuccess: () => {
+          qc.invalidateQueries({ queryKey: ["chat-message-search", message.chatId] });
+          if ("chapter" in extra) {
+            qc.invalidateQueries({ queryKey: chatKeys.chapters(message.chatId) });
+            qc.invalidateQueries({ queryKey: campaignLogKeys.all });
+          }
+        },
         onError: (error) =>
           toast.error(
             error instanceof ApiError && error.status === 409
@@ -169,6 +179,12 @@ export function MessageMarksAction({
                 </span>
               </span>
             </button>
+
+            <ChapterMenuSection
+              extra={message.extra}
+              rowClassName={MENU_ROW_CLASS}
+              onSave={(chapter) => save({ chapter })}
+            />
 
             <div className="mt-1 border-t border-[var(--marinara-chat-chrome-panel-divider)] px-2 pt-2">
               <label htmlFor={noteId} className="mb-1 flex items-center gap-1.5 text-xs">

@@ -1,0 +1,136 @@
+{
+  "id": "roads-and-weather",
+  "name": "Roads and weather",
+  "description": "Weather, roadside encounters, travellers, beasts and finds by the wayside.",
+  "tables": [
+    {
+      "name": "Weather",
+      "dice": "d20",
+      "description": "Today's sky for temperate lands.",
+      "rows": [
+        { "text": "Clear and bright, a good day for walking", "min": 1, "max": 3 },
+        { "text": "High thin cloud, cool and pleasant", "min": 4, "max": 5 },
+        { "text": "Overcast and still", "min": 6, "max": 7 },
+        { "text": "Blustery wind from the west, hats go flying", "min": 8, "max": 8 },
+        { "text": "Light drizzle on and off", "min": 9, "max": 10 },
+        { "text": "Morning fog that burns off by noon", "min": 11, "max": 11 },
+        { "text": "Steady rain, roads turning to mud", "min": 12, "max": 13 },
+        { "text": "Muggy heat and biting flies", "min": 14, "max": 14 },
+        { "text": "Thick fog all day; sight is a stone's throw", "min": 15, "max": 15 },
+        { "text": "Cold snap, frost on the grass at dawn", "min": 16, "max": 16 },
+        { "text": "Thunderstorm in the afternoon, lightning on the hills", "min": 17, "max": 17 },
+        { "text": "Hail for an hour, then sun as if nothing happened", "min": 18, "max": 18 },
+        { "text": "Gale; trees down across the road", "min": 19, "max": 19 },
+        { "text": "Strange weather: [[Strange Sky]]", "min": 20, "max": 20 }
+      ]
+    },
+    {
+      "name": "Strange Sky",
+      "dice": null,
+      "rows": [
+        "a red haze and a copper-coloured sun",
+        "warm rain that smells of flowers",
+        "snow in high summer, melting as it lands",
+        "two rainbows crossed over the road",
+        "a silent storm, lightning with no thunder",
+        "clouds that move against the wind",
+        "a night so dark no stars show at all",
+        "a falling star that lands somewhere near",
+        "mist that forms shapes if you watch too long",
+        "birds all flying south at once, in silence",
+        "a moon that rises twice",
+        "the air tastes of iron and every dog howls"
+      ]
+    },
+    {
+      "name": "Roadside Encounter",
+      "dice": "d100",
+      "rows": [
+        { "text": "Nothing but the road and the birds", "min": 1, "max": 20 },
+        { "text": "A traveller on the road: [[Traveller]]", "min": 21, "max": 38 },
+        { "text": "Two travellers walking together: [[Traveller]], and [[Traveller]]", "min": 39, "max": 44 },
+        { "text": "Tracks and signs of [[Wild Beast]] crossing the road", "min": 45, "max": 52 },
+        { "text": "[[Wild Beast]], close by and not yet aware of you", "min": 53, "max": 58 },
+        { "text": "Something by the wayside: [[Roadside Find]]", "min": 59, "max": 68 },
+        { "text": "A toll post; [[1d6]] guards want [[2d6]] coppers each", "min": 69, "max": 72 },
+        { "text": "A broken-down cart and a driver begging for help", "min": 73, "max": 76 },
+        { "text": "A roadside shrine with fresh offerings on it", "min": 77, "max": 80 },
+        { "text": "[[1d6]] bandits wait where the road narrows", "min": 81, "max": 84 },
+        { "text": "A patrol of riders who ask your business", "min": 85, "max": 88 },
+        { "text": "A burnt farmhouse, still smoking", "min": 89, "max": 91 },
+        { "text": "A crossroads sign that has been turned the wrong way", "min": 92, "max": 94 },
+        { "text": "A funeral procession that asks you to walk with them a while", "min": 95, "max": 97 },
+        { "text": "The weather turns: [[Weather]]", "min": 98, "max": 99 },
+        { "text": "Something that should not be here, and it has seen you", "min": 100, "max": 100 }
+      ]
+    },
+    {
+      "name": "Traveller",
+      "dice": null,
+      "rows": [
+        "a pedlar with a mule loaded with pots",
+        "a pilgrim going barefoot to a distant shrine",
+        "a messenger riding hard who will not stop",
+        "a family moving house with everything on one cart",
+        "a tinker who mends anything for a meal",
+        "a wandering minstrel with a cracked lute",
+        "a deserter still in half a uniform",
+        "a herder driving [[2d6]] goats",
+        "a scholar lost and too proud to admit it",
+        "a noble's servant searching for a runaway horse",
+        "an old woman gathering herbs who knows the land",
+        "a bounty hunter with a sketch of a face",
+        "a pair of young lovers who clearly ran away",
+        "a beggar with a very fine pair of boots",
+        "a travelling healer with a satchel of remedies",
+        "a courier guarding a small locked box",
+        "a hunter carrying a fresh kill",
+        "a monk under a vow of silence",
+        "a merchant whose guards quit this morning",
+        "a child alone, looking for someone"
+      ]
+    },
+    {
+      "name": "Wild Beast",
+      "dice": null,
+      "rows": [
+        { "text": "a herd of deer", "weight": 2 },
+        { "text": "a wild boar", "weight": 2 },
+        "a lone grey wolf",
+        "a pack of [[1d4]] wolves",
+        "a brown bear and her cubs",
+        "a bad-tempered badger",
+        "a swarm of wild bees",
+        "an escaped bull",
+        "a giant spider in a roadside thicket",
+        "a flock of crows that follows you",
+        "a mountain cat watching from a rock",
+        "a stray war dog with a torn collar",
+        "a huge old stag with a crown of antlers",
+        "a snake sunning itself across the path"
+      ]
+    },
+    {
+      "name": "Roadside Find",
+      "dice": null,
+      "rows": [
+        "a dropped purse with [[2d6]] silver in it",
+        "a lame horse still saddled",
+        "a milestone with fresh scratches: a warning in thieves' marks",
+        "a shallow grave, recently dug",
+        "an abandoned camp with the fire still warm",
+        "a letter sealed with wax, addressed to someone in the next town",
+        "a broken sword stuck in the ground like a marker",
+        "a cage on a cart, door open, empty",
+        "a well with a bucket and very cold water",
+        "a basket of apples someone left for travellers",
+        "a hanged man's gibbet, creaking",
+        "a signpost with one arm painted red",
+        "a lost child's toy, a carved wooden horse",
+        "a wagon wheel rut that leads off into the woods",
+        "a stone circle no taller than your knee",
+        "a boot, a single one, very expensive"
+      ]
+    }
+  ]
+}

@@ -182,18 +182,18 @@ function repeatedlyDecodePath(path: string): string {
   return decoded.replace(/\\/g, "/").toLowerCase();
 }
 
-/** Managed files that may contain Private Notebook plaintext and must stay outside Professor Mari context. */
+/** Managed files that may contain Private Notebook or GM prep board plaintext and must stay outside Professor Mari context. */
 export function isProfessorMariPrivateDataPath(absolutePath: string): boolean {
   for (const storageRoot of configuredPathRoots(getFileStorageDir())) {
     const rel = relativeInside(storageRoot, absolutePath);
     if (rel === null) continue;
     const normalized = repeatedlyDecodePath(rel);
-    if (normalized.startsWith("tables/") && /(?:^|\/)app_settings(?:\/|$)/u.test(normalized)) return true;
+    if (normalized.startsWith("tables/") && /(?:^|\/)(?:app_settings|game_prep_boards)(?:\/|$)/u.test(normalized)) return true;
     const name = normalized.split("/").at(-1) ?? "";
     if (
       normalized.startsWith("tables/") &&
       normalized.split("/").length === 2 &&
-      /^\.?app_settings\.json(?:$|[.-])/u.test(name)
+      /^\.?(?:app_settings|game_prep_boards)\.json(?:$|[.-])/u.test(name)
     ) {
       return true;
     }

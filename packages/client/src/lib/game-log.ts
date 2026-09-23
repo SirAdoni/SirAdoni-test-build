@@ -14,6 +14,15 @@ export interface CampaignLogMessage {
   role: "user" | "assistant" | "system" | "narrator";
   content: string;
   createdAt: string;
+  /** A chapter the player marked as starting here; `messageId` is the message that stores it. */
+  chapter?: LogChapter | null;
+}
+
+export interface LogChapter {
+  title: string;
+  summary: string | null;
+  /** The message that stores the chapter (this turn, or a hidden turn just before it). */
+  messageId: string;
 }
 
 export interface CampaignLogSession {
@@ -75,6 +84,7 @@ export interface LogEntry {
   role: CampaignLogMessage["role"];
   createdAt: string;
   lines: LogLine[];
+  chapter?: LogChapter | null;
 }
 
 /** Speaker filter value for lines nobody speaks (narration, notes, system lines). */
@@ -132,6 +142,7 @@ export function buildGameLogEntries(
   log.sessions.forEach((session, sessionIndex) => {
     const deletes = new Set(session.segmentDeletes);
     const player = normalizeSpeaker(session.playerName) || labels.player;
+    let pendingChapter: LogChapter | null = null;
     for (const message of session.messages) {
       const lines: LogLine[] = [];
       if (message.role === "user") {
@@ -155,7 +166,13 @@ export function buildGameLogEntries(
           if (line) lines.push(line);
         });
       }
-      if (lines.length === 0) continue;
+      if (lines.length === 0) {
+        // A chapter on a turn with nothing left to read starts at the next readable turn.
+        if (message.chapter) pendingChapter = message.chapter;
+        continue;
+      }
+      const chapter = message.chapter ?? pendingChapter;
+      pendingChapter = null;
       entries.push({
         key: `${session.chatId}:${message.id}`,
         sessionIndex,
@@ -165,10 +182,27 @@ export function buildGameLogEntries(
         role: message.role,
         createdAt: message.createdAt,
         lines,
+        ...(chapter ? { chapter } : {}),
       });
     }
   });
   return entries;
+}
+
+export interface LogChapterItem {
+  /** Index into the entry list the chapters were read from. */
+  entryIndex: number;
+  entry: LogEntry;
+  chapter: LogChapter;
+}
+
+/** Chapters of the campaign in reading order, for the log's table of contents. */
+export function listLogChapters(entries: readonly LogEntry[]): LogChapterItem[] {
+  const out: LogChapterItem[] = [];
+  entries.forEach((entry, entryIndex) => {
+    if (entry.chapter) out.push({ entryIndex, entry, chapter: entry.chapter });
+  });
+  return out;
 }
 
 export function lineSpeakerKey(line: LogLine): string {
@@ -281,6 +315,9 @@ export function findLogTarget(
   if (target.messageId) {
     const index = entries.findIndex((entry) => entry.messageId === target.messageId);
     if (index >= 0) return { index, exact: true };
+    // A chapter stored on a hidden turn shows on the next readable one; land there.
+    const chapterIndex = entries.findIndex((entry) => entry.chapter?.messageId === target.messageId);
+    if (chapterIndex >= 0) return { index: chapterIndex, exact: true };
   }
   const number = target.messageNumber;
   if (number != null && number > 0) {

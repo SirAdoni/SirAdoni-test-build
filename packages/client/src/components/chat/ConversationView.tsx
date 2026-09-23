@@ -17,6 +17,7 @@ import {
 import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
 import { Loader2, ChevronUp, Settings2, Image as ImageIcon, ArrowRightLeft } from "lucide-react";
 import { ConversationMessage } from "./ConversationMessage";
+import { ChapterDivider } from "./MessageChapters";
 import { ConversationInput } from "./ConversationInput";
 import { ConversationGamesPicker } from "./ConversationGamesPicker";
 import { SceneBanner, EndSceneBar } from "./SceneBanner";
@@ -58,6 +59,7 @@ import {
   parseGroupedSpeakerSegments,
   stripLeadingMessageTimestamps,
   type Message,
+  readMessageChapter,
 } from "@marinara-engine/shared";
 import { useInstalledCapabilityPackages } from "../../hooks/use-capability-packages";
 import { CapabilityElement } from "../capabilities/CapabilityElement";
@@ -959,6 +961,8 @@ export function ConversationView({
       const TIME_GAP_MS = 5 * 60 * 1000;
       const isGroupedWith = (current: Message, other: Message | null, currentIsAfterOther: boolean) => {
         if (!other || isHiddenFromUser(other)) return false;
+        // A chapter divider sits between the two, so the later message starts a fresh group.
+        if (readMessageChapter(currentIsAfterOther ? current.extra : other.extra)) return false;
         const currentTime = new Date(current.createdAt).getTime();
         const otherTime = new Date(other.createdAt).getTime();
         const timeGap = currentIsAfterOther ? currentTime - otherTime : otherTime - currentTime;
@@ -1500,6 +1504,7 @@ export function ConversationView({
 
           return (
             <Fragment key={item.key}>
+              <ChapterDivider extra={msg.extra} className="px-4" />
               <ConversationMessage
                 key={msg.id}
                 message={displayMsg as any}

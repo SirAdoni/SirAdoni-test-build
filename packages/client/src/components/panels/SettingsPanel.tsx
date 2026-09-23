@@ -1495,6 +1495,14 @@ const SETTINGS_SEARCHABLE_CONTROLS: readonly SettingsSearchableControlMeta[] = [
     kind: "Toggle",
   },
   {
+    id: "npc-quick-reference",
+    sectionId: "message-tools",
+    label: "Character quick reference",
+    description: "Show a card preview when hovering or tapping a character name in chats and Game narration.",
+    aliases: ["npc", "hover", "popover", "names", "peek"],
+    kind: "Toggle",
+  },
+  {
     id: "guide-generations",
     sectionId: "message-tools",
     label: "Guide swipes/regens with chat input",
@@ -7938,6 +7946,8 @@ function AdvancedSettings() {
   const setShowContextUsage = useUIStore((s) => s.setShowContextUsage);
   const showMessageNumbers = useUIStore((s) => s.showMessageNumbers);
   const setShowMessageNumbers = useUIStore((s) => s.setShowMessageNumbers);
+  const npcQuickReference = useUIStore((s) => s.npcQuickReference);
+  const setNpcQuickReference = useUIStore((s) => s.setNpcQuickReference);
   const showCharactersInPersonaPickers = useUIStore((s) => s.showCharactersInPersonaPickers);
   const setShowCharactersInPersonaPickers = useUIStore((s) => s.setShowCharactersInPersonaPickers);
   const guideGenerations = useUIStore((s) => s.guideGenerations);
@@ -8922,6 +8932,13 @@ function AdvancedSettings() {
             checked={showMessageNumbers}
             onChange={setShowMessageNumbers}
             help={localizeUi("settings.controls.showMessageNumbers.help")}
+          />
+          <ToggleSetting
+            anchorId={getSettingsControlAnchorId("npc-quick-reference")}
+            label={localizeUi("settings.controls.npcQuickReference.label")}
+            checked={npcQuickReference}
+            onChange={setNpcQuickReference}
+            help={localizeUi("settings.controls.npcQuickReference.help")}
           />
           <ToggleSetting
             anchorId={getSettingsControlAnchorId("guide-generations")}

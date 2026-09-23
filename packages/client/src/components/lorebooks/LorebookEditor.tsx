@@ -28,7 +28,7 @@ import {
   useLorebookEntries,
   useCreateLorebookEntry,
   useDeleteLorebook,
-  useDeleteLorebookEntry,
+  useBulkDeleteLorebookEntries,
   useReorderLorebookEntries,
   useLorebookFolders,
   useCreateLorebookFolder,
@@ -38,6 +38,7 @@ import {
   useUpdateLorebookFolder,
   useTransferLorebookEntries,
   useLorebookActivationStats,
+  useLorebookStaleEntries,
   lorebookKeys,
 } from "../../hooks/use-lorebooks";
 import { useCharacters, usePersonas } from "../../hooks/use-characters";
@@ -78,6 +79,8 @@ import {
   FolderPlus,
   RefreshCw,
   Info,
+  FileUp,
+  FileSpreadsheet,
 } from "lucide-react";
 import { cn, copyToClipboard } from "../../lib/utils";
 import { LOREBOOK_EDITOR_TOOL_EVENT, readLorebookEditorTool } from "../../lib/lorebook-editor-events";
@@ -92,6 +95,7 @@ import {
   testSecondaryKeys,
   buildFolderForest,
   canReparentFolder,
+  selectLorebookEntryRange,
   type Lorebook,
   type LorebookEntry,
   type LorebookFolder,
@@ -101,13 +105,16 @@ import {
 import { LorebookEntryRow } from "./LorebookEntryRow";
 import { LorebookFolderRow } from "./LorebookFolderRow";
 import { LorebookLintPanel } from "./LorebookLintPanel";
+import { LorebookBulkEditPanel } from "./LorebookBulkEditPanel";
 import { LorebookScanTest, type LorebookScanPreviewMatch } from "./LorebookScanTest";
 import { ExpandableTextarea, estimateTokens } from "./LorebookFormFields";
 import { ExportFormatDialog, type ExportFormatChoice } from "../ui/ExportFormatDialog";
+import { LorebookTextImportDialog } from "./LorebookTextImportDialog";
 import { EditorTabNavigation } from "../ui/EditorTabNavigation";
 import { useEditorSections } from "../../hooks/use-editor-sections";
 import { useEditorLeaveSave } from "../../hooks/use-editor-leave-save";
 import { leaveWithoutSaving } from "../../lib/editor-leave";
+import { hasPendingLorebookEntryFocus, takePendingLorebookEntryFocus } from "../../lib/lorebook-entry-focus";
 import { Modal } from "../ui/Modal";
 
 // ──────────────────────────────────────────────
@@ -426,7 +433,7 @@ export function LorebookEditor() {
   const updateLorebook = useUpdateLorebook();
   const deleteLorebook = useDeleteLorebook();
   const createEntry = useCreateLorebookEntry();
-  const deleteEntry = useDeleteLorebookEntry();
+  const bulkDeleteEntries = useBulkDeleteLorebookEntries();
   const updateEntry = useUpdateLorebookEntry();
   const bulkUpdateEntries = useBulkUpdateLorebookEntries();
   const updateEntryMutationRef = useRef(updateEntry);
@@ -514,6 +521,7 @@ export function LorebookEditor() {
   const formRevisionRef = useRef(0);
   const saveInFlightRef = useRef<Promise<boolean> | null>(null);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [textImportOpen, setTextImportOpen] = useState(false);
   const setEditorDirty = useUIStore((s) => s.setEditorDirty);
   useEffect(() => {
     setEditorDirty(lorebookDirty);
@@ -566,6 +574,14 @@ export function LorebookEditor() {
     [activationStats],
   );
   const [neverFiredOnly, setNeverFiredOnly] = useState(false);
+  // Stale view: entries that have not fired in the last N days while this lorebook did.
+  const [staleOnly, setStaleOnly] = useState(false);
+  const [staleDays, setStaleDays] = useState(30);
+  const { data: staleEntries } = useLorebookStaleEntries(lorebookId, staleDays, !!activationStats);
+  const staleEntryIds = useMemo(
+    () => new Set((staleEntries?.entries ?? []).map((entry) => entry.entryId)),
+    [staleEntries],
+  );
   const [draggingEntryIdx, setDraggingEntryIdx] = useState<number | null>(null);
   const [entryDragReadyIdx, setEntryDragReadyIdx] = useState<number | null>(null);
   const [entryDropIdx, setEntryDropIdx] = useState<number | null>(null);
@@ -573,6 +589,8 @@ export function LorebookEditor() {
   const [selectedEntryIds, setSelectedEntryIds] = useState<Set<string>>(new Set());
   const [entryTransferTargetId, setEntryTransferTargetId] = useState("");
   const [entryTransferOperation, setEntryTransferOperation] = useState<"copy" | "move" | null>(null);
+  // Last plainly clicked entry; Shift+click selects everything between it and the clicked entry.
+  const selectionAnchorRef = useRef<string | null>(null);
   const selectedEntryIdsRef = useRef(selectedEntryIds);
   useEffect(() => {
     selectedEntryIdsRef.current = selectedEntryIds;
@@ -738,6 +756,7 @@ export function LorebookEditor() {
   const filteredEntries = useMemo(() => {
     let result = entries;
     if (neverFiredOnly) result = result.filter((entry) => !activationStatsById.has(entry.id));
+    if (staleOnly) result = result.filter((entry) => staleEntryIds.has(entry.id));
     if (entrySearch) {
       result = result.filter(
         (e) =>
@@ -774,12 +793,12 @@ export function LorebookEditor() {
       default:
         return [...result].sort((a, b) => a.order - b.order);
     }
-  }, [activationStatsById, entries, entrySearch, entrySort, neverFiredOnly]);
+  }, [activationStatsById, entries, entrySearch, entrySort, neverFiredOnly, staleEntryIds, staleOnly]);
 
   // Folder grouping is only meaningful when the user is sorting by Order with
   // no search — any other state would put entries out of their containers
   // (e.g. "Name A→Z" interleaves entries from different folders).
-  const showFolderGrouping = entrySort === "order" && entrySearch.trim().length === 0 && !neverFiredOnly;
+  const showFolderGrouping = entrySort === "order" && entrySearch.trim().length === 0 && !neverFiredOnly && !staleOnly;
   const transferTargetLorebooks = useMemo(
     () => lorebooks.filter((book) => book.id !== lorebookId).sort((a, b) => a.name.localeCompare(b.name)),
     [lorebooks, lorebookId],
@@ -821,6 +840,24 @@ export function LorebookEditor() {
 
   // Folder hierarchy: flat parentFolderId rows → sorted roots + child lists.
   const folderForest = useMemo(() => buildFolderForest(folders), [folders]);
+
+  // Entry ids in on-screen order (folders first, then root entries; collapsed
+  // folders hide theirs), so a Shift+click range matches what the user sees.
+  const displayedEntryIds = useMemo(() => {
+    if (!showFolderGrouping) return filteredEntries.map((entry) => entry.id);
+    const ids: string[] = [];
+    const seen = new Set<string>();
+    const walk = (folder: LorebookFolder) => {
+      if (seen.has(folder.id)) return;
+      seen.add(folder.id);
+      if (collapsedFolderIds.has(folder.id)) return;
+      for (const entry of entriesByContainer.get(folder.id) ?? []) ids.push(entry.id);
+      for (const child of folderForest.childrenByParent.get(folder.id) ?? []) walk(child);
+    };
+    for (const folder of folderForest.roots) walk(folder);
+    for (const entry of entriesByContainer.get(null) ?? []) ids.push(entry.id);
+    return ids;
+  }, [collapsedFolderIds, entriesByContainer, filteredEntries, folderForest, showFolderGrouping]);
 
   const canReorderEntries = showFolderGrouping && entries.length > 1 && !reorderEntries.isPending;
   const canReorderFolders = showFolderGrouping && folders.length > 1 && !reorderFolders.isPending;
@@ -882,16 +919,17 @@ export function LorebookEditor() {
   const exitEntrySelectionMode = useCallback(() => {
     setEntrySelectionMode(false);
     setSelectedEntryIds(new Set());
+    selectionAnchorRef.current = null;
   }, []);
 
-  const toggleEntrySelection = useCallback((entryId: string) => {
-    setSelectedEntryIds((current) => {
-      const next = new Set(current);
-      if (next.has(entryId)) next.delete(entryId);
-      else next.add(entryId);
-      return next;
-    });
-  }, []);
+  const toggleEntrySelection = useCallback(
+    (entryId: string, event?: { shiftKey: boolean }) => {
+      const anchorId = event?.shiftKey ? selectionAnchorRef.current : null;
+      setSelectedEntryIds((current) => selectLorebookEntryRange(displayedEntryIds, current, anchorId, entryId));
+      selectionAnchorRef.current = entryId;
+    },
+    [displayedEntryIds],
+  );
 
   const openEntryTransferDialog = useCallback(
     (operation: "copy" | "move") => {
@@ -1003,11 +1041,14 @@ export function LorebookEditor() {
       return;
     }
 
-    const results = await Promise.allSettled(
-      selectedIds.map((entryId) => deleteEntry.mutateAsync({ lorebookId, entryId })),
-    );
-    const failedIds = selectedIds.filter((_, index) => results[index]?.status === "rejected");
-    const deletedCount = selectedIds.length - failedIds.length;
+    // One request for the whole selection: 900+ entries delete in a single pass.
+    let deletedCount = 0;
+    let failedIds: string[] = [];
+    try {
+      deletedCount = (await bulkDeleteEntries.mutateAsync({ lorebookId, entryIds: selectedIds })).deleted;
+    } catch {
+      failedIds = selectedIds;
+    }
 
     if (deletedCount > 0) {
       toast.success(
@@ -1036,7 +1077,7 @@ export function LorebookEditor() {
     }
 
     exitEntrySelectionMode();
-  }, [deleteEntry, exitEntrySelectionMode, lorebookId, selectedEntryIds, localizeUi]);
+  }, [bulkDeleteEntries, exitEntrySelectionMode, lorebookId, selectedEntryIds, localizeUi]);
 
   // Toggle the inline drawer for an entry. Single-expand keeps the page
   // tidy; users can collapse the open one and click another to jump.
@@ -1052,6 +1093,7 @@ export function LorebookEditor() {
       if (!target) return;
       setEntrySearch("");
       setNeverFiredOnly(false);
+      setStaleOnly(false);
       if (lorebookId && target.folderId) {
         const parentById = new Map(folders.map((folder) => [folder.id, folder.parentFolderId ?? null]));
         setCollapsedFolderIds((prev) => {
@@ -1077,6 +1119,12 @@ export function LorebookEditor() {
     },
     [contentRef, entries, folders, lorebookId],
   );
+  // Another tool (the GM prep board) asked to open this lorebook on one entry.
+  useEffect(() => {
+    if (!lorebookId || !rawEntries || !hasPendingLorebookEntryFocus(lorebookId)) return;
+    const entryId = takePendingLorebookEntryFocus(lorebookId);
+    if (entryId) jumpToEntry(entryId);
+  }, [jumpToEntry, lorebookId, rawEntries]);
   const entryNameById = useMemo(() => new Map(entries.map((entry) => [entry.id, entry.name])), [entries]);
   const activeChatForTest = useMemo(
     () =>
@@ -1900,7 +1948,7 @@ export function LorebookEditor() {
                     onDragEnd={resetEntryDragState}
                     selectionMode={entrySelectionMode}
                     isSelected={selectedEntryIds.has(entry.id)}
-                    onToggleSelected={() => toggleEntrySelection(entry.id)}
+                    onToggleSelected={(event) => toggleEntrySelection(entry.id, event)}
                     previewMatch={effectivePreviewMatches.get(entry.id)}
                     activationStat={activationStatsById.get(entry.id)}
                     mapBacklinks={mapBacklinksByEntryId.get(entry.id)}
@@ -1937,7 +1985,36 @@ export function LorebookEditor() {
           setExportDialogOpen(false);
           void api.download(`/lorebooks/${lorebookId}/export?format=${format}`);
         }}
+        extraOptions={[
+          {
+            id: "markdown",
+            label: t("lorebook.textExport.markdown"),
+            icon: FileText,
+            description: t("lorebook.textExport.markdownDescription"),
+          },
+          {
+            id: "csv",
+            label: t("lorebook.textExport.csv"),
+            icon: FileSpreadsheet,
+            description: t("lorebook.textExport.csvDescription"),
+          },
+        ]}
+        onSelectExtra={(format) => {
+          if (!lorebookId) return;
+          setExportDialogOpen(false);
+          void api.download(
+            `/lorebooks/${lorebookId}/export-text?format=${format}`,
+            format === "csv" ? "lorebook.csv" : "lorebook.md",
+          );
+        }}
       />
+      {lorebookId ? (
+        <LorebookTextImportDialog
+          open={textImportOpen}
+          onClose={() => setTextImportOpen(false)}
+          lorebookId={lorebookId}
+        />
+      ) : null}
       <Modal
         open={entryTransferOperation !== null}
         onClose={() => {
@@ -2062,6 +2139,14 @@ export function LorebookEditor() {
             <span className="mari-editor-save-label">
               {saving ? localizeUi("chat.settings.inlineEditor.saving") : localizeUi("ui.noodle.noodlehome.save")}
             </span>
+          </button>
+          <button
+            onClick={() => setTextImportOpen(true)}
+            className="mari-editor-action inline-flex"
+            title={t("lorebook.textImport.open")}
+            aria-label={t("lorebook.textImport.open")}
+          >
+            <FileUp size="0.875rem" />
           </button>
           <button
             onClick={() => setExportDialogOpen(true)}
@@ -2733,6 +2818,7 @@ export function LorebookEditor() {
                     </span>
                     <button
                       onClick={() => setSelectedEntryIds(new Set(visibleEntryIds))}
+                      title={t("lorebook.editor.bulk.selectAllTitle")}
                       disabled={visibleEntryIds.length === 0}
                       className="mari-editor-action mari-editor-action--compact px-2.5 py-1 text-[0.625rem] disabled:opacity-40"
                     >
@@ -2752,7 +2838,7 @@ export function LorebookEditor() {
                         transferTargetLorebooks.length === 0 ||
                         transferEntries.isPending ||
                         bulkUpdateEntries.isPending ||
-                        deleteEntry.isPending
+                        bulkDeleteEntries.isPending
                       }
                       className="mari-editor-action mari-editor-action--primary mari-editor-action--compact inline-flex items-center gap-1 px-2.5 py-1.5 text-[0.625rem] disabled:opacity-40"
                     >
@@ -2770,7 +2856,7 @@ export function LorebookEditor() {
                         transferTargetLorebooks.length === 0 ||
                         transferEntries.isPending ||
                         bulkUpdateEntries.isPending ||
-                        deleteEntry.isPending
+                        bulkDeleteEntries.isPending
                       }
                       className="mari-editor-action mari-editor-action--compact inline-flex items-center gap-1 px-2.5 py-1.5 text-[0.625rem] disabled:opacity-40"
                     >
@@ -2787,11 +2873,11 @@ export function LorebookEditor() {
                         selectedEntryIds.size === 0 ||
                         transferEntries.isPending ||
                         bulkUpdateEntries.isPending ||
-                        deleteEntry.isPending
+                        bulkDeleteEntries.isPending
                       }
                       className="mari-editor-action mari-editor-action--compact inline-flex items-center gap-1 px-2.5 py-1.5 text-[0.625rem] disabled:opacity-40"
                     >
-                      {deleteEntry.isPending ? (
+                      {bulkDeleteEntries.isPending ? (
                         <Loader2 size="0.6875rem" className="animate-spin" />
                       ) : (
                         <Trash2 size="0.6875rem" />
@@ -2804,6 +2890,14 @@ export function LorebookEditor() {
                     >
                       {t("lorebook.editor.batch.done")}
                     </button>
+                    {lorebookId && (
+                      <LorebookBulkEditPanel
+                        lorebookId={lorebookId}
+                        selectedIds={selectedEntryIds}
+                        folders={folders}
+                        busy={transferEntries.isPending || bulkUpdateEntries.isPending || bulkDeleteEntries.isPending}
+                      />
+                    )}
                   </div>
                 )}
 
@@ -2838,7 +2932,10 @@ export function LorebookEditor() {
                         <span>•</span>
                         <button
                           type="button"
-                          onClick={() => setNeverFiredOnly((value) => !value)}
+                          onClick={() => {
+                            setNeverFiredOnly((value) => !value);
+                            setStaleOnly(false);
+                          }}
                           aria-pressed={neverFiredOnly}
                           title={localizeUi("lorebook.editor.stats.neverFiredHint")}
                           className={cn(
@@ -2851,6 +2948,43 @@ export function LorebookEditor() {
                             count: entries.filter((entry) => !activationStatsById.has(entry.id)).length,
                           })}
                         </button>
+                        {staleEntries && (staleEntries.lorebookActive || staleOnly) && (
+                          <>
+                            <span>•</span>
+                            <span className="flex items-center">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setStaleOnly((value) => !value);
+                                  setNeverFiredOnly(false);
+                                }}
+                                aria-pressed={staleOnly}
+                                title={localizeUi("lorebook.editor.stale.hint", { count: staleEntries.days })}
+                                className={cn(
+                                  "rounded-md px-1.5 py-0.5 transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
+                                  staleOnly &&
+                                    "bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-button-text-active)]",
+                                )}
+                              >
+                                {localizeUi("lorebook.editor.stale.toggle", { count: staleEntries.entries.length })}
+                              </button>
+                              {staleOnly && (
+                                <select
+                                  value={staleDays}
+                                  onChange={(event) => setStaleDays(Number(event.target.value))}
+                                  aria-label={localizeUi("lorebook.editor.stale.daysLabel")}
+                                  className="rounded-md bg-transparent px-0.5 py-0.5 text-[inherit] outline-none hover:bg-[var(--accent)] focus:ring-1 focus:ring-[var(--ring)]"
+                                >
+                                  {[7, 14, 30, 90, 180].map((days) => (
+                                    <option key={days} value={days}>
+                                      {localizeUi("lorebook.editor.stale.days", { count: days })}
+                                    </option>
+                                  ))}
+                                </select>
+                              )}
+                            </span>
+                          </>
+                        )}
                       </>
                     )}
                     {!showFolderGrouping && folders.length > 0 && (
@@ -3005,7 +3139,7 @@ export function LorebookEditor() {
                               onDragEnd={resetEntryDragState}
                               selectionMode={entrySelectionMode}
                               isSelected={selectedEntryIds.has(entry.id)}
-                              onToggleSelected={() => toggleEntrySelection(entry.id)}
+                              onToggleSelected={(event) => toggleEntrySelection(entry.id, event)}
                               previewMatch={effectivePreviewMatches.get(entry.id)}
                               activationStat={activationStatsById.get(entry.id)}
                               mapBacklinks={mapBacklinksByEntryId.get(entry.id)}
@@ -3045,7 +3179,7 @@ export function LorebookEditor() {
                         onDragEnd={() => undefined}
                         selectionMode={entrySelectionMode}
                         isSelected={selectedEntryIds.has(entry.id)}
-                        onToggleSelected={() => toggleEntrySelection(entry.id)}
+                        onToggleSelected={(event) => toggleEntrySelection(entry.id, event)}
                         previewMatch={effectivePreviewMatches.get(entry.id)}
                         activationStat={activationStatsById.get(entry.id)}
                         mapBacklinks={mapBacklinksByEntryId.get(entry.id)}

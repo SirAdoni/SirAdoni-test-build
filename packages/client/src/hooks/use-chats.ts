@@ -42,6 +42,7 @@ import type {
   ChatPersonaAttributionsSummary,
   ReassignMessagePersonaInput,
   MessageTrashEntry,
+  ChatChapterSummary,
 } from "@marinara-engine/shared";
 import { translate } from "../localization/i18n";
 
@@ -59,6 +60,7 @@ export const chatKeys = {
   memories: (chatId: string) => [...chatKeys.all, "memories", chatId] as const,
   notes: (chatId: string) => [...chatKeys.all, "notes", chatId] as const,
   trash: (chatId: string) => [...chatKeys.all, "trash", chatId] as const,
+  chapters: (chatId: string) => [...chatKeys.all, "chapters", chatId] as const,
   group: (groupId: string) => [...chatKeys.all, "group", groupId] as const,
 };
 
@@ -1328,6 +1330,7 @@ export function useDeleteMessage(chatId: string | null) {
           notifyMovedToTrash(1);
         }
         qc.invalidateQueries({ queryKey: ["chat-message-search", chatId] });
+        qc.invalidateQueries({ queryKey: chatKeys.chapters(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.messagePeek(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.messageCount(chatId) });
@@ -1349,6 +1352,7 @@ export function useDeleteMessages(chatId: string | null) {
           notifyMovedToTrash(messageIds.length);
         }
         qc.invalidateQueries({ queryKey: ["chat-message-search", chatId] });
+        qc.invalidateQueries({ queryKey: chatKeys.chapters(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.messagePeek(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.messageCount(chatId) });
@@ -1380,8 +1384,19 @@ export function useMessageTrash(chatId: string | null, enabled = true) {
   });
 }
 
+/** User-marked chapters of one chat, in reading order. */
+export function useChatChapters(chatId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: chatKeys.chapters(chatId ?? ""),
+    queryFn: ({ signal }) => api.get<ChatChapterSummary[]>(`/chats/${chatId}/chapters`, { signal }),
+    enabled: !!chatId && enabled,
+    staleTime: 30_000,
+  });
+}
+
 function invalidateAfterTrashChange(qc: ReturnType<typeof useQueryClient>, chatId: string) {
   qc.invalidateQueries({ queryKey: chatKeys.trash(chatId) });
+  qc.invalidateQueries({ queryKey: chatKeys.chapters(chatId) });
   qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
   qc.invalidateQueries({ queryKey: chatKeys.messagePeek(chatId) });
   qc.invalidateQueries({ queryKey: chatKeys.messageCount(chatId) });

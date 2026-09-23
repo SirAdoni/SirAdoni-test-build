@@ -21,6 +21,9 @@ import {
   type CreateLorebookEntryInput,
   type UpdateLorebookEntryInput,
   type BulkUpdateLorebookEntriesInput,
+  type LorebookBulkEdit,
+  type LorebookBulkEditResult,
+  planLorebookBulkKeyPatches,
   type CreateLorebookFolderInput,
   type LorebookEntry,
   type SourceMessageRef,
@@ -1144,6 +1147,73 @@ export function createLorebooksStorage(db: DB) {
         .set(updates)
         .where(and(eq(lorebookEntries.lorebookId, lorebookId), inArray(lorebookEntries.id, uniqueEntryIds)));
       return { updated: rows.length };
+    },
+
+    /**
+     * Bulk editor: plain field changes plus per-entry key add/remove, in one
+     * transaction so a failure leaves every selected entry as it was. Reads
+     * the selection once and writes only rows whose keys actually change.
+     */
+    async bulkEditEntries(lorebookId: string, edit: LorebookBulkEdit): Promise<LorebookBulkEditResult> {
+      const uniqueEntryIds = Array.from(new Set(edit.entryIds));
+      return db.transaction(async () => {
+        const rows = await db
+          .select({ id: lorebookEntries.id, keys: lorebookEntries.keys, secondaryKeys: lorebookEntries.secondaryKeys })
+          .from(lorebookEntries)
+          .where(and(eq(lorebookEntries.lorebookId, lorebookId), inArray(lorebookEntries.id, uniqueEntryIds)));
+        if (rows.length !== uniqueEntryIds.length) {
+          throw new Error("One or more selected entries do not belong to this lorebook");
+        }
+
+        const setChanges = Object.fromEntries(
+          Object.entries(edit.set ?? {}).filter(([, value]) => value !== undefined),
+        ) as BulkUpdateLorebookEntriesInput["changes"];
+        const changedIds = new Set<string>();
+        if (Object.keys(setChanges).length > 0) {
+          await this.bulkUpdateEntries(lorebookId, uniqueEntryIds, setChanges);
+          for (const id of uniqueEntryIds) changedIds.add(id);
+        }
+
+        const patches = planLorebookBulkKeyPatches(
+          rows.map((row) => ({
+            id: row.id as string,
+            keys: parseStringArray(row.keys),
+            secondaryKeys: parseStringArray(row.secondaryKeys),
+          })),
+          edit,
+        );
+        const timestamp = now();
+        for (const patch of patches) {
+          // Keys feed the embedding text, so a key change invalidates the stored vector.
+          const updates: Record<string, unknown> = { updatedAt: timestamp, embedding: null, embeddingSpaceId: null };
+          if (patch.keys) updates.keys = JSON.stringify(patch.keys);
+          if (patch.secondaryKeys) updates.secondaryKeys = JSON.stringify(patch.secondaryKeys);
+          await db.update(lorebookEntries).set(updates).where(eq(lorebookEntries.id, patch.id));
+          changedIds.add(patch.id);
+        }
+        return { matched: rows.length, updated: changedIds.size };
+      });
+    },
+
+    /** Delete many entries of one lorebook in a single pass (chat metadata pruned once). */
+    async bulkRemoveEntries(lorebookId: string, entryIds: string[]) {
+      const uniqueEntryIds = Array.from(new Set(entryIds));
+      let deleted = 0;
+      await createChatsStorage(db).pruneLorebookChatMetadata(async () => {
+        const rows = await db
+          .select({ id: lorebookEntries.id })
+          .from(lorebookEntries)
+          .where(and(eq(lorebookEntries.lorebookId, lorebookId), inArray(lorebookEntries.id, uniqueEntryIds)));
+        const ids = rows.map((row) => row.id as string);
+        if (ids.length > 0) {
+          await db
+            .delete(lorebookEntries)
+            .where(and(eq(lorebookEntries.lorebookId, lorebookId), inArray(lorebookEntries.id, ids)));
+        }
+        deleted = ids.length;
+        return ids;
+      });
+      return { deleted };
     },
 
     /**

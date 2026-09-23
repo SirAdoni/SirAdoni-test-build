@@ -208,6 +208,9 @@ const COMMAND_OUTPUT_LIMIT = 32_000;
 const CODE_READ_TIMEOUT_MS = 30_000;
 const CODE_CHECK_TIMEOUT_MS = 15 * 60 * 1000;
 const FILE_BACKED_TABLE_SET = new Set<string>(FILE_BACKED_TABLES);
+/** Private tables the generic DB commands never list, read or write (like Private Notebook settings rows). */
+const MARI_PRIVATE_TABLES = new Set<string>(["game_prep_boards"]);
+const MARI_TABLES = FILE_BACKED_TABLES.filter((table) => !MARI_PRIVATE_TABLES.has(table));
 const THEME_TABLE = "custom_themes";
 const THEME_ACTIVE_TRUE = "true";
 const THEME_ACTIVE_FALSE = "false";
@@ -796,6 +799,9 @@ function deepMerge(base: unknown, patch: unknown): unknown {
 }
 
 function getMeta(table: string): TableMeta {
+  if (MARI_PRIVATE_TABLES.has(table)) {
+    throw new Error("Private GM prep boards cannot be accessed through generic Professor Mari DB commands.");
+  }
   let meta = TABLE_METAS.get(table);
   if (!meta) {
     // Capability packages register their tables after this module loads (registerTables).
@@ -5455,7 +5461,7 @@ export class MariDbService {
   }
 
   async validate(table?: string | null): Promise<MariDbValidationResult> {
-    return this.validateStoredRows(table ? [table] : [...FILE_BACKED_TABLES]);
+    return this.validateStoredRows(table ? [table] : [...MARI_TABLES]);
   }
 
   private async validateStoredRows(tables: string[], changes?: PlanChange[]): Promise<MariDbValidationResult> {
@@ -7099,10 +7105,10 @@ export class MariDbService {
           ok: true,
           mode: "read",
           command: context.command,
-          output: { status: "ok", dataDir: getFileStorageDir(), tables: FILE_BACKED_TABLES.length },
+          output: { status: "ok", dataDir: getFileStorageDir(), tables: MARI_TABLES.length },
         };
       case "tables":
-        return { ok: true, mode: "read", command: context.command, output: [...FILE_BACKED_TABLES] };
+        return { ok: true, mode: "read", command: context.command, output: [...MARI_TABLES] };
       case "schema": {
         const table = parsed.positionals[0];
         if (!table) throw new Error("Usage: mari db schema <table>");
@@ -7126,7 +7132,7 @@ export class MariDbService {
       }
       case "counts": {
         const counts: Record<string, number> = {};
-        for (const table of FILE_BACKED_TABLES) counts[table] = (await this.genericRows(table)).length;
+        for (const table of MARI_TABLES) counts[table] = (await this.genericRows(table)).length;
         return { ok: true, mode: "read", command: context.command, output: counts };
       }
       case "data-dir":
@@ -7216,7 +7222,7 @@ export class MariDbService {
   ): Promise<MariDbCommandResult> {
     if (!tableArg || !query) throw new Error("Usage: mari db search <table|all> <query>");
     const needle = query.toLowerCase();
-    const tables = tableArg === "all" ? [...FILE_BACKED_TABLES] : [tableArg];
+    const tables = tableArg === "all" ? [...MARI_TABLES] : [tableArg];
     const results: Array<{ table: string; row: Row }> = [];
     const limit = normalizeLimit(flagString(flags, "limit"), 50, 1000);
     for (const table of tables) {
@@ -7989,7 +7995,7 @@ export class MariDbService {
   ): Promise<PlanChange[]> {
     const cwd = request.cwd ? resolve(request.cwd) : process.cwd();
     const scriptPath = resolve(cwd, String(request.scriptPath));
-    const tables = request.table === "all" ? [...FILE_BACKED_TABLES] : [String(request.table)];
+    const tables = request.table === "all" ? [...MARI_TABLES] : [String(request.table)];
     const allParsed = new Map<string, Row[]>();
     const allRaw = new Map<string, Row[]>();
     for (const table of tables) {
@@ -9085,7 +9091,7 @@ export class MariDbService {
       "Write: insert|patch|replace|delete|transform ... (dry-run by default; --apply saves reversible changes and shows a Keep/Restore review card)",
       "Use -- before positional arguments that match option names, with options first: mari db get --parsed -- characters --apply",
       "Transform scripts use an OS sandbox where supported; on other systems, reviewed local scripts remain available only with MARI_DB_ALLOW_UNSAFE_TRANSFORMS=true.",
-      `Known tables: ${FILE_BACKED_TABLES.slice(0, 8).join(", ")} ... (${FILE_BACKED_TABLES.length})`,
+      `Known tables: ${MARI_TABLES.slice(0, 8).join(", ")} ... (${MARI_TABLES.length})`,
       `Journal directory: ${this.journalDir()} (${basename(getFileStorageDir())})`,
     ].join("\n");
   }

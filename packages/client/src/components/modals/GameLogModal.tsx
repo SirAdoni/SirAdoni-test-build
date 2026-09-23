@@ -3,23 +3,21 @@
 // ──────────────────────────────────────────────
 // The Game screen shows one narration beat at a time. This reader lays every
 // session out in order, with the game's own segment parsing, edits and
-// deletions, a campaign-wide search with next/previous, and filters by session
-// and speaker. Long campaigns render a window of turns at a time.
-import {
-  useCallback,
-  useDeferredValue,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
-import { ChevronDown, ChevronUp, Loader2, Search } from "lucide-react";
+// deletions, a campaign-wide search with next/previous, filters by session
+// and speaker, and a chapter list. Game mode has no per-message anchors on its
+// main screen, so chapters are marked here. Long campaigns render a window of
+// turns at a time.
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { BookOpen, ChevronDown, ChevronUp, Loader2, Search } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { Modal } from "../ui/Modal";
 import { cn } from "../../lib/utils";
-import { useCampaignLog } from "../../hooks/use-game-tools";
+import { campaignLogKeys, useCampaignLog } from "../../hooks/use-game-tools";
+import { chatKeys } from "../../hooks/use-chats";
+import { api } from "../../lib/api-client";
+import { ChapterFields, ChapterHeading, ChapterHeadingEditButton, type ChapterDraft } from "../chat/MessageChapters";
 import { parseNarrationSegments } from "../game/GameNarration";
 import {
   LOG_SEARCH_MIN_CHARS,
@@ -29,6 +27,7 @@ import {
   filterLogEntries,
   findLogHits,
   findLogTarget,
+  listLogChapters,
   listLogSpeakers,
   logWindowAround,
   splitLogHighlights,
@@ -128,15 +127,20 @@ export function GameLogModal({
   chatId,
   messageId = null,
   messageNumber = null,
+  focusChapters = false,
 }: {
   open: boolean;
   onClose: () => void;
   chatId: string;
   messageId?: string | null;
   messageNumber?: number | null;
+  /** Open with the chapter list focused (the palette's "Go to chapter"). */
+  focusChapters?: boolean;
 }) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
+  const chapterSelectRef = useRef<HTMLSelectElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pendingScrollRef = useRef<{ key: string; hit: boolean } | null>(null);
   // An entry that must stay where it is on screen while turns are added or dropped around it.
@@ -157,6 +161,11 @@ export function GameLogModal({
     [log.data, t],
   );
   const speakers = useMemo(() => listLogSpeakers(entries), [entries]);
+  const chapters = useMemo(() => listLogChapters(entries), [entries]);
+  const [editingChapterKey, setEditingChapterKey] = useState<string | null>(null);
+  const [savingChapterKey, setSavingChapterKey] = useState<string | null>(null);
+  // A chapter picked while filters hide it: filters clear first, then the reader jumps.
+  const pendingChapterJumpRef = useRef<string | null>(null);
   const view = useMemo(() => filterLogEntries(entries, { sessionChatId, speaker }), [entries, sessionChatId, speaker]);
   const search = useMemo(() => findLogHits(view, deferredQuery), [view, deferredQuery]);
   const searching = deferredQuery.trim().length >= LOG_SEARCH_MIN_CHARS;
@@ -221,6 +230,56 @@ export function GameLogModal({
     // Only a new result set moves the reader, not a window change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search.hits]);
+
+  useEffect(() => {
+    const key = pendingChapterJumpRef.current;
+    if (!key) return;
+    const index = view.findIndex((entry) => entry.key === key);
+    if (index < 0) return;
+    pendingChapterJumpRef.current = null;
+    showEntry(index, { flash: true });
+  }, [showEntry, view]);
+
+  // The palette's "Go to chapter" lands on the chapter list once the log has loaded.
+  const chapterFocusDoneRef = useRef(false);
+  useEffect(() => {
+    if (!focusChapters || chapterFocusDoneRef.current || chapters.length === 0) return;
+    chapterFocusDoneRef.current = true;
+    chapterSelectRef.current?.focus();
+  }, [chapters.length, focusChapters]);
+
+  const jumpToChapter = (key: string) => {
+    const index = view.findIndex((entry) => entry.key === key);
+    if (index >= 0) {
+      showEntry(index, { flash: true });
+      return;
+    }
+    pendingChapterJumpRef.current = key;
+    setSessionChatId(null);
+    setSpeaker(null);
+  };
+
+  const saveChapter = async (entry: LogEntry, draft: ChapterDraft | null) => {
+    // An existing chapter may live on a hidden turn just before this one.
+    const targetId = entry.chapter?.messageId ?? entry.messageId;
+    setSavingChapterKey(entry.key);
+    try {
+      await api.patch(
+        `/chats/${encodeURIComponent(entry.sessionChatId)}/messages/${encodeURIComponent(targetId)}/extra`,
+        { chapter: draft },
+      );
+      setEditingChapterKey(null);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: campaignLogKeys.detail(chatId) }),
+        queryClient.invalidateQueries({ queryKey: chatKeys.chapters(entry.sessionChatId) }),
+        queryClient.invalidateQueries({ queryKey: chatKeys.messages(entry.sessionChatId) }),
+      ]);
+    } catch {
+      toast.error(t("ui.chat.messagemarks.saveFailed"));
+    } finally {
+      setSavingChapterKey(null);
+    }
+  };
 
   const goToHit = (index: number) => {
     const total = search.hits.length;
@@ -331,6 +390,8 @@ export function GameLogModal({
           // Later sessions are named after the game plus a session suffix; only a name of its own is shown.
           const ownName = sessions[entry.sessionIndex]?.name.replace(/\s+\u2014\s+Session \d+$/u, "").trim();
           const sessionName = ownName && ownName !== log.data?.gameName ? ownName : null;
+          const editingChapter = editingChapterKey === entry.key;
+          const chapterLabel = t("ui.game.log.chapterAction");
           return (
             <div key={entry.key} className="flex flex-col gap-4">
               {sessionChanged && (
@@ -338,16 +399,39 @@ export function GameLogModal({
                   <span className="h-px flex-1 bg-[var(--border)]" />
                   <span className="max-w-[80%] truncate text-[0.6875rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
                     {sessionLabel(entry.sessionIndex)}
-                    {sessionName ? (
-                      <span className="font-normal normal-case tracking-normal">
-                        {" · "}
-                        {sessionName}
-                      </span>
-                    ) : null}
+                    {sessionName ? <span className="font-normal normal-case tracking-normal">{t("ui.game.log.sessionNameSuffix", { name: sessionName })}</span> : null}
                   </span>
                   <span className="h-px flex-1 bg-[var(--border)]" />
                 </div>
               )}
+              {editingChapter ? (
+                <div className="mx-auto w-full max-w-md rounded-xl border border-[var(--border)] bg-[var(--secondary)]/40 p-2.5">
+                  <p className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-[var(--foreground)]">
+                    <BookOpen size="0.8125rem" className="shrink-0 text-[var(--primary)]" />
+                    {entry.chapter ? t("ui.game.log.editChapter") : t("ui.game.log.newChapter")}
+                  </p>
+                  <ChapterFields
+                    initial={entry.chapter ? { title: entry.chapter.title, summary: entry.chapter.summary } : null}
+                    busy={savingChapterKey === entry.key}
+                    onSave={(draft) => void saveChapter(entry, draft)}
+                    onRemove={entry.chapter ? () => void saveChapter(entry, null) : undefined}
+                    onCancel={() => setEditingChapterKey(null)}
+                  />
+                </div>
+              ) : entry.chapter ? (
+                <ChapterHeading
+                  title={entry.chapter.title}
+                  summary={entry.chapter.summary}
+                  label={t("ui.chat.chapters.dividerLabel", { title: entry.chapter.title })}
+                  className="px-0 py-1"
+                  action={
+                    <ChapterHeadingEditButton
+                      title={t("ui.game.log.editChapter")}
+                      onClick={() => setEditingChapterKey(entry.key)}
+                    />
+                  }
+                />
+              ) : null}
               <article
                 data-log-entry={entry.key}
                 title={t("ui.game.log.turnMeta", {
@@ -355,10 +439,23 @@ export function GameLogModal({
                   number: entry.number,
                 })}
                 className={cn(
-                  "flex flex-col gap-2 rounded-lg px-2 py-1 text-sm leading-6 transition-colors duration-700",
+                  "group relative flex flex-col gap-2 rounded-lg py-1 pl-2 pr-8 text-sm leading-6 transition-colors duration-700",
                   flashKey === entry.key && "bg-[var(--primary)]/12 ring-1 ring-[var(--primary)]/40",
+                  // Keep the chapter heading above in view when the reader jumps here.
+                  entry.chapter && "scroll-mt-24",
                 )}
               >
+                {!entry.chapter && !editingChapter && (
+                  <button
+                    type="button"
+                    onClick={() => setEditingChapterKey(entry.key)}
+                    title={chapterLabel}
+                    aria-label={chapterLabel}
+                    className="absolute right-0.5 top-1 inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-foreground)] opacity-0 transition-opacity hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] group-hover:opacity-100 [@media(pointer:coarse)]:opacity-50"
+                  >
+                    <BookOpen size="0.8125rem" />
+                  </button>
+                )}
                 {entry.lines.map((line, lineIndex) => (
                   <LogLineView key={lineIndex} line={line} ranges={hitsByLine.get(`${index}:${lineIndex}`)} />
                 ))}
@@ -443,7 +540,7 @@ export function GameLogModal({
               <ChevronDown size="0.875rem" />
             </button>
           </div>
-          <div className="grid grid-cols-2 gap-1.5">
+          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
             <select
               value={sessionChatId ?? ""}
               onChange={(event) => setSessionChatId(event.target.value || null)}
@@ -469,6 +566,28 @@ export function GameLogModal({
               {speakers.map((item) => (
                 <option key={item.key} value={item.key}>
                   {item.key === NARRATION_SPEAKER ? t("ui.game.log.narration") : item.label}
+                </option>
+              ))}
+            </select>
+            <select
+              ref={chapterSelectRef}
+              value=""
+              onChange={(event) => {
+                if (event.target.value) jumpToChapter(event.target.value);
+              }}
+              disabled={chapters.length === 0}
+              className={cn(FIELD_CLASS, "col-span-2 sm:col-span-1 disabled:opacity-60")}
+              aria-label={t("ui.game.log.chapters")}
+              title={chapters.length === 0 ? t("ui.game.log.noChaptersHint") : t("ui.game.log.chapters")}
+            >
+              <option value="">
+                {chapters.length === 0
+                  ? t("ui.game.log.noChapters")
+                  : t("ui.game.log.chapterCount", { count: chapters.length })}
+              </option>
+              {chapters.map((item, index) => (
+                <option key={item.entry.key} value={item.entry.key}>
+                  {t("ui.game.log.chapterOption", { number: index + 1, title: item.chapter.title })}
                 </option>
               ))}
             </select>
