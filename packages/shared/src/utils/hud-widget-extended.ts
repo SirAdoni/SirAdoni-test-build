@@ -830,7 +830,8 @@ export function extendedWidgetConfigFromText(
     case "tug_of_war": {
       const first = lines[0] ?? "";
       const [value, max] = numbers(first.split("|")[0] ?? "");
-      return normalize({ value, max, text: afterPipe(first) });
+      // A bare "4" keeps the current size; only a countdown may drop its maximum by leaving it out.
+      return normalize({ value, max: max ?? (type === "countdown" ? undefined : base.max), text: afterPipe(first) });
     }
     case "tier_track":
     case "stages": {
@@ -845,8 +846,10 @@ export function extendedWidgetConfigFromText(
       return normalize({ items: lines });
     case "ledger": {
       const [head = "", ...rest] = lines;
-      const balance = numbers(head)[0] ?? 0;
-      const unit = head.replace(/^[+-]?\d+(?:\.\d+)?/, "").trim();
+      // Same number reader as transactions, so "1,500 gold" is 1500 gold, not 1 with ",500 gold" as the unit.
+      const headEntry = parseLedgerEntry(head);
+      const balance = headEntry?.amount ?? 0;
+      const unit = headEntry ? headEntry.text : head.trim();
       const transactions = rest
         .map((line) => parseLedgerEntry(line))
         .filter((e): e is { amount: number; text: string } => !!e);
@@ -878,7 +881,7 @@ export function extendedWidgetConfigFromText(
     case "calendar": {
       const [head = "", ...rest] = lines;
       const [value, max] = numbers(head.split("|")[0] ?? "");
-      return normalize({ value, max, text: afterPipe(head), entries: dated(rest) });
+      return normalize({ value, max: max ?? base.max, text: afterPipe(head), entries: dated(rest) });
     }
   }
 }

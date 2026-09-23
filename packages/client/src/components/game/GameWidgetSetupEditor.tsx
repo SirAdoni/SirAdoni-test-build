@@ -925,6 +925,7 @@ function ExtendedTextField({
         {localizeUi(type === "note" ? "ui.game.widgeteditormodal.text" : "ui.game.widgeteditormodal.items")}
       </span>
       <textarea
+        dir="auto"
         value={draft}
         disabled={disabled}
         rows={3}

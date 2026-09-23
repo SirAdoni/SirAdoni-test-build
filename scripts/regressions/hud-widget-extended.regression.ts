@@ -353,6 +353,18 @@ assert.equal(fallbackById.purse!.config.value, 150);
 assert.deepEqual(fallbackById.todo!.config.tasks, []);
 assert.deepEqual(fallbackById.alert!.config.levels, ["Calm", "Alert"], "structure survives the reset");
 
+// Manual editor text: a bare value keeps the widget's size, a countdown can still drop its maximum,
+// and a thousands comma in the ledger balance is part of the number.
+assert.equal(extendedWidgetConfigFromText("clock", "4", { value: 1, max: 8 }).max, 8);
+assert.equal(extendedWidgetConfigFromText("pips", "2", { value: 1, max: 10 }).max, 10);
+assert.equal(extendedWidgetConfigFromText("calendar", "12", { value: 3, max: 10 }).max, 10);
+assert.equal(extendedWidgetConfigFromText("countdown", "3 | days", { value: 5, max: 10 }).max, undefined);
+const commaLedger = extendedWidgetConfigFromText("ledger", "1,500 gold\n+50 | Sold the ring");
+assert.equal(commaLedger.value, 1500);
+assert.equal(commaLedger.text, "gold");
+assert.equal(extendedWidgetConfigFromText("ledger", "-20 gold").value, -20);
+assert.equal(extendedWidgetConfigFromText("ledger", "gold").text, "gold");
+
 console.log(
   `All ${EXTENDED_HUD_WIDGET_TYPES.length} extended widget types update identically in live play, editors and branch restoration.`,
 );

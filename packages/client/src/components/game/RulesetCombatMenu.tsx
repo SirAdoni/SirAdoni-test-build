@@ -9,7 +9,7 @@
 // On a board, a step that picks a cell (walking, or aiming a shape) is drawn by the board rather
 // than listed here, so the half-made choice is HELD by the board and handed back down: one step,
 // two ways of finishing it, and the same pure rules behind both.
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import type { DirectedRulesetOption, DirectedRulesetView, RulesetCombatCell } from "@marinara-engine/shared";
 import { useTranslation } from "react-i18next";
 import { rulesetOptionHasAim, rulesetOptionNeedsAim, rulesetOptionNeedsCell } from "../../lib/ruleset-combat-board";
@@ -85,9 +85,11 @@ export function RulesetCombatMenu({
   const groups = useMemo(() => rulesetMenuGroups(view.options), [view.options]);
   // A fresh menu is a fresh choice: the turn moved on, so a half-finished pick from the last one
   // must never be sent against it.
+  // A changed menu under the same actor (a controller toggled to automatic, a second action in the
+  // same turn) is a fresh choice as well: the held option may no longer be on it.
   useEffect(() => {
     setStep(null);
-  }, [view.actorId, view.round, setStep]);
+  }, [view.actorId, view.round, view.options, setStep]);
   // Focus follows a NEW stage or a new option, never every pick: choosing the second of three
   // targets replaces `step`, and pulling focus back to the first button each time would take the
   // keyboard away from somebody working down the list.
@@ -101,6 +103,13 @@ export function RulesetCombatMenu({
     // flag left standing would be spent on the next turn reset instead.
     playerClosedStep.current = step !== null;
     setStep(null);
+  };
+  /** Escape leaves a step the menu draws, the same way it leaves one the board draws. */
+  const escapeStep = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeStep();
   };
   useEffect(() => {
     // A step the BOARD draws has its keyboard on the board, so the menu must not take it back the
@@ -171,7 +180,7 @@ export function RulesetCombatMenu({
   if (step && pools.length > 0) {
     const option = step.option;
     return (
-      <div className="flex flex-col gap-2 p-3">
+      <div className="flex flex-col gap-2 p-3" onKeyDown={escapeStep}>
         <p className="text-xs text-white/60">
           {t("game.combat.ruleset.upcast.prompt", { label: rulesetOptionLabel(option, t) })}
         </p>
@@ -230,8 +239,10 @@ export function RulesetCombatMenu({
     const option = step.option;
     const many = option.targets.count > 1;
     const targets = view.combatants.filter((combatant) => option.targetIds.includes(combatant.id));
+    const cost = rulesetOptionCostText(option, budgetLabel, t, distance);
+    const forecast = rulesetOptionForecastText(option, t);
     return (
-      <div className="flex flex-col gap-2 p-3">
+      <div className="flex flex-col gap-2 p-3" onKeyDown={escapeStep}>
         <p className="text-xs text-amber-200" id="ruleset-target-prompt">
           {many
             ? t("game.combat.ruleset.target.promptMany", {
@@ -240,6 +251,11 @@ export function RulesetCombatMenu({
               })
             : t("game.combat.ruleset.target.prompt", { label: rulesetOptionLabel(option, t) })}
         </p>
+        {/* What the choice costs and how likely it is to land, kept in sight while the targets are
+            picked, so the price is not only on a button that is no longer on screen. */}
+        {(cost || forecast) && (
+          <p className="text-[0.65rem] text-white/50">{[cost, forecast].filter(Boolean).join(" · ")}</p>
+        )}
         <div className="flex flex-wrap gap-2" role="group" aria-labelledby="ruleset-target-prompt">
           {targets.map((combatant, index) => {
             const picked = step.targets.includes(combatant.id);

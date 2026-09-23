@@ -14,6 +14,7 @@ import {
   Loader2,
   Play,
 } from "lucide-react";
+import { toast } from "sonner";
 import { cn } from "../../lib/utils";
 import { EmojiPicker } from "../ui/EmojiPicker";
 import { SpeechToTextButton } from "../ui/SpeechToTextButton";
@@ -157,6 +158,11 @@ export function GameInput({
   const speechToTextEnabled = useUIStore((s) => s.speechToTextEnabled);
   const quoteFormat = useUIStore((s) => s.quoteFormat);
   const storageKey = draftKey ? `game-input-draft:${draftKey}` : null;
+  // The live chat key, so async work (file reads, a failed send, a translation) can tell the chat changed.
+  const storageKeyRef = useRef(storageKey);
+  storageKeyRef.current = storageKey;
+  // The last turn text sent from this chat, recalled by Up in an empty composer (one level, like a shell).
+  const lastSentTextRef = useRef<string | null>(null);
   const [text, setText] = useState(() => readGameInputDraft(storageKey));
   const [showDice, setShowDice] = useState(false);
   const [customDice, setCustomDice] = useState("");
@@ -206,6 +212,9 @@ export function GameInput({
     preRolledDiceRef.current = null;
     setShowDice(false);
     setAddressMode("scene");
+    setAddressMenuOpen(false);
+    setEmojiOpen(false);
+    lastSentTextRef.current = null;
     requestAnimationFrame(() => {
       if (!inputRef.current) return;
       inputRef.current.style.height = "auto";
@@ -236,8 +245,17 @@ export function GameInput({
       if (addressButtonRef.current?.contains(target) || addressMenuRef.current?.contains(target)) return;
       setAddressMenuOpen(false);
     };
+    const handleKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setAddressMenuOpen(false);
+      addressButtonRef.current?.focus();
+    };
     document.addEventListener("pointerdown", handlePointerDown);
-    return () => document.removeEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKey);
+    };
   }, [addressMenuOpen]);
 
   /** Update text state and persist draft */
@@ -332,6 +350,7 @@ export function GameInput({
 
     const submittedText = text;
     const submittedAttachments = attachments;
+    const submittedKey = storageKey;
     setText("");
     clearDraft();
     setAttachments([]);
@@ -344,24 +363,61 @@ export function GameInput({
         : {}),
     });
     if (succeeded === false) {
-      setText(submittedText);
-      writeGameInputDraft(storageKey, submittedText);
-      setAttachments(submittedAttachments);
+      // Keep the failed turn in its own chat's draft; only refill the composer if it is still that chat
+      // and the player has not started typing something new meanwhile.
+      if (storageKeyRef.current !== submittedKey) {
+        writeGameInputDraft(submittedKey, submittedText);
+        return;
+      }
+      if (!(inputRef.current?.value ?? "").trim()) {
+        setText(submittedText);
+        writeGameInputDraft(submittedKey, submittedText);
+      }
+      setAttachments((current) => [...submittedAttachments, ...current]);
       if (rolledNotation) setQueuedDice(rolledNotation);
       requestAnimationFrame(() => {
         if (!inputRef.current) return;
         inputRef.current.style.height = "auto";
         inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 120)}px`;
       });
-    } else if (rolledNotation) {
-      preRolledDiceRef.current = null;
+    } else {
+      if (rolledNotation) preRolledDiceRef.current = null;
+      if (submittedText.trim() && storageKeyRef.current === submittedKey) lastSentTextRef.current = submittedText;
     }
+  };
+
+  const resizeInput = () => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     // Enter that confirms an IME candidate (Japanese, Chinese, Korean input) must not send the turn.
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (expandOnKeyDown(e)) return;
+    // Up in an empty composer brings back the last sent turn for editing.
+    if (
+      e.key === "ArrowUp" &&
+      !e.shiftKey &&
+      !e.altKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.currentTarget.value &&
+      lastSentTextRef.current
+    ) {
+      e.preventDefault();
+      const recalled = lastSentTextRef.current;
+      updateText(recalled);
+      requestAnimationFrame(() => {
+        const el = inputRef.current;
+        if (!el) return;
+        resizeInput();
+        el.selectionStart = el.selectionEnd = el.value.length;
+      });
+      return;
+    }
     const shouldSend = enterToSend ? e.key === "Enter" && !e.shiftKey : e.key === "Enter" && (e.metaKey || e.ctrlKey);
     if (shouldSend) {
       e.preventDefault();
@@ -374,19 +430,59 @@ export function GameInput({
     setShowDice(false);
   };
 
-  const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files?.length) return;
-    for (const file of Array.from(files)) {
-      if (file.size > 20 * 1024 * 1024) continue;
-      const reader = new FileReader();
-      reader.onload = () => {
-        setAttachments((prev) => [...prev, { type: file.type, data: reader.result as string, name: file.name }]);
-      };
-      reader.readAsDataURL(file);
-    }
-    e.target.value = "";
-  }, []);
+  const addFiles = useCallback(
+    (files: File[]) => {
+      const originKey = storageKeyRef.current;
+      for (const file of files) {
+        const displayName = file.name || "pasted-file";
+        if (file.size > 20 * 1024 * 1024) {
+          toast.error(localizeUi("ui.chat.chatinput.value1IsTooLargeMax20Mb", { value1: displayName }));
+          continue;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+          // A slow read must not land in another chat's composer.
+          if (storageKeyRef.current !== originKey || typeof reader.result !== "string") return;
+          const data = reader.result;
+          setAttachments((prev) => [...prev, { type: file.type, data, name: displayName }]);
+        };
+        reader.onerror = () => {
+          toast.error(localizeUi("ui.chat.chatinput.failedToReadValue1", { value1: displayName }));
+        };
+        reader.readAsDataURL(file);
+      }
+    },
+    [localizeUi],
+  );
+
+  const handleFileUpload = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files;
+      if (!files?.length) return;
+      addFiles(Array.from(files));
+      e.target.value = "";
+    },
+    [addFiles],
+  );
+
+  // Pasting a screenshot attaches it. Pastes that carry text (a spreadsheet selection also offers an
+  // image of itself) stay plain text paste.
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const data = e.clipboardData;
+      if (!data || data.types.includes("text/plain")) return;
+      const images: File[] = [];
+      for (const item of Array.from(data.items)) {
+        if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+        const file = item.getAsFile();
+        if (file) images.push(file);
+      }
+      if (images.length === 0) return;
+      e.preventDefault();
+      addFiles(images);
+    },
+    [addFiles],
+  );
 
   const handleEmojiSelect = useCallback(
     (emoji: string) => {
@@ -408,9 +504,13 @@ export function GameInput({
   const handleTranslateDraft = useCallback(async () => {
     if (disabled || isTranslatingDraft || !text.trim()) return;
     setIsTranslatingDraft(true);
+    const originKey = storageKey;
+    const originText = text;
     try {
-      const translated = await translateDraftText(text);
+      const translated = await translateDraftText(originText);
       if (!translated) return;
+      // Drop a late result if the chat changed or the player edited the draft while it was translating.
+      if (storageKeyRef.current !== originKey || inputRef.current?.value !== originText) return;
       updateText(translated);
       requestAnimationFrame(() => {
         if (!inputRef.current) return;
@@ -421,7 +521,7 @@ export function GameInput({
     } finally {
       setIsTranslatingDraft(false);
     }
-  }, [disabled, isTranslatingDraft, text, updateText]);
+  }, [disabled, isTranslatingDraft, storageKey, text, updateText]);
 
   const handleSpeechTranscript = useCallback(
     (transcript: string) => {
@@ -547,8 +647,11 @@ export function GameInput({
               )}
               <span className="max-w-[80px] truncate">{att.name}</span>
               <button
+                type="button"
                 onClick={() => setAttachments((prev) => prev.filter((_, idx) => idx !== i))}
-                className="text-foreground/45 hover:text-[var(--destructive)]"
+                aria-label={t("chat.input.removeAttachment", { name: att.name })}
+                title={t("chat.input.removeAttachment", { name: att.name })}
+                className="-my-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-foreground/45 hover:text-[var(--destructive)]"
               >
                 ✕
               </button>
@@ -701,6 +804,7 @@ export function GameInput({
             el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
           }}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           placeholder={
             sessionConcluded
               ? t("game.input.sessionConcluded")
@@ -735,12 +839,15 @@ export function GameInput({
         )}
 
         {queuedDice && (
-          <div className="flex items-center self-stretch rounded-lg border border-foreground/10 bg-foreground/10 px-2 text-xs text-foreground/70">
-            🎲 {queuedDice}
+          <div className="flex max-w-[6.5rem] shrink-0 items-center self-stretch whitespace-nowrap rounded-lg border border-foreground/10 bg-foreground/10 px-2 text-xs text-foreground/70">
+            <span className="min-w-0 truncate" title={queuedDice}>
+              🎲 {queuedDice}
+            </span>
             <button
               type="button"
               onClick={() => setQueuedDice(null)}
-              className="ml-1 text-foreground/45 transition-colors hover:text-foreground/80"
+              aria-label={t("game.input.clearQueuedRoll")}
+              className="ml-1 shrink-0 text-foreground/45 transition-colors hover:text-foreground/80"
               title={t("game.input.clearQueuedRoll")}
             >
               ✕

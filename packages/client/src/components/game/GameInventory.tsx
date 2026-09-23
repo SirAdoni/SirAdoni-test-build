@@ -1,5 +1,5 @@
 // Game: Inventory Panel
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import {
   DndContext,
   type DragEndEvent,
@@ -10,7 +10,7 @@ import {
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
-import { Check, ChevronLeft, ChevronRight, Minus, Package, Plus, Wand2, X } from "lucide-react";
+import { ArrowUpDown, Check, ChevronLeft, ChevronRight, Minus, Package, Plus, Search, Wand2, X } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import type { InventoryIdentity } from "./game-inventory-identity";
@@ -42,6 +42,18 @@ interface GameInventoryProps {
 
 const ITEMS_PER_PAGE = 20;
 
+type InventorySortMode = "original" | "name" | "quantity";
+const SORT_MODES: InventorySortMode[] = ["original", "name", "quantity"];
+
+/** Case- and accent-insensitive search key. View-only: never written back to the inventory. */
+function searchKey(value: string): string {
+  return value.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().trim().replace(/\s+/g, " ");
+}
+
+function sameIdentity(a: InventoryIdentity, b: InventoryIdentity): boolean {
+  return a.itemId ? a.itemId === b.itemId : a.name === b.name;
+}
+
 export function GameInventory({
   items,
   open,
@@ -61,6 +73,8 @@ export function GameInventory({
   const [addPending, setAddPending] = useState(false);
   const [amountPending, setAmountPending] = useState<"increment" | "decrement" | null>(null);
   const [pageIndex, setPageIndex] = useState(0);
+  const [query, setQuery] = useState("");
+  const [sortMode, setSortMode] = useState<InventorySortMode>("original");
 
   // Mouse: 4px distance threshold so quick clicks still select.
   // Touch: 200ms hold within 5px so swipe-to-scroll still works on mobile.
@@ -71,18 +85,9 @@ export function GameInventory({
 
   const handleItemClick = useCallback(
     (item: InventoryItem) => {
-      if (!canInteract) {
-        // Just toggle inspect
-        setSelectedItem((prev) =>
-          (prev?.itemId ? prev.itemId === item.itemId : prev?.name === item.name) ? null : item,
-        );
-        return;
-      }
-      setSelectedItem((prev) =>
-        (prev?.itemId ? prev.itemId === item.itemId : prev?.name === item.name) ? null : item,
-      );
+      setSelectedItem((prev) => (prev && sameIdentity(prev, item) ? null : item));
     },
-    [canInteract],
+    [],
   );
 
   const handleUse = useCallback(
@@ -95,40 +100,62 @@ export function GameInventory({
 
   // Clear selection if the selected item was removed
   useEffect(() => {
-    if (
-      selectedItem &&
-      !items.some((i) => (selectedItem.itemId ? i.itemId === selectedItem.itemId : i.name === selectedItem.name))
-    ) {
+    if (selectedItem && !items.some((i) => sameIdentity(selectedItem, i))) {
       setSelectedItem(null);
     }
   }, [items, selectedItem]);
 
-  const selectedInventoryItem = selectedItem
-    ? (items.find((item) =>
-        selectedItem.itemId ? item.itemId === selectedItem.itemId : item.name === selectedItem.name,
-      ) ?? null)
-    : null;
-  const pageCount = Math.max(1, Math.ceil(items.length / ITEMS_PER_PAGE));
-  const pageStart = pageIndex * ITEMS_PER_PAGE;
-  const pageItems = items.slice(pageStart, pageStart + ITEMS_PER_PAGE);
+  // Rows without an itemId that share a name are indistinguishable to the host, which acts on the
+  // first one. Highlight exactly that row so the selection matches what the actions will change.
+  const selectedIndex = selectedItem ? items.findIndex((item) => sameIdentity(selectedItem, item)) : -1;
+  const selectedInventoryItem = selectedIndex >= 0 ? items[selectedIndex]! : null;
 
+  // Search and sort only change what is shown. Each entry keeps its stored index for reorder.
+  const trimmedQuery = searchKey(query);
+  const viewActive = trimmedQuery !== "" || sortMode !== "original";
+  const viewEntries = useMemo(() => {
+    const entries = items
+      .map((item, index) => ({ item, index }))
+      .filter((entry) => !trimmedQuery || searchKey(entry.item.name).includes(trimmedQuery));
+    if (sortMode === "name") {
+      entries.sort(
+        (a, b) =>
+          a.item.name.localeCompare(b.item.name, undefined, { sensitivity: "base", numeric: true }) || a.index - b.index,
+      );
+    } else if (sortMode === "quantity") {
+      entries.sort((a, b) => b.item.quantity - a.item.quantity || a.index - b.index);
+    }
+    return entries;
+  }, [items, trimmedQuery, sortMode]);
+  const selectedViewIndex =
+    selectedIndex >= 0 ? viewEntries.findIndex((entry) => entry.index === selectedIndex) : -1;
+
+  const pageCount = Math.max(1, Math.ceil(viewEntries.length / ITEMS_PER_PAGE));
+  const safePageIndex = Math.min(pageIndex, pageCount - 1);
+  const pageStart = safePageIndex * ITEMS_PER_PAGE;
+  const pageEntries = viewEntries.slice(pageStart, pageStart + ITEMS_PER_PAGE);
+  const reorderEnabled = Boolean(onReorderItem) && !viewActive;
+
+  // Reset the draft when the selection changes to another row, even one with the same name.
+  const selectedKey = selectedInventoryItem ? (selectedInventoryItem.itemId ?? "#" + selectedIndex) : "";
   useEffect(() => {
     setRenameDraft(selectedInventoryItem?.name ?? "");
-  }, [selectedInventoryItem?.name]);
+  }, [selectedInventoryItem?.name, selectedKey]);
 
   useEffect(() => {
     setPageIndex((current) => Math.min(current, pageCount - 1));
   }, [pageCount]);
 
+  // A new search or sort starts on the first page; the follow effect below may move to the selection.
   useEffect(() => {
-    if (!selectedItem) return;
-    const selectedIndex = items.findIndex((item) =>
-      selectedItem.itemId ? item.itemId === selectedItem.itemId : item.name === selectedItem.name,
-    );
-    if (selectedIndex >= 0) {
-      setPageIndex(Math.floor(selectedIndex / ITEMS_PER_PAGE));
+    setPageIndex(0);
+  }, [trimmedQuery, sortMode]);
+
+  useEffect(() => {
+    if (selectedViewIndex >= 0) {
+      setPageIndex(Math.floor(selectedViewIndex / ITEMS_PER_PAGE));
     }
-  }, [items, selectedItem]);
+  }, [selectedViewIndex]);
 
   const handleRename = useCallback(
     async (item: InventoryItem) => {
@@ -141,7 +168,8 @@ export function GameInventory({
       try {
         const resolvedName = await onRenameItem(item, nextName);
         if (resolvedName) {
-          setSelectedItem({ ...item, name: resolvedName });
+          // Keep the renamed row selected unless the player picked another row meanwhile.
+          setSelectedItem((prev) => (!prev || sameIdentity(prev, item) ? { ...item, name: resolvedName } : prev));
         }
       } finally {
         setRenamePending(false);
@@ -157,13 +185,14 @@ export function GameInventory({
     try {
       const addedItemName = await onAddItem();
       if (addedItemName) {
+        // Clear the search so the new item is visible; the page follows the selection.
+        setQuery("");
         setSelectedItem({ name: addedItemName });
-        setPageIndex(Math.floor(items.length / ITEMS_PER_PAGE));
       }
     } finally {
       setAddPending(false);
     }
-  }, [items.length, onAddItem]);
+  }, [onAddItem]);
 
   const handleIncrement = useCallback(
     async (item: InventoryItem) => {
@@ -207,10 +236,16 @@ export function GameInventory({
 
   if (!open) return null;
 
-  const slots: Array<InventoryItem | null> = [];
+  const slots: Array<{ item: InventoryItem; index: number } | null> = [];
   for (let i = 0; i < ITEMS_PER_PAGE; i++) {
-    slots.push(pageItems[i] ?? null);
+    slots.push(pageEntries[i] ?? null);
   }
+  const sortLabel =
+    sortMode === "name"
+      ? localizeUi("ui.game.gameinventory.sortName")
+      : sortMode === "quantity"
+        ? localizeUi("ui.game.gameinventory.sortQuantity")
+        : localizeUi("ui.game.gameinventory.sortOriginal");
 
   return (
     <div
@@ -236,7 +271,10 @@ export function GameInventory({
             </span>
           </div>
           <button
+            type="button"
             onClick={onClose}
+            aria-label={localizeUi("ui.chat.maripromptpreviewmodal.close")}
+            title={localizeUi("ui.chat.maripromptpreviewmodal.close")}
             className="rounded p-1 text-white/40 transition-colors hover:bg-white/10 hover:text-white/70"
           >
             <X size={14} />
@@ -247,22 +285,84 @@ export function GameInventory({
         <div className="flex-1 overflow-y-auto p-3">
           {items.length > 0 ? (
             <>
+              {(items.length > 1 || viewActive) && (
+                <div className="mb-2 flex items-center gap-1.5">
+                  <div className="relative min-w-0 flex-1">
+                    <Search
+                      size={12}
+                      className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-white/35"
+                    />
+                    <input
+                      type="search"
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape" && query) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setQuery("");
+                        }
+                      }}
+                      placeholder={localizeUi("ui.game.gameinventory.searchItems")}
+                      aria-label={localizeUi("ui.game.gameinventory.searchItems")}
+                      className="h-7 w-full rounded border border-white/10 bg-black/40 pl-7 pr-7 text-[0.7rem] text-white/85 outline-none transition-colors placeholder:text-white/30 focus:border-amber-400/40 [&::-webkit-search-cancel-button]:hidden"
+                    />
+                    {query && (
+                      <button
+                        type="button"
+                        onClick={() => setQuery("")}
+                        aria-label={localizeUi("ui.characters.schedulemanager.clearSearch")}
+                        title={localizeUi("ui.characters.schedulemanager.clearSearch")}
+                        className="absolute right-1 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-white/40 transition-colors hover:bg-white/10 hover:text-white/75"
+                      >
+                        <X size={11} />
+                      </button>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSortMode((mode) => SORT_MODES[(SORT_MODES.indexOf(mode) + 1) % SORT_MODES.length]!)
+                    }
+                    aria-label={localizeUi("ui.game.gameinventory.sortByValue1", { value1: sortLabel })}
+                    title={localizeUi("ui.game.gameinventory.sortByValue1", { value1: sortLabel })}
+                    className={cn(
+                      "flex h-7 shrink-0 items-center gap-1 rounded border px-2 text-[0.65rem] transition-colors",
+                      sortMode === "original"
+                        ? "border-white/8 bg-white/[0.03] text-white/55 hover:bg-white/[0.06]"
+                        : "border-amber-500/25 bg-amber-500/10 text-amber-300 hover:bg-amber-500/15",
+                    )}
+                  >
+                    <ArrowUpDown size={11} />
+                    {sortLabel}
+                  </button>
+                </div>
+              )}
+              {viewEntries.length === 0 && (
+                <div className="flex min-h-24 items-center justify-center rounded border border-dashed border-white/10 bg-white/[0.02] px-4 text-center text-[0.7rem] text-white/45">
+                  {localizeUi("ui.game.gameinventory.noItemsMatchYourSearch")}
+                </div>
+              )}
               {pageCount > 1 && (
                 <div className="mb-2 flex items-center justify-between gap-2 text-[0.625rem] text-white/45">
                   <button
-                    onClick={() => setPageIndex((page) => Math.max(0, page - 1))}
-                    disabled={pageIndex === 0}
+                    type="button"
+                    onClick={() => setPageIndex(Math.max(0, safePageIndex - 1))}
+                    disabled={safePageIndex === 0}
+                    aria-label={localizeUi("ui.game.gameinventory.previousInventoryPage")}
                     className="flex h-6 w-6 items-center justify-center rounded border border-white/8 bg-white/[0.03] transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-35"
                     title={localizeUi("ui.game.gameinventory.previousInventoryPage")}
                   >
                     <ChevronLeft size={12} />
                   </button>
                   <span className="tabular-nums">
-                    {localizeUi("ui.game.gameinventory.page")} {pageIndex + 1} / {pageCount}
+                    {localizeUi("ui.game.gameinventory.page")} {safePageIndex + 1} / {pageCount}
                   </span>
                   <button
-                    onClick={() => setPageIndex((page) => Math.min(pageCount - 1, page + 1))}
-                    disabled={pageIndex >= pageCount - 1}
+                    type="button"
+                    onClick={() => setPageIndex(Math.min(pageCount - 1, safePageIndex + 1))}
+                    disabled={safePageIndex >= pageCount - 1}
+                    aria-label={localizeUi("ui.game.gameinventory.nextInventoryPage")}
                     className="flex h-6 w-6 items-center justify-center rounded border border-white/8 bg-white/[0.03] transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-35"
                     title={localizeUi("ui.game.gameinventory.nextInventoryPage")}
                   >
@@ -270,27 +370,29 @@ export function GameInventory({
                   </button>
                 </div>
               )}
-              <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
-                <div className="grid grid-cols-5 gap-1.5">
-                  {slots.map((item, i) => {
-                    const globalIndex = pageStart + i;
-                    return (
+              {viewEntries.length > 0 && (
+                <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+                  <div
+                    className="grid grid-cols-5 gap-1.5"
+                    title={
+                      viewActive && onReorderItem
+                        ? localizeUi("ui.game.gameinventory.clearSearchAndSortToReorder")
+                        : undefined
+                    }
+                  >
+                    {slots.map((entry, i) => (
                       <InventorySlot
-                        key={`slot-${globalIndex}`}
-                        item={item}
-                        globalIndex={globalIndex}
-                        selected={Boolean(
-                          item &&
-                          selectedItem &&
-                          (selectedItem.itemId ? selectedItem.itemId === item.itemId : selectedItem.name === item.name),
-                        )}
-                        reorderEnabled={Boolean(onReorderItem)}
-                        onClick={() => item && handleItemClick(item)}
+                        key={"slot-" + (pageStart + i)}
+                        item={entry?.item ?? null}
+                        globalIndex={entry ? entry.index : -1 - i}
+                        selected={Boolean(entry && entry.index === selectedIndex)}
+                        reorderEnabled={reorderEnabled}
+                        onClick={() => entry && handleItemClick(entry.item)}
                       />
-                    );
-                  })}
-                </div>
-              </DndContext>
+                    ))}
+                  </div>
+                </DndContext>
+              )}
             </>
           ) : (
             <div className="flex min-h-40 flex-col items-center justify-center rounded border border-dashed border-white/10 bg-white/[0.02] px-4 text-center">
@@ -326,7 +428,7 @@ export function GameInventory({
                     if (e.key === "Escape") {
                       setRenameDraft(selectedInventoryItem.name);
                     }
-                    if (e.key === "Enter") {
+                    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                       e.preventDefault();
                       void handleRename(selectedInventoryItem);
                     }
@@ -475,12 +577,12 @@ function InventorySlot({ item, globalIndex, selected, reorderEnabled, onClick }:
             : item.name
           : undefined
       }
-      aria-pressed={enabled ? isDragging : undefined}
+      aria-pressed={item ? selected : undefined}
       className={cn(
         "group relative flex aspect-square flex-col items-center justify-center overflow-hidden rounded border transition-all",
         // touch-action: none lets the TouchSensor activate without browser scroll-gestures stealing the touch.
         // Scrolling the inventory panel is still possible by touching the modal background / pagination row.
-        enabled && "touch-none",
+        enabled && "touch-none select-none [-webkit-touch-callout:none]",
         item
           ? selected
             ? "border-amber-500/50 bg-amber-500/10 shadow-[inset_0_0_12px_rgba(245,158,11,0.08)]"

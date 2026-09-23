@@ -358,6 +358,7 @@ export function GameStoryboardInlineViewer({
                         onClick={onReplay}
                         className={`${STORYBOARD_VIEWER_CONTROL_BUTTON} max-lg:h-11 max-lg:w-11`}
                         title={localizeUi("ui.game.gamesurfacecomponent.replayStoryboardVideo")}
+                        aria-label={localizeUi("ui.game.gamesurfacecomponent.replayStoryboardVideo")}
                       >
                         <RotateCcw size={13} />
                       </button>
@@ -370,6 +371,11 @@ export function GameStoryboardInlineViewer({
                             ? localizeUi("ui.game.gamesurfacecomponent.pauseStoryboardVideo")
                             : localizeUi("ui.game.gamesurfacecomponent.playStoryboardVideo")
                         }
+                        aria-label={
+                          playing
+                            ? localizeUi("ui.game.gamesurfacecomponent.pauseStoryboardVideo")
+                            : localizeUi("ui.game.gamesurfacecomponent.playStoryboardVideo")
+                        }
                       >
                         {playing ? <Pause size={13} /> : <Play size={13} />}
                       </button>
@@ -378,6 +384,11 @@ export function GameStoryboardInlineViewer({
                         onClick={onToggleMute}
                         className={`${STORYBOARD_VIEWER_CONTROL_BUTTON} max-lg:h-11 max-lg:w-11`}
                         title={
+                          muted
+                            ? localizeUi("ui.game.gamesurfacecomponent.unmuteStoryboardVideo")
+                            : localizeUi("ui.game.gamesurfacecomponent.muteStoryboardVideo")
+                        }
+                        aria-label={
                           muted
                             ? localizeUi("ui.game.gamesurfacecomponent.unmuteStoryboardVideo")
                             : localizeUi("ui.game.gamesurfacecomponent.muteStoryboardVideo")

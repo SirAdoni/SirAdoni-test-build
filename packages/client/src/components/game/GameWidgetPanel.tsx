@@ -431,7 +431,7 @@ export function MobileWidgetPanel({ widgets, position, chatId, layout = "vertica
           <div className="space-y-3">
             <div className={cn(GAME_WIDGET_SHELL_CLASS, "max-h-[min(60vh,28rem)] overflow-y-auto")}>
               <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-left">
-                {expandedWidget.icon && <span className="text-xs">{expandedWidget.icon}</span>}
+                <span className="text-xs">{widgetIcon(expandedWidget)}</span>
                 <span className="min-w-0 flex-1 truncate text-[0.6875rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
                   <CharacterLinkedContent currentNames>{expandedWidget.label}</CharacterLinkedContent>
                 </span>
@@ -631,12 +631,23 @@ function WidgetEditorModal({
 }) {
   const { t: localizeUi } = useUiTranslation();
   const [draft, setDraft] = useState<WidgetEditorDraft>(EMPTY_WIDGET_DRAFT);
+  // Reset the draft when a widget is opened, not whenever its object is replaced: the HUD store swaps widget
+  // objects on every model turn, which wiped whatever the user was typing.
+  const draftKey = open && widget ? widget.id : null;
 
   useEffect(() => {
     if (widget) {
       setDraft(createWidgetEditorDraft(widget));
     }
-  }, [widget]);
+  }, [draftKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const previewWidget = useMemo(
+    () =>
+      widget && isExtendedHudWidgetType(widget.type)
+        ? { ...widget, config: extendedWidgetConfigFromText(widget.type, draft.items, widget.config) }
+        : null,
+    [draft.items, widget],
+  );
 
   const handleSave = useCallback(() => {
     if (!widget) return;
@@ -650,7 +661,8 @@ function WidgetEditorModal({
   return createPortal(
     <Modal
       open={open}
-      onClose={isSaving ? () => {} : onClose}
+      onClose={onClose}
+      closeDisabled={isSaving}
       title={localizeUi("ui.game.mobilewidgetpanel.editValue1", { value1: widget.label })}
       width="max-w-lg"
     >
@@ -803,6 +815,7 @@ function WidgetEditorModal({
               {localizeUi("ui.game.widgeteditormodal.items")}
             </span>
             <textarea
+              dir="auto"
               value={draft.items}
               onChange={(event) => setDraft((current) => ({ ...current, items: event.target.value }))}
               rows={6}
@@ -822,6 +835,7 @@ function WidgetEditorModal({
               )}
             </span>
             <textarea
+              dir="auto"
               value={draft.items}
               onChange={(event) => setDraft((current) => ({ ...current, items: event.target.value }))}
               rows={6}
@@ -835,6 +849,17 @@ function WidgetEditorModal({
               </span>
             )}
           </label>
+        )}
+
+        {previewWidget && (
+          <div className="space-y-1.5">
+            <span className="block text-xs font-medium text-[var(--muted-foreground)]">
+              {localizeUi("ui.game.widgeteditormodal.preview")}
+            </span>
+            <div className={cn(GAME_WIDGET_SHELL_CLASS, "max-h-48 w-full max-w-[16rem] overflow-y-auto px-2.5 py-2")}>
+              <ExtendedWidgetView widget={previewWidget} />
+            </div>
+          </div>
         )}
 
         {widget.type === "timer" && (
