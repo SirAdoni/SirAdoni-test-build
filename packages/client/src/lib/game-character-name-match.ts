@@ -122,8 +122,8 @@ export function findNamedMapValue<T>(map: Map<string, T>, targetName: string): T
 /**
  * Resolve a display name without guessing between equally plausible identities.
  * Exact names win; otherwise prefer the complete queried name inside a longer
- * canonical title (for example, "Honoria Stell" -> "Dame Honoria Stell") over
- * a shorter alias ("Honoria").
+ * canonical title (for example, "Wynne Brack" -> "Dame Wynne Brack") over
+ * a shorter alias ("Wynne").
  */
 export function findBestNamedEntry<T>(
   entries: Iterable<T>,

@@ -76,7 +76,7 @@ try {
   // ── Game chat: a published receipt and a provisional summary cover the assistant turn ──
   const game = await createChat("Continuity source change", "game");
   const user = await addMessage(game.id, "user", "We enter the old hall.");
-  const assistant = await addMessage(game.id, "assistant", "Robert promises to return before dawn.");
+  const assistant = await addMessage(game.id, "assistant", "Edmund promises to return before dawn.");
   const continuityMetadata = { gameContinuity: { mode: "shadow", activationMessageId: assistant.id } };
   const messages = await chats.listMessages(game.id);
   const prepared = prepareContinuitySources(messages, continuityMetadata);
@@ -109,7 +109,7 @@ try {
   await continuityStorage.enqueue(receipt);
   const summary = {
     sessionNumber: 1,
-    summary: "Robert promised to return.",
+    summary: "Edmund promised to return.",
     resumePoint: "At the hall.",
     partyDynamics: "Together.",
     partyState: "Ready.",

@@ -36,8 +36,8 @@ try {
   const parsed = parseContinuityStructure(
     {
       movements: [
-        { recordId: "r1", who: ["Elsevere"], to: "Library", presence: "present" },
-        { recordId: "nope", who: ["Elsevere"], to: "Library" },
+        { recordId: "r1", who: ["Ismene"], to: "Library", presence: "present" },
+        { recordId: "nope", who: ["Ismene"], to: "Library" },
       ],
       relationships: [
         { recordId: "r1", source: "A", target: "B", type: "employs", status: "active" },
@@ -67,8 +67,8 @@ try {
   };
   await db.insert(apiConnections).values({ id: "conn", name: "Structure test", provider: "custom", model: "m" });
   await db.insert(characters).values([
-    { id: "elsevere", data: JSON.stringify({ name: "Lady Elsevere Aldareth" }), createdAt: now, updatedAt: now },
-    { id: "audrey", data: JSON.stringify({ name: "Audrey Justinia" }), createdAt: now, updatedAt: now },
+    { id: "ismene", data: JSON.stringify({ name: "Lady Ismene Varrow" }), createdAt: now, updatedAt: now },
+    { id: "beatrix", data: JSON.stringify({ name: "Beatrix Hallam" }), createdAt: now, updatedAt: now },
   ]);
   await db.insert(chats).values({
     id: "chat",
@@ -79,9 +79,9 @@ try {
     createdAt: now,
     updatedAt: now,
   });
-  const text = "Elsevere comes into the library, and Audrey hires her on a perpetual contract.";
+  const text = "Ismene comes into the library, and Beatrix hires her on a perpetual contract.";
   await db.insert(messages).values([
-    { id: "m1", chatId: "chat", role: "user", content: "Bring Elsevere and Audrey in.", createdAt: "2026-09-16T00:00:01.000Z" },
+    { id: "m1", chatId: "chat", role: "user", content: "Bring Ismene and Beatrix in.", createdAt: "2026-09-16T00:00:01.000Z" },
     { id: "m2", chatId: "chat", role: "assistant", content: text, createdAt: "2026-09-16T00:00:02.000Z" },
   ]);
   forgetNamedCharacterIds();
@@ -100,7 +100,7 @@ try {
   const recordOf = (kind: "event" | "decision", recordText: string) => ({
     kind,
     text: recordText,
-    subjects: ["Elsevere", "Audrey"],
+    subjects: ["Ismene", "Beatrix"],
     conditions: [],
     status: "completed" as const,
     evidence: [{ messageId: "m2", quote: text }],
@@ -108,8 +108,8 @@ try {
   });
   const id = "gcb-structure";
   const rawRecords = [
-    recordOf("event", "Elsevere came into the library."),
-    recordOf("decision", "Audrey hired Elsevere on a perpetual contract."),
+    recordOf("event", "Ismene came into the library."),
+    recordOf("decision", "Beatrix hired Ismene on a perpetual contract."),
   ];
   const records = rawRecords.map((record) => ({ ...record, id: createGameContinuityRecordId(id, record) }));
   const disposition = (messageId: string) => ({
@@ -141,11 +141,11 @@ try {
 
   const entities = await createCampaignMemoryStorage(db).listEntities({ chatId: "chat" });
   const resolve = createContinuityEntityResolver(entities);
-  const elsevere = resolve("Elsevere", ["character"]);
-  const audrey = resolve("Audrey Justinia", ["character"]);
+  const ismene = resolve("Ismene", ["character"]);
+  const beatrix = resolve("Beatrix Hallam", ["character"]);
   const library = resolve("library", ["location"]);
-  assert.ok(elsevere, "a person resolves by a registered alias");
-  assert.ok(audrey, "a person resolves by full name");
+  assert.ok(ismene, "a person resolves by a registered alias");
+  assert.ok(beatrix, "a person resolves by full name");
   assert.ok(library, "a shortened place name resolves to the one registered place containing it");
   assert.equal(resolve("Rowan", ["character"]), null, "an unknown name resolves to nothing");
 
@@ -154,12 +154,12 @@ try {
     prompts.push(prompt);
     return {
       movements: [
-        { recordId: records[0]!.id, who: ["Elsevere"], to: "library", presence: "present" },
+        { recordId: records[0]!.id, who: ["Ismene"], to: "library", presence: "present" },
         { recordId: records[0]!.id, who: ["Someone Unknown"], to: "library", presence: "present" },
       ],
       relationships: [
-        { recordId: records[1]!.id, source: "Audrey Justinia", target: "Elsevere", type: "employs", status: "active" },
-        { recordId: records[1]!.id, source: "Audrey Justinia", target: "Nobody", type: "friend-of", status: "active" },
+        { recordId: records[1]!.id, source: "Beatrix Hallam", target: "Ismene", type: "employs", status: "active" },
+        { recordId: records[1]!.id, source: "Beatrix Hallam", target: "Nobody", type: "friend-of", status: "active" },
       ],
     };
   };
@@ -169,12 +169,12 @@ try {
   assert.equal(first.relationshipsApplied, 1, JSON.stringify(first));
   assert.equal(first.dropped["movement-person-unresolved"], 1);
   assert.equal(first.dropped["relationship-person-unresolved"], 1);
-  assert.ok(prompts[0]!.includes("Moonrise Hall Library") && prompts[0]!.includes("Audrey Justinia"), "the model is given the registered names");
+  assert.ok(prompts[0]!.includes("Moonrise Hall Library") && prompts[0]!.includes("Beatrix Hallam"), "the model is given the registered names");
 
   const state = await db.select().from(campaignMemoryCurrentState).where(eq(campaignMemoryCurrentState.chatId, "chat"));
   assert.ok(
-    state.some((row) => JSON.stringify(row).includes(elsevere!) && JSON.stringify(row).includes(library!)),
-    "Elsevere's current location is the library",
+    state.some((row) => JSON.stringify(row).includes(ismene!) && JSON.stringify(row).includes(library!)),
+    "Ismene's current location is the library",
   );
   const relationships = await db
     .select()
@@ -182,8 +182,8 @@ try {
     .where(eq(campaignMemoryRelationships.chatId, "chat"));
   assert.equal(relationships.length, 1);
   assert.equal(relationships[0]!.type, "employs");
-  assert.equal(relationships[0]!.sourceEntityId, audrey);
-  assert.equal(relationships[0]!.targetEntityId, elsevere);
+  assert.equal(relationships[0]!.sourceEntityId, beatrix);
+  assert.equal(relationships[0]!.targetEntityId, ismene);
 
   // The receipt is marked; a second run pays for nothing.
   const entry = (await db.select().from(lorebookEntries)).find((row) => row.id.startsWith("gce_"));

@@ -28,7 +28,7 @@ try {
   const created = await app.inject({ method: "POST", url: "/api/chats", payload: { name: "Mode off reads", mode: "game", characterIds: [] } });
   assert.equal(created.statusCode, 200);
   const chat = created.json();
-  const message = await app.inject({ method: "POST", url: `/api/chats/${chat.id}/messages`, payload: { role: "assistant", content: "Robert promises to return before dawn." } });
+  const message = await app.inject({ method: "POST", url: `/api/chats/${chat.id}/messages`, payload: { role: "assistant", content: "Edmund promises to return before dawn." } });
   assert.equal(message.statusCode, 200);
   const messageId = message.json().id;
 
@@ -36,19 +36,19 @@ try {
   const now = new Date().toISOString();
   await createGameContinuityStorage(db).enqueue({
     id: "mode-off-receipt", chatId: chat.id, sessionNumber: 1, sourceHash: "source-hash",
-    sources: [{ messageId, swipeIndex: 0, hash: "message-hash", role: "assistant", content: "Robert promises to return before dawn." }],
+    sources: [{ messageId, swipeIndex: 0, hash: "message-hash", role: "assistant", content: "Edmund promises to return before dawn." }],
     context: [], configHash: "config-hash", config: {}, status: "extracting", attempts: 1, repairAttempts: 0, records: [], dispositions: [], review: null, entryIds: [], createdAt: now, updatedAt: now,
   });
-  await chatsStorage.updateMetadata(chat.id, { gameNpcs: [{ id: "npc-robert", name: "Robert" }] });
+  await chatsStorage.updateMetadata(chat.id, { gameNpcs: [{ id: "npc-edmund", name: "Edmund" }] });
   const memory = createCampaignMemoryStorage(db);
   const provenance = { source: "regression", sourceRevision: "r1", actor: "user" as const };
-  await memory.createEntity({ entityId: "mode-off-robert", chatId: chat.id, kind: "character", owner: { type: "existing", store: "game-npcs", recordId: "npc-robert" }, aliases: ["Robert"], tags: [], summary: "Robert", attributes: {}, status: "active", manualLock: false, provenance });
+  await memory.createEntity({ entityId: "mode-off-edmund", chatId: chat.id, kind: "character", owner: { type: "existing", store: "game-npcs", recordId: "npc-edmund" }, aliases: ["Edmund"], tags: [], summary: "Edmund", attributes: {}, status: "active", manualLock: false, provenance });
   const fact = await memory.createFact({
-    chatId: chat.id, subjectEntityId: "mode-off-robert", predicate: "promise", value: { text: "Robert promises to return before dawn." }, conditions: [], status: "verified", sourceRevision: "r1",
-    evidence: [{ messageId, quote: "Robert promises to return before dawn.", sourceHash: createHash("sha256").update("Robert promises to return before dawn.", "utf8").digest("hex") }],
+    chatId: chat.id, subjectEntityId: "mode-off-edmund", predicate: "promise", value: { text: "Edmund promises to return before dawn." }, conditions: [], status: "verified", sourceRevision: "r1",
+    evidence: [{ messageId, quote: "Edmund promises to return before dawn.", sourceHash: createHash("sha256").update("Edmund promises to return before dawn.", "utf8").digest("hex") }],
     author: "system", provenance: { ...provenance, actor: "system" }, manualLock: false,
   });
-  await memory.createKnowledge({ knowledgeId: "mode-off-knowledge", chatId: chat.id, holderEntityId: "mode-off-robert", factId: fact.factId, epistemicState: "knows", learnedFrom: [], provenance, manualLock: false });
+  await memory.createKnowledge({ knowledgeId: "mode-off-knowledge", chatId: chat.id, holderEntityId: "mode-off-edmund", factId: fact.factId, epistemicState: "knows", learnedFrom: [], provenance, manualLock: false });
   await chatsStorage.updateMetadata(chat.id, { gameContinuity: { mode: "off" } });
   const stored = await chatsStorage.getById(chat.id);
   const metadata = typeof stored!.metadata === "string" ? JSON.parse(stored!.metadata) : stored!.metadata;
@@ -63,11 +63,11 @@ try {
   const list = await app.inject({ method: "GET", url: `/api/game/${chat.id}/memory/entities` });
   assert.equal(list.statusCode, 200, "GET /memory/entities serves with mode off");
   assert.equal(list.json().total, 1);
-  assert.deepEqual(list.json().items.map((item: { entityId: string }) => item.entityId), ["mode-off-robert"]);
+  assert.deepEqual(list.json().items.map((item: { entityId: string }) => item.entityId), ["mode-off-edmund"]);
 
-  const detail = await app.inject({ method: "GET", url: `/api/game/${chat.id}/memory/entities/mode-off-robert` });
+  const detail = await app.inject({ method: "GET", url: `/api/game/${chat.id}/memory/entities/mode-off-edmund` });
   assert.equal(detail.statusCode, 200, "GET /memory/entities/:id serves with mode off");
-  assert.equal(detail.json().entity.entityId, "mode-off-robert");
+  assert.equal(detail.json().entity.entityId, "mode-off-edmund");
   assert.equal(detail.json().facts.total, 1);
   assert.equal(detail.json().facts.items[0].factId, fact.factId);
   assert.equal(detail.json().facts.items[0].status, "verified");

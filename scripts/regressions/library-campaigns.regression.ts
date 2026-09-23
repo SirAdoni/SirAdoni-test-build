@@ -69,7 +69,7 @@ try {
     });
   await gameChat(
     "ash-1",
-    "Ashfall",
+    "Cinderholt",
     {
       gameId: "ash",
       gameSessionNumber: 1,
@@ -80,7 +80,7 @@ try {
   );
   await gameChat(
     "ash-2",
-    "Ashfall — Session 2",
+    "Cinderholt — Session 2",
     {
       gameId: "ash",
       gameSessionNumber: 2,
@@ -117,7 +117,7 @@ try {
     "one campaign per gameId, most recently played first; non-game chats are ignored",
   );
   const ash = campaigns[0]!;
-  assert.equal(ash.name, "Ashfall", "name comes from the latest session without its session suffix");
+  assert.equal(ash.name, "Cinderholt", "name comes from the latest session without its session suffix");
   assert.equal(ash.sessionCount, 2);
   assert.equal(ash.lastPlayedAt, t(30), "last played uses the newest message");
   assert.deepEqual(

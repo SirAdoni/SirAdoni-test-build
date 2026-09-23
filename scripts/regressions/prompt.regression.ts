@@ -4318,7 +4318,7 @@ const cases: RegressionCase[] = [
             content: "Rowan always touches his sword when worried.",
           },
         ],
-        transcriptText: "Rowan: The offer is withdrawn. Personhood protection remains.",
+        transcriptText: "Rowan: The offer is withdrawn. Sanctuary protection remains.",
       });
 
       assert.match(fairness, /genuinely good protagonist may remain genuinely good/u);
@@ -9224,7 +9224,7 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
     run() {
       assert.deepEqual(
         extractNarrationNpcCandidates(
-          "House Williams, the strongest duchy, protected Milkwell Union, a cheese guild, at dawn.",
+          "House Hartwell, the strongest duchy, protected Milkwell Union, a cheese guild, at dawn.",
           [],
         ),
         [],

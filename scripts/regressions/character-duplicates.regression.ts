@@ -18,7 +18,7 @@ assert.equal(jaccardSimilarity(new Set(["a"]), new Set(["b"])), 0);
 assert.equal(jaccardSimilarity(new Set(), new Set()), 0);
 
 const knightText =
-  "Sir Aldric is a weary knight of the northern marches who guards the old bridge at Harrow Ford. " +
+  "Sir Leofric is a weary knight of the northern marches who guards the old bridge at Fallow Ford. " +
   "He speaks slowly, distrusts sorcery, and keeps a pressed flower from his late wife in his gauntlet.";
 const reworded =
   knightText.replace("weary", "tired") + " He has recently taken a squire named Pell who follows him everywhere.";
@@ -26,8 +26,8 @@ const reworded =
 const groups = findDuplicateCharacters([
   { id: "c1", name: "Elodie", description: "A cheerful baker from the valley.", personality: "Kind." },
   { id: "c2", name: "elodie (copy)", description: "Totally different text about a pirate queen.", personality: "" },
-  { id: "k1", name: "Aldric", description: knightText, personality: "Stoic, loyal." },
-  { id: "k2", name: "Harrow Ford Guard", description: reworded, personality: "Stoic, loyal." },
+  { id: "k1", name: "Leofric", description: knightText, personality: "Stoic, loyal." },
+  { id: "k2", name: "Fallow Ford Guard", description: reworded, personality: "Stoic, loyal." },
   { id: "solo", name: "Nobody", description: "An entirely unrelated wandering bard with a lute.", personality: "" },
   { id: "blank1", name: "", description: "", personality: "" },
   { id: "blank2", name: "", description: "", personality: "" },

@@ -214,41 +214,41 @@ try {
     "a card referenced by another session must survive retrying its source session",
   );
 
-  const tova = candidate({ npcId: "npc:tova", name: "Tova" });
+  const brisa = candidate({ npcId: "npc:brisa", name: "Brisa" });
   const deferredFirst = await syncGameNpcCharacters({
     ...baseInput,
-    candidates: [tova],
-    canonicalSource: { messageId: "assistant-turn", swipeIndex: 0, supportedNpcIds: [tova.npcId] },
+    candidates: [brisa],
+    canonicalSource: { messageId: "assistant-turn", swipeIndex: 0, supportedNpcIds: [brisa.npcId] },
   });
-  const tovaCharacterId = deferredFirst.created[0]!.characterId;
+  const brisaCharacterId = deferredFirst.created[0]!.characterId;
   const deferredRetraction = await syncGameNpcCharacters({
     ...baseInput,
-    candidates: [{ ...tova, characterId: tovaCharacterId, evidenceKind: "linked" }],
+    candidates: [{ ...brisa, characterId: brisaCharacterId, evidenceKind: "linked" }],
     canonicalSource: { messageId: "assistant-turn", swipeIndex: 1, supportedNpcIds: [] },
     deferRetractionDeletion: true,
   });
-  assert.equal(deferredRetraction.retracted.find((entry) => entry.npcId === tova.npcId)?.cardRemoved, false);
+  assert.equal(deferredRetraction.retracted.find((entry) => entry.npcId === brisa.npcId)?.cardRemoved, false);
   assert.ok(
-    await store.getById(tovaCharacterId),
+    await store.getById(brisaCharacterId),
     "a stale-swipe result must not delete its card before the queued canonical metadata patch accepts ownership",
   );
 
   const staleJournal = addNpcEntry(
     createJournal(),
     {
-      id: tova.npcId,
-      name: tova.name,
+      id: brisa.npcId,
+      name: brisa.name,
       emoji: "👤",
-      description: tova.description,
+      description: brisa.description,
       descriptionSource: "narration",
-      location: tova.location,
+      location: brisa.location,
       reputation: 0,
       notes: [],
       avatarUrl: null,
     },
     "Introduced only in the discarded swipe.",
   );
-  const prunedJournal = pruneGameNpcJournal(staleJournal, tova.name);
+  const prunedJournal = pruneGameNpcJournal(staleJournal, brisa.name);
   assert.equal(prunedJournal.npcLog.length, 0, "discarded NPC interactions must not survive in the journal");
   assert.equal(prunedJournal.entries.length, 0, "discarded NPC journal entries must not influence later recaps");
 
@@ -267,57 +267,57 @@ try {
     },
     "Arrived while the stale sync result was being persisted.",
   );
-  const restoredAfterPersistRace = restorePrunedGameNpcJournal(concurrentJournal, staleJournal, [tova.name]);
+  const restoredAfterPersistRace = restorePrunedGameNpcJournal(concurrentJournal, staleJournal, [brisa.name]);
   assert.deepEqual(
     restoredAfterPersistRace.npcLog.map((entry) => entry.npcName),
-    ["Concurrent Arrival", "Tova"],
+    ["Concurrent Arrival", "Brisa"],
     "a post-persist stale-swipe rollback restores pruned NPC history without overwriting concurrent entries",
   );
   assert.equal(restoredAfterPersistRace.entries.length, 2);
 
-  const tovaRosterNpc = {
-    id: tova.npcId,
-    characterId: tovaCharacterId,
-    name: tova.name,
+  const brisaRosterNpc = {
+    id: brisa.npcId,
+    characterId: brisaCharacterId,
+    name: brisa.name,
     emoji: "👤",
-    description: tova.description,
+    description: brisa.description,
     descriptionSource: "narration" as const,
-    location: tova.location,
+    location: brisa.location,
     reputation: 0,
     notes: [],
     avatarUrl: null,
   };
   const concurrentRosterNpc = {
-    ...tovaRosterNpc,
+    ...brisaRosterNpc,
     id: "npc:concurrent",
     characterId: "character:concurrent",
     name: "Concurrent Arrival",
   };
-  const staleRetraction = deferredRetraction.retracted.filter((entry) => entry.npcId === tova.npcId);
+  const staleRetraction = deferredRetraction.retracted.filter((entry) => entry.npcId === brisa.npcId);
   const restoredRoster = rollbackStaleGameNpcRoster({
     currentNpcs: [concurrentRosterNpc],
-    previousNpcs: [tovaRosterNpc],
+    previousNpcs: [brisaRosterNpc],
     persistedNpcs: [],
     touchedNpcIds: new Set(staleRetraction.map((entry) => entry.npcId)),
   });
   assert.deepEqual(
     restoredRoster.map((npc) => npc.id),
-    [tova.npcId, concurrentRosterNpc.id],
+    [brisa.npcId, concurrentRosterNpc.id],
     "a stale metadata write restores only its exact retraction and preserves a concurrent NPC",
   );
   assert.deepEqual(
     rollbackStaleGameNpcRoster({
       currentNpcs: [concurrentRosterNpc],
-      previousNpcs: [tovaRosterNpc],
+      previousNpcs: [brisaRosterNpc],
       persistedNpcs: [],
       touchedNpcIds: new Set(staleRetraction.map((entry) => entry.npcId)),
-      ignoredNpcIds: new Set([tova.npcId]),
+      ignoredNpcIds: new Set([brisa.npcId]),
     }),
     [concurrentRosterNpc],
     "an explicit removal tombstone must win over stale-swipe rollback",
   );
 
-  const staleLinkedNpc = { ...tovaRosterNpc, id: "npc:stale-link", characterId: "character:stale-link" };
+  const staleLinkedNpc = { ...brisaRosterNpc, id: "npc:stale-link", characterId: "character:stale-link" };
   assert.deepEqual(
     rollbackStaleGameNpcRoster({
       currentNpcs: [concurrentRosterNpc, staleLinkedNpc],

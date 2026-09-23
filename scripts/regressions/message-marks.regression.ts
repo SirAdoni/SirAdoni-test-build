@@ -104,7 +104,7 @@ try {
   const timestamp = "2026-09-01T00:00:00.000Z";
   await db.insert(characters).values({
     id: "char-marks",
-    data: JSON.stringify({ name: "Vessa" }),
+    data: JSON.stringify({ name: "Pima" }),
     createdAt: timestamp,
     updatedAt: timestamp,
   });

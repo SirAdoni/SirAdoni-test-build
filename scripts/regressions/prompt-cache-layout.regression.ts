@@ -359,7 +359,7 @@ const gameAssistant = {
 };
 const gameUser = {
   role: "user" as const,
-  content: "Please ask Corvina to bring you to Tessaly.",
+  content: "Please ask Corvina to bring you to Odrana.",
   contextKind: "history" as const,
   providerMetadata: { id: "user-1" },
 };
@@ -385,7 +385,7 @@ assert.deepEqual(
     "Current runtime context",
     "Current dynamic lore",
     "Corvina answers from the grove gate.",
-    "Please ask Corvina to bring you to Tessaly.",
+    "Please ask Corvina to bring you to Odrana.",
   ],
   "the preceding assistant moves across runtime and dynamic-lore blocks to the current user turn",
 );
@@ -425,7 +425,7 @@ assert.deepEqual(
     "Older history",
     '<spatial_context mode="game" authority="application">Current path: Great Hall</spatial_context>',
     "Corvina answers from the grove gate.",
-    "Please ask Corvina to bring you to Tessaly.",
+    "Please ask Corvina to bring you to Odrana.",
   ],
   "the spatial block moves from the system prefix to the current turn",
 );
@@ -439,7 +439,7 @@ assert.deepEqual(
   keepGameDialogueAdjacent([gmPrompt, { ...gmPrompt, content: "User prompt section" }, olderGameHistory, gameUser]).map(
     (message) => message.content,
   ),
-  ["GM system prompt", "User prompt section", "Older history", "Please ask Corvina to bring you to Tessaly."],
+  ["GM system prompt", "User prompt section", "Older history", "Please ask Corvina to bring you to Odrana."],
   "unmarked system sections keep their place",
 );
 assert.deepEqual(

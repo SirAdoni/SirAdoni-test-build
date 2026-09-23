@@ -18,9 +18,9 @@ import { createFileNativeDB } from "../../packages/server/src/db/file-backed-sto
 import { createCharactersStorage } from "../../packages/server/src/services/storage/characters.storage.js";
 
 const candidate: GameNpcCharacterCandidate = {
-  npcId: "npc:mereth-vasseth",
-  name: "Mereth Vasseth",
-  description: ': "Rowan Mercer, my mother, Mereth Vasseth.',
+  npcId: "npc:mereth-drummond",
+  name: "Mereth Drummond",
+  description: ': "Rowan Mercer, my mother, Mereth Drummond.',
   appearance: "",
   location: "",
   evidenceKind: "narration",
@@ -37,10 +37,10 @@ assert.match(JSON.parse(withLore).profileRequirements, /Chronological age is not
 const generated = {
   npcId: candidate.npcId,
   name: candidate.name,
-  description: "Mereth Vasseth is Ilyrien's mother, a weaver who welcomes visitors to her home.",
+  description: "Mereth Drummond is Faelan's mother, a weaver who welcomes visitors to her home.",
   appearance: "Silver hair in a practical braid; a russet working dress.",
   personality: "Practical, warmly direct, and attentive to craftsmanship.",
-  backstory: "She raised Ilyrien while working as a weaver.",
+  backstory: "She raised Faelan while working as a weaver.",
   creativeAdditions: "Practical braid.",
 };
 const profile = {
@@ -48,7 +48,7 @@ const profile = {
   sourceMessageId: "turn1",
 };
 assert.throws(() =>
-  parseNpcProfiles(JSON.stringify({ profiles: [{ ...generated, name: "Ilyrien Vasseth" }] }), [candidate], sourceKey),
+  parseNpcProfiles(JSON.stringify({ profiles: [{ ...generated, name: "Faelan Drummond" }] }), [candidate], sourceKey),
 );
 assert.throws(() => parseNpcProfiles(JSON.stringify({ profiles: [generated, generated] }), [candidate], sourceKey));
 assert.throws(() =>
@@ -64,18 +64,18 @@ const context = JSON.parse(
     [candidate],
     [
       { id: "u", role: "user", content: "She is a weaver, not a mage." },
-      { id: "a", role: "assistant", content: "Ilyrien introduced Mereth as her mother." },
+      { id: "a", role: "assistant", content: "Faelan introduced Mereth as her mother." },
     ],
     [],
   ),
 );
 assert.equal(context.transcript[0].role, "user");
-assert.equal(context.targets[0].name, "Mereth Vasseth");
+assert.equal(context.targets[0].name, "Mereth Drummond");
 assert.equal(isVerifiedNpcCharacterData({ name: "Authored character" }), true);
 assert.equal(isVerifiedNpcCharacterData(null), false);
 const identityContext = buildNpcProfileContext(
   [candidate],
-  [{ id: "proof", role: "assistant", content: "The weaver introduced herself as Mereth Vasseth." }],
+  [{ id: "proof", role: "assistant", content: "The weaver introduced herself as Mereth Drummond." }],
   [],
 );
 const decision = {
@@ -83,7 +83,7 @@ const decision = {
   name: candidate.name,
   status: "confirmed",
   messageId: "proof",
-  quote: "The weaver introduced herself as Mereth Vasseth.",
+  quote: "The weaver introduced herself as Mereth Drummond.",
   reason: "Explicit introduction",
 };
 const verify = (decisions: unknown[]) =>
@@ -91,7 +91,7 @@ const verify = (decisions: unknown[]) =>
 assert.equal(verify([decision]).get(candidate.npcId), "confirmed");
 assert.throws(() => verify([]));
 assert.throws(() => verify([decision, decision]));
-assert.throws(() => verify([{ ...decision, quote: "Mereth Vasseth is an imaginary quote." }]));
+assert.throws(() => verify([{ ...decision, quote: "Mereth Drummond is an imaginary quote." }]));
 assert.throws(() => verify([{ ...decision, messageId: "invented" }]));
 assert.throws(() => verify([{ ...decision, name: "Another Person" }]));
 assert.equal(

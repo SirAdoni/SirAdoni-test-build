@@ -51,8 +51,8 @@ const base: GmPromptContext = {
   partyNames: ["Ari"],
   partyCards: [{ name: "Ari", card: "Name: Ari\nPersonality: Resolute" }],
   partyCardReferences: [{ name: "Ari", card: "Name: Ari\nPersonality: Resolute" }],
-  playerName: "Robert",
-  playerCard: "Name: Robert\nPersonality: Careful",
+  playerName: "Edmund",
+  playerCard: "Name: Edmund\nPersonality: Careful",
   gmCharacterCard: null,
   difficulty: "normal",
   combatStyle: "classic",
@@ -63,7 +63,7 @@ const base: GmPromptContext = {
   gameSystemPrompt: "Custom system rules: preserve authorial canon.",
   gameSpecialInstructions: "Keep consequences grounded.",
   weatherContext: "Current weather: clear",
-  playerNotes: "The key is in Robert's pack.",
+  playerNotes: "The key is in Edmund's pack.",
 };
 
 const first = buildGmSystemPromptParts(base);
@@ -133,7 +133,7 @@ const runtimeArgs = {
   chats: { getById: async () => null, updateMetadata: async () => null },
   selectedGameStateSnapshotPromise: Promise.resolve(null),
   mappedMessages: [{ role: "user" }],
-  personaName: "Robert",
+  personaName: "Edmund",
   resolvePromptMacros: (value: string) => value,
   resolveCharacterPromptMacros: (value: string) => value,
 };
@@ -271,9 +271,9 @@ const makeReferencePrompt = async (clock: string, hitPoints: number) => {
                 : "The hour is {{time}}.",
         },
       }),
-      getPersona: async () => ({ name: "Robert", description: "Player authority sentinel" }),
+      getPersona: async () => ({ name: "Edmund", description: "Player authority sentinel" }),
     },
-    resolvePromptMacros: (value: string) => value.replaceAll("{{user}}", "Robert").replaceAll("{{time}}", clock),
+    resolvePromptMacros: (value: string) => value.replaceAll("{{user}}", "Edmund").replaceAll("{{time}}", clock),
   });
   const normalized = normalizePromptCacheLayout(prompt);
   assert.deepEqual(normalizePromptCacheLayout(normalized), normalized, "reference layout is idempotent");
@@ -286,7 +286,7 @@ assert.deepEqual(referenceBefore.slice(0, historyStart), referenceAfter.slice(0,
 for (const needle of ["GM authority sentinel", "Player authority sentinel", "Unrelated system rule"]) {
   assert.equal(referenceBefore.find((m) => m.content.includes(needle))?.role, "system", needle);
 }
-for (const needle of ["LATEST_DISTINCTIVE_SESSION_SUMMARY", "Keeps faith with Robert."]) {
+for (const needle of ["LATEST_DISTINCTIVE_SESSION_SUMMARY", "Keeps faith with Edmund."]) {
   const index = referenceBefore.findIndex((m) => m.content.includes(needle));
   assert.ok(index >= 0 && index < historyStart, `${needle} belongs before history`);
   assert.equal(referenceBefore[index].role, "user", "reference never promotes data to system instructions");
@@ -294,7 +294,7 @@ for (const needle of ["LATEST_DISTINCTIVE_SESSION_SUMMARY", "Keeps faith with Ro
 const clockIndex = referenceBefore.findIndex((m) => m.content.includes("The hour is 12:34."));
 assert.ok(clockIndex > historyStart && clockIndex < referenceBefore.length - 1);
 assert.equal(referenceBefore[clockIndex].role, "user");
-assert.equal(referenceBefore.filter((m) => m.content.includes("Keeps faith with Robert.")).length, 1);
+assert.equal(referenceBefore.filter((m) => m.content.includes("Keeps faith with Edmund.")).length, 1);
 assert.match(referenceAfter.find((m) => m.providerMetadata?.marinaraGmDynamic)?.content ?? "", /HP: 3/u);
 assert.equal(referenceAfter.at(-1)?.content, "Current action");
 

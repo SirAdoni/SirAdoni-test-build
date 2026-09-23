@@ -9,7 +9,7 @@ const result = await runIsolatedGameTurn({
   gmPrompt: "GM PRIVATE PLOT: vault marker should never reach an actor",
   playerAction: "I ask the party what they saw.",
   playerActorId: "player",
-  playerActorName: "Robert",
+  playerActorName: "Edmund",
   actors: [
     { actorId: "alice", name: "Alice", card: "Alice card", authorizedMemory: "ALICE PRIVATE MARKER" },
     { actorId: "bob", name: "Bob", card: "Bob card", authorizedMemory: "BOB PRIVATE MARKER" },
@@ -54,7 +54,7 @@ const result = await runIsolatedGameTurn({
 
 assert.equal(peak, 1);
 assert.match(result.content, /ALICE-ONLY OBSERVATION/);
-assert.match(result.content, /\[Alice\] \[whisper:Robert\] \[worried\]:/);
+assert.match(result.content, /\[Alice\] \[whisper:Edmund\] \[worried\]:/);
 assert.doesNotMatch(result.content, /\[Bob\]/);
 assert.equal(result.actorDiagnostics.filter((item) => item.status === "omitted").length, 1);
 assert.equal(prompts.length, 2);

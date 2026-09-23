@@ -16,16 +16,16 @@ const sources: GameContinuitySource[] = [
     swipeIndex: 0,
     hash: "h1",
     role: "user",
-    content: "Robert offered a two-month contract if she completes the survey first.",
+    content: "Edmund offered a two-month contract if she completes the survey first.",
   },
 ];
 const base = {
   kind: "decision" as const,
-  text: "Robert offered a two-month contract.",
-  subjects: ["Robert"],
+  text: "Edmund offered a two-month contract.",
+  subjects: ["Edmund"],
   conditions: [] as string[],
   status: "proposed" as const,
-  evidence: [{ messageId: "m1", quote: "Robert offered a two-month contract" }],
+  evidence: [{ messageId: "m1", quote: "Edmund offered a two-month contract" }],
   keys: ["contract"],
 };
 const record: GameContinuityRecord = { ...base, id: createGameContinuityRecordId("batch", base) };
@@ -60,9 +60,9 @@ const raw = {
   recordChecks: [
     {
       recordRef: "r1",
-      sourceActors: ["Robert"],
+      sourceActors: ["Edmund"],
       sourceQualifiers: ["if she completes the survey first"],
-      recordSubjects: ["Robert"],
+      recordSubjects: ["Edmund"],
       recordConditions: [],
       missingQualifiers: ["if she completes the survey first"],
       actorMismatch: "none",

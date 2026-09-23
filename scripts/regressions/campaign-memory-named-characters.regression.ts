@@ -34,14 +34,14 @@ try {
   const { eq } = await import("../../packages/server/src/db/file-query.js");
 
   // Aliases: full name, name without titles, and a first name only when no other card shares it.
-  const counts = countNamedCharacterFirstNames(["Lady Ismene Varrow", "Nimue of the Linden Host", "Nimue Brightwater", "Ivy Tansley"]);
+  const counts = countNamedCharacterFirstNames(["Lady Ismene Varrow", "Nimue of the Linden Host", "Nimue Brightwater", "Una Tansley"]);
   assert.deepEqual(namedCharacterAliases("Lady Ismene Varrow", counts), [
     "Lady Ismene Varrow",
     "Ismene Varrow",
     "Ismene",
   ]);
   assert.deepEqual(namedCharacterAliases("Nimue Brightwater", counts), ["Nimue Brightwater"], "shared first names are not aliases");
-  assert.deepEqual(namedCharacterAliases("Ivy Tansley", counts), ["Ivy Tansley"], "short first names need the full name");
+  assert.deepEqual(namedCharacterAliases("Una Tansley", counts), ["Una Tansley"], "short first names need the full name");
 
   const db = await createFileNativeDB();
   const now = new Date().toISOString();

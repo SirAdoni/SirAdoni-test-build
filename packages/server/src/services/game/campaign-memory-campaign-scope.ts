@@ -350,7 +350,7 @@ async function buildCampaignMemoryProjection(db: DB, chatId: string): Promise<Ca
     // namesake. The check still guards the one-word fold below, where "Ash" and "Ash Vale" can be two people.
     fold(key, target);
   }
-  // A tracked NPC first met under a single name ("Aria") and later under the full name ("Aria Vell") is the
+  // A tracked NPC first met under a single name ("Aria") and later under the full name ("Aria Stanmore") is the
   // same person when exactly one other entity of that kind has a name starting with that word. Names are computed
   // once per group and multi-word names indexed by first word, so a long campaign's pass stays linear. Folding only
   // moves single-word names into the target, so the index stays exact while the pass runs.

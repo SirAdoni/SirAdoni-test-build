@@ -13,7 +13,7 @@ const sources: GameContinuitySource[] = [
     swipeIndex: 0,
     hash: "hash-contract",
     role: "user",
-    content: "Rowan offered Rosamund a two-month contract; candidacy remained undecided.",
+    content: "Rowan offered Gwenllian a two-month contract; candidacy remained undecided.",
   },
   {
     messageId: "m-invitation",
@@ -27,7 +27,7 @@ const sources: GameContinuitySource[] = [
     swipeIndex: 0,
     hash: "hash-arrival",
     role: "assistant",
-    content: "Rosamund arrived at Moonrise through Rowan's gate.",
+    content: "Gwenllian arrived at Moonrise through Rowan's gate.",
   },
 ];
 
@@ -52,14 +52,14 @@ const recordFor = (
 
 const initialRecords = [
   recordFor(
-    "Rowan offered Rosamund a contract.",
-    ["Mirah"],
+    "Rowan offered Gwenllian a contract.",
+    ["Zerah"],
     [],
-    [{ messageId: "m-contract", quote: "Rowan offered Rosamund a two-month contract" }],
+    [{ messageId: "m-contract", quote: "Rowan offered Gwenllian a two-month contract" }],
   ),
   recordFor(
-    "Rosamund arrived at Moonrise.",
-    ["Rowan", "Rosamund"],
+    "Gwenllian arrived at Moonrise.",
+    ["Rowan", "Gwenllian"],
     [],
     [{ messageId: "m-invitation", quote: "private-audience invitation was sent" }],
   ),
@@ -78,22 +78,22 @@ let repairCalls = 0;
 let sawExactSourceAndRecord = false;
 const repairedRecords = [
   recordFor(
-    "Rowan offered Rosamund a two-month contract; candidacy remained undecided.",
-    ["Rowan", "Rosamund"],
+    "Rowan offered Gwenllian a two-month contract; candidacy remained undecided.",
+    ["Rowan", "Gwenllian"],
     ["two months", "candidacy remained undecided"],
-    [{ messageId: "m-contract", quote: "Rowan offered Rosamund a two-month contract; candidacy remained undecided" }],
+    [{ messageId: "m-contract", quote: "Rowan offered Gwenllian a two-month contract; candidacy remained undecided" }],
   ),
   recordFor(
     "The invitation did not establish arrival.",
-    ["Rowan", "Rosamund"],
+    ["Rowan", "Gwenllian"],
     [],
     [{ messageId: "m-invitation", quote: "private-audience invitation was sent; no arrival was established" }],
   ),
   recordFor(
-    "Rosamund arrived at Moonrise through Rowan's gate.",
-    ["Rowan", "Rosamund"],
+    "Gwenllian arrived at Moonrise through Rowan's gate.",
+    ["Rowan", "Gwenllian"],
     [],
-    [{ messageId: "m-arrival", quote: "Rosamund arrived at Moonrise through Rowan's gate" }],
+    [{ messageId: "m-arrival", quote: "Gwenllian arrived at Moonrise through Rowan's gate" }],
   ),
 ];
 const cleanDispositions = [
@@ -109,7 +109,7 @@ const result = await reviewGameContinuityWithRepairs({
   completeReview: async (prompt) => {
     reviewCalls += 1;
     assert.match(prompt, /m-contract/u);
-    assert.match(prompt, /Rowan offered Rosamund/u);
+    assert.match(prompt, /Rowan offered Gwenllian/u);
     assert.match(prompt, /m-invitation/u);
     sawExactSourceAndRecord = true;
     return reviewCalls === 1
@@ -118,7 +118,7 @@ const result = await reviewGameContinuityWithRepairs({
             {
               kind: "attribution",
               messageId: "m-contract",
-              quote: "Rowan offered Rosamund",
+              quote: "Rowan offered Gwenllian",
               recordIds: [initialRecords[0]!.id],
               detail: "actor must remain Rowan",
             },
@@ -139,7 +139,7 @@ const result = await reviewGameContinuityWithRepairs({
             {
               kind: "omission",
               messageId: "m-arrival",
-              quote: "Rosamund arrived at Moonrise",
+              quote: "Gwenllian arrived at Moonrise",
               recordIds: [],
               detail: "durable arrival omitted",
             },
@@ -180,7 +180,7 @@ const boundedRecord = recordFor(
   "Rowan offered a contract.",
   ["Rowan"],
   ["two months"],
-  [{ messageId: "m-contract", quote: "Rowan offered Rosamund a two-month contract" }],
+  [{ messageId: "m-contract", quote: "Rowan offered Gwenllian a two-month contract" }],
   "bounded-history-proof",
 );
 const bounded = await reviewGameContinuityWithRepairs({
@@ -216,7 +216,7 @@ const bounded = await reviewGameContinuityWithRepairs({
               "Rowan offered a contract.",
               ["Rowan"],
               ["two months"],
-              [{ messageId: "m-contract", quote: "Rowan offered Rosamund a two-month contract" }],
+              [{ messageId: "m-contract", quote: "Rowan offered Gwenllian a two-month contract" }],
               "bounded-history-proof",
             ),
             id: "temporary",
@@ -236,6 +236,6 @@ assert.equal(boundedReviews, 4);
 
 assert.match(
   buildGameContinuityReviewPrompt({ sources, records: repairedRecords }),
-  /PRIMARY SOURCES:[\s\S]*m-contract[\s\S]*PROPOSED RECORDS:[\s\S]*Rosamund/u,
+  /PRIMARY SOURCES:[\s\S]*m-contract[\s\S]*PROPOSED RECORDS:[\s\S]*Gwenllian/u,
 );
 console.log("game-continuity history review orchestration regression passed");
