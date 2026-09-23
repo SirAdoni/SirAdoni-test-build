@@ -2521,6 +2521,10 @@ function GameSurfaceComponent({
       ? chatMeta.gamePanelLayoutScopeId.trim()
       : activeChatId;
   const sceneRuntimeScopeKey = `${activeChatId}:${activeGameMetaId}`;
+  // Current scene scope for async scene work (analysis callbacks, its fallback timer, asset installs):
+  // GameSurface is not keyed by chat, so a result that returns after a chat switch must not touch the new chat.
+  const sceneRuntimeScopeKeyRef = useRef(sceneRuntimeScopeKey);
+  sceneRuntimeScopeKeyRef.current = sceneRuntimeScopeKey;
   const { data: connectionsList } = useConnections();
   // Game audio capability: the game's audio connection (explicit pick, else the
   // category default, else the fallback) wins; the legacy TTS settings blob
@@ -3382,6 +3386,14 @@ function GameSurfaceComponent({
   const lastProcessedMsgRef = useRef<string | null>(null);
   const weatherMsgRef = useRef<string | null>(null);
   const sceneAnalysisTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Leaving the game must not let the 120 s fallback play this chat's music on another screen.
+  useEffect(
+    () => () => {
+      if (sceneAnalysisTimeoutRef.current) clearTimeout(sceneAnalysisTimeoutRef.current);
+      sceneAnalysisTimeoutRef.current = null;
+    },
+    [],
+  );
   const autoAssetGenerationKeyRef = useRef<string | null>(null);
   const autoStoryboardGenerationKeyRef = useRef<string | null>(null);
   const storyboardViewerVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -3511,6 +3523,10 @@ function GameSurfaceComponent({
   useEffect(() => {
     if (prevSceneRuntimeScopeRef.current === sceneRuntimeScopeKey) return; // skip initial mount
     prevSceneRuntimeScopeRef.current = sceneRuntimeScopeKey;
+    if (sceneAnalysisTimeoutRef.current) {
+      clearTimeout(sceneAnalysisTimeoutRef.current);
+      sceneAnalysisTimeoutRef.current = null;
+    }
     setReplaySessionNumber(null);
     setReplayBackgroundTag(null);
     setReplaySpriteMessages([]);
@@ -5541,6 +5557,9 @@ function GameSurfaceComponent({
         clearTimeout(sceneAnalysisTimeoutRef.current);
         sceneAnalysisTimeoutRef.current = null;
       }
+      const analysisScope = sceneRuntimeScopeKeyRef.current;
+      const stillCurrent = () =>
+        gameSurfaceMountedRef.current && sceneRuntimeScopeKeyRef.current === analysisScope;
 
       const onComplete = () => {
         if (sceneAnalysisTimeoutRef.current) {
@@ -5559,10 +5578,12 @@ function GameSurfaceComponent({
           {
             onSuccess: (r) => {
               onComplete();
+              if (!stillCurrent()) return;
               applySceneResult(r, msg);
             },
             onError: () => {
               onComplete();
+              if (!stillCurrent()) return;
               setSceneAnalysisFailed(true);
               applyInlineTags(tags, assets, msg);
               if (sceneReadyMsgIdRef.current !== msg.id) {
@@ -5583,10 +5604,12 @@ function GameSurfaceComponent({
           {
             onSuccess: (r) => {
               onComplete();
+              if (!stillCurrent()) return;
               applySceneResult(r, msg);
             },
             onError: (err) => {
               onComplete();
+              if (!stillCurrent()) return;
               console.warn("[scene-wrapup] scene-wrap failed:", err);
               setSceneAnalysisFailed(true);
               applyInlineTags(tags, assets, msg);
@@ -5619,6 +5642,7 @@ function GameSurfaceComponent({
       // Generous because scene-wrap may still generate a background image inline.
       sceneAnalysisTimeoutRef.current = setTimeout(() => {
         sceneAnalysisTimeoutRef.current = null;
+        if (!stillCurrent()) return;
         if (sceneReadyMsgIdRef.current !== msg.id) {
           console.warn("[scene-wrapup] Scene analysis timed out after 120s, falling back to inline tags");
           setSceneAnalysisFailed(true);
@@ -5941,7 +5965,11 @@ function GameSurfaceComponent({
   );
 
   async function applySceneResult(incomingResult: SceneAnalysis, msg: { id: string; content?: string | null }) {
+    const resultScope = sceneRuntimeScopeKeyRef.current;
+    const resultStillCurrent = () =>
+      gameSurfaceMountedRef.current && sceneRuntimeScopeKeyRef.current === resultScope;
     const result = await materializeGeneratedGameAudio(incomingResult);
+    if (!resultStillCurrent()) return;
     setSceneAnalysisFailed(false);
     // NOTE: Game state transitions are owned exclusively by the GM model via [state: ...] tags.
     // The scene model no longer emits stateChange to avoid conflicting state flips.
@@ -6057,9 +6085,11 @@ function GameSurfaceComponent({
       result.background?.startsWith("backgrounds:generated:");
     if (hasGeneratedBg) {
       await fetchManifest();
+      if (!resultStillCurrent()) return;
     }
     if (result.generatedIllustration) {
       await installGeneratedIllustration(result.generatedIllustration);
+      if (!resultStillCurrent()) return;
     }
     if (result.generatedNpcAvatars?.length) {
       useGameModeStore.getState().patchNpcAvatars(result.generatedNpcAvatars);
@@ -6178,6 +6208,7 @@ function GameSurfaceComponent({
 
         runGameAssetGeneration(assetPayload, { allowPromptReview: true })
           .then(async (res) => {
+            if (!resultStillCurrent()) return;
             if (res) {
               await applyGeneratedAssets(res);
               setPendingAssetGeneration(null);

@@ -17,7 +17,6 @@ import {
   registerPendingHudWidgetPersistence,
   useGameModeStore,
 } from "../stores/game-mode.store";
-import { useGameAssetStore } from "../stores/game-asset.store";
 import { useGameStateStore } from "../stores/game-state.store";
 import { useChatStore } from "../stores/chat.store";
 import { useUIStore } from "../stores/ui.store";
@@ -411,7 +410,9 @@ export function useStartSession() {
       });
     },
     onSuccess: (res, variables) => {
-      useGameAssetStore.getState().resetPlaybackState();
+      // No playback reset here: the previous session is still mounted, so its scene persister would save the
+      // cleared background/music/ambient over that session's metadata. GameSurface resets playback itself when
+      // the chat scope changes, after the old session's state is flushed.
       store.getState().setActiveGame(variables.gameId, res.sessionChat.id, null);
       store.getState().setSessionNumber(res.sessionNumber);
       // Deliberately unguarded (#5641): the session chat id is unknown until
