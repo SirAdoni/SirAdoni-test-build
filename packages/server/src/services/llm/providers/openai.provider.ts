@@ -1735,6 +1735,7 @@ export class OpenAIProvider extends BaseLLMProvider {
     let anonymousContentBlockToolCallCount = 0;
     let rawStreamCapture = "";
     let rawStreamCaptureBytes = 0;
+    let rawStreamCaptureStoredBytes = 0;
     let rawStreamCaptureTruncated = false;
     const requestBodyCapture = appendOpenAIStreamCaptureChunk(
       "",
@@ -1755,14 +1756,18 @@ export class OpenAIProvider extends BaseLLMProvider {
         const { done, value } = await reader.read();
 
         const decoded = done ? decoder.decode() : decoder.decode(value, { stream: true });
-        const captured = appendOpenAIStreamCaptureChunk(
-          rawStreamCapture,
-          decoded,
-          OPENAI_EMPTY_STREAM_CAPTURE_MAX_BYTES,
-        );
-        rawStreamCapture = captured.value;
+        if (!rawStreamCaptureTruncated) {
+          const captured = appendOpenAIStreamCaptureChunk(
+            rawStreamCapture,
+            decoded,
+            OPENAI_EMPTY_STREAM_CAPTURE_MAX_BYTES,
+            rawStreamCaptureStoredBytes,
+          );
+          rawStreamCapture = captured.value;
+          rawStreamCaptureStoredBytes = captured.bytes;
+          rawStreamCaptureTruncated = captured.truncated;
+        }
         rawStreamCaptureBytes += value?.byteLength ?? 0;
-        rawStreamCaptureTruncated ||= captured.truncated;
         buffer += decoded;
         const lines = buffer.split(/\r?\n/);
         buffer = done ? "" : (lines.pop() ?? "");
@@ -2555,6 +2560,8 @@ export class OpenAIProvider extends BaseLLMProvider {
       }
     } finally {
       options.signal?.removeEventListener("abort", onAbortResponses);
+      await reader.cancel().catch(() => {});
+      reader.releaseLock();
     }
 
     if (streamUsage) return streamUsage;
@@ -2873,6 +2880,8 @@ export class OpenAIProvider extends BaseLLMProvider {
       }
     } finally {
       options.signal?.removeEventListener("abort", onAbortCCR);
+      await reader.cancel().catch(() => {});
+      reader.releaseLock();
     }
     // Check if we got tool calls
     if (functionCalls.length > 0) {

@@ -98,6 +98,8 @@ export async function handleConversationSelfieCommand(args: {
   chats: ChatsStore;
   connections: ConnectionsStore;
   sendEvent: (payload: Record<string, unknown>) => void;
+  /** The generation's abort signal; a Stop press cancels the selfie and skips persisting it. */
+  signal?: AbortSignal;
 }): Promise<boolean> {
   if (args.command.type !== "selfie") return false;
   const command = args.command as SelfieCommand;
@@ -123,6 +125,10 @@ export async function handleConversationSelfieCommand(args: {
   try {
     await generateSelfie({ ...args, command, imgConnId, charData, charName });
   } catch (err) {
+    if (args.signal?.aborted) {
+      logger.info("[commands] Selfie generation cancelled for %s", charName);
+      return true;
+    }
     logger.error(err, "[commands] Selfie generation failed");
     args.sendEvent({
       type: "selfie_error",
@@ -234,8 +240,10 @@ async function generateSelfie(
       suppressModelParameters: promptRuntime.suppressModelParameters,
       enableCaching: promptRuntime.enableCaching,
       anthropicExtendedCacheTtl: promptRuntime.anthropicExtendedCacheTtl,
+      signal: args.signal,
     },
   );
+  if (args.signal?.aborted) return;
 
   const imagePrompt = (promptResult.content ?? "").trim();
   if (!imagePrompt) return;
@@ -339,12 +347,14 @@ async function generateSelfie(
         referenceImages: selfieReferenceImages,
         fallback: imageFallback,
         onFallback: reportFallback,
+        signal: args.signal,
       }),
     onVariantError: (error, index) =>
       logger.warn(error, "[commands] Selfie variant %d failed for %s", index + 1, args.charName),
   });
 
   for (const [variantIndex, imageResult] of imageResults.entries()) {
+    if (args.signal?.aborted) return;
     const filePath = saveImageToDisk(args.chatId, imageResult.base64, imageResult.ext, { shared: true });
     const renderedPrompt = imageResult.effectivePrompt ?? compiledSelfiePrompt.prompt;
     const effectiveImageProvider =

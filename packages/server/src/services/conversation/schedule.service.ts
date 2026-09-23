@@ -351,22 +351,33 @@ function parseScheduleResponse(content: string): Omit<WeekSchedule, "weekStart">
   const data = parseRepairedJson<{
     talkativeness?: number;
     inactivityThresholdMinutes?: number;
-    days?: Record<string, Array<{ time: string; activity: string; status?: string }>>;
+    days?: Record<string, unknown>;
   }>(content);
 
   const VALID_STATUSES = new Set(["online", "idle", "dnd", "offline"] as const);
   type ValidStatus = "online" | "idle" | "dnd" | "offline";
   const days: Record<string, DaySchedule> = {};
   for (const day of DAYS) {
-    const dayData = data.days?.[day] ?? [];
-    days[day] = dayData.map((block) => ({
-      time: block.time,
-      activity: block.activity,
-      status:
-        block.status && VALID_STATUSES.has(block.status as ValidStatus)
-          ? (block.status as ValidStatus)
-          : inferStatusFromActivity(block.activity),
-    }));
+    const rawDay = data.days?.[day];
+    const dayData = Array.isArray(rawDay) ? rawDay : [];
+    // Normalize like parseDayScheduleResponse: a model may drop "activity" or "time" from a block.
+    days[day] = dayData
+      .filter(
+        (block): block is { time?: unknown; activity?: unknown; status?: unknown } =>
+          !!block && typeof block === "object",
+      )
+      .map((block) => {
+        const activity =
+          typeof block.activity === "string" && block.activity.trim() ? block.activity.trim() : "free time";
+        return {
+          time: typeof block.time === "string" ? block.time : "00:00-00:00",
+          activity,
+          status:
+            typeof block.status === "string" && VALID_STATUSES.has(block.status as ValidStatus)
+              ? (block.status as ValidStatus)
+              : inferStatusFromActivity(activity),
+        };
+      });
   }
 
   return {

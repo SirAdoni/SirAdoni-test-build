@@ -26,8 +26,9 @@ export function appendOpenAIStreamCaptureChunk(
   current: string,
   chunk: string,
   maxBytes = OPENAI_EMPTY_STREAM_CAPTURE_MAX_BYTES,
+  /** Byte length of `current` when the caller already tracks it, so the buffer is not re-measured per chunk. */
+  currentBytes = Buffer.byteLength(current, "utf8"),
 ): { value: string; bytes: number; truncated: boolean } {
-  const currentBytes = Buffer.byteLength(current, "utf8");
   const chunkBytes = Buffer.byteLength(chunk, "utf8");
   const remaining = Math.max(0, maxBytes - currentBytes);
   if (chunkBytes <= remaining) return { value: current + chunk, bytes: currentBytes + chunkBytes, truncated: false };

@@ -457,11 +457,13 @@ export class AnthropicProvider extends BaseLLMProvider {
         if (supportsAdaptive) {
           applyAdaptiveThinkingConfig(body, options, maxTokens);
           delete body.temperature;
+          delete body.top_k;
         } else {
           const budgetTokens = Math.max(1024, Math.min(maxTokens, 16000));
           body.thinking = { type: "enabled", budget_tokens: budgetTokens };
           body.max_tokens = maxTokens + budgetTokens;
           delete body.temperature;
+          delete body.top_k;
         }
       }
     }
@@ -816,6 +818,7 @@ export class AnthropicProvider extends BaseLLMProvider {
           applyAdaptiveThinkingConfig(body, options, outputMaxTokens);
           // Cannot use temperature with extended thinking
           delete body.temperature;
+          delete body.top_k;
         } else {
           const budgetTokens = Math.max(1024, Math.min(outputMaxTokens, 16000));
           body.thinking = { type: "enabled", budget_tokens: budgetTokens };
@@ -823,6 +826,7 @@ export class AnthropicProvider extends BaseLLMProvider {
           body.max_tokens = outputMaxTokens + budgetTokens;
           // Cannot use temperature with extended thinking
           delete body.temperature;
+          delete body.top_k;
         }
       }
     }

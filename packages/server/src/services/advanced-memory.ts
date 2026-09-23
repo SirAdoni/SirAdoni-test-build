@@ -112,7 +112,18 @@ type Context = {
   names: Map<string, string>;
   individual: boolean;
   recordCache?: StoredRecord[];
+  /** Validated as-of snapshot reused by put() within one preparation scene instead of reloading the chat per record. */
+  snapshot?: Context;
 };
+type ValidationIndex = {
+  byId: Map<string, AdvancedMemoryMessage>;
+  position: Map<string, number>;
+  eligible: Map<string, Set<string>>;
+  manual: ReturnType<typeof normalizeChatSummaryEntries>;
+  macroRevision: string;
+};
+// Keyed by context, then by message array, so derived data cannot outlive either.
+const validationIndexes = new WeakMap<Context, WeakMap<readonly AdvancedMemoryMessage[], ValidationIndex>>();
 type Scene = { id: string; start: number; end: number; closed: boolean };
 const activeOperations = new Map<
   string,
@@ -489,31 +500,54 @@ export function createAdvancedMemoryService(db: DB) {
     return (ctx.recordCache ??= await records(ctx.chatId));
   }
 
+  /** Per-context, per-source derived data, so validating many records does not rescan the whole chat each time. */
+  function validationIndex(ctx: Context, source: readonly AdvancedMemoryMessage[]): ValidationIndex {
+    let bySource = validationIndexes.get(ctx);
+    if (!bySource) validationIndexes.set(ctx, (bySource = new WeakMap()));
+    let index = bySource.get(source);
+    if (!index) {
+      index = {
+        byId: new Map(source.map((message) => [message.id, message])),
+        // First occurrence wins, matching findIndex.
+        position: new Map(source.map((message, position) => [message.id, position] as const).reverse()),
+        eligible: new Map(),
+        manual: normalizeChatSummaryEntries(ctx.metadata.summaryEntries, {
+          legacySummary: typeof ctx.metadata.summary === "string" ? ctx.metadata.summary : null,
+        }),
+        macroRevision: hash(normalizeChatMacroVariables(ctx.metadata.macroVariables)),
+      };
+      bySource.set(source, index);
+    }
+    return index;
+  }
+
   function recordValid(ctx: Context, record: StoredRecord, source = ctx.messages): boolean {
-    const byId = new Map(source.map((message) => [message.id, message]));
-    const covered = record.messageIds.map((id) => byId.get(id));
+    const index = validationIndex(ctx, source);
+    const covered = record.messageIds.map((id) => index.byId.get(id));
     if (!covered.length || covered.some((message) => !message)) return false;
     if (record.sourceFingerprint !== fingerprint(ctx, covered as AdvancedMemoryMessage[], record.audienceCharacterIds))
       return false;
-    const eligibleIds = new Set(allowed(ctx, source, record.audienceCharacterIds).map((message) => message.id));
+    const audienceKey = [...record.audienceCharacterIds].sort().join("\0");
+    let eligibleIds = index.eligible.get(audienceKey);
+    if (!eligibleIds) {
+      eligibleIds = new Set(allowed(ctx, source, record.audienceCharacterIds).map((message) => message.id));
+      index.eligible.set(audienceKey, eligibleIds);
+    }
+    const eligible = eligibleIds;
     const structural = record.kind === "scene" && record.id === record.sceneId;
     // A partial summary may be empty while retaining discontiguous audience-scoped coverage.
-    if (!structural && record.messageIds.some((id) => !eligibleIds.has(id))) return false;
-    const first = source.findIndex((message) => message.id === record.messageIds[0]);
-    const last = source.findIndex((message) => message.id === record.messageIds.at(-1));
+    if (!structural && record.messageIds.some((id) => !eligible.has(id))) return false;
+    const first = index.position.get(record.messageIds[0]!) ?? -1;
+    const last = index.position.get(record.messageIds.at(-1)!) ?? -1;
     if (first < 0 || last < first) return false;
     if (record.kind === "scene" || record.kind === "excerpt") {
-      const expected = source.slice(first, last + 1).filter((message) => structural || eligibleIds.has(message.id));
+      const expected = source.slice(first, last + 1).filter((message) => structural || eligible.has(message.id));
       if (expected.map((message) => message.id).join("\0") !== record.messageIds.join("\0")) return false;
     }
-    const manual = normalizeChatSummaryEntries(ctx.metadata.summaryEntries, {
-      legacySummary: typeof ctx.metadata.summary === "string" ? ctx.metadata.summary : null,
-    });
+    const manual = index.manual;
     if (
       record.dependencies.some(
-        (dependency) =>
-          dependency.id === "macro-variables" &&
-          dependency.revision !== hash(normalizeChatMacroVariables(ctx.metadata.macroVariables)),
+        (dependency) => dependency.id === "macro-variables" && dependency.revision !== index.macroRevision,
       )
     )
       return false;
@@ -543,13 +577,26 @@ export function createAdvancedMemoryService(db: DB) {
     return fresh;
   }
 
-  async function put(ctx: Context, record: StoredRecord, options: AdvancedMemoryOperationOptions) {
-    const selected = record.messageIds
-      .map((id) => ctx.messages.find((message) => message.id === id))
-      .filter((message): message is AdvancedMemoryMessage => !!message);
-    const fresh = await validateSnapshot(ctx, selected, options);
+  /** Reload the chat, check the given sources are unchanged, and return it trimmed to this operation's messages. */
+  async function snapshotAsOf(
+    ctx: Context,
+    source: readonly AdvancedMemoryMessage[],
+    options: AdvancedMemoryOperationOptions,
+  ): Promise<Context> {
+    const fresh = await validateSnapshot(ctx, source, options);
     const end = fresh.messages.findIndex((message) => message.id === ctx.messages.at(-1)?.id);
-    const asOf = { ...fresh, messages: fresh.messages.slice(0, end + 1) };
+    return { ...fresh, messages: fresh.messages.slice(0, end + 1) };
+  }
+
+  async function put(ctx: Context, record: StoredRecord, options: AdvancedMemoryOperationOptions) {
+    abortIfNeeded(options.signal);
+    let asOf = ctx.snapshot;
+    if (!asOf) {
+      const selected = record.messageIds
+        .map((id) => ctx.messages.find((message) => message.id === id))
+        .filter((message): message is AdvancedMemoryMessage => !!message);
+      asOf = await snapshotAsOf(ctx, selected, options);
+    }
     if (!recordValid(asOf, record) || !dependenciesValid(record, await operationRecords(ctx), asOf))
       throw new Error("Memory sources or summary corrections changed during preparation; retry");
     const row = {
@@ -1164,6 +1211,8 @@ export function createAdvancedMemoryService(db: DB) {
       const scene = scenes[index]!;
       const fullSource = ctx.messages.slice(scene.start, scene.end + 1);
       const scaffold = buildRecord(ctx, scene, "scene", [], fullSource, "");
+      // Validate the whole chat once per scene; put() reuses it instead of reloading the chat for every record.
+      ctx.snapshot = await snapshotAsOf(ctx, ctx.messages, options);
       await put(ctx, scaffold, options);
       for (const audience of audiences) {
         const allowedIds = new Set(allowed(ctx, ctx.messages, audience).map((message) => message.id));
@@ -1179,6 +1228,8 @@ export function createAdvancedMemoryService(db: DB) {
               ? previousRecord
               : undefined;
           if (!record) {
+            // A paid summary can take long; its writes revalidate against a fresh reload.
+            ctx.snapshot = undefined;
             await progress(ctx, { stage: "summarizing", completed: index, total: scenes.length }, options);
             const entries = sourceEntries(ctx, source, false).filter(
               (entry) => entry.messageIds?.length || entry.rangeStartIndex,
@@ -1221,6 +1272,7 @@ export function createAdvancedMemoryService(db: DB) {
           await embedRecord(ctx, record, embeddingOptions, options);
         }
         await progress(ctx, { stage: "indexing", completed: index, total: scenes.length }, options);
+        ctx.snapshot ??= await snapshotAsOf(ctx, ctx.messages, options);
         for (let offset = 0; offset < source.length; offset += 3) {
           const chunk = source.slice(offset, offset + 3);
           const candidate = buildRecord(ctx, scene, "excerpt", audience, chunk, logMessages(ctx, chunk));
@@ -1235,6 +1287,7 @@ export function createAdvancedMemoryService(db: DB) {
         }
       }
     }
+    ctx.snapshot = undefined;
     await validateSnapshot(ctx, ctx.messages, options);
     await chats.patchMetadata(
       chatId,
@@ -1876,16 +1929,19 @@ export function createAdvancedMemoryService(db: DB) {
     let temporary: StoredRecord | null = null;
     if (historySize(ctx, live) + summarySize(continuity) > budget) {
       const temporaryBudget = Math.max(64, Math.min(1024, Math.floor((budget - summarySize(continuity)) / 3)));
-      let prefixLength = 0;
-      while (
-        prefixLength < live.length - 1 &&
-        historySize(ctx, live.slice(prefixLength)) + summarySize(continuity) + temporaryBudget > budget
-      )
-        prefixLength++;
-      if (
-        !prefixLength ||
-        historySize(ctx, live.slice(prefixLength)) + summarySize(continuity) + temporaryBudget > budget
-      ) {
+      const continuitySize = summarySize(continuity);
+      const over = (prefix: number) => historySize(ctx, live.slice(prefix)) + continuitySize + temporaryBudget > budget;
+      // History size never grows as the prefix grows, so a binary search finds the same smallest fitting
+      // prefix as a linear walk without re-estimating the whole transcript once per dropped message.
+      let low = 0;
+      let high = Math.max(0, live.length - 1);
+      while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (over(middle)) low = middle + 1;
+        else high = middle;
+      }
+      const prefixLength = low;
+      if (!prefixLength || over(prefixLength)) {
         throw new Error(
           "The latest message cannot fit without losing necessary context; increase the Advanced Memory context limit",
         );
@@ -2480,10 +2536,20 @@ export function createAdvancedMemoryService(db: DB) {
         record.dependencies = record.dependencies.map((dependency) =>
           dependency.id === "boundary" ? { ...dependency, revision: idMap.get(dependency.revision) ?? "" } : dependency,
         );
-        const previous = existing.find((item) => sameIdentity(item, record));
+        const previous =
+          existing.find((item) => sameIdentity(item, record)) ?? existing.find((item) => item.id === record.id);
         if (previous) {
           recordIdMap.set(String(value.id), previous.id);
           continue; // Import never overwrites local user corrections.
+        }
+        // Scaffold ids derive from the scene anchor alone, so a local scaffold (possibly hidden preparation work)
+        // may already hold this id with different coverage. Keep the local row instead of failing the import.
+        if (
+          scaffold &&
+          (await db.select().from(advancedMemoryRecords).where(eq(advancedMemoryRecords.id, record.id))).length
+        ) {
+          recordIdMap.set(String(value.id), record.id);
+          continue;
         }
         await db.insert(advancedMemoryRecords).values({
           ...record,
