@@ -6,6 +6,7 @@ import { activateLocale } from "../../../packages/client/src/localization/i18n";
 import { FloatingGamePanel, GamePanelContext } from "../../../packages/client/src/components/game/FloatingGamePanel";
 import { GameContactBookWidget } from "../../../packages/client/src/components/game/GameContactBookWidget";
 import { GameWidgetPanel, MobileWidgetPanel } from "../../../packages/client/src/components/game/GameWidgetPanel";
+import { MobileWidgetArrangeButton } from "../../../packages/client/src/components/game/GameMobileArrange";
 import { CharacterPhoto } from "../../../packages/client/src/components/ui/CharacterPhoto";
 import { EditorAvatarTileActions } from "../../../packages/client/src/components/ui/EditorAvatarTileActions";
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -59,6 +60,7 @@ function MobileWidgetFixture() {
             chatId="mobile-hud"
             layout="horizontal"
           />
+          <MobileWidgetArrangeButton widgets={mobileFixtureWidgets} chatId="mobile-hud" />
         </div>
       </main>
     </QueryClientProvider>

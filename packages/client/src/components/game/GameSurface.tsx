@@ -257,6 +257,7 @@ import { FloatingGamePanel, GamePanelContext } from "./FloatingGamePanel";
 import { GameLayoutEditToolbar } from "./GameLayoutEditToolbar";
 import { GAME_PANEL_INTERACTIVE_LAYER } from "../../lib/game-panel-layout";
 import { GameWidgetPanel, GameWidgetSessionPrepModal, MobileWidgetPanel } from "./GameWidgetPanel";
+import { MobileWidgetArrangeButton } from "./GameMobileArrange";
 import { WeatherEffects } from "../chat/WeatherEffects";
 import { GameInventory, type InventoryItem as GameInventoryItem } from "./GameInventory";
 import { addInventoryQuantity, renameInventoryIdentity, updateInventoryQuantity } from "./game-inventory-identity";
@@ -13644,6 +13645,7 @@ function GameSurfaceComponent({
                               chatId={activeChatId}
                               layout="horizontal"
                             />
+                            <MobileWidgetArrangeButton widgets={normalizedWidgets} chatId={activeChatId} />
                           </div>
                         ) : undefined;
 

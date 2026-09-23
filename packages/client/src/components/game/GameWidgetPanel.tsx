@@ -26,6 +26,7 @@ import { useGameModeStore } from "../../stores/game-mode.store";
 import { useRenderTimer } from "../../lib/perf-diagnostics";
 import { Modal } from "../ui/Modal";
 import { FloatingGamePanel } from "./FloatingGamePanel";
+import { arrangeMobileWidgets, useMobileWidgetArrangement } from "./GameMobileArrange";
 import { GameWidgetSetupEditor, normalizeGameHudWidgets, widgetIcon } from "./GameWidgetSetupEditor";
 import { CharacterLinkedContent } from "../characters/CharacterReferences";
 import { useTranslation as useUiTranslation } from "react-i18next";
@@ -354,7 +355,8 @@ export function GameWidgetPanel({ widgets, position, chatId, constraintsRef }: G
 /** Mobile: collapsed emoji pills that expand into full widget on tap. */
 export function MobileWidgetPanel({ widgets, position, chatId, layout = "vertical" }: MobileWidgetPanelProps) {
   const { t: localizeUi } = useUiTranslation();
-  const filtered = getVisibleWidgets(widgets, position);
+  const { arrangement } = useMobileWidgetArrangement(chatId);
+  const filtered = arrangeMobileWidgets(getVisibleWidgets(widgets, position), arrangement);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const { editingWidget, openEditor, closeEditor, saveWidget, isSaving } = useWidgetEditor(widgets, chatId);
   const expandedWidget = layout === "horizontal" ? (filtered.find((widget) => widget.id === expandedId) ?? null) : null;
