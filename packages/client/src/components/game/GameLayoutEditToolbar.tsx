@@ -421,7 +421,8 @@ function LayoutToolbar({
         doneRef.current();
         return;
       }
-      if (!(event.ctrlKey || event.metaKey) || isEditableTarget(event.target)) return;
+      // Alt is excluded: AltGr on Windows reports Ctrl+Alt for ordinary characters.
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || isEditableTarget(event.target)) return;
       if (key === "z" && !event.shiftKey) {
         event.preventDefault();
         undo();
@@ -748,8 +749,19 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
     setImportError(null);
     setImportOpen(false);
   };
+  // The rename field unmounts on Enter or Esc: focus goes back to the rename button so it
+  // stays inside the popover. Esc must not commit through the blur that follows.
+  const renameCancelled = useRef(false);
+  const renameReturn = useRef<string | null>(null);
+  useEffect(() => {
+    if (renaming || !renameReturn.current) return;
+    const id = renameReturn.current;
+    renameReturn.current = null;
+    renameCancelled.current = false;
+    document.querySelector<HTMLElement>(`[data-layout-rename="${CSS.escape(id)}"]`)?.focus();
+  }, [renaming]);
   const commitRename = () => {
-    if (!renaming) return;
+    if (!renaming || renameCancelled.current) return;
     setStorageFull(!writeSavedLayouts(renameSavedLayout(readSavedLayouts(), renaming.id, renaming.value, Date.now())));
     setRenaming(null);
   };
@@ -815,10 +827,13 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
                     onKeyDown={(event) => {
                       if (event.key === "Enter") {
                         event.preventDefault();
+                        renameReturn.current = layout.id;
                         commitRename();
                       } else if (event.key === "Escape") {
                         event.preventDefault();
                         event.stopPropagation();
+                        renameCancelled.current = true;
+                        renameReturn.current = layout.id;
                         setRenaming(null);
                       }
                     }}
@@ -841,6 +856,7 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
                   className={iconButton}
                   aria-label={t("ui.game.layoutEditor.renameLayout", { name: layout.name })}
                   title={t("ui.game.layoutEditor.renameLayout", { name: layout.name })}
+                  data-layout-rename={layout.id}
                   onClick={() => setRenaming({ id: layout.id, value: layout.name })}
                 >
                   <Pencil size={12} aria-hidden="true" />

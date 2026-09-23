@@ -1063,7 +1063,8 @@ function FloatingFrame({
     tweenPosition(from, to, (nextX, nextY) => drag.session.setGroupPosition(nextX, nextY), commit);
   };
   const nudge = (event: ReactKeyboardEvent<HTMLElement>) => {
-    if (panelLocked || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+    if (panelLocked || event.ctrlKey || event.altKey || event.metaKey) return;
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
     event.preventDefault();
     event.stopPropagation();
     const step = event.shiftKey ? 40 : 10;
@@ -1177,6 +1178,7 @@ function FloatingFrame({
     record();
   };
   const resizeWithKeys = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.ctrlKey || event.altKey || event.metaKey) return;
     if (!["ArrowLeft", "ArrowDown", "ArrowRight", "ArrowUp"].includes(event.key)) return;
     event.preventDefault();
     event.stopPropagation();
@@ -1516,8 +1518,8 @@ function FloatingFrame({
               ref={moveHandle}
               type="button"
               disabled={panelLocked}
-              aria-label={t("ui.game.floatingPanel.move")}
-              title={panelLocked ? t("ui.game.layoutEditor.lockedHint") : t("ui.game.floatingPanel.move")}
+              aria-label={t("ui.game.floatingPanel.moveNamed", { name: label })}
+              title={panelLocked ? t("ui.game.layoutEditor.lockedHint") : t("ui.game.floatingPanel.moveNamed", { name: label })}
               className="flex h-full min-w-0 touch-none items-center gap-1 rounded-l-md pl-1 pr-1.5 enabled:cursor-grab focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--marinara-chat-chrome-accent)] disabled:cursor-default"
               onPointerDown={startDrag}
               onPointerMove={moveDrag}
@@ -1580,8 +1582,8 @@ function FloatingFrame({
                 <button
                   key={handle}
                   type="button"
-                  aria-label={t("ui.game.floatingPanel.resize")}
-                  title={t("ui.game.floatingPanel.resize")}
+                  aria-label={t("ui.game.floatingPanel.resizeNamed", { name: label })}
+                  title={t("ui.game.floatingPanel.resizeNamed", { name: label })}
                   {...common}
                   className="group/handle rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--marinara-chat-chrome-accent)]"
                   onKeyDown={resizeWithKeys}
