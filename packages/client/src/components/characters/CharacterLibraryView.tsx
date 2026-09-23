@@ -242,7 +242,8 @@ function CardLibraryDetailCard({
             <CharacterPhoto
               src={card.avatarPath}
               name={card.name}
-              className="h-full w-full"
+              className="block h-full w-full"
+              wrapperClassName="absolute inset-0 block"
               onUpdate={() => onEdit(card.id)}
               updateLabel={localizeUi("ui.noodle.noodlepostcard.edit")}
             >

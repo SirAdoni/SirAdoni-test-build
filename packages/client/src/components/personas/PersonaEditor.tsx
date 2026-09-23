@@ -244,12 +244,14 @@ interface PersonaFormData {
 }
 
 function appendNewTags(existingTags: string[], rawInput: string) {
-  const seen = new Set(existingTags);
+  // Library tag filters match case-insensitively, so "Fantasy" and "fantasy" are one tag: keep the
+  // spelling already on the card instead of adding a case variant.
+  const seen = new Set(existingTags.map((tag) => tag.toLowerCase()));
   const additions: string[] = [];
 
   for (const tag of rawInput.split(",").map((part) => part.trim())) {
-    if (!tag || seen.has(tag)) continue;
-    seen.add(tag);
+    if (!tag || seen.has(tag.toLowerCase())) continue;
+    seen.add(tag.toLowerCase());
     additions.push(tag);
   }
 

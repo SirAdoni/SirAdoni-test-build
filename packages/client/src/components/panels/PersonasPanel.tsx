@@ -312,18 +312,16 @@ export function PersonasPanel() {
     async (group: ParsedPersonaGroupRow) => {
       const memberCount = group.memberIds.length;
       const ok = await confirmNonEmptyFolderDelete(memberCount, {
-        title: "Delete Folder",
-        message: `Delete "${group.name}"? Its ${memberCount} persona${
-          memberCount === 1 ? "" : "s"
-        } will stay in the library and move out of the folder.`,
-        confirmLabel: "Delete",
+        title: localizeUi("ui.panels.personaspanel.deleteFolderTitle"),
+        message: localizeUi("ui.panels.personaspanel.deleteFolderMessage", { name: group.name, count: memberCount }),
+        confirmLabel: localizeUi("lorebook.editor.batch.delete"),
         tone: "destructive",
       });
       if (!ok) return;
       deletePGroup.mutate(group.id);
       if (expandedGroupId === group.id) setExpandedGroupId(null);
     },
-    [deletePGroup, expandedGroupId],
+    [deletePGroup, expandedGroupId, localizeUi],
   );
 
   const getDraggedPersonaIds = useCallback(

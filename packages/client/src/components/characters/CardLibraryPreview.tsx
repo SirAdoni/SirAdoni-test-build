@@ -84,6 +84,7 @@ export function CardLibraryPreview({
               src={card.avatarPath}
               name={card.name}
               className="absolute inset-0 block h-full w-full"
+              wrapperClassName="absolute inset-0 block"
               onUpdate={onClick}
               updateLabel={localizeUi("ui.noodle.noodlepostcard.edit")}
             >

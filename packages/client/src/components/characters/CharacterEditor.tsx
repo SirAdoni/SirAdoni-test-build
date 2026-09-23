@@ -255,12 +255,14 @@ function getPersistedCharacterName(character: ParsedCharacter | undefined) {
 }
 
 function appendNewTags(existingTags: string[], rawInput: string) {
-  const seen = new Set(existingTags);
+  // Library tag filters match case-insensitively, so "Fantasy" and "fantasy" are one tag: keep the
+  // spelling already on the card instead of adding a case variant.
+  const seen = new Set(existingTags.map((tag) => tag.toLowerCase()));
   const additions: string[] = [];
 
   for (const tag of rawInput.split(",").map((part) => part.trim())) {
-    if (!tag || seen.has(tag)) continue;
-    seen.add(tag);
+    if (!tag || seen.has(tag.toLowerCase())) continue;
+    seen.add(tag.toLowerCase());
     additions.push(tag);
   }
 
@@ -448,6 +450,20 @@ export function CharacterEditor() {
       };
     });
   }, []);
+
+  // A gallery image promoted to avatar is a different picture, so the saved crop (fractions of the
+  // old image) would frame it wrongly and, for a non-square image, stretch it. Drop the crop the same
+  // way a direct avatar upload does, and show the new avatar right away: the pending crop change
+  // keeps the editor dirty, which also stops the refetch from replacing the preview.
+  const handleGalleryAvatarSet = useCallback(
+    (avatarUrl: string) => {
+      setAvatarPreview(avatarUrl);
+      if (formData?.extensions.avatarCrop == null) return;
+      setExtensionValue("avatarCrop", null);
+      markDirty();
+    },
+    [formData?.extensions.avatarCrop, markDirty, setExtensionValue],
+  );
 
   // "Remove from card" clears the embedded lorebook server-side
   // (data.character_book + the embeddedLorebook pointer) immediately. Mirror
@@ -1280,6 +1296,7 @@ export function CharacterEditor() {
                   characterId={characterId}
                   characterName={formData.name}
                   onCreateCharacterSheet={() => setCharacterSheetGeneratorOpen(true)}
+                  onAvatarSet={handleGalleryAvatarSet}
                 />
               )}
             </LazyEditorSection>
@@ -2622,7 +2639,12 @@ function AdvancedTab({
                   max={100}
                   value={depthPrompt.depth}
                   onChange={(e) =>
-                    updateExtension("depth_prompt", { ...depthPrompt, depth: parseInt(e.target.value) || 0 })
+                    // The card schema rejects negative depths, which would otherwise surface only as an
+                    // opaque validation error on save; keep typed values inside the input's 0-100 range.
+                    updateExtension("depth_prompt", {
+                      ...depthPrompt,
+                      depth: Math.min(100, Math.max(0, parseInt(e.target.value, 10) || 0)),
+                    })
                   }
                   className="w-16 rounded-lg border border-[var(--border)] bg-[var(--secondary)] px-2 py-1 text-center text-xs outline-none"
                 />
@@ -2896,10 +2918,12 @@ function CharacterGalleryTab({
   characterId,
   characterName,
   onCreateCharacterSheet,
+  onAvatarSet,
 }: {
   characterId: string;
   characterName?: string;
   onCreateCharacterSheet: () => void;
+  onAvatarSet: (avatarUrl: string) => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const [mediaTab, setMediaTab] = useState<CharacterGalleryMediaTab>("images");
@@ -2976,6 +3000,7 @@ function CharacterGalleryTab({
     async (image: CharacterGalleryImage) => {
       try {
         await setAvatar.mutateAsync(image.id);
+        onAvatarSet(image.url);
         toast.success(localizeUi("ui.characters.charactergallerytab.characterAvatarUpdated"));
       } catch (error) {
         toast.error(
@@ -2985,7 +3010,7 @@ function CharacterGalleryTab({
         );
       }
     },
-    [setAvatar, localizeUi],
+    [setAvatar, onAvatarSet, localizeUi],
   );
 
   const handleBatchDownload = useCallback(async () => {
