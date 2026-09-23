@@ -237,6 +237,27 @@ export function rulesetCombatEventLine(
         cost: event.cost,
         left: event.left,
       });
+    case "strikes":
+      // The count is what says "1 strike" rather than "1 strikes": the last swing has its own line.
+      return key(event.left > 0 ? "strikes" : "strikesLast", {
+        actor: names.combatant(event.actorId),
+        label: event.label,
+        count: event.left,
+        left: event.left,
+      });
+    case "gives":
+      return key("gives", {
+        actor: names.combatant(event.actorId),
+        label: event.label,
+        budget: names.budget(event.budget),
+        left: event.left,
+      });
+    case "rider":
+      return key("rider", {
+        actor: names.combatant(event.actorId),
+        target: names.combatant(event.targetId),
+        label: event.label,
+      });
     case "concentration":
       if (event.state === "ended") {
         return key(
@@ -269,6 +290,16 @@ export function rulesetCombatEventLine(
         cost: names.distance(event.cost),
         left: names.distance(event.left),
       });
+    case "window":
+      // Who the fight stopped for. The window between two turns is nobody's interruption, so it is
+      // said as a pause rather than as somebody being caught out.
+      return key(event.kind === "signature" ? "windowBetween" : "windowLeaving", {
+        actor: names.combatant(event.waiting[0] ?? ""),
+        others: Math.max(0, event.waiting.length - 1),
+        mover: names.combatant(event.moverId ?? ""),
+      });
+    case "pass":
+      return key("pass", { actor: names.combatant(event.actorId) });
     case "opportunity":
       return key("opportunity", {
         actor: names.combatant(event.actorId),

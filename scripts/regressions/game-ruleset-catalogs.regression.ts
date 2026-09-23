@@ -57,8 +57,25 @@ function withoutLaterGates(doc: Record<string, any>): void {
   // block that just went, so it leaves with it.
   doc.catalogs = (doc.catalogs ?? []).filter((catalog: Record<string, any>) => catalog.holds !== "creatures");
   if (doc.catalogs.length === 0) delete doc.catalogs;
+  // And the 1.29 keys that say what one turn can do, for the same reason.
+  for (const catalog of doc.catalogs ?? []) {
+    catalog.entries = (catalog.entries ?? []).filter((entry: Record<string, any>) => entry.mechanics?.kind !== "rider");
+  }
   for (const entry of doc.catalogs?.[0]?.entries ?? []) {
-    for (const key of ["targetCount", "autoHit", "applies", "temporary", "budget"]) delete entry.mechanics?.[key];
+    for (const key of [
+      "targetCount",
+      "autoHit",
+      "applies",
+      "temporary",
+      "budget",
+      "plus",
+      "free",
+      "gives",
+      "standard",
+      "rider",
+    ]) {
+      delete entry.mechanics?.[key];
+    }
   }
 }
 
@@ -84,11 +101,11 @@ const catalogFile = (entries: unknown[], catalog = "knacks") =>
   const catalog = ember.catalogs![0]!;
   assert.equal(catalog.id, "knacks");
   assert.deepEqual(catalog.feeds, ["knacks", "tricks"]);
-  assert.equal(catalog.entries!.length, 6);
+  assert.equal(catalog.entries!.length, 7);
   assert.equal(
     catalog.entries!.filter((entry) => entry.rows.length > 1).length,
-    1,
-    "one entry fills two lists: the knack and the limited use that tracks it",
+    2,
+    "an entry may fill two lists: the knack and the limited use that tracks it",
   );
   assert.ok(
     catalog.entries!.filter((entry) => entry.mechanics).length >= 2,
@@ -323,7 +340,7 @@ const catalogFile = (entries: unknown[], catalog = "knacks") =>
   const withAsset = parsedOrThrow(ruleset(asAsset));
   const good = parseRulesetCatalogFile(withAsset, "knacks", JSON.parse(catalogFile(emberEntries)));
   assert.ok(good.ok, `the same entries are usable from a file: ${good.ok ? "" : good.issues.join("; ")}`);
-  assert.equal(good.ok && good.entries.length, 6);
+  assert.equal(good.ok && good.entries.length, 7);
 
   const wrongName = parseRulesetCatalogFile(withAsset, "knacks", JSON.parse(catalogFile(emberEntries, "tricks")));
   assert.ok(!wrongName.ok && /this file is for "tricks"/.test(wrongName.issues[0]!));
@@ -440,10 +457,10 @@ const installedPackages = packages.map((fixture) => {
   ];
   const manifest = {
     schemaVersion: 2,
-    // 1.28, because the example ruleset carries the combat bridge's battle block, a scaled catalog
-    // row, a layer, a combat block, catalog mechanics a fight reads, a catalog of creatures and the
-    // keys that give that fight a board.
-    capabilityApi: { major: 1, minor: 28 },
+    // 1.29, because the example ruleset carries the combat bridge's battle block, a scaled catalog
+    // row, a layer, a combat block, catalog mechanics a fight reads, a catalog of creatures, the
+    // keys that give that fight a board and the ones that say what one turn of it can do.
+    capabilityApi: { major: 1, minor: 29 },
     builtAgainst: { engineVersion: "2.4.6", engineCommit: "0".repeat(40) },
     id: packageId,
     name: fixture.id,
@@ -589,6 +606,14 @@ try {
     withoutLaterGates(assetRuleset);
     const assetPath = rulesetCatalogAssetPath("knacks");
     const scaledFile = JSON.parse(packages[0]!.catalog);
+    // The entries in the FILE gate on their own later declarations too, and these cases are about
+    // the scaled row and nothing else.
+    scaledFile.entries = (scaledFile.entries ?? []).filter(
+      (entry: Record<string, any>) => entry.mechanics?.kind !== "rider",
+    );
+    for (const entry of scaledFile.entries) {
+      for (const key of ["plus", "free", "gives", "standard", "rider"]) delete entry.mechanics?.[key];
+    }
     assert.match(
       getCapabilityPackageInstallIssue(before123 as any, assetRuleset, new Map([[assetPath, scaledFile]])) ?? "",
       scaledIssue,
@@ -667,7 +692,7 @@ try {
     const pinned = await catalogRequest({ rulesetId: "local/ember-roads", catalogId: "knacks", version: "1" });
     assert.equal(pinned.statusCode, 200, pinned.body);
     assert.equal(pinned.json().version, 1);
-    assert.equal(pinned.json().entries.length, 6, "a game on version 1 picks from version 1's catalog");
+    assert.equal(pinned.json().entries.length, 7, "a game on version 1 picks from version 1's catalog");
 
     const gone = await catalogRequest({ rulesetId: "local/ember-roads", catalogId: "knacks", version: "9" });
     assert.equal(gone.statusCode, 404, gone.body);
@@ -679,7 +704,7 @@ try {
     const served = await catalogRequest({ rulesetId: "ember-roads", catalogId: "knacks" });
     assert.equal(served.statusCode, 200, served.body);
     const payload = served.json();
-    assert.equal(payload.entries.length, 6);
+    assert.equal(payload.entries.length, 7);
     assert.equal(payload.version, 1);
     assert.deepEqual(
       payload.entries.map((entry: RulesetCatalogEntry) => entry.id),

@@ -34,6 +34,7 @@ import {
   Camera,
 } from "lucide-react";
 import { useUIStore, type LorebookPanelCategory, type LorebookPanelSort } from "../../stores/ui.store";
+import { sortPanelFolders } from "../../lib/panel-sort";
 import { useChatStore } from "../../stores/chat.store";
 import {
   fetchAllLorebookPages,
@@ -330,6 +331,19 @@ export function LorebooksPanel() {
   }, [filtered, sort]);
 
   const lorebookById = useMemo(() => new Map(sorted.map((lorebook) => [lorebook.id, lorebook])), [sorted]);
+  const lorebookOrder = useMemo(
+    () => new Map(sorted.map((lorebook, index) => [lorebook.id, index])),
+    [sorted],
+  );
+  const sortedFolders = useMemo(() => {
+    const folders = sortPanelFolders(lorebookFolders, sort === "tokens" ? "name-asc" : sort);
+    if (sort !== "tokens") return folders;
+    const tokens = new Map(sorted.map((lorebook) => [lorebook.id, lorebook.tokenBudget ?? 0]));
+    const totals = new Map(
+      folders.map((folder) => [folder.id, folder.itemIds.reduce((total, id) => total + (tokens.get(id) ?? 0), 0)]),
+    );
+    return folders.sort((a, b) => totals.get(b.id)! - totals.get(a.id)!);
+  }, [lorebookFolders, sort, sorted]);
   const folderFilterActive =
     searchQuery.trim().length > 0 ||
     activeCategory !== "all" ||
@@ -338,13 +352,16 @@ export function LorebooksPanel() {
 
   const folderNodes = useMemo<LibraryFolderNode[]>(
     () =>
-      lorebookFolders.map((folder) => ({
+      sortedFolders.map((folder) => ({
         id: folder.id,
         name: folder.name,
         parentId: folder.parentId ?? null,
-        itemIds: folder.itemIds,
+        // Members follow the panel's sort; ids not loaded or filtered out keep their stored order at the end.
+        itemIds: [...folder.itemIds].sort(
+          (a, b) => (lorebookOrder.get(a) ?? sorted.length) - (lorebookOrder.get(b) ?? sorted.length),
+        ),
       })),
-    [lorebookFolders],
+    [sortedFolders, lorebookOrder, sorted.length],
   );
   const folderToggle = useLorebookFolderToggle(folderNodes, lorebooks);
   const folderView = useMemo(

@@ -1,6 +1,6 @@
 # Creating Custom Agents
 
-This guide shows you how to build your own agent in Marinara Engine. An agent is a small AI helper that runs automatically alongside your chat. You will learn how to set its phase, powers, output type, activation keywords, tools, and prompt, with one full worked example.
+This guide shows you how to build your own agent in Marinara Engine. An agent is a small AI helper that runs automatically alongside your chat. You will learn how to set its phase, powers, output type, activation keywords and questions, tools, and prompt, with one full worked example.
 
 New to agents? Read [Agents: AI Helpers for Your Chats](agents-overview.md) first for the basics, then come back here.
 
@@ -130,7 +130,65 @@ moonlit ritual
 2. Set **Scan Depth** to the number of recent messages to search. The default is 5. The maximum is 200.
 3. The agent now runs only when at least one keyword appears in that many recent messages.
 
-Leave the keyword box empty to run the agent every time on its normal cadence.
+Leave the keyword box empty to disable the keyword filter. Cadence and any activation question still apply.
+
+## Activation questions
+
+An **Activation question** asks whether the recent scene needs your custom agent. For example: `Did the characters move to a different location?` This can recognize paraphrases that keywords miss. Leave the question empty to keep the existing behavior.
+
+Something has to answer that question. Pick it once, under **Decision model** in the Connections panel. The list has three groups:
+
+- **None**, the default. No questions are asked and the question fields in the agent editor stay disabled.
+- **Local models**: the model you already run on the main or utility local slot. Nothing is downloaded and nothing leaves your machine.
+- **Connections**: any Decision connection you created, hosted or self-run.
+
+Entries that cannot answer right now stay in the list, greyed out with the reason, so you can see what to fix.
+
+### Use a model you already run
+
+If you have a local model in **Local Model**, you can gate agents with it and never create a connection or pay for a request.
+
+1. In **Connections**, open **Connection defaults** and set **Decision model** to **Primary local model**, or to **Utility local model** if you have one set up.
+2. Click **Test**. A successful result shows the probability and request time, plus two things that are specific to a local model: whether log-probabilities were available, and whether the model answers directly.
+
+Marinara asks the model a single yes/no question, lets it produce one token, and reads the answer from that token's probabilities. No reply is written, so the request is short. Requests use a 4-second budget, longer than a hosted one, because your slot may already be busy with agent work.
+
+**Thinking.** Most models answer in one word. Some always reason first, whatever they are asked. The **Thinking** setting below the dropdown controls this:
+
+- **Auto** (default) tries the fast one-word method and, if the model cannot answer that way twice in a row, lets that model think first and tells you.
+- **Off** always uses the one-word method. A model that cannot answer that way leaves its agents running.
+- **Allowed** never asks the model to skip reasoning.
+
+A model that thinks first takes seconds, so it only gates **post-processing** agents by default. Those run after the reply is already on screen. Pre-generation and parallel agents run as if they had no question, unless you turn on **Also gate agents that run before the reply**, which makes every reply wait.
+
+**About the numbers.** A general chat model's yes/no probabilities are usable for a threshold, but they were never trained to be calibrated the way a purpose-built decision model's are, and a runtime that returns no log-probabilities answers a flat 1 or 0. Tune the threshold against your own chats rather than trusting the default.
+
+### Set up a Decision connection
+
+1. In **Connections**, create a connection with provider **Decision**.
+2. Choose **TypeSafe**, **OpenRouter**, or **Custom System One endpoint**. Hosted sources need an API key. Custom accepts a System One server you already run, including Open-Jev; enter its base URL without `/v1/systemone` and use the model name it supports.
+3. For OpenRouter, choose a saved OpenRouter connection under **API key source**, or enter a separate key. Its editor also offers **Use this key for decisions (Jev)**. Linked keys follow later key changes automatically. Custom connections may borrow a custom chat connection's key only when both URLs have the same origin (scheme, host, and port).
+4. Save, then select it under **Decision model** in the Connections panel and click **Test**. The test sends a fixed sample, not your chat. A successful result shows the probability and request time.
+
+The Decision default is separate from your chat, agent, image, video, and audio defaults. Choosing **None** disables activation questions without deleting them.
+
+Hosted decisions send the selected recent messages and question to the chosen provider and can incur charges. The state budget defaults to 30,000 estimated tokens for hosted sources and 3,500 for custom servers. Reduce it if your server has a smaller context limit. Marinara drops older messages first, then trims the oldest portion of the newest message. Token estimates can differ from a server's tokenizer; a rejected or over-budget request lets the agent run normally.
+
+Deleting a connection used for a linked key warns you and leaves the Decision connection needing relinking. Imported standalone connection files also need keys or links restored; they never contain API keys or borrowed connection IDs.
+
+### Set up your agent
+
+With a Decision default selected, open a custom agent and enter a **Question** of up to 500 characters. Standard agent macros, including `{{user}}` and `{{char}}`, work in the question. **Scan Depth** controls the recent messages used by both keywords and the question.
+
+- **Run when probability is at least** defaults to 0.50. The agent runs when the probability of “yes” meets or exceeds it. Higher values skip more runs.
+- **Bypass the question after this many messages without a successful run** is optional. Once this many user/assistant messages have passed since the agent last ran successfully, the question is bypassed. A new agent, or one whose previous message was deleted, also bypasses the question when this setting is enabled. Keywords and cadence must still allow the run.
+- Pre-generation and parallel agents use the conversation before the reply. Post-processing agents also see the completed reply.
+
+Keywords and cadence are checked first, so an already-skipped agent does not make a paid decision request. Questions sharing a scan depth are batched for each phase. A timeout, unavailable model, or invalid answer lets the affected agent run normally. The budget is 1.5 seconds for a Decision connection and 4 seconds for a local model, or 20 seconds when that model has to think first. Decision requests follow generation cancellation. Ordinary logs omit chat content; debug prompt logging includes the evaluated messages and questions.
+
+A local model derives its state budget from the slot's own context size rather than from a connection setting.
+
+This setting applies to custom agents. Built-in agent activation and character-activity evaluation keep their existing behavior. Marinara does not install or start Open-Jev through these controls.
 
 ## Attaching tools (Function Calling)
 

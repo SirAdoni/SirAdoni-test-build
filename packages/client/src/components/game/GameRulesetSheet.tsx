@@ -54,6 +54,8 @@ const SHEET_REFUSAL_KEYS: Readonly<Record<string, string>> = Object.freeze({
   "bad-amount": "game.ruleset.sheet.refusal.badAmount",
   "no-temp": "game.ruleset.sheet.refusal.noTemp",
   "unknown-track": "game.ruleset.sheet.refusal.unknownTrack",
+  "wrong-track": "game.ruleset.sheet.refusal.wrongTrack",
+  "unknown-kind": "game.ruleset.sheet.refusal.unknownKind",
   "unknown-condition": "game.ruleset.sheet.refusal.unknownCondition",
   "unknown-field": "game.ruleset.sheet.refusal.unknownField",
   "unknown-rest": "game.ruleset.sheet.refusal.unknownRest",
@@ -97,6 +99,147 @@ function summaryFieldValue(
   if (typeof value === "number") return String(value);
   if (typeof value !== "string") return "";
   return field.type === "enum" ? (field.valueLabels?.[value] ?? value) : value;
+}
+
+/**
+ * A wound track: its levels as boxes, worst last, each showing its own mark.
+ *
+ * These systems expect a player to keep their own track, so every box is a button. Clicking an
+ * unmarked box marks the track with the chosen kind; clicking a marked one clears one mark. The
+ * rules themselves live in `applyRulesetSheetOp`, so a mark placed here lands exactly where the
+ * Game Master's own command would put it: in severity order, pushing lighter marks down.
+ */
+function WoundTrack({
+  track,
+  wound,
+  cardName,
+  readOnly,
+  onMark,
+  localizeUi,
+}: {
+  track: ResolvedRulesetLive["tracks"][number];
+  wound: NonNullable<ResolvedRulesetLive["tracks"][number]["wound"]>;
+  cardName: string;
+  readOnly: boolean;
+  onMark: (kind: string, amount: number) => void;
+  localizeUi: TFunction;
+}) {
+  // The kind a click marks with. The lightest is the default, because that is what most harm is.
+  const kinds = [...wound.kinds].sort((a, b) => a.severity - b.severity);
+  const [kindId, setKindId] = useState(kinds[0]?.id ?? "");
+  const chosen = kinds.find((kind) => kind.id === kindId) ?? kinds[0];
+  const markLabel = (id: string | undefined) => wound.kinds.find((kind) => kind.id === id)?.label ?? "";
+
+  return (
+    <div className={`space-y-1.5 ${cardClass}`}>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="min-w-0 flex-1 basis-24 truncate text-xs text-[var(--foreground)]" title={track.label}>
+          {track.label}
+        </span>
+        {kinds.length > 1 && (
+          <div className="flex shrink-0 flex-wrap gap-1">
+            {kinds.map((kind) => (
+              <button
+                key={kind.id}
+                type="button"
+                aria-pressed={kind.id === chosen?.id}
+                disabled={readOnly}
+                onClick={() => setKindId(kind.id)}
+                aria-label={localizeUi("game.ruleset.sheet.wound.kindAria", { kind: kind.label, name: track.label })}
+                className={`${chipClass} ${
+                  kind.id === chosen?.id
+                    ? "border-[var(--primary)] bg-[var(--accent)] text-[var(--foreground)]"
+                    : "border-[var(--border)] text-[var(--muted-foreground)] hover:bg-[var(--accent)]"
+                }`}
+              >
+                {kind.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* The two that always mean the same thing, whatever the track looks like: one more of the
+          chosen kind (which becomes an overflow once the track is full and cannot take another),
+          and one less (which takes an overflow back before it takes a mark off). The boxes below
+          are the quick way; these are the way that still works at both ends. */}
+      <div className="flex flex-wrap items-center gap-1">
+        <button
+          type="button"
+          disabled={readOnly || !chosen}
+          onClick={() => onMark(chosen?.id ?? "", 1)}
+          className={chipClass}
+        >
+          {localizeUi("game.ruleset.sheet.wound.mark")}
+        </button>
+        <button
+          type="button"
+          disabled={readOnly || (wound.marks.length === 0 && wound.overflow === 0)}
+          onClick={() => onMark(wound.marks[wound.marks.length - 1] ?? chosen?.id ?? "", -1)}
+          className={chipClass}
+        >
+          {localizeUi("game.ruleset.sheet.wound.unmark")}
+        </button>
+      </div>
+
+      <div className="flex flex-wrap gap-1">
+        {wound.levels.map((level, index) => {
+          const mark = wound.marks[index];
+          // Marks are held sorted, so a mark always lands at the end of the run and a clear always
+          // takes the last one. Only those two boxes do anything, and only those two are offered:
+          // a box that looked pressable but moved a DIFFERENT box would be lying about itself.
+          const adds = !mark && index === wound.marks.length && !!chosen;
+          const clears = !!mark && index === wound.marks.length - 1;
+          return (
+            <button
+              key={`${track.id}-${index}`}
+              type="button"
+              disabled={readOnly || (!adds && !clears)}
+              // A box says what it is, what it costs and what is on it, because a coloured square
+              // says none of the three to somebody who cannot see it.
+              aria-label={localizeUi("game.ruleset.sheet.wound.levelAria", {
+                level: level.label,
+                penalty: level.penalty,
+                state: mark
+                  ? localizeUi("game.ruleset.sheet.wound.marked", { kind: markLabel(mark) })
+                  : localizeUi("game.ruleset.sheet.wound.clear"),
+                name: track.label,
+                who: cardName,
+              })}
+              title={localizeUi("game.ruleset.sheet.wound.levelTitle", {
+                level: level.label,
+                penalty: level.penalty,
+              })}
+              onClick={() => onMark(clears ? mark! : (chosen?.id ?? ""), clears ? -1 : 1)}
+              className={`flex h-9 w-9 shrink-0 flex-col items-center justify-center rounded-lg border text-[0.625rem] leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                mark
+                  ? "border-[var(--primary)] bg-[var(--accent)] font-semibold text-[var(--foreground)]"
+                  : "border-[var(--border)] text-[var(--muted-foreground)] hover:bg-[var(--accent)]"
+              }`}
+            >
+              <span aria-hidden="true">{mark ? markLabel(mark) : ""}</span>
+              <span aria-hidden="true" className="tabular-nums opacity-70">
+                {level.penalty}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* The penalty in force, said once, in words. It is the one on the lowest marked level. */}
+      <p role="status" className="text-[0.6875rem] text-[var(--muted-foreground)]">
+        {wound.penalty === 0
+          ? localizeUi("game.ruleset.sheet.wound.noPenalty", { name: track.label })
+          : localizeUi("game.ruleset.sheet.wound.penalty", {
+              name: track.label,
+              level: wound.levels[wound.marks.length - 1]?.label ?? "",
+              penalty: wound.penalty,
+            })}
+        {wound.overflow > 0 ? " " : ""}
+        {wound.overflow > 0 ? localizeUi("game.ruleset.sheet.wound.overflow", { count: wound.overflow }) : ""}
+      </p>
+    </div>
+  );
 }
 
 export interface GameRulesetSheetProps {
@@ -329,42 +472,57 @@ export function GameRulesetSheet({
 
           {resolved.tracks.length > 0 && (
             <div className="space-y-1.5">
-              {resolved.tracks.map((track) => (
-                <div key={track.id} className={`flex flex-wrap items-center gap-x-2 gap-y-1 ${cardClass}`}>
-                  <span
-                    className="min-w-0 flex-1 basis-24 truncate text-xs text-[var(--foreground)]"
-                    title={track.label}
-                  >
-                    {track.label}
-                  </span>
-                  <span className="shrink-0 text-[0.6875rem] tabular-nums text-[var(--muted-foreground)]">
-                    {localizeUi("game.ruleset.sheet.range", { min: track.min, max: track.max })}
-                  </span>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => apply({ op: "track", track: track.id, by: -1 })}
-                      disabled={readOnly || track.value <= track.min}
-                      aria-label={localizeUi("game.ruleset.sheet.trackDownAria", { name: track.label, who: cardName })}
-                      className={stepButtonClass}
+              {resolved.tracks.map((track) =>
+                track.wound ? (
+                  <WoundTrack
+                    key={track.id}
+                    track={track}
+                    wound={track.wound}
+                    cardName={cardName}
+                    readOnly={readOnly}
+                    onMark={(kind, amount) => apply({ op: "damage", track: track.id, kind, amount })}
+                    localizeUi={localizeUi}
+                  />
+                ) : (
+                  <div key={track.id} className={`flex flex-wrap items-center gap-x-2 gap-y-1 ${cardClass}`}>
+                    <span
+                      className="min-w-0 flex-1 basis-24 truncate text-xs text-[var(--foreground)]"
+                      title={track.label}
                     >
-                      <Minus size={12} aria-hidden="true" />
-                    </button>
-                    <span className="min-w-6 text-center text-xs font-semibold tabular-nums text-[var(--foreground)]">
-                      {track.value}
+                      {track.label}
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => apply({ op: "track", track: track.id, by: 1 })}
-                      disabled={readOnly || track.value >= track.max}
-                      aria-label={localizeUi("game.ruleset.sheet.trackUpAria", { name: track.label, who: cardName })}
-                      className={stepButtonClass}
-                    >
-                      <Plus size={12} aria-hidden="true" />
-                    </button>
+                    <span className="shrink-0 text-[0.6875rem] tabular-nums text-[var(--muted-foreground)]">
+                      {localizeUi("game.ruleset.sheet.range", { min: track.min, max: track.max })}
+                    </span>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => apply({ op: "track", track: track.id, by: -1 })}
+                        disabled={readOnly || track.value <= track.min}
+                        aria-label={localizeUi("game.ruleset.sheet.trackDownAria", {
+                          name: track.label,
+                          who: cardName,
+                        })}
+                        className={stepButtonClass}
+                      >
+                        <Minus size={12} aria-hidden="true" />
+                      </button>
+                      <span className="min-w-6 text-center text-xs font-semibold tabular-nums text-[var(--foreground)]">
+                        {track.value}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => apply({ op: "track", track: track.id, by: 1 })}
+                        disabled={readOnly || track.value >= track.max}
+                        aria-label={localizeUi("game.ruleset.sheet.trackUpAria", { name: track.label, who: cardName })}
+                        className={stepButtonClass}
+                      >
+                        <Plus size={12} aria-hidden="true" />
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ),
+              )}
             </div>
           )}
 

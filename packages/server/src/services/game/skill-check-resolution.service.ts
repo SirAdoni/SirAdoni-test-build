@@ -13,6 +13,9 @@
 // ──────────────────────────────────────────────
 
 import {
+  applyRulesetSheetOp,
+  planRulesetUse,
+  rulesetEntryNamed,
   createSkillCheckTagRegex,
   formatPoolSlotName,
   readGmTagAttributes,
@@ -24,6 +27,7 @@ import {
   evaluateRulesetSheet,
   matchRulesetCheckTarget,
   parseDiceNotation,
+  readRulesetWoundPenalty,
   rollDicePoolCheck,
   rulesetPoolMaxSuccesses,
   rollDiceSumCheck,
@@ -31,7 +35,11 @@ import {
   rulesetSheetEnvelopeSchema,
   type EvaluatedRulesetSheet,
   type RPGAttributes,
+  type RulesetCatalogEntriesById,
   type RulesetDefinition,
+  type RulesetLiveState,
+  type RulesetLiveStates,
+  type RulesetSheetBuild,
   type SkillCheckResult,
   type SkillCheckTag,
 } from "@marinara-engine/shared";
@@ -43,7 +51,7 @@ import type { GameDicePoolSession } from "./dice-pool.service.js";
 import { logPoolDcFit } from "./dice-pool.service.js";
 import { createCharactersStorage } from "../storage/characters.storage.js";
 import { createChatsStorage } from "../storage/chats.storage.js";
-import { createGameStateStorage } from "../storage/game-state.storage.js";
+import { createGameStateStorage, parseStoredRulesetLive } from "../storage/game-state.storage.js";
 import { rollDieSecurely } from "./dice-rng.js";
 import { normalizeCharacterLookupName } from "./name-normalization.js";
 import { loadRulesetRegistry, resolveGameRuleset } from "./ruleset-registry.service.js";
@@ -88,6 +96,20 @@ export interface SkillCheckRulesetContext {
   playerKey: string | null;
   /** Evaluated sheet per normalized card name. */
   sheets: Map<string, EvaluatedRulesetSheet>;
+  /** The BUILD behind each of those sheets, which `applyRulesetSheetOp` needs to pay a spend.
+   *  Kept beside the evaluated sheet rather than re-read, so one turn sees one sheet throughout. */
+  builds: Map<string, RulesetSheetBuild>;
+  /** The live state this turn started with, keyed the same way. A spend is applied on top of it,
+   *  and `spentLive` is what the caller writes back. */
+  live: RulesetLiveStates;
+  /** The ruleset's catalog entries, when a tag on this turn named one with `use=` and the caller
+   *  could fetch them. Empty otherwise, which reads exactly as a character having no such entry:
+   *  the Engine cannot know what a charm costs, and guessing would apply it for free. */
+  catalogs: RulesetCatalogEntriesById;
+  /** What the wound track named by `resolution.penaltyFrom` costs each card's rolls, per normalized
+   *  card name. Always negative or 0, worked out once per turn like the sheets beside it. Empty for
+   *  a ruleset that names no penalty track, which is every ruleset written before they existed. */
+  penalties: Map<string, number>;
   /** The ruleset's blank default build, for a party member (or a player) who has no sheet yet.
    *  It is what setup would have copied for them. A `who=` that names NOBODY in the party does
    *  not get this: it rolls with no modifier at all, because a ruleset's defaults are not neutral
@@ -109,6 +131,11 @@ export interface SkillCheckRequest {
   threshold?: number;
   /** `bonus=`: dice a pool check adds or takes, where the ruleset declares situational dice. */
   bonusDice?: number;
+  /** `spend=`: what the player said they were spending on this check, where the ruleset offers
+   *  such a purchase. The Engine decides what it costs and what it buys. */
+  spend?: { pool: string; amount: number };
+  /** `use=`: a catalog entry the character has, whose `mechanics.check` changes this roll. */
+  useEntry?: string;
 }
 
 function parsePlayerStats(raw: unknown, chatId: string): Record<string, unknown> | null {
@@ -200,7 +227,20 @@ async function findPlayerCharacterCard(
  * the player character card's sheet attributes as the fallback the shipped
  * endpoint has always used (playerStats.attributes is never seeded today).
  */
-export async function loadSkillCheckModifierContext(db: DB, chatId: string): Promise<SkillCheckModifierContext> {
+export async function loadSkillCheckModifierContext(
+  db: DB,
+  chatId: string,
+  /**
+   * The live state this TURN starts from, when the caller knows it. A generating turn does: it is
+   * the row the turn follows, or a continuation's own row, and it is what the sheet-command pass
+   * later starts from too. Without it this reads the newest row instead, which is a different
+   * balance whenever the turn does not follow the newest one — a regenerate or a swipe — and the
+   * two passes of one turn would then spend from two different starting points. Left out, the
+   * newest stored state stands, which is right for a caller with no turn of its own, such as the
+   * `POST /game/skill-check` endpoint.
+   */
+  turnStartLive?: RulesetLiveStates | null,
+): Promise<SkillCheckModifierContext> {
   const stateStore = createGameStateStorage(db);
   const snapshot = await stateStore.getLatest(chatId);
   const playerStats = parsePlayerStats(snapshot?.playerStats, chatId);
@@ -231,7 +271,15 @@ export async function loadSkillCheckModifierContext(db: DB, chatId: string): Pro
         skills: null,
         attributes: null,
         sheetAttributes: {},
-        ruleset: buildSkillCheckRulesetContext(pinned.definition, cards, playerCard),
+        // The live state of this chat's sheets: it is where a wound track's marks live, and a
+        // check cannot know what a wound costs without them. The turn's own starting state when
+        // the caller handed one over, and otherwise the snapshot read above.
+        ruleset: buildSkillCheckRulesetContext(
+          pinned.definition,
+          cards,
+          playerCard,
+          turnStartLive === undefined ? parseStoredRulesetLive(snapshot?.rulesetLive) : turnStartLive,
+        ),
       };
     }
     // A pin the install cannot honour must not be answered with another system's arithmetic.
@@ -253,9 +301,17 @@ export function buildSkillCheckRulesetContext(
   definition: RulesetDefinition,
   cards: ReadonlyArray<Record<string, unknown>>,
   playerCard: Record<string, unknown> | undefined,
+  /** The game's live sheet state, keyed by normalized card name. Absent means nobody is marked,
+   *  which is what a game whose ruleset has no wound track always looks like. */
+  live?: RulesetLiveStates | null,
+  /** The ruleset's catalog entries, for a check that names one with `use=`. */
+  catalogs?: RulesetCatalogEntriesById | null,
 ): SkillCheckRulesetContext {
   const blankBuild = defaultRulesetSheetBuild(definition);
   const sheets = new Map<string, EvaluatedRulesetSheet>();
+  const builds = new Map<string, RulesetSheetBuild>();
+  const penalties = new Map<string, number>();
+  const penaltyTrack = definition.resolution.penaltyFrom;
   const playerKeyForCards = playerCard ? normalizeCharacterLookupName(readTrimmedString(playerCard.name)) : "";
   // Two cards that normalize to one name: `who=` cannot say which, so neither sheet answers it and
   // the check rolls unmodified. The player's own card is the exception; a name they share stays theirs.
@@ -267,7 +323,12 @@ export function buildSkillCheckRulesetContext(
       if (key === playerKeyForCards) {
         if (card !== playerCard) continue;
       } else {
+        // Everything read under this name goes, not just the sheet: a build or a wound penalty
+        // left behind would still be applied to a name the Engine has just decided it cannot tell
+        // apart, which is the opposite of rolling it unmodified.
         sheets.delete(key);
+        builds.delete(key);
+        penalties.delete(key);
         ambiguous.add(key);
         logger.warn("[game/skill-check] Two party cards are named %s; checks for that name roll unmodified", key);
         continue;
@@ -277,14 +338,200 @@ export function buildSkillCheckRulesetContext(
     if (card.rulesetSheet != null && !envelope.success) {
       logger.warn("[game/skill-check] The ruleset sheet for %s is unreadable; rolling on a blank sheet", key);
     }
-    sheets.set(key, evaluateRulesetSheet(definition, envelope.success ? envelope.data.build : blankBuild));
+    const cardBuild = envelope.success ? envelope.data.build : blankBuild;
+    sheets.set(key, evaluateRulesetSheet(definition, cardBuild));
+    builds.set(key, cardBuild);
+    if (penaltyTrack) {
+      const penalty = readRulesetWoundPenalty(definition, live?.[key], penaltyTrack);
+      if (penalty !== 0) penalties.set(key, penalty);
+    }
   }
   return {
     definition,
     playerKey: playerKeyForCards || null,
     sheets,
+    builds,
+    live: live ?? {},
+    catalogs: catalogs ?? {},
+    penalties,
     blank: evaluateRulesetSheet(definition, blankBuild),
   };
+}
+
+// ── What a check may BUY ──
+//
+// Some systems let a player spend a resource to change a roll they are about to make: a point of
+// will for an automatic success. It cannot be two tags in one reply, because the dice are thrown
+// before the `[sheet: ...]` commands are applied and there would be nothing left to change. So the
+// check tag carries what was spent and ONE resolution does both.
+//
+// All or nothing, exactly as `planRulesetUse` already is: a spend the pool cannot cover buys
+// nothing and costs nothing. The model names what the player said they were spending; the Engine
+// decides what it costs and what it does, and never takes the model's word for the dice.
+
+export interface RulesetCheckPurchase {
+  /** What really left the sheet, for the record. */
+  spent?: { pool: string; amount: number };
+  /** What it bought, for the roller. */
+  bought: {
+    dice?: number;
+    successes?: number;
+    threshold?: number;
+    reroll?: { upTo: number; mode: "once" | "until" };
+  };
+  /** The entry it came out of, when it came out of one, by the label the ruleset gives it. */
+  used?: string;
+  /** The roller's own key, and the live state with the cost taken out of it. */
+  key: string;
+  live: RulesetLiveState;
+}
+
+/** How many times over one check may buy an entry's effect, whatever an entry's own cost is. The
+ *  same reason `perCheck` exists on a standing spend: a full pool must not buy an unlosable roll. */
+const MAX_ENTRY_CHECK_STEPS = 5;
+
+/**
+ * What the catalog entry the Game Master named with `use=` does to this check, and what it costs.
+ *
+ * The entry is matched by `planRulesetUse`'s own rules, through `planRulesetUse` itself, so one
+ * name means the same thing here as it does in a `[sheet:]` command: the name the sheet shows a
+ * row under, or the label of the entry it came from, and an ambiguous one is refused rather than
+ * guessed at. What it COSTS is the plan's own steps, which is the same machinery that upcasts a
+ * spell, so nothing about paying for something is reinvented here.
+ *
+ * `spend=` beside `use=` is what pays for a HIGHER use of it, exactly as a spell paid out of a
+ * bigger slot: an entry that declares `perCostStep` scales with how many times over the price was
+ * paid, and one that does not is bought once however much was offered.
+ *
+ * Null for every reason there is, and in every one of them the roll is the one it would have been
+ * and nothing is deducted: the ruleset has no catalogs here, the character does not have the entry,
+ * the entry says nothing about checks, its kind cannot honour what it says, or the sheet cannot pay.
+ */
+function planRulesetEntryCheck(
+  ruleset: SkillCheckRulesetContext,
+  name: string | undefined,
+  asked: { pool: string; amount: number } | undefined,
+  who: string | undefined,
+): RulesetCheckPurchase | null {
+  const wanted = name?.trim();
+  if (!wanted || ruleset.definition.resolution.kind !== "dice-pool") return null;
+  const key = who ? normalizeCharacterLookupName(who) : ruleset.playerKey;
+  const build = key ? ruleset.builds.get(key) : undefined;
+  if (!key || !build) return null;
+
+  // The SAME matcher the payment uses, so the effect and the cost can never come from two different
+  // entries: a row answers to its name on the sheet as well as to the catalog's label, and a name
+  // two rows answer to is refused here exactly as it is refused there.
+  const found = rulesetEntryNamed(ruleset.definition, build, ruleset.catalogs, wanted);
+  if (!found.ok) return null;
+  const entry = found.entry;
+  // The entry has to say something about checks, or using it here would spend for nothing.
+  const effect = entry.mechanics?.check;
+  if (!effect) return null;
+
+  // How many times over the price was paid. One use unless the entry scales and the Game Master
+  // said more was spent, and never past the Engine's own ceiling.
+  const cost = entry.mechanics?.cost ?? [];
+  const price = cost.length === 1 ? cost[0]! : null;
+  const offered = asked && price && price.pool.trim().toLowerCase() === asked.pool.trim().toLowerCase() ? asked : null;
+  const scales = !!entry.mechanics?.perCostStep;
+  const steps =
+    scales && offered && price && price.amount > 0 && offered.amount % price.amount === 0
+      ? Math.max(1, Math.min(MAX_ENTRY_CHECK_STEPS, offered.amount / price.amount))
+      : 1;
+
+  // Paid through the same plan a `[sheet:]` `use` goes through, so an entry's counters and its
+  // pool cost come off together and a price the sheet would refuse is refused here too.
+  let live: RulesetLiveState = ruleset.live[key] ?? {};
+  let paidPool = "";
+  let paidAmount = 0;
+  for (let step = 0; step < steps; step++) {
+    const plan = planRulesetUse(ruleset.definition, build, live, ruleset.catalogs, { op: "use", name: wanted });
+    if (!plan.ok) return null;
+    for (const planned of plan.steps) {
+      const applied = applyRulesetSheetOp(ruleset.definition, build, live, planned.op);
+      // All or nothing: the first refusal takes the whole purchase with it.
+      if (!applied.ok) return null;
+      live = applied.live;
+      if ("pool" in planned.op && planned.op.op === "spend") {
+        if (!paidPool) paidPool = planned.op.pool;
+        if (planned.op.pool === paidPool) paidAmount += planned.op.amount;
+      }
+    }
+  }
+  return {
+    ...(paidPool ? { spent: { pool: paidPool, amount: paidAmount } } : {}),
+    bought: {
+      ...(effect.dice ? { dice: effect.dice * steps } : {}),
+      ...(effect.successes ? { successes: effect.successes * steps } : {}),
+      ...(effect.threshold !== undefined ? { threshold: effect.threshold } : {}),
+      ...(effect.reroll ? { reroll: effect.reroll } : {}),
+    },
+    used: entry.label,
+    key,
+    live,
+  };
+}
+
+/**
+ * What the Game Master's `spend=` actually buys on this check, and what it costs.
+ *
+ * Null whenever nothing is bought, for every reason there is: the ruleset offers no such purchase,
+ * the tag named another pool, the points are not a whole number of purchases, or the pool cannot
+ * cover it. In all of them the roll happens exactly as it would have without the tag's `spend=`,
+ * and nothing is deducted.
+ *
+ * The number of purchases is CLAMPED to the ruleset's own `perCheck` rather than refused, the way
+ * `threshold=` and `bonus=` are clamped: a player asking for more than the rules allow still gets
+ * the roll, and pays only for what they got.
+ */
+export function planRulesetCheckPurchase(
+  ruleset: SkillCheckRulesetContext,
+  asked: { pool: string; amount: number } | undefined,
+  who?: string,
+): RulesetCheckPurchase | null {
+  const offers = ruleset.definition.resolution.spend;
+  if (!asked || !offers || offers.length === 0) return null;
+  const wanted = asked.pool.trim().toLowerCase();
+  const offer = offers.find((entry) => {
+    if (entry.pool.toLowerCase() === wanted) return true;
+    const pool = ruleset.definition.sheet.live.pools.find((candidate) => candidate.id === entry.pool);
+    return pool?.label.trim().toLowerCase() === wanted;
+  });
+  if (!offer) return null;
+  // Whole purchases only. Half a point of will buys half a success in no system.
+  if (!Number.isInteger(asked.amount) || asked.amount < offer.amount || asked.amount % offer.amount !== 0) return null;
+  const times = Math.min(offer.perCheck, asked.amount / offer.amount);
+  const cost = times * offer.amount;
+
+  const key = who ? normalizeCharacterLookupName(who) : ruleset.playerKey;
+  const build = key ? ruleset.builds.get(key) : undefined;
+  // A stranger has no sheet to spend from, so there is nothing to pay with and nothing is bought.
+  if (!key || !build) return null;
+  const paid = applyRulesetSheetOp(ruleset.definition, build, ruleset.live[key], {
+    op: "spend",
+    pool: offer.pool,
+    amount: cost,
+  });
+  // `spend` refuses rather than floors when the pool is short, which is exactly the all-or-nothing
+  // this needs: the effect does not apply and nothing is deducted.
+  if (!paid.ok) return null;
+  return {
+    spent: { pool: offer.pool, amount: cost },
+    bought: {
+      ...(offer.dice ? { dice: offer.dice * times } : {}),
+      ...(offer.successes ? { successes: offer.successes * times } : {}),
+    },
+    key,
+    live: paid.live,
+  };
+}
+
+/** What the roller's wound track costs this check. Always negative or 0, and 0 for a stranger, a
+ *  ruleset that names no penalty track and anybody who is not marked. */
+export function rulesetCheckPenaltyFor(ruleset: SkillCheckRulesetContext, who?: string): number {
+  const key = who ? normalizeCharacterLookupName(who) : ruleset.playerKey;
+  return (key ? ruleset.penalties.get(key) : undefined) ?? 0;
 }
 
 /** The sheet modifier a ruleset game applies for `who` (or the player) on the named check. Under
@@ -309,6 +556,9 @@ function resolveRulesetSkillCheck(
   ruleset: SkillCheckRulesetContext,
   request: SkillCheckRequest,
   rollD20?: () => number,
+  /** Called with the live state a purchase paid out of, so the caller can write it back. Absent on
+   *  every path that does not persist, which then rolls exactly as it would have with no spend. */
+  onSpend?: (key: string, live: RulesetLiveState) => void,
 ): SkillCheckResult {
   const { definition } = ruleset;
   const resolution = definition.resolution;
@@ -324,13 +574,41 @@ function resolveRulesetSkillCheck(
     );
   }
   const modifier = rulesetCheckModifierFor(ruleset, request.skill, request.who, request.withAbility);
+  // What the roller's wounds cost this check. It is applied the way the kind understands a number:
+  // `dice-sum` adds it to the roll, `dice-pool` takes that many dice off the pool and the roller's
+  // own clamp holds it at `pool.min`. Both go through the same `modifier` input, so there is one
+  // place a wound can be forgotten rather than two.
+  const penalty = rulesetCheckPenaltyFor(ruleset, request.who);
+  // What the check buys, worked out and PAID before the dice are thrown, so a roll can never be
+  // changed by something that turned out to be unaffordable. A caller that cannot persist the cost
+  // buys nothing: the roll is then the one it would have been without the tag's `spend=`.
+  // An entry the player used outranks the ruleset's own standing spend, because it is the more
+  // specific thing the Game Master named. Only ONE of the two is ever bought on one check: two
+  // purchases out of one `spend=` would pay for it twice.
+  // And when a name WAS given, it is the only thing that can be bought. Beside a `use=`, the
+  // `spend=` is that entry's own price, which is what pays for a higher use of it; buying the
+  // ruleset's standing spend with it instead would take the points for an effect nobody asked for,
+  // on a check where the named charm did nothing.
+  const purchase = !onSpend
+    ? null
+    : request.useEntry?.trim()
+      ? planRulesetEntryCheck(ruleset, request.useEntry, request.spend, request.who)
+      : planRulesetCheckPurchase(ruleset, request.spend, request.who);
+  if (purchase) onSpend!(purchase.key, purchase.live);
   // What the record may say about `with=`: the ability's own label, and only when the swap
   // happened. An ability check has no other ability to swap in, and an unknown name was ignored.
   const swapped =
     target && target.type !== "ability" && target.withAbility
       ? definition.sheet.abilities.find((ability) => ability.id === target.withAbility)?.label
       : undefined;
-  const applied = swapped ? { withAbility: swapped } : {};
+  const applied = {
+    ...(swapped ? { withAbility: swapped } : {}),
+    // Said even on a summed check, where it is also inside `modifier`: "-2 because you are Wounded"
+    // is not something a player can read out of one number.
+    ...(penalty !== 0 ? { penalty } : {}),
+    ...(purchase?.spent ? { spent: purchase.spent } : {}),
+    ...(purchase?.used ? { used: purchase.used } : {}),
+  };
   // The injected d20 (tests, the sighted pool) stands in only where a d20 is what is rolled.
   const rollDie = (sides: number) => (sides === 20 && rollD20 ? rollD20() : rollDieSecurely(sides));
   const isSave = target?.type === "save";
@@ -343,7 +621,16 @@ function resolveRulesetSkillCheck(
     const dc = Math.min(rulesetPoolMaxSuccesses(resolution), Math.max(1, Math.round(request.dc)));
     const rolled = rollDicePoolCheck(
       definition,
-      { modifier, required: dc, isSave, threshold: request.threshold, bonusDice: request.bonusDice },
+      {
+        // Dice off the pool. The roller clamps into `pool`, so a large penalty stops at `pool.min`
+        // rather than at no dice at all, which is the ruleset's own floor for an empty pool.
+        modifier: modifier + penalty,
+        required: dc,
+        isSave,
+        threshold: request.threshold,
+        bonusDice: request.bonusDice,
+        ...(purchase ? { bought: purchase.bought } : {}),
+      },
       rollDie,
     );
     return {
@@ -355,16 +642,21 @@ function resolveRulesetSkillCheck(
       ...rolled,
       // The roller reports 0 where nothing was added; a record says nothing about that.
       bonusDice: rolled.bonusDice || undefined,
+      autoSuccesses: rolled.autoSuccesses || undefined,
+      rerolled: rolled.rerolled || undefined,
       ...applied,
       ...(request.who ? { who: request.who } : {}),
     };
   }
 
   const { sides, count } = resolution.dice;
+  // A flat modifier on the roll, which is what a penalty IS in a summed system, so it belongs in
+  // the number the record adds up rather than beside it.
+  const summed = modifier + penalty;
   const rolled = rollDiceSumCheck(
     definition,
     {
-      modifier,
+      modifier: summed,
       dc: request.dc,
       isSave,
       advantage: request.advantage,
@@ -376,7 +668,7 @@ function resolveRulesetSkillCheck(
   return {
     skill: request.skill,
     dc: request.dc,
-    modifier,
+    modifier: summed,
     resolution: "sum",
     ...rolled,
     ...applied,
@@ -428,7 +720,12 @@ function rulesetVouchesFor(ruleset: SkillCheckRulesetContext, tag: SkillCheckTag
         ? Math.max(first, sum(result.rolls.slice(count)))
         : Math.min(first, sum(result.rolls.slice(count)));
   if (result.usedRoll !== kept) return false;
-  if (result.modifier !== rulesetCheckModifierFor(ruleset, tag.skill, tag.who, tag.withAbility)) return false;
+  // The sheet's own number PLUS what the roller's wounds take off it, because that is the one
+  // number a summed check adds to the dice. A GM that wrote the unwounded modifier has not rolled
+  // this character's check.
+  const expected =
+    rulesetCheckModifierFor(ruleset, tag.skill, tag.who, tag.withAbility) + rulesetCheckPenaltyFor(ruleset, tag.who);
+  if (result.modifier !== expected) return false;
   if (result.usedRoll + result.modifier !== result.total) return false;
   const target = matchRulesetCheckTarget(ruleset.definition, tag.skill);
   const policy = target?.type === "save" ? resolution.naturals.save : resolution.naturals.check;
@@ -444,8 +741,9 @@ export function resolveSkillCheckWithContext(
   context: SkillCheckModifierContext,
   request: SkillCheckRequest,
   rollD20?: () => number,
+  onSpend?: (key: string, live: RulesetLiveState) => void,
 ): SkillCheckResult {
-  if (context.ruleset) return resolveRulesetSkillCheck(context.ruleset, request, rollD20);
+  if (context.ruleset) return resolveRulesetSkillCheck(context.ruleset, request, rollD20, onSpend);
   const skills = context.skills;
   const rawSkillMod = skills ? (skills[request.skill] ?? skills[request.skill.toLowerCase()]) : undefined;
   const skillMod = Number.isFinite(Number(rawSkillMod)) ? Number(rawSkillMod) : 0;
@@ -526,6 +824,16 @@ export interface SkillCheckTagResolutionOptions {
    * passes nothing and behaves byte for byte as it does today.
    */
   pool?: GameDicePoolSession;
+  /**
+   * The ruleset's catalog entries, fetched lazily and ONLY when a check in this reply names one
+   * with `use=`.
+   *
+   * It is separate from `loadContext` because reading a catalog is file work, and the overwhelming
+   * majority of turns never need it. A caller that supplies none, or one whose fetch fails, leaves
+   * the context's catalogs empty, which reads as the character not having the entry: the Engine
+   * cannot know what a charm costs and will not guess, so the roll is the one it would have been.
+   */
+  loadCatalogs?: () => Promise<RulesetCatalogEntriesById>;
 }
 
 export interface SkillCheckTagResolution {
@@ -551,6 +859,15 @@ export interface SkillCheckTagResolution {
    * non-zero only on the failure path.
    */
   sparse: number;
+  /**
+   * The live sheet state after every purchase this pass paid for, when any did.
+   *
+   * Absent when nothing was bought, which is every game that does not use `spend=`. The caller
+   * hands it to the sheet-command pass as the state THAT turn starts from, so one turn's dice and
+   * its bookkeeping are applied in the order they happened: the points are gone before the
+   * narration's own `[sheet: ...]` commands run.
+   */
+  live?: RulesetLiveStates;
 }
 
 /**
@@ -603,6 +920,16 @@ export async function resolveSkillCheckTagsInContent(
   }> = [];
   /** Ruleset games only: tags whose fate depends on the ruleset, decided once it is loaded. */
   const deferred: Array<{ start: number; end: number; tag: SkillCheckTag }> = [];
+  /** Live state after the purchases this pass paid for. Built up across the checks in one turn, so
+   *  two checks that both spend from one pool cannot both see the value the turn started with. */
+  let spentLive: RulesetLiveStates | null = null;
+  /** The context's own live map moves with it, so a second check in the same turn spends from what
+   *  the first one left rather than from the value the turn started with. */
+  let spendContext: SkillCheckRulesetContext | null = null;
+  const onSpend = (key: string, live: RulesetLiveState) => {
+    spentLive = { ...(spentLive ?? {}), [key]: live };
+    if (spendContext) spendContext.live = { ...spendContext.live, [key]: live };
+  };
   /** Set once a ruleset context is in hand, so every rewrite keeps the `who=` it rolled for. */
   // Starts from the hint, so a context that fails to load on ANY path (the pool's included) still
   // saves the sparse ask with the name it was for, instead of handing the check to the player.
@@ -633,6 +960,8 @@ export async function resolveSkillCheckTagsInContent(
     withAbility: tag.withAbility,
     threshold: tag.threshold,
     bonusDice: tag.bonusDice,
+    ...(tag.spend ? { spend: tag.spend } : {}),
+    ...(tag.useEntry ? { useEntry: tag.useEntry } : {}),
   });
   /** Pool checks the resolver could not roll, written back without the numbers they claimed. */
   const stripped: Array<{ start: number; end: number; replacement: string }> = [];
@@ -753,6 +1082,15 @@ export async function resolveSkillCheckTagsInContent(
         keepWho = true;
         throw err;
       }
+      // A check that names an entry needs the ruleset's catalogs, and nothing else on this path
+      // does, so they are fetched here and only here. A failure costs the effect, never the turn.
+      if (loadedContext.ruleset && options.loadCatalogs && deferred.some((entry) => entry.tag.useEntry)) {
+        try {
+          loadedContext.ruleset.catalogs = await options.loadCatalogs();
+        } catch (err) {
+          logger.warn(err, "[game/skill-check] Could not read the catalogs for chat %s", options.chatId ?? "unknown");
+        }
+      }
       const ruleset = loadedContext.ruleset;
       keepWho = !!ruleset;
       for (const entry of deferred) {
@@ -796,6 +1134,7 @@ export async function resolveSkillCheckTagsInContent(
 
     const context = loadedContext ?? (await options.loadContext());
     keepWho = !!context.ruleset;
+    spendContext = context.ruleset ?? null;
     const results: SkillCheckResult[] = [];
     // The pool holds d20s. A ruleset that rolls anything else gets an ordinary Engine roll for its
     // checks, so a pool value is never spent on, or recorded against, a roll it did not decide.
@@ -841,7 +1180,7 @@ export async function resolveSkillCheckTagsInContent(
           askExtras(entry.tag),
         );
       }
-      const result = resolveSkillCheckWithContext(context, entry.request, options.rollD20);
+      const result = resolveSkillCheckWithContext(context, entry.request, options.rollD20, onSpend);
       results.push(result);
       // The result carries what the roll applied (who, the other ability, the dice added), so a
       // saved turn says exactly that. None of it is set outside a ruleset game, byte for byte.
@@ -854,6 +1193,7 @@ export async function resolveSkillCheckTagsInContent(
       trusted,
       left: left + overflowed,
       sparse: overflowed + stripped.length,
+      ...(spentLive ? { live: spentLive } : {}),
     };
   } catch (err) {
     // The log itself must not be a second way to fail: a rejected value with a

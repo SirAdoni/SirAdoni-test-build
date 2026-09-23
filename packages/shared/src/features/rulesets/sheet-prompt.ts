@@ -8,8 +8,15 @@
 // Every value that comes off the sheet is user-authored text on its way into a prompt, so it is
 // flattened to one line, stripped of the characters that shape a tag or a macro, and capped.
 
-import type { RulesetDefinition, RulesetField, RulesetSheetBuild } from "../../schemas/ruleset.schema.js";
+import {
+  RULESET_CATALOG_ROW_KEY,
+  type RulesetCatalogEntriesById,
+  type RulesetDefinition,
+  type RulesetField,
+  type RulesetSheetBuild,
+} from "../../schemas/ruleset.schema.js";
 import { readRulesetLive } from "./live-state.js";
+import { rulesetCatalogEntriesByRef } from "./scaled-rows.js";
 import { evaluateRulesetSheet, formatRulesetCheckValue, isRulesetItemHidden } from "./sheet-math.js";
 
 /** How much of one sheet value reaches the prompt. */
@@ -56,11 +63,13 @@ export function renderRulesetSheetBlock(
   definition: RulesetDefinition,
   card: { name: string; build: RulesetSheetBuild },
   stored: unknown,
+  catalogs: RulesetCatalogEntriesById = {},
 ): string {
   const { sheet, gm } = definition;
   const build = card.build;
   const evaluated = evaluateRulesetSheet(definition, build);
   const live = readRulesetLive(definition, build, stored);
+  const catalogEntries = rulesetCatalogEntriesByRef(catalogs);
   const lines: string[] = [];
   const push = (line: string) => {
     if (line) lines.push(line);
@@ -111,14 +120,26 @@ export function renderRulesetSheetBlock(
       .join(", "),
   );
 
-  // A track at its default says nothing: three death saves at zero are the absence of a fact.
-  const trackValues = new Map(live.tracks.map((track) => [track.id, track.value]));
+  // A track at its default says nothing: three death saves at zero are the absence of a fact. A
+  // marked WOUND track says how far down it is, what that level is called and what it costs a roll,
+  // because those three are exactly what the Game Master has to narrate honestly.
+  const resolvedTracks = new Map(live.tracks.map((track) => [track.id, track]));
   push(
     sheet.live.tracks
       .flatMap((track) => {
-        const value = trackValues.get(track.id);
+        const resolved = resolvedTracks.get(track.id);
+        if (!resolved) return [];
+        if (resolved.wound) {
+          if (resolved.value === 0 && resolved.wound.overflow === 0) return [];
+          const level = resolved.wound.levels[resolved.value - 1]?.label;
+          const over = resolved.wound.overflow > 0 ? ` +${resolved.wound.overflow} over` : "";
+          const penalty = resolved.wound.penalty !== 0 ? ` ${resolved.wound.penalty} to rolls` : "";
+          return [
+            `${track.label} ${resolved.value}/${resolved.max}${level ? ` ${safeValue(level)}` : ""}${penalty}${over}`,
+          ];
+        }
         const fallback = Math.min(Math.max(track.default ?? track.min, track.min), track.max);
-        return value === undefined || value === fallback ? [] : [`${track.label} ${value}`];
+        return resolved.value === fallback ? [] : [`${track.label} ${resolved.value}`];
       })
       .join(", "),
   );
@@ -148,10 +169,21 @@ export function renderRulesetSheetBlock(
       }
       const name = cellText(own(row as Record<string, unknown>, entry.nameColumn));
       if (!name) continue;
+      const ref = own(row as Record<string, unknown>, RULESET_CATALOG_ROW_KEY);
+      const mechanics = typeof ref === "string" ? catalogEntries.get(ref)?.mechanics : undefined;
+      const cost = mechanics?.cost?.map((term) => `${term.amount} ${safeValue(term.pool)}`).join(" + ");
+      const scaledCost = mechanics?.perCostStep && mechanics.cost?.length === 1 ? mechanics.cost[0] : undefined;
+      const scale = scaledCost
+        ? `; stronger use: spend="${safeValue(scaledCost.pool)}:N", where N is a positive multiple of ${scaledCost.amount}`
+        : "";
+      const check = mechanics?.check
+        ? ` (check: ${JSON.stringify(mechanics.check)}${cost ? `; pool cost: ${cost}` : ""}${scale})`
+        : "";
+      const describedName = name + check;
       const group = entry.groupBy === undefined ? "" : cellText(own(row as Record<string, unknown>, entry.groupBy));
       const bucket = groups.get(group);
-      if (bucket) bucket.push(name);
-      else groups.set(group, [name]);
+      if (bucket) bucket.push(describedName);
+      else groups.set(group, [describedName]);
       named += 1;
     }
     if (groups.size === 0) continue;

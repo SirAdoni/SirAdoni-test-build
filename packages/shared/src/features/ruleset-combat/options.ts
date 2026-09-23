@@ -9,9 +9,10 @@ import {
   type RulesetLiveState,
   type RulesetSheetOp,
 } from "../rulesets/live-state.js";
-import { rulesetAverageAmount } from "./dice.js";
+import { rulesetAverageDamage } from "./dice.js";
 import {
   currentRulesetActor,
+  rulesetActiveConditions,
   rulesetCombatant,
   rulesetCombatConditions,
   rulesetCombatEffects,
@@ -22,6 +23,7 @@ import {
   rulesetCellCover,
   rulesetCellDistance,
   rulesetLineOfSight,
+  rulesetOpportunityAttack,
   rulesetPositionOf,
   rulesetReachableCells,
 } from "./grid.js";
@@ -37,6 +39,97 @@ import type {
 /** The budget a standard action spends: the first one the economy declares, which is the main one. */
 export function rulesetStandardBudget(combat: RulesetCombat): string {
   return combat.economy.budgets[0]!.id;
+}
+
+/** The standard action one option id names. An ability that lets its holder buy one with another
+ *  budget writes that budget after an `@`, which no standard action's own name may hold. */
+export function rulesetStandardName(optionId: string): string {
+  const name = optionId.startsWith("standard:") ? optionId.slice("standard:".length) : optionId;
+  const at = name.indexOf("@");
+  return at < 0 ? name : name.slice(0, at);
+}
+
+/** Whether this action would be taken out of strikes already in hand rather than out of a budget. */
+export function rulesetFreeStrike(actor: RulesetCombatant, action: RulesetCombatAction): boolean {
+  return action.strikes !== undefined && (actor.strikesLeft ?? 0) > 0;
+}
+
+/** Whether taking this action itself would do anything at all. An entry that only says which
+ *  standard actions its holder may buy with another budget is a PERMISSION, not something to take:
+ *  what it grants is on the menu as `standard:<id>@<budget>`, and the entry itself is not. */
+function actionDoesSomething(action: RulesetCombatAction): boolean {
+  if (!action.standard) return true;
+  return !!(
+    action.damage ||
+    action.heal ||
+    action.temporary ||
+    action.applies?.length ||
+    action.gives ||
+    action.sequence ||
+    action.concentration
+  );
+}
+
+/**
+ * The standard actions an ability lets its holder buy with a budget other than the main one, priced
+ * by the ability that grants them. The granting ability's own price is paid when one is taken, so a
+ * grant nobody can pay for is not offered at all.
+ */
+function grantedStandardOptions(
+  definition: RulesetDefinition,
+  combat: RulesetCombat,
+  actor: RulesetCombatant,
+): RulesetCombatOption[] {
+  const declared = new Set<string>(combat.standard ?? []);
+  const options: RulesetCombatOption[] = [];
+  const seen = new Set<string>();
+  for (const action of actor.actions) {
+    const granted = action.standard;
+    if (!granted || (actor.budgets[granted.budget] ?? 0) < 1) continue;
+    if (!rulesetActionAvailable(actor, action)) continue;
+    const paid = planRulesetCombatCost(definition, actor, action);
+    if (!paid) continue;
+    for (const name of granted.actions) {
+      if (!declared.has(name)) continue;
+      const id = `standard:${name}@${granted.budget}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      options.push({
+        id,
+        kind: "standard",
+        label: name,
+        budget: granted.budget,
+        targets: name === "help" ? { side: "ally", count: 1 } : { side: "self", count: 0 },
+        ...(paid.cost.length > 0 ? { cost: paid.cost } : {}),
+      });
+    }
+  }
+  return options;
+}
+
+/** The ability behind a `standard:<id>@<budget>` option, when one of the actor's own granted it.
+ *  Null for an ordinary standard action, which no ability had to allow. */
+export function rulesetGrantedStandard(
+  definition: RulesetDefinition,
+  actor: RulesetCombatant,
+  optionId: string,
+): { action: RulesetCombatAction; name: string; budget: string } | null {
+  if (!optionId.startsWith("standard:")) return null;
+  const at = optionId.indexOf("@");
+  if (at < 0) return null;
+  const name = optionId.slice("standard:".length, at);
+  const budget = optionId.slice(at + 1);
+  // The SAME ability the menu offered it under: one that has run out of uses, is waiting on its
+  // dice, or cannot pay its own price is not on the menu, so it must not be what resolution picks
+  // either, or a character with two permissions could take one through the other's exhausted half.
+  const action = actor.actions.find(
+    (entry) =>
+      entry.standard?.budget === budget &&
+      entry.standard.actions.includes(name) &&
+      rulesetActionAvailable(actor, entry) &&
+      !!planRulesetCombatCost(definition, actor, entry),
+  );
+  return action ? { action, name, budget } : null;
 }
 
 /** The one thing a fight with no board answers about distance: nothing at all. */
@@ -385,8 +478,31 @@ export function rulesetHitChance(
 // ── The menu ──
 
 /** Whether the actor's own conditions stop them doing anything at all. */
-function blocked(definition: RulesetDefinition, combat: RulesetCombat, actor: RulesetCombatant): boolean {
-  return rulesetCombatEffects(definition, combat, actor).has("cannot-act");
+function blocked(
+  definition: RulesetDefinition,
+  combat: RulesetCombat,
+  state: RulesetEncounterState,
+  actor: RulesetCombatant,
+): boolean {
+  return rulesetCombatEffects(definition, combat, actor, state).has("cannot-act");
+}
+
+/** Whoever this combatant may not point anything at: the source of a condition on them that says
+ *  so. A charm keeps a character from turning on whoever charmed them, in the ruleset's own words. */
+export function rulesetForbiddenTargets(
+  definition: RulesetDefinition,
+  state: RulesetEncounterState,
+  actor: RulesetCombatant,
+): Set<string> {
+  const combat = definition.combat;
+  const forbidden = new Set<string>();
+  if (!combat) return forbidden;
+  for (const entry of rulesetActiveConditions(definition, combat, actor, state)) {
+    if (!entry.effects.includes("cannot-target-source")) continue;
+    const source = actor.tracked.find((tracked) => tracked.condition === entry.condition)?.source;
+    if (source) forbidden.add(source);
+  }
+  return forbidden;
 }
 
 /**
@@ -399,6 +515,7 @@ function blocked(definition: RulesetDefinition, combat: RulesetCombat, actor: Ru
  * the fight is over for is off the table.
  */
 export function rulesetOptionTargets(
+  definition: RulesetDefinition,
   state: RulesetEncounterState,
   actorId: string,
   option: { id: string; targets: RulesetCombatAction["targets"] },
@@ -408,12 +525,17 @@ export function rulesetOptionTargets(
   // An area is aimed at a CELL, so nobody is named: which combatants it catches follows from where
   // it lands, and `rulesetAreaTargets` is the one place that answers it.
   if (positioned(state) && actionOf(actor, option.id)?.area) return [];
+  const forbidden = rulesetForbiddenTargets(definition, state, actor);
   return (
     state.combatants
       .filter((combatant) => {
         if (combatant.defeated) return false;
+        // Whoever put a condition on this actor that says they may not be pointed at.
+        if (forbidden.has(combatant.id)) return false;
         // Helping yourself is not help.
-        if (option.id === "standard:help" && combatant.id === actor.id) return false;
+        // Read the NAME rather than the id: the same standard action is also offered bought with
+        // another budget, as `standard:help@bonus`, and nobody helps themselves whichever they took.
+        if (rulesetStandardName(option.id) === "help" && combatant.id === actor.id) return false;
         if (option.targets.side === "self") return combatant.id === actor.id;
         if (option.targets.side === "ally") return combatant.side === actor.side;
         if (option.targets.side === "enemy") return combatant.side !== actor.side;
@@ -425,8 +547,13 @@ export function rulesetOptionTargets(
   );
 }
 
-function firstTarget(state: RulesetEncounterState, actor: RulesetCombatant, action: RulesetCombatAction) {
-  const id = rulesetOptionTargets(state, actor.id, { id: action.id, targets: action.targets })[0];
+function firstTarget(
+  definition: RulesetDefinition,
+  state: RulesetEncounterState,
+  actor: RulesetCombatant,
+  action: RulesetCombatAction,
+) {
+  const id = rulesetOptionTargets(definition, state, actor.id, { id: action.id, targets: action.targets })[0];
   return id === undefined ? undefined : rulesetCombatant(state, id);
 }
 
@@ -497,12 +624,12 @@ function forecastFor(
         strikes = 1;
         spent.add(part.id);
       }
-      return sum + (part.damage ? strikes * rulesetAverageAmount(part.damage) : 0);
+      return sum + (part.damage ? strikes * rulesetAverageDamage(part.damage) : 0);
     }, 0);
     if (total > 0) forecast.averageDamage = Math.round(total * 100) / 100;
     return forecast.averageDamage === undefined ? undefined : forecast;
   }
-  const target = firstTarget(state, actor, action) ?? firstAreaTarget(state, actor, action);
+  const target = firstTarget(definition, state, actor, action) ?? firstAreaTarget(state, actor, action);
   if (action.toHit !== undefined && target) {
     // The same number the roll will be made against: the target's own defense plus whatever the
     // ground they stand on is worth, and the same roll mode the distance between them asks for.
@@ -514,8 +641,10 @@ function forecastFor(
     );
     if (chance !== null) forecast.hitChance = Math.round(chance * 1000) / 1000;
   }
+  // The whole blow, clauses and all. A clause with a save of its own is counted in full: a forecast
+  // says what a blow would do, not what a die nobody has thrown might take off it.
   const amount = action.damage ?? action.heal;
-  if (amount) forecast.averageDamage = Math.round(rulesetAverageAmount(amount) * 100) / 100;
+  if (amount) forecast.averageDamage = Math.round(rulesetAverageDamage(amount) * 100) / 100;
   return forecast.hitChance !== undefined || forecast.averageDamage !== undefined ? forecast : undefined;
 }
 
@@ -531,7 +660,11 @@ function optionFrom(
   if (action.signature) return null;
   // A sequence whose parts are all gone, or all spent, would spend a budget and do nothing.
   if (!rulesetSequenceCanHappen(actor, action)) return null;
-  if ((actor.budgets[action.budget] ?? 0) < 1) return null;
+  if (!actionDoesSomething(action)) return null;
+  // Free of the economy, or paid for out of strikes a spend already bought. Either way no budget is
+  // asked for, and the option says so by carrying none.
+  const free = action.free === true || rulesetFreeStrike(actor, action);
+  if (!free && (actor.budgets[action.budget] ?? 0) < 1) return null;
   if (!rulesetActionAvailable(actor, action)) return null;
   const paid = planRulesetCombatCost(definition, actor, action);
   if (!paid) return null;
@@ -539,8 +672,9 @@ function optionFrom(
     id: action.id,
     kind: action.kind,
     label: action.label,
-    budget: action.budget,
+    ...(free ? {} : { budget: action.budget }),
     targets: action.targets,
+    ...(rulesetFreeStrike(actor, action) ? { strikes: actor.strikesLeft } : {}),
     ...(action.heal ? { heals: true } : {}),
   };
   if (paid.cost.length > 0) option.cost = paid.cost;
@@ -579,8 +713,8 @@ export function rulesetAttackMode(
   where?: { state: RulesetEncounterState; optionId: string },
 ): RulesetCombatRollMode {
   if (!combat.attackRoll.advantage) return "normal";
-  const own = rulesetCombatEffects(definition, combat, actor);
-  const theirs = rulesetCombatEffects(definition, combat, target);
+  const own = rulesetCombatEffects(definition, combat, actor, where?.state);
+  const theirs = rulesetCombatEffects(definition, combat, target, where?.state);
   const distance = where ? distanceModes(combat, where.state, where.optionId, actor, target, theirs) : null;
   const advantage =
     own.has("own-attacks-advantage") ||
@@ -645,7 +779,7 @@ export function rulesetCriticalFromAdjacent(
   const from = rulesetPositionOf(actor);
   const to = rulesetPositionOf(target);
   if (!positioned(state) || !from || !to || rulesetCellDistance(from, to) > 1) return false;
-  return rulesetCombatEffects(definition, combat, target).has("attacks-from-adjacent-critical");
+  return rulesetCombatEffects(definition, combat, target, state).has("attacks-from-adjacent-critical");
 }
 
 /** What getting back up costs, in cells: half the whole allowance, rounded up, so half of one is
@@ -682,7 +816,7 @@ function movementOptions(
   if (!positioned(state) || !rulesetPositionOf(actor)) return [];
   // A condition that pins somebody takes their movement away the moment it lands, not at the start
   // of their next turn.
-  if (rulesetCombatEffects(definition, combat, actor).has("speed-zero")) return [];
+  if (rulesetCombatEffects(definition, combat, actor, state).has("speed-zero")) return [];
   const left = Math.max(0, Math.floor(actor.movementLeft ?? 0));
   const prone = rulesetProneCondition(definition, combat, actor);
   if (prone) {
@@ -723,7 +857,7 @@ export function rulesetCombatOptions(
     label: "End turn",
     targets: { side: "self", count: 0 },
   };
-  if (!rulesetCombatStanding(actor) || blocked(definition, combat, actor)) return [endTurn];
+  if (!rulesetCombatStanding(actor) || blocked(definition, combat, state, actor)) return [endTurn];
 
   const options: RulesetCombatOption[] = [];
   options.push(...movementOptions(definition, combat, state, actor));
@@ -743,6 +877,7 @@ export function rulesetCombatOptions(
       targets: action === "help" ? { side: "ally", count: 1 } : { side: "self", count: 0 },
     });
   }
+  options.push(...grantedStandardOptions(definition, combat, actor));
   options.push(endTurn);
   return options;
 }
@@ -766,7 +901,7 @@ export function rulesetSignatureOptions(
   const points = actor?.signature?.points;
   if (!combat || !actor || points === undefined) return [];
   if (currentRulesetActor(state)?.id === actorId) return [];
-  if (!rulesetCombatStanding(actor) || blocked(definition, combat, actor)) return [];
+  if (!rulesetCombatStanding(actor) || blocked(definition, combat, state, actor)) return [];
   const options: RulesetCombatOption[] = [];
   for (const action of actor.actions) {
     if (!action.signature || action.signature.cost > points) continue;
@@ -785,4 +920,52 @@ export function rulesetSignatureOptions(
     options.push(option);
   }
   return options;
+}
+
+/** Letting a window go by. Not an action and not on any turn's menu: the one id a window always
+ *  takes, so passing is a choice the fight records rather than a timeout. */
+export const RULESET_PASS_OPTION = "pass";
+
+/**
+ * The menu of the one combatant a window is asking. Everybody else gets nothing, because a window
+ * asks one at a time: the answer spends a budget or points, and two answers at once would spend
+ * them against a fight that had already moved.
+ *
+ * Passing is always legal and is not listed here: it is `RULESET_PASS_OPTION`, which needs no
+ * legality of its own.
+ */
+export function rulesetWindowOptions(
+  definition: RulesetDefinition,
+  state: RulesetEncounterState,
+  actorId: string,
+): RulesetCombatOption[] {
+  const combat = definition.combat;
+  const window = state.window;
+  if (!combat || !window || window.waiting[0] !== actorId) return [];
+  // Points, not a budget, and priced and checked where every other signature option is.
+  if (window.kind === "signature") return rulesetSignatureOptions(definition, state, actorId);
+
+  const actor = rulesetCombatant(state, actorId);
+  const opportunity = combat.opportunity;
+  if (!actor || !opportunity || !rulesetCombatStanding(actor)) return [];
+  // Re-read rather than trusted from when the window opened: an answer before this one may have
+  // taken this combatant out, held them still or spent the very budget this would pay with.
+  const effects = rulesetCombatEffects(definition, combat, actor, state);
+  if (effects.has("cannot-act") || effects.has("cannot-react")) return [];
+  if ((actor.budgets[opportunity.budget] ?? 0) < 1) return [];
+  const mover = window.trigger.kind === "leaves-reach" ? rulesetCombatant(state, window.trigger.moverId) : undefined;
+  if (!mover || !rulesetCombatStanding(mover)) return [];
+  const strike = rulesetOpportunityAttack(actor);
+  if (!strike) return [];
+  return [
+    {
+      id: strike.id,
+      kind: strike.kind,
+      label: strike.label,
+      // Nobody to pick: the strike lands on whoever is walking away, and offering a target would be
+      // offering a choice the fight then ignores.
+      targets: { side: "self", count: 0 },
+      budget: opportunity.budget,
+    },
+  ];
 }

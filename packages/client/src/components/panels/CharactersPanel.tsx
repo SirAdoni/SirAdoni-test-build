@@ -59,6 +59,7 @@ import {
   parseCardLibrarySearchQuery,
 } from "../../lib/card-library-search";
 import { useUIStore, type CharacterLibrarySort } from "../../stores/ui.store";
+import { sortPanelFolders } from "../../lib/panel-sort";
 import { useTouchFolderDrag } from "../../hooks/use-touch-folder-drag";
 import { normalizeAvatarCrop } from "@marinara-engine/shared";
 import type { CharacterCatalogEntry } from "@marinara-engine/shared";
@@ -530,6 +531,22 @@ export function CharactersPanel() {
       );
   }, [groups]);
 
+  const sortedGroups = useMemo(() => {
+    const folders = sortPanelFolders(parsedGroups, sort === "favorites" ? "name-asc" : sort);
+    if (sort !== "favorites") return folders;
+    const favorites = new Set(
+      sortedCharacters.filter((character) => character.parsed.extensions?.fav).map((character) => character.id),
+    );
+    return folders.sort(
+      (a, b) =>
+        Number(b.memberIds.some((id) => favorites.has(id))) - Number(a.memberIds.some((id) => favorites.has(id))),
+    );
+  }, [parsedGroups, sort, sortedCharacters]);
+
+  const characterOrder = useMemo(
+    () => new Map(sortedCharacters.map((character, index) => [character.id, index])),
+    [sortedCharacters],
+  );
   const visibleCharacterById = useMemo(
     () => new Map(sortedCharacters.map((character) => [character.id, character])),
     [sortedCharacters],
@@ -545,13 +562,17 @@ export function CharactersPanel() {
   const folderFilterActive = category !== "all" || userFolderFilterActive;
   const folderNodes = useMemo<LibraryFolderNode[]>(
     () =>
-      parsedGroups.map((group) => ({
+      sortedGroups.map((group) => ({
         id: group.id,
         name: group.name,
         parentId: group.parentId ?? null,
-        itemIds: group.memberIds,
+        // Members follow the panel's sort; ids not in the current list keep their stored order at the end.
+        itemIds: [...group.memberIds].sort(
+          (a, b) =>
+            (characterOrder.get(a) ?? sortedCharacters.length) - (characterOrder.get(b) ?? sortedCharacters.length),
+        ),
       })),
-    [parsedGroups],
+    [sortedGroups, characterOrder, sortedCharacters.length],
   );
   const isFolderMemberShown = useCallback(
     (id: string) => (folderFilterActive ? visibleCharacterById.has(id) : charMap.has(id)),
@@ -777,7 +798,7 @@ export function CharactersPanel() {
     }
   }, []);
 
-  const { startTouchDrag: startCharacterTouchDrag } = useTouchFolderDrag({
+  const { startTouchDrag: startCharacterTouchDrag, startMouseDrag: startCharacterMouseDrag } = useTouchFolderDrag({
     onActivate: (characterId) => {
       suppressCharacterClickRef.current = true;
       setDraggedCharacterId(characterId);
@@ -915,6 +936,22 @@ export function CharactersPanel() {
       <div
         key={memberId}
         data-touch-drag-card="character"
+        onMouseDown={(event) => {
+          const ids = getDraggedCharacterIds(memberId);
+          startCharacterMouseDrag(event, memberId, {
+            chatResourcePayload: {
+              version: 1,
+              kind: "character",
+              ids,
+              label:
+                ids.length === 1
+                  ? memberName
+                  : localizeUi("ui.chat.chatresourcedropoverlay.characterCount", {
+                      count: ids.length,
+                    }),
+            },
+          });
+        }}
         onClick={() => {
           if (suppressCharacterClickRef.current) return;
           if (selectionMode) {
@@ -1228,6 +1265,22 @@ export function CharactersPanel() {
         key={section?.rowKey ?? char.id}
         data-character-id={char.id}
         data-touch-drag-card="character"
+        onMouseDown={(event) => {
+          const ids = getDraggedCharacterIds(char.id);
+          startCharacterMouseDrag(event, char.id, {
+            chatResourcePayload: {
+              version: 1,
+              kind: "character",
+              ids,
+              label:
+                ids.length === 1
+                  ? charName
+                  : localizeUi("ui.chat.chatresourcedropoverlay.characterCount", {
+                      count: ids.length,
+                    }),
+            },
+          });
+        }}
         onClick={() => {
           if (suppressCharacterClickRef.current) return;
           if (selectionMode) {

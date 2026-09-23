@@ -523,6 +523,17 @@ function entriesCarryCombatMechanics(entries: unknown): boolean {
   });
 }
 
+/** What a picked entry does to a CHECK rather than to a fight, which is `mechanics.check` and is
+ *  new in 1.30. Read the same structural way, for the same reason: an Engine that does not know the
+ *  key refuses the whole file that holds it, inline or in a catalog asset. */
+function entriesCarryCheckEffects(entries: unknown): boolean {
+  if (!Array.isArray(entries)) return false;
+  return entries.some((entry) => {
+    const mechanics = entry && typeof entry === "object" ? (entry as { mechanics?: unknown }).mechanics : undefined;
+    return !!mechanics && typeof mechanics === "object" && (mechanics as Record<string, unknown>).check !== undefined;
+  });
+}
+
 /** An opponent in place of rows: another new key in the same strict file, read structurally for the
  *  same reason the two above are. */
 function entriesCarryCreatures(entries: unknown): boolean {
@@ -530,6 +541,58 @@ function entriesCarryCreatures(entries: unknown): boolean {
   return entries.some(
     (entry) => !!entry && typeof entry === "object" && (entry as { creature?: unknown }).creature !== undefined,
   );
+}
+
+/** The `mechanics` keys that say what one turn can do, which are new keys in the same strict file.
+ *  Read structurally, for the same reason the ones above are. */
+const TURN_ECONOMY_MECHANICS_KEYS = ["plus", "free", "gives", "standard", "rider"] as const;
+
+/** The condition effects an Engine before 1.29 knew. Written out rather than read off the shared
+ *  enum, because the question this asks is what an OLDER Engine would refuse, which is a fixed list
+ *  and not whatever this build happens to implement. */
+const OLD_CONDITION_EFFECTS: ReadonlySet<string> = new Set([
+  "own-attacks-advantage",
+  "own-attacks-disadvantage",
+  "attacks-against-advantage",
+  "attacks-against-disadvantage",
+  "attacks-against-adjacent-advantage",
+  "attacks-against-far-disadvantage",
+  "attacks-from-adjacent-critical",
+  "cannot-act",
+  "cannot-react",
+  "speed-zero",
+  "half-move-to-stand",
+  "ends-on-damage",
+]);
+
+function entriesCarryTurnEconomy(entries: unknown): boolean {
+  if (!Array.isArray(entries)) return false;
+  return entries.some((entry) => {
+    const mechanics = entry && typeof entry === "object" ? (entry as { mechanics?: unknown }).mechanics : undefined;
+    if (!mechanics || typeof mechanics !== "object") return false;
+    const record = mechanics as Record<string, unknown>;
+    // The kind counts too: `rider` is a new value for an old key, and an Engine that knows only the
+    // five it had refuses the file whichever way round it is written.
+    if (record.kind === "rider") return true;
+    return TURN_ECONOMY_MECHANICS_KEYS.some((key) => record[key] !== undefined);
+  });
+}
+
+/** A creature whose blow carries a second clause, or that carries riders of its own: new keys in
+ *  the same strict file again, read the same way. */
+function entriesCarryCreatureEconomy(entries: unknown): boolean {
+  if (!Array.isArray(entries)) return false;
+  return entries.some((entry) => {
+    const creature = entry && typeof entry === "object" ? (entry as { creature?: unknown }).creature : undefined;
+    if (!creature || typeof creature !== "object") return false;
+    const record = creature as { actions?: unknown; riders?: unknown };
+    if (record.riders !== undefined) return true;
+    if (!Array.isArray(record.actions)) return false;
+    return record.actions.some((action) => {
+      const damage = action && typeof action === "object" ? (action as { damage?: unknown }).damage : undefined;
+      return !!damage && typeof damage === "object" && (damage as { plus?: unknown }).plus !== undefined;
+    });
+  });
 }
 
 /** A creature action whose `range` is an ordinary distance with a longer one beyond it, which is a
@@ -595,6 +658,7 @@ export function getCapabilityPackageInstallIssue(
           resolution?: unknown;
           layers?: unknown;
           gm?: unknown;
+          sheet?: unknown;
         })
       : undefined;
   const api = manifest.schemaVersion === 2 ? manifest.capabilityApi : null;
@@ -622,6 +686,13 @@ export function getCapabilityPackageInstallIssue(
     // strict file. Same reading, same reason.
     const positionIssue =
       "A ruleset whose fights are measured in cells requires schemaVersion 2 and capabilityApi 1.28 or newer";
+    // And what one turn of that fight can do: a second damage clause, several strikes for one
+    // budget, an ability that changes the economy, and a rider. New keys, same file, same reason.
+    const economyIssue =
+      "A ruleset that says what one turn can do requires schemaVersion 2 and capabilityApi 1.29 or newer";
+    // And what a picked entry does to a check, which is new in 1.30 and needs no wound track at all.
+    const checkIssue =
+      "A ruleset whose catalog entries change a check requires schemaVersion 2 and capabilityApi 1.30 or newer";
     for (const catalog of catalogs) {
       const header =
         catalog && typeof catalog === "object"
@@ -632,6 +703,9 @@ export function getCapabilityPackageInstallIssue(
       if (entriesCarryCombatMechanics(header.entries) && !declaresApi(26)) return mechanicsIssue;
       if (entriesCarryCreatures(header.entries) && !declaresApi(27)) return creatureIssue;
       if (entriesCarryCreatureRanges(header.entries) && !declaresApi(28)) return positionIssue;
+      if (entriesCarryTurnEconomy(header.entries) && !declaresApi(29)) return economyIssue;
+      if (entriesCarryCreatureEconomy(header.entries) && !declaresApi(29)) return economyIssue;
+      if (entriesCarryCheckEffects(header.entries) && !declaresApi(30)) return checkIssue;
       const asset = header.asset;
       if (typeof asset !== "string") continue;
       // A path that does not normalize is never a declared one, whatever else failed to normalize.
@@ -645,6 +719,9 @@ export function getCapabilityPackageInstallIssue(
       if (entriesCarryCombatMechanics(fileEntries) && !declaresApi(26)) return mechanicsIssue;
       if (entriesCarryCreatures(fileEntries) && !declaresApi(27)) return creatureIssue;
       if (entriesCarryCreatureRanges(fileEntries) && !declaresApi(28)) return positionIssue;
+      if (entriesCarryTurnEconomy(fileEntries) && !declaresApi(29)) return economyIssue;
+      if (entriesCarryCreatureEconomy(fileEntries) && !declaresApi(29)) return economyIssue;
+      if (entriesCarryCheckEffects(fileEntries) && !declaresApi(30)) return checkIssue;
     }
   }
   // The battle block lives inside the ruleset file too, so it is read the same way and for the same
@@ -657,7 +734,7 @@ export function getCapabilityPackageInstallIssue(
   // `dice-sum` refuses the whole file, so the package would be installed with no rules at all.
   const resolution =
     ruleset?.resolution && typeof ruleset.resolution === "object"
-      ? (ruleset.resolution as { kind?: unknown })
+      ? (ruleset.resolution as { kind?: unknown; penaltyFrom?: unknown; spend?: unknown })
       : undefined;
   if (resolution?.kind === "dice-pool" && !declaresApi(24)) {
     return "A ruleset with a dice-pool resolution requires schemaVersion 2 and capabilityApi 1.24 or newer";
@@ -692,6 +769,73 @@ export function getCapabilityPackageInstallIssue(
       : false;
     if (positioned || attacks) {
       return "A ruleset whose fights are measured in cells requires schemaVersion 2 and capabilityApi 1.28 or newer";
+    }
+  }
+  // And the keys inside the block that say what one turn can do. Same file, same reading, same
+  // reason: an attack list that buys several strikes with one spend, and a condition that narrows
+  // the saves it is about, is in sight of its source or ends when its source goes down.
+  if (combat && !declaresApi(29)) {
+    const strikes = Array.isArray(combat.attacks)
+      ? combat.attacks.some(
+          (source) =>
+            !!source && typeof source === "object" && (source as Record<string, unknown>).strikes !== undefined,
+        )
+      : false;
+    const conditions = Array.isArray(combat.conditions)
+      ? combat.conditions.some((entry) => {
+          if (!entry || typeof entry !== "object") return false;
+          const record = entry as Record<string, unknown>;
+          if ((["saves", "whileSourceInSight", "endsWhenSourceDown"] as const).some((key) => record[key] !== undefined))
+            return true;
+          // A value the old effect list did not hold is refused by an Engine that only knows that
+          // list, so it is read here as well as the keys beside it.
+          return (
+            Array.isArray(record.effects) &&
+            record.effects.some((effect) => typeof effect === "string" && !OLD_CONDITION_EFFECTS.has(effect))
+          );
+        })
+      : false;
+    // The part of a dodge its flag does not carry. Same reason as the two above: an Engine that does
+    // not know the key refuses the whole strict file rather than ignoring it.
+    const dodgeSaves = combat.standardEffects !== undefined;
+    if (strikes || conditions || dodgeSaves) {
+      return "A ruleset that says what one turn can do requires schemaVersion 2 and capabilityApi 1.29 or newer";
+    }
+  }
+  // A weapon held to one strike by a column of its own row. Same file, same reading, same reason as
+  // everything above: an Engine that does not know the key refuses the whole ruleset.
+  if (combat && !declaresApi(32)) {
+    const capped = Array.isArray(combat.attacks)
+      ? combat.attacks.some(
+          (source) =>
+            !!source && typeof source === "object" && (source as Record<string, unknown>).strikesCappedBy !== undefined,
+        )
+      : false;
+    if (capped) {
+      return "A ruleset whose weapons cap their own strikes requires schemaVersion 2 and capabilityApi 1.32 or newer";
+    }
+  }
+  // Wound tracks. `levels` and `kinds` on a live track, and the track `resolution.penaltyFrom`
+  // names, are new keys in the same strict file, so the reading and the reason are the same as
+  // everything above: an Engine that does not know them refuses the whole ruleset.
+  if (!declaresApi(30)) {
+    const woundIssue = "A ruleset with wound tracks requires schemaVersion 2 and capabilityApi 1.30 or newer";
+    const sheet =
+      ruleset?.sheet && typeof ruleset.sheet === "object" ? (ruleset.sheet as { live?: unknown }) : undefined;
+    const live = sheet?.live && typeof sheet.live === "object" ? (sheet.live as { tracks?: unknown }) : undefined;
+    const marked = Array.isArray(live?.tracks)
+      ? live.tracks.some(
+          (track) =>
+            !!track &&
+            typeof track === "object" &&
+            (["levels", "kinds"] as const).some((key) => (track as Record<string, unknown>)[key] !== undefined),
+        )
+      : false;
+    if (marked || resolution?.penaltyFrom !== undefined) return woundIssue;
+    // A player spending a resource on a roll is the other half of 1.30 and depends on no track at
+    // all, so it is its own reason rather than being folded into the wound-track one.
+    if (resolution?.spend !== undefined) {
+      return "A ruleset that lets a check spend a resource requires schemaVersion 2 and capabilityApi 1.30 or newer";
     }
   }
   return null;

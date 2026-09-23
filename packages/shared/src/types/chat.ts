@@ -878,6 +878,16 @@ export interface MessageReply {
   content: string;
 }
 
+/** A character's scene invitation, retained with the response that proposed it. */
+export interface ConversationSceneRequest {
+  prompt: string;
+  background?: string | null;
+  planHint?: string | null;
+  initiatorCharId?: string | null;
+  initiatorCharName?: string | null;
+  connectionId?: string | null;
+}
+
 /** Additional data attached to a message. */
 export interface MessageExtra {
   /** Quoted snapshot shown in the transcript and included only for the latest user turn in prompts. */
@@ -918,6 +928,7 @@ export interface MessageExtra {
    * like [selfie] remain part of the model-visible transcript.
    */
   conversationCommandContent?: string | null;
+  sceneRequest?: ConversationSceneRequest | null;
   /** Private actions for this swipe, never replayed into shared prompt history. */
   roleplayPrivateCommands?: RoleplayPrivateCommand[] | null;
   /** Provider reasoning from a private turn must not be replayed into shared history. */
@@ -1055,6 +1066,8 @@ export interface GenerationInfo {
   temperature: number | null;
   tokensPrompt: number | null;
   tokensCompletion: number | null;
+  /** Input tokens in the latest completed model request, including cache but excluding output. */
+  tokensLastRequestInput?: number | null;
   /** Occupied tokens in the latest completed model request, including cache and output; null when unreported. */
   tokensContext?: number | null;
   /** Completed main-model requests in this turn; agent and separate Game planner calls are excluded. */

@@ -95,7 +95,7 @@ export type SummaryPopoverSourceMode = "last" | "range";
 export const DEFAULT_ROLEPLAY_BACKGROUND_URL = "/api/backgrounds/file/Black.jpg";
 const DEFAULT_CONVERSATION_BACKGROUND_IMAGE_OPACITY = 45;
 
-function normalizeConversationBackgroundImageOpacity(value: unknown): number {
+export function normalizeConversationBackgroundImageOpacity(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value)
     ? Math.max(0, Math.min(100, Math.round(value)))
     : DEFAULT_CONVERSATION_BACKGROUND_IMAGE_OPACITY;
@@ -621,7 +621,7 @@ interface UIState {
   defaultRoleplayBackground: string;
   /** Native blur applied to selected chat/game background images, in px. */
   chatBackgroundBlur: number;
-  /** Device-local opacity applied to conversation background images, as a percentage. */
+  /** Persisted opacity applied to conversation background images, as a percentage. */
   conversationBackgroundImageOpacity: number;
   /** When set, the main area shows the full-page character editor instead of chat */
   characterDetailId: string | null;
@@ -2801,6 +2801,7 @@ export const useUIStore = create<UIState>()(
             chatBackground: null,
             defaultRoleplayBackground: DEFAULT_ROLEPLAY_BACKGROUND_URL,
             chatBackgroundBlur: 0,
+            conversationBackgroundImageOpacity: DEFAULT_CONVERSATION_BACKGROUND_IMAGE_OPACITY,
             fontSize: 17 as FontSize,
             chatFontSize: 16,
             fontFamily: "",
@@ -3600,6 +3601,17 @@ export const useUIStore = create<UIState>()(
         persisted.defaultRoleplayBackground = normalizeDefaultRoleplayBackground(persisted.defaultRoleplayBackground);
         delete persisted.trackerPanelWidth;
         return persisted;
+      },
+      merge: (persistedState: unknown, currentState) => {
+        const persisted =
+          persistedState && typeof persistedState === "object" ? (persistedState as Record<string, unknown>) : {};
+        return {
+          ...currentState,
+          ...persisted,
+          conversationBackgroundImageOpacity: normalizeConversationBackgroundImageOpacity(
+            persisted.conversationBackgroundImageOpacity,
+          ),
+        };
       },
       partialize: pickPersistedUIState,
     },

@@ -37,6 +37,7 @@ import {
   rulesetCreatureBlock,
   rulesetSheetBuildSchema,
   rulesetSignatureOptions,
+  rulesetWindowOptions,
   supportedCapabilityApi,
   type RulesetCatalogEntriesById,
   type RulesetCatalogEntry,
@@ -800,15 +801,41 @@ const traveller = (live: unknown = {}): RulesetCombatantInput => ({
     rulesetSignatureOptions(fiveE, state, "lasher").map((option) => option.id),
     ["lash_out"],
   );
-  const bought = act(fiveE, state, { actorId: "lasher", optionId: "lash_out", targetIds: ["brenna"] }, 16, 3);
-  assert.equal(who(bought.state, "lasher").signature!.points, 1, "one point bought one sting");
+  // Points are spent in the window BETWEEN two turns, so Brenna's ends first and the lasher is asked
+  // before the next turn begins. Off that window there is nothing to buy with them.
+  assert.deepEqual(
+    act(fiveE, state, { actorId: "lasher", optionId: "lash_out", targetIds: ["brenna"] }).events,
+    [{ type: "refused", actorId: "lasher", optionId: "lash_out", reason: "not-your-turn" }],
+    "a signature action is bought in its window and nowhere else",
+  );
+  const asked = act(fiveE, state, { actorId: "brenna", optionId: "end-turn", targetIds: [] });
+  assert.equal(asked.state.window?.kind, "signature");
+  assert.deepEqual(asked.state.window?.waiting, ["lasher"], "the one block with points to spend");
+  const bought = act(
+    fiveE,
+    asked.state,
+    { actorId: "lasher", optionId: "lash_out", targetIds: ["brenna"], window: asked.state.window!.id },
+    16,
+    3,
+  );
+  assert.deepEqual(
+    bought.events.find((event) => event.type === "signature"),
+    { type: "signature", actorId: "lasher", optionId: "lash_out", label: "Lash out", cost: 1, left: 1 },
+    "one point bought one sting",
+  );
+  assert.equal(bought.state.window, undefined, "and the window closed behind it");
+  assert.equal(
+    who(bought.state, "lasher").signature!.points,
+    2,
+    "and the turn the window was holding up is its own, which hands the points back",
+  );
   assert.deepEqual(rulesetSignatureOptions(fiveE, bought.state, "lasher"), [], "with the sting spent, nothing is sold");
   const again = act(fiveE, bought.state, { actorId: "lasher", optionId: "lash_out", targetIds: ["brenna"] });
   assert.ok(
     again.events.some((event) => event.type === "refused"),
     "and asking for it anyway is refused",
   );
-  assert.equal(who(again.state, "lasher").signature!.points, 1, "without a point being taken for nothing");
+  assert.equal(who(again.state, "lasher").signature!.points, 2, "without a point being taken for nothing");
 }
 
 // ── A sequence with a target for each part, on Ember Roads ──
@@ -996,7 +1023,28 @@ const traveller = (live: unknown = {}): RulesetCombatantInput => ({
   );
   assert.deepEqual(waiting[0]!.forecast, { hitChance: 0.4, averageDamage: 6.5 }, "+5 against a defense of 18");
 
-  const struck = act(fiveE, state, { actorId: "sentinel", optionId: "watchful_strike", targetIds: ["brenna"] }, 16, 5);
+  // Off its own window there is nothing to buy with them: the points are spent between one turn and
+  // the next, and nowhere else.
+  assert.deepEqual(
+    act(fiveE, state, { actorId: "sentinel", optionId: "watchful_strike", targetIds: ["brenna"] }).events,
+    [{ type: "refused", actorId: "sentinel", optionId: "watchful_strike", reason: "not-your-turn" }],
+  );
+  const held = endTurn(fiveE, state, "brenna");
+  assert.equal(held.state.window?.kind, "signature");
+  assert.deepEqual(held.state.window?.waiting, ["sentinel"]);
+  assert.deepEqual(
+    rulesetWindowOptions(fiveE, held.state, "sentinel").map((option) => option.id),
+    ["watchful_strike"],
+    "the window sells exactly what the pricing did",
+  );
+  assert.equal(currentRulesetActor(held.state)?.id, "brenna", "and the next turn has not begun");
+  const struck = act(
+    fiveE,
+    held.state,
+    { actorId: "sentinel", optionId: "watchful_strike", targetIds: ["brenna"], window: held.state.window!.id },
+    16,
+    5,
+  );
   assert.deepEqual(firstOf(struck.events, "signature"), {
     type: "signature",
     actorId: "sentinel",
@@ -1009,23 +1057,22 @@ const traveller = (live: unknown = {}): RulesetCombatantInput => ({
   assert.equal(firstOf(struck.events, "attack").outcome, "hit");
   assert.deepEqual(who(struck.state, "sentinel").budgets, { action: 1, bonus: 1, reaction: 1 });
 
-  // A second one empties the points, and a third is refused.
-  const again = act(
-    fiveE,
-    struck.state,
-    { actorId: "sentinel", optionId: "watchful_strike", targetIds: ["brenna"] },
-    16,
-    5,
-  );
-  assert.equal(firstOf(again.events, "signature").left, 0);
-  assert.deepEqual(rulesetSignatureOptions(fiveE, again.state, "sentinel"), [], "nothing left to buy with");
+  // One answer each: the window closed behind it, and the answer written for it buys nothing twice.
+  // It is refused as the stale window answer it is rather than taken for a turn's choice, which is
+  // the whole reason an answer carries the id of the window it was written for.
+  assert.equal(struck.state.window, undefined);
   assert.deepEqual(
-    act(fiveE, again.state, { actorId: "sentinel", optionId: "watchful_strike", targetIds: ["brenna"] }).events,
-    [{ type: "refused", actorId: "sentinel", optionId: "watchful_strike", reason: "insufficient" }],
+    act(fiveE, struck.state, {
+      actorId: "sentinel",
+      optionId: "watchful_strike",
+      targetIds: ["brenna"],
+      window: held.state.window!.id,
+    }).events,
+    [{ type: "refused", actorId: "sentinel", optionId: "watchful_strike", reason: "stale-window" }],
   );
 
-  // The points come back at the start of its own turn, and it has none to spend on that turn.
-  state = endTurn(fiveE, again.state, "brenna").state;
+  // The turn the window was holding up is the sentinel's own, and the points came back with it.
+  state = struck.state;
   assert.equal(currentRulesetActor(state)?.id, "sentinel");
   assert.deepEqual(who(state, "sentinel").signature, { points: 2, max: 2 });
   assert.deepEqual(rulesetSignatureOptions(fiveE, state, "sentinel"), [], "not while it is acting itself");
@@ -1054,7 +1101,16 @@ const traveller = (live: unknown = {}): RulesetCombatantInput => ({
     lash.map((option) => [option.id, option.signature]),
     [["glass_lash", { cost: 1, points: 2 }]],
   );
-  const cut = act(ember, road, { actorId: "wader", optionId: "glass_lash", targetIds: ["juno"] }, 5, 4, 6);
+  const open = endTurn(ember, road, "juno");
+  assert.deepEqual(open.state.window?.waiting, ["wader"], "the same window, on the other example");
+  const cut = act(
+    ember,
+    open.state,
+    { actorId: "wader", optionId: "glass_lash", targetIds: ["juno"], window: open.state.window!.id },
+    5,
+    4,
+    6,
+  );
   assert.equal(firstOf(cut.events, "signature").left, 1);
   assert.deepEqual(firstOf(cut.events, "damage").dealt, 6);
 }
@@ -1182,6 +1238,53 @@ const traveller = (live: unknown = {}): RulesetCombatantInput => ({
   const unknown = clampRulesetStatBlock(fiveE, absurd(), "cr_30");
   assert.equal(unknown.block.tier, "cr_0");
   assert.ok(unknown.adjusted[0]!.startsWith('The tier "cr_30" is not on this ruleset\'s scale'), unknown.adjusted[0]);
+
+  // A rider carries a damage type of its own, and a fight matches resistance by name, so it is held
+  // to the same declared names the first amount of a blow and its clauses are.
+  {
+    const riderly: RulesetStatBlock = {
+      health: 20,
+      defense: 13,
+      initiativeModifier: 2,
+      tier: "cr_1",
+      actions: [
+        {
+          id: "bite",
+          name: "Bite",
+          budget: "action",
+          toHit: 4,
+          damage: { count: 1, sides: 6, flat: 1, type: "piercing" },
+        },
+      ],
+      riders: [
+        {
+          id: "ember",
+          label: "Ember",
+          on: "hit",
+          oncePer: "turn",
+          amount: { count: 1, sides: 4, flat: 0 },
+          type: "starfire",
+        },
+        {
+          id: "cinder",
+          label: "Cinder",
+          on: "hit",
+          oncePer: "round",
+          amount: { count: 1, sides: 4, flat: 0 },
+          type: "fire",
+        },
+      ],
+    };
+    const held = clampRulesetStatBlock(fiveE, riderly, "cr_1");
+    assert.equal(held.block.riders![0]!.type, undefined, "a type this ruleset does not have is dropped from a rider");
+    assert.equal(held.block.riders![1]!.type, "fire", "and one it does have is left alone");
+    assert.ok(
+      held.adjusted.some((line) =>
+        /The damage type "starfire" is not one this ruleset has, so "Ember" deals untyped damage\./.test(line),
+      ),
+      held.adjusted.join(" | "),
+    );
+  }
 
   // A block already in scale is left exactly as it was.
   const hound = rulesetCreatureBlock(fiveE, entryOf(fiveE, "creatures", "cinder-hound"))!;
@@ -1336,9 +1439,32 @@ const traveller = (live: unknown = {}): RulesetCombatantInput => ({
       delete source.reach;
       delete source.range;
     }
+    // And the keys that say what one turn can do, a release later still: a case about the bestiary
+    // gate has to leave the gate above it nothing to fire on.
+    for (const source of doc.combat?.attacks ?? []) {
+      delete source.strikes;
+      delete source.strikesCappedBy;
+    }
+    delete doc.combat?.standardEffects;
+    for (const entry of doc.combat?.conditions ?? []) {
+      for (const key of ["saves", "whileSourceInSight", "endsWhenSourceDown"]) delete entry[key];
+      entry.effects = (entry.effects ?? []).filter(
+        (effect: string) =>
+          !effect.startsWith("own-saves-") &&
+          effect !== "resist-all" &&
+          !effect.startsWith("cannot-target-") &&
+          !effect.startsWith("cannot-approach-"),
+      );
+    }
     for (const catalog of doc.catalogs ?? []) {
-      for (const entry of catalog.entries ?? []) {
+      catalog.entries = (catalog.entries ?? []).filter(
+        (entry: Record<string, any>) => entry.mechanics?.kind !== "rider",
+      );
+      for (const entry of catalog.entries) {
+        for (const key of ["plus", "free", "gives", "standard", "rider"]) delete entry.mechanics?.[key];
+        delete entry.creature?.riders;
         for (const action of entry.creature?.actions ?? []) {
+          delete action.damage?.plus;
           if (action.range && typeof action.range === "object") action.range = action.range.normal;
           delete action.area;
         }

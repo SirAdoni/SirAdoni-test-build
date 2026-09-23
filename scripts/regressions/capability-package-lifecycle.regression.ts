@@ -104,7 +104,7 @@ try {
   const legacyManifest = capabilityPackageManifestSchema.parse(installedPackage("legacy", ["agent"]).manifest);
   assert.equal(legacyManifest.schemaVersion, 1, "Existing manifest v1 packages must remain readable");
   assert.equal(getCapabilityApiCompatibilityIssue(legacyManifest), null);
-  assert.deepEqual(supportedCapabilityApi, { major: 1, minor: 28 });
+  assert.deepEqual(supportedCapabilityApi, { major: 1, minor: 32 });
 
   const manifestV2 = capabilityPackageManifestSchema.parse({
     ...legacyManifest,
@@ -140,11 +140,11 @@ try {
   });
   assert.match(
     getCapabilityApiCompatibilityIssue(unsupportedMajorManifest) ?? "",
-    /requires capability API 2\.0; this Engine supports 1\.28/,
+    /requires capability API 2\.0; this Engine supports 1\.32/,
   );
   const currentMinorManifest = capabilityPackageManifestSchema.parse({
     ...manifestV2,
-    capabilityApi: { major: 1, minor: 27 },
+    capabilityApi: { major: 1, minor: 28 },
   });
   assert.equal(getCapabilityApiCompatibilityIssue(currentMinorManifest), null);
   const legacySupportedMinorManifest = capabilityPackageManifestSchema.parse({
@@ -158,11 +158,11 @@ try {
   );
   const unsupportedMinorManifest = capabilityPackageManifestSchema.parse({
     ...manifestV2,
-    capabilityApi: { major: 1, minor: 29 },
+    capabilityApi: { major: 1, minor: 33 },
   });
   assert.match(
     getCapabilityApiCompatibilityIssue(unsupportedMinorManifest) ?? "",
-    /requires capability API 1\.29; this Engine supports 1\.28/,
+    /requires capability API 1\.33; this Engine supports 1\.32/,
   );
   const startupManifest = {
     ...currentMinorManifest,
@@ -648,6 +648,16 @@ try {
     capabilityLanguageModelSource,
     /reasoningEffort:\s*options\.reasoningEffort,/u,
     "Capability model calls must preserve an explicit reasoning effort of none",
+  );
+  assert.match(
+    capabilityLanguageModelSource,
+    /AbortSignal\.any\(\[options\.signal,\s*timeoutSignal\]\)[\s\S]*withLlmRequestTimeout\(\s*timeoutMs,\s*async\s*\(\)\s*=>[\s\S]*provider\.chatComplete\(/u,
+    "Capability model calls must enforce AGENT_CALL_TIMEOUT_MS as a total-duration cap while scoping the transport timeout",
+  );
+  assert.match(
+    capabilityLanguageModelSource,
+    /const\s+timeoutSignal\s*=\s*AbortSignal\.timeout\(\s*timeoutMs\s*\);/u,
+    "Capability model calls must build their deadline signal from AbortSignal.timeout",
   );
   assert.doesNotMatch(
     capabilityLanguageModelSource,
@@ -1937,7 +1947,9 @@ try {
   assert.equal(getCapabilityService("readiness:success"), null, "Runtime stop must remove ready contributions");
   const runtimeSnapshotsRoot = join(dataDir, "capability-runtime-snapshots");
   assert.equal(
-    existsSync(runtimeSnapshotsRoot) ? readdirSync(runtimeSnapshotsRoot).length : 0,
+    existsSync(runtimeSnapshotsRoot)
+      ? readdirSync(runtimeSnapshotsRoot).filter((entry) => entry !== "node_modules").length
+      : 0,
     0,
     "runtime snapshots are retained during activation and removed at stop",
   );

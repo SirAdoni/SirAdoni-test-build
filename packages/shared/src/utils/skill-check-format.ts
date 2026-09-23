@@ -86,6 +86,16 @@ export interface SkillCheckTagExtras {
   with?: string;
   /** `bonus="+2"` — dice a pool ruleset added or took for this check. Written only by that path. */
   bonus?: number;
+  /** `spend="willpower:1"` — what the check actually paid, never what the model asked to pay. */
+  spend?: string;
+  /** `auto="2"` — successes a spend added that nobody rolled, so a reader can tell them apart. */
+  auto?: number;
+  /** `use="Potence"` — the catalog entry the check actually applied, never one it could not. */
+  use?: string;
+  /** `rerolled="3"` — how many dice a bought re-throw replaced. */
+  rerolled?: number;
+  /** The wound penalty already applied by the Engine. */
+  penalty?: number;
 }
 
 function serializeSkillCheckExtras(extras: SkillCheckTagExtras | undefined): string {
@@ -98,6 +108,15 @@ function serializeSkillCheckExtras(extras: SkillCheckTagExtras | undefined): str
   if (extras.with) parts.push(`with="${serializeSkillCheckAttribute(extras.with)}"`);
   if (extras.bonus != null && Number.isFinite(extras.bonus)) {
     parts.push(`bonus="${extras.bonus > 0 ? "+" : ""}${extras.bonus}"`);
+  }
+  if (extras.spend) parts.push(`spend="${serializeSkillCheckAttribute(extras.spend)}"`);
+  if (extras.auto != null && Number.isFinite(extras.auto) && extras.auto > 0) parts.push(`auto="${extras.auto}"`);
+  if (extras.use) parts.push(`use="${serializeSkillCheckAttribute(extras.use)}"`);
+  if (extras.rerolled != null && Number.isFinite(extras.rerolled) && extras.rerolled > 0) {
+    parts.push(`rerolled="${extras.rerolled}"`);
+  }
+  if (extras.penalty != null && Number.isFinite(extras.penalty) && extras.penalty < 0) {
+    parts.push(`penalty="${extras.penalty}"`);
   }
   return parts.length > 0 ? ` ${parts.join(" ")}` : "";
 }
@@ -133,6 +152,11 @@ export function serializeResolvedSkillCheckTag(result: SkillCheckResult, extras?
     ...(result.who ? { who: result.who } : {}),
     ...(result.withAbility ? { with: result.withAbility } : {}),
     ...(result.bonusDice ? { bonus: result.bonusDice } : {}),
+    ...(result.spent ? { spend: `${result.spent.pool}:${result.spent.amount}` } : {}),
+    ...(result.autoSuccesses ? { auto: result.autoSuccesses } : {}),
+    ...(result.used ? { use: result.used } : {}),
+    ...(result.rerolled ? { rerolled: result.rerolled } : {}),
+    ...(result.penalty != null ? { penalty: result.penalty } : {}),
     // An extra a caller left undefined is absent, not an instruction to erase what the result says.
     ...Object.fromEntries(Object.entries(extras ?? {}).filter(([, value]) => value !== undefined)),
   };

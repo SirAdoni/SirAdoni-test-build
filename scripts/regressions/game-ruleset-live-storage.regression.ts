@@ -250,12 +250,30 @@ try {
     assert.match(withSheets, /<character_sheets>\nMira\n[\s\S]*<\/character_sheets>/, "sheets are delimited as data");
     // The `use` line is only for a ruleset that ships catalogs of ROWS: a bestiary writes nothing
     // onto a sheet, so nothing there carries a price the Engine could pay and the line would
-    // describe a command that always refuses. This example's one catalog is a bestiary.
+    // describe a command that always refuses. This example ships one of each, so the line is there.
     assert.deepEqual(
       fiveE.catalogs?.map((catalog) => catalog.holds),
-      ["creatures"],
+      ["creatures", "rows"],
     );
-    assert.doesNotMatch(withSheets, /op="use"/, "a bestiary is not something a sheet can use");
+    assert.match(withSheets, /op="use"/, "a catalog of rows is something a sheet can use");
+    const bestiaryOnly = parseRulesetDefinition(
+      JSON.parse(
+        JSON.stringify({
+          ...(fiveE as unknown as Record<string, unknown>),
+          catalogs: (fiveE.catalogs ?? []).filter((catalog) => catalog.holds === "creatures"),
+        }),
+      ),
+    );
+    assert.ok(bestiaryOnly.ok, "the example without its catalog of rows must still validate");
+    assert.doesNotMatch(
+      buildGmFormatReminder({
+        ...base,
+        ruleset: bestiaryOnly.definition,
+        rulesetSheetBlocks: renderGameRulesetSheetBlocks(bestiaryOnly.definition, [{ name: "Mira" }], null),
+      }),
+      /op="use"/,
+      "a bestiary on its own is not something a sheet can use",
+    );
     const emberParsed = parseRulesetDefinition(
       JSON.parse(
         readFileSync(fileURLToPath(new URL("../../docs/examples/rulesets/ember-roads.json", import.meta.url)), "utf8"),

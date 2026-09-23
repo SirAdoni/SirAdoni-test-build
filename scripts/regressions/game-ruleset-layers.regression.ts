@@ -682,8 +682,27 @@ try {
       // The bestiary is written in the numbers that block declares, and gates on its own later
       // declaration, so it goes with it.
       doc.catalogs = (doc.catalogs ?? []).filter((catalog: Record<string, any>) => catalog.holds !== "creatures");
+      for (const catalog of doc.catalogs ?? []) {
+        catalog.entries = (catalog.entries ?? []).filter(
+          (entry: Record<string, any>) => entry.mechanics?.kind !== "rider",
+        );
+      }
       for (const entry of doc.catalogs?.[0]?.entries ?? []) {
-        for (const key of ["targetCount", "autoHit", "applies", "temporary", "budget"]) delete entry.mechanics?.[key];
+        // Every key that gates on a LATER declaration than the one this case is about.
+        for (const key of [
+          "targetCount",
+          "autoHit",
+          "applies",
+          "temporary",
+          "budget",
+          "plus",
+          "free",
+          "gives",
+          "standard",
+          "rider",
+        ]) {
+          delete entry.mechanics?.[key];
+        }
       }
       return doc;
     };

@@ -10,7 +10,7 @@
 
 import { TERRAIN_DATA, type TacticalGrid } from "../tactical-combat/types.js";
 import type { RulesetCombat, RulesetDefinition } from "../../schemas/ruleset.schema.js";
-import { rulesetCombatant, rulesetCombatEffects, rulesetCombatStanding } from "./encounter.js";
+import { rulesetActiveConditions, rulesetCombatant, rulesetCombatEffects, rulesetCombatStanding } from "./encounter.js";
 import type {
   RulesetCombatAction,
   RulesetCombatant,
@@ -263,7 +263,7 @@ export function rulesetThreateningEnemies(
   for (const combatant of state.combatants) {
     if (combatant.side === mover.side || !rulesetCombatStanding(combatant)) continue;
     if ((combatant.budgets[opportunity.budget] ?? 0) < 1) continue;
-    const effects = rulesetCombatEffects(definition, combat, combatant);
+    const effects = rulesetCombatEffects(definition, combat, combatant, state);
     if (effects.has("cannot-act") || effects.has("cannot-react")) continue;
     const at = rulesetPositionOf(combatant);
     const strike = rulesetOpportunityAttack(combatant);
@@ -304,6 +304,16 @@ export function rulesetReachableCells(
     if (combatant.side !== actor.side) blockers.add(`${at.x},${at.y}`);
   }
 
+  // Whoever this combatant may not get any nearer to, and how near they stand right now. A cell
+  // closer than that is not offered at all, so the menu stays the one place legality lives.
+  const held: Array<{ at: RulesetCombatCell; away: number }> = [];
+  for (const entry of rulesetActiveConditions(definition, combat, actor, state)) {
+    if (!entry.effects.includes("cannot-approach-source")) continue;
+    const sourceId = actor.tracked.find((tracked) => tracked.condition === entry.condition)?.source;
+    const at = sourceId ? rulesetPositionOf(rulesetCombatant(state, sourceId)) : null;
+    if (at) held.push({ at, away: rulesetCellDistance(from, at) });
+  }
+
   const threats = rulesetThreateningEnemies(definition, combat, state, actor);
   const best = new Map<string, number>([[`${from.x},${from.y}`, 0]]);
   const cameFrom = new Map<string, string>();
@@ -330,6 +340,12 @@ export function rulesetReachableCells(
       const y = at.y + dy;
       const next = `${x},${y}`;
       if (rulesetCellBlocked(grid, x, y) || blockers.has(next)) continue;
+      // Somebody this combatant may not approach is not walked PAST either. A route that dips
+      // inside the ring and comes out the far side is still getting nearer, which is the thing the
+      // condition forbids, and the board DRAWS that route. So the step is refused rather than only
+      // the place it would have ended, and a cell far enough away is still offered whenever there
+      // is a way round.
+      if (held.some((source) => rulesetCellDistance({ x, y }, source.at) < source.away)) continue;
       // No squeezing between two solid corners: a step corner-wise needs one of its two sides open.
       if (
         dx !== 0 &&

@@ -714,9 +714,16 @@ try {
       restartRequired: false,
     });
     const document = JSON.parse(gravewatchText);
-    // The shipped example also carries a layer, which has a gate of its own (proven in the layers
-    // regression). This case is about the resolution kind, so it reads the file without one.
+    // The shipped example also carries a layer, a wound track, a spend on a check and a charm that
+    // changes one, each with a gate of its own (proven in the layers and wound-track regressions).
+    // This case is about the resolution kind, so it reads the file without any of them.
     delete document.layers;
+    document.sheet.live.tracks = [];
+    delete document.resolution.penaltyFrom;
+    delete document.resolution.spend;
+    for (const catalog of document.catalogs ?? []) {
+      for (const entry of catalog.entries ?? []) delete entry.mechanics?.check;
+    }
     assert.match(
       getCapabilityPackageInstallIssue(manifest(23) as any, document) ?? "",
       /dice-pool resolution requires schemaVersion 2 and capabilityApi 1\.24 or newer/,

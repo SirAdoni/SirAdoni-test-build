@@ -7,6 +7,7 @@
 // Pure, like the rest of the fight: no I/O, nothing thrown, and a clamp that says in plain words
 // what it changed so a log can print the line.
 
+import { RULESET_DAMAGE_MAX_PLUS } from "../../schemas/ruleset.schema.js";
 import type {
   RulesetCatalogEntriesById,
   RulesetCatalogEntry,
@@ -15,8 +16,15 @@ import type {
   RulesetCreatureAction,
   RulesetDefinition,
 } from "../../schemas/ruleset.schema.js";
-import { parseRulesetCombatDice, rulesetAverageAmount } from "./dice.js";
-import type { RulesetCombatAmount, RulesetCombatDamage, RulesetStatBlock, RulesetStatBlockAction } from "./types.js";
+import { parseRulesetCombatDice, rulesetAverageAmount, rulesetAverageDamage } from "./dice.js";
+import type {
+  RulesetCombatAmount,
+  RulesetCombatDamage,
+  RulesetCombatDamageClause,
+  RulesetCombatRider,
+  RulesetStatBlock,
+  RulesetStatBlockAction,
+} from "./types.js";
 
 /** How many actions survive a clamp. A proposal with more than this is a creature nobody could read
  *  at the table, whatever the numbers say. */
@@ -79,8 +87,35 @@ function amountOf(input: { dice?: string; flat?: number } | undefined): RulesetC
   return { count: dice?.count ?? 0, sides: dice?.sides ?? 0, flat: (dice?.flat ?? 0) + (input.flat ?? 0) };
 }
 
+/** The clauses beside a blow's first amount. A clause with a save of its own falls back to the
+ *  action's number when it named none, and a block has no other number to reach for. */
+function clausesOf(action: RulesetCreatureAction): RulesetCombatDamageClause[] | null {
+  const fallback = action.save?.difficulty ?? action.saveDifficulty ?? 0;
+  const clauses = (action.damage?.plus ?? []).flatMap((clause) => {
+    const amount = amountOf(clause);
+    if (!amount) return [];
+    return [
+      {
+        ...amount,
+        ...(clause.type ? { type: clause.type } : {}),
+        ...(clause.save
+          ? {
+              save: {
+                save: clause.save.save,
+                onSuccess: clause.save.onSuccess,
+                difficulty: clause.save.difficulty ?? fallback,
+              },
+            }
+          : {}),
+      },
+    ];
+  });
+  return clauses.length > 0 ? clauses : null;
+}
+
 function creatureAction(action: RulesetCreatureAction): RulesetStatBlockAction {
   const damage = amountOf(action.damage);
+  const plus = clausesOf(action);
   return {
     id: action.id,
     name: action.name,
@@ -88,7 +123,13 @@ function creatureAction(action: RulesetCreatureAction): RulesetStatBlockAction {
     ...(action.toHit !== undefined ? { toHit: action.toHit } : {}),
     ...(action.autoHit ? { autoHit: true } : {}),
     ...(damage
-      ? { damage: { ...damage, ...(action.damage?.type ? { type: action.damage.type } : {}) } as RulesetCombatDamage }
+      ? {
+          damage: {
+            ...damage,
+            ...(action.damage?.type ? { type: action.damage.type } : {}),
+            ...(plus ? { plus } : {}),
+          } as RulesetCombatDamage,
+        }
       : {}),
     ...(action.save ? { save: { ...action.save } } : {}),
     ...(action.saveDifficulty !== undefined ? { saveDifficulty: action.saveDifficulty } : {}),
@@ -202,7 +243,29 @@ function blockFromCreature(creature: RulesetCreature, budgets: ReadonlySet<strin
     tier: creature.tier,
     ...(creature.traits ? { traits: creature.traits.map((trait) => ({ ...trait })) } : {}),
     ...(creature.signaturePoints !== undefined ? { signaturePoints: creature.signaturePoints } : {}),
+    ...(creature.riders?.length ? { riders: creature.riders.flatMap((rider) => riderOf(rider, ids)) } : {}),
   };
+}
+
+/** One rider of a block, with its amount read as dice. A rider that names only actions this block
+ *  no longer has would never fire, so it is dropped rather than carried. */
+function riderOf(rider: NonNullable<RulesetCreature["riders"]>[number], ids: ReadonlySet<string>) {
+  const amount = amountOf(rider.amount);
+  if (!amount) return [];
+  const actions = rider.actions?.filter((id) => ids.has(id));
+  if (rider.actions && (!actions || actions.length === 0)) return [];
+  return [
+    {
+      id: rider.id,
+      label: rider.name,
+      on: rider.on,
+      ...(actions?.length ? { actions } : {}),
+      ...(rider.when?.length ? { when: [...rider.when] } : {}),
+      oncePer: rider.oncePer,
+      amount,
+      ...(rider.type ? { type: rider.type } : {}),
+    } satisfies RulesetCombatRider,
+  ];
 }
 
 // ── The clamp ──
@@ -213,9 +276,18 @@ export interface RulesetClampedStatBlock {
   adjusted: string[];
 }
 
-/** What one action deals on average, per target. */
+/** What one action deals on average, per target: the whole blow, clauses and all. */
 function damageAverage(action: RulesetStatBlockAction | undefined): number {
-  return action?.damage ? Math.max(0, rulesetAverageAmount(action.damage)) : 0;
+  return action?.damage ? Math.max(0, rulesetAverageDamage(action.damage)) : 0;
+}
+
+/** Every amount one action's blow is made of, heaviest first: the first amount and every clause. A
+ *  clamp shaves the heaviest of them, so a creature whose weight sits in a clause loses it there. */
+function blowAmounts(action: RulesetStatBlockAction): RulesetCombatAmount[] {
+  if (!action.damage) return [];
+  return [action.damage, ...(action.damage.plus ?? [])].sort(
+    (left, right) => rulesetAverageAmount(right) - rulesetAverageAmount(left),
+  );
 }
 
 /** The id a block action answers to, with the same fallback the encounter builds its menu with, so
@@ -231,11 +303,28 @@ interface RulesetBestRound {
   average: number;
   action: RulesetStatBlockAction | null;
   parts: string[];
+  /** The heaviest rider this block carries, which adds itself once to that round. */
+  rider: RulesetCombatRider | null;
 }
 
-function bestRound(actions: readonly RulesetStatBlockAction[]): RulesetBestRound {
+/** The rider that says most. A rider fires once in its period, so one of them rides the best round
+ *  and the rest do not: counting them all would measure a creature nobody could play. */
+function heaviestRider(riders: readonly RulesetCombatRider[] | undefined): RulesetCombatRider | null {
+  let best: RulesetCombatRider | null = null;
+  for (const rider of riders ?? []) {
+    if (!best || rulesetAverageAmount(rider.amount) > rulesetAverageAmount(best.amount)) best = rider;
+  }
+  return best;
+}
+
+function bestRound(
+  actions: readonly RulesetStatBlockAction[],
+  riders?: readonly RulesetCombatRider[],
+): RulesetBestRound {
   const byId = new Map(actions.map((action, index) => [actionId(action, index), action]));
-  let best: RulesetBestRound = { average: 0, action: null, parts: [] };
+  const rider = heaviestRider(riders);
+  const carried = rider ? Math.max(0, rulesetAverageAmount(rider.amount)) : 0;
+  let best: RulesetBestRound = { average: 0, action: null, parts: [], rider };
   actions.forEach((action, index) => {
     const round: RulesetBestRound = action.sequence
       ? {
@@ -245,8 +334,11 @@ function bestRound(actions: readonly RulesetStatBlockAction[]): RulesetBestRound
           ),
           action,
           parts: action.sequence.map((step) => step.action),
+          rider,
         }
-      : { average: damageAverage(action), action, parts: [actionId(action, index)] };
+      : { average: damageAverage(action), action, parts: [actionId(action, index)], rider };
+    // A rider adds itself to whatever the round already was, so it is counted once on top.
+    round.average += round.average > 0 ? carried : 0;
     if (round.average > best.average) best = round;
   });
   return best;
@@ -350,6 +442,17 @@ export function clampRulesetStatBlock(
     if (Object.keys(kept).length > 0) block.saves = kept;
     else delete block.saves;
   }
+  // A rider carries a damage type of its own, and a fight reads resistance off the NAME, so a type
+  // this ruleset never declared is a word nothing could act on: held to the same names an action's
+  // first amount and its clauses are.
+  for (const rider of block.riders ?? []) {
+    if (rider.type && types && !types.has(rider.type.trim().toLowerCase())) {
+      adjusted.push(
+        `The damage type "${rider.type}" is not one this ruleset has, so "${rider.label}" deals untyped damage.`,
+      );
+      delete rider.type;
+    }
+  }
   if (block.abilities) {
     const kept = Object.fromEntries(Object.entries(block.abilities).filter(([id]) => abilities.has(id)));
     if (Object.keys(kept).length < Object.keys(block.abilities).length) {
@@ -398,6 +501,36 @@ export function clampRulesetStatBlock(
         `The damage type "${action.damage.type}" is not one this ruleset has, so "${action.name}" deals untyped damage.`,
       );
       delete action.damage.type;
+    }
+    // The clauses beside the first amount, held to the same names and the same ceiling. A clause
+    // over the cap is dropped outright: a blow written as a list nobody could read is not a blow.
+    if (action.damage?.plus) {
+      if (action.damage.plus.length > RULESET_DAMAGE_MAX_PLUS) {
+        adjusted.push(
+          `"${action.name}" carried more than ${RULESET_DAMAGE_MAX_PLUS} damage clauses, so the rest were dropped.`,
+        );
+        action.damage.plus = action.damage.plus.slice(0, RULESET_DAMAGE_MAX_PLUS);
+      }
+      for (const clause of action.damage.plus) {
+        if (clause.type && types && !types.has(clause.type.trim().toLowerCase())) {
+          adjusted.push(
+            `The damage type "${clause.type}" is not one this ruleset has, so a clause of "${action.name}" deals untyped damage.`,
+          );
+          delete clause.type;
+        }
+        if (clause.save && !saves.has(clause.save.save)) {
+          adjusted.push(
+            `A clause of "${action.name}" asked for a save this ruleset does not have, so it simply lands.`,
+          );
+          delete clause.save;
+        }
+        if (clause.save && clause.save.difficulty > difficultyCap) {
+          // Said out loud like every other clamp: a Game Master who asked for a harder save deserves
+          // to be told it was lowered, whether it was the action's own or a clause of it.
+          adjusted.push(`The save against a clause of "${action.name}" was lowered to ${difficultyCap}.`);
+          clause.save.difficulty = difficultyCap;
+        }
+      }
     }
     if (action.save && !saves.has(action.save.save)) {
       adjusted.push(`"${action.name}" asked for a save this ruleset does not have, so it simply lands.`);
@@ -460,14 +593,18 @@ export function clampRulesetStatBlock(
   let scaled = false;
   let fewer = false;
   while (guard++ < 500) {
-    const round = bestRound(block.actions);
+    const round = bestRound(block.actions, block.riders);
     if (round.average <= cap) break;
     // The heaviest part of the heaviest round: shaving that is what brings the round down.
     const part = round.parts
       .map((id) => byId.get(id))
       .filter((action): action is RulesetStatBlockAction => !!action?.damage)
       .sort((left, right) => damageAverage(right) - damageAverage(left))[0];
-    const damage = part?.damage;
+    // The heaviest amount in that round: the first amount of a blow that carries only one, and
+    // otherwise whichever of it, its clauses and the rider riding the round says most.
+    const damage = [...(part ? blowAmounts(part) : []), ...(round.rider ? [round.rider.amount] : [])].sort(
+      (left, right) => rulesetAverageAmount(right) - rulesetAverageAmount(left),
+    )[0];
     const rolls = !!damage && damage.count > 0 && damage.sides > 0;
     if (damage && damage.count > 1 && damage.sides > 0) damage.count -= 1;
     else if (damage && damage.flat > (rolls ? 0 : 1)) damage.flat -= 1;
@@ -478,7 +615,7 @@ export function clampRulesetStatBlock(
   }
   if (fewer) adjusted.push("A creature of this tier does not strike that often, so the sequence lost a strike.");
   if (scaled) {
-    const left = Math.round(bestRound(block.actions).average * 100) / 100;
+    const left = Math.round(bestRound(block.actions, block.riders).average * 100) / 100;
     adjusted.push(
       left <= cap
         ? `The damage was scaled down until the best round averages ${left}, inside the ${tier.damagePerRound[0]} to ${cap} of ${tier.label}.`

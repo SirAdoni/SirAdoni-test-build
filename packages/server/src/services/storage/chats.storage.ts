@@ -432,15 +432,9 @@ function hasConversationSchedules(value: unknown): value is CharacterSchedules {
   return !!value && typeof value === "object" && Object.keys(value as Record<string, unknown>).length > 0;
 }
 
-/**
- * A chat opts into schedules explicitly, or implicitly by already having a
- * cached schedule from an earlier opt-in. An unset flag on a chat that has never
- * used schedules means off, so a character gaining a schedule does not silently
- * switch it on in every old chat.
- */
+/** Reuse character-owned routines unless this chat explicitly disables them. */
 function areConversationSchedulesEnabled(meta: MetadataPatch): boolean {
-  if (typeof meta.conversationSchedulesEnabled === "boolean") return meta.conversationSchedulesEnabled;
-  return hasConversationSchedules(meta.characterSchedules);
+  return meta.conversationSchedulesEnabled !== false;
 }
 
 /** Resolved presence state for one chat, read from the character cards it uses. */
@@ -2378,6 +2372,82 @@ export function createChatsStorage(db: DB) {
       });
     },
 
+    /** Save a context flag, every swipe mirror and its automatic cutoff in one transaction. */
+    async updateMessageExtraWithContextStart(
+      id: string,
+      partial: Record<string, unknown>,
+      sharedExtra: Record<string, unknown>,
+      swipeIndex?: number,
+    ) {
+      const owner = await readMessage(id);
+      if (!owner) return null;
+      // Summary hiding already takes metadata before message queues. Acquire both
+      // before the transaction, and never call a queue-taking writer inside it.
+      return withChatMetadataPatchQueue(owner.chatId, () =>
+        withMessageExtraPatchQueue(id, () =>
+          db.transaction(async () => {
+            const msg = await readMessage(id);
+            if (!msg || msg.chatId !== owner.chatId) return null;
+            const swipes = await readSwipes(id);
+            if (swipeIndex !== undefined && !swipes.some((swipe) => swipe.index === swipeIndex)) return null;
+            const previousExtra = parseExtraRecord(msg.extra);
+            await db
+              .update(messages)
+              .set({
+                extra: JSON.stringify({
+                  ...previousExtra,
+                  ...(swipeIndex === undefined || swipeIndex === msg.activeSwipeIndex ? partial : {}),
+                  ...sharedExtra,
+                }),
+              })
+              .where(eq(messages.id, id));
+            for (const swipe of swipes) {
+              await db
+                .update(messageSwipes)
+                .set({
+                  extra: JSON.stringify({
+                    ...parseExtraRecord(swipe.extra),
+                    ...(swipe.index === (swipeIndex ?? msg.activeSwipeIndex) ? partial : {}),
+                    ...sharedExtra,
+                  }),
+                })
+                .where(eq(messageSwipes.id, swipe.id));
+            }
+            await this.patchMetadata(
+              msg.chatId,
+              (metadata) => {
+                if (!Object.prototype.hasOwnProperty.call(partial, "isConversationStart")) return {};
+                const state = parseExtraRecord(metadata.advancedMemoryState);
+                if (!Array.isArray(state.contextStarts) || !state.contextStarts.length) return {};
+                // A new manual shared flag replaces the automatic window. Unchecking
+                // the automatic flag itself clears it through this same control.
+                const contextStarts =
+                  partial.isConversationStart === true && previousExtra.isConversationStart !== true
+                    ? []
+                    : state.contextStarts.filter((raw) => {
+                        const start = parseExtraRecord(raw);
+                        return start.messageId !== id && start.sceneStartMessageId !== id;
+                      });
+                if (contextStarts.length === state.contextStarts.length) return {};
+                return {
+                  advancedMemoryState: {
+                    ...state,
+                    contextStarts,
+                    contextStartRevision:
+                      (typeof state.contextStartRevision === "number" && Number.isFinite(state.contextStartRevision)
+                        ? state.contextStartRevision
+                        : 0) + 1,
+                  },
+                };
+              },
+              { touchUpdatedAt: false, metadataQueueHeld: true },
+            );
+            return this.getMessage(id);
+          }),
+        ),
+      );
+    },
+
     /** Merge partial data into a message's extra JSON field. */
     async updateMessageExtra(id: string, partial: Record<string, unknown>) {
       const updated = await withPatchQueue(messageExtraPatchQueues, id, async () => {
@@ -2407,7 +2477,12 @@ export function createChatsStorage(db: DB) {
     },
 
     /** Merge partial data into a specific swipe and mirror it to the message only if that swipe is active. */
-    async updateMessageExtraForSwipe(id: string, swipeIndex: number, partial: Record<string, unknown>) {
+    async updateMessageExtraForSwipe(
+      id: string,
+      swipeIndex: number,
+      partial: Record<string, unknown>,
+      expectedContent?: string,
+    ) {
       const updated = await withPatchQueue(messageExtraPatchQueues, id, async () => {
         const msg = await this.getMessage(id);
         if (!msg) return null;
@@ -2416,6 +2491,12 @@ export function createChatsStorage(db: DB) {
         if (!targetSwipe) return null;
 
         const swipeExtra = parseExtraRecord(targetSwipe.extra);
+        // A delayed automatic translation must not replace an edit or a translation the user hid.
+        if (
+          expectedContent !== undefined &&
+          (targetSwipe.content !== expectedContent || swipeExtra.translationHidden === true)
+        )
+          return null;
         await db
           .update(messageSwipes)
           .set({ extra: JSON.stringify({ ...swipeExtra, ...swipeExtraPatch(partial) }) })

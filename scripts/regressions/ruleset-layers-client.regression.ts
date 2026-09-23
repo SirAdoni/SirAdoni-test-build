@@ -185,14 +185,14 @@ assert.deepEqual(restoredRulesetLayers(ember, { somebodyElse: "yes" }), []);
 const knacks = ember.catalogs?.find((entry) => entry.id === "knacks");
 assert.ok(knacks, "Ember Roads ships its knacks catalog");
 const entries = knacks.entries ?? [];
-assert.equal(entries.length, 6);
+assert.equal(entries.length, 7);
 
 const hardWinter = { "layer.hard_winter": true };
 const offered = visibleCatalogEntries(ember, hardWinter, "knacks", entries);
 // Hard winter hides the knacks that cost Grit, and only those.
 assert.deepEqual(
   offered.map((entry) => entry.id),
-  ["road-sense", "scrap-whisper", "iron-stomach", "hold-the-line"],
+  ["road-sense", "scrap-whisper", "iron-stomach", "hold-the-line", "second-breath"],
 );
 // With no game pinned, and with the layer off, the picker offers the whole catalog.
 assert.equal(visibleCatalogEntries(ember, undefined, "knacks", entries).length, entries.length);
@@ -206,7 +206,7 @@ const emptyBuild = (lists: RulesetSheetBuild["lists"] = {}) =>
 // The count under the picker counts what is offered, not what the file holds: the filters run over
 // the narrowed entries, so a hidden entry is missing from the list AND from the match count.
 const layeredViews = catalogFilterViews(knacks, offered, ember, emptyBuild());
-assert.equal(filterCatalogEntries(offered, layeredViews, "", {}).length, 4);
+assert.equal(filterCatalogEntries(offered, layeredViews, "", {}).length, 5);
 // A search for a hidden knack by name finds nothing at all.
 assert.equal(filterCatalogEntries(offered, layeredViews, "Coldfire", {}).length, 0);
 assert.equal(

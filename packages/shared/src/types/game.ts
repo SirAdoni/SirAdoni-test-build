@@ -407,6 +407,8 @@ export interface DiceRollResult {
   modifier: number;
   /** Final total */
   total: number;
+  /** Optional difficulty class declared before the roll. */
+  dc?: number;
 }
 
 /** Result of a skill check resolution. */
@@ -451,6 +453,34 @@ export interface SkillCheckResult {
    */
   withAbility?: string;
   bonusDice?: number;
+  /**
+   * What the roller's wound track took off this check, when the ruleset names one with
+   * `resolution.penaltyFrom` and the character is marked. Always negative, and absent when there
+   * was no penalty, so a record never claims a wound nobody has. A summed check has it folded into
+   * `modifier` as well, because it IS a modifier there; a pool check spent it on dice instead, so
+   * this is the only place the pool's missing dice are said.
+   */
+  penalty?: number;
+  /**
+   * What this check actually paid out of a pool, when the Game Master wrote `spend=` and the
+   * ruleset offers such a purchase. Absent when nothing was bought, and never what the tag asked
+   * for: a spend the pool could not cover buys nothing and costs nothing, so a record only ever
+   * says what really left the sheet.
+   */
+  spent?: { pool: string; amount: number };
+  /**
+   * Successes a purchase added that nobody rolled. They are inside `total` already; this is what
+   * lets a card show which part of the result came out of the dice. Only a ruleset game sets it.
+   */
+  autoSuccesses?: number;
+  /**
+   * The catalog entry this check actually applied, by the label the ruleset gives it. Absent when
+   * the Game Master named none, when the character does not have it, or when the pool could not
+   * cover it, so a record never claims a charm that did nothing.
+   */
+  used?: string;
+  /** How many dice a bought re-throw replaced. Absent when none were. */
+  rerolled?: number;
 }
 
 // ── The sighted dice pool (opt-in, last) ──

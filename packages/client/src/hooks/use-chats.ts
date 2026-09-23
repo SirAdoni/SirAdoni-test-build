@@ -298,10 +298,12 @@ export function useGenerationStatus(chatId: string | null, enabled = true) {
   return useQuery({
     queryKey: ["generation-status", chatId ?? ""],
     queryFn: ({ signal }) =>
-      api.get<{ active: boolean }>(`/generate/status/${encodeURIComponent(chatId ?? "")}`, { signal }),
+      api.get<{ active: boolean; translating?: boolean }>(`/generate/status/${encodeURIComponent(chatId ?? "")}`, {
+        signal,
+      }),
     enabled: !!chatId && enabled,
     staleTime: 0,
-    refetchInterval: (query) => (query.state.data?.active ? 1_000 : false),
+    refetchInterval: (query) => (query.state.data?.active || query.state.data?.translating ? 1_000 : false),
   });
 }
 
@@ -341,7 +343,7 @@ export function useChatMessages(chatId: string | null, pageSize: number = 0, ena
     // Re-enabling the query must not adopt a cached active status from before
     // a local stream took ownership. Wait for the fresh server response.
     if (checkingGeneration) return;
-    if (generationStatus?.active) {
+    if (generationStatus?.active || generationStatus?.translating) {
       orphanedGeneration.current = chatId;
     } else if (generationStatus?.active === false && orphanedGeneration.current === chatId) {
       orphanedGeneration.current = null;
@@ -357,7 +359,16 @@ export function useChatMessages(chatId: string | null, pageSize: number = 0, ena
         void queryClient.invalidateQueries({ queryKey });
       }
     }
-  }, [chatId, enabled, canRecover, localAgentsProcessing, checkingGeneration, generationStatus?.active, queryClient]);
+  }, [
+    chatId,
+    enabled,
+    canRecover,
+    localAgentsProcessing,
+    checkingGeneration,
+    generationStatus?.active,
+    generationStatus?.translating,
+    queryClient,
+  ]);
   const query = useInfiniteQuery({
     queryKey: chatKeys.messages(chatId ?? ""),
     queryFn: ({ pageParam, signal }) => {
@@ -1036,12 +1047,14 @@ export function useUpdateChatSummaries() {
 export type SummaryEntryOperation =
   | { operation: "replace"; entry: Partial<ChatSummaryEntry> & { id: string; content: string } }
   | { operation: "delete"; entryId?: string; entryIds?: string[] }
-  | { operation: "toggle"; entryId: string; enabled: boolean }
+  | { operation: "toggle"; entryId?: string; entryIds?: string[]; enabled: boolean }
   | { operation: "reorder"; entryIds: string[] };
 
 function useSummaryEntryMutation() {
   const qc = useQueryClient();
   return useMutation({
+    // Keep returned summary snapshots ordered while allowing other rows to stay usable.
+    scope: { id: "summary-entry-edits" },
     mutationFn: ({ chatId, ...body }: { chatId: string } & SummaryEntryOperation) =>
       api.patch<Chat>(`/chats/${chatId}/summary-entries`, body),
     onMutate: ({ chatId }) => ({ metadataVersion: captureChatMetadataVersion(chatId) }),
@@ -1051,7 +1064,7 @@ function useSummaryEntryMutation() {
       } else {
         qc.invalidateQueries({ queryKey: chatKeys.detail(vars.chatId) });
       }
-      qc.invalidateQueries({ queryKey: chatKeys.list() });
+      // The PATCH returns the updated chat; syncCachedChat already refreshes its list entry.
       qc.invalidateQueries({ queryKey: lorebookKeys.active(vars.chatId) });
       // Only delete changes message visibility (it unhides server-side), so scope
       // the message-list refetch to that operation rather than every summary edit.
@@ -1088,9 +1101,9 @@ export function useToggleSummaryEntry() {
   const mutation = useSummaryEntryMutation();
   return {
     ...mutation,
-    mutate: (input: { chatId: string; entryId: string; enabled: boolean }) =>
+    mutate: (input: { chatId: string; entryId?: string; entryIds?: string[]; enabled: boolean }) =>
       mutation.mutate({ ...input, operation: "toggle" }),
-    mutateAsync: (input: { chatId: string; entryId: string; enabled: boolean }) =>
+    mutateAsync: (input: { chatId: string; entryId?: string; entryIds?: string[]; enabled: boolean }) =>
       mutation.mutateAsync({ ...input, operation: "toggle" }),
   };
 }
@@ -1533,10 +1546,13 @@ export function useUpdateMessageExtra(chatId: string | null) {
         qc.setQueryData(chatKeys.messages(chatId), context.previous);
       }
     },
-    onSettled: () => {
+    onSettled: (_data, _error, { extra }) => {
       if (chatId) {
         qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
         qc.invalidateQueries({ queryKey: lorebookKeys.active(chatId) });
+        if (Object.hasOwn(extra, "isConversationStart")) {
+          qc.invalidateQueries({ queryKey: chatKeys.detail(chatId) });
+        }
       }
     },
   });
@@ -1634,6 +1650,8 @@ export function usePeekPrompt() {
           assistantPrefill?: string | null;
           tokensPrompt?: number | null;
           tokensCompletion?: number | null;
+          tokensLastRequestInput?: number | null;
+          requestCount?: number;
           tokensCachedPrompt?: number | null;
           tokensCacheWritePrompt?: number | null;
           durationMs?: number | null;

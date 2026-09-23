@@ -96,7 +96,7 @@ interface ConversationViewProps {
   onEdit: (messageId: string, content: string) => void;
   onSetActiveSwipe: (messageId: string, index: number) => void;
   onToggleHiddenFromAI: (messageId: string, current: boolean) => void;
-  onPeekPrompt: () => void;
+  onPeekPrompt: (messageId?: string) => void;
   onIllustrate?: (prompt?: string) => void | Promise<void>;
   onGenerateSelfie?: (characterId?: string) => void | Promise<void>;
   lastAssistantMessageId: string | null;
@@ -1377,11 +1377,13 @@ export function ConversationView({
           opacity={conversationBackgroundImageOpacity / 100}
           reduceMotion={reduceAmbientEffects}
         />
-        <div
-          data-conversation-background-gradient-veil
-          className="pointer-events-none absolute inset-0"
-          style={{ ...gradientStyle, opacity: 0.35 }}
-        />
+        {chatBackground ? (
+          <div
+            data-conversation-background-gradient-veil
+            className="pointer-events-none absolute inset-0"
+            style={{ ...gradientStyle, opacity: 0.35 }}
+          />
+        ) : null}
       </div>
       {/* ── Messages scroll area ── */}
       <div
@@ -1510,7 +1512,7 @@ export function ConversationView({
                 onEdit={onEdit}
                 onSetActiveSwipe={onSetActiveSwipe}
                 onToggleHiddenFromAI={onToggleHiddenFromAI}
-                onPeekPrompt={onPeekPrompt}
+                onPeekPrompt={() => onPeekPrompt(msg.id)}
                 isLastAssistantMessage={msg.id === lastAssistantMessageId}
                 characterMap={characterMap}
                 personaInfo={personaInfo as any}
@@ -1545,7 +1547,7 @@ export function ConversationView({
                   onEdit={onEdit}
                   onSetActiveSwipe={onSetActiveSwipe}
                   onToggleHiddenFromAI={onToggleHiddenFromAI}
-                  onPeekPrompt={onPeekPrompt}
+                  onPeekPrompt={() => onPeekPrompt(regenerationDraftMessage.id)}
                   isLastAssistantMessage={false}
                   characterMap={characterMap}
                   personaInfo={personaInfo as any}
@@ -1577,7 +1579,7 @@ export function ConversationView({
             onEdit={onEdit}
             onSetActiveSwipe={onSetActiveSwipe}
             onToggleHiddenFromAI={onToggleHiddenFromAI}
-            onPeekPrompt={onPeekPrompt}
+            onPeekPrompt={() => onPeekPrompt(liveStreamMessage.id)}
             isLastAssistantMessage={false}
             characterMap={characterMap}
             personaInfo={personaInfo as any}

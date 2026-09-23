@@ -72,7 +72,9 @@ export function RulesetCatalogRefreshModal({
                 <span className="block text-xs font-medium text-[var(--foreground)]">{row.name}</span>
                 {row.columns.map((column) => (
                   <span key={column.columnId} className="block space-y-0.5">
-                    <span className={`block ${labelClass}`}>{column.label}</span>
+                    <span className={`block ${labelClass}`}>
+                      {column.added ? t("ui.rulesets.sheet.refreshAddedColumn", { label: column.label }) : column.label}
+                    </span>
                     <span className="grid gap-1 sm:grid-cols-2">
                       <span className="block min-w-0">
                         <span className={`block ${labelClass}`}>{t("ui.rulesets.sheet.refreshCurrent")}</span>

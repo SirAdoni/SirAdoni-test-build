@@ -589,7 +589,7 @@ export function resolveTranscriptExportCharacterId(args: {
 type SummaryEntriesPatchBody =
   | { operation: "replace"; entry: Partial<ChatSummaryEntry> & { id: string; content: string } }
   | { operation: "delete"; entryId?: string; entryIds?: string[] }
-  | { operation: "toggle"; entryId: string; enabled: boolean }
+  | { operation: "toggle"; entryId?: string; entryIds?: string[]; enabled: boolean }
   | { operation: "reorder"; entryIds: string[] };
 
 async function loadLatestChatGameSnapshot(
@@ -1687,8 +1687,15 @@ export async function chatsRoutes(app: FastifyInstance) {
       }
       deleteEntryIds = requestedIds as string[];
     } else if (body.operation === "toggle") {
-      if (typeof body.entryId !== "string" || !body.entryId.trim() || typeof body.enabled !== "boolean") {
-        return reply.status(400).send({ error: "toggle requires entryId and enabled" });
+      const ids = body.entryIds ?? [body.entryId];
+      if (
+        !Array.isArray(ids) ||
+        !ids.length ||
+        !ids.every((id) => typeof id === "string" && id.trim()) ||
+        new Set(ids).size !== ids.length ||
+        typeof body.enabled !== "boolean"
+      ) {
+        return reply.status(400).send({ error: "toggle requires entryId or unique entryIds and enabled" });
       }
     } else if (body.operation === "reorder") {
       if (
@@ -1740,8 +1747,9 @@ export async function chatsRoutes(app: FastifyInstance) {
         nextEntries = entries.filter((entry) => !deletedIds.has(entry.id));
       } else if (body.operation === "toggle") {
         const now = new Date().toISOString();
+        const toggledIds = new Set(body.entryIds ?? [body.entryId]);
         nextEntries = entries.map((entry) =>
-          entry.id === body.entryId ? { ...entry, enabled: body.enabled, updatedAt: now } : entry,
+          toggledIds.has(entry.id) ? { ...entry, enabled: body.enabled, updatedAt: now } : entry,
         );
       } else if (body.operation === "reorder") {
         const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
@@ -2549,32 +2557,15 @@ export async function chatsRoutes(app: FastifyInstance) {
           });
         }
       }
+      if (
+        Object.prototype.hasOwnProperty.call(partial, "isConversationStart") &&
+        typeof partial.isConversationStart !== "boolean"
+      )
+        return reply.status(400).send({ error: "isConversationStart must be a boolean" });
       for (const key of ["hiddenFromAICharacterIds", "conversationStartForCharacterIds"] as const) {
         if (Object.prototype.hasOwnProperty.call(partial, key)) {
           partial[key] = normalizeMessageCharacterIds(partial[key]);
         }
-      }
-      const updated =
-        swipeIndex === undefined
-          ? await storage.updateMessageExtra(req.params.messageId, partial)
-          : await storage.updateMessageExtraForSwipe(req.params.messageId, swipeIndex, partial);
-      if (!updated) return reply.status(404).send({ error: "Message not found" });
-      // A lone user reaction (no text after it) is a valid turn: feed it to the
-      // autonomous-messaging cadence so a character may notice and respond,
-      // time-gated. Only when this update leaves the user with a reaction here
-      // (so removing one's last reaction doesn't count as fresh activity).
-      if (Object.prototype.hasOwnProperty.call(partial, "reactions")) {
-        const next = partial.reactions;
-        const userReacted =
-          Array.isArray(next) &&
-          next.some(
-            (r) =>
-              !!r &&
-              typeof r === "object" &&
-              Array.isArray((r as { by?: unknown }).by) &&
-              (r as { by: unknown[] }).by.includes("user"),
-          );
-        if (userReacted) recordUserReaction(req.params.chatId);
       }
       const syncAllSwipeExtra: Record<string, unknown> = {};
       if (Object.prototype.hasOwnProperty.call(partial, "hiddenFromAI")) {
@@ -2597,9 +2588,35 @@ export async function chatsRoutes(app: FastifyInstance) {
         if (Object.prototype.hasOwnProperty.call(partial, key)) syncAllSwipeExtra[key] = partial[key];
       }
 
-      if (Object.keys(syncAllSwipeExtra).length > 0) {
-        // AI visibility, context boundaries, and reactions are message-level fields, so keep them
-        // stable across swipe changes instead of binding them to one swipe.
+      const contextFlagChanged =
+        Object.prototype.hasOwnProperty.call(partial, "isConversationStart") ||
+        Object.prototype.hasOwnProperty.call(partial, "conversationStartForCharacterIds");
+      const updated = contextFlagChanged
+        ? await storage.updateMessageExtraWithContextStart(req.params.messageId, partial, syncAllSwipeExtra, swipeIndex)
+        : swipeIndex === undefined
+          ? await storage.updateMessageExtra(req.params.messageId, partial)
+          : await storage.updateMessageExtraForSwipe(req.params.messageId, swipeIndex, partial);
+      if (!updated) return reply.status(404).send({ error: "Message not found" });
+      // A lone user reaction (no text after it) is a valid turn: feed it to the
+      // autonomous-messaging cadence so a character may notice and respond,
+      // time-gated. Only when this update leaves the user with a reaction here
+      // (so removing one's last reaction doesn't count as fresh activity).
+      if (Object.prototype.hasOwnProperty.call(partial, "reactions")) {
+        const next = partial.reactions;
+        const userReacted =
+          Array.isArray(next) &&
+          next.some(
+            (r) =>
+              !!r &&
+              typeof r === "object" &&
+              Array.isArray((r as { by?: unknown }).by) &&
+              (r as { by: unknown[] }).by.includes("user"),
+          );
+        if (userReacted) recordUserReaction(req.params.chatId);
+      }
+
+      if (!contextFlagChanged && Object.keys(syncAllSwipeExtra).length > 0) {
+        // Message-level fields stay stable across swipe changes.
         const swipes = await storage.getSwipes(req.params.messageId);
         for (const swipe of swipes) {
           await storage.updateSwipeExtra(req.params.messageId, swipe.index, syncAllSwipeExtra);
@@ -3107,7 +3124,9 @@ export async function chatsRoutes(app: FastifyInstance) {
             .filter((entry): entry is PeekPromptMessage => entry !== null)
         : [];
       if (cachedPrompt.length === 0) return null;
-      if (advancedMemoryEnabled) {
+      // A selected turn is a historical request, not memory being reused for a
+      // new generation. Later images, summaries and policy edits cannot alter it.
+      if (advancedMemoryEnabled && !allowHistoricalCache) {
         const receipt = extra.advancedMemoryReceipt;
         if (!isRecord(receipt) || !Object.prototype.hasOwnProperty.call(receipt, "sourceEndMessageId")) return null;
         const end =
@@ -3223,20 +3242,9 @@ export async function chatsRoutes(app: FastifyInstance) {
       if (!cached && promptSourceMessage.id) {
         const swipes = await storage.getSwipes(promptSourceMessage.id);
         const activeSwipe = swipes.find((s: any) => s.index === promptSourceMessage.activeSwipeIndex);
-        const messageIsolated = isRecord(extra.isolatedGameTurn) && extra.isolatedGameTurn.mode === "isolated";
         const activeSwipeExtra = activeSwipe ? (parseExtra(activeSwipe.extra) as Record<string, unknown>) : null;
-        const activeSwipeIsolated =
-          activeSwipeExtra &&
-          isRecord(activeSwipeExtra.isolatedGameTurn) &&
-          activeSwipeExtra.isolatedGameTurn.mode === "isolated";
         if (activeSwipe) {
           cached = await readCachedPrompt(activeSwipeExtra ?? {}, Boolean(requestedMessage));
-        }
-        if (!cached && !messageIsolated && !activeSwipeIsolated) {
-          for (const sw of swipes) {
-            cached = await readCachedPrompt(parseExtra(sw.extra) as Record<string, unknown>, Boolean(requestedMessage));
-            if (cached) break;
-          }
         }
       }
 

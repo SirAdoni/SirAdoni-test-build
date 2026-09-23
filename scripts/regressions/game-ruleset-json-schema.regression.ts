@@ -53,13 +53,24 @@ assert.equal(
 
   // A refinement the generator cannot see has to be told to the editor by hand. A creature action's
   // damage is one: the Engine refuses an empty one, so the published schema must as well.
-  const damageNodes: Array<{ anyOf?: unknown }> = [];
+  type Constrained = { allOf?: Array<{ anyOf?: unknown }> };
+  const damageNodes: Constrained[] = [];
+  // And a charm's `check`, which is the same rule one step along: an effect that throws no dice
+  // again, adds no dice, adds no successes and moves no target spends a resource for nothing.
+  const checkNodes: Constrained[] = [];
+  const checkKeys = ["reroll", "dice", "successes", "threshold"];
   const walk = (node: unknown): void => {
     if (Array.isArray(node)) return node.forEach(walk);
     if (!node || typeof node !== "object") return;
-    const object = node as { properties?: Record<string, unknown>; anyOf?: unknown };
+    const object = node as { properties?: Record<string, unknown> } & Constrained;
     const keys = Object.keys(object.properties ?? {}).filter((key) => key !== "$comment");
-    if (keys.length === 3 && ["dice", "flat", "type"].every((key) => keys.includes(key))) damageNodes.push(object);
+    // A blow and every clause beside it: the three an amount always carries, plus the two a blow or
+    // a clause may carry and nothing else.
+    const damageShaped =
+      ["dice", "flat", "type"].every((key) => keys.includes(key)) &&
+      keys.every((key) => ["dice", "flat", "type", "plus", "save"].includes(key));
+    if (damageShaped) damageNodes.push(object);
+    if (checkKeys.every((key) => keys.includes(key))) checkNodes.push(object);
     Object.values(node).forEach(walk);
   };
   // The same for what a combat block measures in cells: the Engine refuses any of it in a block
@@ -77,12 +88,25 @@ assert.equal(
   );
 
   walk(schema);
+  // Each of these is carried in `allOf` rather than merged into a node's own `anyOf`: a node that
+  // already had one would be WIDENED by the extra branches instead of narrowed, and the editor
+  // would call an empty object valid.
   assert.ok(damageNodes.length > 0, "the schema describes a creature action's damage");
   for (const node of damageNodes) {
-    assert.deepEqual(
-      node.anyOf,
-      [{ required: ["dice"] }, { required: ["flat"] }],
+    assert.ok(
+      node.allOf?.some(
+        (rule) => JSON.stringify(rule.anyOf) === JSON.stringify([{ required: ["dice"] }, { required: ["flat"] }]),
+      ),
       "and asks for dice or a flat amount",
+    );
+  }
+  assert.ok(checkNodes.length > 0, "the schema describes what an entry does to a check");
+  for (const node of checkNodes) {
+    assert.ok(
+      node.allOf?.some(
+        (rule) => JSON.stringify(rule.anyOf) === JSON.stringify(checkKeys.map((key) => ({ required: [key] }))),
+      ),
+      "and asks that it do one of the four things it can do",
     );
   }
 }

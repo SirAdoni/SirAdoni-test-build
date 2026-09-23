@@ -1,6 +1,6 @@
 # Game Mode rulesets and ruleset character sheets: implementation handoff
 
-Status: in progress. Written September 18, 2026 against `staging` at `459f8b85` (v2.4.6). Slice 1 (the shared schema, the pin, the registry and Capability API 1.20) slice 2 (the `dice-sum` resolver, `who=`, and the Game Master reminder swap) slice 3 (sheets on cards and personas) slice 4 (the Rules choice, the pin at creation, copy-at-setup and setup sharing) slice 5 (the in-game sheet, live state and the `[sheet:]` command) slice 7a (the community lanes) slice 8a (the catalog format, its route and Capability API 1.21) the combat bridge (the `battle` block, the shared helpers and Capability API 1.22) slice 8c (scaled catalog values, the `use` command, Refresh from ruleset and Capability API 1.23) slice 7b (the `dice-pool` resolution kind, the `with=`, `threshold=` and `bonus=` tag attributes and Capability API 1.24) layers L1 (variants a ruleset ships in its own file, the wizard's layer toggles, the `gm.worldGuidance` slot and Capability API 1.25) and real ruleset combat C1 (the `combat` block, the pure resolver, the mechanics additions and Capability API 1.26; shared only, nothing playable yet) are implemented, client half included where there is one; every later slice is still a proposal. § Format decisions records where the implemented format differs from the first draft and why. It complements `game-combat-rulesets-implementation.md` (the combat handoff). Where the two differ, § Relationship to the combat handoff says so and asks for sign-off rather than quietly overriding it.
+Status: in progress. Written September 18, 2026 against `staging` at `459f8b85` (v2.4.6). Slice 1 (the shared schema, the pin, the registry and Capability API 1.20) slice 2 (the `dice-sum` resolver, `who=`, and the Game Master reminder swap) slice 3 (sheets on cards and personas) slice 4 (the Rules choice, the pin at creation, copy-at-setup and setup sharing) slice 5 (the in-game sheet, live state and the `[sheet:]` command) slice 7a (the community lanes) slice 8a (the catalog format, its route and Capability API 1.21) the combat bridge (the `battle` block, the shared helpers and Capability API 1.22) slice 8c (scaled catalog values, the `use` command, Refresh from ruleset and Capability API 1.23) slice 7b (the `dice-pool` resolution kind, the `with=`, `threshold=` and `bonus=` tag attributes and Capability API 1.24) layers L1 (variants a ruleset ships in its own file, the wizard's layer toggles, the `gm.worldGuidance` slot and Capability API 1.25) and real ruleset combat C1 (the `combat` block, the pure resolver, the mechanics additions and Capability API 1.26) C2 (bestiaries, creature actions and the threat clamp, Capability API 1.27) C3a (the combat director that resolves a fight on the server's own ledger) C3b (that fight played on screen in the ruleset's own words) C4a (positions, reach and range, areas, cover and opportunity strikes, Capability API 1.28) C4b (the fight drawn on the battlefield) and C5a (what one turn can do: a second damage clause, several strikes for one budget, abilities that change the economy, riders, the new condition effects and Capability API 1.29) are implemented, client half included where there is one; the slices after C5a are still proposals. § Format decisions records where the implemented format differs from the first draft and why. It complements `game-combat-rulesets-implementation.md` (the combat handoff). Where the two differ, § Relationship to the combat handoff says so and asks for sign-off rather than quietly overriding it.
 
 Companion file: [`ruleset-5e-2014.example.json`](ruleset-5e-2014.example.json), the first ruleset definition, the precise statement of what "the whole sheet" means, and the file the slice 1 regression validates. The authority for the format is the zod schema in `packages/shared/src/schemas/ruleset.schema.ts`.
 
@@ -230,8 +230,10 @@ and recharge, the threat clamp, and the 5e package's own creatures and enriched 
 the director's `ruleset` style, split into C3a (session, routes, persistence, enemy choices over the
 menu) and C3b (the Classic shell on real numbers, `coverage.combat` true). C4 the board, split into C4a (the format,
 positions, movement, reach and ranges, areas, cover, opportunity attacks, the picker and the view) and C4b (the board on
-screen, out of the Tactical style's own look). C5 reactions through the director's windows, legendary
-actions, contests and the remaining conditions.
+screen, out of the Tactical style's own look). C5 what a turn can do and what interrupts one, split
+into C5a (the turn economy, riders and the condition vocabulary) and C5b (the window itself: a walk
+held open, and the one a signature action is bought in). C5c and later: what else opens a window,
+legendary actions, contests and the remaining conditions.
 
 ### What C1 settled
 
@@ -317,8 +319,8 @@ actions, contests and the remaining conditions.
   `sequence` (other actions of the same block, in order, one budget for the lot, each part with its
   own target and its own roll, never naming another sequence) and `signature` (bought with the
   block's own `signaturePoints`, refreshed at the start of its own turn, never on its own turn's
-  menu). `rulesetSignatureOptions` prices them and `applyRulesetCombatChoice` spends them; the
-  window that offers one between two turns is C5.
+  menu). `rulesetSignatureOptions` prices them and `applyRulesetCombatChoice` spends them, in the
+  window C5b opens between two turns and nowhere else.
 - **A sequence takes the targets of all its parts.** Hand it fewer and every part takes the ones at
   the front of the list, so one id is "all of it at the same target". A part whose target the fight
   is already over for is skipped, and nothing picks a new one: choosing is the caller's job.
@@ -453,6 +455,89 @@ additions below are fields nothing outside the Engine writes.
   `e2e/game-combat-director.e2e.ts` that imports Ember Roads through the real route and plays a
   fight on it.
 
+### What C5a settled
+
+C5a is what one TURN can do, on the shared and server sides. Everything in it is additive and
+optional, and a ruleset that declares none of it resolves byte for byte as it did.
+
+- **A blow may be several amounts.** `mechanics.plus` on a catalog entry and `damage.plus` on a
+  creature action are up to three clauses, each rolled and typed on its own, each answered by the
+  target's own hide on its own, each doubled by a critical on its own, and each able to ask the
+  TARGET for a save of its own (`onSuccess: "none"` leaves nothing of that clause, `"half"` leaves
+  half). The blow they make together is ONE check against concentration, with the summed damage,
+  and one check for going down. Forecasts, the threat clamp and the measured damage per round all
+  count the clauses; a save-gated clause is counted in full, because a forecast says what a blow
+  would do.
+- **Several strikes for one budget.** `combat.attacks[].strikes` is a value reference. The first
+  take spends the budget and puts the rest in `combatant.strikesLeft`; while any are in hand every
+  row of a list that declares `strikes` is offered at no budget cost, carrying `option.strikes` so
+  the menu can say what is left. Different weapons, different targets and a walk between them all
+  fall out of the menu with no special case. A list that buys one strike a spend puts nothing in
+  hand and emits no event, so today's logs are unchanged.
+- **Abilities that change the economy.** `mechanics.free` costs no budget, `mechanics.gives` adds
+  to budgets the moment it is used and caps where they land, and `mechanics.standard` offers named
+  standard actions as `standard:<id>@<budget>`, priced by the ability that granted them. A
+  `utility` entry that declares `gives` or `standard` is built as an action rather than dropped,
+  and one whose `standard` is all it has stays off the menu itself: a permission is not something
+  anybody takes.
+- **Riders.** A new catalog entry kind, `rider`, and a creature's own `riders[]`. Passive, never on
+  the menu, and one more clause of the first qualifying hit of the period. Which attacks it comes
+  off is resolved once when the fight begins, out of the attack lists it names and one truthy
+  column of their rows, so the resolution never re-reads a sheet. `oncePer: "turn"` is cleared at
+  the start of EVERY turn, whosever it is, so a strike made while somebody else is acting can carry
+  one.
+- **Condition vocabulary.** Five new effects, plus `saves` (which saves the two save effects are
+  about), `whileSourceInSight` (a gate over all of that condition's effects) and
+  `endsWhenSourceDown`. A tracked condition already recorded who applied it, so nothing new had to
+  be stored for the three source-bound ones.
+- **Proven** by the C5a block in `scripts/regressions/game-ruleset-combat-core.regression.ts` (the
+  refusals, the clauses, the strikes, the economy, the riders, the conditions, both examples, and a
+  fight compared event for event with the same fight on a ruleset carrying none of the keys) and
+  the board-only condition cases in `game-ruleset-combat-grid.regression.ts`.
+- **Left for C5b and later**: `on` has one value, `hit`, so a rider still fires by itself.
+  `combat.standard` stayed a closed list of plain strings, because every ruleset that already ships
+  one writes it that way; what a dodge does BEYOND being harder to hit is said beside it instead, in
+  `combat.standardEffects.dodge.saves`.
+
+### What C5b settled
+
+C5b is the WINDOW: a fight held open between one step and the next, for somebody who is not the
+current actor.
+
+- **No new key, and no capability bump.** Every part of the vocabulary a window reads was already
+  there: `combat.opportunity.budget` says what a strike at a passer-by costs, a creature's
+  `signature` and `signaturePoints` say what its points buy. What changed is that the Engine asks
+  instead of deciding: an opportunity strike used to be made FOR its holder, and a signature action
+  used to be buyable at any moment that was not its own turn. A package built before this slice
+  plays the same fight, one question at a time.
+- **The window lives in the state.** `RulesetEncounterState.window` holds the kind, what opened it,
+  who is still to answer and, when a walk opened it, the rest of that walk: the cells already
+  crossed, the ones still to cross, what has been paid and everybody already asked. A fight saved
+  mid-walk comes back with the same people still to ask and the same cells still to walk, and
+  `windows` counts every one ever opened so an answer written for a closed one is refused rather
+  than spent on the one that replaced it.
+- **While a window is open, nothing else moves.** Every other choice is refused with `window-open`,
+  including the end of the turn, and an answer naming another window is refused with `stale-window`.
+  There is one entry point either way: `applyRulesetCombatChoice` takes the answer exactly as it
+  takes a turn's choice, off `rulesetWindowOptions` or `RULESET_PASS_OPTION`.
+- **One answer each.** The window asks each waiting combatant once, struck or passed, and drops
+  anybody left with nothing to answer with rather than holding the fight open for a menu with only a
+  pass on it. One chance each for a whole walk, however many times the path leaves the same reach.
+- **A walk is finished even when the last blow ended the fight**, because its own event is what says
+  where the walker really stopped.
+- **The director drives it.** Everybody in a window who is not a person's to play answers there and
+  then, out of the window's own menu and through the same scoring that plays their turn; a Game
+  Master's boss is asked through the Game Master's own decision, with letting the moment go by as
+  one of the answers. The window is left standing only for somebody's own party member, and
+  `DirectedRulesetView.window` is what the client draws the question and its Pass on.
+- **Proven** by the window block in `scripts/regressions/game-ruleset-combat-grid.regression.ts`
+  (held open, the menu, the strike, the pass, the refusals, one chance per walk), the signature
+  windows in `game-ruleset-combat-creatures.regression.ts`, and the boss's own window in
+  `ruleset-combat-director-route.regression.ts`.
+- **Left for C5c and later**: what ELSE opens a window. A catalog entry marked `reaction` names no
+  trigger yet, so it is still on no menu; the vocabulary that says what a reaction answers, and the
+  nesting, cancellation and refunds that come with a counter, are the next slice's.
+
 ### What C4a settled
 
 C4a is the board, on the shared and server sides. C4b is the screen that draws it.
@@ -495,8 +580,8 @@ C4a is the board, on the shared and server sides. C4b is the screen that draws i
 - **Proven** in `scripts/regressions/game-ruleset-combat-grid.regression.ts` (hand-drawn boards,
   scripted dice, both example rulesets, and the byte-for-byte comparison), plus positioned cases in
   `ruleset-combat-director.regression.ts` and `ruleset-combat-director-route.regression.ts`.
-- **Left for C5**: reaction windows, three-quarter and total cover, elevation, flying over
-  obstacles, squeezing, hiding and forced movement.
+- **Left for later**: three-quarter and total cover, elevation, flying over obstacles, squeezing,
+  hiding and forced movement. The reaction window itself is C5b.
 
 ### What C4b settled
 
@@ -542,7 +627,7 @@ type RulesetRef = {
   source?: string; // where a community ruleset came from
   options: Record<string, boolean | number | string>;
 };
-// chat.metadata.gameRuleset?: RulesetRef   — absent means engine-legacy
+// chat.metadata.gameRuleset?: RulesetRef   (absent means engine-legacy)
 ```
 
 Written once by game creation, like `gameExperienceId`. `gameRuleset` is declared on the `ChatMetadata` interface, so the GM-verb namespace derivation sees it as Engine-owned. An unknown id, or a pinned `version` newer than the installed definition, makes the game read-only-recoverable with a clear message, never silently reinterpreted. An installed definition newer than the pin is accepted, because sheets are read tolerantly against the current schema. The combat handoff's `RulesetRef` closes `id` to four built-in names; this one widens it to a string so community rulesets can exist, which is part of the sign-off asked for above.
@@ -676,7 +761,7 @@ Each slice is one PR against `staging`, with a draft PR opened when work starts,
 
 | #   | Repo            | Work                                                                                                                                                                | Smallest useful proof                                                                                                                                                                                                                                                                                     |
 | --- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0   | —               | Open the issue (Appendix) and get sign-off on § Relationship                                                                                                        | Maintainer reply on the issue                                                                                                                                                                                                                                                                             |
+| 0   | n/a             | Open the issue (Appendix) and get sign-off on § Relationship                                                                                                        | Maintainer reply on the issue                                                                                                                                                                                                                                                                             |
 | 1   | Engine + Agents | Shared zod schema and types, `RulesetRef`, ruleset registry reading `ruleset.json` from installed packages, package skeleton marked incomplete. No behaviour change | Draft file validates; unknown kind, unknown key, oversized file and duplicate id are refused with a log line; a game with no pin resolves `engine-legacy`                                                                                                                                                 |
 | 2   | Engine          | `dice-sum` resolver wired into `skill-check-resolution.service.ts`; GM reminder swap; `who=`                                                                        | Proficiency, expertise, half proficiency, save proficiency, level boundaries 4→5 and 16→17, advantage, natural 20 below DC fails and natural 1 above DC passes; legacy chat byte-identical in prompt and result. Manual: hand-enter a sheet through **Edit Spoilers** JSON and watch a real banner        |
 | 3   | Engine          | Sheets on cards and personas: storage, generic Stats subsection, dormant handling, size cap                                                                         | Round-trip through Marinara Native export and import with and without the package installed; persona normalization keeps the key; light, dark and 400 px screenshots                                                                                                                                      |
@@ -685,7 +770,7 @@ Each slice is one PR against `staging`, with a draft PR opened when work starts,
 | 6   | Agents          | Finish and stage the package                                                                                                                                        | `validate-catalog.mjs` green; install, update and uninstall on a staging Engine; a game whose package was uninstalled opens read-only-recoverable                                                                                                                                                         |
 | 7a  | Engine          | Community lanes: **Import ruleset** for one file, and `rulesets/*.json` read by the existing custom agent repository lane                                           | A namespaced id cannot shadow an official one; the preview lists added, changed and removed rulesets; same version with different bytes is refused; a game keeps its pinned version after an update; turning the import toggle off hides community rulesets from new games without breaking existing ones |
 | 7b  | Engine          | `dice-pool` resolution kind. Built                                                                                                                                  | Built: the schema refusals, every pool rule with an injected die sequence, the clamps, the tag attributes, the prompt line per kind, the 1.24 install gate, the legacy pool path unchanged and the sighted pool falling back blind                                                                        |
-| —   | Engine          | `5e-2014` combat adapter                                                                                                                                            | Combat handoff slice 5, after its slices 1–4                                                                                                                                                                                                                                                              |
+| n/a | Engine          | `5e-2014` combat adapter                                                                                                                                            | Combat handoff slice 5, after its slices 1–4                                                                                                                                                                                                                                                              |
 
 Slices 1 and 2 come first because they are testable end to end with no UI at all, which is the cheapest way to find out the schema is wrong.
 

@@ -79,6 +79,7 @@ import {
   type ImageStyleProfile,
   type ImageStyleProfileSettings,
   type QuoteFormat,
+  type SidecarHealthSection,
   type Theme,
   type VideoGenerationUserSettings,
 } from "@marinara-engine/shared";
@@ -5546,6 +5547,27 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                     </span>
                   </div>
                 </label>
+                <label className="flex flex-col gap-1 rounded-lg bg-[var(--secondary)]/45 p-3 ring-1 ring-[var(--border)]/70">
+                  <span className="inline-flex items-center gap-1 text-[0.6875rem] font-medium">
+                    {localizeUi("settings.controls.conversationBackgroundImageOpacity.label")}
+                    <HelpTooltip text={localizeUi("settings.controls.conversationBackgroundImageOpacity.help")} />
+                  </span>
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="range"
+                      aria-label={localizeUi("settings.controls.conversationBackgroundImageOpacity.label")}
+                      min={0}
+                      max={100}
+                      step={5}
+                      value={conversationBackgroundImageOpacity}
+                      onChange={(event) => setConversationBackgroundImageOpacity(Number(event.target.value))}
+                      className="min-w-0 flex-1 accent-[var(--primary)]"
+                    />
+                    <span className="w-12 text-right text-xs tabular-nums text-[var(--muted-foreground)]">
+                      {conversationBackgroundImageOpacity}%
+                    </span>
+                  </div>
+                </label>
                 <label className="flex items-center gap-2">
                   <span className="inline-flex shrink-0 items-center gap-1 text-[0.6875rem] font-medium">
                     {localizeUi("ui.panels.appearancesettings.chatListBackgrounds")}
@@ -8249,6 +8271,7 @@ function AdvancedSettings() {
           };
         };
     uncleanExitCount?: number;
+    sidecars?: SidecarHealthSection;
   }>({
     queryKey: ["health"],
     // Against a frozen host this fetch would otherwise pend forever, leaving
@@ -8299,6 +8322,10 @@ function AdvancedSettings() {
         // Unavailable instead of asserting a fate it never observed.
         previousSession: health.data?.previousSession,
         uncleanExitCount: health.data?.uncleanExitCount,
+        // The server's own GPU and local model slots. Useful on its own for
+        // "my local model won't load" reports, whether or not the user has
+        // ever touched an activation question.
+        sidecars: health.data?.sidecars,
         clientOs: resolveClientOs(navigator.userAgent, navigator.platform, navigator.maxTouchPoints),
         browser: navigator.userAgent,
         gpu: detectBrowserGpu(),

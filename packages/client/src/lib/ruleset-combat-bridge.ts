@@ -62,8 +62,15 @@ export function isRulesetCombatFight(input: {
  */
 export function rulesetCombatRecapLines(definition: RulesetDefinition, summary: RulesetEncounterSummary): string[] {
   const combat = definition.combat;
-  const poolLabel =
-    definition.sheet.live.pools.find((pool) => pool.id === combat?.health.pool)?.label ?? combat?.health.pool ?? "";
+  // What this ruleset calls the thing a fight takes away, whichever shape it keeps it in. A wound
+  // track's numbers are the levels it has LEFT, which is what the rest of the recap already reads,
+  // so the only thing that changes here is the name beside them.
+  const health = combat?.health;
+  const healthLabel = !health
+    ? ""
+    : "track" in health
+      ? (definition.sheet.live.tracks.find((track) => track.id === health.track)?.label ?? health.track)
+      : (definition.sheet.live.pools.find((pool) => pool.id === health.pool)?.label ?? health.pool);
   const conditionLabel = new Map(definition.sheet.live.conditions.map((entry) => [entry.id, entry.label]));
   // Stable outranks dying, because a member who has stopped slipping is not still on the clock, and
   // both outrank plain "down": the ruleset's own dying rule is what put them there.
@@ -76,7 +83,7 @@ export function rulesetCombatRecapLines(definition: RulesetDefinition, summary: 
       member.conditions.length > 0 ? member.conditions.map((id) => conditionLabel.get(id) ?? id).join(", ") : "",
     ].filter(Boolean);
     const suffix = notes.length > 0 ? ` (${notes.join("; ")})` : "";
-    return `${member.name}: ${member.health}/${member.maxHealth} ${poolLabel}${suffix}`;
+    return `${member.name}: ${member.health}/${member.maxHealth} ${healthLabel}${suffix}`;
   });
   const lines = [`Party on ${definition.name} rules: ${party.join("; ")}`];
   const alive = summary.enemies.filter((enemy) => !enemy.defeated);
@@ -87,6 +94,29 @@ export function rulesetCombatRecapLines(definition: RulesetDefinition, summary: 
   lines.push(
     `Sheets: the ${definition.name} sheets were kept up to date while the fight ran, so every cost is already paid. Do not change those numbers again.`,
   );
+  // A condition does not expire because the fighting stopped. It is still on the sheet, and the
+  // thing that would end it, a spell's own terms, a night's rest, somebody's help, is a ruling
+  // rather than arithmetic, so it is the Game Master's to make and they are told they have it.
+  // Not the one the ruleset's own dying rule puts on somebody at zero: that comes off when they are
+  // healed or stabilised, which the rules already say, and asking the Game Master to rule on it
+  // would invite them to wake a dying character by fiat.
+  const dyingCondition = combat?.dying?.condition;
+  const lingeringOf = (member: RulesetEncounterSummary["party"][number]) =>
+    member.conditions.filter((id) => id !== dyingCondition);
+  const lingering = summary.party.filter((member) => lingeringOf(member).length > 0);
+  if (lingering.length > 0) {
+    const who = lingering
+      .map(
+        (member) =>
+          `${member.name} (${lingeringOf(member)
+            .map((id) => conditionLabel.get(id) ?? id)
+            .join(", ")})`,
+      )
+      .join("; ");
+    lines.push(
+      `Still affected: ${who}. These stay until you take them off. Decide whether the fiction ends one, and write [sheet: who="Name" op="condition" condition="Name" state="off"] when it does.`,
+    );
+  }
   return lines;
 }
 

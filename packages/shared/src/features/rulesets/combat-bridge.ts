@@ -111,6 +111,25 @@ function livePool(live: ReturnType<typeof readRulesetLive>, id: string) {
 }
 
 /**
+ * The health a `battle` block names, on whichever shape the ruleset gave it.
+ *
+ * A pool is its value out of its maximum. A WOUND TRACK is the levels it has LEFT out of its
+ * length, which is the only reading that keeps the share honest: a share of a track is a fraction
+ * of its length, a full track is zero, and an unmarked one is the whole of it. That is also exactly
+ * what `rulesetCombatHealth` reports, so the two seams cannot come to different answers about
+ * whether somebody is still standing.
+ */
+function liveHealth(
+  live: ReturnType<typeof readRulesetLive>,
+  health: { pool: string } | { track: string },
+): { value: number; max: number; temp: number } | undefined {
+  if (!("track" in health)) return livePool(live, health.pool);
+  const track = live.tracks.find((entry) => entry.id === health.track);
+  if (!track?.wound) return undefined;
+  return { value: track.wound.levels.length - track.wound.marks.length, max: track.wound.levels.length, temp: 0 };
+}
+
+/**
  * The same health, read on the other scale: `value` out of `fromMax`, as a number out of `toMax`.
  *
  * Hit points cross this seam as a SHARE, never as raw numbers. The Engine gives a level 1 combatant
@@ -155,7 +174,7 @@ export function seedCombatantFromSheet(
   const battle = definition.battle;
   if (!battle) return null;
   const live = readRulesetLive(definition, build, storedLive);
-  const health = livePool(live, battle.health.pool);
+  const health = liveHealth(live, battle.health);
   if (!health) return null;
 
   const seed: RulesetCombatSeed = {
@@ -236,9 +255,10 @@ function combatSkillFromEntry(
   perCell: number,
 ): CombatSkill | null {
   const mechanics = entry.mechanics;
-  // `utility` has no Engine action behind it, and a reaction is a timing window the combat handoff's
-  // adapters own. Both are better absent than mapped to something they are not.
-  if (!mechanics || mechanics.kind === "utility" || mechanics.reaction) return null;
+  // `utility` has no Engine action behind it, a `rider` is passive and nobody takes it, and a
+  // reaction is a timing window the combat handoff's adapters own. All three are better absent than
+  // mapped to something they are not.
+  if (!mechanics || mechanics.kind === "utility" || mechanics.kind === "rider" || mechanics.reaction) return null;
 
   let mpCost = 0;
   let slotLevel: number | undefined;
@@ -352,6 +372,34 @@ function poolOp(pool: string, delta: number, drain: "damage" | "spend"): Ruleset
 }
 
 /**
+ * The health the battle ended on, written back onto whichever shape the sheet keeps it in.
+ *
+ * `delta` is in LEVELS LEFT, the same scale the seed carried, so a negative one is harm and marks
+ * the track that many times, and a positive one clears that many marks.
+ *
+ * The kind it marks with is the track's LIGHTEST. That is a choice and it is the only defensible
+ * one here: the `battle` block lends the Engine's own combat model the sheet's numbers and that
+ * model has no damage types at all, so there is nothing for a mapping to read. Everything an
+ * Engine battle does is therefore the mildest harm the ruleset has, which is also what the sheet's
+ * own buttons default to. A ruleset that wants a fight to choose the kind declares `combat` and
+ * gets `combat.damageKinds`.
+ */
+function healthOp(
+  definition: RulesetDefinition,
+  health: { pool: string } | { track: string },
+  delta: number,
+): RulesetSheetOp | null {
+  if (!("track" in health)) return poolOp(health.pool, delta, "damage");
+  const amount = Math.round(Math.abs(delta));
+  if (!Number.isFinite(delta) || amount < 1) return null;
+  const declared = definition.sheet.live.tracks.find((entry) => entry.id === health.track);
+  const lightest = [...(declared?.kinds ?? [])].sort((a, b) => a.severity - b.severity)[0];
+  if (!lightest) return null;
+  // Fewer levels left is harm, so the sign turns over on the way to a number of marks.
+  return { op: "damage", track: health.track, kind: lightest.id, amount: delta < 0 ? amount : -amount };
+}
+
+/**
  * The sheet operations that turn the live state the battle started from into the one it ended with.
  * A member whose numbers did not move produces nothing, and so does a battle the caller never
  * seeded. Nothing here is applied: the caller decides whether the fight counts.
@@ -376,7 +424,7 @@ export function sheetOpsFromCombatResult(
   };
   if (after.hp !== before.hp) {
     const ended = carryHealthShare(after.hp, before.maxHp, before.sheetMaxHp);
-    push(poolOp(battle.health.pool, ended - before.sheetHp, "damage"));
+    push(healthOp(definition, battle.health, ended - before.sheetHp));
   }
   if (battle.energy && before.mp !== undefined && after.mp !== undefined) {
     push(poolOp(battle.energy.pool, after.mp - before.mp, "spend"));

@@ -61,6 +61,17 @@ export function AnimatedSkillCheckResult({
           {rollMode}
         </span>
       </div>
+      {/* Why the pool was smaller, or the sum lower, than the sheet says. A wounded character can
+          otherwise only guess at where the missing dice went. */}
+      {result.penalty !== undefined && result.penalty !== 0 && (
+        <div className="skill-check-roll-meta">
+          <span>
+            {result.resolution === "successes"
+              ? localizeUi("ui.dice.animatedskillcheckresult.woundPenaltyDice", { count: -result.penalty })
+              : localizeUi("ui.dice.animatedskillcheckresult.woundPenalty", { penalty: result.penalty })}
+          </span>
+        </div>
+      )}
       <AnimatedDiceRoll
         notation={result.dice ?? `${result.rolls.length}d20`}
         rolls={result.rolls}

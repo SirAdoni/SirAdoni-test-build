@@ -286,7 +286,31 @@ const capabilityPackageManifestBaseSchema = z
 //        1.20 through 1.27: an Engine that cannot read these keys refuses the whole ruleset file,
 //        or the catalog file that holds them, so a package that ships any of them declares 1.28.
 //        No permission.
-export const supportedCapabilityApi = Object.freeze({ major: 1, minor: 28 } as const);
+// 1.29: what one turn of a ruleset fight can do. A blow may carry a second damage clause
+//        (`plus`), an attack list may say how many strikes one spend of its budget buys
+//        (`strikes`), a catalog entry may be free of the economy, hand budgets back or let its
+//        holder buy a standard action with another budget (`free`, `gives`, `standard`), a new
+//        entry kind `rider` and a creature's own `riders` add damage to a qualifying hit, and a
+//        condition may narrow the saves it is about, count only while its source is in sight or
+//        end when its source goes down. Not a soft seam, for the same reason as 1.20 through
+//        1.28: an Engine that cannot read these keys refuses the whole ruleset file, or the
+//        catalog file that holds them, so a package that ships any of them declares 1.29.
+//        No permission.
+// 1.30: wound tracks. A ruleset's `live.tracks` entry may declare `levels` (a column of boxes, each
+//        with a label and a penalty) and `kinds` (what a mark on it may be), which turns the track
+//        from a bounded integer into a wound track that is marked rather than counted; and
+//        `resolution.penaltyFrom` names the track whose penalty rides on every roll, taking dice
+//        off a pool or adding a flat modifier to a sum. Not a soft seam, for the same reason as
+//        1.20 through 1.29: an Engine that cannot read these keys refuses the whole ruleset file,
+//        so a package that ships any of them declares 1.30. No permission.
+// 1.31: live host LLM, image and video integrations for downloadable packages.
+// 1.32: a weapon that is one strike a turn whatever its wielder's count. An attack source may
+//        declare `strikesCappedBy`, a boolean column of its own list that holds ITS row to a single
+//        strike however many `strikes` the list buys. SRD 5.1's Loading is the sentence it exists
+//        for. Not a soft seam, for the same reason as 1.20 through 1.31: an Engine that cannot read
+//        the key refuses the whole ruleset file, so a package that ships it declares 1.32. No
+//        permission.
+export const supportedCapabilityApi = Object.freeze({ major: 1, minor: 32 } as const);
 
 const capabilityApiVersionSchema = z
   .object({

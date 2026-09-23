@@ -63,3 +63,22 @@ export function parseRulesetCombatDice(text: unknown): RulesetCombatAmount | nul
 export function rulesetAverageAmount(amount: { count: number; sides: number; flat: number }): number {
   return amount.count * ((amount.sides + 1) / 2) + amount.flat;
 }
+
+/**
+ * What a whole blow averages: its first amount and every clause on it.
+ *
+ * A clause with a save of its own is counted IN FULL, because a forecast says what a blow would do,
+ * not what a die nobody has thrown might take off it: the same reading the first amount gets when
+ * the action itself asks for a save.
+ */
+export function rulesetAverageDamage(damage: {
+  count: number;
+  sides: number;
+  flat: number;
+  plus?: ReadonlyArray<{ count: number; sides: number; flat: number }>;
+}): number {
+  return (damage.plus ?? []).reduce(
+    (total, clause) => total + rulesetAverageAmount(clause),
+    rulesetAverageAmount(damage),
+  );
+}

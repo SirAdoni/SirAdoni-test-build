@@ -31,8 +31,10 @@ import {
   rowsFromCatalogEntry,
   rulesetCatalogEntryIssues,
   rulesetCombatant,
+  rulesetCombatConditions,
   parseRulesetCombatDice,
   rulesetCombatOptions,
+  rulesetOptionTargets,
   rulesetCombatRoller,
   rulesetEncounterOutcome,
   rulesetEncounterSummary,
@@ -1526,6 +1528,34 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
       delete source.reach;
       delete source.range;
     }
+    withoutTurnEconomy(doc);
+  };
+  /** And the keys that say what one turn can do, a release later still, for the same reason. */
+  const withoutTurnEconomy = (doc: Record<string, any>) => {
+    for (const source of doc.combat?.attacks ?? []) {
+      delete source.strikes;
+      delete source.strikesCappedBy;
+    }
+    for (const entry of doc.combat?.conditions ?? []) {
+      for (const key of ["saves", "whileSourceInSight", "endsWhenSourceDown"]) delete entry[key];
+      entry.effects = (entry.effects ?? []).filter(
+        (effect: string) =>
+          !effect.startsWith("own-saves-") &&
+          effect !== "resist-all" &&
+          !effect.startsWith("cannot-target-") &&
+          !effect.startsWith("cannot-approach-"),
+      );
+    }
+    for (const catalog of doc.catalogs ?? []) {
+      catalog.entries = (catalog.entries ?? []).filter(
+        (entry: Record<string, any>) => entry.mechanics?.kind !== "rider",
+      );
+      for (const entry of catalog.entries) {
+        for (const key of ["plus", "free", "gives", "standard", "rider"]) delete entry.mechanics?.[key];
+        delete entry.creature?.riders;
+        for (const action of entry.creature?.actions ?? []) delete action.damage?.plus;
+      }
+    }
   };
   const combatOnly = variant(emberText, (doc) => {
     delete doc.catalogs;
@@ -1672,6 +1702,1167 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
     /measured in cells requires schemaVersion 2 and capabilityApi 1\.28 or newer/,
   );
   assert.equal(getCapabilityPackageInstallIssue(manifest(28), pairAsset, pairAssets), null);
+}
+
+// ── Slice C5a: what one turn can do ──
+//
+// Five things a turn could not do before this slice. Every one of them is refused where a ruleset
+// names something it does not have, proven on the 5e draft and on Ember Roads, and a fight that
+// declares none of them is compared event for event with the same fight without the keys at all.
+{
+  const withCombat = (edit: (combat: Record<string, any>) => void) =>
+    variant(fiveEText, (doc) => edit(doc.combat as Record<string, any>));
+  const withEntry = (text: string, edit: (mechanics: Record<string, any>) => void) =>
+    variant(text, (doc) => {
+      const rows = (doc.catalogs as Array<Record<string, any>>).find((catalog) => catalog.holds !== "creatures")!;
+      const entry = rows.entries[0] as Record<string, any>;
+      entry.mechanics = entry.mechanics ?? { kind: "utility" };
+      edit(entry.mechanics as Record<string, any>);
+    });
+  const withCreature = (edit: (creature: Record<string, any>) => void) =>
+    variant(fiveEText, (doc) => {
+      const bestiary = (doc.catalogs as Array<Record<string, any>>).find((catalog) => catalog.holds === "creatures")!;
+      edit(bestiary.entries[0].creature as Record<string, any>);
+    });
+
+  // ── What the format refuses ──
+  assert.match(
+    refusal(withCreature((creature) => (creature.actions[0].damage.plus = [{ type: "fire" }]))),
+    /A clause names dice, a flat amount, or both/,
+  );
+  assert.match(
+    refusal(withCreature((creature) => (creature.actions[0].damage.plus = [{ dice: "1d6", type: "moonlight" }]))),
+    /Unknown damage type "moonlight"/,
+  );
+  assert.match(
+    refusal(
+      withCreature((creature) => {
+        creature.actions[0].damage.plus = [
+          { dice: "1d6", save: { save: "luck_save", difficulty: 12, onSuccess: "half" } },
+        ];
+      }),
+    ),
+    /Unknown save "luck_save"/,
+  );
+  // A clause save with no number of its own, on an action with none either, would be rolled
+  // against nothing and everybody would pass it.
+  assert.match(
+    refusal(
+      withCreature((creature) => {
+        creature.actions[0].damage.plus = [{ dice: "1d6", save: { save: "con_save", onSuccess: "half" } }];
+      }),
+    ),
+    /This clause's save has no difficulty to be rolled against/,
+  );
+  assert.match(
+    refusal(
+      withCreature(
+        (creature) => (creature.actions[0].damage.plus = [1, 2, 3, 4].map(() => ({ dice: "1d4", type: "fire" }))),
+      ),
+    ),
+    /at most 3 element/,
+  );
+  assert.match(
+    refusal(withEntry(emberText, (mechanics) => (mechanics.plus = [{ dice: "1d6" }]))),
+    /A clause needs an amount beside it/,
+  );
+  assert.match(
+    refusal(
+      withEntry(emberText, (mechanics) => {
+        mechanics.kind = "heal";
+        mechanics.amount = { dice: "1d6" };
+        mechanics.plus = [{ dice: "1d4" }];
+      }),
+    ),
+    /A heal carries no damage clauses/,
+  );
+  assert.match(
+    refusal(withCombat((combat) => (combat.attacks[0].strikes = { field: "class" }))),
+    /Field "class" is not a number/,
+  );
+  assert.match(
+    refusal(withCombat((combat) => (combat.attacks[0].strikes = { const: 0 }))),
+    /One spend buys at least one strike/,
+  );
+  // A cap names a boolean column of the list it caps, and says nothing on a list that buys one
+  // strike a spend anyway.
+  assert.match(
+    refusal(
+      withCombat((combat) => {
+        combat.attacks[0].strikes = { const: 2 };
+        combat.attacks[0].strikesCappedBy = { column: "damage" };
+      }),
+    ),
+    /Must name a boolean column/,
+  );
+  assert.match(
+    refusal(
+      withCombat((combat) => {
+        delete combat.attacks[0].strikes;
+        combat.attacks[0].strikesCappedBy = { column: "finesse" };
+      }),
+    ),
+    /this list buys one strike a spend anyway/,
+  );
+  assert.match(
+    refusal(
+      withEntry(emberText, (mechanics) => {
+        mechanics.free = true;
+        mechanics.budget = "act";
+      }),
+    ),
+    /Something free spends no budget, so it names none/,
+  );
+  assert.match(
+    refusal(withEntry(emberText, (mechanics) => (mechanics.gives = [{ budget: "swing", count: 1 }]))),
+    /Unknown budget "swing"/,
+  );
+  assert.match(
+    refusal(withEntry(emberText, (mechanics) => (mechanics.standard = { actions: ["dash"], budget: "act" }))),
+    /This ruleset does not have the standard action "dash"/,
+  );
+  // Ember Roads' only budget IS the one a standard action is already taken for, so a permission
+  // naming it grants nothing and would offer the same action twice, once at each id.
+  assert.match(
+    refusal(withEntry(emberText, (mechanics) => (mechanics.standard = { actions: ["dodge"], budget: "act" }))),
+    /Every standard action is already taken for "act", so this permission grants nothing/,
+  );
+  assert.match(
+    refusal(withEntry(emberText, (mechanics) => (mechanics.standard = { actions: ["dodge"], budget: "swing" }))),
+    /Unknown budget "swing"/,
+  );
+  const riderEntry = (rider: Record<string, any>, extra: Record<string, any> = {}) =>
+    withEntry(fiveEText, (mechanics) => {
+      for (const key of Object.keys(mechanics)) delete mechanics[key];
+      mechanics.kind = "rider";
+      mechanics.rider = { on: "hit", oncePer: "turn", amount: { dice: "1d6" }, ...rider };
+      Object.assign(mechanics, extra);
+    });
+  assert.match(refusal(riderEntry({ sources: ["spells"] })), /"spells" is not one of this ruleset's attack lists/);
+  assert.match(refusal(riderEntry({ requires: { column: "shiny" } })), /No attack list this rider reads has a column/);
+  assert.match(refusal(riderEntry({ type: "moonlight" })), /Unknown damage type "moonlight"/);
+  assert.match(refusal(riderEntry({}, { amount: { dice: "1d4" } })), /A rider is passive/);
+  assert.match(
+    refusal(
+      withEntry(fiveEText, (mechanics) => (mechanics.rider = { on: "hit", oncePer: "turn", amount: { flat: 1 } })),
+    ),
+    /An entry with a rider is of the kind "rider"/,
+  );
+  assert.match(
+    refusal(
+      withCreature((creature) => {
+        creature.riders = [
+          { id: "sly", name: "Sly", on: "hit", oncePer: "turn", amount: { dice: "1d6" }, actions: ["nothing"] },
+        ];
+      }),
+    ),
+    /Unknown action "nothing"/,
+  );
+  assert.match(
+    refusal(
+      withCombat((combat) => {
+        combat.conditions[0].effects = ["own-saves-disadvantage"];
+        combat.conditions[0].saves = ["luck_save"];
+      }),
+    ),
+    /Unknown save "luck_save"/,
+  );
+  assert.match(
+    refusal(withCombat((combat) => (combat.conditions[0].saves = ["dex_save"]))),
+    /"saves" narrows own-saves-advantage and own-saves-disadvantage/,
+  );
+
+  // ── A blow made of several clauses ──
+  //
+  // The clauses ride a party member's own ability, because what a clause is FOR is a blow whose
+  // parts are answered one at a time, and only an opponent's block carries the hide that answers.
+  const clauseEntries = [
+    {
+      id: "ember-lash",
+      label: "Ember Lash",
+      rows: [{ list: "spells", values: { name: "Ember Lash", level: 1, prepared: true } }],
+      mechanics: {
+        kind: "attack",
+        attackRoll: true,
+        amount: { dice: "1d6" },
+        damageType: "piercing",
+        plus: [
+          { dice: "1d4", type: "fire" },
+          { flat: 4, type: "poison", save: { save: "con_save", difficulty: 12, onSuccess: "half" } },
+        ],
+      },
+    },
+  ] as unknown as RulesetCatalogEntry[];
+  const caster = (): RulesetCombatantInput => ({
+    id: "wren",
+    name: "Wren",
+    side: "party",
+    build: build({
+      abilities: { str: 8, dex: 12, con: 12, int: 18, wis: 12, cha: 10 },
+      fields: { level: 7, ac: 12, speed: 30, hp_max: 38, spellcasting_ability: "int" },
+      lists: { spells: clauseEntries.flatMap((entry) => rowsFromCatalogEntry("clauses", entry).map((row) => row.row)) },
+    }),
+    live: {},
+    catalogs: { clauses: clauseEntries },
+  });
+  const lashAt = (state: RulesetEncounterState) =>
+    rulesetCombatOptions(fiveE, state, "wren").find((option) => option.label === "Ember Lash")!.id;
+  const clawed = (id: string, hide: Partial<RulesetStatBlock> = {}): RulesetCombatantInput =>
+    foe(id, "Clawed thing", {
+      health: 90,
+      defense: 1,
+      initiativeModifier: -5,
+      saves: { con_save: 0 },
+      actions: [],
+      ...hide,
+    });
+  const biterBlock = (): RulesetStatBlock => ({
+    health: 40,
+    defense: 1,
+    initiativeModifier: 9,
+    actions: [
+      {
+        id: "bite",
+        name: "Bite",
+        budget: "action",
+        toHit: 10,
+        damage: {
+          count: 1,
+          sides: 6,
+          flat: 0,
+          type: "piercing",
+          plus: [
+            { count: 1, sides: 4, flat: 0, type: "fire" },
+            {
+              count: 0,
+              sides: 0,
+              flat: 4,
+              type: "poison",
+              save: { save: "con_save", difficulty: 12, onSuccess: "half" },
+            },
+          ],
+        },
+      },
+    ],
+  });
+  const biter = (): RulesetCombatantInput => foe("biter", "Biter", biterBlock());
+
+  {
+    // Resistant to fire and immune to poison: each clause is answered on its own, and the piercing
+    // the blow started with lands in full.
+    const state = fight(fiveE, [caster(), clawed("hide", { resist: ["fire"], immune: ["poison"] })], 20, 1);
+    assert.equal(currentRulesetActor(state)?.id, "wren");
+    const blow = act(fiveE, state, { actorId: "wren", optionId: lashAt(state), targetIds: ["hide"] }, 15, 4, 3, 5);
+    assert.deepEqual(
+      blow.events.map((event) => event.type),
+      ["budget", "attack", "damage", "damage", "save", "damage"],
+      "each clause is rolled where it lands, and a clause with a save of its own rolls it first",
+    );
+    assert.deepEqual(
+      eventsOf(blow.events, "damage").map((event) => [event.damageType, event.amount, event.dealt, event.adjust]),
+      [
+        ["piercing", 4, 4, "none"],
+        ["fire", 3, 1, "resist"],
+        ["poison", 4, 0, "immune"],
+      ],
+    );
+    assert.equal(eventsOf(blow.events, "damage").at(-1)!.health, 85, "four off, then one, then nothing");
+    assert.equal(firstOf(blow.events, "save").success, false);
+  }
+
+  {
+    // A clause's own save is taken by the TARGET while the action's is not, and halves that clause
+    // and nothing else.
+    const state = fight(fiveE, [caster(), clawed("hide")], 20, 1);
+    const saved = act(fiveE, state, { actorId: "wren", optionId: lashAt(state), targetIds: ["hide"] }, 15, 6, 2, 19);
+    assert.deepEqual(
+      eventsOf(saved.events, "damage").map((event) => [event.damageType, event.dealt, !!event.saved]),
+      [
+        ["piercing", 6, false],
+        ["fire", 2, false],
+        ["poison", 2, true],
+      ],
+    );
+    assert.equal(firstOf(saved.events, "save").success, true);
+  }
+
+  {
+    // The ACTION's own save-for-half covers the first amount and every clause that asked for no
+    // save of its own; a clause with one follows its own roll instead.
+    const wide = [
+      {
+        id: "ash-fall",
+        label: "Ash Fall",
+        rows: [{ list: "spells", values: { name: "Ash Fall", level: 1, prepared: true } }],
+        mechanics: {
+          kind: "attack",
+          amount: { dice: "1d6" },
+          damageType: "piercing",
+          save: { save: "dex_save", onSuccess: "half" },
+          plus: [
+            { dice: "1d4", type: "fire" },
+            { flat: 8, type: "poison", save: { save: "con_save", difficulty: 12, onSuccess: "half" } },
+          ],
+        },
+      },
+    ] as unknown as RulesetCatalogEntry[];
+    const thrower = (): RulesetCombatantInput => ({
+      id: "wren",
+      name: "Wren",
+      side: "party",
+      build: build({
+        abilities: { str: 8, dex: 12, con: 12, int: 18, wis: 12, cha: 10 },
+        fields: { level: 7, ac: 12, speed: 30, hp_max: 38, spellcasting_ability: "int" },
+        lists: { spells: wide.flatMap((entry) => rowsFromCatalogEntry("wide", entry).map((row) => row.row)) },
+      }),
+      live: {},
+      catalogs: { wide: wide },
+    });
+    const state = fight(fiveE, [thrower(), clawed("hide")], 20, 1);
+    const option = rulesetCombatOptions(fiveE, state, "wren").find((entry) => entry.label === "Ash Fall")!;
+    // The target passes the action's save and fails the clause's own.
+    const step = act(fiveE, state, { actorId: "wren", optionId: option.id, targetIds: ["hide"] }, 20, 6, 4, 3);
+    const saves = eventsOf(step.events, "save");
+    assert.deepEqual(
+      saves.map((event) => [event.save, event.success]),
+      [
+        ["dex_save", true],
+        ["con_save", false],
+      ],
+      "the action's save first, then the clause's own",
+    );
+    assert.deepEqual(
+      eventsOf(step.events, "damage").map((event) => [event.damageType, event.amount, !!event.saved]),
+      [
+        ["piercing", 3, true],
+        ["fire", 2, true],
+        ["poison", 8, false],
+      ],
+      "halved by the action's save, except the clause that asked for a save of its own",
+    );
+  }
+
+  {
+    // A critical doubles every clause's dice, by the same rule the ruleset declared for the first.
+    const state = fight(fiveE, [caster(), clawed("hide")], 20, 1);
+    const crit = act(
+      fiveE,
+      state,
+      { actorId: "wren", optionId: lashAt(state), targetIds: ["hide"] },
+      20,
+      3,
+      4,
+      2,
+      1,
+      5,
+    );
+    assert.equal(firstOf(crit.events, "attack").outcome, "critical");
+    const damages = eventsOf(crit.events, "damage");
+    assert.deepEqual(
+      damages.map((event) => [event.damageType, event.rolls, event.flat, event.amount]),
+      [
+        ["piercing", [3, 4], 0, 7],
+        ["fire", [2, 1], 0, 3],
+        ["poison", [], 4, 4],
+      ],
+      "a clause with dice throws them again; one made of a flat amount has none to throw",
+    );
+    assert.ok(damages.every((event) => event.critical));
+  }
+
+  {
+    // ONE check against concentration, made with the whole blow's damage.
+    const state = fight(fiveE, [wizard(), biter()], 1, 20);
+    let running = endTurn(fiveE, state, "biter").state;
+    const holdFast = rulesetCombatOptions(fiveE, running, "corwin").find((option) => option.label === "Hold Fast")!;
+    // The biter shakes the hold off, so it is still the thing that bites back.
+    running = act(fiveE, running, { actorId: "corwin", optionId: holdFast.id, targetIds: ["biter"] }, 19).state;
+    assert.equal(who(running, "corwin").concentrating?.label, "Hold Fast");
+    running = endTurn(fiveE, running, "corwin").state;
+    assert.equal(currentRulesetActor(running)?.id, "biter");
+    const struck = act(fiveE, running, { actorId: "biter", optionId: "bite", targetIds: ["corwin"] }, 15, 6, 4, 3, 14);
+    const saves = eventsOf(struck.events, "save");
+    assert.equal(saves.length, 2, "one for the clause, one for the concentration, and no more");
+    assert.equal(saves.at(-1)!.save, fiveE.combat!.concentration!.save);
+    assert.equal(
+      eventsOf(struck.events, "damage").reduce((total, event) => total + event.dealt, 0),
+      14,
+      "the blow was fourteen all together",
+    );
+    assert.equal(saves.at(-1)!.difficulty, 10, "half of fourteen is under the floor, so the floor is the number");
+    assert.equal(who(struck.state, "corwin").concentrating?.label, "Hold Fast", "and it held");
+  }
+
+  {
+    // And ONE check for going down: a blow whose clauses finish somebody reports it once.
+    const thin = foe("thin", "Thin thing", { health: 8, defense: 1, initiativeModifier: -5, actions: [] });
+    const state = fight(fiveE, [caster(), thin], 20, 1);
+    const down = act(fiveE, state, { actorId: "wren", optionId: lashAt(state), targetIds: ["thin"] }, 15, 6, 4, 5);
+    assert.deepEqual(
+      down.events.map((event) => event.type),
+      ["budget", "attack", "damage", "damage", "save", "damage", "defeated", "outcome"],
+      "three amounts, and one end of the fight for the lot",
+    );
+  }
+
+  {
+    // The whole path, from the shipped file to the fight: the bestiary's own hound, whose bite
+    // carries a second clause, read out of the example rather than written here.
+    const bestiary = fiveE.catalogs!.find((catalog) => catalog.id === "creatures")!.entries!;
+    const state = createRulesetEncounter({
+      definition: fiveE,
+      seed: 3,
+      bestiary: { creatures: bestiary },
+      combatants: [
+        {
+          id: "hound",
+          name: "Cinder Hound",
+          side: "enemy",
+          creature: { catalogId: "creatures", entryId: "cinder-hound" },
+        },
+        fighter(),
+      ],
+      roller: dice(20, 8, 8, 8, 8, 8, 1),
+    });
+    assert.equal(currentRulesetActor(state)?.id, "hound");
+    const bit = act(fiveE, state, { actorId: "hound", optionId: "sear_bite", targetIds: ["brenna"] }, 15, 4, 2);
+    assert.deepEqual(
+      eventsOf(bit.events, "damage").map((event) => [event.damageType, event.dealt]),
+      [
+        ["piercing", 5],
+        ["fire", 2],
+      ],
+      "the tooth and the heat are two amounts of one blow",
+    );
+  }
+
+  // ── A character who can do more with one turn ──
+  const feats = fiveE.catalogs!.find((catalog) => catalog.id === "feats")!.entries!;
+  const featRows = (ids: string[], list: string) =>
+    ids.flatMap((id) =>
+      rowsFromCatalogEntry("feats", feats.find((entry) => entry.id === id)!)
+        .filter((row) => row.list === list)
+        .map((row) => row.row),
+    );
+  const weapon = (name: string, ability: string, damage: string, type: string, finesse: boolean, loading = false) => ({
+    name,
+    ability,
+    proficient: true,
+    bonus: 0,
+    damage,
+    damage_type: type,
+    finesse,
+    loading,
+    reach: 5,
+    range: 0,
+    long_range: 0,
+  });
+  const rogueBuild = (ids: string[], strikes: number) =>
+    build({
+      abilities: { str: 10, dex: 18, con: 14, int: 10, wis: 10, cha: 10 },
+      saves: { dex_save: "proficient" },
+      fields: { level: 7, ac: 15, speed: 30, hp_max: 44, attacks_per_action: strikes },
+      lists: {
+        attacks: [
+          weapon("Rapier", "dex", "1d8", "piercing", true),
+          weapon("Club", "str", "1d4", "bludgeoning", false),
+          // One shot a turn however many attacks its wielder has: SRD Loading.
+          weapon("Crossbow", "dex", "1d8", "piercing", false, true),
+        ],
+        features: featRows(ids, "features"),
+        counters: featRows(ids, "counters"),
+      },
+    });
+  const rogue = (ids: string[] = [], strikes = 1): RulesetCombatantInput => ({
+    id: "vess",
+    name: "Vess",
+    side: "party",
+    build: rogueBuild(ids, strikes),
+    live: {},
+    catalogs: { feats },
+  });
+  const sack = (id = "sack"): RulesetCombatantInput =>
+    foe(id, "Sack", { health: 300, defense: 1, initiativeModifier: -9, actions: [] });
+  const optionFor = (state: RulesetEncounterState, label: string) =>
+    rulesetCombatOptions(fiveE, state, "vess").find((option) => option.label === label)!;
+
+  {
+    // Three strikes for one spend: the first pays, the rest are free, a different weapon between
+    // them is neither refused nor charged, and a fourth asks for a budget again.
+    let state = fight(fiveE, [rogue([], 3), sack()], 20, 1);
+    assert.equal(who(state, "vess").actions[0]!.strikes, 3, "the sheet's own number, read once");
+    // SRD Loading: a crossbow is one shot a turn however many attacks its wielder has, and
+    // `strikesCappedBy` is what says so per ROW while the count stays the list's.
+    const crossbow = who(state, "vess").actions.find((action) => action.label === "Crossbow")!;
+    assert.equal(crossbow.strikes, undefined, "a capped row buys no strikes to keep in hand");
+    assert.equal(
+      who(state, "vess").actions.find((action) => action.label === "Club")!.strikes,
+      3,
+      "and the rest of the list is untouched by one row's cap",
+    );
+    let step = act(fiveE, state, { actorId: "vess", optionId: "attack:0:0", targetIds: ["sack"] }, 18, 5);
+    assert.deepEqual(
+      step.events.map((event) => event.type),
+      ["budget", "strikes", "attack", "damage"],
+    );
+    assert.deepEqual(firstOf(step.events, "strikes"), {
+      type: "strikes",
+      actorId: "vess",
+      optionId: "attack:0:0",
+      label: "Rapier",
+      left: 2,
+    });
+    state = step.state;
+    assert.equal(who(state, "vess").budgets.action, 0);
+    assert.equal(who(state, "vess").strikesLeft, 2);
+
+    const club = optionFor(state, "Club");
+    assert.equal(club.budget, undefined, "another weapon from the same list costs no budget either");
+    assert.equal(club.strikes, 2, "and the menu says how many are in hand");
+    step = act(fiveE, state, { actorId: "vess", optionId: club.id, targetIds: ["sack"] }, 18, 3);
+    assert.deepEqual(
+      step.events.map((event) => event.type),
+      ["strikes", "attack", "damage"],
+      "nothing is spent on a strike that was already bought",
+    );
+    state = step.state;
+    assert.equal(who(state, "vess").budgets.action, 0, "the budget was spent once, for all of them");
+    assert.equal(who(state, "vess").strikesLeft, 1);
+    assert.equal(
+      rulesetCombatOptions(fiveE, state, "vess").find((option) => option.id === "standard:dodge"),
+      undefined,
+      "strikes bought swings, not a turn's worth of everything",
+    );
+
+    step = act(fiveE, state, { actorId: "vess", optionId: "attack:0:0", targetIds: ["sack"] }, 18, 7);
+    assert.equal(firstOf(step.events, "strikes").left, 0, "the last of them says so");
+    state = step.state;
+    assert.equal(who(state, "vess").strikesLeft, undefined);
+    assert.deepEqual(act(fiveE, state, { actorId: "vess", optionId: "attack:0:0", targetIds: ["sack"] }).events, [
+      { type: "refused", actorId: "vess", optionId: "attack:0:0", reason: "no-budget" },
+    ]);
+
+    // Nothing is carried into the next turn.
+    state = endTurn(fiveE, endTurn(fiveE, state, "vess").state, "sack").state;
+    assert.equal(currentRulesetActor(state)?.id, "vess");
+    assert.equal(who(state, "vess").strikesLeft, undefined, "strikes do not outlive the turn that bought them");
+    assert.equal(optionFor(state, "Rapier").budget, "action", "so the next turn pays for its own");
+  }
+
+  {
+    // A list that buys one strike a spend behaves exactly as every list did before this existed.
+    const state = fight(fiveE, [rogue([], 1), sack()], 20, 1);
+    const step = act(fiveE, state, { actorId: "vess", optionId: "attack:0:0", targetIds: ["sack"] }, 18, 5);
+    assert.deepEqual(
+      step.events.map((event) => event.type),
+      ["budget", "attack", "damage"],
+    );
+    assert.equal(who(step.state, "vess").strikesLeft, undefined);
+  }
+
+  {
+    // Free of the economy, and it hands a budget back, capped so nothing can be banked.
+    let state = fight(fiveE, [rogue(["second-effort"]), sack()], 20, 1);
+    const surge = optionFor(state, "Second Effort");
+    assert.equal(surge.budget, undefined, "something free spends no budget");
+    assert.deepEqual(surge.cost, [{ pool: "counters:second effort", label: "Second Effort", amount: 1 }]);
+    const step = act(fiveE, state, { actorId: "vess", optionId: surge.id, targetIds: [] });
+    assert.deepEqual(
+      step.events.map((event) => event.type),
+      ["spend", "gives"],
+    );
+    assert.deepEqual(firstOf(step.events, "gives"), {
+      type: "gives",
+      actorId: "vess",
+      optionId: surge.id,
+      label: "Second Effort",
+      budget: "action",
+      left: 2,
+    });
+    state = step.state;
+    assert.equal(who(state, "vess").budgets.action, 2, "one turn's worth, plus the gift, and no more");
+    assert.equal(
+      rulesetCombatOptions(fiveE, state, "vess").find((option) => option.label === "Second Effort"),
+      undefined,
+      "the counter that tracks it is spent, so the sheet would refuse a second use",
+    );
+    state = act(fiveE, state, { actorId: "vess", optionId: "attack:0:0", targetIds: ["sack"] }, 18, 5).state;
+    state = act(fiveE, state, { actorId: "vess", optionId: "attack:0:0", targetIds: ["sack"] }, 18, 5).state;
+    assert.equal(who(state, "vess").budgets.action, 0, "two actions, really");
+    state = endTurn(fiveE, endTurn(fiveE, state, "vess").state, "sack").state;
+    assert.equal(who(state, "vess").budgets.action, 1, "and a turn gives back what a turn holds");
+  }
+
+  {
+    // A standard action bought with another budget, offered beside the ordinary ones.
+    const state = fight(fiveE, [rogue(["quick-hands"]), sack()], 20, 1);
+    const menu = rulesetCombatOptions(fiveE, state, "vess");
+    assert.equal(
+      menu.find((option) => option.label === "Quick Hands"),
+      undefined,
+      "a permission is not itself something to take",
+    );
+    assert.deepEqual(
+      menu.filter((option) => option.id.includes("@")).map((option) => [option.id, option.budget]),
+      [
+        ["standard:dash@bonus", "bonus"],
+        ["standard:disengage@bonus", "bonus"],
+        ["standard:hide@bonus", "bonus"],
+      ],
+      "only the three the entry named, and only for the budget it named",
+    );
+    // Nobody helps themselves, whichever budget the help was bought with: the rule reads the
+    // action's NAME, so the budgeted id is held to it exactly as the plain one is. The permission
+    // is edited on the PICKED entry, which is what the fight reads, not on the file's own copy.
+    {
+      const helpful = feats.map((entry) =>
+        entry.id === "quick-hands"
+          ? { ...entry, mechanics: { ...entry.mechanics!, standard: { actions: ["help"], budget: "bonus" } } }
+          : entry,
+      ) as typeof feats;
+      const withHelp = createRulesetEncounter({
+        definition: fiveE,
+        seed: 4242,
+        combatants: [
+          { ...rogue(["quick-hands"]), catalogs: { feats: helpful } },
+          { ...rogue(["quick-hands"]), catalogs: { feats: helpful }, id: "mate", name: "Mate" },
+          sack(),
+        ],
+        roller: dice(20, 10, 1),
+      });
+      for (const id of ["standard:help", "standard:help@bonus"]) {
+        const help = rulesetCombatOptions(fiveE, withHelp, "vess").find((option) => option.id === id);
+        assert.ok(help, `${id} is on the menu`);
+        const targets = rulesetOptionTargets(fiveE, withHelp, "vess", help);
+        assert.equal(targets.includes("vess"), false, `${id} is never pointed at the one taking it`);
+        assert.ok(targets.includes("mate"), `${id} reaches the ally beside them`);
+      }
+    }
+
+    // A permission that has run out is off the menu, and resolution has to agree: taking it through
+    // the exhausted ability is refused rather than quietly resolved through some other one.
+    {
+      const spent = structuredClone(state);
+      const holder = who(spent, "vess");
+      const permission = holder.actions.find((option) => option.standard)!;
+      holder.uses[permission.id] = 0;
+      permission.uses = { per: "encounter", count: 1 };
+      assert.equal(
+        rulesetCombatOptions(fiveE, spent, "vess").some((option) => option.id === "standard:dash@bonus"),
+        false,
+        "an ability with nothing left does not offer what it allows",
+      );
+      assert.deepEqual(
+        act(fiveE, spent, { actorId: "vess", optionId: "standard:dash@bonus", targetIds: [] }).events,
+        [{ type: "refused", actorId: "vess", optionId: "standard:dash@bonus", reason: "insufficient" }],
+        "and resolution refuses it for the same reason rather than finding another way",
+      );
+    }
+
+    const step = act(fiveE, state, { actorId: "vess", optionId: "standard:dash@bonus", targetIds: [] });
+    assert.deepEqual(
+      step.events.map((event) => event.type),
+      ["budget", "standard"],
+    );
+    assert.deepEqual(firstOf(step.events, "budget"), { type: "budget", actorId: "vess", budget: "bonus", left: 0 });
+    assert.deepEqual(firstOf(step.events, "standard"), { type: "standard", actorId: "vess", action: "dash" });
+    assert.equal(who(step.state, "vess").budgets.action, 1, "the main budget is untouched");
+    assert.equal(who(step.state, "vess").flags.dashed, true);
+    assert.equal(
+      rulesetCombatOptions(fiveE, step.state, "vess").find((option) => option.id === "standard:dash")?.budget,
+      "action",
+      "the ordinary one is still there, and still spends the main budget",
+    );
+    assert.deepEqual(act(fiveE, state, { actorId: "vess", optionId: "standard:dash@reaction", targetIds: [] }).events, [
+      { type: "refused", actorId: "vess", optionId: "standard:dash@reaction", reason: "unknown-option" },
+    ]);
+  }
+
+  // ── Riders ──
+  {
+    let state = fight(fiveE, [rogue(["sly-strike"], 3), fighter(), sack()], 20, 10, 1);
+    assert.deepEqual(
+      who(state, "vess").riders?.map((rider) => [rider.label, rider.oncePer, rider.amount.count, rider.actions]),
+      [["Sly Strike", "turn", 4, ["attack:0:0"]]],
+      "the rider grew with the sheet, and only the finesse weapon is on its list",
+    );
+    // A friend is in the fight and on their feet, so the any-of condition holds.
+    let step = act(fiveE, state, { actorId: "vess", optionId: "attack:0:0", targetIds: ["sack"] }, 18, 5, 1, 1, 1, 1);
+    assert.deepEqual(
+      step.events.map((event) => event.type),
+      ["budget", "strikes", "attack", "damage", "rider", "damage"],
+      "the rider is one more amount of the blow that carried it",
+    );
+    assert.deepEqual(firstOf(step.events, "rider"), {
+      type: "rider",
+      actorId: "vess",
+      targetId: "sack",
+      riderId: "rider:1:0",
+      label: "Sly Strike",
+    });
+    const extra = eventsOf(step.events, "damage").at(-1)!;
+    assert.deepEqual(
+      [extra.rolls, extra.damageType, extra.dealt],
+      [[1, 1, 1, 1], "piercing", 4],
+      "it takes the blow's own kind of harm",
+    );
+    state = step.state;
+
+    // And not twice in the same turn, however many strikes are left.
+    step = act(fiveE, state, { actorId: "vess", optionId: "attack:0:0", targetIds: ["sack"] }, 18, 5);
+    assert.equal(eventsOf(step.events, "rider").length, 0, "once a turn is once a turn");
+    state = step.state;
+
+    // The turn comes round again and so does the rider.
+    state = endTurn(fiveE, endTurn(fiveE, endTurn(fiveE, state, "vess").state, "brenna").state, "sack").state;
+    assert.equal(currentRulesetActor(state)?.id, "vess");
+    step = act(fiveE, state, { actorId: "vess", optionId: "attack:0:0", targetIds: ["sack"] }, 18, 5, 2, 2, 2, 2);
+    assert.equal(eventsOf(step.events, "rider").length, 1, "a fresh turn is a fresh rider");
+  }
+
+  {
+    // A weapon the rider does not come off, and a fight with nobody to stand beside the target:
+    // either one is enough to keep it out of the blow.
+    const withFriend = fight(fiveE, [rogue(["sly-strike"], 3), fighter(), sack()], 20, 10, 1);
+    const club = act(fiveE, withFriend, { actorId: "vess", optionId: "attack:0:1", targetIds: ["sack"] }, 18, 3);
+    assert.equal(eventsOf(club.events, "rider").length, 0, "the club is not on the rider's own list of rows");
+    const alone = fight(fiveE, [rogue(["sly-strike"], 3), sack()], 20, 1);
+    const swing = act(fiveE, alone, { actorId: "vess", optionId: "attack:0:0", targetIds: ["sack"] }, 18, 5);
+    assert.equal(eventsOf(swing.events, "rider").length, 0, "no advantage, and nobody beside the target");
+
+    // An action that deals nothing never carries one either: a rider is extra damage on a blow, and
+    // a blow that struck for nothing has nothing to add to.
+    const helper = fight(fiveE, [rogue(["sly-strike"], 3), fighter(), sack()], 20, 10, 1);
+    const helped = act(fiveE, helper, { actorId: "vess", optionId: "standard:help", targetIds: ["brenna"] });
+    assert.equal(eventsOf(helped.events, "rider").length, 0, "helping an ally is not a hit and carries no rider");
+    assert.equal(eventsOf(helped.events, "damage").length, 0, "and it deals nothing, which is the point");
+  }
+
+  {
+    // A creature carries its own, and a rider that says "round" waits for the round to turn over.
+    const packBlock = (): RulesetStatBlock => ({
+      health: 30,
+      defense: 1,
+      initiativeModifier: 9,
+      actions: [{ id: "nip", name: "Nip", budget: "action", toHit: 10, damage: { count: 1, sides: 4, flat: 0 } }],
+      riders: [{ id: "pack", label: "Pack", on: "hit", oncePer: "round", amount: { count: 0, sides: 0, flat: 3 } }],
+    });
+    let state = fight(fiveE, [fighter(), foe("pack", "Pack thing", packBlock())], 1, 20);
+    let step = act(fiveE, state, { actorId: "pack", optionId: "nip", targetIds: ["brenna"] }, 15, 2);
+    assert.deepEqual(
+      eventsOf(step.events, "damage").map((event) => event.dealt),
+      [2, 3],
+      "the pack's own rider is one more amount of the blow",
+    );
+    state = step.state;
+    // A second strike on the same round, on somebody else's turn, does not carry it again.
+    state = endTurn(fiveE, state, "pack").state;
+    assert.equal(currentRulesetActor(state)?.id, "brenna");
+    assert.equal(who(state, "pack").ridersSpent?.length, 1, "a round rider is still spent on the next turn");
+    state = endTurn(fiveE, state, "brenna").state;
+    assert.equal(who(state, "pack").ridersSpent, undefined, "and fresh when the round turns over");
+  }
+
+  // ── The condition vocabulary ──
+  {
+    // Saves narrowed to the ones the condition is about: the sheet's own Dexterity save is rolled
+    // twice and the worse kept, and a Constitution save is rolled once.
+    const binderBlock = (): RulesetStatBlock => ({
+      health: 30,
+      defense: 1,
+      initiativeModifier: 9,
+      actions: [
+        {
+          id: "bind",
+          name: "Bind",
+          budget: "action",
+          autoHit: true,
+          applies: [{ condition: "restrained", duration: { rounds: 5 } }],
+        },
+        {
+          id: "sweep",
+          name: "Sweep",
+          budget: "action",
+          damage: { count: 1, sides: 4, flat: 0 },
+          save: { save: "dex_save", difficulty: 12, onSuccess: "half" },
+        },
+        {
+          id: "fumes",
+          name: "Fumes",
+          budget: "action",
+          damage: { count: 1, sides: 4, flat: 0 },
+          save: { save: "con_save", difficulty: 12, onSuccess: "half" },
+        },
+      ],
+    });
+    let state = fight(fiveE, [rogue(), foe("binder", "Binder", binderBlock())], 1, 20);
+    state = act(fiveE, state, { actorId: "binder", optionId: "bind", targetIds: ["vess"] }).state;
+    assert.ok(rulesetCombatConditions(fiveE, who(state, "vess")).includes("restrained"));
+    state = endTurn(fiveE, endTurn(fiveE, state, "binder").state, "vess").state;
+    const swept = act(fiveE, state, { actorId: "binder", optionId: "sweep", targetIds: ["vess"] }, 18, 4, 3);
+    const dexSave = firstOf(swept.events, "save");
+    assert.deepEqual(
+      [dexSave.save, dexSave.mode, dexSave.rolls, dexSave.kept],
+      ["dex_save", "disadvantage", [18, 4], 4],
+      "the save the condition names is rolled twice and the worse one kept",
+    );
+    const fumed = act(fiveE, state, { actorId: "binder", optionId: "fumes", targetIds: ["vess"] }, 18, 3);
+    const conSave = firstOf(fumed.events, "save");
+    assert.deepEqual(
+      [conSave.save, conSave.mode, conSave.rolls],
+      ["con_save", undefined, [18]],
+      "a save the condition does not name is the one throw it always was",
+    );
+  }
+
+  {
+    // Dodging is the other half of the same action: harder to hit, AND the saves the ruleset names
+    // are rolled with advantage while it lasts. The 5e example names its Dexterity save.
+    const sweeper = () =>
+      foe("binder", "Binder", {
+        health: 40,
+        defense: 10,
+        initiativeModifier: -5,
+        actions: [
+          {
+            id: "sweep",
+            name: "Sweep",
+            budget: "action",
+            damage: { count: 1, sides: 6, flat: 0 },
+            save: { save: "dex_save", difficulty: 12, onSuccess: "half" },
+          },
+        ],
+      });
+    const before = fight(fiveE, [rogue(), sweeper()], 20, 1);
+    // Vess is up first either way: once ending the turn without dodging, once dodging first. The
+    // dodge lasts until the start of their own next turn, so the binder's sweep meets it.
+    const stoodStill = endTurn(fiveE, before, "vess").state;
+    const flat = act(fiveE, stoodStill, { actorId: "binder", optionId: "sweep", targetIds: ["vess"] }, 7, 3);
+    assert.deepEqual(
+      [firstOf(flat.events, "save").mode, firstOf(flat.events, "save").rolls],
+      [undefined, [7]],
+      "standing still, the save is the one throw it always was",
+    );
+    const dodged = endTurn(
+      fiveE,
+      act(fiveE, before, { actorId: "vess", optionId: "standard:dodge", targetIds: [] }).state,
+      "vess",
+    ).state;
+    const swept = act(fiveE, dodged, { actorId: "binder", optionId: "sweep", targetIds: ["vess"] }, 7, 19, 3);
+    const save = firstOf(swept.events, "save");
+    assert.deepEqual(
+      [save.save, save.mode, save.rolls, save.kept],
+      ["dex_save", "advantage", [7, 19], 19],
+      "dodging, the named save is rolled twice and the better one kept",
+    );
+    // And only the saves it names: a ruleset that names none is unchanged by dodging.
+    const plain = parsedOrThrow(
+      variant(fiveEText, (doc) => delete doc.combat.standardEffects),
+      "a ruleset whose dodge says nothing about saves",
+    );
+    const plainly = fight(plain, [rogue(), sweeper()], 20, 1);
+    const stillDodging = endTurn(
+      plain,
+      act(plain, plainly, { actorId: "vess", optionId: "standard:dodge", targetIds: [] }).state,
+      "vess",
+    ).state;
+    const plainSweep = act(plain, stillDodging, { actorId: "binder", optionId: "sweep", targetIds: ["vess"] }, 7, 3);
+    assert.equal(firstOf(plainSweep.events, "save").mode, undefined);
+  }
+
+  {
+    // Half of every kind of harm, whatever the hide underneath says, and on a sheet-backed
+    // character who has no hide at all.
+    const tough = parsedOrThrow(
+      variant(fiveEText, (doc) => {
+        const poisoned = (doc.combat.conditions as Array<Record<string, any>>).find(
+          (entry) => entry.condition === "poisoned",
+        )!;
+        poisoned.effects = ["resist-all"];
+      }),
+      "a ruleset whose poison is a hide",
+    );
+    const dousedBlock = (): RulesetStatBlock => ({
+      health: 30,
+      defense: 1,
+      initiativeModifier: 9,
+      actions: [
+        {
+          id: "douse",
+          name: "Douse",
+          budget: "action",
+          autoHit: true,
+          applies: [{ condition: "poisoned", duration: { rounds: 5 } }],
+        },
+        { id: "hit", name: "Hit", budget: "action", toHit: 10, damage: { count: 0, sides: 0, flat: 9 } },
+      ],
+    });
+    let state = fight(tough, [fighter(), foe("douser", "Douser", dousedBlock())], 1, 20);
+    const plain = act(tough, state, { actorId: "douser", optionId: "hit", targetIds: ["brenna"] }, 15);
+    assert.equal(firstOf(plain.events, "damage").dealt, 9, "nine, before anything said otherwise");
+    state = act(tough, state, { actorId: "douser", optionId: "douse", targetIds: ["brenna"] }).state;
+    state = endTurn(tough, endTurn(tough, state, "douser").state, "brenna").state;
+    const halved = act(tough, state, { actorId: "douser", optionId: "hit", targetIds: ["brenna"] }, 15);
+    assert.deepEqual(
+      [firstOf(halved.events, "damage").dealt, firstOf(halved.events, "damage").adjust],
+      [4, "resist"],
+      "and half of it afterwards, on a character with no hide of their own",
+    );
+  }
+
+  {
+    // Whoever put a condition on somebody may be off limits to them, and the condition may end the
+    // moment that somebody goes down.
+    const charmerBlock = (): RulesetStatBlock => ({
+      health: 4,
+      defense: 1,
+      initiativeModifier: 9,
+      actions: [
+        {
+          id: "gaze",
+          name: "Gaze",
+          budget: "action",
+          autoHit: true,
+          applies: [{ condition: "charmed", duration: { rounds: 9 } }],
+        },
+      ],
+    });
+    let state = fight(fiveE, [fighter(), rogue(), foe("charmer", "Charmer", charmerBlock())], 5, 1, 20);
+    state = act(fiveE, state, { actorId: "charmer", optionId: "gaze", targetIds: ["brenna"] }).state;
+    assert.equal(who(state, "brenna").tracked.find((entry) => entry.condition === "charmed")?.source, "charmer");
+    state = endTurn(fiveE, state, "charmer").state;
+    assert.equal(currentRulesetActor(state)?.id, "brenna");
+    const sword = rulesetCombatOptions(fiveE, state, "brenna").find((option) => option.label === "Longsword")!;
+    assert.deepEqual(
+      rulesetOptionTargets(fiveE, state, "brenna", sword),
+      [],
+      "the one opponent in the fight is the one they may not point anything at",
+    );
+    assert.deepEqual(act(fiveE, state, { actorId: "brenna", optionId: sword.id, targetIds: ["charmer"] }).events, [
+      { type: "refused", actorId: "brenna", optionId: sword.id, reason: "bad-target" },
+    ]);
+    // Their friend has no such trouble, and the charm ends with the charmer.
+    state = endTurn(fiveE, state, "brenna").state;
+    assert.equal(currentRulesetActor(state)?.id, "vess");
+    const done = act(fiveE, state, { actorId: "vess", optionId: "attack:0:0", targetIds: ["charmer"] }, 18, 8);
+    assert.ok(eventsOf(done.events, "defeated").some((event) => event.actorId === "charmer"));
+    assert.deepEqual(
+      eventsOf(done.events, "condition").map((event) => [event.targetId, event.condition, event.active]),
+      [["brenna", "charmed", false]],
+      "the charm goes with whoever was holding it up",
+    );
+    assert.ok(!rulesetCombatConditions(fiveE, who(done.state, "brenna")).includes("charmed"));
+  }
+
+  // ── Ember Roads: the same rules, in a system shaped nothing like the other one ──
+  {
+    const knacks = ember.catalogs!.find((catalog) => catalog.id === "knacks")!.entries!;
+    const breath = knacks.find((entry) => entry.id === "second-breath")!;
+    const rowsOf = (list: string) =>
+      rowsFromCatalogEntry("knacks", breath)
+        .filter((row) => row.list === list)
+        .map((row) => row.row);
+    const walker = (): RulesetCombatantInput => ({
+      id: "juno",
+      name: "Juno",
+      side: "party",
+      build: build({
+        abilities: { brawn: 2, wits: 1, heart: 1 },
+        fields: { calling: "Hauler", toughness: 2 },
+        lists: {
+          gear: [{ name: "Road axe", swing: "brawn", damage: "1d6", harm: "cut" }],
+          knacks: rowsOf("knacks"),
+          tricks: rowsOf("tricks"),
+        },
+      }),
+      live: {},
+      catalogs: { knacks },
+    });
+    const post = (): RulesetCombatantInput =>
+      foe("post", "Post", { health: 99, defense: 1, initiativeModifier: -9, actions: [] });
+
+    // One budget, handed back once a scene, in a system whose whole turn is one Action.
+    let state = fight(ember, [walker(), post()], 6, 6, 1, 1);
+    const breathOption = rulesetCombatOptions(ember, state, "juno").find((option) => option.label === "Second Breath")!;
+    assert.equal(breathOption.budget, undefined, "free of the one budget this system has");
+    let step = act(ember, state, { actorId: "juno", optionId: breathOption.id, targetIds: [] });
+    assert.deepEqual(firstOf(step.events, "gives"), {
+      type: "gives",
+      actorId: "juno",
+      optionId: breathOption.id,
+      label: "Second Breath",
+      budget: "act",
+      left: 2,
+    });
+    state = step.state;
+    state = act(ember, state, { actorId: "juno", optionId: "attack:0:0", targetIds: ["post"] }, 4, 3, 5).state;
+    assert.equal(who(state, "juno").budgets.act, 1, "and there is still one left to swing with");
+
+    // A hound out of this ruleset's own bestiary, whose bite carries a second clause.
+    const trouble = ember.catalogs!.find((catalog) => catalog.id === "road_trouble")!.entries!;
+    const hunted = createRulesetEncounter({
+      definition: ember,
+      seed: 5,
+      bestiary: { road_trouble: trouble },
+      combatants: [
+        {
+          id: "hound",
+          name: "Rust Jackal",
+          side: "enemy",
+          creature: { catalogId: "road_trouble", entryId: "rust-jackal" },
+        },
+        walker(),
+      ],
+      roller: dice(6, 6, 3, 3, 3, 1, 1),
+    });
+    assert.equal(currentRulesetActor(hunted)?.id, "hound");
+    const bitten = act(ember, hunted, { actorId: "hound", optionId: "bite", targetIds: ["juno"] }, 6, 6, 4);
+    assert.deepEqual(
+      eventsOf(bitten.events, "damage").map((event) => [event.damageType, event.dealt]),
+      [
+        ["cut", 4],
+        ["rust", 1],
+      ],
+      "two kinds of harm, in this ruleset's own words",
+    );
+  }
+
+  // ── A fight that declares none of it ──
+  {
+    // The same fight, played the same way, on the example as shipped and on the example with every
+    // one of the new keys taken out of it. Nothing here uses any of them, so the two logs have to
+    // be the same event for the same event, numbers included.
+    const stripped = parsedOrThrow(
+      variant(fiveEText, (doc) => {
+        for (const source of doc.combat.attacks ?? []) {
+          delete source.strikes;
+          delete source.strikesCappedBy;
+        }
+        for (const entry of doc.combat.conditions ?? []) {
+          for (const key of ["saves", "whileSourceInSight", "endsWhenSourceDown"]) delete entry[key];
+          entry.effects = (entry.effects ?? []).filter(
+            (effect: string) =>
+              !effect.startsWith("own-saves-") &&
+              effect !== "resist-all" &&
+              !effect.startsWith("cannot-target-") &&
+              !effect.startsWith("cannot-approach-"),
+          );
+        }
+        doc.combat.abilities = (doc.combat.abilities ?? []).filter(
+          (source: Record<string, any>) => source.list !== "features",
+        );
+        doc.catalogs = (doc.catalogs ?? []).filter((catalog: Record<string, any>) => catalog.id !== "feats");
+        for (const catalog of doc.catalogs ?? []) {
+          for (const entry of catalog.entries ?? []) {
+            for (const action of entry.creature?.actions ?? []) delete action.damage?.plus;
+          }
+        }
+      }),
+      "the same ruleset with none of the new keys",
+    );
+    const play = (definition: RulesetDefinition) => {
+      let state = fight(definition, [fighter(), wizard(), snag(), rot()], 20, 14, 5, 3);
+      const events: RulesetCombatEvent[] = [...state.opening];
+      const step = (choice: RulesetCombatChoice, ...faces: number[]) => {
+        const result = act(definition, state, choice, ...faces);
+        events.push(...result.events);
+        state = result.state;
+      };
+      step({ actorId: "brenna", optionId: "attack:0:0", targetIds: ["snag"] }, 12, 5);
+      step({ actorId: "brenna", optionId: "standard:dodge", targetIds: [] });
+      step({ actorId: "brenna", optionId: "end-turn", targetIds: [] });
+      const bolt = rulesetCombatOptions(definition, state, "corwin").find((option) => option.label === "Fire Bolt")!;
+      step({ actorId: "corwin", optionId: bolt.id, targetIds: ["rot"] }, 15, 4, 6);
+      step({ actorId: "corwin", optionId: "end-turn", targetIds: [] });
+      step({ actorId: "snag", optionId: "scimitar", targetIds: ["brenna"] }, 18, 6);
+      step({ actorId: "snag", optionId: "end-turn", targetIds: [] });
+      step({ actorId: "rot", optionId: "bite", targetIds: ["brenna"] }, 18, 5);
+      step({ actorId: "rot", optionId: "end-turn", targetIds: [] });
+      return { events, cursor: state.cursor };
+    };
+    const shipped = play(fiveE);
+    const without = play(stripped);
+    assert.deepEqual(shipped.events, without.events, "a fight that uses none of it is the fight it always was");
+    assert.equal(shipped.cursor, without.cursor, "and it threw the same dice, in the same order");
+  }
+
+  // ── Capability API 1.29 ──
+  {
+    assert.ok(
+      supportedCapabilityApi.major > 1 || supportedCapabilityApi.minor >= 29,
+      "the host supports the turn-economy seam",
+    );
+    const { getCapabilityPackageInstallIssue } =
+      await import("../../packages/server/src/services/capability-packages/package-manager.service.js");
+    const manifest = (minor: number) =>
+      ({
+        schemaVersion: 2,
+        capabilityApi: { major: 1, minor },
+        id: "ruleset-ember-roads",
+        kind: ["ruleset"],
+        permissions: [],
+        restartRequired: false,
+        contributions: { assets: { paths: ["ruleset.json", "catalogs/knacks.json"] } },
+      }) as any;
+    const economyIssue = /says what one turn can do requires schemaVersion 2 and capabilityApi 1\.29 or newer/;
+    const strikesOnly = variant(emberText, (doc) => {
+      doc.catalogs = (doc.catalogs ?? []).filter((catalog: Record<string, any>) => catalog.holds === "creatures");
+      for (const catalog of doc.catalogs) {
+        for (const entry of catalog.entries ?? []) {
+          for (const action of entry.creature?.actions ?? []) delete action.damage?.plus;
+        }
+      }
+      doc.combat.attacks[0].strikes = { const: 2 };
+    });
+    assert.match(getCapabilityPackageInstallIssue(manifest(28), strikesOnly) ?? "", economyIssue);
+    assert.equal(getCapabilityPackageInstallIssue(manifest(29), strikesOnly), null);
+    const conditionOnly = variant(emberText, (doc) => {
+      doc.catalogs = [];
+      doc.combat.conditions[0].effects = ["resist-all"];
+    });
+    assert.match(getCapabilityPackageInstallIssue(manifest(28), conditionOnly) ?? "", economyIssue);
+    assert.equal(getCapabilityPackageInstallIssue(manifest(29), conditionOnly), null);
+    // The part of a dodge its flag does not carry is its own declaration: an Engine that does not
+    // know the key refuses the whole file, so a package carrying it has to say 1.29.
+    const dodgeOnly = variant(emberText, (doc) => {
+      doc.catalogs = [];
+      doc.sheet.saves = [{ id: "reflex", label: "Reflex", ability: "brawn" }];
+      doc.combat.standardEffects = { dodge: { saves: ["reflex"] } };
+    });
+    assert.match(getCapabilityPackageInstallIssue(manifest(28), dodgeOnly) ?? "", economyIssue);
+    assert.equal(getCapabilityPackageInstallIssue(manifest(29), dodgeOnly), null);
+    // And the entries, inline or in the catalog file the install already holds.
+    const inline = variant(emberText, (doc) => {
+      doc.catalogs = (doc.catalogs ?? []).filter((catalog: Record<string, any>) => catalog.holds !== "creatures");
+      doc.catalogs[0].entries[0].mechanics = { kind: "utility", free: true, gives: [{ budget: "act", count: 1 }] };
+    });
+    assert.match(getCapabilityPackageInstallIssue(manifest(28), inline) ?? "", economyIssue);
+    assert.equal(getCapabilityPackageInstallIssue(manifest(29), inline), null);
+    const asAsset = variant(emberText, (doc) => {
+      doc.catalogs = (doc.catalogs ?? []).filter((catalog: Record<string, any>) => catalog.holds !== "creatures");
+      delete doc.catalogs[0].entries;
+      doc.catalogs[0].asset = "catalogs/knacks.json";
+    });
+    const assets = new Map([
+      [
+        "catalogs/knacks.json",
+        {
+          schemaVersion: 1,
+          catalog: "knacks",
+          entries: [
+            {
+              id: "sly",
+              label: "Sly",
+              rows: [{ list: "knacks", values: { name: "Sly" } }],
+              mechanics: { kind: "rider", rider: { on: "hit", oncePer: "turn", amount: { dice: "1d6" } } },
+            },
+          ],
+        },
+      ],
+    ]);
+    assert.match(getCapabilityPackageInstallIssue(manifest(28), asAsset, assets) ?? "", economyIssue);
+    assert.equal(getCapabilityPackageInstallIssue(manifest(29), asAsset, assets), null);
+  }
 }
 
 console.info("game ruleset combat core regressions passed.");

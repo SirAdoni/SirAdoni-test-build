@@ -1,4 +1,7 @@
 import {
+  DECISION_SOURCES,
+  defaultDecisionStateTokens,
+  type DecisionSource,
   IMAGE_GENERATION_QUALITIES,
   MAX_IMAGE_REFERENCES_PER_REQUEST,
   normalizeImagePromptInstructions,
@@ -37,6 +40,8 @@ export type ConnectionTransferRow = {
   videoGenerationSource?: unknown;
   videoService?: unknown;
   audioSource?: unknown;
+  decisionSource?: unknown;
+  maxStateTokens?: unknown;
   audioVoice?: unknown;
   audioSoundEffects?: unknown;
   audioMusic?: unknown;
@@ -78,6 +83,8 @@ export type SafeConnectionExport = {
   videoGenerationSource: string | null;
   videoService: string | null;
   audioSource: string | null;
+  decisionSource: DecisionSource | null;
+  maxStateTokens: number | null;
   audioVoice: string | null;
   audioSoundEffects: boolean;
   audioMusic: boolean;
@@ -127,6 +134,10 @@ export function normalizeImportedConnectionEntry(value: unknown): ConnectionImpo
   const name = asString(value.name).trim();
   if (!provider || !name) return null;
 
+  const decisionSource =
+    provider === "decision" && DECISION_SOURCES.includes(value.decisionSource as DecisionSource)
+      ? (value.decisionSource as DecisionSource)
+      : null;
   const defaultParameters = parseDefaultParameters(value.defaultParameters);
   const baseUrl = asString(value.baseUrl);
   const model = asString(value.model);
@@ -170,6 +181,12 @@ export function normalizeImportedConnectionEntry(value: unknown): ConnectionImpo
       maxImageReferences: asNullableBoundedPositiveInteger(value.maxImageReferences, MAX_IMAGE_REFERENCES_PER_REQUEST),
       videoGenerationSource: provider === "video_generation" ? asNullableString(value.videoGenerationSource) : null,
       videoService,
+      decisionSource,
+      maxStateTokens:
+        provider === "decision"
+          ? asBoundedPositiveInteger(value.maxStateTokens, defaultDecisionStateTokens(decisionSource), 30000)
+          : null,
+      credentialsFromConnectionId: null,
       audioSource: provider === "audio" ? asAudioGenerationSource(value.audioSource ?? value.service) : null,
       audioVoice: provider === "audio" ? asNullableString(value.audioVoice) : null,
       audioSoundEffects: provider === "audio" && asBoolean(value.audioSoundEffects),
@@ -189,6 +206,10 @@ export function normalizeImportedConnectionEntry(value: unknown): ConnectionImpo
 function serializeConnectionForExport(connection: ConnectionTransferRow): SafeConnectionExport {
   const provider = asProvider(connection.provider) ?? "custom";
   const isImageProvider = provider === "image_generation";
+  const decisionSource =
+    provider === "decision" && DECISION_SOURCES.includes(connection.decisionSource as DecisionSource)
+      ? (connection.decisionSource as DecisionSource)
+      : null;
   const isVideoProvider = provider === "video_generation";
   const isAudioProvider = provider === "audio";
   const baseUrl = asString(connection.baseUrl);
@@ -228,6 +249,11 @@ function serializeConnectionForExport(connection: ConnectionTransferRow): SafeCo
     imageService,
     videoGenerationSource: isVideoProvider ? asNullableString(connection.videoGenerationSource) : null,
     videoService: isVideoProvider ? asNullableString(connection.videoService ?? connection.service) : null,
+    decisionSource,
+    maxStateTokens:
+      provider === "decision"
+        ? asBoundedPositiveInteger(connection.maxStateTokens, defaultDecisionStateTokens(decisionSource), 30000)
+        : null,
     audioSource: isAudioProvider ? asNullableString(connection.audioSource ?? connection.service) : null,
     audioVoice: isAudioProvider ? asNullableString(connection.audioVoice) : null,
     audioSoundEffects: isAudioProvider && asBoolean(connection.audioSoundEffects),

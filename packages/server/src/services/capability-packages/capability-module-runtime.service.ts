@@ -25,7 +25,9 @@ import {
 } from "./capability-command-registry.service.js";
 import { registerCapabilityService } from "./capability-service-registry.service.js";
 import { assertCapabilityAgentRuntimeServiceRegistration } from "./capability-agent-runtime.service.js";
+import { createCapabilityIntegrationHost } from "./capability-integrations.service.js";
 import { createCapabilityLanguageModelHost } from "./capability-language-model.service.js";
+import { linkCapabilityNativeDependencies } from "./capability-native-dependencies.service.js";
 import {
   createCapabilityEmbeddingHost,
   createConfiguredCapabilityEmbeddingHost,
@@ -104,6 +106,7 @@ async function createCapabilityRuntimeHost(
     isDebugAgentsEnabled,
     json: Object.freeze({ parseJsonish: parseGameJsonish }),
     languageModels: createCapabilityLanguageModelHost(app.db),
+    integrations: createCapabilityIntegrationHost(permissions),
     logger: Object.freeze({
       debug: (message: string, ...args: CapabilityRuntimeLogArgument[]) =>
         Reflect.apply(logger.debug, logger, [message, ...args]),
@@ -160,6 +163,11 @@ class CapabilityModuleRuntime {
   }
 
   private async ensureModuleResolution(): Promise<void> {
+    try {
+      await linkCapabilityNativeDependencies(join(DATA_DIR, "capability-runtime-snapshots"));
+    } catch (error) {
+      logger.warn(error, "Could not link native package runtime dependencies");
+    }
     const packageRoot = join(DATA_DIR, "capability-packages");
     const link = join(packageRoot, "node_modules");
     if (existsSync(link)) return;

@@ -31,6 +31,14 @@ function allowAnnotations(node, isRoot = true) {
   }
 }
 
+// "At least one of these keys" as its OWN constraint, kept in `allOf` rather than folded into the
+// node's `anyOf`. A node may already carry an `anyOf` from the zod schema, and adding branches to
+// that one would WIDEN it: a document matching an existing branch would satisfy the whole `anyOf`
+// without carrying any of these keys at all.
+function requireAnyOf(node, keys) {
+  node.allOf = [...(node.allOf ?? []), { anyOf: keys.map((key) => ({ required: [key] })) }];
+}
+
 // A catalog carries its entries inline or names a package asset, never both. The zod schema says
 // so in a refinement, which a JSON Schema generator cannot see, so the editor is told here.
 function requireOneCatalogSource(node) {
@@ -107,15 +115,22 @@ function requireSaveEndsUntilSave(node) {
   }
 }
 
-// A creature action's damage names dice, a flat amount, or both: an empty one is refused by the
-// Engine, and that too is a refinement. The node is found by its shape: `dice`, `flat` and `type`.
+// A creature action's damage, and every clause beside it, names dice, a flat amount, or both: an
+// empty one is refused by the Engine, and that too is a refinement. The node is found by its shape:
+// `dice`, `flat` and `type`, and nothing but the keys a blow or a clause carries.
+const DAMAGE_KEYS = ["dice", "flat", "type", "plus", "save"];
 function requireDamageAmount(node) {
   if (Array.isArray(node)) return node.forEach(requireDamageAmount);
   if (!node || typeof node !== "object") return;
   Object.values(node).forEach(requireDamageAmount);
-  const keys = Object.keys(node.properties ?? {});
-  if (node.type === "object" && keys.length === 3 && ["dice", "flat", "type"].every((key) => keys.includes(key))) {
-    node.anyOf = [{ required: ["dice"] }, { required: ["flat"] }];
+  const keys = Object.keys(node.properties ?? {}).filter((key) => key !== "$comment");
+  const damageShaped =
+    ["dice", "flat", "type"].every((key) => keys.includes(key)) && keys.every((key) => DAMAGE_KEYS.includes(key));
+  // A rider's amount carries no type of its own, so its keys alone look like every other pair of
+  // dice and flat in the file, a creature's health included. The schema marks it by name instead.
+  const riderAmountShaped = node.description === "rider-amount";
+  if (node.type === "object" && (damageShaped || riderAmountShaped)) {
+    requireAnyOf(node, ["dice", "flat"]);
   }
 }
 
@@ -147,7 +162,85 @@ function requireDistanceForMeasured(node) {
   ];
 }
 
+/**
+ * Two rules a catalog entry's mechanics keep that the shape alone does not say: an entry of the
+ * kind `rider` has to carry the `rider` that describes it, and something `free` spends no budget so
+ * it names none. Zod refuses both at import; an author's editor should refuse them while typing.
+ */
+function requireMechanicsPairs(node) {
+  if (Array.isArray(node)) return node.forEach(requireMechanicsPairs);
+  if (!node || typeof node !== "object") return;
+  Object.values(node).forEach(requireMechanicsPairs);
+  const properties = node.properties;
+  if (node.type !== "object" || !properties?.kind || !properties.rider || !properties.free) return;
+  node.allOf = [
+    ...(node.allOf ?? []),
+    { if: { properties: { kind: { const: "rider" } }, required: ["kind"] }, then: { required: ["rider"] } },
+    { not: { required: ["free", "budget"] } },
+  ];
+}
+
+// A track's `kinds` say what a mark may BE, so they need the `levels` a mark sits on, and the other
+// way round a track with levels needs kinds. That is a cross-check the generator cannot see, so the
+// editor is told here. The node is found by its shape: `levels` beside `kinds` and `min`.
+function requireLevelsWithKinds(node) {
+  if (Array.isArray(node)) return node.forEach(requireLevelsWithKinds);
+  if (!node || typeof node !== "object") return;
+  Object.values(node).forEach(requireLevelsWithKinds);
+  const properties = node.properties;
+  if (node.type !== "object" || !properties?.levels || !properties.kinds || !properties.min) return;
+  node.dependencies = { ...(node.dependencies ?? {}), kinds: ["levels"], levels: ["kinds"] };
+}
+
+/**
+ * A purchase on a check buys successes or dice, so an entry that names neither buys nothing. Zod
+ * refuses that at import; the published schema has to say it too, or an author's editor calls a
+ * useless entry valid.
+ */
+function requireSpendBuysSomething(node) {
+  if (Array.isArray(node)) return node.forEach(requireSpendBuysSomething);
+  if (!node || typeof node !== "object") return;
+  Object.values(node).forEach(requireSpendBuysSomething);
+  const properties = node.properties;
+  if (node.type !== "object" || !properties?.pool || !properties.perCheck) return;
+  if (!properties.successes && !properties.dice) return;
+  requireAnyOf(node, ["successes", "dice"]);
+}
+
+/**
+ * And the other half of that: a charm's `check` throws dice again, adds dice, adds successes or
+ * moves the target, so one that says none of them spends a resource for nothing. Zod refuses it at
+ * import; without this the editor calls the empty object valid. Found by its shape: all four keys.
+ */
+function requireCheckEffectDoesSomething(node) {
+  if (Array.isArray(node)) return node.forEach(requireCheckEffectDoesSomething);
+  if (!node || typeof node !== "object") return;
+  Object.values(node).forEach(requireCheckEffectDoesSomething);
+  const keys = ["reroll", "dice", "successes", "threshold"];
+  if (node.type !== "object" || !keys.every((key) => node.properties?.[key])) return;
+  requireAnyOf(node, keys);
+}
+
+/**
+ * Only a pool counts successes, so only a `dice-pool` resolution may declare a `spend`. Zod refuses
+ * it on a sum at import; the published schema must not offer it there.
+ */
+function spendOnlyOnAPool(node) {
+  if (Array.isArray(node)) return node.forEach(spendOnlyOnAPool);
+  if (!node || typeof node !== "object") return;
+  Object.values(node).forEach(spendOnlyOnAPool);
+  const properties = node.properties;
+  if (node.type !== "object" || !properties?.spend || !properties.kind) return;
+  const kind = properties.kind.const ?? properties.kind.enum?.[0];
+  if (kind !== undefined && kind !== "dice-pool") delete properties.spend;
+}
+
 const schema = zodToJsonSchema(rulesetDefinitionSchema, { $refStrategy: "none", target: "jsonSchema7" });
+requireLevelsWithKinds(schema);
+requireSpendBuysSomething(schema);
+requireCheckEffectDoesSomething(schema);
+spendOnlyOnAPool(schema);
+requireMechanicsPairs(schema);
 requireOneCatalogSource(schema);
 requireOneEntryContent(schema);
 requireCatalogFeeds(schema);

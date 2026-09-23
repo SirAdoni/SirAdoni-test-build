@@ -4,8 +4,12 @@
  * localization file the editor reads, so nothing here can agree with a mistake the editor makes.
  *
  * What is pinned:
- *   - Only text-like columns are compared. A number or a switch is where the player's own state
- *     lives, so a difference there is never offered, and neither is a column the ruleset keeps.
+ *   - For a column the row HAS, only text-like ones are compared. A number or a switch is where the
+ *     player's own state lives, so a difference there is never offered, and neither is a column the
+ *     ruleset keeps up to date itself.
+ *   - A column the row does not carry AT ALL is offered whatever its type, because a column the
+ *     player has never seen is not their state. Tested on the key, so a 0, a false or an empty
+ *     string the row already holds stays the player's.
  *   - A column the entry does not set is never touched, and neither is a value the column itself
  *     would refuse: a refresh must not write something the editor cannot then show.
  *   - A row is lined up with the entry row it came from by position when the counts agree, and
@@ -83,8 +87,12 @@ const plan = (entries: readonly RulesetCatalogEntry[], lists: Lists) =>
       label: "What it does",
       current: "Older wording.",
       next: roadSense.rows![0]!.values.notes,
+      // What applying writes. The same text, carried beside the display copy so a column the row is
+      // GAINING can write a number or a switch without the applier stringifying it.
+      value: roadSense.rows![0]!.values.notes,
     },
   ]);
+  assert.equal(plans[0]!.rows[0]!.columns[0]!.added, undefined, "a column the row already has is not new to it");
   // The row is named by what the SHEET shows it as, so it can be found in the editor.
   assert.equal(plans[0]!.rows[0]!.name, "Road Sense");
   assert.equal(plans[0]!.rows[0]!.index, 0);
@@ -214,12 +222,13 @@ const fivePlan = (lists: Lists, entries: readonly RulesetCatalogEntry[] = fiveEn
   };
   assert.deepEqual(summarize(fivePlan(magic)), [["attacks", [[0, "Longsword", ["damage", "damage_type"]]]]]);
 
-  // An enum the player changed is text-like, so it IS offered.
+  // An enum the player changed is text-like, so it IS offered. This row also carries NONE of the
+  // other columns, so it is offered those too, whatever their type: see the block below for why.
   const finesse: Lists = {
     attacks: [{ name: "Longsword", ability: "dex", [RULESET_CATALOG_ROW_KEY]: "gear/longsword" }],
   };
   assert.deepEqual(summarize(fivePlan(finesse)), [
-    ["attacks", [[0, "Longsword", ["ability", "damage", "damage_type"]]]],
+    ["attacks", [[0, "Longsword", ["ability", "proficient", "bonus", "damage", "damage_type"]]]],
   ]);
 
   // A column the entry does not set is never touched, whatever the sheet holds in it. The 5e
@@ -228,6 +237,99 @@ const fivePlan = (lists: Lists, entries: readonly RulesetCatalogEntry[] = fiveEn
     { id: "longsword", label: "Longsword", rows: [{ list: "attacks", values: { name: "Longsword" } }] },
   ] as unknown as RulesetCatalogEntry[];
   assert.deepEqual(fivePlan(magic, trimmed), []);
+
+  // ── A column the row does NOT carry at all (#6400) ──
+  //
+  // The rule above protects the player's own state. A column the row has never had is not the
+  // player's state: they have never seen it. Without this a ruleset that ADDS a column could only
+  // reach an existing row by having the player delete it and pick it again.
+  {
+    // A longsword picked before the list grew a `proficient` switch and a `bonus` number.
+    const older: Lists = {
+      attacks: [
+        {
+          name: "Longsword",
+          ability: "str",
+          damage: "1d8",
+          damage_type: "slashing",
+          [RULESET_CATALOG_ROW_KEY]: "gear/longsword",
+        },
+      ],
+    };
+    const plans = fivePlan(older);
+    assert.deepEqual(summarize(plans), [["attacks", [[0, "Longsword", ["proficient", "bonus"]]]]]);
+    const [switchColumn, numberColumn] = plans[0]!.rows[0]!.columns;
+    // Each is offered as its own reviewable line, worded as something the row gained.
+    assert.equal(switchColumn!.added, true);
+    assert.equal(switchColumn!.value, true, "a switch is written as a switch, not as the string 'true'");
+    assert.equal(switchColumn!.current, "", "the row held nothing there");
+    assert.equal(numberColumn!.added, true);
+    assert.equal(numberColumn!.value, 0, "and a number as a number");
+
+    // Accepting writes ONLY those columns. Everything else the row holds survives, the mark
+    // included, and the values land with their own types rather than stringified.
+    const applied = applyCatalogRefresh(older, plans[0]!.rows);
+    assert.deepEqual(applied.attacks![0], {
+      name: "Longsword",
+      ability: "str",
+      damage: "1d8",
+      damage_type: "slashing",
+      proficient: true,
+      bonus: 0,
+      [RULESET_CATALOG_ROW_KEY]: "gear/longsword",
+    });
+
+    // Declining leaves the row exactly as it was: a new column is as declinable as any other line.
+    assert.deepEqual(applyCatalogRefresh(older, []), {});
+
+    // A column whose value the row holds as 0, false or an empty string is a column the row HAS,
+    // so it stays the player's. Tested on the KEY, never on the value.
+    const held = [
+      {
+        id: "longsword",
+        label: "Longsword",
+        rows: [
+          {
+            list: "attacks",
+            values: { name: "Longsword", ability: "str", proficient: true, bonus: 3, damage: "1d8" },
+          },
+        ],
+      },
+    ] as unknown as RulesetCatalogEntry[];
+    const zeroed: Lists = {
+      attacks: [
+        {
+          name: "Longsword",
+          ability: "str",
+          proficient: false,
+          bonus: 0,
+          damage: "1d8",
+          [RULESET_CATALOG_ROW_KEY]: "gear/longsword",
+        },
+      ],
+    };
+    assert.deepEqual(fivePlan(zeroed, held), [], "a 0 and a false the row already holds are the player's");
+
+    // A column the ruleset keeps up to date is recomputed by its own path, so it is not offered
+    // twice, and that holds for a column the row does not carry either.
+    const scaledNew = [
+      {
+        id: "longsword",
+        label: "Longsword",
+        rows: [
+          {
+            list: "attacks",
+            values: { name: "Longsword", ability: "str", damage: "1d8", bonus: 4 },
+            scaled: { bonus: { from: { const: 4 } } },
+          },
+        ],
+      },
+    ] as unknown as RulesetCatalogEntry[];
+    const withoutBonus: Lists = {
+      attacks: [{ name: "Longsword", ability: "str", damage: "1d8", [RULESET_CATALOG_ROW_KEY]: "gear/longsword" }],
+    };
+    assert.deepEqual(fivePlan(withoutBonus, scaledNew), [], "a scaled column is never offered, new or not");
+  }
 
   // A value the column itself would refuse is left out: an enum value that is not offered, dice
   // text past its limit, and text past the column's own maxLength.

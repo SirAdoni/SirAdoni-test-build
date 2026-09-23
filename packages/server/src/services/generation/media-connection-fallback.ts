@@ -10,6 +10,8 @@ import { OPENAI_CHATGPT_CODEX_BASE_URL } from "../llm/openai-chatgpt-auth.js";
 import type { VideoGenerationRequest } from "../video/video-generation.js";
 import { resolveBaseUrl } from "./connection-base-url.js";
 
+const DEFAULT_ATLAS_CLOUD_VIDEO_MODEL = "google/veo3.1/text-to-video";
+
 type ImageFallbackStore = {
   getFallbackForImageGeneration(): Promise<any | null>;
 };
@@ -38,7 +40,7 @@ export function resolveImageReferenceCollectionLimit(
   return Math.max(normalizedPrimary, resolveImageFallbackReferenceLimit(fallback));
 }
 
-function resolveConnectionVideoComfyDefaults(connection: { defaultParameters?: unknown }) {
+function resolveConnectionVideoDefaults(connection: { defaultParameters?: unknown }) {
   let root = connection.defaultParameters;
   if (typeof root === "string") {
     try {
@@ -48,7 +50,7 @@ function resolveConnectionVideoComfyDefaults(connection: { defaultParameters?: u
     }
   }
   if (!root || typeof root !== "object" || Array.isArray(root)) return null;
-  return normalizeVideoGenerationProfile((root as Record<string, unknown>)[VIDEO_DEFAULTS_STORAGE_KEY]).profile.comfyui;
+  return normalizeVideoGenerationProfile((root as Record<string, unknown>)[VIDEO_DEFAULTS_STORAGE_KEY]).profile;
 }
 
 export async function resolveImageConnectionFallback(
@@ -101,7 +103,8 @@ export async function resolveVideoConnectionFallback(
   const model = String(connection.model ?? "").trim();
   const explicitSource = String(connection.videoGenerationSource ?? connection.videoService ?? "").trim();
   const source = explicitSource || inferVideoSource(model, baseUrl);
-  const comfyDefaults = resolveConnectionVideoComfyDefaults(connection);
+  const videoDefaults = resolveConnectionVideoDefaults(connection);
+  const comfyDefaults = videoDefaults?.comfyui;
   return {
     connectionId: connection.id,
     connectionName: String(connection.name ?? "").trim() || connection.id,
@@ -114,5 +117,7 @@ export async function resolveVideoConnectionFallback(
     comfyWorkflow: connection.comfyuiWorkflow || undefined,
     comfyLoras: comfyDefaults?.loras ?? [],
     fps: comfyDefaults?.fps,
+    // An Atlas Cloud request with no model runs the default model, so its saved options apply.
+    atlasModelOptions: videoDefaults?.atlas.modelOptions[model || DEFAULT_ATLAS_CLOUD_VIDEO_MODEL],
   };
 }

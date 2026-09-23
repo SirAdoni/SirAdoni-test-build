@@ -90,8 +90,16 @@ export function parseSheetCommandTagBody(body: string): ParsedSheetCommandTag {
   if (!name) return parsed;
 
   if (name === "spend" || name === "restore" || name === "damage" || name === "temp") {
-    const pool = values.get("pool")?.trim();
     const amount = readInteger(values.get("amount"));
+    // A `damage` that names a track is a mark on a WOUND track. The kind is what the ruleset calls
+    // the harm; the pool form is untouched, so a ruleset whose health is a pool reads as it always did.
+    const track = values.get("track")?.trim();
+    if (name === "damage" && track) {
+      const kind = values.get("kind")?.trim();
+      if (!kind || amount === null) return parsed;
+      return { ...parsed, op: { op: "damage", track, kind, amount } };
+    }
+    const pool = values.get("pool")?.trim();
     if (!pool || amount === null) return parsed;
     return { ...parsed, op: { op: name, pool, amount } };
   }
@@ -170,7 +178,11 @@ export function serializeSheetCommandTag(
   } else {
     if (input.who) attribute("who", input.who);
     attribute("op", op.op);
-    if (op.op === "spend" || op.op === "restore" || op.op === "damage" || op.op === "temp") {
+    if (op.op === "damage" && "track" in op) {
+      attribute("track", op.track);
+      attribute("kind", op.kind);
+      attribute("amount", op.amount);
+    } else if (op.op === "spend" || op.op === "restore" || op.op === "damage" || op.op === "temp") {
       attribute("pool", op.pool);
       attribute("amount", op.amount);
     } else if (op.op === "track") {
@@ -186,7 +198,7 @@ export function serializeSheetCommandTag(
     } else if (op.op === "use") {
       attribute("name", op.name);
       if (op.pool) attribute("pool", op.pool);
-    } else {
+    } else if (op.op === "rest") {
       attribute("rest", op.rest);
     }
   }

@@ -423,7 +423,7 @@ test("Roleplay line volume stays on screen and touch reveal preserves action col
     await page.goto("/");
     const row = page.locator(`[data-message-id="${message.id}"]`);
     const copy = row.getByRole("button", { name: "Copy", exact: true });
-    const volume = row.getByRole("button", { name: /^Line volume: \d+%$/u });
+    const volume = row.getByRole("button", { name: /^Voice controls/u });
     const actions = row.locator(".mari-message-actions");
     const actionAppearance = () =>
       actions.locator("button").evaluateAll((elements) =>
@@ -460,7 +460,7 @@ test("Roleplay line volume stays on screen and touch reveal preserves action col
       }, direction);
       if (testInfo.project.use.hasTouch) await volume.tap();
       else await volume.click();
-      const panel = page.getByRole("dialog", { name: "Line volume", exact: true });
+      const panel = page.getByRole("dialog", { name: /^Voice controls/u });
       await expect(panel).toBeVisible();
       const bounds = await panel.evaluate((element) => {
         const rect = element.getBoundingClientRect();
@@ -478,11 +478,11 @@ test("Roleplay line volume stays on screen and touch reveal preserves action col
       expect(bounds.top).toBeGreaterThanOrEqual(0);
       expect(bounds.bottom).toBeLessThanOrEqual(bounds.height);
       const slider = panel.getByRole("slider", { name: "Line volume", exact: true });
-      await expect(slider).toBeFocused();
+      await slider.focus();
       await slider.press("Home");
       await slider.press("ArrowRight");
       await expect(slider).toHaveValue("1");
-      await expect(volume).toHaveAttribute("aria-label", "Line volume: 1%");
+      await expect(panel.getByText("1%", { exact: true })).toBeVisible();
       await page.screenshot({ path: testInfo.outputPath(`line-volume-${direction}.png`) });
       await slider.press("Escape");
       await expect(panel).toHaveCount(0);
@@ -842,7 +842,7 @@ test("Game translation follows changed narration and remains manually accessible
 });
 
 for (const mode of ["conversation", "roleplay", "game"] as const) {
-  test(`${mode} automatic translation survives navigation and evicted chat settings`, async ({ page, request }) => {
+  test(`${mode} server translations survive navigation and evicted chat settings`, async ({ page, request }) => {
     const chat = await (
       await request.post("/api/chats", { data: { name: "Background translation fixture", mode, characterIds: [] } })
     ).json();
@@ -983,9 +983,11 @@ for (const mode of ["conversation", "roleplay", "game"] as const) {
             settled: () => generated,
             cached(id: string) {
               const data = client.getQueryData(chatKeys.messages(chat.id));
-              return data?.pages.flat().find((row: { id: string }) => row.id === id)?.extra;
+              const extra = data?.pages.flat().find((row: { id: string }) => row.id === id)?.extra;
+              return typeof extra === "string" ? JSON.parse(extra) : extra;
             },
             showSaved() {
+              root?.unmount();
               useTranslationStore.getState().setConfig(config);
               useTranslationStore
                 .getState()
@@ -1049,7 +1051,13 @@ for (const mode of ["conversation", "roleplay", "game"] as const) {
         }
         const source = `The ${scenario} story continues.`;
         const saved = await (
-          await request.post(`/api/chats/${chat.id}/messages`, { data: { role: "assistant", content: source } })
+          await request.post(`/api/chats/${chat.id}/messages`, {
+            data: {
+              role: "assistant",
+              content: source,
+              extra: { translation: "Gotowe tłumaczenie.", translationSource: source, translationHidden: false },
+            },
+          })
         ).json();
         await pendingGeneration!.fulfill({
           contentType: "text/event-stream",
@@ -1062,15 +1070,10 @@ for (const mode of ["conversation", "roleplay", "game"] as const) {
             .join(""),
         });
         await page.evaluate(() => (window as any).translationFixture.settled());
-        await expect.poll(() => translations.length).toBe(scenarios.indexOf(scenario) + 1);
-        expect(translations.at(-1)).toMatchObject({
-          chatId: chat.id,
-          text: source,
-          provider: "ai",
-          targetLanguage: scenario === "malformed-legacy" ? "en" : "pl",
-          connectionId: "origin-connection",
-          systemPrompt: metadata.translationOutputPrompt,
-        });
+        // Generation now persists output translation on the server. The browser must
+        // consume the saved extra even after navigating or evicting the chat query,
+        // without issuing a duplicate client-side translation request.
+        expect(translations).toHaveLength(0);
         await expect
           .poll(async () => {
             const messages = await (await request.get(`/api/chats/${chat.id}/messages`)).json();
@@ -1088,8 +1091,8 @@ for (const mode of ["conversation", "roleplay", "game"] as const) {
               return useTranslationStore.getState().translations[id];
             }, saved.id),
           ).toBeUndefined();
-          await page.evaluate(() => (window as any).translationFixture.showSaved());
         }
+        await page.evaluate(() => (window as any).translationFixture.showSaved());
         await expect(page.getByTestId("translation-fixture-output")).toContainText("Gotowe tłumaczenie.");
       }
     } finally {

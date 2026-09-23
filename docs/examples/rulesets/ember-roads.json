@@ -20,41 +20,121 @@
   },
   "resolution": {
     "kind": "dice-sum",
-    "dice": { "count": 2, "sides": 6 },
-    "abilityModifier": { "op": "identity" },
+    "dice": {
+      "count": 2,
+      "sides": 6
+    },
+    "abilityModifier": {
+      "op": "identity"
+    },
     "proficiencyTiers": [
-      { "id": "untrained", "label": "Untrained" },
-      { "id": "trained", "label": "Trained", "flat": 1 },
-      { "id": "expert", "label": "Expert", "flat": 2 }
+      {
+        "id": "untrained",
+        "label": "Untrained"
+      },
+      {
+        "id": "trained",
+        "label": "Trained",
+        "flat": 1
+      },
+      {
+        "id": "expert",
+        "label": "Expert",
+        "flat": 2
+      }
     ],
     "advantage": false,
     "difficultyLadder": [
-      { "label": "Easy", "dc": 6 },
-      { "label": "Risky", "dc": 8 },
-      { "label": "Hard", "dc": 10 },
-      { "label": "Desperate", "dc": 12 }
+      {
+        "label": "Easy",
+        "dc": 6
+      },
+      {
+        "label": "Risky",
+        "dc": 8
+      },
+      {
+        "label": "Hard",
+        "dc": 10
+      },
+      {
+        "label": "Desperate",
+        "dc": 12
+      }
     ]
   },
   "sheet": {
     "version": 1,
     "sections": [
-      { "id": "about", "label": "About" },
-      { "id": "gear", "label": "Gear" },
-      { "id": "knacks", "label": "Knacks" }
+      {
+        "id": "about",
+        "label": "About"
+      },
+      {
+        "id": "gear",
+        "label": "Gear"
+      },
+      {
+        "id": "knacks",
+        "label": "Knacks"
+      }
     ],
     "abilities": [
-      { "id": "brawn", "label": "Brawn", "short": "BRN", "min": -1, "max": 3, "default": 0 },
-      { "id": "wits", "label": "Wits", "short": "WIT", "min": -1, "max": 3, "default": 0 },
-      { "id": "heart", "label": "Heart", "short": "HRT", "min": -1, "max": 3, "default": 0 }
+      {
+        "id": "brawn",
+        "label": "Brawn",
+        "short": "BRN",
+        "min": -1,
+        "max": 3,
+        "default": 0
+      },
+      {
+        "id": "wits",
+        "label": "Wits",
+        "short": "WIT",
+        "min": -1,
+        "max": 3,
+        "default": 0
+      },
+      {
+        "id": "heart",
+        "label": "Heart",
+        "short": "HRT",
+        "min": -1,
+        "max": 3,
+        "default": 0
+      }
     ],
     "skills": [
-      { "id": "scrap", "label": "Scrap", "ability": "brawn" },
-      { "id": "sneak", "label": "Sneak", "ability": "wits" },
-      { "id": "tinker", "label": "Tinker", "ability": "wits" },
-      { "id": "sway", "label": "Sway", "ability": "heart" }
+      {
+        "id": "scrap",
+        "label": "Scrap",
+        "ability": "brawn"
+      },
+      {
+        "id": "sneak",
+        "label": "Sneak",
+        "ability": "wits"
+      },
+      {
+        "id": "tinker",
+        "label": "Tinker",
+        "ability": "wits"
+      },
+      {
+        "id": "sway",
+        "label": "Sway",
+        "ability": "heart"
+      }
     ],
     "fields": [
-      { "id": "calling", "label": "Calling", "type": "text", "maxLength": 60, "section": "about" },
+      {
+        "id": "calling",
+        "label": "Calling",
+        "type": "text",
+        "maxLength": 60,
+        "section": "about"
+      },
       {
         "id": "toughness",
         "label": "Toughness",
@@ -70,7 +150,17 @@
         "id": "grit_max",
         "label": "Grit maximum",
         "op": "sum",
-        "of": [{ "const": 4 }, { "field": "toughness" }, { "abilityMod": "brawn" }],
+        "of": [
+          {
+            "const": 4
+          },
+          {
+            "field": "toughness"
+          },
+          {
+            "abilityMod": "brawn"
+          }
+        ],
         "section": "about"
       },
       {
@@ -78,7 +168,14 @@
         "id": "guard",
         "label": "Guard",
         "op": "sum",
-        "of": [{ "const": 6 }, { "abilityMod": "wits" }],
+        "of": [
+          {
+            "const": 6
+          },
+          {
+            "abilityMod": "wits"
+          }
+        ],
         "section": "about"
       }
     ],
@@ -89,8 +186,19 @@
         "section": "gear",
         "maxItems": 20,
         "columns": [
-          { "id": "name", "label": "Name", "type": "text", "maxLength": 60, "required": true },
-          { "id": "notes", "label": "Notes", "type": "text", "maxLength": 200 },
+          {
+            "id": "name",
+            "label": "Name",
+            "type": "text",
+            "maxLength": 60,
+            "required": true
+          },
+          {
+            "id": "notes",
+            "label": "Notes",
+            "type": "text",
+            "maxLength": 200
+          },
           {
             "$comment": "A piece of gear with damage dice is something you can swing. The rest of the list is rope and lamp oil, and a fight simply never offers it.",
             "id": "swing",
@@ -99,8 +207,18 @@
             "values": ["brawn", "wits", "heart"],
             "default": "brawn"
           },
-          { "id": "damage", "label": "Damage dice", "type": "dice", "example": "1d6" },
-          { "id": "harm", "label": "Kind of harm", "type": "text", "maxLength": 20 }
+          {
+            "id": "damage",
+            "label": "Damage dice",
+            "type": "dice",
+            "example": "1d6"
+          },
+          {
+            "id": "harm",
+            "label": "Kind of harm",
+            "type": "text",
+            "maxLength": 20
+          }
         ]
       },
       {
@@ -109,8 +227,19 @@
         "section": "knacks",
         "maxItems": 20,
         "columns": [
-          { "id": "name", "label": "Name", "type": "text", "maxLength": 60, "required": true },
-          { "id": "notes", "label": "What it does", "type": "text", "maxLength": 200 }
+          {
+            "id": "name",
+            "label": "Name",
+            "type": "text",
+            "maxLength": 60,
+            "required": true
+          },
+          {
+            "id": "notes",
+            "label": "What it does",
+            "type": "text",
+            "maxLength": 200
+          }
         ]
       },
       {
@@ -120,30 +249,79 @@
         "section": "knacks",
         "maxItems": 12,
         "columns": [
-          { "id": "name", "label": "Name", "type": "text", "maxLength": 60, "required": true },
-          { "id": "uses", "label": "Uses", "type": "number", "min": 0, "max": 9, "default": 1 },
+          {
+            "id": "name",
+            "label": "Name",
+            "type": "text",
+            "maxLength": 60,
+            "required": true
+          },
+          {
+            "id": "uses",
+            "label": "Uses",
+            "type": "number",
+            "min": 0,
+            "max": 9,
+            "default": 1
+          },
           {
             "id": "recharge",
             "label": "Comes back",
             "type": "enum",
             "values": ["camp", "scene"],
-            "valueLabels": { "camp": "At camp", "scene": "Each scene" },
+            "valueLabels": {
+              "camp": "At camp",
+              "scene": "Each scene"
+            },
             "default": "camp"
           }
         ],
-        "pools": { "nameColumn": "name", "maxColumn": "uses", "rechargeColumn": "recharge" }
+        "pools": {
+          "nameColumn": "name",
+          "maxColumn": "uses",
+          "rechargeColumn": "recharge"
+        }
       }
     ],
     "live": {
       "pools": [
-        { "id": "grit", "label": "Grit", "max": { "derived": "grit_max" } },
-        { "id": "luck", "label": "Luck", "max": { "const": 3 } }
+        {
+          "id": "grit",
+          "label": "Grit",
+          "max": {
+            "derived": "grit_max"
+          }
+        },
+        {
+          "id": "luck",
+          "label": "Luck",
+          "max": {
+            "const": 3
+          }
+        }
       ],
-      "tracks": [{ "id": "heat", "label": "Heat", "min": 0, "max": 5, "default": 0 }],
+      "tracks": [
+        {
+          "id": "heat",
+          "label": "Heat",
+          "min": 0,
+          "max": 5,
+          "default": 0
+        }
+      ],
       "conditions": [
-        { "id": "shaken", "label": "Shaken" },
-        { "id": "wounded", "label": "Wounded" },
-        { "id": "pinned", "label": "Pinned" }
+        {
+          "id": "shaken",
+          "label": "Shaken"
+        },
+        {
+          "id": "wounded",
+          "label": "Wounded"
+        },
+        {
+          "id": "pinned",
+          "label": "Pinned"
+        }
       ]
     }
   },
@@ -152,12 +330,31 @@
       "id": "camp",
       "label": "Make camp",
       "restore": [
-        { "pool": "grit", "to": "max" },
-        { "pool": "luck", "by": { "const": 1 } },
-        { "track": "heat", "by": { "const": -1 } },
-        { "listPools": "tricks", "recharge": ["camp"], "to": "max" }
+        {
+          "pool": "grit",
+          "to": "max"
+        },
+        {
+          "pool": "luck",
+          "by": {
+            "const": 1
+          }
+        },
+        {
+          "track": "heat",
+          "by": {
+            "const": -1
+          }
+        },
+        {
+          "listPools": "tricks",
+          "recharge": ["camp"],
+          "to": "max"
+        }
       ],
-      "clear": { "conditions": ["shaken"] }
+      "clear": {
+        "conditions": ["shaken"]
+      }
     }
   ],
   "gm": {
@@ -166,7 +363,12 @@
     "sheetSummary": {
       "fields": ["calling"],
       "derived": ["grit_max"],
-      "lists": [{ "list": "gear", "nameColumn": "name" }]
+      "lists": [
+        {
+          "list": "gear",
+          "nameColumn": "name"
+        }
+      ]
     }
   },
   "catalogs": [
@@ -176,17 +378,41 @@
       "label": "Knacks",
       "feeds": ["knacks", "tricks"],
       "filters": [
-        { "id": "grit", "label": "Grit cost", "type": "number" },
-        { "id": "road", "label": "Road", "type": "text" },
-        { "id": "callings", "label": "Calling", "type": "tags", "startFrom": { "field": "calling" } }
+        {
+          "id": "grit",
+          "label": "Grit cost",
+          "type": "number"
+        },
+        {
+          "id": "road",
+          "label": "Road",
+          "type": "text"
+        },
+        {
+          "id": "callings",
+          "label": "Calling",
+          "type": "tags",
+          "startFrom": {
+            "field": "calling"
+          }
+        }
       ],
-      "units": { "distance": { "label": "paces", "perCell": 2 } },
+      "units": {
+        "distance": {
+          "label": "paces",
+          "perCell": 2
+        }
+      },
       "entries": [
         {
           "id": "road-sense",
           "label": "Road Sense",
           "summary": "You read a road the way other people read a face.",
-          "filters": { "grit": 0, "road": "Ash Flats", "callings": ["Scout", "Courier"] },
+          "filters": {
+            "grit": 0,
+            "road": "Ash Flats",
+            "callings": ["Scout", "Courier"]
+          },
           "rows": [
             {
               "list": "knacks",
@@ -201,11 +427,18 @@
           "id": "scrap-whisper",
           "label": "Scrap Whisper",
           "summary": "Dead machines tell you what killed them.",
-          "filters": { "grit": 0, "road": "Rustways", "callings": ["Tinker"] },
+          "filters": {
+            "grit": 0,
+            "road": "Rustways",
+            "callings": ["Tinker"]
+          },
           "rows": [
             {
               "list": "knacks",
-              "values": { "name": "Scrap Whisper", "notes": "Tinker to learn what a broken thing was last used for." }
+              "values": {
+                "name": "Scrap Whisper",
+                "notes": "Tinker to learn what a broken thing was last used for."
+              }
             }
           ]
         },
@@ -213,7 +446,11 @@
           "id": "iron-stomach",
           "label": "Iron Stomach",
           "summary": "You can eat what the road offers and keep walking.",
-          "filters": { "grit": 0, "road": "Every road", "callings": ["Hauler"] },
+          "filters": {
+            "grit": 0,
+            "road": "Every road",
+            "callings": ["Hauler"]
+          },
           "rows": [
             {
               "list": "knacks",
@@ -229,7 +466,11 @@
           "id": "last-ember",
           "label": "Last Ember",
           "summary": "Between camps you can call a friend back from the edge, once for each point of Heart.",
-          "filters": { "grit": 1, "road": "Every road", "callings": ["Ember-tender"] },
+          "filters": {
+            "grit": 1,
+            "road": "Every road",
+            "callings": ["Ember-tender"]
+          },
           "rows": [
             {
               "list": "knacks",
@@ -241,23 +482,44 @@
             {
               "$comment": "The uses follow the character's Heart, so the row stays right as the character grows without anyone editing it. The value is fitted to the column, so a Heart of 3 gives 3 uses and a Heart of 0 or less leaves the trick with none.",
               "list": "tricks",
-              "values": { "name": "Last Ember", "uses": 1, "recharge": "camp" },
-              "scaled": { "uses": { "from": { "abilityScore": "heart" } } }
+              "values": {
+                "name": "Last Ember",
+                "uses": 1,
+                "recharge": "camp"
+              },
+              "scaled": {
+                "uses": {
+                  "from": {
+                    "abilityScore": "heart"
+                  }
+                }
+              }
             }
           ],
           "mechanics": {
             "kind": "heal",
             "range": 0,
             "targets": "ally",
-            "amount": { "flat": 3 },
-            "cost": [{ "pool": "grit", "amount": 1 }]
+            "amount": {
+              "flat": 3
+            },
+            "cost": [
+              {
+                "pool": "grit",
+                "amount": 1
+              }
+            ]
           }
         },
         {
           "id": "coldfire-toss",
           "label": "Coldfire Toss",
           "summary": "A jar of blue fire that burns cold and spreads.",
-          "filters": { "grit": 1, "road": "Glasslands", "callings": ["Ember-tender"] },
+          "filters": {
+            "grit": 1,
+            "road": "Glasslands",
+            "callings": ["Ember-tender"]
+          },
           "rows": [
             {
               "list": "knacks",
@@ -270,20 +532,36 @@
           "mechanics": {
             "kind": "attack",
             "range": 12,
-            "area": { "shape": "burst", "size": 4 },
+            "area": {
+              "shape": "burst",
+              "size": 4
+            },
             "targets": "any",
             "targetCount": 3,
             "friendlyFire": true,
-            "amount": { "dice": "2d6" },
+            "amount": {
+              "dice": "2d6"
+            },
             "damageType": "coldfire",
-            "applies": [{ "condition": "shaken", "duration": { "rounds": 2 } }]
+            "applies": [
+              {
+                "condition": "shaken",
+                "duration": {
+                  "rounds": 2
+                }
+              }
+            ]
           }
         },
         {
           "id": "hold-the-line",
           "label": "Hold the Line",
           "summary": "You make the people beside you braver than they are.",
-          "filters": { "grit": 0, "road": "Every road", "callings": ["Hauler", "Scout"] },
+          "filters": {
+            "grit": 0,
+            "road": "Every road",
+            "callings": ["Hauler", "Scout"]
+          },
           "rows": [
             {
               "list": "knacks",
@@ -298,8 +576,53 @@
             "kind": "buff",
             "range": 4,
             "targets": "ally",
-            "temporary": { "flat": 2 },
-            "cost": [{ "pool": "luck", "amount": 1 }]
+            "temporary": {
+              "flat": 2
+            },
+            "cost": [
+              {
+                "pool": "luck",
+                "amount": 1
+              }
+            ]
+          }
+        },
+        {
+          "$comment": "One entry, two rows: the knack and the trick that counts it. Using it hands back the one thing this system's turn has, and the count is the trick row's own pool, so nothing here names a cost.",
+          "id": "second-breath",
+          "label": "Second Breath",
+          "summary": "Once a scene, find one more thing to do before the moment passes.",
+          "filters": {
+            "grit": 0,
+            "road": "Every road",
+            "callings": ["Hauler", "Scout"]
+          },
+          "rows": [
+            {
+              "list": "knacks",
+              "values": {
+                "name": "Second Breath",
+                "notes": "Once a scene, take a second Action on your turn."
+              }
+            },
+            {
+              "list": "tricks",
+              "values": {
+                "name": "Second Breath",
+                "uses": 1,
+                "recharge": "scene"
+              }
+            }
+          ],
+          "mechanics": {
+            "kind": "utility",
+            "free": true,
+            "gives": [
+              {
+                "budget": "act",
+                "count": 1
+              }
+            ]
           }
         }
       ]
@@ -310,24 +633,42 @@
       "label": "Road trouble",
       "holds": "creatures",
       "filters": [
-        { "id": "tier", "label": "How bad", "type": "text" },
-        { "id": "road", "label": "Road", "type": "text" }
+        {
+          "id": "tier",
+          "label": "How bad",
+          "type": "text"
+        },
+        {
+          "id": "road",
+          "label": "Road",
+          "type": "text"
+        }
       ],
       "entries": [
         {
           "id": "cinder-moth",
           "label": "Cinder Moth",
           "summary": "A hand-sized moth that carries a lungful of hot ash in its wings.",
-          "filters": { "tier": "Stray trouble", "road": "Glasslands" },
+          "filters": {
+            "tier": "Stray trouble",
+            "road": "Glasslands"
+          },
           "creature": {
             "health": 6,
             "defense": 5,
             "initiativeModifier": 2,
             "speed": 12,
-            "abilities": { "brawn": -1, "wits": 1, "heart": 0 },
+            "abilities": {
+              "brawn": -1,
+              "wits": 1,
+              "heart": 0
+            },
             "tier": "stray",
             "traits": [
-              { "name": "Drawn to light", "text": "It goes for the lamp before it goes for the person holding it." }
+              {
+                "name": "Drawn to light",
+                "text": "It goes for the lamp before it goes for the person holding it."
+              }
             ],
             "actions": [
               {
@@ -335,7 +676,10 @@
                 "name": "Wing dust",
                 "budget": "act",
                 "toHit": 1,
-                "damage": { "dice": "1d4", "type": "burn" },
+                "damage": {
+                  "dice": "1d4",
+                  "type": "burn"
+                },
                 "reach": 1
               },
               {
@@ -344,10 +688,26 @@
                 "name": "Ash bloom",
                 "budget": "act",
                 "autoHit": true,
-                "damage": { "dice": "1d6", "type": "burn" },
+                "damage": {
+                  "dice": "1d6",
+                  "type": "burn"
+                },
                 "targetCount": 2,
-                "applies": [{ "condition": "shaken", "duration": { "rounds": 1 } }],
-                "recharge": { "dice": { "count": 1, "sides": 6 }, "from": 5 }
+                "applies": [
+                  {
+                    "condition": "shaken",
+                    "duration": {
+                      "rounds": 1
+                    }
+                  }
+                ],
+                "recharge": {
+                  "dice": {
+                    "count": 1,
+                    "sides": 6
+                  },
+                  "from": 5
+                }
               }
             ]
           }
@@ -356,13 +716,22 @@
           "id": "rust-jackal",
           "label": "Rust Jackal",
           "summary": "A lean thing that lives on the metal roads and eats what stops moving on them.",
-          "filters": { "tier": "Pack trouble", "road": "Rustways" },
+          "filters": {
+            "tier": "Pack trouble",
+            "road": "Rustways"
+          },
           "creature": {
-            "health": { "dice": "3d6" },
+            "health": {
+              "dice": "3d6"
+            },
             "defense": 6,
             "initiativeModifier": 1,
             "speed": 16,
-            "abilities": { "brawn": 1, "wits": 0, "heart": -1 },
+            "abilities": {
+              "brawn": 1,
+              "wits": 0,
+              "heart": -1
+            },
             "tier": "pack",
             "actions": [
               {
@@ -370,7 +739,17 @@
                 "name": "Bite",
                 "budget": "act",
                 "toHit": 2,
-                "damage": { "dice": "1d6", "flat": 1, "type": "cut" },
+                "damage": {
+                  "dice": "1d6",
+                  "flat": 0,
+                  "type": "cut",
+                  "plus": [
+                    {
+                      "flat": 1,
+                      "type": "rust"
+                    }
+                  ]
+                },
                 "reach": 2
               },
               {
@@ -378,8 +757,18 @@
                 "name": "Worry",
                 "budget": "act",
                 "toHit": 2,
-                "damage": { "dice": "1d4", "type": "cut" },
-                "applies": [{ "condition": "shaken", "duration": { "rounds": 2 } }],
+                "damage": {
+                  "dice": "1d4",
+                  "type": "cut"
+                },
+                "applies": [
+                  {
+                    "condition": "shaken",
+                    "duration": {
+                      "rounds": 2
+                    }
+                  }
+                ],
                 "reach": 2
               },
               {
@@ -388,31 +777,51 @@
                 "name": "Snap and worry",
                 "budget": "act",
                 "sequence": [
-                  { "action": "bite", "times": 1 },
-                  { "action": "worry", "times": 1 }
+                  {
+                    "action": "bite",
+                    "times": 1
+                  },
+                  {
+                    "action": "worry",
+                    "times": 1
+                  }
                 ]
               }
             ]
-          }
+          },
+          "$comment": "Its bite carries a second clause: the tooth and the rust it leaves behind are rolled, typed and shrugged off one at a time, and together they are still one blow."
         },
         {
           "id": "glass-wader",
           "label": "Glass Wader",
           "summary": "It lies in the glass fields with only its back showing, and the back looks like glass.",
-          "filters": { "tier": "Road terror", "road": "Glasslands" },
+          "filters": {
+            "tier": "Road terror",
+            "road": "Glasslands"
+          },
           "creature": {
-            "health": { "dice": "4d8", "flat": 4 },
+            "health": {
+              "dice": "4d8",
+              "flat": 4
+            },
             "defense": 7,
             "initiativeModifier": 0,
             "speed": 6,
-            "abilities": { "brawn": 3, "wits": -1, "heart": -1 },
+            "abilities": {
+              "brawn": 3,
+              "wits": -1,
+              "heart": -1
+            },
             "resist": ["cut"],
             "vulnerable": ["burn"],
             "conditionImmunities": ["shaken"],
             "tier": "road_terror",
             "signaturePoints": 2,
             "traits": [
-              { "name": "Glass-bedded", "text": "Lying still, it is a ridge of glass until somebody stands on it." }
+              {
+                "name": "Glass-bedded",
+                "text": "Lying still, it is a ridge of glass until somebody stands on it."
+              }
             ],
             "actions": [
               {
@@ -420,7 +829,11 @@
                 "name": "Sweep",
                 "budget": "act",
                 "toHit": 4,
-                "damage": { "dice": "2d6", "flat": 1, "type": "crush" },
+                "damage": {
+                  "dice": "2d6",
+                  "flat": 1,
+                  "type": "crush"
+                },
                 "targetCount": 2,
                 "reach": 4
               },
@@ -430,9 +843,14 @@
                 "name": "Glass lash",
                 "budget": "act",
                 "toHit": 3,
-                "damage": { "dice": "1d8", "type": "cut" },
+                "damage": {
+                  "dice": "1d8",
+                  "type": "cut"
+                },
                 "reach": 4,
-                "signature": { "cost": 1 }
+                "signature": {
+                  "cost": 1
+                }
               }
             ]
           }
@@ -442,21 +860,55 @@
   ],
   "battle": {
     "$comment": "Optional. It does not make battles follow these rules: it lends Marinara's own combat the numbers on the sheet. Grit is what a fight damages, Luck is what a knack spends, there are no slots here, and the knacks a player picked from the catalog become the skills they can use.",
-    "health": { "pool": "grit" },
-    "energy": { "pool": "luck" },
-    "skills": [{ "list": "knacks" }]
+    "health": {
+      "pool": "grit"
+    },
+    "energy": {
+      "pool": "luck"
+    },
+    "skills": [
+      {
+        "list": "knacks"
+      }
+    ]
   },
   "combat": {
     "$comment": "How a fight is resolved by these rules. Nothing here is borrowed from another system: two six-sided dice plus the stat you swing with, against a Guard, with no advantage, no lucky faces, no criticals and one thing to do a turn. The battle block above is what an Engine that cannot read this one falls back to.",
     "kind": "attack-vs-defense",
-    "health": { "pool": "grit" },
-    "defense": { "derived": "guard" },
-    "initiative": { "dice": { "count": 2, "sides": 6 }, "modifier": { "abilityMod": "wits" } },
-    "attackRoll": { "dice": { "count": 2, "sides": 6 } },
+    "health": {
+      "pool": "grit"
+    },
+    "defense": {
+      "derived": "guard"
+    },
+    "initiative": {
+      "dice": {
+        "count": 2,
+        "sides": 6
+      },
+      "modifier": {
+        "abilityMod": "wits"
+      }
+    },
+    "attackRoll": {
+      "dice": {
+        "count": 2,
+        "sides": 6
+      }
+    },
     "economy": {
-      "budgets": [{ "id": "act", "label": "Action", "per": "turn", "count": 1 }],
+      "budgets": [
+        {
+          "id": "act",
+          "label": "Action",
+          "per": "turn",
+          "count": 1
+        }
+      ],
       "$comment": "Everybody walks the same eight paces a turn on these roads. It is written as a plain number because nothing on this short sheet is a speed, which is the point: a ruleset states its movement once, wherever the number comes from.",
-      "movement": { "const": 8 }
+      "movement": {
+        "const": 8
+      }
     },
     "distance": {
       "$comment": "One cell is two paces, and that is all this system says about a board. No long shots, no cover, no strikes at somebody walking away: none of it is required, and a small system is allowed to stay small.",
@@ -468,19 +920,44 @@
         "list": "gear",
         "budget": "act",
         "name": "name",
-        "toHit": { "ability": { "column": "swing" } },
-        "damage": { "dice": { "column": "damage" }, "ability": { "column": "swing" }, "type": { "column": "harm" } },
+        "toHit": {
+          "ability": {
+            "column": "swing"
+          }
+        },
+        "damage": {
+          "dice": {
+            "column": "damage"
+          },
+          "ability": {
+            "column": "swing"
+          },
+          "type": {
+            "column": "harm"
+          }
+        },
         "reach": {
           "$comment": "Everything you can swing here reaches two paces, which is one cell. The gear list has no column for it and does not need one.",
           "const": 2
         }
       }
     ],
-    "abilities": [{ "list": "knacks", "budget": "act" }],
+    "abilities": [
+      {
+        "list": "knacks",
+        "budget": "act"
+      }
+    ],
     "standard": ["dodge", "help"],
     "conditions": [
-      { "condition": "shaken", "effects": ["own-attacks-disadvantage", "ends-on-damage"] },
-      { "condition": "pinned", "effects": ["cannot-act", "speed-zero"] }
+      {
+        "condition": "shaken",
+        "effects": ["own-attacks-disadvantage", "ends-on-damage"]
+      },
+      {
+        "condition": "pinned",
+        "effects": ["cannot-act", "speed-zero"]
+      }
     ],
     "threat": {
       "$comment": "The three rungs trouble comes in on these roads. A traveller carries six to nine Grit and swings for about five, so a stray is one bad minute, a pack is a fight, and a terror is a reason to leave the road. There are no saving throws here, so every rung says nothing is rolled against.",
@@ -526,12 +1003,32 @@
         "worldGuidance": "Hard winter is on. Build a world locked in a long cold: closed roads, thin stores, and settlements rationing what they have."
       },
       "difficultyLadder": [
-        { "label": "Easy", "dc": 7 },
-        { "label": "Risky", "dc": 9 },
-        { "label": "Hard", "dc": 11 },
-        { "label": "Desperate", "dc": 13 }
+        {
+          "label": "Easy",
+          "dc": 7
+        },
+        {
+          "label": "Risky",
+          "dc": 9
+        },
+        {
+          "label": "Hard",
+          "dc": 11
+        },
+        {
+          "label": "Desperate",
+          "dc": 13
+        }
       ],
-      "catalogs": [{ "id": "knacks", "hide": { "filter": "grit", "above": 0 } }]
+      "catalogs": [
+        {
+          "id": "knacks",
+          "hide": {
+            "filter": "grit",
+            "above": 0
+          }
+        }
+      ]
     }
   ]
 }

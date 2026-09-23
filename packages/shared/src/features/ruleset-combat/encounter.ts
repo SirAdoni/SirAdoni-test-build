@@ -36,14 +36,16 @@ import {
 } from "../rulesets/sheet-math.js";
 import { findRulesetCreatureEntry, rulesetCreatureBlock } from "./creatures.js";
 import { parseRulesetCombatDice, rollRulesetDice, rulesetCombatRoller, sumOf } from "./dice.js";
-import { rulesetInCells } from "./grid.js";
+import { rulesetInCells, rulesetLineOfSight, rulesetPositionOf } from "./grid.js";
 import type {
   RulesetCombatAction,
   RulesetCombatAmount,
   RulesetCombatant,
   RulesetCombatantInput,
   RulesetCombatBoard,
+  RulesetCombatDamageClause,
   RulesetCombatEvent,
+  RulesetCombatRider,
   RulesetCombatRoller,
   RulesetEncounterState,
   RulesetStatBlockAction,
@@ -78,19 +80,54 @@ export interface RulesetCombatHealth {
   temp: number;
 }
 
-/** Health as it stands. A party member's lives in their sheet, so it is read from there every time
- *  rather than copied into the encounter, and a reload mid-fight is exact. */
+/**
+ * Health as it stands. A party member's lives in their sheet, so it is read from there every time
+ * rather than copied into the encounter, and a reload mid-fight is exact.
+ *
+ * A WOUND TRACK is reported as the levels it has LEFT: `value` is how many boxes are still clear
+ * and `max` is the track's length. That is deliberate and it is what keeps the rest of the fight
+ * written in its own words: "down" is a combatant at zero, and a full track is a combatant with no
+ * boxes left, so `dropToZero`, the dying rules, the recap and the screen all keep asking the one
+ * question they already ask. A track carries no buffer, so `temp` is always 0 on one.
+ */
 export function rulesetCombatHealth(
   definition: RulesetDefinition,
   combat: RulesetCombat,
   combatant: RulesetCombatant,
 ): RulesetCombatHealth {
   // A copy, always: an opponent's health lives in the state, and a caller that read it before a
-  // blow has to still be holding what it was before.
+  // blow has to still be holding what it was before. An opponent is written in plain numbers
+  // whichever shape the party's health takes: a stat block has no character sheet to mark.
   if (!combatant.sheet) return { ...(combatant.health ?? { value: 0, max: 0, temp: 0 }) };
   const live = readRulesetLive(definition, combatant.sheet.build, combatant.sheet.live);
-  const pool = live.pools.find((entry) => !entry.listId && entry.key === combat.health.pool);
+  const health = combat.health;
+  if ("track" in health) {
+    const track = live.tracks.find((entry) => entry.id === health.track);
+    if (!track?.wound) return { value: 0, max: 0, temp: 0 };
+    return { value: track.wound.levels.length - track.wound.marks.length, max: track.wound.levels.length, temp: 0 };
+  }
+  const pool = live.pools.find((entry) => !entry.listId && entry.key === health.pool);
   return pool ? { value: pool.value, max: pool.max, temp: pool.temp } : { value: 0, max: 0, temp: 0 };
+}
+
+/**
+ * Which kind of mark this fight's damage is, on a ruleset whose health is a wound track.
+ *
+ * The mapping is the ruleset's own and nothing here guesses: a type it names lands as the kind it
+ * named, and everything else, a blow with no type included, lands as the declared `default`. The
+ * match ignores case, exactly as a creature's resistances and the block's own `damageTypes` do.
+ *
+ * The empty string is returned only for a ruleset whose health is a pool, where nobody asks.
+ */
+export function rulesetCombatDamageKind(combat: RulesetCombat, damageType: string | undefined): string {
+  const kinds = combat.damageKinds;
+  if (!kinds) return "";
+  const wanted = damageType?.trim().toLowerCase();
+  if (!wanted) return kinds.default;
+  for (const [type, kind] of Object.entries(kinds.byType ?? {})) {
+    if (type.trim().toLowerCase() === wanted) return kind;
+  }
+  return kinds.default;
 }
 
 /** One command through the sheet's own rules. A refusal changes nothing and says so, exactly as it
@@ -118,16 +155,64 @@ export function rulesetCombatConditions(definition: RulesetDefinition, combatant
   return [...ids];
 }
 
+/**
+ * Whether whoever put this condition on somebody is still in their sight.
+ *
+ * A condition nobody applied, one whose source has left the fight, and every fight with no board at
+ * all all read as "yes": a fight that measures nothing has no line for anything to break.
+ */
+function sourceInSight(
+  combatant: RulesetCombatant,
+  condition: string,
+  state: RulesetEncounterState | undefined,
+): boolean {
+  const sourceId = combatant.tracked.find((entry) => entry.condition === condition)?.source;
+  const grid = state?.board?.grid;
+  if (!sourceId || !state || !grid) return true;
+  const source = rulesetCombatant(state, sourceId);
+  const from = rulesetPositionOf(combatant);
+  const to = rulesetPositionOf(source);
+  if (!source || !from || !to) return true;
+  return rulesetLineOfSight(grid, from, to);
+}
+
+/**
+ * The condition entries that are ON this combatant right now, with their gates read.
+ *
+ * One place, because everything a condition does reads it: what it stops, what it makes harder, and
+ * which saves it is about. `state` is what a gate that measures anything needs; without it a gated
+ * condition simply counts, which is what it does in a fight with no board anyway.
+ */
+export function rulesetActiveConditions(
+  definition: RulesetDefinition,
+  combat: RulesetCombat,
+  combatant: RulesetCombatant,
+  state?: RulesetEncounterState,
+): Array<NonNullable<RulesetCombat["conditions"]>[number]> {
+  const active = new Set(rulesetCombatConditions(definition, combatant));
+  return (combat.conditions ?? []).flatMap((entry) => {
+    if (!active.has(entry.condition)) return [];
+    const gate = entry.whileSourceInSight;
+    if (!gate || sourceInSight(combatant, entry.condition, state)) return [entry];
+    // Out of sight: `true` takes the whole condition off, and a list takes off only what it names,
+    // so an effect nobody has to see to suffer stays.
+    if (gate === true) return [];
+    // A list gates the effects it NAMES and nothing else. `failsSaves` and `saves` are not effects
+    // and were never named, so the entry stays even when the gate took every effect it had: a
+    // fright you fail a save against whether or not you can see it is exactly what the list is for.
+    return [{ ...entry, effects: entry.effects.filter((effect) => !gate.includes(effect)) }];
+  });
+}
+
 /** What those conditions DO, as the closed effect list. */
 export function rulesetCombatEffects(
   definition: RulesetDefinition,
   combat: RulesetCombat,
   combatant: RulesetCombatant,
+  state?: RulesetEncounterState,
 ): Set<string> {
   const effects = new Set<string>();
-  const active = new Set(rulesetCombatConditions(definition, combatant));
-  for (const entry of combat.conditions ?? []) {
-    if (!active.has(entry.condition)) continue;
+  for (const entry of rulesetActiveConditions(definition, combat, combatant, state)) {
     for (const effect of entry.effects) effects.add(effect);
   }
   return effects;
@@ -139,11 +224,36 @@ export function rulesetCombatFailsSave(
   combat: RulesetCombat,
   combatant: RulesetCombatant,
   save: string,
+  state?: RulesetEncounterState,
 ): boolean {
-  const active = new Set(rulesetCombatConditions(definition, combatant));
-  return (combat.conditions ?? []).some(
-    (entry) => active.has(entry.condition) && entry.failsSaves?.includes(save) === true,
+  return rulesetActiveConditions(definition, combat, combatant, state).some(
+    (entry) => entry.failsSaves?.includes(save) === true,
   );
+}
+
+/** How this combatant's own saves are rolled: the conditions on them, narrowed to the ones that
+ *  are about THIS save, with advantage and disadvantage cancelling each other out exactly as they
+ *  do on an attack. A ruleset that never rolls twice keeps its single roll. */
+export function rulesetSaveMode(
+  definition: RulesetDefinition,
+  combat: RulesetCombat,
+  combatant: RulesetCombatant,
+  save: string,
+  state?: RulesetEncounterState,
+): "normal" | "advantage" | "disadvantage" {
+  if (!combat.attackRoll.advantage) return "normal";
+  let advantage = false;
+  let disadvantage = false;
+  for (const entry of rulesetActiveConditions(definition, combat, combatant, state)) {
+    if (entry.saves && !entry.saves.includes(save)) continue;
+    if (entry.effects.includes("own-saves-advantage")) advantage = true;
+    if (entry.effects.includes("own-saves-disadvantage")) disadvantage = true;
+  }
+  // Dodging is not only about being harder to hit: where the ruleset says so, the saves that are
+  // about getting out of the way are rolled with advantage too, for as long as the dodge lasts.
+  if (combatant.flags.dodging && combat.standardEffects?.dodge?.saves.includes(save)) advantage = true;
+  if (advantage === disadvantage) return "normal";
+  return advantage ? "advantage" : "disadvantage";
 }
 
 /** A combatant who can still be acted on and still take a turn. */
@@ -197,6 +307,7 @@ function distanceInCells(
 }
 
 function attackActions(
+  definition: RulesetDefinition,
   source: RulesetCombatAttackSource,
   index: number,
   build: RulesetSheetBuild,
@@ -205,6 +316,11 @@ function attackActions(
 ): RulesetCombatAction[] {
   const rows = build.lists?.[source.list];
   if (!Array.isArray(rows)) return [];
+  // How many strikes one spend of this list's budget buys, read off the sheet once. A number below
+  // one is the one strike every spend has always bought, so a sheet left alone changes nothing.
+  const strikes = source.strikes
+    ? Math.max(1, Math.trunc(resolveRulesetValueRef(definition, build, source.strikes, evaluated)))
+    : undefined;
   const actions: RulesetCombatAction[] = [];
   rows.forEach((raw, rowIndex) => {
     if (!raw || typeof raw !== "object") return;
@@ -222,6 +338,9 @@ function attackActions(
       label: name,
       budget: source.budget,
       targets: { side: "enemy", count: 1 },
+      // A row its own column holds to one strike keeps none in hand: a crossbow is one shot a turn
+      // however many attacks its wielder has. Said per ROW, because the count is the list's.
+      ...(strikes !== undefined && columnValue(row, source.strikesCappedBy?.column) !== true ? { strikes } : {}),
       ...(reach !== undefined ? { reach } : {}),
       // A row whose long distance came out shorter than its ordinary one is the player's row, not
       // the ruleset's rule, so it is read as having nothing beyond the ordinary one.
@@ -246,9 +365,42 @@ function attackActions(
   return actions;
 }
 
+/** The clauses beside a blow's first amount, with each save's difficulty resolved once: the
+ *  clause's own number when it named one, and otherwise the number this source rolls saves against.
+ *  A clause with neither dice nor a flat part is refused at import, so nothing here is dropped. */
+function clausesOf(
+  plus: RulesetCatalogMechanics["plus"] | undefined,
+  difficulty: number,
+): RulesetCombatDamageClause[] | null {
+  if (!plus?.length) return null;
+  const clauses = plus.flatMap((clause) => {
+    const amount = amountOf(clause);
+    if (!amount) return [];
+    return [
+      {
+        ...amount,
+        ...(clause.type ? { type: clause.type } : {}),
+        ...(clause.save
+          ? {
+              save: {
+                save: clause.save.save,
+                onSuccess: clause.save.onSuccess,
+                difficulty: clause.save.difficulty ?? difficulty,
+              },
+            }
+          : {}),
+      },
+    ];
+  });
+  return clauses.length > 0 ? clauses : null;
+}
+
 /** Who a catalog entry may be pointed at. What it does decides it when the entry says nothing: a
  *  heal or a buff goes to the actor's own side, anything else to the other one. */
 function targetsOf(mechanics: RulesetCatalogMechanics): RulesetCombatAction["targets"] {
+  // A `utility` entry is only ever here because it changes what the turn may hold, and what it
+  // changes is the holder's own economy: there is nobody to point it at.
+  if (mechanics.kind === "utility") return { side: "self", count: 0 };
   const side = mechanics.targets ?? (mechanics.kind === "heal" || mechanics.kind === "buff" ? "ally" : "enemy");
   return { side, count: Math.max(1, mechanics.targetCount ?? 1) };
 }
@@ -265,8 +417,13 @@ function abilityAction(
   perCell: number | undefined,
 ): RulesetCombatAction | null {
   const mechanics = entry.mechanics;
-  // A reaction is a timing window a later slice owns, and a `utility` entry has nothing to resolve.
-  if (!mechanics || mechanics.kind === "utility" || mechanics.reaction) return null;
+  // A reaction answers something, and `reaction` alone does not say what. Until an entry can name
+  // the trigger it waits for, one marked this way is on no menu: not a turn's, because it is not
+  // taken on a turn, and not a window's, because nothing here knows which window it belongs in.
+  if (!mechanics || mechanics.reaction) return null;
+  // A `utility` entry has nothing to resolve unless it changes what the turn itself may hold: one
+  // that hands a budget back, or lets its holder buy a standard action with another one.
+  if (mechanics.kind === "utility" && !mechanics.gives && !mechanics.standard) return null;
   const resolve = (ref: RulesetValueRef) => resolveRulesetValueRef(definition, build, ref, evaluated);
   const amount = amountOf(mechanics.amount);
   // A scaling amount grows in DICE: the table says how many to add at each step of what it reads.
@@ -275,6 +432,7 @@ function abilityAction(
     : 0;
   const scaled = amount ? { ...amount, count: amount.count + (amount.count > 0 ? extra : 0) } : null;
   const heals = mechanics.kind === "heal";
+  const sourceDifficulty = source.saveDifficulty ? resolve(source.saveDifficulty) : 0;
   const cost = mechanics.cost?.length === 1 ? mechanics.cost[0]! : undefined;
   const pool = cost ? definition.sheet.live.pools.find((entry2) => entry2.id === cost.pool) : undefined;
   const family = cost ? (pool ? pool.group : cost.pool) : undefined;
@@ -296,8 +454,15 @@ function abilityAction(
         : {}),
     },
   };
+  const plus = clausesOf(mechanics.plus, sourceDifficulty);
   if (scaled && heals) action.heal = scaled;
-  else if (scaled) action.damage = { ...scaled, ...(mechanics.damageType ? { type: mechanics.damageType } : {}) };
+  else if (scaled) {
+    action.damage = {
+      ...scaled,
+      ...(mechanics.damageType ? { type: mechanics.damageType } : {}),
+      ...(plus ? { plus } : {}),
+    };
+  }
   const temporary = amountOf(mechanics.temporary);
   if (temporary) action.temporary = temporary;
   // An entry that rolls to hit always rolls: a source that names no bonus adds nothing to the dice.
@@ -305,15 +470,18 @@ function abilityAction(
   if (mechanics.attackRoll) action.toHit = source.toHit ? resolve(source.toHit) : 0;
   if (mechanics.autoHit) action.autoHit = true;
   if (mechanics.save) {
-    action.save = {
-      save: mechanics.save.save,
-      onSuccess: mechanics.save.onSuccess,
-      difficulty: source.saveDifficulty ? resolve(source.saveDifficulty) : 0,
-    };
+    action.save = { save: mechanics.save.save, onSuccess: mechanics.save.onSuccess, difficulty: sourceDifficulty };
   }
-  if (source.saveDifficulty) action.saveDifficulty = resolve(source.saveDifficulty);
+  if (source.saveDifficulty) action.saveDifficulty = sourceDifficulty;
   if (mechanics.applies?.length) action.applies = mechanics.applies.map((entry2) => ({ ...entry2 }));
   if (mechanics.concentration) action.concentration = true;
+  // What the turn's own economy makes of it: free of a budget, handing budgets back, or letting
+  // its holder buy a standard action with a budget other than the main one.
+  if (mechanics.free) action.free = true;
+  if (mechanics.gives?.length) action.gives = mechanics.gives.map((gift) => ({ ...gift }));
+  if (mechanics.standard) {
+    action.standard = { actions: [...mechanics.standard.actions], budget: mechanics.standard.budget };
+  }
   // Distance, in the unit this CATALOG declared, or the combat block's when it declared none. A
   // range of zero is self or touch, and touching somebody else is the next cell: a REACH of one,
   // never a range, so the rules for shooting (a foe beside the shooter, long range) do not read it.
@@ -332,6 +500,42 @@ function abilityAction(
   return action;
 }
 
+/** Whether one cell of a row says yes. A rider reads a column rather than a word, so a ruleset says
+ *  "the rows you can do this with" in its own list without the Engine knowing what a weapon is. */
+function truthyColumn(row: Record<string, unknown>, column: string): boolean {
+  const value = columnValue(row, column);
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) && value !== 0;
+  return typeof value === "string" && value.trim() !== "";
+}
+
+/**
+ * The attack actions one rider fires on, resolved once when the fight begins.
+ *
+ * Undefined is "any hit at all", which is what a rider that names neither an attack list nor a
+ * column means. Naming either turns into the ids of the rows that qualify, so the resolution never
+ * reads a sheet again: the row a rider needs may have been edited by then.
+ */
+function riderActionIds(
+  combat: RulesetCombat,
+  build: RulesetSheetBuild,
+  rider: NonNullable<RulesetCatalogMechanics["rider"]>,
+): string[] | undefined {
+  if (!rider.sources && !rider.requires) return undefined;
+  const ids: string[] = [];
+  (combat.attacks ?? []).forEach((source, index) => {
+    if (rider.sources && !rider.sources.includes(source.list)) return;
+    const rows = build.lists?.[source.list];
+    if (!Array.isArray(rows)) return;
+    rows.forEach((raw, rowIndex) => {
+      if (!raw || typeof raw !== "object") return;
+      if (rider.requires && !truthyColumn(raw as Record<string, unknown>, rider.requires.column)) return;
+      ids.push(`attack:${index}:${rowIndex}`);
+    });
+  });
+  return ids;
+}
+
 /** The name a row answers to: the column the Game Master sees it under, then the entry's label. */
 function rowName(definition: RulesetDefinition, listId: string, row: Record<string, unknown>, fallback: string) {
   const list = definition.sheet.lists.find((entry) => entry.id === listId);
@@ -342,17 +546,56 @@ function rowName(definition: RulesetDefinition, listId: string, row: Record<stri
   return textFromColumn(row, column) ?? fallback;
 }
 
+/** One rider a catalog entry carries, with its dice grown by the sheet exactly as an amount's are
+ *  and the rows it fires on already worked out. */
+function riderFrom(
+  definition: RulesetDefinition,
+  combat: RulesetCombat,
+  build: RulesetSheetBuild,
+  evaluated: EvaluatedRulesetSheet,
+  id: string,
+  label: string,
+  mechanics: RulesetCatalogMechanics,
+): RulesetCombatRider | null {
+  const declared = mechanics.rider;
+  const amount = declared ? amountOf(declared.amount) : null;
+  if (!declared || !amount) return null;
+  const extra = mechanics.scales
+    ? Math.max(
+        0,
+        Math.trunc(
+          lookupStepTable(
+            mechanics.scales.table,
+            resolveRulesetValueRef(definition, build, mechanics.scales.from, evaluated),
+          ),
+        ),
+      )
+    : 0;
+  const actions = riderActionIds(combat, build, declared);
+  return {
+    id,
+    label,
+    on: declared.on,
+    ...(actions ? { actions } : {}),
+    ...(declared.when?.length ? { when: [...declared.when] } : {}),
+    oncePer: declared.oncePer,
+    amount: { ...amount, count: amount.count + (amount.count > 0 ? extra : 0) },
+    ...(declared.type ? { type: declared.type } : {}),
+  };
+}
+
 function abilityActions(
   definition: RulesetDefinition,
+  combat: RulesetCombat,
   source: RulesetCombatAbilitySource,
   index: number,
   build: RulesetSheetBuild,
   catalogs: RulesetCatalogEntriesById,
   evaluated: EvaluatedRulesetSheet,
   perCell: number | undefined,
-): RulesetCombatAction[] {
+): { actions: RulesetCombatAction[]; riders: RulesetCombatRider[] } {
   const rows = build.lists?.[source.list];
-  if (!Array.isArray(rows)) return [];
+  if (!Array.isArray(rows)) return { actions: [], riders: [] };
   const byRef = rulesetCatalogEntriesByRef(catalogs);
   /** A catalog states what its own `range` and `area.size` numbers mean; one that does not is read
    *  in the combat block's own unit. */
@@ -362,6 +605,7 @@ function abilityActions(
     return definition.catalogs?.find((catalog) => catalog.id === catalogId)?.units?.distance?.perCell ?? perCell;
   };
   const actions: RulesetCombatAction[] = [];
+  const riders: RulesetCombatRider[] = [];
   const seen = new Set<string>();
   rows.forEach((raw, rowIndex) => {
     if (!raw || typeof raw !== "object") return;
@@ -373,22 +617,29 @@ function abilityActions(
     if (!always && source.onlyWhen && columnValue(row, source.onlyWhen) !== true) return;
     const entry = byRef.get(ref);
     if (!entry) return;
-    const action = abilityAction(
-      definition,
-      source,
-      index,
-      rowIndex,
-      rowName(definition, source.list, row, entry.label),
-      entry,
-      build,
-      evaluated,
-      perCellOf(ref),
-    );
+    const name = rowName(definition, source.list, row, entry.label);
+    // A rider is passive: it never becomes an action, and it is carried by whoever holds the row.
+    if (entry.mechanics?.kind === "rider") {
+      const rider = riderFrom(
+        definition,
+        combat,
+        build,
+        evaluated,
+        `rider:${index}:${rowIndex}`,
+        name,
+        entry.mechanics,
+      );
+      if (!rider) return;
+      seen.add(ref);
+      riders.push(rider);
+      return;
+    }
+    const action = abilityAction(definition, source, index, rowIndex, name, entry, build, evaluated, perCellOf(ref));
     if (!action) return;
     seen.add(ref);
     actions.push(action);
   });
-  return actions;
+  return { actions, riders };
 }
 
 /** Only the entries this member's own rows point at, so the state stays small enough to persist
@@ -449,7 +700,14 @@ function blockActions(block: RulesetStatBlockLike, perCell: number | undefined):
     },
     ...(action.toHit !== undefined ? { toHit: action.toHit } : {}),
     ...(action.autoHit ? { autoHit: true } : {}),
-    ...(action.damage ? { damage: { ...action.damage } } : {}),
+    ...(action.damage
+      ? {
+          damage: {
+            ...action.damage,
+            ...(action.damage.plus ? { plus: action.damage.plus.map((clause) => ({ ...clause })) } : {}),
+          },
+        }
+      : {}),
     ...(action.save ? { save: { ...action.save } } : {}),
     ...(action.saveDifficulty !== undefined ? { saveDifficulty: action.saveDifficulty } : {}),
     ...(action.applies?.length ? { applies: action.applies.map((entry) => ({ ...entry })) } : {}),
@@ -515,10 +773,11 @@ export function rulesetMovementAllowance(
   definition: RulesetDefinition,
   combat: RulesetCombat,
   combatant: RulesetCombatant,
+  state?: RulesetEncounterState,
 ): number {
   const perCell = combat.distance?.perCell;
   if (perCell === undefined || !(perCell > 0)) return 0;
-  if (rulesetCombatEffects(definition, combat, combatant).has("speed-zero")) return 0;
+  if (rulesetCombatEffects(definition, combat, combatant, state).has("speed-zero")) return 0;
   const speed = combatant.speed;
   if (!Number.isFinite(speed) || speed <= 0) return 0;
   return Math.max(1, Math.floor(speed / perCell));
@@ -529,9 +788,10 @@ export function refreshRulesetMovement(
   definition: RulesetDefinition,
   combat: RulesetCombat,
   combatant: RulesetCombatant,
+  state?: RulesetEncounterState,
 ): void {
   if (combatant.movement === undefined) return;
-  const allowance = rulesetMovementAllowance(definition, combat, combatant);
+  const allowance = rulesetMovementAllowance(definition, combat, combatant, state);
   combatant.movement = allowance;
   combatant.movementLeft = allowance;
 }
@@ -627,6 +887,7 @@ export function createRulesetEncounter(input: RulesetEncounterInput): RulesetEnc
         ...(block.signaturePoints !== undefined
           ? { signature: { points: block.signaturePoints, max: block.signaturePoints } }
           : {}),
+        ...(block.riders?.length ? { riders: block.riders.map((rider) => ({ ...rider })) } : {}),
         tracked: [],
         concentrating: null,
         flags: {},
@@ -658,12 +919,16 @@ export function createRulesetEncounter(input: RulesetEncounterInput): RulesetEnc
         ...(save.ability ? { ability: save.ability } : {}),
       });
     }
+    const abilities = (combat.abilities ?? []).map((source, index) =>
+      abilityActions(definition, combat, source, index, build, catalogs, evaluated, perCell),
+    );
     const actions = [
-      ...(combat.attacks ?? []).flatMap((source, index) => attackActions(source, index, build, evaluated, perCell)),
-      ...(combat.abilities ?? []).flatMap((source, index) =>
-        abilityActions(definition, source, index, build, catalogs, evaluated, perCell),
+      ...(combat.attacks ?? []).flatMap((source, index) =>
+        attackActions(definition, source, index, build, evaluated, perCell),
       ),
+      ...abilities.flatMap((entry) => entry.actions),
     ];
+    const riders = abilities.flatMap((entry) => entry.riders);
     const combatant: RulesetCombatant = {
       id: entry.id,
       name: entry.name,
@@ -675,6 +940,7 @@ export function createRulesetEncounter(input: RulesetEncounterInput): RulesetEnc
       actions,
       uses: startingUses(actions),
       spent: [],
+      ...(riders.length > 0 ? { riders } : {}),
       tracked: [],
       concentrating: null,
       flags: {},

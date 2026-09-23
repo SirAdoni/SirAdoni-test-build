@@ -29,6 +29,7 @@ import {
   STORYBOARD_AGENT_ID,
   type GameTurnStoryboard,
   type ChatSummaryEntry,
+  type AdvancedMemoryJob,
   type MarkerConfig,
   type PromptGroup,
   type PromptSection,
@@ -1068,7 +1069,9 @@ function AuthorNotesButton({
     const handle = (e: PointerEvent) => {
       const target = e.target as Node;
       if (ref.current?.contains(target) || panelRef.current?.contains(target)) return;
-      if (target instanceof Element && target.closest("[data-macro-modal]")) return;
+      // The overflow menu also mounts a hidden desktop copy of this trigger.
+      // Let the visible trigger toggle shared state without another copy closing it first.
+      if (target instanceof Element && target.closest('[data-macro-modal], [data-chat-help="author-notes"]')) return;
       // On mobile, the virtual keyboard opening can synthesise a pointer/mouse
       // event outside the panel that would otherwise close it mid-edit; don't
       // dismiss while a field inside the panel is focused. Mobile-only: on desktop
@@ -1304,7 +1307,7 @@ type RoleplaySurfaceProps = {
     conversationStartForCharacterIds: string[],
   ) => void;
   onToggleHiddenFromAI: (messageId: string, hiddenFromAll: boolean, hiddenFromAICharacterIds?: string[]) => void;
-  onPeekPrompt: () => void;
+  onPeekPrompt: (messageId?: string) => void;
   onBranch?: (messageId: string) => void;
   onCloneSceneFromHere?: (messageId: string) => void;
   isCloneSceneFromHereDisabled?: boolean;
@@ -1477,6 +1480,19 @@ export function ChatRoleplaySurface({
   const { t: localizeUi } = useUiTranslation();
   const { t } = useTranslation();
   const { data: installedCapabilities = [] } = useInstalledCapabilityPackages();
+  const memoryContextStarts = useMemo(() => {
+    const starts = new Map<string, string[]>();
+    if (chatMeta.advancedMemory?.enabled !== true) return starts;
+    const entries = (chatMeta.advancedMemoryState as AdvancedMemoryJob | undefined)?.contextStarts;
+    if (!Array.isArray(entries)) return starts;
+    for (const entry of entries) {
+      if (!entry || typeof entry.messageId !== "string" || !Array.isArray(entry.audienceCharacterIds)) continue;
+      // Older character-specific automatic windows are no longer active.
+      if (entry.audienceCharacterIds.length) continue;
+      starts.set(entry.sceneStartMessageId ?? entry.messageId, []);
+    }
+    return starts;
+  }, [chatMeta.advancedMemory?.enabled, chatMeta.advancedMemoryState]);
   const activeAgentIds = chatMeta.activeAgentIds;
   const enabledConversationCapabilities =
     chatMeta.enableAgents === true
@@ -2193,7 +2209,7 @@ export function ChatRoleplaySurface({
                     paddingRight: "calc(1rem + var(--tracker-panel-hud-clear-right, 0px))",
                   }}
                 >
-                  {chat && chatMeta.enableAgents && (
+                  {chat && (chatMeta.enableAgents || chatMeta.advancedMemory?.enabled === true) && (
                     <div
                       data-chat-help="agents"
                       data-roleplay-agent-window
@@ -2202,6 +2218,7 @@ export function ChatRoleplaySurface({
                       <Suspense fallback={null}>
                         <RoleplayHUD
                           chatId={chat.id}
+                          advancedMemoryEnabled={chatMeta.advancedMemory?.enabled === true}
                           isStreaming={isStreaming}
                           onRetriggerTrackers={onRerunTrackers}
                           onRetryFailedAgents={onRetryFailedAgents}
@@ -2325,7 +2342,7 @@ export function ChatRoleplaySurface({
                   centerCompact ? "flex" : "flex md:hidden",
                 )}
               >
-                {chat && chatMeta.enableAgents && (
+                {chat && (chatMeta.enableAgents || chatMeta.advancedMemory?.enabled === true) && (
                   <div
                     className="flex w-full min-w-0 items-start justify-between gap-1.5 pb-1 pt-2"
                     style={{
@@ -2337,6 +2354,7 @@ export function ChatRoleplaySurface({
                       <Suspense fallback={null}>
                         <RoleplayHUD
                           chatId={chat.id}
+                          advancedMemoryEnabled={chatMeta.advancedMemory?.enabled === true}
                           isStreaming={isStreaming}
                           onRetriggerTrackers={onRerunTrackers}
                           onRetryFailedAgents={onRetryFailedAgents}
@@ -2455,7 +2473,7 @@ export function ChatRoleplaySurface({
                     </div>
                   </div>
                 )}
-                {chat && !chatMeta.enableAgents && (
+                {chat && !chatMeta.enableAgents && chatMeta.advancedMemory?.enabled !== true && (
                   <div
                     className={cn("flex w-full items-center justify-end px-2 pb-1 pt-2", CHAT_TOOLBAR_ICON_GAP_CLASS)}
                   >
@@ -2659,7 +2677,7 @@ export function ChatRoleplaySurface({
                           onSetActiveSwipe={onSetActiveSwipe}
                           onToggleConversationStart={onToggleConversationStart}
                           onToggleHiddenFromAI={onToggleHiddenFromAI}
-                          onPeekPrompt={onPeekPrompt}
+                          onPeekPrompt={() => onPeekPrompt(msg.id)}
                           onBranch={onBranch}
                           onCloneSceneFromHere={onCloneSceneFromHere}
                           isCloneSceneFromHereDisabled={isCloneSceneFromHereDisabled}
@@ -2680,6 +2698,7 @@ export function ChatRoleplaySurface({
                           onToggleSelect={onToggleSelectMessage}
                           storyboard={inlineStoryboard}
                           storyboardGenerating={inlineStoryboardGenerating}
+                          memoryStartCharacterIds={memoryContextStarts.get(msg.id)}
                         />
                       ) : (
                         <ChatMessage
@@ -2692,7 +2711,7 @@ export function ChatRoleplaySurface({
                           onSetActiveSwipe={onSetActiveSwipe}
                           onToggleConversationStart={onToggleConversationStart}
                           onToggleHiddenFromAI={onToggleHiddenFromAI}
-                          onPeekPrompt={onPeekPrompt}
+                          onPeekPrompt={() => onPeekPrompt(msg.id)}
                           onBranch={onBranch}
                           onCloneSceneFromHere={onCloneSceneFromHere}
                           isCloneSceneFromHereDisabled={isCloneSceneFromHereDisabled}
@@ -2713,6 +2732,7 @@ export function ChatRoleplaySurface({
                           onToggleSelect={onToggleSelectMessage}
                           storyboard={inlineStoryboard}
                           storyboardGenerating={inlineStoryboardGenerating}
+                          memoryStartCharacterIds={memoryContextStarts.get(msg.id)}
                         />
                       )}
                     </div>
@@ -2823,6 +2843,7 @@ export function ChatRoleplaySurface({
                             <ChatMessage
                               key={`${activeChatId}:${activeVnMessage.id}:${activeVnMessage.activeSwipeIndex}`}
                               message={activeVnMessage}
+                              memoryStartCharacterIds={memoryContextStarts.get(activeVnMessage.id)}
                               visualNovel
                               visualNovelSpeech={vnSpeech}
                               onVisualNovelSpeechParagraph={setVnParagraphIndex}

@@ -292,13 +292,37 @@ function refreshableText(column: RulesetListColumn, value: unknown): string | nu
   return null;
 }
 
+/**
+ * The entry's value for a column the row does NOT carry at all, whatever the column's type.
+ *
+ * The rule above exists because a number or a switch is where the player's own state lives and
+ * overwriting it would throw away what they typed. A column the row has never had is not the
+ * player's state: they have never seen it. A ruleset that ADDS a column (a weapon list that grows
+ * a reach) could otherwise only reach an existing row by having the player delete it and pick it
+ * again, which is a thing a package README should not have to say.
+ *
+ * Still held to what the column can hold, for the same reason as above: a refresh must never write
+ * something the editor cannot then show.
+ */
+function refreshableNewValue(column: RulesetListColumn, value: unknown): string | number | boolean | null {
+  if (typeof value === "number") return column.type === "number" && Number.isFinite(value) ? value : null;
+  if (typeof value === "boolean") return column.type === "boolean" ? value : null;
+  return refreshableText(column, value);
+}
+
 export type CatalogRefreshColumn = {
   columnId: string;
   label: string;
   /** What the sheet holds now. Empty when the row never carried the column. */
   current: string;
-  /** What the ruleset says now, and exactly what applying writes. */
+  /** What the ruleset says now, as text a reader can compare. */
   next: string;
+  /** Exactly what applying writes. A string for every column the row already had; a number or a
+   *  switch only ever for a column the row is GAINING. */
+  value: string | number | boolean;
+  /** True when the row does not carry this column at all, so the review can word it as something
+   *  the row gained rather than as a change to what it holds. */
+  added?: boolean;
 };
 
 export type CatalogRefreshRow = {
@@ -371,7 +395,11 @@ export function planCatalogRefresh(
           if (entryRow.scaled && Object.hasOwn(entryRow.scaled, columnId)) continue;
           const column = columnById.get(columnId);
           if (!column) continue;
-          const next = refreshableText(column, value);
+          // A column the row HAS is the rule above, unchanged: only text is compared, because the
+          // number and the switch are the player's. Tested on the KEY, never on the value, so a
+          // column holding 0, false or "" is a column the row has and stays the player's.
+          const isNew = !Object.hasOwn(row, columnId);
+          const next = isNew ? refreshableNewValue(column, value) : refreshableText(column, value);
           if (next === null) continue;
           const stored = row[columnId];
           if (stored === next) continue;
@@ -379,7 +407,9 @@ export function planCatalogRefresh(
             columnId,
             label: column.label,
             current: stored === undefined ? "" : String(stored),
-            next,
+            next: String(next),
+            value: next,
+            ...(isNew ? { added: true } : {}),
           });
         }
         if (columns.length === 0) return;
@@ -414,7 +444,7 @@ export function applyCatalogRefresh(
     const current = rows[chosenRow.index];
     if (!current || typeof current !== "object") continue;
     const patched = { ...current };
-    for (const column of chosenRow.columns) patched[column.columnId] = column.next;
+    for (const column of chosenRow.columns) patched[column.columnId] = column.value;
     rows[chosenRow.index] = patched;
     next[chosenRow.listId] = rows;
   }
@@ -429,6 +459,7 @@ const KIND_KEYS: Readonly<Record<RulesetCatalogMechanics["kind"], string>> = Obj
   buff: "game.ruleset.catalog.kind.buff",
   debuff: "game.ruleset.catalog.kind.debuff",
   utility: "game.ruleset.catalog.kind.utility",
+  rider: "game.ruleset.catalog.kind.rider",
 });
 
 const SHAPE_KEYS: Readonly<Record<"burst" | "cone" | "line", string>> = Object.freeze({
@@ -457,6 +488,9 @@ export type CatalogMechanicsLabels = {
   saves: Readonly<Record<string, string>>;
   /** Live pool id, or pool group id, to the name the sheet shows. */
   pools: Readonly<Record<string, string>>;
+  /** Action-economy budget id to the name the ruleset gives it, for the entries that hand a budget
+   *  back or buy a standard action with one. Empty for a ruleset that resolves no combat. */
+  budgets: Readonly<Record<string, string>>;
 };
 
 /** The ruleset's own names for everything a mechanics block can point at. A pool group has no label
@@ -472,7 +506,9 @@ export function catalogMechanicsLabels(
     pools[pool.id] = pool.label;
     if (pool.group && !(pool.group in pools)) pools[pool.group] = pool.group;
   }
-  return { units: catalog.units, saves, pools };
+  const budgets: Record<string, string> = {};
+  for (const budget of definition.combat?.economy.budgets ?? []) budgets[budget.id] = budget.label;
+  return { units: catalog.units, saves, pools, budgets };
 }
 
 /** Dice and a flat adjustment read as one die expression (`1d8+3`), which every system writes the
@@ -498,6 +534,24 @@ export function formatCatalogMechanics(
   };
   const parts: string[] = [t(KIND_KEYS[mechanics.kind])];
 
+  if (mechanics.check?.reroll) {
+    parts.push(
+      t(
+        mechanics.check.reroll.mode === "once"
+          ? "game.ruleset.catalog.mechanics.checkRerollOnce"
+          : "game.ruleset.catalog.mechanics.checkRerollUntil",
+        { value: mechanics.check.reroll.upTo },
+      ),
+    );
+  }
+  if (mechanics.check?.dice) parts.push(t("game.ruleset.catalog.mechanics.checkDice", { count: mechanics.check.dice }));
+  if (mechanics.check?.successes) {
+    parts.push(t("game.ruleset.catalog.mechanics.checkSuccesses", { count: mechanics.check.successes }));
+  }
+  if (mechanics.check?.threshold !== undefined) {
+    parts.push(t("game.ruleset.catalog.mechanics.checkThreshold", { value: mechanics.check.threshold }));
+  }
+
   if (mechanics.range !== undefined) {
     parts.push(
       mechanics.range === 0
@@ -513,6 +567,48 @@ export function formatCatalogMechanics(
       }),
     );
   }
+  // A rider never reaches the menu, so its line is the only place a reader learns what it does: how
+  // much it adds, of what, and how often. Without this the picker says only the word "Rider".
+  if (mechanics.rider) {
+    const added = formatAmount(mechanics.rider.amount);
+    if (added) {
+      parts.push(
+        t("game.ruleset.catalog.mechanics.riderAmount", {
+          amount: added,
+          type: mechanics.rider.type ?? t("game.ruleset.catalog.mechanics.riderSameType"),
+        }),
+      );
+    }
+    parts.push(
+      t(
+        mechanics.rider.oncePer === "round"
+          ? "game.ruleset.catalog.mechanics.riderOnceRound"
+          : "game.ruleset.catalog.mechanics.riderOnceTurn",
+      ),
+    );
+  }
+  // What the 1.29 keys do is the whole point of the entries that carry them, and none of them
+  // reaches the menu as its own row: an ability that costs no action, or hands one back, or lets
+  // its holder Dash with a bonus action, would otherwise read as nothing but its kind.
+  if (mechanics.free) parts.push(t("game.ruleset.catalog.mechanics.free"));
+  for (const given of mechanics.gives ?? []) {
+    parts.push(
+      t("game.ruleset.catalog.mechanics.gives", {
+        count: given.count,
+        budget: labels.budgets[given.budget] ?? given.budget,
+      }),
+    );
+  }
+  if (mechanics.standard) {
+    parts.push(
+      t("game.ruleset.catalog.mechanics.standard", {
+        actions: mechanics.standard.actions
+          .map((action) => t(`game.combat.ruleset.standard.${action}`, { defaultValue: action }))
+          .join(", "),
+        budget: labels.budgets[mechanics.standard.budget] ?? mechanics.standard.budget,
+      }),
+    );
+  }
   if (mechanics.targets) parts.push(t(TARGET_KEYS[mechanics.targets]));
   if (mechanics.friendlyFire) parts.push(t("game.ruleset.catalog.mechanics.friendlyFire"));
   if (mechanics.attackRoll) parts.push(t("game.ruleset.catalog.mechanics.attackRoll"));
@@ -524,6 +620,24 @@ export function formatCatalogMechanics(
         ? t("game.ruleset.catalog.mechanics.amountOfType", { amount, type: mechanics.damageType })
         : amount,
     );
+  }
+  // Each clause beside the first amount is rolled and typed on its own, so each says so on its own
+  // rather than being summed into a number no die matches.
+  for (const clause of mechanics.plus ?? []) {
+    const added = formatAmount(clause);
+    if (!added) continue;
+    parts.push(
+      t("game.ruleset.catalog.mechanics.plus", {
+        amount: added,
+        type: clause.type ?? t("game.ruleset.catalog.mechanics.riderSameType"),
+      }),
+    );
+    // A clause may ask the target for a saving throw of its OWN, which is a different throw from
+    // the action's and is the only thing standing between the target and this part of the blow.
+    // Said right after the clause it belongs to, so a reader can tell the two saves apart.
+    if (clause.save) {
+      parts.push(t(SAVE_KEYS[clause.save.onSuccess], { save: labels.saves[clause.save.save] ?? clause.save.save }));
+    }
   }
   const perStep = formatAmount(mechanics.perCostStep);
   if (perStep) parts.push(t("game.ruleset.catalog.mechanics.perStep", { amount: perStep }));

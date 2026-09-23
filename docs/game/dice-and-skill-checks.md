@@ -65,7 +65,7 @@ Some more examples you can type:
 - `4d8-1` rolls four 8-sided dice and subtracts 1.
 - `2d6+3` rolls two 6-sided dice and adds 3.
 
-There are two hard limits. You can roll at most 100 dice at once, and each die can have at most 1000 sides. If you ask for more, the app trims your request down to those limits instead of refusing it, and the result card shows the trimmed notation, so typing `500d6` gives you a `100d6` card for the hundred dice it actually rolled. If your text is not valid dice notation — `NdM`, or a bare `dM` like `d20` — the roll fails and you get an error that names the expected format.
+There are two hard limits. You can roll at most 100 dice at once, and each die can have at most 1000 sides. If you ask for more, the app trims your request down to those limits instead of refusing it, and the result card shows the trimmed notation, so typing `500d6` gives you a `100d6` card for the hundred dice it actually rolled. If your text is not valid dice notation, meaning `NdM` or a bare `dM` like `d20`, the roll fails and you get an error that names the expected format.
 
 ## Skill checks
 
@@ -139,6 +139,9 @@ When a game has a ruleset:
 - The Game Master can roll a skill or a save with a different ability than the one it normally uses, by adding `with="Ability"` to the tag. Only an ability your ruleset declares counts; anything else is ignored and the skill keeps its own.
 - Roll placeholders can name the ruleset's abilities, skills and saves, and `PROF` for the proficiency bonus when the ruleset has one.
 - If the ruleset's package is missing or older than the one the game was created on, checks are saved without numbers and stay owed. They are never rolled with another system's rules.
+- If something on your sheet changes a roll, such as a charm that throws the dice that fell wrong again, the Game Master names it on the check and the Engine does the rest: it takes what the charm costs, applies what it does, and rolls. A charm you have not picked, or one you cannot pay for, does nothing and costs nothing.
+- If the ruleset lets you spend a resource to steady a roll, the Game Master says so on the check itself and the Engine does both at once: it takes the points, adds what they bought, and rolls. If the pool cannot cover it, nothing is spent and the roll is the one it would have been. What the record shows is what was really paid, not what was asked for.
+- If the ruleset has a wound track and says its penalty applies to rolls, being hurt makes every check harder. Under a pool ruleset it takes that many dice off the pool, never below the smallest pool that ruleset allows, which some systems set to none at all. Under a ruleset that adds dice up, it is a flat penalty on the roll. Either way the check says how much was applied, so you can see why you rolled fewer dice. See [The ruleset sheet](party-and-npcs.md#the-ruleset-sheet).
 - The Game Master also keeps each character's resources, conditions and rests up to date on the sheet, and the Engine refuses a change the sheet does not allow. See [The ruleset sheet](party-and-npcs.md#the-ruleset-sheet).
 
 ### Rulesets that roll a pool of dice

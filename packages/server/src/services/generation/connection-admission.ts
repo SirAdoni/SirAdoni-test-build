@@ -22,22 +22,12 @@ export const BACKGROUND_CONNECTION_IDLE_MS = 30_000;
 export const BACKGROUND_CONNECTION_FAILURE_THRESHOLD = 3;
 export const BACKGROUND_CONNECTION_FAILURE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
-export type ConnectionAttemptOutcome = "completed" | "failed" | "ignored";
-export type ConnectionAttemptFinalizer = (outcome: ConnectionAttemptOutcome) => void | Promise<void>;
-export type ConnectionAdmissionMode =
-  | { kind: "foreground" }
-  | {
-      kind: "background";
-      /** Concurrent requests from one admitted batch may share the connection. */
-      groupId?: string;
-      beforeAttempt?: () => void | ConnectionAttemptFinalizer | Promise<void | ConnectionAttemptFinalizer>;
-    }
-  /**
-   * A call that is a step inside someone else's attempt rather than an attempt of its own. It
-   * takes no slot and leaves no foreground stamp, because the work it feeds is already admitted
-   * and would otherwise be refused by its own preparation.
-   */
-  | { kind: "none" };
+import type {
+  ConnectionAdmissionMode,
+  ConnectionAttemptFinalizer,
+  ConnectionAttemptOutcome,
+} from "@marinara-engine/shared";
+export type { ConnectionAdmissionMode, ConnectionAttemptFinalizer, ConnectionAttemptOutcome };
 
 /**
  * Marks a request the server issued to itself on a scheduler's behalf. Background admission is

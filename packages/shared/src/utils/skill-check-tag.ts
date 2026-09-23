@@ -76,6 +76,22 @@ export interface SkillCheckTag {
    * situational dice at all is decided by the resolver.
    */
   bonusDice?: number;
+  /**
+   * `spend="willpower:1"` as the GM wrote it, read into a pool name and a whole number of points.
+   *
+   * What the player said they were spending on THIS check, so one resolution both rolls the dice
+   * and pays for what changed them. Carried, never judged: whether the ruleset offers such a spend,
+   * whether the pool covers it and what it buys are all the resolver's business.
+   */
+  spend?: { pool: string; amount: number };
+  /**
+   * `use="Potence"` as the GM wrote it: the catalog entry the player is using ON this check.
+   *
+   * Carried, never judged. Whether the character actually has that entry, what it costs and what
+   * it does to the roll are all the resolver's business, and it needs the ruleset's catalogs to
+   * answer any of them.
+   */
+  useEntry?: string;
   /** `pool=` exactly as written, for the mismatch log. Present whenever `poolDeclared` is. */
   poolRaw?: string;
   /**
@@ -347,6 +363,21 @@ export function parseSkillCheckTagBody(body: string): SkillCheckTag | null {
     const bonus = Number(bonusValue);
     if (Number.isInteger(bonus)) tag.bonusDice = bonus;
   }
+  // `spend="<pool>:<points>"`. Read on the same terms as `threshold=` and `bonus=`: written at all,
+  // not necessarily usable. A body with no colon, an empty pool name or a number that is not a
+  // whole positive one has declared nothing the Engine could act on.
+  const spendValue = values.get("spend")?.trim();
+  if (spendValue) {
+    const at = spendValue.lastIndexOf(":");
+    const pool = at > 0 ? spendValue.slice(0, at).trim() : "";
+    const amount = at > 0 ? Number(spendValue.slice(at + 1).trim()) : Number.NaN;
+    if (pool && Number.isInteger(amount) && amount > 0) tag.spend = { pool: pool.slice(0, 100), amount };
+  }
+  const useEntry = values.get("use")?.trim();
+  // A catalog entry's label may be 120 characters, and this is the name that has to match one, so
+  // the cut is the schema's own limit rather than the 100 the rest of these use: a shorter one
+  // would make an entry with a long label impossible to name.
+  if (useEntry) tag.useEntry = useEntry.slice(0, 120);
   const who = values.get("who")?.trim();
   if (who) tag.who = who.slice(0, 100);
   const withAbility = values.get("with")?.trim();
@@ -358,6 +389,8 @@ export function parseSkillCheckTagBody(body: string): SkillCheckTag | null {
     if (poolSlots) tag.poolSlots = poolSlots;
   }
 
+  const penaltyValue = Number(values.get("penalty"));
+  const penalty = Number.isFinite(penaltyValue) && penaltyValue < 0 ? { penalty: penaltyValue } : {};
   const rollsValue = values.get("rolls");
   const modifier = Number.parseInt(values.get("modifier") ?? "", 10);
   const total = Number.parseInt(values.get("total") ?? "", 10);
@@ -393,6 +426,7 @@ export function parseSkillCheckTagBody(body: string): SkillCheckTag | null {
       rollMode: "normal",
       resolution,
       dice: declaredDice,
+      ...penalty,
     };
     return tag;
   }
@@ -503,6 +537,7 @@ export function parseSkillCheckTagBody(body: string): SkillCheckTag | null {
     rollMode: normalizedMode,
     resolution,
     dice,
+    ...penalty,
   };
 
   return tag;

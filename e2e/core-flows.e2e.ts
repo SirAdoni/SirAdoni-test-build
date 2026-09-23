@@ -213,6 +213,23 @@ async function getChatCharacterIds(request: APIRequestContext, chatId: string): 
 }
 
 async function dragChatResource(page: Page, source: Locator, target: Locator) {
+  const kind = await source.getAttribute("data-touch-drag-card");
+  if (kind === "character" || kind === "persona") {
+    const handle = source.getByTitle(`Drag ${kind}`, { exact: true });
+    const start = await handle.boundingBox();
+    const end = await target.boundingBox();
+    expect(start).not.toBeNull();
+    expect(end).not.toBeNull();
+    await page.mouse.move(start!.x + start!.width / 2, start!.y + start!.height / 2);
+    await page.mouse.down();
+    try {
+      await page.mouse.move(end!.x + end!.width / 2, end!.y + end!.height / 2, { steps: 8 });
+      await expect(page.locator(".mari-chat-drop-zone")).toBeVisible();
+    } finally {
+      await page.mouse.up();
+    }
+    return;
+  }
   const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
   try {
     await source.dispatchEvent("dragstart", { dataTransfer });
@@ -1478,6 +1495,11 @@ test("Author's Notes keeps its expand and full macro guide inside the field", as
     await page.getByRole("button", { name: "Author's Notes", exact: true }).filter({ visible: true }).click();
 
     const heading = page.locator("h3").filter({ hasText: "Author's Notes" });
+    await expect(heading).toBeVisible();
+    const notesButton = page.getByRole("button", { name: "Author's Notes", exact: true }).filter({ visible: true });
+    await notesButton.click();
+    await expect(heading).toBeHidden();
+    await notesButton.click();
     await expect(heading).toBeVisible();
     const floatingPanel = heading.locator("xpath=ancestor::div[contains(@class, 'fixed')][1]");
     const floatingPanelZIndex = await floatingPanel.evaluate((element) => Number(getComputedStyle(element).zIndex));
@@ -21071,6 +21093,77 @@ test("mobile Load More clears the collapsed Echo Chamber", async ({ page }, test
       .toBeGreaterThanOrEqual(8);
   } finally {
     await page.request.delete(`/api/chats/${chat.id}?force=true`).catch(() => undefined);
+  }
+});
+
+test("chat image preview allows native mobile pinch zoom", async ({ page, request, browserName }, testInfo) => {
+  test.skip(!testInfo.project.name.includes("mobile"), "Native pinch zoom applies to touch viewports.");
+  const response = await request.post("/api/chats", {
+    data: { name: "Chat image pinch zoom", mode: "roleplay", characterIds: [] },
+  });
+  expect(response.ok()).toBeTruthy();
+  const chat = (await response.json()) as { id: string };
+  try {
+    await page.route("**/pinch-probe.svg", (route) =>
+      route.fulfill({
+        contentType: "image/svg+xml",
+        body: '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="800"><rect width="800" height="800" fill="#293655"/><circle cx="400" cy="400" r="180" fill="#8bd1da"/><text x="400" y="415" text-anchor="middle" font-size="48">Zoom probe</text></svg>',
+      }),
+    );
+    expect(
+      (
+        await request.post(`/api/chats/${chat.id}/messages`, {
+          data: {
+            role: "assistant",
+            content: "An image to inspect.",
+            extra: { attachments: [{ type: "image", filename: "pinch-probe.svg", url: "/pinch-probe.svg" }] },
+          },
+        })
+      ).ok(),
+    ).toBeTruthy();
+    await prepareFreshClient(page);
+    await page.addInitScript((id) => localStorage.setItem("marinara-active-chat-id", id), chat.id);
+    await page.goto("/");
+    await page.getByRole("button", { name: "Open pinch-probe.svg", exact: true }).click();
+    const preview = page.getByRole("dialog", { name: "Image preview", exact: true });
+    await expect(preview).toBeVisible();
+    await expect(page.locator('meta[name="viewport"]')).not.toHaveAttribute(
+      "content",
+      /user-scalable\s*=\s*(?:no|0)|maximum-scale\s*=\s*1(?:\.0)?(?:,|$)/u,
+    );
+    const image = preview.getByRole("img");
+    const before = await image.boundingBox();
+    expect(before).not.toBeNull();
+    if (browserName === "chromium") {
+      // Drive the browser's native touch gesture, without mocking visualViewport.
+      const session = await page.context().newCDPSession(page);
+      const centerX = before!.x + before!.width / 2;
+      const centerY = before!.y + before!.height / 2;
+      // synthesizePinchGesture is a no-op in Linux headless Chromium, even on a blank page.
+      for (let step = 0; step <= 10; step++) {
+        const offset = 30 + step * 6;
+        await session.send("Input.dispatchTouchEvent", {
+          type: step === 0 ? "touchStart" : "touchMove",
+          touchPoints: [
+            { x: centerX - offset, y: centerY, id: 0 },
+            { x: centerX + offset, y: centerY, id: 1 },
+          ],
+        });
+        await page.evaluate(() => new Promise(requestAnimationFrame));
+      }
+      await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await expect.poll(() => page.evaluate(() => window.visualViewport?.scale ?? 1)).toBeGreaterThan(1.5);
+      await expect(page.locator("html")).not.toHaveAttribute("data-mari-software-keyboard-open");
+      expect((await image.boundingBox())!.width).toBeCloseTo(before!.width, 0);
+      await testInfo.attach("chat-image-native-pinch.png", { body: await page.screenshot(), contentType: "image/png" });
+      await session.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1 });
+      await session.detach();
+    }
+    // Playwright WebKit cannot drive a native two-finger pinch; device verification remains separate.
+    await preview.getByRole("button", { name: "Close image", exact: true }).click();
+    await expect(preview).toBeHidden();
+  } finally {
+    await bestEffortDelete(request, `/api/chats/${chat.id}?force=true`);
   }
 });
 

@@ -44,7 +44,7 @@ export function CreateConnectionModal({ open, onClose }: Props) {
         provider,
         baseUrl: providerDef?.defaultBaseUrl ?? "",
         apiKey: "",
-        model: defaultModel?.id ?? "",
+        model: provider === "decision" ? "jev-latest" : (defaultModel?.id ?? ""),
         maxContext: defaultModel?.context || 128000,
       });
       const connId = (result as { id: string })?.id;
@@ -116,7 +116,7 @@ export function CreateConnectionModal({ open, onClose }: Props) {
                     : "bg-[var(--secondary)] text-[var(--muted-foreground)] ring-1 ring-[var(--border)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
                 )}
               >
-                {info.name}
+                {key === "decision" ? localizeUi("connections.decision.label") : info.name}
               </button>
             ))}
           </div>

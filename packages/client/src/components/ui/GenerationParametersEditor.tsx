@@ -2,6 +2,7 @@ import type { EffectiveGenerationParameters } from "../../hooks/use-effective-ge
 import { useEffect, useRef, useState } from "react";
 import {
   GENERATION_PARAMETER_SEND_KEYS,
+  isClaudeOpus55Model,
   customRequestHeadersSchema,
   normalizeThinkingTagPairs,
   reasoningEffortChoices,
@@ -301,7 +302,10 @@ export function GenerationParametersFields({
   const relevant = provider === undefined ? null : relevantGenerationParameters(context);
   const show = (key: GenerationParameterKey) =>
     relevant ? relevant.has(key) : key !== "serviceTier" || showOpenRouterServiceTier;
-  const effortChoices = reasoningEffortChoices({ ...context, selected: value.reasoningEffort });
+  // Claude Opus 5.5 always thinks, so it has no "off" effort level.
+  const effortChoices = reasoningEffortChoices({ ...context, selected: value.reasoningEffort }).filter(
+    (choice) => choice.value !== null || !isClaudeOpus55Model(model ?? ""),
+  );
   const verbosityOptions = verbosityChoices(context);
   const set = <K extends keyof EditableGenerationParameters>(key: K, nextValue: EditableGenerationParameters[K]) => {
     onChange({ ...value, [key]: nextValue });

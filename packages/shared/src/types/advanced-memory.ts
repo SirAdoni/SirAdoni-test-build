@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+/** Distinguishes explicit scene participants from legacy visibility-based assignments. */
+export const ADVANCED_MEMORY_SCENE_AUDIENCE = { id: "scene-audience", revision: "participants-v1" } as const;
+
 export const advancedMemorySettingsSchema = z.object({
   enabled: z.boolean().default(false),
   maxContextTokens: z.number().int().min(1024).max(10_000_000).default(65_000),
@@ -8,6 +11,7 @@ export const advancedMemorySettingsSchema = z.object({
   initialProcessingModel: z.enum(["main", "helper"]).default("helper"),
   /** Cadence and recent-message window for standalone post-generation scene checks. */
   sceneCheckInterval: z.number().int().min(1).max(100).default(5),
+  retrieveMaxScenes: z.number().int().min(0).max(50).default(3),
   retrieveMinMessages: z.number().int().min(0).max(50).default(3),
   retrieveMaxMessages: z.number().int().min(0).max(50).default(10),
   narratorCharacterId: z.string().nullable().default(null),
@@ -32,7 +36,19 @@ export interface AdvancedMemoryJob {
   completed: number;
   total: number;
   error: string | null;
+  reviewRecordId?: string | null;
   processedMessageId?: string | null;
+  /** Invalidates cached prompts when a user removes an automatic context flag. */
+  contextStartRevision?: number;
+  /** Shared automatic scene reset, controlled by the existing New Start flag UI. */
+  contextStarts?: Array<{
+    messageId: string;
+    audienceCharacterIds: string[];
+    /** Keep this scene boundary until the live window reaches its budget again. */
+    sceneStartMessageId?: string | null;
+    /** A changed manual flag replaces the automatic window. */
+    manualStartMessageId?: string | null;
+  }>;
 }
 
 export interface AdvancedMemoryRecord {
@@ -47,7 +63,7 @@ export interface AdvancedMemoryRecord {
   startIndex: number;
   endIndex: number;
   messageIds: string[];
-  /** Empty means the shared, non-Individual audience. */
+  /** Scene/excerpt access: empty means narrator only, never all characters. */
   audienceCharacterIds: string[];
   content: string;
   title: string;
@@ -70,6 +86,11 @@ export interface AdvancedMemoryStatus {
   helperModel: string | null;
   summaryModel: string | null;
   warnings: string[];
+  unpreparedScenes?: Array<{
+    sceneId: string;
+    startIndex: number;
+    endIndex: number;
+  }>;
   latestReceipt?: AdvancedMemoryReceipt;
 }
 

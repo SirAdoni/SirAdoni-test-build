@@ -359,7 +359,7 @@ const menuOf = (definition: RulesetDefinition, state: RulesetEncounterState, act
     const aim = option.area ? rulesetAimCells(state, actorId, option.id) : [];
     return {
       ...option,
-      targetIds: rulesetOptionTargets(state, actorId, option),
+      targetIds: rulesetOptionTargets(definition, state, actorId, option),
       ...(aim.length > 0 ? { aim } : {}),
     };
   }) satisfies DirectedRulesetOption[];
@@ -586,6 +586,14 @@ const line = (definition: RulesetDefinition, state: RulesetEncounterState, event
       }),
     ],
     ["signature", say({ type: "signature", actorId: "lurker", optionId: "wail", label: "Wail", cost: 2, left: 1 })],
+    // The three the turn's own economy adds: a strike out of what one spend bought, a budget an
+    // ability handed back, and something that added itself to a blow.
+    ["strikes", say({ type: "strikes", actorId: "brenna", optionId: "sword", label: "Longsword", left: 1 })],
+    [
+      "gives",
+      say({ type: "gives", actorId: "brenna", optionId: "surge", label: "Second Wind", budget: "action", left: 1 }),
+    ],
+    ["rider", say({ type: "rider", actorId: "brenna", targetId: "lurker", riderId: "sly", label: "Sly Strike" })],
     [
       "concentration",
       say({ type: "concentration", actorId: "corwin", label: "Bless", state: "ended", reason: "damage" }),
@@ -632,6 +640,8 @@ const line = (definition: RulesetDefinition, state: RulesetEncounterState, event
       "opportunity",
       say({ type: "opportunity", actorId: "lurker", targetId: "brenna", label: "Barbed claw", budget: "reaction" }),
     ],
+    ["window", say({ type: "window", window: "w1", kind: "reaction", waiting: ["lurker"], moverId: "brenna" })],
+    ["pass", say({ type: "pass", actorId: "lurker", window: "w1" })],
     ["cover", say({ type: "cover", targetId: "lurker", bonus: 2, defense: 15 })],
     [
       "area",
@@ -655,6 +665,12 @@ const line = (definition: RulesetDefinition, state: RulesetEncounterState, event
   }
 
   // The exact strings, so rewording one is a decision rather than an accident.
+  assert.equal(printed.get("window"), "Brenna breaks away, and Thorn Lurker may strike.");
+  assert.equal(printed.get("pass"), "Thorn Lurker lets the moment go by.");
+  assert.equal(
+    line(fiveE, state, { type: "window", window: "w2", kind: "signature", waiting: ["lurker"] }),
+    "The fight pauses between turns, and Thorn Lurker may act.",
+  );
   assert.equal(printed.get("initiative"), "Initiative: Brenna 14.");
   assert.equal(printed.get("round"), "Round 3.");
   assert.equal(printed.get("turn"), "Brenna takes their turn.");
@@ -675,6 +691,14 @@ const line = (definition: RulesetDefinition, state: RulesetEncounterState, event
   assert.equal(printed.get("uses"), "Thorns: 1 of 3 left.");
   assert.equal(printed.get("recharge"), "Thorns is ready again: 5, needing 5.");
   assert.equal(printed.get("signature"), "Thorn Lurker spends 2 on Wail, with 1 left.");
+  assert.equal(printed.get("strikes"), "Brenna swings with Longsword, with 1 strike left.");
+  assert.equal(printed.get("gives"), "Brenna uses Second Wind and has 1 Action.");
+  assert.equal(printed.get("rider"), "Sly Strike catches Thorn Lurker as well.");
+  // The last strike of a spend says so rather than promising none left.
+  assert.equal(
+    line(fiveE, state, { type: "strikes", actorId: "brenna", optionId: "sword", label: "Longsword", left: 0 }),
+    "Brenna swings with Longsword, the last of the strikes.",
+  );
   assert.equal(printed.get("concentration"), "Corwin loses hold of Bless.");
   assert.equal(printed.get("standard"), "Brenna helps Corwin.");
   assert.equal(printed.get("dying"), "Brenna holds on: 12 against 10. Held 2, slipped 1.");
@@ -800,6 +824,11 @@ const line = (definition: RulesetDefinition, state: RulesetEncounterState, event
   const sword = menu.find((option) => option.label === "Longsword")!;
   assert.equal(rulesetOptionLabel(sword, t), "Longsword", "a weapon off the sheet keeps the sheet's own name");
   assert.equal(rulesetOptionCostText(sword, budgetLabel, t), "Spends Action");
+  // A strike taken out of what one spend already bought carries no budget and says what is left.
+  assert.equal(
+    rulesetOptionCostText({ ...sword, budget: undefined, strikes: 1 }, budgetLabel, t),
+    "Free, 1 strike left",
+  );
   const forecast = rulesetOptionForecastText(sword, t);
   assert.match(forecast, /^\d+% to hit, about \d+ damage$/u, `the forecast reads oddly: ${forecast}`);
   assert.equal(
@@ -974,6 +1003,25 @@ const line = (definition: RulesetDefinition, state: RulesetEncounterState, event
     "Still standing: Thorn Lurker (3/12)",
     "Sheets: the 5e (SRD 5.1) sheets were kept up to date while the fight ran, so every cost is already paid. Do not change those numbers again.",
   ]);
+
+  // A condition that OUTLIVES the fight is the Game Master's to end, as it is at a table: the thing
+  // that would lift a charm is the spell's own terms or the fiction, never arithmetic, so the recap
+  // names who is still carrying one and hands over the command rather than guessing. The condition
+  // the dying rule puts on somebody at zero is deliberately not in that list, because it comes off
+  // when they are healed or stabilised and the rules already say so.
+  const charmed = {
+    ...summary,
+    party: [
+      { ...summary.party[0]!, conditions: ["charmed"] },
+      { ...summary.party[1]!, health: 0, down: true, dying: true, stable: false, conditions: ["unconscious"] },
+    ],
+  };
+  const charmedRecap = rulesetCombatRecapLines(fiveE, charmed);
+  const still = charmedRecap.find((line) => line.startsWith("Still affected:"));
+  assert.ok(still, `the recap must name a lingering condition: ${JSON.stringify(charmedRecap)}`);
+  assert.match(still, /Brenna \(Charmed\)/u, still);
+  assert.doesNotMatch(still, /Corwin/u, "the dying rule's own condition is not a ruling to make");
+  assert.match(still, /op="condition"/u, "and the Game Master is given the command that ends it");
 }
 
 // ── The board: everything on it came off the view, and nothing was worked out here ──
