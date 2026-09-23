@@ -155,6 +155,14 @@ import {
 } from "../services/game/session-summary-refresh.js";
 import { buildRecapPrompt, buildSessionCombatResetPatch } from "../services/game/session.service.js";
 import { buildMapGenerationPrompt } from "../services/game/map.service.js";
+import { validateGeneratedGameMap } from "../services/game/game-map-validate.js";
+import {
+  JournalEntryMovedError,
+  journalEntryExpectedFromQuery,
+  journalEntryExpectedSchema,
+  journalEntryMatchesExpected,
+  mergeJournalEntryExpected,
+} from "../services/game/journal-entry-guard.js";
 import {
   identifyGeneratedGameMap,
   getGameMapId,
@@ -11736,12 +11744,19 @@ export async function gameRoutes(app: FastifyInstance) {
       );
     }
 
-    let map: GameMap;
+    let parsedMap: unknown;
     try {
-      map = parseJSON(mapContent) as GameMap;
+      parsedMap = parseJSON(mapContent);
     } catch {
-      throw new Error("Failed to parse map from AI response");
+      return reply.status(422).send({ error: "Failed to parse map from AI response", code: "MAP_INVALID" });
     }
+    const mapValidation = validateGeneratedGameMap(parsedMap);
+    if (!mapValidation.ok) {
+      return reply
+        .status(422)
+        .send({ error: `The AI returned an unusable map: ${mapValidation.error}. Try generating again.`, code: "MAP_INVALID" });
+    }
+    const map: GameMap = mapValidation.map;
 
     let hydratedMeta: Record<string, unknown> | null = null;
     const updatedChat = await chats.patchMetadata(chatId, async (freshMeta) => {
@@ -12719,25 +12734,35 @@ export async function gameRoutes(app: FastifyInstance) {
     "/:chatId/journal/entries/:entryIndex",
     async (req, reply) => {
       const entryIndex = z.coerce.number().int().nonnegative().parse(req.params.entryIndex);
-      const { title, content } = z
+      const { title, content, expected } = z
         .object({
           title: z.string().trim().min(1).max(500),
           content: z.string().max(20_000),
+          expected: journalEntryExpectedSchema,
         })
         .parse(req.body);
       const chats = createChatsStorage(app.db);
       let nextJournal: Journal | null = null;
-      const updated = await chats.patchMetadata(req.params.chatId, (current) => {
-        const journal = (current.gameJournal as Journal) ?? createJournal();
-        const entry = journal.entries[entryIndex];
-        if (!entry) {
-          throw Object.assign(new Error("Journal entry not found"), { statusCode: 404 });
+      let updated: Awaited<ReturnType<typeof chats.patchMetadata>>;
+      try {
+        updated = await chats.patchMetadata(req.params.chatId, (current) => {
+          const journal = (current.gameJournal as Journal) ?? createJournal();
+          const entry = journal.entries[entryIndex];
+          if (!entry) {
+            throw Object.assign(new Error("Journal entry not found"), { statusCode: 404 });
+          }
+          if (!journalEntryMatchesExpected(entry, expected)) throw new JournalEntryMovedError();
+          const entries = [...journal.entries];
+          entries[entryIndex] = { ...entry, title, content };
+          nextJournal = { ...journal, entries };
+          return { gameJournal: nextJournal };
+        });
+      } catch (err) {
+        if (err instanceof JournalEntryMovedError) {
+          return reply.status(409).send({ error: err.message, code: err.code });
         }
-        const entries = [...journal.entries];
-        entries[entryIndex] = { ...entry, title, content };
-        nextJournal = { ...journal, entries };
-        return { gameJournal: nextJournal };
-      });
+        throw err;
+      }
       if (!updated || !nextJournal) return reply.status(404).send({ error: "Chat not found" });
 
       return { journal: nextJournal };
@@ -12749,19 +12774,36 @@ export async function gameRoutes(app: FastifyInstance) {
     "/:chatId/journal/entries/:entryIndex",
     async (req, reply) => {
       const entryIndex = z.coerce.number().int().nonnegative().parse(req.params.entryIndex);
+      const bodyExpected = z
+        .object({ expected: journalEntryExpectedSchema })
+        .passthrough()
+        .optional()
+        .nullable()
+        .parse(req.body ?? undefined)?.expected;
+      const expected = mergeJournalEntryExpected(bodyExpected, journalEntryExpectedFromQuery(req.query));
       const chats = createChatsStorage(app.db);
       let nextJournal: Journal | null = null;
-      const updated = await chats.patchMetadata(req.params.chatId, (current) => {
-        const journal = (current.gameJournal as Journal) ?? createJournal();
-        if (!journal.entries[entryIndex]) {
-          throw Object.assign(new Error("Journal entry not found"), { statusCode: 404 });
+      let updated: Awaited<ReturnType<typeof chats.patchMetadata>>;
+      try {
+        updated = await chats.patchMetadata(req.params.chatId, (current) => {
+          const journal = (current.gameJournal as Journal) ?? createJournal();
+          const entry = journal.entries[entryIndex];
+          if (!entry) {
+            throw Object.assign(new Error("Journal entry not found"), { statusCode: 404 });
+          }
+          if (!journalEntryMatchesExpected(entry, expected)) throw new JournalEntryMovedError();
+          nextJournal = {
+            ...journal,
+            entries: journal.entries.filter((_, index) => index !== entryIndex),
+          };
+          return { gameJournal: nextJournal };
+        });
+      } catch (err) {
+        if (err instanceof JournalEntryMovedError) {
+          return reply.status(409).send({ error: err.message, code: err.code });
         }
-        nextJournal = {
-          ...journal,
-          entries: journal.entries.filter((_, index) => index !== entryIndex),
-        };
-        return { gameJournal: nextJournal };
-      });
+        throw err;
+      }
       if (!updated || !nextJournal) return reply.status(404).send({ error: "Chat not found" });
 
       return { journal: nextJournal };
