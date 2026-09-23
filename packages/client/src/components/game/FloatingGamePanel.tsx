@@ -426,7 +426,9 @@ function FloatingFrame({
       const stored = JSON.parse(localStorage.getItem(sizeKey) ?? "null");
       return {
         width: Number.isFinite(stored?.width) ? Math.max(MIN_PANEL_WIDTH, stored.width) : width,
-        height: Number.isFinite(stored?.height) ? Math.max(MIN_PANEL_HEIGHT, stored.height) : height,
+        // A stored height under the minimum is not a real choice (a crushed reflow or a
+        // hand-edited value); treat it as unset so the panel sizes to its content.
+        height: Number.isFinite(stored?.height) && stored.height >= MIN_PANEL_HEIGHT ? stored.height : height,
         manualWidth: stored?.manualWidth === true,
       };
     } catch {
@@ -455,6 +457,10 @@ function FloatingFrame({
   const [mounted, setMounted] = useState(false);
   const [panelHeight, setPanelHeight] = useState(0);
   const [layoutHeightLimit, setLayoutHeightLimit] = useState<number | null>(null);
+  const layoutHeightLimitRef = useRef<number | null>(null);
+  layoutHeightLimitRef.current = layoutHeightLimit;
+  /** Content height measured the last time no crowded-layout limit applied. */
+  const unlimitedNaturalHeight = useRef<number | null>(null);
   useLayoutEffect(() => {
     const element = panel.current;
     if (!element) return;
@@ -503,7 +509,15 @@ function FloatingFrame({
   }, [tuckEdge, tuckRevealAnchorY, tuckedClosed, tuckTabTop, y]);
   // Collision reflow is temporary. Keep a separate anchor so a later resize or
   // observer pass cannot treat the resolver's displacement as a new preference.
-  const preferredPosition = useRef<{ x: number; y: number; relativeX: number; relativeY: number } | null>(null);
+  const preferredPosition = useRef<{
+    x: number;
+    y: number;
+    relativeX: number;
+    relativeY: number;
+    /** Surface size the absolute x/y belong to. */
+    surfaceWidth?: number;
+    surfaceHeight?: number;
+  } | null>(null);
   const untuckAnchorX = useRef<number | null>(null);
   const preferredAnchor = useCallback(() => {
     const host = surface.current;
@@ -528,9 +542,22 @@ function FloatingFrame({
         y: bottomLocked ? Math.max(0, maxY - 16) : saved.relativeY * maxY,
       };
     }
+    // On an unchanged surface the anchor is absolute. Relative anchors depend on the panel's
+    // current height, which a crowded reflow limits, and that feedback flipped the layout
+    // between two solutions. After a surface resize, rebase once from the relative anchor.
+    if (saved.surfaceWidth !== host.clientWidth || saved.surfaceHeight !== host.clientHeight) {
+      preferredPosition.current = {
+        ...saved,
+        x: saved.relativeX * maxX,
+        y: saved.relativeY * maxY,
+        surfaceWidth: host.clientWidth,
+        surfaceHeight: host.clientHeight,
+      };
+    }
+    const anchor = preferredPosition.current ?? saved;
     return {
-      x: saved.relativeX * maxX,
-      y: bottomLocked ? Math.max(0, maxY - 16) : saved.relativeY * maxY,
+      x: Math.max(0, Math.min(anchor.x, maxX)),
+      y: bottomLocked ? Math.max(0, maxY - 16) : Math.max(0, Math.min(anchor.y, maxY)),
     };
   }, [bottomLocked, surface, topCenterPinned, tuckEdge, tucked, tuckedClosed, x, y]);
   useLayoutEffect(() => {
@@ -555,6 +582,8 @@ function FloatingFrame({
         y: preservedY,
         relativeX: maxX > 0 ? anchor.x / maxX : 0,
         relativeY: maxY > 0 ? preservedY / maxY : 0,
+        surfaceWidth: host.clientWidth,
+        surfaceHeight: host.clientHeight,
       };
       handleDragEnd();
     }
@@ -578,6 +607,8 @@ function FloatingFrame({
           y: y.get(),
           relativeX: maxX > 0 ? Math.max(0, Math.min(1, x.get() / maxX)) : 0,
           relativeY: maxY > 0 ? Math.max(0, Math.min(1, y.get() / maxY)) : 0,
+          surfaceWidth: host.clientWidth,
+          surfaceHeight: host.clientHeight,
         };
       }
     },
@@ -597,8 +628,26 @@ function FloatingFrame({
         y: y.get(),
         relativeX: maxX > 0 ? Math.max(0, Math.min(1, x.get() / maxX)) : 0,
         relativeY: maxY > 0 ? Math.max(0, Math.min(1, y.get() / maxY)) : 0,
+        surfaceWidth: host.clientWidth,
+        surfaceHeight: host.clientHeight,
       };
     }
+    // Fill panels (the storyboard) shrink their media to the box they are given, so while a
+    // crowded-layout limit applies their measured height is not their natural height. Use
+    // the last unlimited measurement then, or the limit and the measurement feed back into
+    // each other and the whole layout flips between two states every frame.
+    const measureNaturalHeight = () => {
+      const measured = intrinsicContent.current
+        ? Math.max(intrinsicContent.current.offsetHeight, intrinsicContent.current.scrollHeight)
+        : element.offsetHeight;
+      if (layoutHeightLimitRef.current == null) {
+        unlimitedNaturalHeight.current = measured;
+        return measured;
+      }
+      return fillHeight && unlimitedNaturalHeight.current != null
+        ? Math.max(measured, unlimitedNaturalHeight.current)
+        : measured;
+    };
     return registerGamePanel(host, {
       id,
       element,
@@ -610,13 +659,14 @@ function FloatingFrame({
       // The narration surface reserves the primary reading area. Keep it ahead
       // of optional HUD widgets when their saved positions would collide so
       // narration controls remain reachable while editing the layout.
-      priority: reserveSpace || bottomLocked || topCenterPinned || tucked ? 0 : id === "map" ? 1 : 2,
+      // The wide game toolbar claims its strip before widgets; placed last, it split the
+      // screen in two and crowded layouts fell apart around it.
+      priority:
+        reserveSpace || bottomLocked || topCenterPinned || tucked ? 0 : id === "map" || id === "toolbar" ? 1 : 2,
       getPosition: () => ({ x: x.get(), y: y.get() }),
       getPreferredPosition: preferredAnchor,
       getSize: () => {
-        const naturalHeight = intrinsicContent.current
-          ? Math.max(intrinsicContent.current.offsetHeight, intrinsicContent.current.scrollHeight)
-          : element.offsetHeight;
+        const naturalHeight = measureNaturalHeight();
         const desiredHeight = collapsed
           ? naturalHeight
           : growsWithContent
@@ -628,9 +678,7 @@ function FloatingFrame({
         };
       },
       setHeightLimit: (nextHeight) => {
-        const naturalHeight = intrinsicContent.current
-          ? Math.max(intrinsicContent.current.offsetHeight, intrinsicContent.current.scrollHeight)
-          : element.offsetHeight;
+        const naturalHeight = measureNaturalHeight();
         const desiredHeight = collapsed
           ? naturalHeight
           : growsWithContent
@@ -654,6 +702,8 @@ function FloatingFrame({
           y: y.get(),
           relativeX: maxX > 0 ? Math.max(0, Math.min(1, x.get() / maxX)) : 0,
           relativeY: maxY > 0 ? Math.max(0, Math.min(1, y.get() / maxY)) : 0,
+          surfaceWidth: host.clientWidth,
+          surfaceHeight: host.clientHeight,
         };
       },
       commitPosition: () => rememberPositionRef.current(),
@@ -679,6 +729,7 @@ function FloatingFrame({
     stackEnabled,
     size.height,
     height,
+    fillHeight,
     setLayoutHeightLimit,
   ]);
   useEffect(() => {
@@ -1474,7 +1525,13 @@ function FloatingFrame({
           }}
           growth={growth}
           onGrowth={(next) => {
-            if (next === "fixed") fixHeight(panel.current?.offsetHeight);
+            // A crowded reflow may be showing a temporary window; fix the panel's real height.
+            if (next === "fixed")
+              fixHeight(
+                layoutHeightLimit != null && intrinsicContent.current
+                  ? Math.min(available.height, Math.max(MIN_PANEL_HEIGHT, intrinsicContent.current.scrollHeight))
+                  : panel.current?.offsetHeight,
+              );
             else {
               try {
                 localStorage.setItem(growthPreferenceKey, "true");

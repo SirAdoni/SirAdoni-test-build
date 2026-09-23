@@ -214,16 +214,18 @@ export function useDraggablePanel(
   const toggleLocked = useCallback(() => {
     setLocked((prev) => {
       const next = !prev;
-      writePanelState(
-        key,
-        clampPanelState({
-          locked: next,
-          x: x.get(),
-          y: y.get(),
-          relativeX: relative.current.x,
-          relativeY: relative.current.y,
-        }),
-      );
+      // Measured panels keep their saved anchor: x/y may hold a temporary reflow position.
+      const stored =
+        boundsRef.current && window.localStorage.getItem(key)
+          ? readPanelState(key)
+          : clampPanelState({
+              locked: next,
+              x: x.get(),
+              y: y.get(),
+              relativeX: relative.current.x,
+              relativeY: relative.current.y,
+            });
+      writePanelState(key, { ...stored, locked: next });
       return next;
     });
   }, [key, x, y]);

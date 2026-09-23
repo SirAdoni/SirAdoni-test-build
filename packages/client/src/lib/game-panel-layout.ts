@@ -34,6 +34,19 @@ export interface GamePanelLayoutItem {
   /** Panels sharing a stack move and resolve as one vertical group. */
   stackGroup?: string | null;
   stackOrder?: number;
+  /**
+   * Reading panels (narration, map, storyboard) keep at least a third of the surface
+   * (or their natural height) when a crowded screen shrinks other panels.
+   */
+  reading?: boolean;
+}
+
+/** Panels whose content is read continuously; crowded reflow never crushes them to a sliver. */
+export const GAME_READING_PANEL_IDS: ReadonlySet<string> = new Set(["narration", "map", "storyboard"]);
+
+/** The smallest height a reading panel is shrunk to when the screen is crowded. */
+export function gameReadingPanelFloor(surfaceHeight: number): number {
+  return Math.max(160, Math.round(surfaceHeight / 3));
 }
 
 export interface GamePanelPosition {
@@ -142,45 +155,163 @@ function clamp(item: GamePanelLayoutItem, bounds: GamePanelLayoutBounds): GamePa
   };
 }
 
+interface ResolveVariant {
+  cap: number;
+  readingCap: number;
+  promoted: string[];
+  packed: boolean;
+  /** Smallest window a non-reading panel may be squeezed into to fit a leftover gap. */
+  gapFloor: number;
+}
+
+/** Crowded layouts search several variants; remember which one won for unchanged input. */
+const resolvedVariantCache = new Map<string, ResolveVariant | null>();
+const RESOLVED_VARIANT_CACHE_SIZE = 16;
+
+function layoutSignature(items: GamePanelLayoutItem[], bounds: GamePanelLayoutBounds): string {
+  const round = (value: number | undefined) => (value == null || !Number.isFinite(value) ? "-" : Math.round(value));
+  return [
+    bounds.width,
+    bounds.height,
+    bounds.gap ?? 8,
+    bounds.allowOverlap ? 1 : 0,
+    ...items.map((item) =>
+      [
+        item.id,
+        round(item.preferredX ?? item.x),
+        round(item.preferredY ?? item.y),
+        round(item.width),
+        round(item.height),
+        item.priority,
+        item.fixed ? 1 : 0,
+        round(item.bottomInset),
+        item.firmHeight ? 1 : 0,
+        item.reading ? 1 : 0,
+        item.setHeightLimit ? 1 : 0,
+      ].join(","),
+    ),
+  ].join("|");
+}
+
 /** Resolve sibling collisions without changing the saved position of panels that already fit. */
 export function resolveGamePanelLayout(items: GamePanelLayoutItem[], bounds: GamePanelLayoutBounds): boolean {
   const layoutItems = collapseStackGroups(items);
-  // Prefer full panels. If the screen is crowded, retry with bounded reading
-  // windows; only panel contents scroll, and saved sizes remain untouched.
-  for (const cap of [...new Set([bounds.height, bounds.height / 2, bounds.height / 3, bounds.height / 4, 64])]) {
+  const readingFloor = gameReadingPanelFloor(bounds.height);
+  type Attempt = { result: Array<{ x: number; y: number; height: number }>; overflowIds: string[] };
+  const attempt = ({ cap, readingCap, promoted, packed, gapFloor }: ResolveVariant): Attempt => {
     const result = layoutItems.map((item) => ({
       x: item.x,
       y: item.y,
       height: Math.min(item.height, Math.max(64, bounds.height - (item.bottomInset ?? 0))),
     }));
-    const overflow = resolvePanelPositions(
-      layoutItems.map((item, index) => ({
-        ...item,
-        height:
-          item.setHeightLimit && !item.firmHeight
-            ? Math.min(item.height, Math.max(64, cap - (item.bottomInset ?? 0)))
-            : item.height,
-        setPosition: (x, y) => {
-          result[index]!.x = x;
-          result[index]!.y = y;
-        },
-        setHeightLimit: item.setHeightLimit
-          ? (height) => {
-              result[index]!.height = height;
-            }
-          : undefined,
-      })),
+    const overflowIds = resolvePanelPositions(
+      layoutItems.map((item, index) => {
+        // Reading panels never shrink below the reading floor; other panels follow the cap.
+        const itemCap = item.reading ? Math.max(readingCap, readingFloor) : cap;
+        // Packed: movable widgets give up their anchors and fill from the top of their side.
+        const pack = packed && !item.reading && !item.fixed && item.bottomInset == null;
+        const anchorX = Number.isFinite(item.preferredX) ? item.preferredX! : item.x;
+        return {
+          ...item,
+          ...(pack
+            ? {
+                preferredX: anchorX + item.width / 2 < bounds.width / 2 ? 0 : Math.max(0, bounds.width - item.width),
+                preferredY: 0,
+              }
+            : null),
+          height:
+            item.setHeightLimit && !item.firmHeight
+              ? Math.min(item.height, Math.max(64, itemCap - (item.bottomInset ?? 0)))
+              : item.height,
+          setPosition: (x: number, y: number) => {
+            result[index]!.x = x;
+            result[index]!.y = y;
+          },
+          setHeightLimit: item.setHeightLimit
+            ? (height: number) => {
+                result[index]!.height = height;
+              }
+            : undefined,
+        };
+      }),
       bounds,
+      new Set(promoted),
+      readingFloor,
+      gapFloor,
     );
-    if (overflow) continue;
+    return { result, overflowIds };
+  };
+  const apply = ({ result }: Attempt) =>
     layoutItems.forEach((item, index) => {
       const resolved = result[index]!;
       item.setHeightLimit?.(resolved.height);
       if (item.stackGroup || Math.abs(item.x - resolved.x) > 0.5 || Math.abs(item.y - resolved.y) > 0.5)
         item.setPosition(resolved.x, resolved.y);
     });
-    return false;
+
+  // Steady state: ResizeObserver passes repeat the same input, so reuse the variant that won.
+  const signature = layoutSignature(layoutItems, bounds);
+  const cached = resolvedVariantCache.get(signature);
+  if (cached) {
+    const current = attempt(cached);
+    if (!current.overflowIds.length) {
+      apply(current);
+      return false;
+    }
   }
+  const remember = (variant: ResolveVariant | null) => {
+    resolvedVariantCache.delete(signature);
+    resolvedVariantCache.set(signature, variant);
+    while (resolvedVariantCache.size > RESOLVED_VARIANT_CACHE_SIZE)
+      resolvedVariantCache.delete(resolvedVariantCache.keys().next().value!);
+  };
+
+  // Prefer full panels. If the screen is crowded, retry with bounded windows; only
+  // panel contents scroll, and saved sizes remain untouched. Other panels become
+  // scrolling windows before reading panels do, and reading panels stop at the
+  // reading floor. Before shrinking every panel another step, each level tries the
+  // saved anchors, then places the panels a greedy pass stranded first, then packs
+  // the widgets from the top of their side, and last squeezes widgets into any gap.
+  const full = bounds.height;
+  const ladder: Array<[cap: number, readingCap: number]> = [
+    [full, full],
+    [full / 2, full],
+    [full / 3, full],
+    [full / 3, full / 2],
+    [full / 3, full / 3],
+    [full / 4, full / 3],
+    [64, full / 3],
+  ];
+  let best: Attempt | null = null;
+  /** Applies and returns true when the variant fits; otherwise returns the ids that did not. */
+  const consider = (variant: ResolveVariant): true | string[] => {
+    const current = attempt(variant);
+    if (!current.overflowIds.length) {
+      apply(current);
+      remember(variant);
+      return true;
+    }
+    if (!best || current.overflowIds.length < best.overflowIds.length) best = current;
+    return current.overflowIds;
+  };
+  for (const [cap, readingCap] of ladder) {
+    const promoted = new Set<string>();
+    for (let pass = 0; pass < 3; pass += 1) {
+      const outcome = consider({ cap, readingCap, promoted: [...promoted], packed: false, gapFloor: 96 });
+      if (outcome === true) return false;
+      const before = promoted.size;
+      for (const id of outcome) promoted.add(id);
+      if (promoted.size === before) break;
+    }
+    if (consider({ cap, readingCap, promoted: [...promoted], packed: true, gapFloor: 96 }) === true) return false;
+    if (consider({ cap, readingCap, promoted: [...promoted], packed: false, gapFloor: 64 }) === true) return false;
+    if (consider({ cap, readingCap, promoted: [...promoted], packed: true, gapFloor: 64 }) === true) return false;
+  }
+  // Nothing fits even at the smallest windows. Keep the least crowded attempt:
+  // the few panels that do not fit stay at their own anchors (overlapping),
+  // rather than crushing every panel on the screen.
+  remember(null);
+  if (best) apply(best);
   return true;
 }
 
@@ -241,14 +372,27 @@ function collapseStackGroups(items: GamePanelLayoutItem[]): GamePanelLayoutItem[
   return [...singles, ...grouped];
 }
 
-function resolvePanelPositions(items: GamePanelLayoutItem[], bounds: GamePanelLayoutBounds): boolean {
+function resolvePanelPositions(
+  items: GamePanelLayoutItem[],
+  bounds: GamePanelLayoutBounds,
+  promoted: ReadonlySet<string> = new Set(),
+  readingFloor = 64,
+  gapFloor = 64,
+): string[] {
   const gap = bounds.gap ?? 8;
   const placed: GamePanelLayoutItem[] = [];
   const ordered = items
     .map((item) => ({ ...item, height: Math.min(item.height, bounds.height) }))
-    .sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id));
+    .sort(
+      (a, b) =>
+        a.priority - b.priority ||
+        // Reading panels claim their anchors before same-priority widgets.
+        Number(!!b.reading) - Number(!!a.reading) ||
+        Number(promoted.has(b.id)) - Number(promoted.has(a.id)) ||
+        a.id.localeCompare(b.id),
+    );
 
-  let overflow = false;
+  const overflowIds: string[] = [];
   for (const source of ordered) {
     const anchorX = Number.isFinite(source.preferredX) ? source.preferredX! : source.x;
     const anchorY =
@@ -294,21 +438,24 @@ function resolvePanelPositions(items: GamePanelLayoutItem[], bounds: GamePanelLa
                 continue;
               height = Math.min(height, item.y - gap - y);
             }
-            if (height < Math.min(64, source.height)) continue;
+            // A widget squeezed into a leftover gap must still show a few lines; below that,
+            // shrinking every panel a step further gives a better layout.
+            if (height < Math.min(source.reading ? Math.max(64, readingFloor) : Math.max(64, gapFloor), source.height))
+              continue;
             const candidate = { ...source, x, y, height };
             const score = (item: GamePanelLayoutItem) => distance(item) + (source.height - item.height) * 2;
             if (!best || score(candidate) < score(best)) best = candidate;
           }
       }
       if (best) current = best;
-      else overflow = true;
+      else overflowIds.push(source.id);
     }
     source.setHeightLimit?.(current.height);
     placed.push(current);
     if (Math.abs(current.x - source.x) > 0.5 || Math.abs(current.y - source.y) > 0.5)
       source.setPosition(current.x, current.y);
   }
-  return overflow;
+  return overflowIds;
 }
 
 type RegisteredPanel = Omit<GamePanelLayoutItem, "width" | "height" | "x" | "y" | "setPosition" | "priority"> & {
@@ -651,6 +798,7 @@ export function scheduleGamePanelLayout(surface: HTMLElement): void {
         fixed: panel.fixed,
         bottomInset: panel.bottomInset,
         firmHeight: panel.firmHeight,
+        reading: panel.reading ?? GAME_READING_PANEL_IDS.has(panel.id),
         stackGroup: panel.stackGroup ?? null,
         setPosition: panel.setPosition,
         setHeightLimit: panel.setHeightLimit,
