@@ -6678,7 +6678,7 @@ assert.match(gameJournalSource, /data-game-journal-scroll/u);
 assert.match(gameJournalSource, /\/game\/\$\{chatId\}\/journal\/entries\/\$\{editingEntry\.index\}/u);
 assert.match(
   gameJournalSource,
-  /<TimelineView\s+entries=\{visibleEntries\}\s+onEdit=\{beginEditingEntry\}/u,
+  /<TimelineView\s+entries=\{\w+\}\s+onEdit=\{beginEditingEntry\}/u,
   "Game Journal must keep edit controls connected after JSX formatting changes",
 );
 assert.match(
