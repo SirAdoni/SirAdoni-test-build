@@ -6,7 +6,7 @@ import {
   type GamePanelLayoutItem,
 } from "../../packages/client/src/lib/game-panel-layout.js";
 
-// The 11 desktop panels of a Session 12 style HUD at 1440x900 (surface 1440x849),
+// The 11 desktop panels of a crowded HUD at 1440x900 (surface 1440x849),
 // measured from the live game: natural content heights and the default anchors a
 // fresh profile gives them (left-column widgets pile up at 48 + slot * 44).
 const SURFACE = { width: 1440, height: 849 };
@@ -80,7 +80,7 @@ function inBounds(panels: Resolved[], bounds = SURFACE): void {
 //    wide widget that the greedy pass stranded forced every cap down to 64px.
 {
   const { overflow, panels } = resolve(SESSION_12);
-  assert.equal(overflow, false, "the Session 12 HUD fits at 1440x900");
+  assert.equal(overflow, false, "the crowded HUD fits at 1440x900");
   assert.deepEqual(overlaps(panels), [], "no panel overlaps another after reflow");
   inBounds(panels);
   const byId = new Map(panels.map((panel) => [panel.id, panel]));

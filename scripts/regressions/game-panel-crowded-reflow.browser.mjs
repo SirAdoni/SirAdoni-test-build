@@ -3,7 +3,7 @@ import { build } from "esbuild";
 import { chromium } from "@playwright/test";
 import { resolve } from "node:path";
 
-// Real FloatingGamePanel with the 11 panels of a Session 12 style HUD on a 1440x900
+// Real FloatingGamePanel with the 11 panels of a crowded HUD on a 1440x900
 // screen (surface 1440x849). The rebuild regression crushed every panel, narration
 // included, to 64px here. This also covers stored layouts from before the rebuild,
 // positions saved while panels were crushed, and that automatic reflow writes nothing.
