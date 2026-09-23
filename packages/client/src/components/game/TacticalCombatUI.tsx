@@ -324,6 +324,13 @@ export function TacticalCombatUI({
   const popupIdRef = useRef(0);
   const endedRef = useRef(false);
   const launchGenerationRef = useRef(0);
+  // Bumped on unmount / chat switch so a late action response is dropped instead
+  // of scheduling playback timers (persist + onCombatEnd) nobody will clear.
+  const actionGenerationRef = useRef(0);
+  // One GM handoff per battle: guards double clicks on Continue / Finish / Retreat.
+  const handedOffRef = useRef(false);
+  // Hovered token (mouse only) for the idle movement/attack range preview.
+  const [hoverUnitId, setHoverUnitId] = useState<string | null>(null);
 
   const playSfx = useCallback((tag: string) => audioManager.playSfx(tag, assets), [assets]);
 
@@ -335,6 +342,7 @@ export function TacticalCombatUI({
   useEffect(() => {
     return () => {
       launchGenerationRef.current += 1;
+      actionGenerationRef.current += 1;
       clearTimers();
     };
   }, [chatId, clearTimers]);
@@ -511,6 +519,37 @@ export function TacticalCombatUI({
     }
     return keys;
   }, [liveState, showThreat]);
+
+  // Hover preview (mouse only, nothing selected): the hovered unit's reachable
+  // tiles plus the extra tiles it could strike from them. Pure read helpers only.
+  const hoverRange = useMemo(() => {
+    const empty = { move: new Set<string>(), attack: new Set<string>(), side: "party" as TacticalUnit["side"] };
+    if (!liveState || !hoverUnitId || ui.kind !== "idle" || animating || liveState.outcome) return empty;
+    const unit = liveState.units.find((u) => u.id === hoverUnitId);
+    if (!unit || unit.hp <= 0) return empty;
+    const reach =
+      unit.side === "party" && (unit.hasMoved || unit.hasActed)
+        ? [{ x: unit.x, y: unit.y }]
+        : [{ x: unit.x, y: unit.y }, ...getMovementRange(liveState, unit.id)];
+    const move = new Set(reach.map((t) => `${t.x},${t.y}`));
+    const attack = new Set<string>();
+    if (!(unit.side === "party" && unit.hasActed)) {
+      for (const tile of reach) {
+        for (let dy = -unit.attackRange.max; dy <= unit.attackRange.max; dy++) {
+          for (let dx = -unit.attackRange.max; dx <= unit.attackRange.max; dx++) {
+            const d = Math.abs(dx) + Math.abs(dy);
+            if (d < unit.attackRange.min || d > unit.attackRange.max) continue;
+            const tx = tile.x + dx;
+            const ty = tile.y + dy;
+            if (tx < 0 || ty < 0 || tx >= liveState.grid.width || ty >= liveState.grid.height) continue;
+            const k = `${tx},${ty}`;
+            if (!move.has(k)) attack.add(k);
+          }
+        }
+      }
+    }
+    return { move, attack, side: unit.side };
+  }, [liveState, hoverUnitId, ui.kind, animating]);
 
   // Staged post-move state, used for target highlighting + forecast.
   const stagedState = useMemo(
@@ -690,6 +729,8 @@ export function TacticalCombatUI({
       const summary = buildTacticalSummary(s);
       // buildTacticalSummary already maps to classic outcome values ("victory"|"defeat"|"flee").
       const t = setTimeout(() => {
+        if (handedOffRef.current) return;
+        handedOffRef.current = true;
         persistSnapshot(null);
         onCombatEnd(summary.outcome, summary);
       }, 1400);
@@ -705,12 +746,17 @@ export function TacticalCombatUI({
   // onCombatEnd/handoff never fires); a restored defeat just needs endedRef set
   // so its Retry / Continue buttons work normally. Runs once per mount.
   const restoredEndCheckedRef = useRef(false);
+  // Mount-time snapshot only. The prop is re-read from chat metadata on every
+  // render, so after persistSnapshot(terminal) + a quick Retry it would hand the
+  // OLD outcome to maybeEnd, set endedRef, and soft-lock the restarted battle.
+  const mountInitialStateRef = useRef(initialState);
   useEffect(() => {
+    const restored = mountInitialStateRef.current;
     if (directed || restoredEndCheckedRef.current) return;
-    if (!initialState?.outcome) return;
     restoredEndCheckedRef.current = true;
-    maybeEnd(initialState);
-  }, [initialState, maybeEnd, directed]);
+    if (!restored?.outcome) return;
+    maybeEnd(restored);
+  }, [maybeEnd, directed]);
 
   // ── Event animation player ──
   // Plays the server-returned events sequentially over a working copy of the
@@ -811,6 +857,7 @@ export function TacticalCombatUI({
     actionMenuX.set(0);
     actionMenuY.set(0);
     endedRef.current = false;
+    handedOffRef.current = false;
     const restartSeed = state?.seed;
     const restartBattlefield = state ? (state.battlefield?.brief ?? null) : (battlefield ?? null);
     const restartEnvironment = state?.environment ?? environment ?? null;
@@ -866,12 +913,18 @@ export function TacticalCombatUI({
       optimisticMoveRef.current = opt;
       setOptimisticMove(opt);
       resetSelection();
+      const actionGeneration = actionGenerationRef.current;
+      const isStale = () => actionGeneration !== actionGenerationRef.current;
       actionMut
         .mutateAsync({ chatId, state: preState, action })
         .then((res) => {
+          // Unmounted or switched chats mid-flight: drop the response so no
+          // uncleared timers persist this battle or hand off onto another chat.
+          if (isStale()) return;
           playEvents(res.events, res.state, preState, onSettled);
         })
         .catch((err: unknown) => {
+          if (isStale()) return;
           // Release the lock so a rejected action doesn't wedge the grid. The move
           // never happened, so the token must return home.
           animatingRef.current = false;
@@ -1130,6 +1183,8 @@ export function TacticalCombatUI({
           onClick={() => {
             // Clear any stale snapshot (e.g. the old terminal state after a failed
             // restart) so the next battle can't restore — and auto-hand-off — it.
+            if (handedOffRef.current) return;
+            handedOffRef.current = true;
             persistSnapshot(null);
             onCombatEnd("flee", { outcome: "flee", rounds: 0, party: [], enemies: [] });
           }}
@@ -1153,6 +1208,21 @@ export function TacticalCombatUI({
       ref={rootRef}
       data-component="TacticalCombatUI"
       className="relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-slate-950/60 text-white select-none"
+      onKeyDown={(event) => {
+        // Escape backs out one step (dialog, target, sub-menu, staged move, selection)
+        // while focus is inside the battle (tiles and tokens are focusable).
+        if (event.key !== "Escape" || outcome) return;
+        if (fleeConfirm) setFleeConfirm(false);
+        else if (restartConfirm) setRestartConfirm(false);
+        else if (logOpen) setLogOpen(false);
+        else if (animating || ui.kind === "idle") return;
+        else if (ui.kind !== "unit") {
+          setForecastTargetId(null);
+          setUi({ kind: "unit", unitId: ui.unitId });
+        } else if (stagedMove) setStagedMove(null);
+        else resetSelection();
+        event.stopPropagation();
+      }}
     >
       {/* One-off keyframes for shimmer / range pulse / ready glow (self-contained).
           Ready glow uses the app's --primary accent (theme-aware) via color-mix. */}
@@ -1365,6 +1435,19 @@ export function TacticalCombatUI({
                     {inThreat && (
                       <span className="pointer-events-none absolute inset-0 bg-[var(--destructive)]/20 ring-1 ring-inset ring-[var(--destructive)]/30" />
                     )}
+                    {hoverRange.move.has(key) && (
+                      <span
+                        className={cn(
+                          "pointer-events-none absolute inset-0 ring-1 ring-inset",
+                          hoverRange.side === "party"
+                            ? "bg-[var(--primary)]/20 ring-[var(--primary)]/40"
+                            : "bg-[var(--destructive)]/15 ring-[var(--destructive)]/35",
+                        )}
+                      />
+                    )}
+                    {hoverRange.attack.has(key) && (
+                      <span className="pointer-events-none absolute inset-0 bg-amber-400/15 ring-1 ring-inset ring-amber-300/35" />
+                    )}
                     {isStaged && (
                       <span className="pointer-events-none absolute inset-0 animate-pulse bg-[var(--primary)]/50 ring-2 ring-inset ring-[var(--primary)]" />
                     )}
@@ -1398,6 +1481,9 @@ export function TacticalCombatUI({
                   forecastTarget={isForecastTarget}
                   preview={staged}
                   ready={ready}
+                  onHoverChange={(hovering) =>
+                    setHoverUnitId((prev) => (hovering ? unit.id : prev === unit.id ? null : prev))
+                  }
                   ariaLabel={localizeUi("ui.game.tacticalcombatui.unitLabel", {
                     name: unit.name,
                     movement: localizeUi(movementLabelKey(unit.movementMode)),
@@ -1887,6 +1973,8 @@ export function TacticalCombatUI({
               <button
                 type="button"
                 onClick={() => {
+                  if (handedOffRef.current) return;
+                  handedOffRef.current = true;
                   const summary = buildTacticalSummary(liveState);
                   persistSnapshot(null);
                   onCombatEnd(summary.outcome, summary);
@@ -1899,7 +1987,12 @@ export function TacticalCombatUI({
           ) : directed ? (
             <button
               className="min-h-11 rounded-lg bg-[var(--primary)] px-4"
-              onClick={() => onCombatEnd(buildTacticalSummary(liveState).outcome, buildTacticalSummary(liveState))}
+              onClick={() => {
+                if (handedOffRef.current) return;
+                handedOffRef.current = true;
+                const summary = buildTacticalSummary(liveState);
+                onCombatEnd(summary.outcome, summary);
+              }}
             >
               {localizeUi("game.combat.director.finish")}
             </button>
@@ -1929,6 +2022,8 @@ interface UnitTokenProps {
   ready: boolean;
   ariaLabel: string;
   onClick: () => void;
+  /** Mouse hover only (touch taps would leave a stale preview behind). */
+  onHoverChange?: (hovering: boolean) => void;
 }
 
 function UnitToken({
@@ -1945,6 +2040,7 @@ function UnitToken({
   ready,
   ariaLabel,
   onClick,
+  onHoverChange,
 }: UnitTokenProps) {
   const left = ((x + 0.5) / gridW) * 100;
   const top = ((y + 0.5) / gridH) * 100;
@@ -1968,6 +2064,12 @@ function UnitToken({
       tabIndex={0}
       onClick={onClick}
       aria-label={ariaLabel}
+      onPointerEnter={(event) => {
+        if (event.pointerType === "mouse") onHoverChange?.(true);
+      }}
+      onPointerLeave={(event) => {
+        if (event.pointerType === "mouse") onHoverChange?.(false);
+      }}
       onKeyDown={(event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();

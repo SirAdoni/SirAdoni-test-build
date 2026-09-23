@@ -8047,6 +8047,7 @@
   "ui.game.gamepartybar.openPartyMembers": "Open party members",
   "ui.game.gamepartybar.removeValue1FromParty": "Remove {{value1}} from party",
   "ui.game.gamepartybar.value1ClickToOpenCharacterSheet": "{{value1}} - Click to open character sheet",
+  "ui.game.gamepartybar.value1HpValue2OfValue3": "{{value1}}, HP {{value2}} of {{value3}}",
   "ui.game.gamepeekpromptbutton.peekPrompt": "Peek prompt",
   "ui.game.gameqteoverlay.bonus": "bonus",
   "ui.game.gameqteoverlay.closeQuickTimeEvent": "Close quick-time event",
