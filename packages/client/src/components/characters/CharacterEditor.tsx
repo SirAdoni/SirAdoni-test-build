@@ -4,6 +4,7 @@
 // Sections: Metadata, Card, Convo, Lorebook, Sprites, Gallery, Colors, Stats, Advanced
 // ──────────────────────────────────────────────
 import {
+  memo,
   useState,
   useEffect,
   useRef,
@@ -456,6 +457,8 @@ export function CharacterEditor() {
   // old image) would frame it wrongly and, for a non-square image, stretch it. Drop the crop the same
   // way a direct avatar upload does, and show the new avatar right away: the pending crop change
   // keeps the editor dirty, which also stops the refetch from replacing the preview.
+  const openCharacterSheetGenerator = useCallback(() => setCharacterSheetGeneratorOpen(true), []);
+
   const handleGalleryAvatarSet = useCallback(
     (avatarUrl: string) => {
       setAvatarPreview(avatarUrl);
@@ -1264,9 +1267,11 @@ export function CharacterEditor() {
               />
             </section>
             <LazyEditorSection key={`lorebook:${characterId}`} id="lorebook">
-              <LorebookTab
+              <MemoLorebookTab
                 characterId={characterId}
-                formData={formData}
+                characterBook={formData.character_book}
+                importMetadataSource={formData.extensions.importMetadata}
+                ownerName={formData.name}
                 embedding={lorebookEmbedding}
                 isEmbeddingInFlight={isLorebookEmbeddingInFlight}
                 onEmbedded={handleLorebookEmbedded}
@@ -1276,7 +1281,7 @@ export function CharacterEditor() {
             </LazyEditorSection>
             <LazyEditorSection key={`sprites:${characterId}`} id="sprites">
               {characterId && (
-                <SpritesTab
+                <MemoSpritesTab
                   characterId={characterId}
                   characterName={formData.name}
                   defaultAppearance={(formData.extensions.appearance as string) ?? formData.description}
@@ -1288,16 +1293,16 @@ export function CharacterEditor() {
                   }
                   useCharacterSheetAsReference={formData.extensions.useCharacterSheetAsReference === true}
                   updateExtension={updateExtension}
-                  onCreateCharacterSheet={() => setCharacterSheetGeneratorOpen(true)}
+                  onCreateCharacterSheet={openCharacterSheetGenerator}
                 />
               )}
             </LazyEditorSection>
             <LazyEditorSection key={`gallery:${characterId}`} id="gallery">
               {characterId && (
-                <CharacterGalleryTab
+                <MemoCharacterGalleryTab
                   characterId={characterId}
                   characterName={formData.name}
-                  onCreateCharacterSheet={() => setCharacterSheetGeneratorOpen(true)}
+                  onCreateCharacterSheet={openCharacterSheetGenerator}
                   onAvatarSet={handleGalleryAvatarSet}
                 />
               )}
@@ -2384,43 +2389,54 @@ function DialogueTab({
     greetingKeysRef.current.length = formData.alternate_greetings.length;
   }
 
+  // Row callbacks read the latest list through a ref so they stay stable; memoized rows then skip
+  // re-rendering (and re-counting tokens) for every greeting except the one being edited.
+  const greetingsRef = useRef(formData.alternate_greetings);
+  greetingsRef.current = formData.alternate_greetings;
+
   const addGreeting = () => {
     greetingKeysRef.current.push(generateClientId());
     updateField("alternate_greetings", [...formData.alternate_greetings, ""]);
   };
 
-  const updateGreeting = (i: number, value: string) => {
-    const copy = [...formData.alternate_greetings];
-    copy[i] = value;
-    updateField("alternate_greetings", copy);
-  };
+  const updateGreeting = useCallback(
+    (i: number, value: string) => {
+      const copy = [...greetingsRef.current];
+      copy[i] = value;
+      updateField("alternate_greetings", copy);
+    },
+    [updateField],
+  );
 
-  const removeGreeting = (i: number) => {
-    greetingKeysRef.current.splice(i, 1);
-    updateField(
-      "alternate_greetings",
-      formData.alternate_greetings.filter((_, idx) => idx !== i),
-    );
-  };
+  const removeGreeting = useCallback(
+    (i: number) => {
+      greetingKeysRef.current.splice(i, 1);
+      updateField(
+        "alternate_greetings",
+        greetingsRef.current.filter((_, idx) => idx !== i),
+      );
+    },
+    [updateField],
+  );
 
-  const moveGreeting = (i: number, offset: -1 | 1) => {
-    const nextIndex = i + offset;
-    if (nextIndex < 0 || nextIndex >= formData.alternate_greetings.length) return;
+  const moveGreeting = useCallback(
+    (i: number, offset: -1 | 1) => {
+      const nextIndex = i + offset;
+      if (nextIndex < 0 || nextIndex >= greetingsRef.current.length) return;
 
-    const nextGreetings = [...formData.alternate_greetings];
-    const [movedGreeting] = nextGreetings.splice(i, 1);
-    nextGreetings.splice(nextIndex, 0, movedGreeting ?? "");
+      const nextGreetings = [...greetingsRef.current];
+      const [movedGreeting] = nextGreetings.splice(i, 1);
+      nextGreetings.splice(nextIndex, 0, movedGreeting ?? "");
 
-    const nextKeys = [...greetingKeysRef.current];
-    const [movedKey] = nextKeys.splice(i, 1);
-    nextKeys.splice(nextIndex, 0, movedKey ?? generateClientId());
-    greetingKeysRef.current = nextKeys;
+      const nextKeys = [...greetingKeysRef.current];
+      const [movedKey] = nextKeys.splice(i, 1);
+      nextKeys.splice(nextIndex, 0, movedKey ?? generateClientId());
+      greetingKeysRef.current = nextKeys;
 
-    updateField("alternate_greetings", nextGreetings);
-  };
-
-  const greetingActionButtonClassName =
-    "mari-editor-action mari-editor-action--compact inline-flex h-8 w-8 rounded-lg p-0 disabled:cursor-not-allowed disabled:opacity-40";
+      updateField("alternate_greetings", nextGreetings);
+    },
+    [updateField],
+  );
 
   return (
     <div className="space-y-6">
@@ -2468,60 +2484,16 @@ function DialogueTab({
           </button>
         </div>
         {formData.alternate_greetings.map((g, i) => (
-          <div
+          <AlternateGreetingRow
             key={greetingKeysRef.current[i] ?? i}
-            className="space-y-2 rounded-xl border border-[var(--border)]/70 bg-[var(--background)]/35 p-2.5"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-medium text-[var(--muted-foreground)]">
-                {localizeUi("ui.characters.dialoguetab.greeting")}
-                {i + 1}
-              </span>
-              <div className="flex shrink-0 items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => moveGreeting(i, -1)}
-                  disabled={i === 0}
-                  className={greetingActionButtonClassName}
-                  aria-label={localizeUi("ui.characters.dialoguetab.moveAlternateGreetingValue1Up", { value1: i + 1 })}
-                  title={localizeUi("ui.characters.dialoguetab.moveUp")}
-                >
-                  <ArrowUp size="0.75rem" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => moveGreeting(i, 1)}
-                  disabled={i === formData.alternate_greetings.length - 1}
-                  className={greetingActionButtonClassName}
-                  aria-label={localizeUi("ui.characters.dialoguetab.moveAlternateGreetingValue1Down", {
-                    value1: i + 1,
-                  })}
-                  title={localizeUi("ui.characters.dialoguetab.moveDown")}
-                >
-                  <ArrowDown size="0.75rem" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => removeGreeting(i)}
-                  className={cn(greetingActionButtonClassName, "mari-editor-action--danger")}
-                  aria-label={localizeUi("ui.characters.dialoguetab.removeAlternateGreetingValue1", { value1: i + 1 })}
-                  title={localizeUi("ui.characters.dialoguetab.removeGreeting")}
-                >
-                  <Trash2 size="0.75rem" />
-                </button>
-              </div>
-            </div>
-            <MacroTextarea
-              value={g}
-              onChange={(value) => updateGreeting(i, value)}
-              rows={3}
-              title={localizeUi("ui.characters.dialoguetab.alternateGreetingValue1", { value1: i + 1 })}
-              showMarkdownPreview
-              selfCharacterId={selfCharacterId}
-              className="w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--secondary)] p-3 text-sm outline-none placeholder:text-[var(--muted-foreground)]/40 focus:border-[var(--primary)]/40"
-              placeholder={localizeUi("ui.characters.dialoguetab.greetingValue1", { value1: i + 1 })}
-            />
-          </div>
+            index={i}
+            value={g}
+            isLast={i === formData.alternate_greetings.length - 1}
+            selfCharacterId={selfCharacterId}
+            onChange={updateGreeting}
+            onMove={moveGreeting}
+            onRemove={removeGreeting}
+          />
         ))}
       </div>
 
@@ -2551,6 +2523,84 @@ function DialogueTab({
     </div>
   );
 }
+
+const greetingActionButtonClassName =
+  "mari-editor-action mari-editor-action--compact inline-flex h-8 w-8 rounded-lg p-0 disabled:cursor-not-allowed disabled:opacity-40";
+
+const AlternateGreetingRow = memo(function AlternateGreetingRow({
+  index,
+  value,
+  isLast,
+  selfCharacterId,
+  onChange,
+  onMove,
+  onRemove,
+}: {
+  index: number;
+  value: string;
+  isLast: boolean;
+  selfCharacterId: string | null;
+  onChange: (index: number, value: string) => void;
+  onMove: (index: number, offset: -1 | 1) => void;
+  onRemove: (index: number) => void;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  return (
+    // content-visibility skips layout and paint for off-screen greetings; with dozens of long
+    // greetings this more than doubles the editor's scroll frame rate.
+    <div className="space-y-2 rounded-xl border border-[var(--border)]/70 bg-[var(--background)]/35 p-2.5 [contain-intrinsic-size:auto_14rem] [content-visibility:auto]">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-[var(--muted-foreground)]">
+          {localizeUi("ui.characters.dialoguetab.greeting")}
+          {index + 1}
+        </span>
+        <div className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            onClick={() => onMove(index, -1)}
+            disabled={index === 0}
+            className={greetingActionButtonClassName}
+            aria-label={localizeUi("ui.characters.dialoguetab.moveAlternateGreetingValue1Up", { value1: index + 1 })}
+            title={localizeUi("ui.characters.dialoguetab.moveUp")}
+          >
+            <ArrowUp size="0.75rem" />
+          </button>
+          <button
+            type="button"
+            onClick={() => onMove(index, 1)}
+            disabled={isLast}
+            className={greetingActionButtonClassName}
+            aria-label={localizeUi("ui.characters.dialoguetab.moveAlternateGreetingValue1Down", {
+              value1: index + 1,
+            })}
+            title={localizeUi("ui.characters.dialoguetab.moveDown")}
+          >
+            <ArrowDown size="0.75rem" />
+          </button>
+          <button
+            type="button"
+            onClick={() => onRemove(index)}
+            className={cn(greetingActionButtonClassName, "mari-editor-action--danger")}
+            aria-label={localizeUi("ui.characters.dialoguetab.removeAlternateGreetingValue1", { value1: index + 1 })}
+            title={localizeUi("ui.characters.dialoguetab.removeGreeting")}
+          >
+            <Trash2 size="0.75rem" />
+          </button>
+        </div>
+      </div>
+      <MacroTextarea
+        value={value}
+        onChange={(next) => onChange(index, next)}
+        rows={3}
+        title={localizeUi("ui.characters.dialoguetab.alternateGreetingValue1", { value1: index + 1 })}
+        showMarkdownPreview
+        selfCharacterId={selfCharacterId}
+        className="w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--secondary)] p-3 text-sm outline-none placeholder:text-[var(--muted-foreground)]/40 focus:border-[var(--primary)]/40"
+        placeholder={localizeUi("ui.characters.dialoguetab.greetingValue1", { value1: index + 1 })}
+      />
+    </div>
+  );
+});
 
 function AdvancedTab({
   formData,
@@ -2677,25 +2727,27 @@ function AdvancedTab({
 
 type CharacterGalleryMediaTab = "images" | "clips";
 
-function characterGalleryClipSourceLabel(source: CharacterGalleryClip["source"]) {
+type ClipLocalize = (key: string) => string;
+
+function characterGalleryClipSourceLabel(source: CharacterGalleryClip["source"], localize: ClipLocalize) {
   switch (source) {
     case "conversation-call":
-      return "Call presence";
+      return localize("ui.characters.clipsource.callPresence");
     case "conversation-call-custom":
-      return "Custom call clip";
+      return localize("ui.characters.clipsource.customCallClip");
     case "game-scene":
-      return "Game scene";
+      return localize("ui.characters.clipsource.gameScene");
     case "scene-video":
-      return "Scene video";
+      return localize("ui.characters.clipsource.sceneVideo");
     case "uploaded-video":
-      return "Uploaded video";
+      return localize("ui.characters.clipsource.uploadedVideo");
     default:
-      return "Video";
+      return localize("ui.chat.chatgallery.video");
   }
 }
 
-function formatClipDate(value: string | null) {
-  if (!value) return "Not generated";
+function formatClipDate(value: string | null, localize: ClipLocalize) {
+  if (!value) return localize("ui.characters.characterclipcard.notGenerated");
   return new Date(value).toLocaleDateString();
 }
 
@@ -2705,11 +2757,11 @@ function canDeleteCharacterGalleryClip(clip: CharacterGalleryClip) {
   return true;
 }
 
-function characterGalleryClipDeleteMessage(clip: CharacterGalleryClip) {
+function characterGalleryClipDeleteMessage(clip: CharacterGalleryClip, localize: ClipLocalize) {
   if (clip.source === "conversation-call") {
-    return "Delete this call clip? The standard slot will stay available for regeneration or upload.";
+    return localize("ui.characters.charactervideosgallery.deleteCallClipMessage");
   }
-  return "Delete this clip everywhere it appears in Marinara? This cannot be undone.";
+  return localize("ui.personas.personavideosgallery.deleteThisClipEverywhereItAppearsInMarinaraThis");
 }
 
 function isCharacterCallVideoClip(clip: CharacterGalleryClip) {
@@ -2770,16 +2822,15 @@ function handleCharacterCallClipTimeUpdate(
   }
 }
 
-function formatTrimSecond(value: number | null | undefined) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return "full";
+function formatTrimSecond(value: number) {
   return `${roundClipTrimSecond(value).toFixed(2)}s`;
 }
 
-function characterClipTrimLabel(clip: CharacterGalleryClip) {
+function characterClipTrimLabel(clip: CharacterGalleryClip, localize: ClipLocalize) {
   const start = readClipTrimStart(clip);
   const end = readClipTrimEnd(clip);
   if (start <= 0 && end === null) return null;
-  return `${formatTrimSecond(start)} -> ${formatTrimSecond(end)}`;
+  return `${formatTrimSecond(start)} -> ${end === null ? localize("ui.characters.characterclipcard.trimFull") : formatTrimSecond(end)}`;
 }
 
 function CharacterSheetSection({
@@ -3411,7 +3462,7 @@ function CharacterVideosGallery({ characterId, characterName }: { characterId: s
       if (
         !(await showConfirmDialog({
           title: localizeUi("ui.characters.charactervideosgallery.deleteClip"),
-          message: characterGalleryClipDeleteMessage(clip),
+          message: characterGalleryClipDeleteMessage(clip, localizeUi),
           confirmLabel: localizeUi("lorebook.editor.batch.delete"),
           tone: "destructive",
         }))
@@ -3637,7 +3688,7 @@ function CharacterCallClipsGallery({ characterId, characterName }: { characterId
       if (
         !(await showConfirmDialog({
           title: localizeUi("ui.characters.charactervideosgallery.deleteClip"),
-          message: characterGalleryClipDeleteMessage(clip),
+          message: characterGalleryClipDeleteMessage(clip, localizeUi),
           confirmLabel: localizeUi("lorebook.editor.batch.delete"),
           tone: "destructive",
         }))
@@ -4032,8 +4083,11 @@ function CharacterClipCard({
   onEditTrim: (clip: CharacterGalleryClip) => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
-  const sourceLabel = clip.origin === "uploaded" ? "Uploaded" : characterGalleryClipSourceLabel(clip.source);
-  const dateLabel = formatClipDate(clip.updatedAt ?? clip.createdAt);
+  const sourceLabel =
+    clip.origin === "uploaded"
+      ? localizeUi("ui.characters.clipsource.uploaded")
+      : characterGalleryClipSourceLabel(clip.source, localizeUi);
+  const dateLabel = formatClipDate(clip.updatedAt ?? clip.createdAt, localizeUi);
   const isReady = clip.status === "ready" && Boolean(clip.url);
   const canDelete = canDeleteCharacterGalleryClip(clip);
   const isCallVideoClip = isCharacterCallVideoClip(clip);
@@ -4046,7 +4100,7 @@ function CharacterClipCard({
   const clipDetails = [clip.durationSeconds ? `${clip.durationSeconds}s` : null, clip.aspectRatio]
     .filter(Boolean)
     .join(" · ");
-  const trimLabel = characterClipTrimLabel(clip);
+  const trimLabel = characterClipTrimLabel(clip, localizeUi);
 
   return (
     <div className="group overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] transition-all hover:border-[var(--primary)]/30 hover:shadow-md">
@@ -4114,7 +4168,7 @@ function CharacterClipCard({
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold text-[var(--foreground)]">
-              {clip.label || characterName || "Clip"}
+              {clip.label || characterName || localizeUi("ui.characters.clipsource.clip")}
             </p>
             <p className="mt-0.5 truncate text-[0.6875rem] text-[var(--muted-foreground)]">
               {clip.chatName
@@ -5568,7 +5622,9 @@ function ColorsTab({
 
 function LorebookTab({
   characterId,
-  formData,
+  characterBook,
+  importMetadataSource,
+  ownerName,
   embedding,
   isEmbeddingInFlight,
   onEmbedded,
@@ -5576,7 +5632,9 @@ function LorebookTab({
   onUnembed,
 }: {
   characterId: string | null;
-  formData: CharacterData;
+  characterBook: CharacterData["character_book"];
+  importMetadataSource: unknown;
+  ownerName: string;
   embedding?: boolean;
   isEmbeddingInFlight?: () => boolean;
   onEmbedded?: (lorebookId: string, characterBook: unknown) => void;
@@ -5584,15 +5642,15 @@ function LorebookTab({
   onUnembed?: () => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
-  const book = formData.character_book;
+  const book = characterBook;
   const entries = book?.entries ?? [];
   const qc = useQueryClient();
   const openLorebookDetail = useUIStore((s) => s.openLorebookDetail);
   const [importing, setImporting] = useState(false);
   const [removing, setRemoving] = useState(false);
   const importMetadata =
-    formData.extensions.importMetadata && typeof formData.extensions.importMetadata === "object"
-      ? (formData.extensions.importMetadata as Record<string, unknown>)
+    importMetadataSource && typeof importMetadataSource === "object"
+      ? (importMetadataSource as Record<string, unknown>)
       : {};
   const embeddedLorebookMetadata =
     importMetadata.embeddedLorebook && typeof importMetadata.embeddedLorebook === "object"
@@ -5703,7 +5761,7 @@ function LorebookTab({
       <LorebookAssignmentSection
         ownerType="character"
         ownerId={characterId}
-        ownerName={formData.name}
+        ownerName={ownerName}
         embeddedLorebookId={linkedLorebookId}
         slotOccupied={hasEmbeddedLorebook}
         onEmbedded={(result) => onEmbedded?.(result.lorebookId, result.characterBook)}
@@ -5787,7 +5845,10 @@ function LorebookTab({
       {entries.length > 0 && (
         <div className="space-y-2">
           {entries.map((entry, i) => (
-            <div key={entry.id ?? i} className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-3">
+            <div
+              key={entry.id ?? i}
+              className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-3 [contain-intrinsic-size:auto_7.5rem] [content-visibility:auto]"
+            >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">{entry.name || `Entry #${i + 1}`}</p>
@@ -5817,3 +5878,10 @@ function LorebookTab({
     </div>
   );
 }
+
+// The editor re-renders on every keystroke because formData is one object. These sections only take
+// the slices they read plus stable callbacks, so memoizing them keeps typing in the card fields from
+// re-rendering the sprite list, the gallery grid and every embedded lorebook entry.
+const MemoLorebookTab = memo(LorebookTab);
+const MemoSpritesTab = memo(SpritesTab);
+const MemoCharacterGalleryTab = memo(CharacterGalleryTab);

@@ -1,5 +1,6 @@
 import { Check, Hash, Star, User } from "lucide-react";
 import type { AvatarCrop } from "@marinara-engine/shared";
+import { memo } from "react";
 import { useTranslation } from "react-i18next";
 import { cn, getAvatarCropStyle, isLegacyAvatarCrop } from "../../lib/utils";
 import { formatEstimatedTokens } from "../../lib/character-token-count";
@@ -26,15 +27,19 @@ export function CardLibraryPreview({
   kind = "characters",
   isSelected = false,
   compact = false,
-  onClick,
+  onClick: onClickProp,
+  onSelect,
 }: {
   card: LibraryPreviewCard;
   kind?: "characters" | "personas";
   isSelected?: boolean;
   compact?: boolean;
-  onClick: () => void;
+  /** Either a per-card click handler, or a stable onSelect(id) so a memoized grid can skip unchanged cards. */
+  onClick?: () => void;
+  onSelect?: (id: string) => void;
 }) {
   const { t: localizeUi } = useTranslation();
+  const onClick = () => (onSelect ? onSelect(card.id) : onClickProp?.());
   const placeholderClass =
     kind === "personas" ? "mari-avatar-placeholder--persona" : "mari-avatar-placeholder--character";
   const portrait = card.avatarPath ? (
@@ -183,3 +188,6 @@ export function CardLibraryPreview({
     </div>
   );
 }
+
+/** Skips re-rendering unchanged cards when the library grid re-renders on each search keystroke. */
+export const MemoCardLibraryPreview = memo(CardLibraryPreview);
