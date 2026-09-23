@@ -1,3 +1,6 @@
+// Opt-in: boots the real server twice (about 50 s), longer than run-regressions.mjs allows per file, so it is
+// named *.slow-regression.ts to stay out of the default suite. Run it directly:
+//   node packages/server/node_modules/tsx/dist/cli.mjs scripts/regressions/server-hunt-b3.slow-regression.ts
 // A fatal process error (unhandled rejection or uncaught exception) must close
 // the app gracefully so the file-backed store flushes writes still sitting in
 // its debounce window, instead of a bare process.exit(1) that drops them.

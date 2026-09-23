@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -88,6 +88,12 @@ try {
   });
   assert.equal(caseRename.statusCode, 200, caseRename.body);
   assert.equal(caseRename.json().filename, "Forest.png");
+  {
+    const metaPath = join(bgDir, "meta.json");
+    const meta = existsSync(metaPath) ? JSON.parse(readFileSync(metaPath, "utf8")) : {};
+    meta["forest_2.jpg"] = { tags: ["night"] };
+    writeFileSync(metaPath, JSON.stringify(meta));
+  }
   const clash = await app.inject({
     method: "PATCH",
     url: "/api/backgrounds/forest_2.jpg/rename",
@@ -101,6 +107,13 @@ try {
       .replace(/\.[^.]+$/, ""),
     "forest",
   );
+
+  // A rename that resolves back to the file's own name must not delete its metadata.
+  {
+    const kept = JSON.parse(readFileSync(join(bgDir, "meta.json"), "utf8"));
+    const clashName = clash.json().filename as string;
+    assert.deepEqual(kept[clashName]?.tags, ["night"], "tags survive a rename onto a sibling's stem");
+  }
 
   // Rename to only dots must not produce a hidden file.
   const dots = await app.inject({

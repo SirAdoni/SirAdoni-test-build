@@ -722,6 +722,11 @@ export async function backgroundsRoutes(app: FastifyInstance) {
     }
 
     const newFilename = uniqueFilename(desired, filename);
+    // The suffix search can land back on the file's own name (e.g. "forest_2.jpg" renamed to "forest" while
+    // forest.png exists). Nothing moves then, and the metadata move below would delete its own entry.
+    if (newFilename === filename) {
+      return { success: true, filename, url: `/api/backgrounds/file/${encodeURIComponent(filename)}` };
+    }
     const newPath = assertInsideDir(BG_DIR, join(BG_DIR, newFilename));
 
     renameSync(filePath, newPath);

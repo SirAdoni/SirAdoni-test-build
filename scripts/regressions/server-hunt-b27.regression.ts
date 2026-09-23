@@ -86,3 +86,15 @@ assert.ok(names.includes("Tracked 1"), "a character this delta touched is kept")
 assert.ok(!names.includes("Tracked 2"), "the oldest untouched character is the one evicted");
 
 console.log("server-hunt-b27 regression passed");
+
+// --- Worn swap on a full slot: removals leave before the cap, so nothing else is evicted ---
+{
+  const swap = resolveBeholderStateResponse(
+    { changed: true, delta: { Mira: { body: { neck: { worn: [{ item: "silver torc" }], worn_remove: ["ring 12"] } } } } },
+    { characters: [{ name: "Mira", body: { neck: { worn: Array.from({ length: 12 }, (_, i) => ({ item: `ring ${i + 1}` })) } } }] },
+    "User",
+  );
+  const items = (swap.state.characters.find((c) => c.name === "Mira")?.body.neck?.worn ?? []).map((w) => w.item);
+  assert.deepEqual(items, [...Array.from({ length: 11 }, (_, i) => `ring ${i + 1}`), "silver torc"], "swap keeps ring 1");
+  console.log("server-hunt-b27 worn swap check passed");
+}

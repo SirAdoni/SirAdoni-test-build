@@ -227,8 +227,14 @@ function boundKeepingTouched<T>(merged: T[], touched: ReadonlySet<number>, max: 
   return merged.filter((_, index) => !dropped.has(index));
 }
 
-function mergeWornItems(current: BeholderWornItem[] | undefined, updates: BeholderWornItem[]): BeholderWornItem[] {
-  const merged = [...(current ?? [])];
+function mergeWornItems(
+  current: BeholderWornItem[] | undefined,
+  updates: BeholderWornItem[],
+  removals: ReadonlySet<string> = new Set(),
+): BeholderWornItem[] {
+  // Garments coming off this turn leave before the cap is applied, so a swap on a full slot
+  // (worn + worn_remove together) does not also evict an untouched garment.
+  const merged = (current ?? []).filter((item) => !removals.has(wornItemIdentity(item)));
   const indexes = new Map(merged.map((item, index) => [wornItemIdentity(item), index]));
   const touched = new Set<number>();
   for (const item of updates) {
@@ -407,6 +413,12 @@ function mergeSlotDelta(
   // bare flag unless the delta explicitly restores it first.
   if (next.missing) return { state: next, used };
 
+  const pendingWornRemovals = new Set(
+    (Array.isArray(rawDelta.worn_remove) ? rawDelta.worn_remove : [])
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim().toLocaleLowerCase("en-US"))
+      .filter((entry) => entry.length > 0),
+  );
   if (Array.isArray(rawDelta.worn)) {
     if (rawDelta.worn.length === 0) {
       delete next.worn;
@@ -417,7 +429,7 @@ function mergeSlotDelta(
         .map(normalizeWornItem)
         .filter((item) => item !== null);
       if (wornUpdates.length > 0) {
-        next.worn = mergeWornItems(next.worn, wornUpdates);
+        next.worn = mergeWornItems(next.worn, wornUpdates, pendingWornRemovals);
         used = true;
       }
     }
