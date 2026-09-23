@@ -579,6 +579,18 @@ function normalizeCombatName(value: string | undefined): string {
   return (value ?? "").trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
 }
 
+/**
+ * hp_threshold mechanics fire once, when the owner crosses the threshold. Directed fights keep their
+ * mechanics in persisted state, so the mechanic itself remembers the round it fired. Classic rounds
+ * arrive as fresh request bodies, so they also require the owner to have started the round above the
+ * threshold (the stateless crossing signal).
+ */
+type ThresholdMarkedMechanic = CombatMechanic & { thresholdFiredRound?: number };
+
+function hpPercentOf(combatant: CombatantStats): number {
+  return combatant.maxHp > 0 ? (combatant.hp / combatant.maxHp) * 100 : 100;
+}
+
 function resolveMechanicActions(
   combatants: (CombatantStats & { side?: "player" | "enemy" })[],
   round: number,
@@ -586,6 +598,8 @@ function resolveMechanicActions(
   elementPreset: string | undefined,
   defendingIds: Set<string>,
   weather?: CombatWeather,
+  startHpPercent?: Map<string, number>,
+  thresholdOnly = false,
 ): { actions: AttackResult[]; reactions: CombatRoundResult["reactions"] } {
   if (!mechanics?.length) return { actions: [], reactions: [] };
 
@@ -601,11 +615,19 @@ function resolveMechanicActions(
 
     const interval = Math.max(0, Math.floor(Number(mechanic.interval) || 0));
     const hpThreshold = Math.max(0, Math.min(100, Number(mechanic.hpThreshold) || 0));
-    const ownerHpPercent = owner.maxHp > 0 ? (owner.hp / owner.maxHp) * 100 : 100;
-    const shouldTrigger =
-      (mechanic.trigger === "round_interval" && interval > 0 && round % interval === 0) ||
-      (mechanic.trigger === "hp_threshold" && hpThreshold > 0 && ownerHpPercent <= hpThreshold);
+    const ownerHpPercent = hpPercentOf(owner);
+    const marked = mechanic as ThresholdMarkedMechanic;
+    const thresholdCrossed =
+      mechanic.trigger === "hp_threshold" &&
+      hpThreshold > 0 &&
+      ownerHpPercent <= hpThreshold &&
+      marked.thresholdFiredRound === undefined &&
+      (!startHpPercent || (startHpPercent.get(owner.id) ?? 100) > hpThreshold);
+    const shouldTrigger = thresholdOnly
+      ? thresholdCrossed
+      : (mechanic.trigger === "round_interval" && interval > 0 && round % interval === 0) || thresholdCrossed;
     if (!shouldTrigger) continue;
+    if (mechanic.trigger === "hp_threshold") marked.thresholdFiredRound = round;
 
     const ownerSide = owner.side;
     const targetPool =
@@ -698,6 +720,9 @@ export function resolveCombatRound(
   },
 ): CombatRoundResult {
   const weather = directed?.weather;
+  // Classic rounds resolve in one call, so HP at the start of the call is the start of the round.
+  // Directed rounds span several calls and rely on the persisted mark instead.
+  const startHpPercent = directed ? undefined : new Map(combatants.map((c) => [c.id, hpPercentOf(c)]));
   const alive = combatants.filter((c) => c.hp > 0);
   const initiative: InitiativeEntry[] = directed
     ? alive
@@ -919,7 +944,15 @@ export function resolveCombatRound(
 
   if (directed && !directed.finishRound) return { round, initiative, actions, statusTicks, reactions };
 
-  const mechanicResult = resolveMechanicActions(combatants, round, mechanics, elementPreset, defendingIds, weather);
+  const mechanicResult = resolveMechanicActions(
+    combatants,
+    round,
+    mechanics,
+    elementPreset,
+    defendingIds,
+    weather,
+    startHpPercent,
+  );
   actions.push(...mechanicResult.actions);
   reactions.push(...mechanicResult.reactions);
 
@@ -934,6 +967,21 @@ export function resolveCombatRound(
       statusTicks.push({ id: c.id, ...t });
     }
   }
+
+  // A damage-over-time tick can carry the owner across its threshold after the mechanic pass; fire it
+  // now, otherwise classic combat (which only sees start-of-round HP) would never fire it.
+  const tickThreshold = resolveMechanicActions(
+    combatants,
+    round,
+    mechanics,
+    elementPreset,
+    defendingIds,
+    weather,
+    startHpPercent,
+    true,
+  );
+  actions.push(...tickThreshold.actions);
+  reactions.push(...tickThreshold.reactions);
 
   return { round, initiative, actions, statusTicks, reactions };
 }
