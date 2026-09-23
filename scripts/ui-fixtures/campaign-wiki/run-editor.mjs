@@ -119,6 +119,27 @@ try {
   record("stale 409 retains draft", conflictBody.includes("This record changed since it was loaded") && await conflictSummary.inputValue() === "Draft retained on conflict");
   await conflict.close();
 
+  // CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE is also a 409, but a reload cannot fix it: its own message, no reload banner.
+  const cross = await browser.newPage({ viewport: VIEWPORTS.desktop });
+  await openEditor(cross);
+  const crossSummary = cross.locator("textarea").nth(2);
+  await crossSummary.fill("Draft kept on cross-session refusal");
+  await cross.getByLabel("Reason for this change", { exact: true }).fill("Cross-session test");
+  await cross.getByRole("button", { name: "Review preview", exact: true }).click();
+  await cross.getByRole("button", { name: "Apply reviewed change", exact: true }).waitFor();
+  await cross.evaluate(() => { window.__wikiMock.crossSessionOnce = true; });
+  await cross.getByRole("button", { name: "Apply reviewed change", exact: true }).click();
+  await cross.locator("[data-campaign-wiki-cross-session]").waitFor();
+  const crossBody = await cross.locator("body").innerText();
+  record("editor save cross-session 409 shows the specific message, not the reload banner", crossBody.includes("Not saved: this change points at a record from another session.") && crossBody.includes("Mira Thorne has no page in that session yet") && !crossBody.includes("This record changed since it was loaded") && !crossBody.includes("could not be saved") && await crossSummary.inputValue() === "Draft kept on cross-session refusal", crossBody.slice(0, 400));
+  await cross.evaluate(() => { window.__wikiMock.crossSessionOnce = true; });
+  await crossSummary.fill("Draft kept on cross-session preview");
+  await cross.getByRole("button", { name: "Review preview", exact: true }).click();
+  await cross.locator("[data-campaign-wiki-cross-session]").waitFor();
+  const crossPreviewBody = await cross.locator("body").innerText();
+  record("editor preview cross-session 409 shows the specific message", crossPreviewBody.includes("Not saved: this change points at a record from another session.") && !crossPreviewBody.includes("This record changed since it was loaded"), crossPreviewBody.slice(0, 400));
+  await cross.close();
+
   const nav = await browser.newPage({ viewport: VIEWPORTS.desktop });
   await openEditor(nav);
   await nav.getByRole("button", { name: "Fact", exact: true }).click();

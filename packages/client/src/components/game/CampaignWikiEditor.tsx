@@ -25,7 +25,7 @@ import type {
   CampaignMemoryMutationJournal,
 } from "@marinara-engine/shared";
 import { useTranslation as useUiTranslation } from "react-i18next";
-import { ApiError, api } from "../../lib/api-client";
+import { api } from "../../lib/api-client";
 import { cn } from "../../lib/utils";
 import {
   useApplyCampaignMemoryMutation,
@@ -46,7 +46,18 @@ import {
   editorButton,
 } from "./CampaignWikiCreateRecord";
 import { CampaignWikiEvidence } from "./CampaignWikiEvidence";
-import { EntityAvatar, WikiChip, factDisplay, humanizeKey, recordOrigin, recordWriteChatId } from "./campaign-wiki-ui";
+import {
+  EntityAvatar,
+  WikiChip,
+  crossSessionReferenceDetail,
+  crossSessionReferenceText,
+  factDisplay,
+  humanizeKey,
+  isWikiRevisionConflict,
+  recordOrigin,
+  recordWriteChatId,
+} from "./campaign-wiki-ui";
+import type { TFn } from "./CampaignWikiReaderParts";
 
 /** Wiki read contract item 5: records that depend on a fact. */
 interface CampaignMemoryFactDependents {
@@ -246,6 +257,8 @@ export function CampaignWikiEditor({
   const [validationError, setValidationError] = useState(false);
   const [previewError, setPreviewError] = useState(false);
   const [applyError, setApplyError] = useState(false);
+  // Server reason for CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE on preview or save; a reload cannot fix it.
+  const [crossSession, setCrossSession] = useState<string | null>(null);
   const [undoError, setUndoError] = useState(false);
   const [creating, setCreating] = useState(false);
   const draftVersion = useRef(0);
@@ -352,6 +365,7 @@ export function CampaignWikiEditor({
     setConflict(false);
     setPreviewError(false);
     setApplyError(false);
+    setCrossSession(null);
   };
 
   const updateDirty = () => {
@@ -479,21 +493,25 @@ export function CampaignWikiEditor({
     setRequest(next);
     setConflict(false);
     setPreviewError(false);
+    setCrossSession(null);
     void previewMutation
       .mutateAsync(next)
       .then((result) => {
         if (mounted.current && requestVersion === draftVersion.current) setPreview(result);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (mounted.current && requestVersion === draftVersion.current) {
+          const detail = crossSessionReferenceDetail(error);
           setPreview(null);
-          setPreviewError(true);
+          setCrossSession(detail);
+          setPreviewError(detail === null);
         }
       });
   };
   const apply = () => {
     if (!request) return;
     setApplyError(false);
+    setCrossSession(null);
     void applyMutation
       .mutateAsync(request)
       .then(() => {
@@ -502,9 +520,11 @@ export function CampaignWikiEditor({
         setRequest(null);
         onReload();
       })
-      .catch((error) => {
-        setConflict(error instanceof ApiError && error.status === 409);
-        setApplyError(true);
+      .catch((error: unknown) => {
+        const detail = crossSessionReferenceDetail(error);
+        setCrossSession(detail);
+        setConflict(isWikiRevisionConflict(error));
+        setApplyError(detail === null);
       });
   };
   const close = () => {
@@ -1336,6 +1356,11 @@ export function CampaignWikiEditor({
         </EditorAlert>
       )}
       {previewError && <EditorAlert>{t("ui.game.campaignWiki.editor.previewError")}</EditorAlert>}
+      {crossSession !== null && (
+        <EditorAlert>
+          <span data-campaign-wiki-cross-session>{crossSessionReferenceText(t as TFn, crossSession)}</span>
+        </EditorAlert>
+      )}
       {applyError && !conflict && <EditorAlert>{t("ui.game.campaignWiki.editor.applyError")}</EditorAlert>}
       {conflict && (
         <EditorAlert

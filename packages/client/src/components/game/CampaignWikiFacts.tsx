@@ -21,7 +21,6 @@ import type {
 } from "@marinara-engine/shared";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
-import { ApiError } from "../../lib/api-client";
 import { wikiValueRecord } from "../../lib/campaign-wiki-value";
 import {
   useCampaignMemoryEntityFacts,
@@ -45,8 +44,11 @@ import {
 import {
   WikiChip,
   WikiEmpty,
+  crossSessionReferenceDetail,
+  crossSessionReferenceText,
   factDisplay,
   factKindTone,
+  isWikiRevisionConflict,
   recordOrigin,
   recordWriteChatId,
   type FactDisplay,
@@ -825,7 +827,9 @@ function FactDetails({
   const queryClient = useQueryClient();
   const update = useUpdateCampaignMemoryFact(recordWriteChatId(fact, chatId));
   const [confirmWrong, setConfirmWrong] = useState(false);
-  const [error, setError] = useState<"conflict" | "generic" | null>(null);
+  const [error, setError] = useState<"conflict" | "generic" | "crossSession" | null>(null);
+  // The server's reason when the write names a record of another session that this fact's session lacks.
+  const [crossSessionDetail, setCrossSessionDetail] = useState("");
   const coHolders = (fact.coHolders ?? []).filter((holder) => holder.alias && !RAW_ID.test(holder.alias));
   const withdrawn = fact.status === "retracted";
   const valueObject = pinnableValue(fact.value);
@@ -835,7 +839,11 @@ function FactDetails({
       { fact, changes, reason, operationId: operationId() },
       {
         onSuccess: () => setConfirmWrong(false),
-        onError: (failure) => setError(failure instanceof ApiError && failure.status === 409 ? "conflict" : "generic"),
+        onError: (failure) => {
+          const detail = crossSessionReferenceDetail(failure);
+          setCrossSessionDetail(detail ?? "");
+          setError(detail !== null ? "crossSession" : isWikiRevisionConflict(failure) ? "conflict" : "generic");
+        },
       },
     );
   };
@@ -972,13 +980,15 @@ function FactDetails({
       {error && (
         <div role="alert" className="flex flex-wrap items-center gap-2 text-xs text-destructive">
           <span>
-            {error === "conflict"
-              ? t("ui.game.campaignWiki.facts.conflict", {
-                  defaultValue: "This fact changed since it was loaded. Reload the page and try again.",
-                })
-              : t("ui.game.campaignWiki.facts.saveError", {
-                  defaultValue: "The change could not be saved. Try again.",
-                })}
+            {error === "crossSession"
+              ? crossSessionReferenceText(t as TFn, crossSessionDetail)
+              : error === "conflict"
+                ? t("ui.game.campaignWiki.facts.conflict", {
+                    defaultValue: "This fact changed since it was loaded. Reload the page and try again.",
+                  })
+                : t("ui.game.campaignWiki.facts.saveError", {
+                    defaultValue: "The change could not be saved. Try again.",
+                  })}
           </span>
           {error === "conflict" && (
             <button

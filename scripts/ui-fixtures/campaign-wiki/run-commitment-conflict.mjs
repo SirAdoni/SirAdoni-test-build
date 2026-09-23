@@ -37,6 +37,18 @@ try {
     return form;
   };
 
+  // CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE: its own message, no reload banner, the form stays usable.
+  await ev(page, () => { window.__wikiMock.crossSessionTransition = true; });
+  const crossForm = await openForm();
+  await crossForm.getByRole("button", { name: "Mark as Accepted", exact: true }).click();
+  const crossAlert = crossForm.getByRole("alert").filter({ hasText: "Not saved: this change points at a record from another session." });
+  await crossAlert.waitFor();
+  const crossText = await crossAlert.innerText();
+  record("cross-session 409 on a transition shows the specific message", crossText.includes("Mira Thorne has no page in that session yet") && (await crossForm.getByText("This commitment changed since it was loaded.").count()) === 0 && (await crossForm.getByRole("button", { name: "Reload", exact: true }).count()) === 0, crossText);
+  await crossForm.getByRole("button", { name: /^Cancel$/ }).click();
+  await crossForm.waitFor({ state: "detached" });
+  await ev(page, () => { window.__wikiMock.transitions.length = 0; });
+
   // The server moved on to revision 2 while the page still shows revision 1.
   await ev(page, () => { window.__wikiMock.commitmentRevisions["commitment-proposed"] = 2; });
   const form = await openForm();

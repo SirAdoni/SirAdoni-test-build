@@ -11,6 +11,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { CampaignMemoryEntityKind, CampaignMemoryFact, CampaignMemoryJson } from "@marinara-engine/shared";
+import { ApiError } from "../../lib/api-client";
 import { cn } from "../../lib/utils";
 import { wikiValueRecord, wikiValueSummary } from "../../lib/campaign-wiki-value";
 import { useTranslation as useUiTranslation } from "react-i18next";
@@ -401,6 +402,58 @@ export function recordOrigin(record: unknown): { chatId: string | null; sessionN
 export function recordWriteChatId(record: unknown, fallbackChatId: string): string {
   const value = (record ?? {}) as { originChatId?: unknown };
   return typeof value.originChatId === "string" && value.originChatId ? value.originChatId : fallbackChatId;
+}
+
+/**
+ * A session chat is named "<campaign> — Session N" (the server builds and strips it this way); the wiki front page is
+ * about the whole campaign, so it shows the name without that suffix.
+ */
+export function campaignTitle(chatName: string | null | undefined): string {
+  return (chatName ?? "").replace(/\s+[—–-]\s+Session\s+\d+\s*$/iu, "").trim();
+}
+
+/** Server refusal for a write that names another session's record with no counterpart in the write chat. */
+export const CROSS_SESSION_REFERENCE_CODE = "CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE";
+
+type WikiErrorBody = { error?: { code?: unknown; message?: unknown } | string; code?: unknown };
+
+/** Error code of a failed wiki request; the memory routes answer `{ error: { code, message } }`. */
+export function wikiApiErrorCode(error: unknown): string | undefined {
+  if (!(error instanceof ApiError)) return undefined;
+  if (error.code) return error.code;
+  const body = (error.payload ?? {}) as WikiErrorBody;
+  const nested = typeof body.error === "object" && body.error ? body.error.code : undefined;
+  return typeof nested === "string" ? nested : undefined;
+}
+
+/**
+ * The server's own sentence for a cross-session refusal (it names who is missing and what to do), "" when it sent
+ * none, or null when the failure is anything else.
+ */
+export function crossSessionReferenceDetail(error: unknown): string | null {
+  if (wikiApiErrorCode(error) !== CROSS_SESSION_REFERENCE_CODE) return null;
+  const body = ((error as ApiError).payload ?? {}) as WikiErrorBody;
+  const message = typeof body.error === "object" && body.error ? body.error.message : undefined;
+  return typeof message === "string" ? message.trim() : "";
+}
+
+/**
+ * A 409 that a reload fixes (the record moved on since it was loaded). A cross-session refusal is also a 409, but
+ * reloading cannot fix it, so it never counts as a revision conflict.
+ */
+export function isWikiRevisionConflict(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409 && wikiApiErrorCode(error) !== CROSS_SESSION_REFERENCE_CODE;
+}
+
+/** Message for a cross-session refusal: a translated lead, then the server's specific reason. */
+export function crossSessionReferenceText(
+  t: (key: string, options?: Record<string, unknown>) => string,
+  detail: string,
+): string {
+  const lead = t("ui.game.campaignWiki.crossSessionReference", {
+    defaultValue: "Not saved: this change points at a record from another session.",
+  });
+  return detail ? `${lead} ${detail}` : lead;
 }
 
 export function entitySessionNumbers(entity: unknown): number[] {

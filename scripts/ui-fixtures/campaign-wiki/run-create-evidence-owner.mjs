@@ -50,6 +50,20 @@ try {
   await openEditor(desktop); await addRecord(desktop); await selects.first().selectOption({ label: "Knowledge" });
   const factOptions = await selects.nth(1).locator("option").allTextContents();
   record("stale verified fact excluded from knowledge choices", !factOptions.some((x) => x.includes("holds the northern archive key")) && factOptions.some((x) => x.includes("has archive count")), JSON.stringify(factOptions));
+  const otherIndex = factOptions.findIndex((x) => x.includes("met the ferryman"));
+  const lastSameIndex = factOptions.findIndex((x) => x.includes("has archive count"));
+  record("knowledge picker lists this session's facts first and labels the others", otherIndex > lastSameIndex && lastSameIndex > 0 && /\(from Session 1\)$/.test(factOptions[otherIndex] ?? "") && !factOptions[lastSameIndex].includes("from Session"), JSON.stringify(factOptions));
+  const groups = await selects.nth(1).locator("optgroup").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("label")));
+  record("knowledge picker groups facts by session", JSON.stringify(groups) === JSON.stringify(["From this session", "From other sessions (saved only if this session has a copy)"]), JSON.stringify(groups));
+  await selects.nth(1).selectOption("fact-other-session");
+  const otherHint = await desktop.getByText(/This fact was recorded in another session\./).count();
+  record("choosing another session's fact explains the risk", otherHint === 1, `hint=${otherHint}`);
+  await desktop.getByLabel("Reason for this change", { exact: true }).fill("Knows about the ferryman");
+  await desktop.getByRole("button", { name: "Review preview", exact: true }).click();
+  const crossAlert = desktop.getByRole("alert").filter({ hasText: "Not saved: this change points at a record from another session." });
+  await crossAlert.waitFor();
+  const crossText = await crossAlert.innerText();
+  record("knowledge citing another session's fact shows the cross-session message", crossText.includes("That fact belongs to another session") && !crossText.includes("changed since it was loaded"), crossText);
 
   await openEditor(desktop); await addRecord(desktop); await selects.first().selectOption({ label: "Relationship" });
   const targetSearch = desktop.locator("textarea").first();

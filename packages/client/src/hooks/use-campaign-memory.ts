@@ -90,6 +90,9 @@ export interface CampaignMemoryTimelineItem {
   summary: string;
   stateChanges: Array<{ entityId: string; key: string; value: CampaignMemoryJson }>;
   sourceMessageId: string | null;
+  /** Campaign scope: the chat and session number the event was recorded in (absent on older servers). */
+  originChatId?: string;
+  originSessionNumber?: number;
 }
 
 export interface CampaignMemoryTimelinePage {
@@ -302,27 +305,16 @@ export function useApplyCampaignMemoryMutation(chatId: string | null) {
   });
 }
 
-/** Fact fields the write route accepts on update; the patch must carry the whole record, not only the changes. */
-function factUpdatePatch(fact: CampaignMemoryFact, changes: CampaignMemoryFactChanges) {
-  const evidence = fact.evidence
-    .filter((item) => item.messageId && item.quote?.trim())
-    .map((item) => ({
-      messageId: item.messageId,
-      quote: item.quote,
-      ...(typeof item.sourceHash === "string" && /^[a-f0-9]{64}$/iu.test(item.sourceHash)
-        ? { sourceHash: item.sourceHash }
-        : {}),
-    }));
+/**
+ * Update patches are partial on the server: only the keys sent change, and a missing key keeps its stored value. So the
+ * patch carries just the changed fields (Pin sends value + manualLock, Wrong sends status + manualLock). Re-sending the
+ * whole record would also re-send `supersedesFactId`, which the server re-maps and can refuse across sessions.
+ */
+function factUpdatePatch(changes: CampaignMemoryFactChanges) {
   return {
-    predicate: fact.predicate,
-    value: changes.value ?? fact.value,
-    conditions: fact.conditions.map((condition) => ({ kind: condition.kind, value: condition.value })),
-    status: changes.status ?? fact.status,
-    evidence,
-    manualLock: changes.manualLock ?? fact.manualLock,
-    ...(fact.validFromOrder ? { validFromOrder: fact.validFromOrder } : {}),
-    ...(fact.validToOrder ? { validToOrder: fact.validToOrder } : {}),
-    ...(fact.supersedesFactId ? { supersedesFactId: fact.supersedesFactId } : {}),
+    ...(changes.value !== undefined ? { value: changes.value } : {}),
+    ...(changes.status !== undefined ? { status: changes.status } : {}),
+    ...(changes.manualLock !== undefined ? { manualLock: changes.manualLock } : {}),
   };
 }
 
@@ -336,8 +328,9 @@ export interface CampaignMemoryFactUpdateRequest {
 }
 
 /**
- * Status / lock / pin change on one fact (pin as canon, unpin, mark wrong), sent as the full fact patch. `chatId` must be the fact's own session
- * (recordWriteChatId). 409 means the fact changed since it was loaded.
+ * Status / lock / pin change on one fact (pin as canon, unpin, mark wrong), sent as a partial patch of only those
+ * fields. `chatId` must be the fact's own session (recordWriteChatId). A 409 is either a revision conflict (the fact
+ * changed since it was loaded) or CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE, which a reload does not fix.
  */
 export function useUpdateCampaignMemoryFact(chatId: string | null) {
   const queryClient = useQueryClient();
@@ -350,7 +343,7 @@ export function useUpdateCampaignMemoryFact(chatId: string | null) {
         recordId: fact.factId,
         expectedRevision: fact.revision,
         reason,
-        patch: factUpdatePatch(fact, changes),
+        patch: factUpdatePatch(changes),
       } satisfies CampaignMemoryAuthoringRequest),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: campaignMemoryKeys.all });

@@ -95,6 +95,10 @@ try {
     record("overview people grid leads with portraits", people.length === 12 && people[0].includes("Character 3") && people[1].includes("Character 6") && people[2].includes("Ariadne Vale"), JSON.stringify(people.slice(0, 3)));
     const latest = await overview.locator("[data-campaign-wiki-latest] li").allInnerTexts();
     record("latest in the story is newest first and readable", latest.length === 2 && latest[0].includes("Ariadne kept watch at the gate") && /Session 3/i.test(latest[0]) && latest[1].includes("archive opened after the eclipse"), JSON.stringify(latest));
+    const timelineRequests = await desktop.evaluate(() => window.__wikiMock.timelineRequests.slice());
+    record("latest in the story is one order=desc&limit=10 request, no cursor walk", timelineRequests.length >= 1 && timelineRequests.every((query) => /[?&]order=desc\b/.test(query) && /[?&]limit=10\b/.test(query) && !/cursor=/.test(query)), JSON.stringify(timelineRequests));
+    const heroTitle = (await overview.locator("header h2").first().innerText()).trim();
+    record("front page names the campaign, not the session chat", heroTitle === "Fixture Campaign", heroTitle);
     const promises = await overview.locator("[data-campaign-wiki-overview-promises] li").allInnerTexts();
     record("open promises only", promises.length === 2 && promises.some((row) => row.includes("Keep the archive watch")) && !promises.some((row) => row.includes("Archive key recovered")), JSON.stringify(promises));
     record("places and recently changed render", (await overview.locator("[data-campaign-wiki-overview-places] li").count()) === 8 && (await overview.locator("[data-campaign-wiki-overview-recent] li").count()) === 6);
@@ -212,7 +216,7 @@ try {
     await details.getByRole("button", { name: "Mark as wrong", exact: true }).click();
     await desktop.waitForFunction(() => window.__wikiMock.lastMutation?.recordId === "fact-6", undefined, WAIT);
     const wrong = await desktop.evaluate(() => window.__wikiMock.lastMutation);
-    record("wrong sends the full fact patch", wrong.action === "update" && wrong.recordType === "fact" && wrong.expectedRevision === 1 && wrong.patch.status === "retracted" && wrong.patch.manualLock === true && wrong.patch.predicate === "continuity.record" && wrong.patch.value?.kind === "commitment" && Array.isArray(wrong.patch.evidence) && wrong.reason === "Marked wrong in the Campaign Wiki", JSON.stringify(wrong));
+    record("wrong sends a partial patch of status and lock only", wrong.action === "update" && wrong.recordType === "fact" && wrong.expectedRevision === 1 && JSON.stringify(Object.keys(wrong.patch).sort()) === JSON.stringify(["manualLock", "status"]) && wrong.patch.status === "retracted" && wrong.patch.manualLock === true && wrong.reason === "Marked wrong in the Campaign Wiki", JSON.stringify(wrong));
     await desktop.getByRole("button", { name: /^2 withdrawn/ }).waitFor(WAIT);
     record("wrong fact moves to withdrawn", !(await desktop.locator('[data-component="campaign-wiki-facts"]').innerText()).includes("promised to guard the gate"));
 
@@ -221,6 +225,7 @@ try {
     await desktop.waitForFunction(() => window.__wikiMock.lastMutation?.recordId === "fact-10", undefined, WAIT);
     const pin = await desktop.evaluate(() => window.__wikiMock.lastMutation);
     record("pin sets value.pinned and the lock", pin.patch.value?.pinned === true && pin.patch.manualLock === true && pin.patch.value?.text === "Ariadne learned archive rule 10.", JSON.stringify(pin.patch));
+    record("pin sends a partial patch of value and lock only", JSON.stringify(Object.keys(pin.patch).sort()) === JSON.stringify(["manualLock", "value"]), JSON.stringify(Object.keys(pin.patch)));
     await desktop.locator('[data-component="campaign-wiki-pinned"]').getByText("Ariadne learned archive rule 10.", { exact: true }).waitFor(WAIT);
     record("pinned fact joins the pinned block", true);
 
@@ -229,6 +234,17 @@ try {
     await desktop.waitForFunction(() => window.__wikiMock.lastMutation?.recordId === "fact-5", undefined, WAIT);
     const unpin = await desktop.evaluate(() => window.__wikiMock.lastMutation);
     record("unpin clears the flag and the pin lock", unpin.patch.value?.pinned === false && unpin.patch.manualLock === false, JSON.stringify(unpin.patch));
+
+    // A write the server refuses as CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE (409) gets its own message, not the reload banner.
+    await factRow(desktop, /archive rule 17\./).click();
+    const crossDetails = desktop.locator('[data-component="campaign-wiki-facts"] li', { has: desktop.getByRole("button", { name: /archive rule 17\./ }) }).last().locator('[data-component="campaign-wiki-fact-details"]').first();
+    await crossDetails.waitFor(WAIT);
+    await desktop.evaluate(() => { window.__wikiMock.crossSessionOnce = true; });
+    await crossDetails.getByRole("button", { name: "Pin as canon", exact: true }).click();
+    const crossAlert = crossDetails.getByRole("alert");
+    await crossAlert.waitFor(WAIT);
+    const crossText = await crossAlert.innerText();
+    record("fact pin cross-session 409 shows the specific message", crossText.includes("Not saved: this change points at a record from another session.") && crossText.includes("Mira Thorne has no page in that session yet") && !crossText.includes("changed since it was loaded") && (await crossAlert.getByRole("button", { name: "Reload", exact: true }).count()) === 0, crossText);
 
     await factRow(desktop, /Holds the northern archive key/).click();
     await desktop.locator('[data-component="campaign-wiki-fact-details"]').first().getByRole("button", { name: "Correct", exact: true }).click();

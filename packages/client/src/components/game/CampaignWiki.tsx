@@ -73,6 +73,7 @@ import {
   WikiSectionHeader,
   WikiSkeleton,
   WikiTabs,
+  campaignTitle,
   entitySessionNumbers,
   factDisplay,
   formatCaptureOrder,
@@ -1222,7 +1223,7 @@ export function CampaignWiki({
             {view === "home" && !selectedId && (
               <CampaignWikiOverview
                 chatId={chatId}
-                campaignName={chat.data?.name}
+                campaignName={campaignTitle(chat.data?.name)}
                 totals={kindTotals}
                 onSelect={selectEntity}
                 onShowKind={showKind}

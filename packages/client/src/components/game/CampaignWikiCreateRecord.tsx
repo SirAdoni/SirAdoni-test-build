@@ -13,7 +13,7 @@ import type {
   CampaignMemoryRelationshipStatus,
 } from "@marinara-engine/shared";
 import { useTranslation as useUiTranslation } from "react-i18next";
-import { ApiError, api } from "../../lib/api-client";
+import { api } from "../../lib/api-client";
 import { cn } from "../../lib/utils";
 import { wikiValueSummary } from "../../lib/campaign-wiki-value";
 import {
@@ -21,7 +21,18 @@ import {
   useCampaignMemoryEntities,
   usePreviewCampaignMemoryMutation,
 } from "../../hooks/use-campaign-memory";
-import { WikiCard, WikiChip, factDisplay, humanizeKey, recordWriteChatId } from "./campaign-wiki-ui";
+import {
+  WikiCard,
+  WikiChip,
+  crossSessionReferenceDetail,
+  crossSessionReferenceText,
+  factDisplay,
+  humanizeKey,
+  isWikiRevisionConflict,
+  recordOrigin,
+  recordWriteChatId,
+} from "./campaign-wiki-ui";
+import type { TFn } from "./CampaignWikiReaderParts";
 
 type RecordKind = "fact" | "knowledge" | "relationship" | "entity";
 
@@ -662,7 +673,15 @@ export function ChangeReview({
 
 /* ------------------------------------------------ Create record ------------------------------------------------ */
 
-type CreateError = "validation" | "preview" | "apply" | "conflict" | "ownerLinked" | "ownerChecking" | null;
+type CreateError =
+  | "validation"
+  | "preview"
+  | "apply"
+  | "conflict"
+  | "crossSession"
+  | "ownerLinked"
+  | "ownerChecking"
+  | null;
 
 export function CampaignWikiCreateRecord({
   chatId,
@@ -705,6 +724,8 @@ export function CampaignWikiCreateRecord({
   const [request, setRequest] = useState<CampaignMemoryAuthoringRequest | null>(null);
   const [preview, setPreview] = useState<CampaignMemoryAuthoringPreview | null>(null);
   const [error, setError] = useState<CreateError>(null);
+  // Server reason for CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE (who or what the write session lacks).
+  const [crossSessionDetail, setCrossSessionDetail] = useState("");
   const [attempted, setAttempted] = useState(false);
   const [dirty, setDirty] = useState(false);
   const version = useRef(0);
@@ -739,14 +760,29 @@ export function CampaignWikiCreateRecord({
   const ownerCheckCurrent = Boolean(ownerStore && ownerId) && !ownerCheckPending;
   const ownerLinked = ownerCheckCurrent ? ownerEntities.data?.items[0] : undefined;
 
+  // Knowledge must cite a fact of the write session: a fact that exists only in another session is refused with
+  // CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE unless this session has its own copy. Same-session facts come first; the
+  // others stay choosable (the server maps a copy when one exists) but are labelled with their session.
   const verifiedFacts = useMemo(() => {
     const byId = new Map<string, CampaignMemoryFact>();
     [...facts.items, ...referencedFacts].forEach((fact) => {
       if (fact.status === "verified" && detail.sourceChecks?.[fact.factId]?.state !== "stale")
         byId.set(fact.factId, fact);
     });
-    return [...byId.values()];
-  }, [detail.sourceChecks, facts.items, referencedFacts]);
+    const sameSession: CampaignMemoryFact[] = [];
+    const otherSessions: CampaignMemoryFact[] = [];
+    for (const fact of byId.values()) {
+      if ((recordOrigin(fact).chatId ?? writeChatId) === writeChatId) sameSession.push(fact);
+      else otherSessions.push(fact);
+    }
+    otherSessions.sort(
+      (left, right) =>
+        (recordOrigin(right).sessionNumber ?? -1) - (recordOrigin(left).sessionNumber ?? -1) ||
+        left.predicate.localeCompare(right.predicate),
+    );
+    return { sameSession, otherSessions, all: [...sameSession, ...otherSessions] };
+  }, [detail.sourceChecks, facts.items, referencedFacts, writeChatId]);
+  const chosenOtherSessionFact = verifiedFacts.otherSessions.find((fact) => fact.factId === factId);
 
   const targetNames = useMemo(() => {
     const names = new Map<string, string>();
@@ -933,10 +969,12 @@ export function CampaignWikiCreateRecord({
       .then((result) => {
         if (mounted.current && requestVersion === version.current) setPreview(result);
       })
-      .catch(() => {
+      .catch((failure: unknown) => {
         if (mounted.current && requestVersion === version.current) {
+          const detail = crossSessionReferenceDetail(failure);
           setPreview(null);
-          setError("preview");
+          setCrossSessionDetail(detail ?? "");
+          setError(detail !== null ? "crossSession" : "preview");
         }
       });
   };
@@ -956,8 +994,10 @@ export function CampaignWikiCreateRecord({
         setPreview(null);
         onApplied();
       })
-      .catch((reasonValue) => {
-        setError(reasonValue instanceof ApiError && reasonValue.status === 409 ? "conflict" : "apply");
+      .catch((reasonValue: unknown) => {
+        const detail = crossSessionReferenceDetail(reasonValue);
+        setCrossSessionDetail(detail ?? "");
+        setError(detail !== null ? "crossSession" : isWikiRevisionConflict(reasonValue) ? "conflict" : "apply");
       });
   };
 
@@ -988,6 +1028,35 @@ export function CampaignWikiCreateRecord({
         { defaultValue: humanizeKey(ownerStore) },
       )
     : "";
+  const factOption = (fact: CampaignMemoryFact) => {
+    const text = factDisplay(fact).text;
+    const label =
+      text && text !== "—" && text !== fact.predicate
+        ? t("ui.game.campaignWiki.create.factOption", {
+            defaultValue: "{{topic}}: {{text}}",
+            topic: fact.predicate,
+            text: shorten(text),
+          })
+        : fact.predicate;
+    const origin = recordOrigin(fact);
+    const otherSession = (origin.chatId ?? writeChatId) !== writeChatId;
+    return (
+      <option key={fact.factId} value={fact.factId} data-other-session={otherSession ? "true" : undefined}>
+        {!otherSession
+          ? label
+          : origin.sessionNumber !== null
+            ? t("ui.game.campaignWiki.create.factOptionFromSession", {
+                defaultValue: "{{option}} (from Session {{number}})",
+                option: label,
+                number: origin.sessionNumber,
+              })
+            : t("ui.game.campaignWiki.create.factOptionFromOtherSession", {
+                defaultValue: "{{option}} (from another session)",
+                option: label,
+              })}
+      </option>
+    );
+  };
   const errorText =
     error === "validation"
       ? t("ui.game.campaignWiki.create.validation", { defaultValue: "Complete the required fields and reason." })
@@ -999,13 +1068,15 @@ export function CampaignWikiCreateRecord({
           ? t("ui.game.campaignWiki.create.ownerLinked", {
               name: ownerLinked?.aliases[0] || ownerLinked?.entityId || "",
             })
-          : error === "conflict"
-            ? t("ui.game.campaignWiki.editor.conflict")
-            : error === "preview"
-              ? t("ui.game.campaignWiki.editor.previewError")
-              : error === "apply"
-                ? t("ui.game.campaignWiki.editor.applyError")
-                : null;
+          : error === "crossSession"
+            ? crossSessionReferenceText(t as TFn, crossSessionDetail)
+            : error === "conflict"
+              ? t("ui.game.campaignWiki.editor.conflict")
+              : error === "preview"
+                ? t("ui.game.campaignWiki.editor.previewError")
+                : error === "apply"
+                  ? t("ui.game.campaignWiki.editor.applyError")
+                  : null;
 
   return (
     <div className="space-y-4" aria-label={t("ui.game.campaignWiki.create.title", { defaultValue: "Add record" })}>
@@ -1138,11 +1209,16 @@ export function CampaignWikiCreateRecord({
           <EditorSelect
             label={t("ui.game.campaignWiki.create.verifiedFact", { defaultValue: "Existing verified fact" })}
             hint={
-              verifiedFacts.length === 0
+              verifiedFacts.all.length === 0
                 ? t("ui.game.campaignWiki.create.noVerifiedFacts", {
                     defaultValue: "There are no verified facts to choose from yet. Verify a fact first.",
                   })
-                : undefined
+                : chosenOtherSessionFact
+                  ? t("ui.game.campaignWiki.create.otherSessionFactHint", {
+                      defaultValue:
+                        "This fact was recorded in another session. It can only be saved here if this session has its own copy of it; facts from this session are safest.",
+                    })
+                  : undefined
             }
             value={factId}
             onChange={edit(setFactId)}
@@ -1152,20 +1228,26 @@ export function CampaignWikiCreateRecord({
             <option value="">
               {t("ui.game.campaignWiki.create.chooseFact", { defaultValue: "Choose a verified fact" })}
             </option>
-            {verifiedFacts.map((fact) => {
-              const text = factDisplay(fact).text;
-              return (
-                <option key={fact.factId} value={fact.factId}>
-                  {text && text !== "—" && text !== fact.predicate
-                    ? t("ui.game.campaignWiki.create.factOption", {
-                        defaultValue: "{{topic}}: {{text}}",
-                        topic: fact.predicate,
-                        text: shorten(text),
-                      })
-                    : fact.predicate}
-                </option>
-              );
-            })}
+            {verifiedFacts.otherSessions.length === 0 ? (
+              verifiedFacts.sameSession.map(factOption)
+            ) : (
+              <>
+                {verifiedFacts.sameSession.length > 0 && (
+                  <optgroup
+                    label={t("ui.game.campaignWiki.create.factsThisSession", { defaultValue: "From this session" })}
+                  >
+                    {verifiedFacts.sameSession.map(factOption)}
+                  </optgroup>
+                )}
+                <optgroup
+                  label={t("ui.game.campaignWiki.create.factsOtherSessions", {
+                    defaultValue: "From other sessions (saved only if this session has a copy)",
+                  })}
+                >
+                  {verifiedFacts.otherSessions.map(factOption)}
+                </optgroup>
+              </>
+            )}
           </EditorSelect>
           <EditorSelect
             label={t("ui.game.campaignWiki.create.howKnown", { defaultValue: "How sure are they?" })}

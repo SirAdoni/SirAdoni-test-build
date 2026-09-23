@@ -55,31 +55,35 @@ import {
 
 const OPEN_COMMITMENT_STATES = new Set(["proposed", "accepted", "active", "unresolved"]);
 const LATEST_COUNT = 5;
+/** One `order=desc` request of this size answers "Latest in the story" on current servers. */
+const LATEST_REQUEST = 10;
+/** Page size and page cap of the fallback walk for servers that ignore `order` and page oldest first. */
 const LATEST_PAGE = 100;
-/** Walking the ascending timeline to its end stops here; the section then says it shows an earlier stretch. */
 const LATEST_MAX_PAGES = 30;
 
 /**
- * The newest timeline events, newest first. The route pages oldest first by cursor; `order=desc` is sent so a server
- * that supports it answers in one request, otherwise the client walks the cursor to the end.
+ * The newest timeline events, newest first, from one `order=desc&limit=10` request. The ascending cursor walk to the
+ * end is only a fallback for an older server that ignored `order` (its page comes back oldest first with more to
+ * read); the section then says when that walk stopped short of the end.
  */
 function useLatestTimeline(chatId: string) {
   return useQuery({
     queryKey: ["campaign-memory", "timeline-latest", chatId, LATEST_COUNT] as const,
     queryFn: async () => {
-      const get = (cursor?: string) =>
-        api.get<CampaignMemoryTimelinePage>(
-          `/game/${chatId}/memory/timeline?limit=${LATEST_PAGE}&order=desc${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
-        );
-      const first = await get();
+      const first = await api.get<CampaignMemoryTimelinePage>(
+        `/game/${chatId}/memory/timeline?order=desc&limit=${LATEST_REQUEST}`,
+      );
       const items = first.items;
-      const descending =
-        items.length > 1 && items[0]!.occurrenceOrder.localeCompare(items[items.length - 1]!.occurrenceOrder) > 0;
-      if (descending) return { items: items.slice(0, LATEST_COUNT), complete: true };
+      const ignoredOrder =
+        items.length > 1 && items[0]!.occurrenceOrder.localeCompare(items[items.length - 1]!.occurrenceOrder) < 0;
+      if (!ignoredOrder) return { items: items.slice(0, LATEST_COUNT), complete: true };
+      if (!first.nextCursor) return { items: items.slice(-LATEST_COUNT).reverse(), complete: true };
       let tail = items;
-      let cursor = first.nextCursor;
+      let cursor: string | null = first.nextCursor;
       for (let pages = 1; cursor && pages < LATEST_MAX_PAGES; pages += 1) {
-        const next = await get(cursor);
+        const next: CampaignMemoryTimelinePage = await api.get<CampaignMemoryTimelinePage>(
+          `/game/${chatId}/memory/timeline?limit=${LATEST_PAGE}&cursor=${encodeURIComponent(cursor)}`,
+        );
         if (next.items.length > 0) tail = [...tail.slice(-LATEST_COUNT), ...next.items];
         cursor = next.nextCursor;
       }

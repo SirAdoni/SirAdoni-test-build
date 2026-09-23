@@ -34,12 +34,15 @@ import {
   WikiEmpty,
   WikiSectionHeader,
   WikiSkeleton,
+  crossSessionReferenceDetail,
+  crossSessionReferenceText,
   formatCaptureOrder,
   humanizeKey,
   recordOrigin,
   recordWriteChatId,
   type WikiTone,
 } from "./campaign-wiki-ui";
+import type { TFn } from "./CampaignWikiReaderParts";
 
 /**
  * Pulse 8 quest/commitment view. Items are grouped by state; a transition is a new
@@ -441,7 +444,9 @@ function TransitionForm({
   const [quote, setQuote] = useState("");
   const [reason, setReason] = useState("");
   const errorStatus = transition.error instanceof ApiError ? transition.error.status : undefined;
-  const conflict = errorStatus === 409;
+  // A cross-session refusal is not a stale revision: reloading cannot fix it, so it gets its own message.
+  const crossSession = crossSessionReferenceDetail(transition.error);
+  const conflict = errorStatus === 409 && crossSession === null;
   const evidenceIncomplete = (messageId.trim() === "") !== (quote.trim() === "");
   const canSubmit = reason.trim() !== "" && !evidenceIncomplete && !transition.isPending && !conflict;
   const stateLabel = t(`ui.game.campaignWiki.commitments.state.${state}`);
@@ -494,9 +499,11 @@ function TransitionForm({
       )}
       {transition.isError && !conflict && (
         <p role="alert" className="text-xs text-destructive">
-          {errorStatus === 400
-            ? t("ui.game.campaignWiki.commitments.illegal")
-            : t("ui.game.campaignWiki.commitments.applyError")}
+          {crossSession !== null
+            ? crossSessionReferenceText(t as TFn, crossSession)
+            : errorStatus === 400
+              ? t("ui.game.campaignWiki.commitments.illegal")
+              : t("ui.game.campaignWiki.commitments.applyError")}
         </p>
       )}
       <label className={labelClass}>

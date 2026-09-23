@@ -31,6 +31,12 @@ type MockControl = {
   releaseOwner: () => void;
   ownerLinked: Record<string, string>;
   ownerLookups: string[];
+  /** The next memory write (preview or apply) answers 409 CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE. */
+  crossSessionOnce: boolean;
+  /** The next commitment transition answers 409 CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE. */
+  crossSessionTransition: boolean;
+  /** Query strings of every timeline request, in order. */
+  timelineRequests: string[];
 };
 declare global {
   interface Window {
@@ -373,12 +379,23 @@ function detail(id: string, offset: number, params: URLSearchParams = new URLSea
     events: emptyPage(events, events.length, 0, 20),
     relationships: emptyPage(relationships, relationships.length, 0, 20),
     relatedEntities: entities.filter((item) => item.entityId === target),
-    referencedFacts: factStates.map((item, index) => ({
-      factId: `fact-${index}`,
-      predicate: item.predicate,
-      value: item.value,
-      status: index === 0 ? "verified" : "verified",
-    })),
+    referencedFacts: [
+      ...factStates.map((item, index) => ({
+        factId: `fact-${index}`,
+        predicate: item.predicate,
+        value: item.value,
+        status: index === 0 ? "verified" : "verified",
+      })),
+      // Recorded in session 1 only: knowledge written to chat-demo that cites it is refused as cross-session.
+      {
+        factId: "fact-other-session",
+        predicate: "met the ferryman",
+        value: "Ariadne met the ferryman at the old crossing.",
+        status: "verified",
+        originChatId: "chat-session-1",
+        originSessionNumber: 1,
+      },
+    ],
     sourceChecks: {
       "fact-0": { state: "stale" },
       "fact-1": { state: "current" },
@@ -416,6 +433,9 @@ async function main() {
     releaseOwner: () => undefined,
     ownerLinked: {},
     ownerLookups: [],
+    crossSessionOnce: false,
+    crossSessionTransition: false,
+    timelineRequests: [],
   };
   const ownerWaiters: Array<() => void> = [];
   window.__wikiMock.releaseOwner = () => {
@@ -467,6 +487,8 @@ async function main() {
       return new Response(
         JSON.stringify({
           id: "chat-demo",
+          // Session chats are named "<campaign> — Session N"; the wiki front page shows the campaign name.
+          name: "Fixture Campaign — Session 3",
           metadata:
             control.branchMode === "no-metadata"
               ? {}
@@ -527,6 +549,22 @@ async function main() {
           reason: body.reason,
         });
         return new Response(JSON.stringify(control.audit[0]), { headers: { "Content-Type": "application/json" } });
+      }
+      const crossSessionRefusal = (message: string) =>
+        new Response(JSON.stringify({ error: { code: "CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE", message } }), {
+          status: 409,
+          headers: { "Content-Type": "application/json" },
+        });
+      // Like the server: knowledge in chat-demo cannot cite a fact that exists only in another session.
+      if (body.recordType === "knowledge" && body.input?.factId === "fact-other-session")
+        return crossSessionRefusal(
+          "That fact belongs to another session and has no copy in this one, so this record cannot be written here. Write it in the session the fact comes from.",
+        );
+      if (control.crossSessionOnce) {
+        control.crossSessionOnce = false;
+        return crossSessionRefusal(
+          "Mira Thorne has no page in that session yet, so this record cannot be written there. Add Mira Thorne to that session first.",
+        );
       }
       if (!mutation[1] && control.failApplyOnce) {
         control.failApplyOnce = false;
@@ -623,11 +661,19 @@ async function main() {
           sourceMessageId: "msg-event-stale",
         },
       ];
+      control.timelineRequests.push(parsed.search);
       const entityFilter = parsed.searchParams.get("entityId");
-      const items = entityFilter
+      const filtered = entityFilter
         ? timelineItems.filter((item) => item.participants.some((p) => p.entityId === entityFilter))
         : timelineItems;
-      return new Response(JSON.stringify({ items, nextCursor: null }), {
+      // order=desc pages newest first; the cursor follows the same direction.
+      const ordered = parsed.searchParams.get("order") === "desc" ? [...filtered].reverse() : filtered;
+      const cursor = parsed.searchParams.get("cursor");
+      const start = cursor ? ordered.findIndex((item) => item.eventId === cursor) + 1 : 0;
+      const limit = Number(parsed.searchParams.get("limit") ?? 50);
+      const items = ordered.slice(start, start + limit);
+      const nextCursor = start + limit < ordered.length ? (items.at(-1)?.eventId ?? null) : null;
+      return new Response(JSON.stringify({ items, nextCursor }), {
         headers: { "Content-Type": "application/json" },
       });
     }
@@ -637,6 +683,20 @@ async function main() {
       const body = JSON.parse(String(init.body ?? "{}"));
       const commitmentId = decodeURIComponent(transitionMatch[1]);
       const current = control.commitmentRevisions[commitmentId] ?? 1;
+      if (control.crossSessionTransition) {
+        control.crossSessionTransition = false;
+        control.transitions.push({ commitmentId, body, status: 409 });
+        return new Response(
+          JSON.stringify({
+            error: {
+              code: "CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE",
+              message:
+                "Mira Thorne has no page in that session yet, so this record cannot be written there. Add Mira Thorne to that session first.",
+            },
+          }),
+          { status: 409, headers: { "Content-Type": "application/json" } },
+        );
+      }
       const status = body.expectedRevision === current ? 200 : 409;
       control.transitions.push({ commitmentId, body, status });
       if (status === 409)
