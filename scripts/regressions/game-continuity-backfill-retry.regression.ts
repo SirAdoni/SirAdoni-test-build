@@ -250,6 +250,40 @@ try {
   const status = await app.inject({ method: "GET", url: `/api/game/${chatId}/continuity/backfill/${backfillId}` });
   assert.deepEqual(status.json().counts, { verified: 3 });
 
+  // A stale batch (the config changed and changed back, so its id is the one a fresh read would get) is re-read
+  // under the backfill's own config and joins the manifest. Live continuity is off here, which used to make
+  // the runtime's live-turn retry return nothing ("runtime_stopped").
+  const staleTarget = (await byTurn()).first;
+  await storage.save({
+    ...staleTarget,
+    status: "stale",
+    errorCode: "CONTINUITY_CONFIG_CHANGED",
+    error: "The continuity configuration changed after this batch was queued.",
+    updatedAt: new Date().toISOString(),
+  });
+  await assert.rejects(
+    runtime.retry(chatId, staleTarget.id),
+    /CONTINUITY_BACKFILL_RERUN_REQUIRED/u,
+    "the runtime never rebuilds a historical batch as a live turn",
+  );
+  const staleRetry = await app.inject({
+    method: "POST",
+    url: `/api/game/${chatId}/continuity/backfill/${backfillId}/retry`,
+    payload: {},
+  });
+  assert.equal(staleRetry.statusCode, 200, staleRetry.body);
+  assert.deepEqual(staleRetry.json().retried, [staleTarget.id]);
+  assert.equal(staleRetry.json().requeued.length, 1, "the stale batch is read again under a new id");
+  const replacementId = staleRetry.json().requeued[0] as string;
+  assert.notEqual(replacementId, staleTarget.id);
+  const replacement = await storage.get(replacementId);
+  assert.equal(replacement?.config.historicalBackfill?.id, backfillId, "the replacement is a historical batch");
+  const manifestNow = await app.inject({ method: "GET", url: `/api/game/${chatId}/continuity/backfill/${backfillId}` });
+  assert.ok(manifestNow.json().manifest.receiptIds.includes(replacementId), "the manifest tracks the replacement");
+  await waitUntil(async () => (await storage.get(replacementId))?.status === "verified", "the replacement to verify");
+  const afterStale = await app.inject({ method: "GET", url: `/api/game/${chatId}/continuity/backfill/${backfillId}` });
+  assert.deepEqual(afterStale.json().counts, { verified: 3, stale: 1 });
+
   await runtime.stop();
   runtime = null;
   await app.close();

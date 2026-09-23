@@ -180,6 +180,32 @@ try {
   assert.equal(beatrixes.length, 1, "one person, one entity");
   assert.equal(beatrixes[0]!.owner.type === "existing" && beatrixes[0]!.owner.store, "game-npcs");
 
+  // Her entity is archived, so the record's subject no longer resolves: the next relink brings the superseded
+  // fallback back instead of failing the whole receipt with a fact conflict on every relink after.
+  const { applyCampaignMemoryMutation } =
+    await import("../../packages/server/src/services/game/campaign-memory-mutations.js");
+  const ismeneNow = (await memory.getEntity({ chatId: "chat" }, ismene.entityId))!;
+  await applyCampaignMemoryMutation(db, {
+    chatId: "chat",
+    operationId: "archive-ismene",
+    actor: "user",
+    reason: "test",
+    recordType: "entity",
+    action: "update",
+    recordId: ismene.entityId,
+    expectedRevision: ismeneNow.revision,
+    patch: { status: "archived" },
+  });
+  const afterArchive = await relinkPublishedContinuityMemory(db, "chat");
+  assert.deepEqual(afterArchive.skipped, {}, JSON.stringify(afterArchive));
+  assert.equal(afterArchive.relinked, 1);
+  assert.equal(
+    (await memory.getFact({ chatId: "chat" }, factsBefore[0]!.factId))?.status,
+    "verified",
+    "the fallback carries the record again",
+  );
+  assert.equal((await relinkPublishedContinuityMemory(db, "chat")).relinked, 1, "and relinking stays stable");
+
   await db._fileStore.close();
   console.log("campaign-memory-named-characters regression passed");
 } finally {

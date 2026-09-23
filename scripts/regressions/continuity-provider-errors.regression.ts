@@ -63,6 +63,9 @@ try {
   assert.equal(resolve("review", { extract: 4000 }, { CONTINUITY_STAGE_TIMEOUT_MS: "1000" }), 1000, "map falls back");
   assert.equal(resolve("extract", "oops", { CONTINUITY_STAGE_TIMEOUT_MS: "nope" }), 600_000, "invalid ignored");
   assert.equal(resolve("extract", -5, { CONTINUITY_STAGE_TIMEOUT_MS: "0" }), 600_000, "non-positive ignored");
+  // A huge value (meant as "no timeout") is capped at the timer maximum; Node would otherwise fire it after 1 ms.
+  assert.equal(resolve("extract", 9_999_999_999), 2_147_483_647, "metadata above the timer maximum is capped");
+  assert.equal(resolve("review", undefined, { CONTINUITY_STAGE_TIMEOUT_MS: "9999999999" }), 2_147_483_647);
 
   // 2. Stable codes from representative thrown errors.
   const codeOf = (error: unknown, hints?: Parameters<typeof normalizeContinuityError>[1]) => {

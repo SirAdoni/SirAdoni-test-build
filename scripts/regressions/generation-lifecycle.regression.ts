@@ -179,7 +179,7 @@ assert.match(
 );
 assert.match(
   gameRouteSource,
-  /if \(storyboardPlanHasNoVisualBeats\(parsedPlan\)\) return skipStoryboard\("no_visual_beats"\);\s*plan = sanitizeStoryboardPlan\(parsedPlan,/,
+  /if \(storyboardPlanHasNoVisualBeats\(parsedPlan\)\) return await skipStoryboardNoVisualBeats\(\);\s*plan = sanitizeStoryboardPlan\(parsedPlan,/,
   "the retried planner result must still pass storyboard validation and sanitization",
 );
 assert.match(

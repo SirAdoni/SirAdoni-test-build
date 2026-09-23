@@ -16,6 +16,11 @@ const root = mkdtempSync(join(tmpdir(), "marinara-campaign-index-"));
 process.env.DATA_DIR = root;
 process.env.FILE_STORAGE_DIR = join(root, "storage");
 process.env.NODE_ENV = "test";
+// Pin the worker budget: server modules load .env, and an installation tuned for a large archive (several turns per
+// receipt) must not change the one-receipt-per-turn counts this fixture asserts.
+process.env.CONTINUITY_MAX_CONCURRENT = "2";
+process.env.CONTINUITY_BACKFILL_CONCURRENCY = "1";
+process.env.CONTINUITY_BACKFILL_TURNS_PER_RECEIPT = "1";
 
 let runtime: { stop(): Promise<void> } | null = null;
 let app: any = null;

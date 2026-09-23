@@ -425,8 +425,10 @@ try {
   assert.deepEqual(
     isolatedExtra.isolatedGameTurn.promptRequests.find((request: any) => request.actorId === isolated.alice)
       .memoryProjection,
-    { includedCount: 2, excludedCount: 0, degraded: false, exclusions: [] },
-    "A valid holder reports its included entity and knowledge without a false degradation warning",
+    // The memory block no longer prints a line per entity (names appear inside the facts), so the holder's one
+    // knowledge record is the only included record.
+    { includedCount: 1, excludedCount: 0, degraded: false, exclusions: [] },
+    "A valid holder reports its included knowledge without a false degradation warning",
   );
   assert.deepEqual(
     isolatedExtra.isolatedGameTurn.promptRequests.find((request: any) => request.actorId === isolated.bob)

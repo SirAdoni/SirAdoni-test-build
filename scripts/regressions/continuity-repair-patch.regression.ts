@@ -222,4 +222,30 @@ assert.throws(
   /added record/,
 );
 
+// The extractor left m2 unresolved; the reviewer found nothing and marked it covered. The repair may add the
+// missing record for m2, and the prompt shows which messages the extractor left unfinished.
+const unfinished = {
+  records: [extraction.records[0]!],
+  dispositions: [
+    { messageId: "m1", status: "covered" as const, reason: "recorded" },
+    { messageId: "m2", status: "unresolved" as const, reason: "needs a closer read" },
+  ],
+};
+const unfinishedArgs = {
+  ...args,
+  extraction: unfinished,
+  review: { findings: [], dispositions: extraction.dispositions },
+};
+const completedRepair = applyTargetedContinuityRepair(
+  {
+    replace: [],
+    add: [{ ...rawRecords[1]! }],
+    dispositions: extraction.dispositions,
+  },
+  unfinishedArgs,
+);
+assert.equal(completedRepair.records.length, 2, "the extractor's unresolved message can receive an added record");
+assert.match(buildTargetedContinuityRepairPrompt(unfinishedArgs), /CURRENT EXTRACTION DISPOSITIONS[^]*needs a closer read/u);
+assert.doesNotMatch(buildTargetedContinuityRepairPrompt(args), /CURRENT EXTRACTION DISPOSITIONS/u);
+
 console.log("continuity-repair-patch regression passed");

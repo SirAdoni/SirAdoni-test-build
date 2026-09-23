@@ -21,9 +21,10 @@ import { readGameContinuityState } from "../services/game/continuity-state.js";
 import { readGameContinuityPromptContext } from "../services/game/continuity-context.js";
 import { selectContinuityRecordsForAudience } from "../services/game/continuity-knowledge.js";
 import { buildCampaignMemoryContextFromStorage } from "../services/game/campaign-memory-context.js";
+import { readCampaignMemoryProjection } from "../services/game/campaign-memory-campaign-scope.js";
+import { readContinuityConfig } from "../services/game/continuity-provider.js";
 import type { CampaignMemoryEntity } from "@marinara-engine/shared";
 import type { DB } from "../db/connection.js";
-import { createCampaignMemoryStorage } from "../services/storage/campaign-memory.storage.js";
 // ──────────────────────────────────────────────
 // Routes: Game Mode
 // ──────────────────────────────────────────────
@@ -344,6 +345,8 @@ import {
   resolveGameSpatialMapDraftOptions,
   BUILT_IN_AGENT_IDS,
   buildStableGameNpcId,
+  findGameNpcByNameDerivedId,
+  gameNpcIdRefersToName,
   findUnambiguousGameNpcNameMatch,
   gameNpcIdentityTokens,
   gameNpcNamesCouldBeAliases,
@@ -2479,6 +2482,22 @@ function isPartyNpcId(id: string): boolean {
   return id.startsWith("npc:");
 }
 
+/**
+ * True when the party already holds this recruit. An NPC recruit also matches a
+ * stored id in the legacy form, unless another known NPC owns that id now.
+ */
+function partyIdsIncludeRecruit(
+  partyIds: readonly string[],
+  recruitId: string,
+  recruitName: string,
+  knownNames: readonly unknown[],
+): boolean {
+  if (partyIds.includes(recruitId)) return true;
+  if (!isPartyNpcId(recruitId)) return false;
+  const names = knownNames.filter((name): name is string => typeof name === "string");
+  return partyIds.some((id) => isPartyNpcId(id) && gameNpcIdRefersToName(id, recruitName, names));
+}
+
 function getStoredPartyCharacterIds(
   meta: Record<string, unknown>,
   setupConfig: GameSetupConfig,
@@ -2571,7 +2590,10 @@ export function mergeRecruitIntoGameMetadata(input: MergeRecruitInput): MergeRec
   const freshPartyIds = getStoredPartyCharacterIds(current, freshSetupConfig, chatCharacterIds);
   const freshNpcs = Array.isArray(current.gameNpcs) ? (current.gameNpcs as GameNpc[]) : [];
 
-  const alreadyInFreshParty = freshPartyIds.includes(recruitId);
+  const alreadyInFreshParty = partyIdsIncludeRecruit(freshPartyIds, recruitId, recruitName, [
+    ...freshNpcs.map((npc) => npc.name),
+    ...freshCards.map((card) => card.name as string),
+  ]);
   const mergedPartyIds = alreadyInFreshParty ? freshPartyIds : [...freshPartyIds, recruitId];
 
   const freshExistingCardIndex = findExistingGameCharacterCardIndex(freshCards, recruitName);
@@ -3699,6 +3721,12 @@ const EXPERIENCE_GENERATION_MIN_OUTPUT_TOKENS = 1_024;
 const SESSION_CONCLUSION_MIN_OUTPUT_TOKENS = 8192;
 const CAMPAIGN_PROGRESSION_MIN_OUTPUT_TOKENS = SESSION_CONCLUSION_MIN_OUTPUT_TOKENS;
 const GAME_GENERATION_TIMEOUT_MS = 5 * 60 * 1000;
+/**
+ * The session recap is one non-streamed request over every previous summary, so nothing resets an idle timer while
+ * the model works. Large campaigns on slow models (Fable 5.1 took over ten minutes for a conclusion) outlasted five
+ * minutes and fell back to "Session N begins" with no recap.
+ */
+const GAME_SESSION_RECAP_TIMEOUT_MS = 20 * 60 * 1000;
 const GAME_ASSET_GENERATION_TIMEOUT_MS = 45 * 60 * 1000;
 const GAME_SCENE_VIDEO_GENERATION_TIMEOUT_MS = 31 * 60 * 1000;
 const GAME_ILLUSTRATION_SUMMARY_TIMEOUT_MS = 60 * 1000;
@@ -4709,10 +4737,10 @@ async function resolveGameLorebookKeeperPartyNames(
       return name ? [name] : [];
     }
 
-    const npc = npcs.find((candidate) => buildPartyNpcId(candidate.name) === id);
+    const npc = findGameNpcByNameDerivedId(id, npcs, (candidate) => candidate.name);
     if (npc?.name) return [npc.name];
 
-    const cardName = cardNames.find((name) => buildPartyNpcId(name) === id);
+    const cardName = findGameNpcByNameDerivedId(id, cardNames, (name) => name);
     return cardName ? [cardName] : [];
   });
 }
@@ -4906,19 +4934,35 @@ export async function createGameLorebookKeeperEntries(args: {
   entries: GameLorebookKeeperEntry[];
   replaceExistingSessionEntries?: boolean;
 }): Promise<number> {
-  void args.replaceExistingSessionEntries;
   const existingEntries = (await args.lorebooksStore.listEntries(
     args.lorebookId,
   )) as unknown as StoredGameLorebookKeeperEntry[];
 
   if (args.entries.length === 0) return 0;
 
-  const refreshedEntries = existingEntries;
+  // A regenerate replaces this session's unlocked Keeper entries. Old entries whose content is
+  // reproduced exactly are kept, and the rest are removed only after every new entry was created,
+  // so a failed or partial save never loses the previous set.
+  const newHashes = new Set(args.entries.map((entry) => hashGameLorebookKeeperEntry(entry)));
+  const staleSessionEntries = args.replaceExistingSessionEntries
+    ? existingEntries.filter((entry) => {
+        const state = entry.dynamicState && typeof entry.dynamicState === "object" ? entry.dynamicState : {};
+        const isLocked = entry.locked === true || entry.locked === "true";
+        return (
+          !isLocked &&
+          state.source === GAME_LOREBOOK_KEEPER_SOURCE_ID &&
+          Number(state.sessionNumber) === args.sessionNumber &&
+          !newHashes.has(typeof state.contentHash === "string" ? state.contentHash : "")
+        );
+      })
+    : [];
+  const staleSessionEntryIds = new Set(staleSessionEntries.map((entry) => entry.id));
+  const refreshedEntries = existingEntries.filter((entry) => !staleSessionEntryIds.has(entry.id));
   const usedNames = new Set(
     refreshedEntries.map((entry) => entry.name?.trim().toLowerCase()).filter((name): name is string => !!name),
   );
   const existingHashes = new Set(
-    existingEntries
+    refreshedEntries
       .map((entry) => entry.dynamicState?.contentHash)
       .filter((hash): hash is string => typeof hash === "string" && hash.length > 0),
   );
@@ -4959,6 +5003,10 @@ export async function createGameLorebookKeeperEntries(args: {
     createdCount += 1;
   }
 
+  for (const entry of staleSessionEntries) {
+    await args.lorebooksStore.removeEntry(entry.id);
+  }
+
   return createdCount;
 }
 
@@ -4995,6 +5043,7 @@ async function performGameLorebookKeeperAfterConclusion(args: {
   let processedMessages = 0;
   let sourceMessageIds: string[] = [];
   let sourceHash = "";
+  let failedRawJson: string | undefined;
 
   try {
     const lorebooksStore = createLorebooksStorage(args.app.db);
@@ -5137,8 +5186,15 @@ async function performGameLorebookKeeperAfterConclusion(args: {
             `KEEPER_OUTPUT_INCOMPLETE: batch ${index + 1}/${total} finished with ${result.finishReason}.`,
           );
         const extraction = extractLeadingThinkingBlocks(result.content ?? "", generationParameters?.customThinkingTags);
-        const parsed = parseJSON(extraction.content) as Record<string, unknown>;
-        validateGameLorebookKeeperEntryEnvelope(parsed);
+        let parsed: Record<string, unknown>;
+        try {
+          parsed = parseJSON(extraction.content) as Record<string, unknown>;
+          validateGameLorebookKeeperEntryEnvelope(parsed);
+        } catch (parseErr) {
+          // Only a single-batch run can be repaired by hand: apply-json replaces the whole session set.
+          if (total === 1) failedRawJson = extraction.content;
+          throw parseErr;
+        }
         const batchSourceMessageIds = Array.from(new Set(batch.sourceRefs.map((ref) => ref.messageId)));
         return normalizeGameLorebookKeeperEntries(parsed).map((entry) => ({
           ...entry,
@@ -5257,7 +5313,7 @@ async function performGameLorebookKeeperAfterConclusion(args: {
       },
     });
     logger.warn(err, "[game/lorebook-keeper] Failed to update game lorebook for chat %s", args.chatId);
-    return { status: "failed", lorebookId, error };
+    return { status: "failed", lorebookId, error, ...(failedRawJson ? { rawJson: failedRawJson } : {}) };
   }
 }
 
@@ -7278,6 +7334,25 @@ export function buildCanonicalPartySpeakerPublicCard(fields: {
     .join("\n");
 }
 
+/**
+ * Verified memory for the "Previously on" recap, read as the new session (which projects every earlier session).
+ * The recap still works without it: a memory failure only costs the fact check.
+ */
+async function readRecapMemory(db: DB, chatId: string, focusTexts: string[]): Promise<string | null> {
+  try {
+    const memory = await buildCampaignMemoryContextFromStorage(db, {
+      chatId,
+      audience: { kind: "gm" },
+      maxCharacters: 5_000,
+      focusText: focusTexts.filter(Boolean).join("\n"),
+    });
+    return memory.text.trim() || null;
+  } catch (error) {
+    logger.warn(error, "[game/session/start] Campaign memory unavailable for the recap");
+    return null;
+  }
+}
+
 export function resolveCanonicalPartyMemoryEntity(
   entities: readonly CampaignMemoryEntity[],
   chatId: string,
@@ -7587,6 +7662,15 @@ export async function gameRoutes(app: FastifyInstance) {
       config: await continuityConfigWithOwnership(req.params.chatId, chat.metadata),
       counts,
       verifiedThroughMessageId: state.verifiedThroughMessageId,
+      // When the watermark message was written, so the panel can say "checked up to Tuesday 14:02".
+      verifiedThroughAt: state.verifiedThroughMessageId
+        ? ((await createChatsStorage(app.db).getMessage(state.verifiedThroughMessageId).catch(() => null))
+            ?.createdAt ?? null)
+        : null,
+      // A usable extraction and review connection; without one the queue cannot run for this chat.
+      connectionAvailable: await readContinuityConfig(app.db, req.params.chatId, { allowHistoricalBackfill: true })
+        .then(() => true)
+        .catch(() => false),
       summaryRefreshes,
       gaps: state.gaps,
       batches: batches.map((batch) => ({
@@ -7706,6 +7790,12 @@ export async function gameRoutes(app: FastifyInstance) {
           return reply
             .status(409)
             .send({ code: "CONTINUITY_BUSY", error: "This continuity batch is already running or queued." });
+        }
+        if (error instanceof Error && error.message === "CONTINUITY_BACKFILL_RERUN_REQUIRED") {
+          return reply.status(409).send({
+            code: "CONTINUITY_BACKFILL_RERUN_REQUIRED",
+            error: "This batch belongs to a historical backfill. Retry or re-run the backfill from its panel.",
+          });
         }
         throw error;
       }
@@ -9360,6 +9450,10 @@ export async function gameRoutes(app: FastifyInstance) {
                 summaries,
                 latestSessionEndingBeat,
                 carriedSetupConfig?.rating === "nsfw" ? "nsfw" : "sfw",
+                await readRecapMemory(app.db, newChat.id, [
+                  summaries.at(-1)?.resumePoint ?? "",
+                  latestSessionEndingBeat ?? "",
+                ]),
               ),
             },
             { role: "user", content: "Generate the session recap." },
@@ -9372,7 +9466,7 @@ export async function gameRoutes(app: FastifyInstance) {
               conn.model,
               {
                 temperature: 0.45,
-                signal: createResponseAbortSignal(reply, GAME_GENERATION_TIMEOUT_MS, "Game session recap", {
+                signal: createResponseAbortSignal(reply, GAME_SESSION_RECAP_TIMEOUT_MS, "Game session recap", {
                   abortOnClose: false,
                 }),
               },
@@ -10991,7 +11085,7 @@ export async function gameRoutes(app: FastifyInstance) {
       } else {
         const gameNpcs = Array.isArray(meta.gameNpcs) ? (meta.gameNpcs as GameNpc[]) : [];
         const npc =
-          gameNpcs.find((candidate) => buildPartyNpcId(candidate.name) === input.characterId) ??
+          findGameNpcByNameDerivedId(input.characterId, gameNpcs, (candidate) => candidate.name) ??
           findGameNpcByName(gameNpcs, requestedName);
         if (npc) {
           targetName = npc.name;
@@ -11016,10 +11110,8 @@ export async function gameRoutes(app: FastifyInstance) {
     const partyNames: string[] = [];
     for (const partyId of partyIds) {
       if (isPartyNpcId(partyId)) {
-        const npc = gameNpcs.find((candidate) => buildPartyNpcId(candidate.name) === partyId);
-        const card = currentCards.find(
-          (candidate) => typeof candidate.name === "string" && buildPartyNpcId(candidate.name) === partyId,
-        );
+        const npc = findGameNpcByNameDerivedId(partyId, gameNpcs, (candidate) => candidate.name);
+        const card = findGameNpcByNameDerivedId(partyId, currentCards, (candidate) => candidate.name);
         const name = npc?.name ?? (typeof card?.name === "string" ? card.name.trim() : "");
         if (name) partyNames.push(name);
         continue;
@@ -11275,7 +11367,10 @@ export async function gameRoutes(app: FastifyInstance) {
     const recruitId = recruit ? recruit.row.id : buildPartyNpcId(npcRecruit!.name);
     const recruitName = recruit ? recruit.name : npcRecruit!.name;
     const existingCardIndex = findExistingGameCharacterCardIndex(currentCards, recruitName);
-    const alreadyInParty = currentPartyIds.includes(recruitId);
+    const alreadyInParty = partyIdsIncludeRecruit(currentPartyIds, recruitId, recruitName, [
+      ...(Array.isArray(meta.gameNpcs) ? (meta.gameNpcs as GameNpc[]) : []).map((npc) => npc.name),
+      ...currentCards.map((card) => card.name as string),
+    ]);
     if (alreadyInParty && existingCardIndex >= 0) {
       return {
         sessionChat: chat,
@@ -11354,12 +11449,11 @@ export async function gameRoutes(app: FastifyInstance) {
             const characterName = characterById.get(id);
             if (characterName) return characterName;
             if (!isPartyNpcId(id)) return null;
-            const npc = gameNpcs.find((candidate) => buildPartyNpcId(candidate.name) === id);
+            const npc = findGameNpcByNameDerivedId(id, gameNpcs, (candidate) => candidate.name);
             if (npc?.name) return npc.name;
-            const card = currentCards.find((candidate) => {
-              const cardName = typeof candidate.name === "string" ? candidate.name.trim() : "";
-              return cardName && buildPartyNpcId(cardName) === id;
-            });
+            const card = findGameNpcByNameDerivedId(id, currentCards, (candidate) =>
+              typeof candidate.name === "string" ? candidate.name.trim() : "",
+            );
             return typeof card?.name === "string" ? card.name.trim() : null;
           })
           .filter((name): name is string => Boolean(name));
@@ -11523,11 +11617,10 @@ export async function gameRoutes(app: FastifyInstance) {
     });
     for (const id of currentPartyIds) {
       if (!isPartyNpcId(id)) continue;
-      const npc = gameNpcs.find((candidate) => buildPartyNpcId(candidate.name) === id);
-      const card = currentCards.find((candidate) => {
-        const cardName = typeof candidate.name === "string" ? candidate.name.trim() : "";
-        return cardName && buildPartyNpcId(cardName) === id;
-      });
+      const npc = findGameNpcByNameDerivedId(id, gameNpcs, (candidate) => candidate.name);
+      const card = findGameNpcByNameDerivedId(id, currentCards, (candidate) =>
+        typeof candidate.name === "string" ? candidate.name.trim() : "",
+      );
       const name = npc?.name ?? (typeof card?.name === "string" ? card.name.trim() : "");
       if (!name) continue;
       currentParty.push({ id, row: null as never, name, lookup: normalizeCharacterLookupName(name) });
@@ -13984,8 +14077,8 @@ export async function gameRoutes(app: FastifyInstance) {
     reason: string;
     entityId?: string;
   }> {
-    const memoryStorage = createCampaignMemoryStorage(db);
-    const entities = await memoryStorage.listEntities({ chatId });
+    // The campaign projection: in a new session the character's memory still lives in earlier session chats.
+    const entities = (await readCampaignMemoryProjection(db, chatId)).entities;
     const resolvedOwner = resolveCanonicalPartyMemoryEntity(entities, chatId, canonicalCharacterId);
     if (!resolvedOwner.entity) {
       return {
@@ -14138,7 +14231,7 @@ export async function gameRoutes(app: FastifyInstance) {
 
     for (const npcId of partyCharIds) {
       if (!isPartyNpcId(npcId)) continue;
-      const npc = gameNpcs.find((candidate) => buildPartyNpcId(candidate.name) === npcId);
+      const npc = findGameNpcByNameDerivedId(npcId, gameNpcs, (candidate) => candidate.name);
       if (!npc) continue;
       const card = [
         `Name: ${npc.name}`,
@@ -14928,7 +15021,8 @@ export async function gameRoutes(app: FastifyInstance) {
     profileNpcName: z.string().trim().min(2).max(120).optional(),
     backfill: z.boolean().default(false),
     backfillBatch: z.boolean().default(false),
-    backfillProcessedNpcIds: z.array(z.string().min(1).max(200)).max(512).default([]),
+    // Matches the backfill runner ceiling: 5000 passes x 4 targets per batch.
+    backfillProcessedNpcIds: z.array(z.string().min(1).max(200)).max(20_000).default([]),
     debugMode: z.boolean().default(false),
   });
 
@@ -15045,7 +15139,7 @@ export async function gameRoutes(app: FastifyInstance) {
               gameNpcBackfill: {
                 status,
                 pass,
-                processedNpcIds: [...processed].slice(-512),
+                processedNpcIds: [...processed],
                 skippedReviewTargets: checkpointSkippedReviewTargets,
                 sourceFingerprint,
                 updatedAt: new Date().toISOString(),
@@ -15485,7 +15579,12 @@ export async function gameRoutes(app: FastifyInstance) {
       let backfillRemainingNpcIds: string[] = [];
       const backfillSkippedReviewTargets: Array<{ npcId: string; name: string; error: string }> = [];
       const profileAnchor = latestNarration ?? historicalSourceMessages.at(-1);
-      if (biographer?.enabled === "true" && profileAnchor && (hasExplicitProfileTarget || autoProfileEnabled)) {
+      // A transcript backfill is an explicit request, so it profiles even when the agent is not active in this chat.
+      if (
+        biographer?.enabled === "true" &&
+        profileAnchor &&
+        (hasExplicitProfileTarget || autoProfileEnabled || input.backfillBatch)
+      ) {
         try {
           const settings = parseSettingsRecord(biographer.settings);
           let prompt = resolveAgentPromptTemplate({
@@ -15557,6 +15656,7 @@ export async function gameRoutes(app: FastifyInstance) {
               const card = saved.find(
                 ({ row, data }) =>
                   row.id === candidate.characterId ||
+                  (!!candidate.presentCharacterId && row.id === candidate.presentCharacterId) ||
                   (isAutoCreatedGameNpcCharacterData(data, gameId) &&
                     parseSettingsRecord(parseSettingsRecord(parseSettingsRecord(data.extensions).marinara).gameNpc)
                       .npcId === candidate.npcId),
@@ -16368,6 +16468,20 @@ export async function gameRoutes(app: FastifyInstance) {
         plannedStoryboard: { keyframes: [] },
         plannerWarning: null,
       });
+      // A deliberate skip must not leave the placeholder row in "planning", where it would later be
+      // marked failed as stale and block automatic runs for this turn.
+      const skipStoryboardNoVisualBeats = async () => {
+        if (planningStoryboardId) {
+          const id = planningStoryboardId;
+          planningStoryboardId = null;
+          await storyboards
+            .remove(id)
+            .catch((err) =>
+              logger.warn(err, "[game/storyboard] Could not remove planning row after no_visual_beats skip"),
+            );
+        }
+        return skipStoryboard("no_visual_beats");
+      };
       const allMessages = await chats.listMessages(input.chatId);
       if (ownerMode === "game") {
         const messageIndex = allMessages.findIndex((candidate) => candidate.id === input.messageId);
@@ -16534,10 +16648,19 @@ export async function gameRoutes(app: FastifyInstance) {
           { exactAnchor: { messageId: input.messageId, swipeIndex: input.swipeIndex } },
           meta,
         )) ?? (await resolveOwnerSpatialProjection(input.chatId, { throughMessageId: input.messageId }, meta));
+      const storyboardSpatialProjectionForOwner =
+        storyboardSpatialProjection?.ownerMode === ownerMode ? storyboardSpatialProjection : null;
+      // Fail fast, before the planning row or any provider call (previews included), when the location
+      // reference cannot be used.
+      if (storyboardSpatialProjectionForOwner && storyboardReferenceImageLimit < 1) {
+        return reply.status(400).send({
+          error: "Location-consistent storyboards require an image connection with reference images enabled.",
+        });
+      }
       let spatialLocationReferenceImage = await resolveSpatialLocationReferenceImage({
         db: app.db,
         chatId: input.chatId,
-        projection: storyboardSpatialProjection?.ownerMode === ownerMode ? storyboardSpatialProjection : null,
+        projection: storyboardSpatialProjectionForOwner,
       });
       const useNovelAiCharacterPrompts =
         ownerMode === "game"
@@ -16888,7 +17011,7 @@ export async function gameRoutes(app: FastifyInstance) {
       } else if (input.plannedStoryboard !== undefined) {
         const reviewedStoryboard = resolveStoryboardReviewPlanEnvelope(input.plannedStoryboard);
         if (!reviewedStoryboard.plannerError && storyboardPlanHasNoVisualBeats(reviewedStoryboard.plan)) {
-          return skipStoryboard("no_visual_beats");
+          return await skipStoryboardNoVisualBeats();
         }
         illustratorErrorMessage = reviewedStoryboard.plannerError;
         const reviewedPlanHasRenderableKeyframe = storyboardPlanHasRenderableKeyframe(reviewedStoryboard.plan);
@@ -16908,7 +17031,7 @@ export async function gameRoutes(app: FastifyInstance) {
         }
       } else if (combinedStoryboardPlan !== undefined) {
         const parsedPlan = combinedStoryboardPlan;
-        if (storyboardPlanHasNoVisualBeats(parsedPlan)) return skipStoryboard("no_visual_beats");
+        if (storyboardPlanHasNoVisualBeats(parsedPlan)) return await skipStoryboardNoVisualBeats();
         if (!storyboardPlanHasRenderableKeyframe(parsedPlan)) {
           throw new Error("Storyboard Illustrator returned no usable keyframes");
         }
@@ -16976,7 +17099,7 @@ export async function gameRoutes(app: FastifyInstance) {
             logger.warn(err, "[game/storyboard] Storyboard planner transport ended early; retrying once");
             parsedPlan = await runPlannerAttempt();
           }
-          if (storyboardPlanHasNoVisualBeats(parsedPlan)) return skipStoryboard("no_visual_beats");
+          if (storyboardPlanHasNoVisualBeats(parsedPlan)) return await skipStoryboardNoVisualBeats();
           plan = sanitizeStoryboardPlan(parsedPlan, storyboardPlanSanitizerOptions);
         } catch (err) {
           if (storyboardAbortSignal.aborted) {
@@ -17072,21 +17195,18 @@ export async function gameRoutes(app: FastifyInstance) {
       const genre = (setupCfg?.genre as string) || "";
       const setting = (setupCfg?.setting as string) || "";
       const artStyle = resolveGameSetupArtStylePrompt(setupCfg);
-      if (storyboardSpatialProjection && storyboardReferenceImageLimit < 1) {
-        throw new Error("Location-consistent storyboards require an image connection with reference images enabled.");
-      }
-      if (!input.previewOnly && storyboardSpatialProjection && storyboardReferenceImageLimit > 0) {
+      if (!input.previewOnly && storyboardSpatialProjectionForOwner && storyboardReferenceImageLimit > 0) {
         spatialLocationReferenceImage = await progress.time("Location reference", () =>
           prepareGameLocationReference({
             app,
             chatId: input.chatId,
             connectionId: chat.connectionId,
             meta,
-            projection: storyboardSpatialProjection,
+            projection: storyboardSpatialProjectionForOwner,
             image: {
               chatId: input.chatId,
-              locationSlug: storyboardSpatialProjection.currentLocationId,
-              sceneDescription: storyboardSpatialProjection.description,
+              locationSlug: storyboardSpatialProjectionForOwner.currentLocationId,
+              sceneDescription: storyboardSpatialProjectionForOwner.description,
               genre,
               setting,
               artStyle,
@@ -17715,7 +17835,8 @@ export async function gameRoutes(app: FastifyInstance) {
         requestedFrameWorkerLimit,
         !videoRuntime,
       );
-      const frameWorkerCount = Math.min(frameWorkerLimit, frameRows.length);
+      // The ChatGPT burst in the helper ignores the requested limit, so re-apply Sequential Agents here.
+      const frameWorkerCount = Math.min(meta.gameSequentialAgents === true ? 1 : frameWorkerLimit, frameRows.length);
       const initialStoryboard = await serializeGameTurnStoryboard({
         storyboards,
         gallery,
@@ -18749,8 +18870,26 @@ export async function gameRoutes(app: FastifyInstance) {
         const allMsgs = await chats.listMessages(input.chatId);
         const approxTurnNumber = Math.max(1, allMsgs.filter((message) => message.role === "user").length + 1);
         const sessionNumber = currentGameSessionNumber(meta);
+        const referenceImageLimit = resolveImageReferenceCollectionLimit(
+          resolveSceneIllustrationReferenceImageLimit({
+            imgSource,
+            imgModel,
+            imgBaseUrl,
+            imgService: imgServiceHint,
+            imgComfyWorkflow,
+            imgMaxImageReferences,
+          }),
+          imgFallback,
+        );
+        const ownerSpatialProjection = await resolveOwnerSpatialProjection(input.chatId, {}, meta);
         if (input.forceIllustration !== true && !isIllustrationAllowed(meta, approxTurnNumber, sessionNumber)) {
           logger.info("[game/generate-assets] illustration skipped: cooldown active");
+        } else if (ownerSpatialProjection?.ownerMode === "game" && referenceImageLimit < 1) {
+          // Skip only the illustration so the background and NPC avatar results still reach the client.
+          logger.warn(
+            "[game/generate-assets] illustration skipped: location-consistent illustrations require an image connection with reference images enabled (chat %s)",
+            input.chatId,
+          );
         } else {
           const charStore = createCharactersStorage(app.db);
           const allChars = await charStore.list();
@@ -18793,23 +18932,6 @@ export async function gameRoutes(app: FastifyInstance) {
             signal: assetAbortSignal,
           });
           const promptOverride = promptOverrideById.get(gameImagePromptReviewId("illustration", illustrationReviewKey));
-          const referenceImageLimit = resolveImageReferenceCollectionLimit(
-            resolveSceneIllustrationReferenceImageLimit({
-              imgSource,
-              imgModel,
-              imgBaseUrl,
-              imgService: imgServiceHint,
-              imgComfyWorkflow,
-              imgMaxImageReferences,
-            }),
-            imgFallback,
-          );
-          const ownerSpatialProjection = await resolveOwnerSpatialProjection(input.chatId, {}, meta);
-          if (ownerSpatialProjection && referenceImageLimit < 1) {
-            throw new Error(
-              "Location-consistent illustrations require an image connection with reference images enabled.",
-            );
-          }
           const spatialLocationReferenceImage = await prepareGameLocationReference({
             app,
             chatId: input.chatId,

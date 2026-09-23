@@ -106,7 +106,7 @@ try {
   assert.ok(header > 1, "a dedicated [current_state] section is present");
   assert.equal(
     lines[header + 1],
-    `char-mira.location = the capital (since ${order(1)}, source event event-mira)`,
+    "Mira: location = the capital",
     "the current-state line names the new location, not Dunmere",
   );
   const firstFact = lines.findIndex((line) => line.startsWith("[fact "));
@@ -119,14 +119,14 @@ try {
 
   // 2. Character audience: only its own state, state of entities its knowledge names, and world-scope state.
   const mira = await buildCampaignMemoryContextFromStorage(db, { chatId, audience: { kind: "character", entityId: "char-mira" }, maxCharacters: 6_000 });
-  assert.match(mira.text, /^\[current_state\]\n(?:.*\n)?char-mira\.location = the capital /u, "a character knows its own current state");
-  assert.match(mira.text, /lore-weather\.sky = /u, "world-scope state reaches every character");
-  assert.doesNotMatch(mira.text, /char-stranger|hidden camp/u, "Mira has no knowledge of the stranger");
+  assert.match(mira.text, /^\[current_state\]\n(?:.*\n)?Mira: location = the capital$/mu, "a character knows its own current state");
+  assert.match(mira.text, /Weather: sky = storm/u, "world-scope state reaches every character");
+  assert.doesNotMatch(mira.text, /Stranger|hidden camp/u, "Mira has no knowledge of the stranger");
   assert.equal(mira.exclusions.find((item) => item.id === "state-stranger")?.reason, "current state entity is not present, referenced, or known");
   assert.equal(mira.currentStateCount, 2);
   const scout = await buildCampaignMemoryContextFromStorage(db, { chatId, audience: { kind: "character", entityId: "char-scout" }, maxCharacters: 6_000 });
-  assert.match(scout.text, /char-stranger\.location = the hidden camp /u, "knowledge about an entity unlocks its current state");
-  assert.doesNotMatch(scout.text, /char-mira\.location/u, "Scout has no knowledge of Mira");
+  assert.match(scout.text, /Stranger: location = the hidden camp/u, "knowledge about an entity unlocks its current state");
+  assert.doesNotMatch(scout.text, /Mira: location/u, "Scout has no knowledge of Mira");
   assert.ok(scout.text.indexOf("[current_state]") < scout.text.indexOf("[knowledge "), "current state precedes knowledge lines");
 
   // 3. Budget: the header is charged with its first row, so a tiny budget drops the section rather than overflowing.
