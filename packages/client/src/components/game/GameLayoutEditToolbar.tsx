@@ -180,10 +180,16 @@ export function GameLayoutEditToolbar({ editing, onDone, onLayoutApplied }: Prop
     setHost(surface?.current ?? null);
   }, [editing, surface]);
   useEffect(() => {
-    if (!scopeId) return;
-    if (editing) beginLayoutEditSession(scopeId);
-    else endLayoutEditSession(scopeId);
+    if (!scopeId || !editing) return;
+    beginLayoutEditSession(scopeId);
+    // Ending on cleanup covers a chat switch while editing too: the old scope's session
+    // must end, or returning to it later keeps a stale undo baseline.
+    return () => endLayoutEditSession(scopeId);
   }, [editing, scopeId]);
+  useEffect(() => {
+    // Below the desktop width panels are inline and there is nothing to edit.
+    if (editing && !desktop) onDone();
+  }, [desktop, editing, onDone]);
   if (!context || !editing || !desktop || !host || !scopeId) return null;
   return (
     <>

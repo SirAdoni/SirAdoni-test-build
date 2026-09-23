@@ -235,7 +235,7 @@ export function GameStoryboardInlineViewer({
                 onPlay={() => onVideoPlayingChange(frame.video!.id, true)}
                 onPause={() => onVideoPlayingChange(frame.video!.id, false)}
                 onEnded={() => onVideoPlayingChange(frame.video!.id, false)}
-                className="aspect-video w-full cursor-auto touch-auto bg-black object-contain max-lg:max-h-[24dvh] lg:max-h-[calc(var(--game-panel-box-max-height,100dvh)-150px)] group-data-[game-panel-fill=true]/panelbox:aspect-auto group-data-[game-panel-fill=true]/panelbox:min-h-0 group-data-[game-panel-fill=true]/panelbox:flex-1! group-data-[game-panel-fill=true]/panelbox:lg:max-h-none"
+                className="aspect-video w-full cursor-auto touch-auto bg-black object-contain max-lg:max-h-[24dvh] lg:max-h-[calc(var(--game-panel-box-max-height,100dvh)-192px)] group-data-[game-panel-fill=true]/panelbox:aspect-auto group-data-[game-panel-fill=true]/panelbox:min-h-0 group-data-[game-panel-fill=true]/panelbox:flex-1! group-data-[game-panel-fill=true]/panelbox:lg:max-h-none"
                 data-storyboard-viewer-no-drag
               />
             ) : frame?.image ? (
@@ -256,7 +256,7 @@ export function GameStoryboardInlineViewer({
                         index: frame.index + 1,
                       })
                     }
-                    className="aspect-video w-full bg-black object-contain max-lg:max-h-[24dvh] lg:max-h-[calc(var(--game-panel-box-max-height,100dvh)-150px)] group-data-[game-panel-fill=true]/panelbox:aspect-auto group-data-[game-panel-fill=true]/panelbox:h-full group-data-[game-panel-fill=true]/panelbox:min-h-0 group-data-[game-panel-fill=true]/panelbox:flex-1! group-data-[game-panel-fill=true]/panelbox:lg:max-h-none"
+                    className="aspect-video w-full bg-black object-contain max-lg:max-h-[24dvh] lg:max-h-[calc(var(--game-panel-box-max-height,100dvh)-192px)] group-data-[game-panel-fill=true]/panelbox:aspect-auto group-data-[game-panel-fill=true]/panelbox:h-full group-data-[game-panel-fill=true]/panelbox:min-h-0 group-data-[game-panel-fill=true]/panelbox:flex-1! group-data-[game-panel-fill=true]/panelbox:lg:max-h-none"
                     draggable={false}
                   />
                 </button>
@@ -269,7 +269,7 @@ export function GameStoryboardInlineViewer({
                       index: frame.index + 1,
                     })
                   }
-                  className="aspect-video w-full bg-black object-contain max-lg:max-h-[24dvh] lg:max-h-[calc(var(--game-panel-box-max-height,100dvh)-150px)] group-data-[game-panel-fill=true]/panelbox:aspect-auto group-data-[game-panel-fill=true]/panelbox:h-full group-data-[game-panel-fill=true]/panelbox:min-h-0 group-data-[game-panel-fill=true]/panelbox:flex-1! group-data-[game-panel-fill=true]/panelbox:lg:max-h-none"
+                  className="aspect-video w-full bg-black object-contain max-lg:max-h-[24dvh] lg:max-h-[calc(var(--game-panel-box-max-height,100dvh)-192px)] group-data-[game-panel-fill=true]/panelbox:aspect-auto group-data-[game-panel-fill=true]/panelbox:h-full group-data-[game-panel-fill=true]/panelbox:min-h-0 group-data-[game-panel-fill=true]/panelbox:flex-1! group-data-[game-panel-fill=true]/panelbox:lg:max-h-none"
                   draggable={false}
                 />
               )

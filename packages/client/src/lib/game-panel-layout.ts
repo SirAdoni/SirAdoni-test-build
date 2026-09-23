@@ -594,12 +594,39 @@ export function beginRegisteredPanelResize(
   id: string,
 ): { targets: SnapTargets; bounds: { width: number; height: number }; obstacles: LayoutRect[] } {
   const bounds = { width: surface.clientWidth, height: surface.clientHeight };
-  const others = [...(registries.get(surface)?.values() ?? [])]
-    .filter((panel) => panel.id !== id)
+  const registry = registries.get(surface);
+  const stackGroup = registry?.get(id)?.stackGroup ?? null;
+  const others = [...(registry?.values() ?? [])]
+    // Stack siblings reflow around a resized member, so they never block its edges.
+    .filter((panel) => panel.id !== id && (!stackGroup || panel.stackGroup !== stackGroup))
     .map(measuredRect)
     .filter((rect) => rect.width > 0 && rect.height > 0);
   return { targets: buildSnapTargets(bounds, others), bounds, obstacles: others };
 }
+/** Dispatched on the surface after panels may have moved (a resolver pass or a committed edit). */
+export const GAME_PANEL_LAYOUT_PASS_EVENT = "marinara-game-panel-layout-pass";
+
+/**
+ * True when another panel sits within `clearance` px above the given span of this panel,
+ * so a name tag drawn above the top border would cover it.
+ */
+export function gamePanelHasNeighbourAbove(
+  surface: HTMLElement,
+  id: string,
+  span: { x: number; y: number; width: number },
+  clearance: number,
+): boolean {
+  for (const panel of registries.get(surface)?.values() ?? []) {
+    if (panel.id === id) continue;
+    const other = measuredRect(panel);
+    if (other.width <= 0 || other.height <= 0) continue;
+    if (other.x >= span.x + span.width || other.x + other.width <= span.x) continue;
+    const bottom = other.y + other.height;
+    if (bottom > span.y - clearance && other.y < span.y) return true;
+  }
+  return false;
+}
+
 export const GAME_PANEL_STACK_CHANGE_EVENT = "marinara-game-panel-stack-change";
 const STACK_STORAGE_PREFIX = "marinara-game-panel-stacks:";
 
@@ -812,6 +839,7 @@ export function scheduleGamePanelLayout(surface: HTMLElement): void {
     if (overflow) {
       surface.dataset.gamePanelOverflow = "true";
     } else delete surface.dataset.gamePanelOverflow;
+    surface.dispatchEvent(new Event(GAME_PANEL_LAYOUT_PASS_EVENT));
   });
   scheduled.set(surface, frame);
 }

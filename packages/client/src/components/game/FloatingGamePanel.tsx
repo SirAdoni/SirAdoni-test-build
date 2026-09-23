@@ -13,7 +13,7 @@ import {
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import { motion, useMotionValue, useTransform } from "framer-motion";
+import { motion, useMotionValue } from "framer-motion";
 import { Bookmark, EyeOff, GripVertical, Lock, LockOpen, Ellipsis, Pin, RotateCcw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useDraggablePanel } from "./DraggablePanel";
@@ -27,18 +27,21 @@ import {
 import {
   GAME_PANEL_HUD_LAYER,
   GAME_PANEL_INTERACTIVE_LAYER,
+  GAME_PANEL_LAYOUT_PASS_EVENT,
   GAME_PANEL_STACK_CHANGE_EVENT,
   arrangeRegisteredPanelStack,
   beginRegisteredPanelDrag,
   beginRegisteredPanelResize,
   commitRegisteredPanelGroup,
   constrainRegisteredPanelDrag,
+  gamePanelHasNeighbourAbove,
   readGamePanelStacks,
   registeredGamePanelOptions,
   registerGamePanel,
   scheduleGamePanelLayout,
   setGamePanelLayoutSuspended,
   snapPanelDragPosition,
+  subscribeGamePanelRegistry,
   writeGamePanelStackMembership,
   type PanelDragSession,
 } from "../../lib/game-panel-layout";
@@ -110,6 +113,8 @@ const DRAG_THRESHOLD_PX = 3;
 const SETTLE_DURATION_MS = 170;
 const EDIT_ACCENT = "var(--marinara-chat-chrome-accent, var(--primary))";
 const OVERLAP_COLOR = "#ef4444";
+/** How far the edit name tag rises above the panel's top border. */
+const NAME_TAG_OUTSET = 11;
 
 const KNOWN_PANEL_LABELS: Record<string, string> = {
   narration: "ui.game.layoutEditor.panelNarration",
@@ -768,13 +773,21 @@ function FloatingFrame({
     }
     if (surface.current) scheduleGamePanelLayout(surface.current);
   }, [allowTuck, surface, tuckEdge, tuckEdgeKey, tuckKey, tucked]);
+  // Each real value change opens a fresh five-second reveal window.
+  const [revealWindow, setRevealWindow] = useState(0);
   useEffect(() => {
     if (!allowTuck || revealOnValueChangeKey == null) return;
     if (previousValueKey.current === revealOnValueChangeKey) return;
     previousValueKey.current = revealOnValueChangeKey;
     if (!tucked) return;
     setTemporaryReveal(true);
+    setRevealWindow((current) => current + 1);
     if (tuckEdge !== "top") setTuckRevealAnchorY((current) => current ?? y.get() + TUCK_TAB_HEIGHT / 2);
+  }, [allowTuck, revealOnValueChangeKey, tuckEdge, tucked, y]);
+  useEffect(() => {
+    // The close timer belongs to the reveal, not to the effect that opened it: changing the
+    // tuck edge mid-reveal used to clear the timer and leave the widget open for good.
+    if (!temporaryReveal) return;
     let timer = window.setTimeout(closeAfterInteraction, 5000);
     function closeAfterInteraction() {
       if (interactionRevealRef.current || focusedRef.current) {
@@ -784,13 +797,43 @@ function FloatingFrame({
       }
     }
     return () => window.clearTimeout(timer);
-  }, [allowTuck, revealOnValueChangeKey, tuckEdge, tucked, y]);
-  // The edit chip sits just above the panel, or inside its top edge when the
-  // panel touches the top of the surface.
-  // The chip sits on the top border like a legend, covering only the gap above
-  // the panel; at the very top of the surface it tucks inside the panel.
-  const chipTop = useTransform(y, (value) => (value < 12 ? 4 : -11));
-  const chipLeft = useTransform(y, (value) => (value < 12 ? 6 : 10));
+  }, [revealWindow, temporaryReveal]);
+  // The name tag sits on the top border like a legend, covering only the gap above the
+  // panel. At the top of the surface, or when another panel sits right above (tightly
+  // stacked panels), it moves inside the panel's top edge instead of covering the neighbour.
+  const [tagInside, setTagInside] = useState(false);
+  useEffect(() => {
+    const host = surface.current;
+    if (!layoutEditing || !host) return;
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      const element = panel.current;
+      if (!element) return;
+      const top = y.get();
+      setTagInside(
+        top < 12 ||
+          gamePanelHasNeighbourAbove(host, id, { x: x.get(), y: top, width: element.offsetWidth }, NAME_TAG_OUTSET + 1),
+      );
+    };
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(measure);
+    };
+    schedule();
+    const stopX = x.on("change", schedule);
+    const stopY = y.on("change", schedule);
+    const unsubscribe = subscribeGamePanelRegistry(host, schedule);
+    host.addEventListener(GAME_PANEL_LAYOUT_PASS_EVENT, schedule);
+    return () => {
+      cancelAnimationFrame(frame);
+      stopX();
+      stopY();
+      unsubscribe();
+      host.removeEventListener(GAME_PANEL_LAYOUT_PASS_EVENT, schedule);
+    };
+  }, [id, layoutEditing, surface, x, y]);
+  const chipTop = tagInside ? 4 : -NAME_TAG_OUTSET;
+  const chipLeft = tagInside ? 6 : 10;
   useLayoutEffect(() => setMounted(true), []);
   useLayoutEffect(() => {
     const host = surface.current;
@@ -858,6 +901,7 @@ function FloatingFrame({
   const moveHandle = useRef<HTMLButtonElement>(null);
   const dragState = useRef<{
     pointerId: number;
+    element: HTMLElement;
     startX: number;
     startY: number;
     moved: boolean;
@@ -865,21 +909,71 @@ function FloatingFrame({
   } | null>(null);
   const resizeState = useRef<{
     pointerId: number;
+    element: HTMLElement;
     handle: ResizeHandle;
     startX: number;
     startY: number;
     origin: LayoutRect;
+    sizeBefore: typeof size;
+    growthBefore: typeof growth;
     targets: SnapTargets;
     bounds: { width: number; height: number };
     obstacles: LayoutRect[];
     last: LayoutRect;
   } | null>(null);
+  /** Abandon a drag or resize in progress: everything returns to where it started. */
+  const cancelInteractionRef = useRef<() => void>(() => {});
+  cancelInteractionRef.current = () => {
+    const drag = dragState.current;
+    const resize = resizeState.current;
+    if (!drag && !resize) return;
+    dragState.current = null;
+    resizeState.current = null;
+    if (drag) {
+      if (drag.element.hasPointerCapture(drag.pointerId)) drag.element.releasePointerCapture(drag.pointerId);
+      if (drag.moved) drag.session.cancel();
+    }
+    if (resize) {
+      if (resize.element.hasPointerCapture(resize.pointerId)) resize.element.releasePointerCapture(resize.pointerId);
+      x.set(resize.origin.x);
+      y.set(resize.origin.y);
+      setSize(resize.sizeBefore);
+      setGrowth(resize.growthBefore);
+    }
+    endInteraction();
+  };
   useEffect(() => {
     if (layoutEditing) return;
+    // Leaving edit mode mid-gesture removes the drag layer that would receive pointerup.
+    cancelInteractionRef.current();
     setOptionsOpen(false);
     setInteraction(null);
     setSizeBadge(null);
   }, [layoutEditing]);
+  useEffect(() => {
+    if (interaction !== "drag" && interaction !== "resize") return;
+    // Esc cancels the gesture; it must not also leave edit mode.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      cancelInteractionRef.current();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [interaction]);
+  useEffect(() => {
+    const host = surface.current;
+    return () => {
+      // Undo, a saved layout or a chat switch can remount the panel mid-gesture: never leave
+      // the resolver suspended or the guides drawn.
+      if (!dragState.current && !resizeState.current) return;
+      dragState.current = null;
+      resizeState.current = null;
+      setLayoutDragOverlay(null);
+      if (host) setGamePanelLayoutSuspended(host, false);
+    };
+  }, [surface]);
   const setOverlapState = (next: boolean) => {
     if (overlappingRef.current === next) return;
     overlappingRef.current = next;
@@ -890,7 +984,11 @@ function FloatingFrame({
     setOverlapState(false);
     setSizeBadge(null);
     setInteraction(null);
-    if (surface.current) setGamePanelLayoutSuspended(surface.current, false);
+    if (surface.current) {
+      setGamePanelLayoutSuspended(surface.current, false);
+      // Neighbours re-check their name tags against the committed position.
+      surface.current.dispatchEvent(new Event(GAME_PANEL_LAYOUT_PASS_EVENT));
+    }
   };
 
   const startDrag = (event: ReactPointerEvent<HTMLElement>) => {
@@ -906,6 +1004,7 @@ function FloatingFrame({
     event.currentTarget.setPointerCapture(event.pointerId);
     dragState.current = {
       pointerId: event.pointerId,
+      element: event.currentTarget,
       startX: event.clientX,
       startY: event.clientY,
       moved: false,
@@ -1008,10 +1107,13 @@ function FloatingFrame({
     const { targets, bounds, obstacles } = beginRegisteredPanelResize(host, id);
     resizeState.current = {
       pointerId: event.pointerId,
+      element: event.currentTarget,
       handle,
       startX: event.clientX,
       startY: event.clientY,
       origin,
+      sizeBefore: size,
+      growthBefore: growth,
       targets,
       bounds,
       obstacles,
@@ -1630,7 +1732,11 @@ function GamePanelOptions(props: OptionsProps) {
             .filter((option) => option.id !== id && option.id.startsWith("widget:"))
             .map((option) => ({ ...option, group: stackGroups[option.id] ?? option.id }));
           if (stackGroup && !options.some((option) => option.group === stackGroup))
-            options.unshift({ id: `current:${stackGroup}`, label: "This widget stack", group: stackGroup });
+            options.unshift({
+              id: `current:${stackGroup}`,
+              label: t("ui.game.layoutEditor.thisWidgetStack"),
+              group: stackGroup,
+            });
           return options;
         })()
       : [];

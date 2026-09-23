@@ -8599,6 +8599,7 @@
   "ui.game.layoutEditor.showPanel": "Show {{name}}",
   "ui.game.layoutEditor.snapOff": "Snapping off",
   "ui.game.layoutEditor.snapOn": "Snapping on (hold Alt to move freely)",
+  "ui.game.layoutEditor.thisWidgetStack": "This widget stack",
   "ui.game.layoutEditor.title": "Layout",
   "ui.game.layoutEditor.toolbarLabel": "Layout editor",
   "ui.game.layoutEditor.transferHeading": "Share",
