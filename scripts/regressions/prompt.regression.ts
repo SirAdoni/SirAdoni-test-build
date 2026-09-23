@@ -4023,9 +4023,9 @@ const cases: RegressionCase[] = [
   {
     name: "Game Extra Instructions retain system authority without duplicating user-authored text",
     run() {
-      const sentinel = "Liora never waived royal style or ordinary courtesy.";
+      const sentinel = "Ysolde never waived royal style or ordinary courtesy.";
       const messages = [
-        { role: "system" as const, content: "<gm>Base GM prompt</gm>\n\n<lore>Liora waived royal style.</lore>" },
+        { role: "system" as const, content: "<gm>Base GM prompt</gm>\n\n<lore>Ysolde waived royal style.</lore>" },
         { role: "user" as const, content: "Continue." },
       ];
       const authorityPrompt = buildGameSpecialInstructionsPrompt(sentinel);
@@ -4044,15 +4044,15 @@ const cases: RegressionCase[] = [
         gameActiveState: "dialogue",
         sessionNumber: 3,
         map: null,
-        partyNames: ["Princess Liora"],
+        partyNames: ["Princess Ysolde"],
         playerName: "Rowan",
       });
-      assert.doesNotMatch(reminder, /SPECIAL INSTRUCTIONS|Liora never waived royal style/u);
+      assert.doesNotMatch(reminder, /SPECIAL INSTRUCTIONS|Ysolde never waived royal style/u);
       assert.equal(
         (
           [messages[0]!.content, messages[1]!.content, reminder]
             .join("\n")
-            .match(/Liora never waived royal style/gu) ?? []
+            .match(/Ysolde never waived royal style/gu) ?? []
         ).length,
         1,
         "the provider-visible Game prompt must contain user-authored Extra Instructions exactly once",

@@ -35,7 +35,7 @@ try {
         chatId: "s1",
         number: 1,
         name: "Ember Road",
-        playerName: "Lior",
+        playerName: "Tamsin",
         segmentEdits: { "m2:1": { content: "It was *very* late.", speaker: "ignored" }, "m2:2": { speaker: "Mira" } },
         segmentDeletes: ["m2:3"],
         messages: [
@@ -68,7 +68,7 @@ try {
     entries.map((entry) => entry.messageId),
     ["m1", "m2", "m3", "m4"],
   );
-  assert.deepEqual(entries[0]!.lines, [{ kind: "player", speaker: "Lior", text: "I open the gate." }]);
+  assert.deepEqual(entries[0]!.lines, [{ kind: "player", speaker: "Tamsin", text: "I open the gate." }]);
   assert.deepEqual(
     entries[1]!.lines.map((line) => [line.kind, line.speaker, line.text]),
     [
@@ -156,7 +156,7 @@ try {
     createdAt: at(session),
     updatedAt: at(session),
   });
-  await db.insert(schema.personas).values({ id: "persona-1", name: "Lior", createdAt: at(0), updatedAt: at(0) } as never);
+  await db.insert(schema.personas).values({ id: "persona-1", name: "Tamsin", createdAt: at(0), updatedAt: at(0) } as never);
   await db.insert(schema.chats).values([
     chat("c1", 1, { "segmentEdit:c1-m3:0": { content: "Edited." }, "segmentDelete:c1-m3:1": true, other: 1 }),
     chat("c2", 2),
@@ -192,7 +192,7 @@ try {
     "the canonical line, oldest first, without the branch",
   );
   const first = loaded.sessions[0]!;
-  assert.equal(first.playerName, "Lior");
+  assert.equal(first.playerName, "Tamsin");
   assert.deepEqual(
     first.messages.map((item) => [item.id, item.number]),
     [

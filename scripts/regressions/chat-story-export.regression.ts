@@ -47,7 +47,7 @@ try {
   const entries = [
     {
       speakerKey: "user",
-      speaker: "Lior",
+      speaker: "Tamsin",
       role: "user",
       content: "Hello <b>there</b>",
       createdAt: "2026-01-02T10:00:00.000Z",
@@ -67,7 +67,7 @@ try {
 
   const markdown = renderTranscriptMarkdown({ title: "Moon *Road*", entries });
   assert.ok(markdown.startsWith("# Moon \\*Road\\*\n\n_2026-01-02 to 2026-01-05_\n\n---\n"), markdown);
-  assert.ok(markdown.includes("### Lior\n\nHello <b>there</b>\n"));
+  assert.ok(markdown.includes("### Tamsin\n\nHello <b>there</b>\n"));
   assert.ok(markdown.includes("### Ayla\n\n*smiles*\n\nSecond paragraph\nwith a break.\n"));
   assert.ok(markdown.includes("<details><summary>Thinking</summary>\n\nShe is glad.\n\n</details>"));
   assert.ok(markdown.endsWith("\n") && !markdown.endsWith("\n\n"));

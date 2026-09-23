@@ -92,7 +92,7 @@ try {
         id: "m1",
         role: "user",
         speakerKey: "user",
-        speakerName: "Lior",
+        speakerName: "Tamsin",
         content: "Hello there friend",
         createdAt: iso(0),
       },
@@ -141,7 +141,7 @@ try {
     ]),
     [
       ["Ayla", 2, 8, 4, 6],
-      ["Lior", 1, 3, 3, 3],
+      ["Tamsin", 1, 3, 3, 3],
       ["Narrator", 1, 1, 1, 1],
     ],
   );
@@ -177,7 +177,7 @@ try {
   await db
     .insert(characters)
     .values({ id: "char-a", data: JSON.stringify({ name: "Ayla" }), createdAt: created, updatedAt: created });
-  await db.insert(personas).values({ id: "persona-1", name: "Lior", createdAt: created, updatedAt: created });
+  await db.insert(personas).values({ id: "persona-1", name: "Tamsin", createdAt: created, updatedAt: created });
   await db.insert(chats).values([
     {
       id: "chat-a",
@@ -231,7 +231,7 @@ try {
   assert.deepEqual(
     stored.speakers.map((speaker) => [speaker.name, speaker.role, speaker.messages]),
     [
-      ["Lior", "user", 2],
+      ["Tamsin", "user", 2],
       ["Ayla", "assistant", 1],
     ],
     "equal word counts rank the busier speaker first; the persona name labels user turns",

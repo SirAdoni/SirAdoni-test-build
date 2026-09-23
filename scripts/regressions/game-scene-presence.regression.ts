@@ -15,7 +15,7 @@ const present = [
   "Caden Vale",
   "Vashti Orlane",
   "Liveth Corren",
-  "Princess Liora",
+  "Princess Ysolde",
   "Neris Voss",
 ];
 const library: Candidate[] = [
@@ -23,7 +23,7 @@ const library: Candidate[] = [
   { id: "warden", name: "Caden Vale", avatarUrl: "/warden.png" },
   { id: "vashti", name: "Vashti Orlane", avatarUrl: "/vashti.png" },
   { id: "liveth", name: "Liveth Corren", avatarUrl: "/liveth.png" },
-  { id: "princess", name: "Princess Liora", avatarUrl: "/princess.png" },
+  { id: "princess", name: "Princess Ysolde", avatarUrl: "/princess.png" },
   {
     id: "oracle",
     name: "Neris Voss",

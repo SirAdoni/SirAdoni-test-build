@@ -192,7 +192,7 @@ const focusedIds = selectFocusedGamePartyIds({
     { id: "char-ari", name: "Maybelle Meadowsweet" },
     { id: "char-bex", name: "Bex" },
     { id: "npc-lyra", name: "Lyra" },
-    { id: "char-princess", name: "Princess Liora" },
+    { id: "char-princess", name: "Princess Ysolde" },
     { id: "char-countess", name: "Countess Vey" },
   ],
   presentCharacters: [{ characterId: "npc-lyra", name: "Lyra" }],
