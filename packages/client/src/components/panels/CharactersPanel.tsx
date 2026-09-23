@@ -526,7 +526,9 @@ export function CharactersPanel() {
       .map((g) => ({ ...g, memberIds: parseGroupMemberIds(g.characterIds) }))
       .sort(
         (a, b) =>
-          (a.createdAt ?? "").localeCompare(b.createdAt ?? "") || a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
+          (a.createdAt ?? "").localeCompare(b.createdAt ?? "") ||
+          a.name.localeCompare(b.name) ||
+          a.id.localeCompare(b.id),
       );
   }, [groups]);
 
@@ -1854,19 +1856,23 @@ export function CharactersPanel() {
                 disabled={selectedCharacterIds.size === 0}
                 onMove={parsedGroups.length > 0 ? handleMoveSelected : undefined}
                 onCampaigns={
-                  organizer.campaignsAvailable ? () => organizer.openCampaignPicker([...selectedCharacterIds]) : undefined
+                  organizer.campaignsAvailable
+                    ? () => organizer.openCampaignPicker([...selectedCharacterIds])
+                    : undefined
                 }
               />
               <button
                 type="button"
                 onClick={() => setBulkTagsOpen(true)}
                 disabled={selectedCharacterIds.size === 0}
-                className="mari-chrome-control min-w-0 flex-1 px-2 py-2 text-xs"
+                className="mari-chrome-control min-w-0 flex-1 px-2 py-2 text-xs max-[400px]:flex-none @max-[28rem]/panel:flex-none"
                 title={localizeUi("characters.bulkTags.action")}
                 aria-label={localizeUi("characters.bulkTags.action")}
               >
                 <Tags size="0.75rem" className="shrink-0" />
-                <span className="truncate max-[400px]:sr-only">{localizeUi("characters.bulkTags.actionShort")}</span>
+                <span className="truncate max-[400px]:sr-only @max-[28rem]/panel:sr-only">
+                  {localizeUi("characters.bulkTags.actionShort")}
+                </span>
               </button>
             </>
           }

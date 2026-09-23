@@ -171,6 +171,12 @@ export async function adminRoutes(app: FastifyInstance) {
       await runDelete("chats", () => db.delete(schema.chats).run());
       // The usage dashboard's ledger names chats, so it goes with them.
       await runDelete("generation_usage", () => db.delete(schema.generationUsage).run());
+      // Games live in chats: their own random tables and library campaign links would be orphans.
+      // Global random tables are not game data and stay.
+      await runDelete("random_tables", () =>
+        db.delete(schema.randomTables).where(ne(schema.randomTables.gameId, "")).run(),
+      );
+      await runDelete("library_campaign_links", () => db.delete(schema.libraryCampaignLinks).run());
       filesDeleted.gallery = clearDirectory(join(DATA_DIR, "gallery"));
       filesDeleted.gameSceneVideos = clearDirectory(join(DATA_DIR, "game-scene-videos"));
     }

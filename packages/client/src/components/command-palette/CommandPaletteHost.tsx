@@ -81,12 +81,15 @@ export function CommandPaletteHost() {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing) return;
+      // None of these open over a dialog the user is in the middle of: a palette command that
+      // opens its own dialog would swap that one out, since the app shows one dialog at a time.
       if (isPaletteShortcut(event)) {
+        const palette = useCommandPaletteStore.getState();
+        if (!canOpenGlobalSearchFromShortcut(countModalOverlays(), palette.paletteOpen)) return;
         event.preventDefault();
-        useCommandPaletteStore.getState().togglePalette();
+        palette.togglePalette();
         return;
       }
-      // Never swaps out a dialog the user is in the middle of, except the palette itself.
       if (isGlobalSearchShortcut(event)) {
         const palette = useCommandPaletteStore.getState();
         if (!canOpenGlobalSearchFromShortcut(countModalOverlays(), palette.paletteOpen)) return;
@@ -95,7 +98,7 @@ export function CommandPaletteHost() {
         openGlobalSearch();
         return;
       }
-      if (isShortcutsHelpKey(event) && !isTypingTarget(event.target)) {
+      if (isShortcutsHelpKey(event) && !isTypingTarget(event.target) && countModalOverlays() === 0) {
         event.preventDefault();
         useCommandPaletteStore.getState().openShortcuts();
       }
@@ -188,7 +191,8 @@ export function CommandPaletteHost() {
         section: "actions",
         title: t("palette.actions.chatGuide"),
         keywords: ["help", "tour", "explain"],
-        when: () => activeChatMode() !== null,
+        // The guide and the snippet picker live in the chat screen, which an open editor replaces.
+        when: () => activeChatMode() !== null && !useUIStore.getState().hasAnyDetailOpen(),
         run: () => {
           const mode = activeChatMode();
           if (mode) requestChatHelp(mode);
@@ -212,6 +216,7 @@ export function CommandPaletteHost() {
         keywords: ["snippets", "text", "expand"],
         when: () =>
           !!useChatStore.getState().activeChatId &&
+          !useUIStore.getState().hasAnyDetailOpen() &&
           (queryClient.getQueryData<{ snippets: unknown[] }>(textSnippetKeys.catalog)?.snippets.length ?? 0) > 0,
         run: requestSnippetPicker,
       }),
