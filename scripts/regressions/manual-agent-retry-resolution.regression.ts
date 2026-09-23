@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { getDefaultAgentPrompt, replaceBuiltInAgentDefinitions } from "../../packages/shared/dist/index.js";
 import type { AgentContext, AgentResult } from "../../packages/shared/src/types/agent.js";
 import type { BuiltInAgentManifest } from "../../packages/shared/src/features/agents/agent-manifest.types.js";
 import type { ResolvedAgent } from "../../packages/server/src/services/agents/agent-pipeline.js";
@@ -17,6 +16,10 @@ import {
   resolveRetryAgentPhaseToolInputs,
   validateSpotifyRetryPlayback,
 } from "../../packages/server/src/routes/generate/retry-agents-route.js";
+import { importServerShared } from "./fixtures/server-shared.js";
+
+// Seed the registry instance the server modules read, not a second copy of the shared package.
+const { getDefaultAgentPrompt, replaceBuiltInAgentDefinitions } = await importServerShared();
 
 assert.deepEqual(
   [

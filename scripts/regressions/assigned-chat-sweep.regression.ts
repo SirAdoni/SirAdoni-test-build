@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const dir = mkdtempSync(join(tmpdir(), "marinara-assigned-chat-"));
 process.env.DATA_DIR = dir;
@@ -19,7 +20,14 @@ const { connectionsRoutes } = await import("../../packages/server/src/routes/con
 const { createChatsStorage } = await import("../../packages/server/src/services/storage/chats.storage.js");
 const { createConnectionsStorage } = await import("../../packages/server/src/services/storage/connections.storage.js");
 const { createAgentsStorage } = await import("../../packages/server/src/services/storage/agents.storage.js");
-const { replaceBuiltInAgentDefinitions } = await import("../../packages/shared/dist/index.js");
+// Hydrate the agent registry through the shared module instance the server itself resolves (its package link,
+// which a worktree may point at another tree), so the fixture never depends on installed capability packages.
+const serverSharedDir = realpathSync(
+  join(dirname(fileURLToPath(import.meta.url)), "../../packages/server/node_modules/@marinara-engine/shared"),
+);
+const { replaceBuiltInAgentDefinitions } = (await import(
+  pathToFileURL(join(serverSharedDir, "dist/index.js")).href
+)) as typeof import("../../packages/shared/dist/index.js");
 const { handleRoleplayDmCommand } =
   await import("../../packages/server/src/services/generation/roleplay-dm-command-runtime.js");
 const { readLocalContextLimit, canRefreshLocalContext } =

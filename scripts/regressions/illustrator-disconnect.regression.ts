@@ -1,11 +1,12 @@
 // Real HTTP disconnects must not cancel a reviewed Illustrator image, but the
 // existing Stop/Stop Agents endpoint must still cancel it before persistence.
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { createServer, request as httpRequest, type ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const fixtureDir = mkdtempSync(join(tmpdir(), "marinara-illustrator-disconnect-data-"));
 process.env.DATA_DIR = fixtureDir;
@@ -23,7 +24,14 @@ const { createChatsStorage } = await import("../../packages/server/src/services/
 const { createAgentsStorage } = await import("../../packages/server/src/services/storage/agents.storage.js");
 const { createConnectionsStorage } = await import("../../packages/server/src/services/storage/connections.storage.js");
 const { createGalleryStorage } = await import("../../packages/server/src/services/storage/gallery.storage.js");
-const { replaceBuiltInAgentDefinitions } = await import("../../packages/shared/dist/index.js");
+// Hydrate the agent registry through the shared module instance the server itself resolves (its package link,
+// which a worktree may point at another tree), so the fixture never depends on installed capability packages.
+const serverSharedDir = realpathSync(
+  join(dirname(fileURLToPath(import.meta.url)), "../../packages/server/node_modules/@marinara-engine/shared"),
+);
+const { replaceBuiltInAgentDefinitions } = (await import(
+  pathToFileURL(join(serverSharedDir, "dist/index.js")).href
+)) as typeof import("../../packages/shared/dist/index.js");
 replaceBuiltInAgentDefinitions([
   {
     id: "illustrator",

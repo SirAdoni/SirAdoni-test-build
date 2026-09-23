@@ -11,11 +11,11 @@ import {
   selectVisibleTrackerCapabilityAgents,
 } from "../../packages/client/src/hooks/use-capability-packages.js";
 import { isReviewableWriterAgentType } from "../../packages/server/src/services/generation/runtime-agent-sections.js";
+import { importServerShared } from "./fixtures/server-shared.js";
 
-// Use the same built shared module instance that the server package resolves;
-// the workspace package exposes an ESM-only export, so createRequire cannot
-// resolve it under the generic regression runner.
-const { replaceBuiltInAgentDefinitions } = await import("../../packages/shared/dist/index.js");
+// Use the same built shared module instance that the server package resolves, so the
+// manifests seeded below land in the registry the server modules read.
+const { replaceBuiltInAgentDefinitions } = await importServerShared();
 
 const manifests: BuiltInAgentManifest[] = [
   {

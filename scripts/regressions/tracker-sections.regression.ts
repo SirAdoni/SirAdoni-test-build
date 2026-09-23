@@ -20,7 +20,9 @@ const { createAgentsStorage } = await import("../../packages/server/src/services
 const { createConnectionsStorage } = await import("../../packages/server/src/services/storage/connections.storage.js");
 const { createGameStateStorage } = await import("../../packages/server/src/services/storage/game-state.storage.js");
 const { createPromptsStorage } = await import("../../packages/server/src/services/storage/prompts.storage.js");
-const { replaceBuiltInAgentDefinitions } = await import("../../packages/shared/dist/index.js");
+const { importServerShared } = await import("./fixtures/server-shared.js");
+// Seed the registry instance the server modules read, not a second copy of the shared package.
+const { replaceBuiltInAgentDefinitions } = await importServerShared();
 const trackerTypes = [
   "world-state",
   "character-tracker",

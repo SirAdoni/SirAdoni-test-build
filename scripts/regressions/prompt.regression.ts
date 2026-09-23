@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   extractCharacterCardCastMembers,
   ANIME_GAME_PROMPT_TEMPLATE_ID,
@@ -305,6 +307,19 @@ const regressionAgentDefinitions = REGRESSION_AGENT_IDS.map((id) => ({
 }));
 replaceBuiltInAgentDefinitions(regressionAgentDefinitions);
 replaceBuiltInAgentDefinitionsDist(regressionAgentDefinitions);
+// Server modules resolve "@marinara-engine/shared" through the server package's own link, which is a separate
+// module instance from the imports above whenever tsx runs without the root path aliases (the runner starts it in
+// packages/server) and, in a worktree, can point at another tree entirely. Hydrate that instance too, so the
+// fixture registry never depends on which capability packages happen to be installed anywhere.
+{
+  const serverSharedDir = realpathSync(
+    join(dirname(fileURLToPath(import.meta.url)), "../../packages/server/node_modules/@marinara-engine/shared"),
+  );
+  const serverShared = (await import(pathToFileURL(join(serverSharedDir, "dist/index.js")).href)) as typeof import(
+    "../../packages/shared/dist/index.js"
+  );
+  serverShared.replaceBuiltInAgentDefinitions(regressionAgentDefinitions);
+}
 import {
   buildIllustratorImageStyleInstructionBlock,
   buildKnowledgeRetrievalAgentMessagesForTest,
