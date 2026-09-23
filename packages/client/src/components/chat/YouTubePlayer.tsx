@@ -97,17 +97,28 @@ function getMobileWidgetStyle(
   };
 }
 
+/** Where the collapsed widget actually sits; stored x may be a right-edge sentinel. */
+function resolveMobileWidgetX(x: number, viewportWidth?: number): number {
+  if (typeof window === "undefined") return x;
+  const width = viewportWidth ?? window.innerWidth;
+  return Math.max(
+    MOBILE_WIDGET_VIEWPORT_PADDING,
+    Math.min(width - MOBILE_WIDGET_COLLAPSED_SIZE - MOBILE_WIDGET_VIEWPORT_PADDING, x),
+  );
+}
+
 function getMobileExpandedPanelStyle(position: { x: number; y: number }): CSSProperties {
   if (typeof window === "undefined") return {};
+  const left = resolveMobileWidgetX(position.x);
 
   const width = Math.min(
     MOBILE_WIDGET_EXPANDED_MAX_WIDTH,
     window.innerWidth - MOBILE_WIDGET_EXPANDED_HORIZONTAL_GUTTER,
   );
   const opensLeft =
-    position.x + width > window.innerWidth - MOBILE_WIDGET_VIEWPORT_PADDING ||
-    position.x + MOBILE_WIDGET_COLLAPSED_SIZE / 2 > window.innerWidth / 2;
-  const preferredLeft = opensLeft ? position.x + MOBILE_WIDGET_COLLAPSED_SIZE - width : position.x;
+    left + width > window.innerWidth - MOBILE_WIDGET_VIEWPORT_PADDING ||
+    left + MOBILE_WIDGET_COLLAPSED_SIZE / 2 > window.innerWidth / 2;
+  const preferredLeft = opensLeft ? left + MOBILE_WIDGET_COLLAPSED_SIZE - width : left;
   const clampedLeft = Math.max(
     MOBILE_WIDGET_VIEWPORT_PADDING,
     Math.min(window.innerWidth - width - MOBILE_WIDGET_VIEWPORT_PADDING, preferredLeft),
@@ -115,7 +126,7 @@ function getMobileExpandedPanelStyle(position: { x: number; y: number }): CSSPro
 
   return {
     width,
-    transform: `translateX(${Math.round(clampedLeft - position.x)}px)`,
+    transform: `translateX(${Math.round(clampedLeft - left)}px)`,
   };
 }
 
@@ -341,7 +352,7 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
         pointerId: event.pointerId,
         startX: event.clientX,
         startY: event.clientY,
-        originX: mobilePosition.x,
+        originX: resolveMobileWidgetX(mobilePosition.x),
         originY: mobilePosition.y,
       };
       try {

@@ -22,6 +22,7 @@ import {
 import { api } from "../lib/api-client";
 import { normalizeConversationTimeZone } from "../lib/conversation-time-zone";
 import {
+  migrateLegacyMobileMusicWidgetPosition,
   normalizeTrackerPanelCollapsedSections,
   normalizeTrackerPanelSectionOrder,
   normalizeTrackerPanelSizeProfile,
@@ -287,6 +288,17 @@ export function useSettingsSync() {
                 parsed.settings.conversationTimeZone = normalizeConversationTimeZone(
                   parsed.settings.conversationTimeZone,
                 );
+              }
+              if ("spotifyMobileWidgetPosition" in parsed.settings) {
+                // The synced copy carries no persist version; move only the untouched old default
+                // (top-left, over message avatars) to the right-edge dock and write it back.
+                const nextPosition = migrateLegacyMobileMusicWidgetPosition(
+                  parsed.settings.spotifyMobileWidgetPosition,
+                );
+                if (nextPosition !== parsed.settings.spotifyMobileWidgetPosition) {
+                  parsed.settings.spotifyMobileWidgetPosition = nextPosition;
+                  staleSyncedShape = true;
+                }
               }
 
               const serverUpdatedAt = parsed.updatedAt;

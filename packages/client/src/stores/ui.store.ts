@@ -104,7 +104,26 @@ export interface FloatingWidgetPosition {
   x: number;
   y: number;
 }
-export const DEFAULT_MOBILE_MUSIC_WIDGET_POSITION = { x: 16, y: 144 } as const;
+// Docked to the right edge (the widgets clamp x to the viewport) so it stays clear of
+// left-aligned message avatars on phones.
+export const DEFAULT_MOBILE_MUSIC_WIDGET_POSITION = { x: 10000, y: 144 } as const;
+/** The pre-v102 top-left default. Only this untouched value is moved to the docked default. */
+const LEGACY_MOBILE_MUSIC_WIDGET_POSITION = { x: 16, y: 144 } as const;
+/**
+ * Moves the untouched legacy default to the docked default and returns every other value as-is,
+ * so positions the user dragged stay put. Shared by the persist migration and the server
+ * settings sync, which can otherwise restore the legacy default from an older synced blob.
+ */
+export function migrateLegacyMobileMusicWidgetPosition<T>(position: T): T | FloatingWidgetPosition {
+  const candidate = position as Partial<FloatingWidgetPosition> | null | undefined;
+  if (
+    candidate?.x === LEGACY_MOBILE_MUSIC_WIDGET_POSITION.x &&
+    candidate?.y === LEGACY_MOBILE_MUSIC_WIDGET_POSITION.y
+  ) {
+    return { ...DEFAULT_MOBILE_MUSIC_WIDGET_POSITION };
+  }
+  return position;
+}
 export interface SummaryPopoverSettings {
   sourceMode: SummaryPopoverSourceMode;
   contextSize: number | null;
@@ -3020,6 +3039,13 @@ export const useUIStore = create<UIState>()(
         };
       }),
       migrate: (persisted: any, version: number) => {
+        // v101 -> v102: the mobile music widget default moved to the right edge. Only the
+        // untouched previous default moves; positions the user dragged stay where they are.
+        if (version <= 101 && persisted.spotifyMobileWidgetPosition !== undefined) {
+          persisted.spotifyMobileWidgetPosition = migrateLegacyMobileMusicWidgetPosition(
+            persisted.spotifyMobileWidgetPosition,
+          );
+        }
         if (version <= 99) {
           persisted.imageCharacterSheetWidth ??= persisted.imageBackgroundWidth ?? 1280;
           persisted.imageCharacterSheetHeight ??= persisted.imageBackgroundHeight ?? 720;
