@@ -2238,6 +2238,9 @@ const regenerateCharacterSheetSchema = z.object({
 const removePartyMemberSchema = z.object({
   chatId: z.string().min(1),
   characterName: z.string().min(1).max(200),
+  /** The party member's id when the caller knows it: two members can share a name (a library "Mira" and an
+   * NPC "Mira"), and the name alone is then ambiguous. */
+  characterId: z.string().min(1).max(200).optional(),
 });
 
 const diceRollSchema = z.object({
@@ -11502,7 +11505,8 @@ export async function gameRoutes(app: FastifyInstance) {
       currentParty.push({ id, row: null as never, name, lookup: normalizeCharacterLookupName(name) });
     }
 
-    let matches = currentParty.filter((candidate) => candidate.lookup === requestedLookup);
+    const byId = input.characterId ? currentParty.find((candidate) => candidate.id === input.characterId) : undefined;
+    let matches = byId ? [byId] : currentParty.filter((candidate) => candidate.lookup === requestedLookup);
     if (matches.length === 0 && requestedLookup.length >= 3) {
       matches = currentParty.filter(
         (candidate) =>
