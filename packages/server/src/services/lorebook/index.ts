@@ -1399,6 +1399,8 @@ export async function processLorebooks(
     timingStates,
     currentMessageIndex,
     ...(options?.random ? { random: options.random } : {}),
+    // Same chat and same group candidates -> same group winner every turn (prompt-cache stable).
+    ...(options?.chatId ? { groupSeed: options.chatId } : {}),
   };
 
   // Determine recursion settings from relevant enabled lorebooks only.

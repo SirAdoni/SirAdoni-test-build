@@ -382,7 +382,33 @@ function pickWeightedGroupEntry(entries: ActivatedEntry[], random: () => number)
   return entries[entries.length - 1] ?? null;
 }
 
-function applyGroupSelection(entries: ActivatedEntry[], random: () => number): ActivatedEntry[] {
+/**
+ * A repeatable random source for one inclusion group. The same seed, group and candidate entries always give the
+ * same winner, so the prompt does not change between turns when nothing about the group changed (a new random winner
+ * every turn rewrote the lore near the top of the prompt and broke prompt caching). It still varies across chats and
+ * whenever the set of activated candidates changes.
+ */
+function seededGroupRandom(seed: string, group: string, entries: ActivatedEntry[]): () => number {
+  const key = `${seed}|${group}|${entries
+    .map((entry) => entry.entry.id)
+    .sort()
+    .join(",")}`;
+  let state = 2166136261;
+  for (let index = 0; index < key.length; index += 1) {
+    state ^= key.charCodeAt(index);
+    state = Math.imul(state, 16777619) >>> 0;
+  }
+  return () => {
+    // mulberry32
+    state = (state + 0x6d2b79f5) >>> 0;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function applyGroupSelection(entries: ActivatedEntry[], random: () => number, groupSeed?: string): ActivatedEntry[] {
   const grouped = new Map<string, ActivatedEntry[]>();
   const ungrouped: ActivatedEntry[] = [];
 
@@ -401,9 +427,13 @@ function applyGroupSelection(entries: ActivatedEntry[], random: () => number): A
 
   const result: ActivatedEntry[] = [...ungrouped];
 
-  for (const [, groupEntries] of grouped) {
+  for (const [group, groupEntries] of grouped) {
     const stickyEntries = groupEntries.filter((entry) => entry.sticky);
-    const selected = pickWeightedGroupEntry(stickyEntries.length > 0 ? stickyEntries : groupEntries, random);
+    const candidates = stickyEntries.length > 0 ? stickyEntries : groupEntries;
+    const selected = pickWeightedGroupEntry(
+      candidates,
+      groupSeed ? seededGroupRandom(groupSeed, group, candidates) : random,
+    );
     if (selected) result.push(selected);
   }
 
@@ -456,6 +486,11 @@ export interface ScanOptions {
   probabilityDecisions?: Map<string, boolean>;
   /** Random source for probability gates; injectable for deterministic tests. */
   random?: () => number;
+  /**
+   * Seed for inclusion-group winners (normally the chat id). When set, a group with the same activated candidates picks
+   * the same entry on every turn instead of re-rolling, which keeps the prompt prefix stable for caching.
+   */
+  groupSeed?: string;
 }
 
 /**
@@ -705,7 +740,7 @@ export function scanForActivatedEntries(
   }
 
   // Apply group selection
-  const afterGroups = applyGroupSelection(activated, random);
+  const afterGroups = applyGroupSelection(activated, random, options.random ? undefined : options.groupSeed);
 
   // Sort by injection order (lower = higher priority)
   afterGroups.sort((a, b) => a.injectionOrder - b.injectionOrder);
