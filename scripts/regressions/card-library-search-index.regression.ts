@@ -15,9 +15,9 @@ import {
 
 const characters = [
   {
-    comment: "The Archivist",
+    comment: "The Keeper",
     parsed: {
-      name: "Mira Vell",
+      name: "Hero A",
       creator: "  someone ",
       character_version: "2.1",
       description: "Keeps the ＲＥＣＯＲＤＳ of the  old   city.",
@@ -29,7 +29,7 @@ const characters = [
   },
   {
     comment: null,
-    parsed: { name: "Unit 7", creator_notes: "Built for salvage work", description: 42, scenario: undefined },
+    parsed: { name: "Hero B", creator_notes: "Built for salvage work", description: 42, scenario: undefined },
     tags: ["Sci-Fi", "robot"],
   },
   { comment: "", parsed: {}, tags: [] },
@@ -44,17 +44,17 @@ const documents: CardLibrarySearchDocument[] = [
 const queries = [
   "",
   "   ",
-  "mira",
+  "hero a",
   "records",
   "old city",
   "OLD   CITY",
-  "archivist",
+  "keeper",
   "v2.1",
   "someone",
   "salvage",
   "robot",
   "-robot",
-  "unit -robot",
+  "hero -robot",
   "!#fantasy",
   '-tag:"slow burn"',
   "cabin -horror",
@@ -86,9 +86,9 @@ for (const query of queries.map(parseCardLibrarySearchQuery)) {
 }
 
 // Spot checks so the equivalence cannot pass by both sides being wrong.
-const mira = buildCharacterSearchIndex(characters[0]!, characters[0]!.tags);
-assert.equal(matchesCardLibrarySearchIndex(mira, parseCardLibrarySearchQuery("old city")), true);
-assert.equal(matchesCardLibrarySearchIndex(mira, parseCardLibrarySearchQuery("records -scholar")), false);
-assert.equal(matchesCardLibrarySearchIndex(mira, parseCardLibrarySearchQuery("salvage")), false);
+const heroA = buildCharacterSearchIndex(characters[0]!, characters[0]!.tags);
+assert.equal(matchesCardLibrarySearchIndex(heroA, parseCardLibrarySearchQuery("old city")), true);
+assert.equal(matchesCardLibrarySearchIndex(heroA, parseCardLibrarySearchQuery("records -scholar")), false);
+assert.equal(matchesCardLibrarySearchIndex(heroA, parseCardLibrarySearchQuery("salvage")), false);
 
 console.log(`card-library-search-index regression passed (${checks} comparisons)`);

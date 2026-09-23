@@ -6,8 +6,13 @@ import { join } from "node:path";
 // Every generated message stored the full text of every activated lorebook entry, in the message and again in
 // each swipe: 184 MB of one 192 MB chat shard, kept resident and pushing the server to its heap limit. Only the
 // newest generation's message row may keep entry text; every other stored scan keeps ids, keys and scores.
+// Point every storage knob at a temp directory before any server module loads: dotenv never overrides a variable
+// that is already set, so a developer .env (or MARINARA_ENV_FILE) naming the real data or storage directory
+// cannot send this regression to the live store and its writer lease.
 const directory = mkdtempSync(join(tmpdir(), "marinara-lorebook-scan-compaction-"));
 process.env.DATA_DIR = directory;
+process.env.FILE_STORAGE_DIR = join(directory, "storage");
+process.env.MARINARA_FILE_STORAGE_DIR = join(directory, "storage");
 process.env.LOG_LEVEL = "silent";
 process.env.LOG_FILE_LEVEL = "silent";
 
@@ -47,6 +52,7 @@ assert.deepEqual(
 assert.equal(compact.totalTokensEstimate, 1234);
 
 const db = await createFileNativeDB();
+assert.equal(db._fileStore.rootDir, join(directory, "storage"), "the store lives in the temp directory");
 const chats = createChatsStorage(db);
 const extraOf = (row: { extra?: unknown } | null | undefined) =>
   JSON.parse(typeof row?.extra === "string" ? row.extra : "{}") as Record<string, any>;

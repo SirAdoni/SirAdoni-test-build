@@ -2079,15 +2079,9 @@ export function TTSConfigCard() {
               }}
               className="w-full accent-[var(--primary)]"
             />
-            <div className="relative flex justify-between text-[0.6rem] text-[var(--muted-foreground)]">
+            <div className="flex justify-between text-[0.6rem] text-[var(--muted-foreground)]">
               <span>{speedMin.toFixed(2)}×</span>
-              {/* The speed range is not symmetric around 1.0, so pin the marker to where 1.0 sits. */}
-              <span
-                className="absolute -translate-x-1/2"
-                style={{ left: `${((1 - speedMin) / (speedMax - speedMin)) * 100}%` }}
-              >
-                1.0×
-              </span>
+              <span>1.0×</span>
               <span>{speedMax.toFixed(2)}×</span>
             </div>
           </FieldRow>

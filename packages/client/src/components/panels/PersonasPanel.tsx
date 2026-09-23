@@ -55,7 +55,6 @@ import {
 import { clearActiveChatResourceDrag, writeChatResourceDragPayload } from "../../lib/chat-resource-drag";
 import { ChatResourceActionButton } from "../chat/ChatResourceActionButton";
 import { CharacterPhoto } from "../ui/CharacterPhoto";
-import { PanelErrorState, PanelListSkeleton } from "../ui/PanelStates";
 import { AvatarImage } from "../characters/AvatarImage";
 import { estimateTextTokens, type Persona } from "@marinara-engine/shared";
 
@@ -150,8 +149,6 @@ export function PersonasPanel() {
   const clientOnlyPersonaFilterActive = activeTag !== null;
   const [completeFilteredPersonas, setCompleteFilteredPersonas] = useState<Persona[] | null>(null);
   const [completePersonasLoading, setCompletePersonasLoading] = useState(false);
-  const [completePersonasFailed, setCompletePersonasFailed] = useState(false);
-  const [completePersonasRetryToken, setCompletePersonasRetryToken] = useState(0);
   const serverSearch = useMemo(() => parseCardLibrarySearchQuery(search).text, [search]);
   const personaPages = usePersonaPages({ search: serverSearch, sort });
   const pagedPersonas = useMemo(() => flattenPersonaPages(personaPages.data), [personaPages.data]);
@@ -162,16 +159,6 @@ export function PersonasPanel() {
   const isLoading =
     personaPages.isLoading ||
     (clientOnlyPersonaFilterActive && completePersonasLoading && completeFilteredPersonas === null);
-  // A failed list request must show an error with Retry, never "No personas yet".
-  const pagesLoadFailed = personaPages.isError && pagedPersonas.length === 0;
-  const completeLoadFailed =
-    clientOnlyPersonaFilterActive && completePersonasFailed && completeFilteredPersonas === null;
-  const listLoadFailed = !isLoading && (pagesLoadFailed || completeLoadFailed);
-  const listRetrying = personaPages.isRefetching || (completeLoadFailed && completePersonasLoading);
-  const retryPersonaList = useCallback(() => {
-    if (pagesLoadFailed) void personaPages.refetch();
-    if (completeLoadFailed) setCompletePersonasRetryToken((token) => token + 1);
-  }, [completeLoadFailed, pagesLoadFailed, personaPages]);
 
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
@@ -187,14 +174,12 @@ export function PersonasPanel() {
     if (!clientOnlyPersonaFilterActive) {
       setCompleteFilteredPersonas(null);
       setCompletePersonasLoading(false);
-      setCompletePersonasFailed(false);
       return () => {
         cancelled = true;
       };
     }
 
     setCompletePersonasLoading(true);
-    setCompletePersonasFailed(false);
     fetchAllPersonaPages({ search: serverSearch, sort })
       .then((rows) => {
         if (!cancelled) setCompleteFilteredPersonas(rows);
@@ -202,7 +187,6 @@ export function PersonasPanel() {
       .catch(() => {
         if (!cancelled) {
           setCompleteFilteredPersonas(null);
-          setCompletePersonasFailed(true);
           toast.error(localizeUi("ui.panels.personaspanel.failedToLoadAllMatchingPersonas"));
         }
       })
@@ -213,14 +197,7 @@ export function PersonasPanel() {
     return () => {
       cancelled = true;
     };
-  }, [
-    clientOnlyPersonaFilterActive,
-    serverSearch,
-    sort,
-    localizeUi,
-    personaPages.dataUpdatedAt,
-    completePersonasRetryToken,
-  ]);
+  }, [clientOnlyPersonaFilterActive, serverSearch, sort, localizeUi, personaPages.dataUpdatedAt]);
 
   const handleCreate = () => {
     openModal("create-persona");
@@ -1057,17 +1034,15 @@ export function PersonasPanel() {
         })}
       </div>
 
-      {isLoading && <PanelListSkeleton rows={2} className="px-0 py-2 [&>div]:h-16 [&>div]:rounded-xl" />}
-
-      {listLoadFailed && (
-        <PanelErrorState
-          message={localizeUi("ui.panels.personaspanel.loadFailed")}
-          onRetry={retryPersonaList}
-          retrying={listRetrying}
-        />
+      {isLoading && (
+        <div className="flex flex-col gap-2 py-2">
+          {[1, 2].map((i) => (
+            <div key={i} className="shimmer h-16 rounded-xl" />
+          ))}
+        </div>
       )}
 
-      {!isLoading && !listLoadFailed && list.length === 0 && (
+      {!isLoading && list.length === 0 && (
         <div className="flex flex-col items-center gap-2 py-8 text-center">
           <div className="animate-float flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-400/20 to-teal-500/20">
             <VenetianMask size="1.25rem" className="text-emerald-400" />

@@ -64,6 +64,7 @@ import type { CharacterCatalogEntry } from "@marinara-engine/shared";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { formatEstimatedTokens } from "../../lib/character-token-count";
 import { SelectionActionBar } from "../ui/SelectionActionBar";
+import { SELECTION_EXTRA_ACTION_BUTTON_CLASS, SELECTION_EXTRA_ACTION_LABEL_CLASS } from "../ui/selection-action-classes";
 import { TouchDragHandle } from "../ui/TouchDragHandle";
 import { buildLibraryFolderView, type LibraryFolderNode } from "../../lib/library-folder-view";
 import { LibrarySearchInput } from "./library/LibrarySearchInput";
@@ -1851,14 +1852,12 @@ export function CharactersPanel() {
                 type="button"
                 onClick={() => setBulkTagsOpen(true)}
                 disabled={selectedCharacterIds.size === 0}
-                className="mari-chrome-control min-w-0 flex-1 px-2 py-2 text-xs max-[400px]:flex-none @max-[28rem]/panel:flex-none"
+                className={SELECTION_EXTRA_ACTION_BUTTON_CLASS}
                 title={localizeUi("characters.bulkTags.action")}
                 aria-label={localizeUi("characters.bulkTags.action")}
               >
                 <Tags size="0.75rem" className="shrink-0" />
-                <span className="truncate max-[400px]:sr-only @max-[28rem]/panel:sr-only">
-                  {localizeUi("characters.bulkTags.actionShort")}
-                </span>
+                <span className={SELECTION_EXTRA_ACTION_LABEL_CLASS}>{localizeUi("characters.bulkTags.actionShort")}</span>
               </button>
             </>
           }

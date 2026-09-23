@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { useSetLorebooksEnabled } from "../../../hooks/use-lorebooks";
 import { planLorebookSelectionEnable } from "../../../lib/lorebook-selection";
+import { SELECTION_EXTRA_ACTION_BUTTON_CLASS, SELECTION_EXTRA_ACTION_LABEL_CLASS } from "../../ui/selection-action-classes";
 
 interface LorebookSelectionEnableActionsProps {
   selectedIds: ReadonlySet<string>;
@@ -76,24 +77,24 @@ export function LorebookSelectionEnableActions({ selectedIds, lorebooks }: Loreb
         data-lorebook-selection-enable="enable"
         onClick={() => void apply(toEnable, true)}
         disabled={setEnabled.isPending || toEnable.length === 0}
-        className="mari-chrome-control min-w-0 flex-1 px-2 py-2 text-xs"
+        className={SELECTION_EXTRA_ACTION_BUTTON_CLASS}
         title={enableLabel}
         aria-label={enableLabel}
       >
         <Power size="0.75rem" className="shrink-0" />
-        <span className="truncate max-[400px]:sr-only">{localizeUi("ui.panels.libraryorganize.enable")}</span>
+        <span className={SELECTION_EXTRA_ACTION_LABEL_CLASS}>{localizeUi("ui.panels.libraryorganize.enable")}</span>
       </button>
       <button
         type="button"
         data-lorebook-selection-enable="disable"
         onClick={() => void apply(toDisable, false)}
         disabled={setEnabled.isPending || toDisable.length === 0}
-        className="mari-chrome-control min-w-0 flex-1 px-2 py-2 text-xs"
+        className={SELECTION_EXTRA_ACTION_BUTTON_CLASS}
         title={disableLabel}
         aria-label={disableLabel}
       >
         <PowerOff size="0.75rem" className="shrink-0" />
-        <span className="truncate max-[400px]:sr-only">{localizeUi("ui.panels.libraryorganize.disable")}</span>
+        <span className={SELECTION_EXTRA_ACTION_LABEL_CLASS}>{localizeUi("ui.panels.libraryorganize.disable")}</span>
       </button>
     </>
   );

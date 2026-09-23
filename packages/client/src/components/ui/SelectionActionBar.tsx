@@ -2,6 +2,7 @@ import { Trash2, Upload } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "../../lib/utils";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { SELECTION_ACTION_BUTTON_CLASS, SELECTION_ACTION_LABEL_CLASS } from "./selection-action-classes";
 
 interface SelectionActionBarProps {
   selectedCount: number;
@@ -31,6 +32,8 @@ export function SelectionActionBar({
 }: SelectionActionBarProps) {
   const { t: localizeUi } = useUiTranslation();
   const isPanelFooter = placement === "panel";
+  const exportLabel = localizeUi("ui.characters.spritestab.export");
+  const deleteLabel = localizeUi("lorebook.editor.batch.delete");
 
   const actionBar = (
     <div
@@ -50,22 +53,26 @@ export function SelectionActionBar({
           type="button"
           onClick={onExport}
           disabled={selectedCount === 0 || exportDisabled || exporting}
-          className="mari-chrome-control min-w-0 flex-1 px-3 py-2 text-xs"
+          className={SELECTION_ACTION_BUTTON_CLASS}
+          title={exportLabel}
+          aria-label={exportLabel}
         >
-          <Upload size="0.75rem" />
-          <span className="truncate">{localizeUi("ui.characters.spritestab.export")}</span>
+          <Upload size="0.75rem" className="shrink-0" />
+          <span className={SELECTION_ACTION_LABEL_CLASS}>{exportLabel}</span>
         </button>
         <button
           type="button"
           onClick={onDelete}
           disabled={selectedCount === 0 || deleteDisabled || exporting}
+          title={deleteLabel}
+          aria-label={deleteLabel}
           className={cn(
-            "mari-chrome-control min-w-0 flex-1 px-3 py-2 text-xs",
+            SELECTION_ACTION_BUTTON_CLASS,
             deleteTone === "danger" ? "mari-chrome-control--danger" : "mari-chrome-control--primary",
           )}
         >
-          <Trash2 size="0.75rem" />
-          <span className="truncate">{localizeUi("lorebook.editor.batch.delete")}</span>
+          <Trash2 size="0.75rem" className="shrink-0" />
+          <span className={SELECTION_ACTION_LABEL_CLASS}>{deleteLabel}</span>
         </button>
       </div>
     </div>
