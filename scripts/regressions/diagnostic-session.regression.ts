@@ -33,7 +33,7 @@ assert.match(String((providerFailure as Error).message), /provider fixture faile
 const providerReference = createDiagnostic(providerFailure, context("generation"));
 assert.equal(createDiagnostic(providerFailure, context("http")).errorId, providerReference.errorId);
 
-const transcript = "[user] Robert: Continue.\n\n[assistant] The gate opens.";
+const transcript = "[user] Edmund: Continue.\n\n[assistant] The gate opens.";
 const draft = {
   summary: "The gate opens.",
   resumePoint: "At the gate.",

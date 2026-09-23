@@ -162,6 +162,19 @@ export function predictCacheHit(
 }
 
 const lastSent = new Map<string, PromptFingerprint>();
+/** In-memory entries kept at most; evicted ones reload from DATA_DIR/cache-guard on the next read. */
+const LAST_SENT_MAX = 200;
+
+function rememberInMemory(key: string, fingerprint: PromptFingerprint): void {
+  // Re-insert so Map order stays least-recently-used first.
+  lastSent.delete(key);
+  lastSent.set(key, fingerprint);
+  while (lastSent.size > LAST_SENT_MAX) {
+    const oldest = lastSent.keys().next().value;
+    if (oldest === undefined) break;
+    lastSent.delete(oldest);
+  }
+}
 
 function sameScope(left: unknown, right: CacheGuardScope): boolean {
   if (!left || typeof left !== "object") return false;
@@ -221,11 +234,14 @@ function fingerprintPath(chatId: string, scope: CacheGuardScope): string {
 export async function readLastSentPrompt(chatId: string, scope: CacheGuardScope): Promise<PromptFingerprint | null> {
   const key = `${chatId}\0${scopeKey(scope)}`;
   const cached = lastSent.get(key);
-  if (cached && sameScope(cached.scope, scope)) return cached;
+  if (cached && sameScope(cached.scope, scope)) {
+    rememberInMemory(key, cached);
+    return cached;
+  }
   try {
     const parsed = JSON.parse(await readFile(fingerprintPath(chatId, scope), "utf8")) as PromptFingerprint;
     if (isStoredFingerprint(parsed) && sameScope(parsed.scope, scope)) {
-      lastSent.set(key, parsed);
+      rememberInMemory(key, parsed);
       return parsed;
     }
   } catch {
@@ -237,7 +253,7 @@ export async function readLastSentPrompt(chatId: string, scope: CacheGuardScope)
 /** Remember the prompt that was just sent, in memory and on disk so a restart inside the cache lifetime still knows. */
 export async function recordSentPrompt(chatId: string, fingerprint: PromptFingerprint): Promise<void> {
   const key = `${chatId}\0${scopeKey(fingerprint.scope)}`;
-  lastSent.set(key, fingerprint);
+  rememberInMemory(key, fingerprint);
   try {
     await mkdir(join(DATA_DIR, "cache-guard"), { recursive: true });
     const path = fingerprintPath(chatId, fingerprint.scope);

@@ -11,33 +11,44 @@ const layoutScope = process.argv[5] || chatId;
 const browser = await chromium.launch({ channel: "msedge", headless: true });
 try {
   const context = await browser.newContext({ storageState, serviceWorkers: "block" });
-  await context.addInitScript((id) => {
-    localStorage.setItem("marinara-active-chat-id", id);
-    if (!sessionStorage.getItem("game-widget-tuck-fixture")) {
-      for (const key of Object.keys(localStorage)) {
-        if (
-          key.startsWith(`marinara-game-panel:${id}:floating:widget:`) &&
-          (key.endsWith(":tucked") || key.endsWith(":tucked:edge"))
-        )
-          localStorage.removeItem(key);
+  await context.addInitScript(
+    ({ id, scope }) => {
+      localStorage.setItem("marinara-active-chat-id", id);
+      if (!sessionStorage.getItem("game-widget-tuck-fixture")) {
+        // Tuck keys live under the layout scope, which differs from the chat id for later sessions.
+        for (const key of Object.keys(localStorage)) {
+          if (
+            (key.startsWith(`marinara-game-panel:${id}:floating:widget:`) ||
+              key.startsWith(`marinara-game-panel:${scope}:floating:widget:`)) &&
+            (key.endsWith(":tucked") || key.endsWith(":tucked:edge"))
+          )
+            localStorage.removeItem(key);
+        }
+        sessionStorage.setItem("game-widget-tuck-fixture", "true");
       }
-      sessionStorage.setItem("game-widget-tuck-fixture", "true");
-    }
-  }, chatId);
+    },
+    { id: chatId, scope: layoutScope },
+  );
   const page = await context.newPage();
+  // The mocked server keeps what the client saved. Echoing the original value after the save
+  // made the chat refetch revert the widget, which is a second value change that restarted
+  // the reveal timer (and, on busy chats, dropped the widget), so the five-second check flaked.
+  let mockWidgets = [
+    { id: "health", type: "progress_bar", label: "Health", position: "hud_left", config: { value: 50, max: 100 } },
+  ];
   await page.route("**/api/**", async (route) => {
     if (route.request().method() === "GET" && new URL(route.request().url()).pathname === `/api/chats/${chatId}`) {
       const response = await route.fetch();
       const body = await response.json();
       const metadata = typeof body.metadata === "string" ? JSON.parse(body.metadata) : { ...body.metadata };
-      metadata.gameWidgetState = [
-        { id: "health", type: "progress_bar", label: "Health", position: "hud_left", config: { value: 50, max: 100 } },
-      ];
+      metadata.gameWidgetState = mockWidgets;
       body.metadata = typeof body.metadata === "string" ? JSON.stringify(metadata) : metadata;
       return route.fulfill({ response, json: body });
     }
     if (route.request().method() === "GET") return route.continue();
     if (route.request().method() === "PUT" && route.request().url().includes(`/game/${chatId}/widgets`)) {
+      const saved = route.request().postDataJSON()?.widgets;
+      if (Array.isArray(saved)) mockWidgets = saved;
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ success: true }) });
     }
     return route.abort();
@@ -58,6 +69,13 @@ try {
     await optionsDialog().waitFor({ state: "detached" });
   };
   const widget = page.locator('[data-game-floating-panel="widget:health"]').first();
+  // Park the pointer on empty surface away from the widget, wherever the layout put it.
+  const parkPointer = async () => {
+    const box = await widget.boundingBox();
+    const viewport = page.viewportSize();
+    const x = box && box.x + box.width / 2 > viewport.width / 2 ? 200 : viewport.width - 200;
+    await page.mouse.move(x, viewport.height / 2);
+  };
   await widget.waitFor({ timeout: 180000 });
   // Transient toasts (for example "update ready") and the all-locked hint must not intercept clicks.
   await page.addStyleTag({
@@ -109,7 +127,7 @@ try {
   await tab.hover();
   await page.waitForTimeout(100);
   assert.ok((await widget.boundingBox()).width > 100, "hover temporarily reveals the widget");
-  await page.mouse.move(900, 700);
+  await parkPointer();
   await page.waitForTimeout(100);
   assert.ok((await widget.boundingBox()).width <= 40, "widget closes after pointer leaves");
 
@@ -119,7 +137,7 @@ try {
   await tab.hover();
   await page.waitForTimeout(5100);
   assert.ok((await widget.boundingBox()).width > 100, "hover hold keeps the widget open past the reveal timeout");
-  await page.mouse.move(900, 700);
+  await parkPointer();
   await page.waitForTimeout(150);
   assert.ok((await widget.boundingBox()).width <= 40, "hover-held widget closes after pointer leaves");
 
@@ -132,7 +150,7 @@ try {
   await page.getByRole("button", { name: /save changes|update widget/i }).click({ force: true });
   await page.waitForTimeout(200);
   assert.ok((await widget.boundingBox()).width > 100, "actual value change reveals the widget immediately");
-  await page.mouse.move(900, 700);
+  await parkPointer();
   await page.waitForTimeout(200);
   assert.ok(
     (await widget.boundingBox()).width > 100,

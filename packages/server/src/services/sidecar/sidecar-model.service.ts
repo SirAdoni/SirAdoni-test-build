@@ -856,7 +856,7 @@ class SidecarModelService {
     } catch (error) {
       this.status = this.detectStatus();
       if (isAbortError(error)) {
-        throw new Error("Download cancelled");
+        throw new Error("Download cancelled", { cause: error });
       }
 
       const progress = this.buildModelErrorProgress(error);

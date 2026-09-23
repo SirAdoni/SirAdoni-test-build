@@ -37,24 +37,24 @@ try {
     revision: 1, createdAt: at(day), updatedAt: at(day),
   });
   await db.insert(schema.campaignMemoryEntities).values([
-    entity("s1-vigil", "s1", "characters", "card-vigil", "Vigil", 1),
+    entity("s1-quenby", "s1", "characters", "card-quenby", "Quenby", 1),
     // Session 2 tracked the same person as a Game NPC; its row is newer.
-    entity("s2-vigil-npc", "s2", "game-npcs", "npc:vigil", "Vigil", 2),
+    entity("s2-quenby-npc", "s2", "game-npcs", "npc:quenby", "Quenby", 2),
   ]);
   const projection = await readCampaignMemoryProjection(db, "s2");
-  const vigil = projection.entities.filter((item: any) => item.aliases[0] === "Vigil");
-  assert.equal(vigil.length, 1, "folded into one entity");
-  assert.equal(vigil[0].entityId, "s1-vigil", "the library card anchors the id");
+  const quenby = projection.entities.filter((item: any) => item.aliases[0] === "Quenby");
+  assert.equal(quenby.length, 1, "folded into one entity");
+  assert.equal(quenby[0].entityId, "s1-quenby", "the library card anchors the id");
   try {
-    assert.equal(vigil[0].owner.store, "characters", `projected owner is ${JSON.stringify(vigil[0].owner)}`);
+    assert.equal(quenby[0].owner.store, "characters", `projected owner is ${JSON.stringify(quenby[0].owner)}`);
   } catch (error) { failures.push(`owner: ${(error as Error).message}`); }
-  const party = resolveCanonicalPartyMemoryEntity(projection.entities, "s2", "card-vigil");
+  const party = resolveCanonicalPartyMemoryEntity(projection.entities, "s2", "card-quenby");
   try {
     assert.ok(party.entity, `party speaker: ${party.reason}`);
   } catch (error) { failures.push(`party speaker: ${(error as Error).message}`); }
-  const present = resolvePresentEntityIds(projection.entities, { characterIds: ["card-vigil"] });
+  const present = resolvePresentEntityIds(projection.entities, { characterIds: ["card-quenby"] });
   try {
-    assert.deepEqual(present, ["s1-vigil"], `presence resolved ${JSON.stringify(present)}`);
+    assert.deepEqual(present, ["s1-quenby"], `presence resolved ${JSON.stringify(present)}`);
   } catch (error) { failures.push(`presence: ${(error as Error).message}`); }
 } finally {
   await db?._fileStore?.close?.();

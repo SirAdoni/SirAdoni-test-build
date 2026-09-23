@@ -64,11 +64,14 @@ import { useTouchFolderDrag } from "../../hooks/use-touch-folder-drag";
 import { SelectionActionBar } from "../ui/SelectionActionBar";
 import { TouchDragHandle } from "../ui/TouchDragHandle";
 import { buildLibraryFolderView, type LibraryFolderNode } from "../../lib/library-folder-view";
+import { LibrarySearchInput } from "./library/LibrarySearchInput";
 import { CAMPAIGN_FILTER_ALL, LibraryCampaignBar } from "./library/LibraryCampaignBar";
 import { LibraryCampaignBadges } from "./library/LibraryCampaignBadges";
 import { LibraryCampaignSections } from "./library/LibraryCampaignSections";
 import { LibraryFolderTree } from "./library/LibraryFolderTree";
 import { LibrarySelectionExtraActions } from "./library/LibrarySelectionExtraActions";
+import { LorebookSelectionEnableActions } from "./library/LorebookSelectionEnableActions";
+import { getInChatLorebookIds } from "../../lib/lorebook-selection";
 import { useAutoLoadAllPages } from "./library/use-auto-load-all-pages";
 import { useLibraryOrganizer } from "./library/use-library-organizer";
 import { useLorebookFolderToggle } from "./library/use-lorebook-folder-toggle";
@@ -188,6 +191,7 @@ export function LorebooksPanel() {
   });
   const lorebooks = useMemo(() => flattenLorebookPages(lorebookPages.data), [lorebookPages.data]);
   const isLoading = lorebookPages.isLoading;
+  const inChatLorebookIds = useMemo(() => getInChatLorebookIds(activeChat, lorebooks), [activeChat, lorebooks]);
   const createLorebook = useCreateLorebook();
   const deleteLorebook = useDeleteLorebook();
   const updateLorebook = useUpdateLorebook();
@@ -752,6 +756,7 @@ export function LorebooksPanel() {
         <LorebookRow
           key={section?.rowKey ?? lb.id}
           lorebook={lb}
+          inChat={inChatLorebookIds.has(lb.id)}
           characterName={combinedNames}
           folderPath={showFolderPaths ? folderView.pathByItemId.get(lb.id) : undefined}
           campaignBadges={
@@ -845,6 +850,7 @@ export function LorebooksPanel() {
       showFolderPaths,
       folderView,
       organizer,
+      inChatLorebookIds,
     ],
   );
 
@@ -919,11 +925,11 @@ export function LorebooksPanel() {
             size="0.8125rem"
             className="mari-chrome-field-icon pointer-events-none absolute left-3 top-1/2 -translate-y-1/2"
           />
-          <input
+          <LibrarySearchInput
             type="text"
             placeholder={localize("Search lorebooks")}
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onValueChange={setSearchQuery}
             className="mari-chrome-field h-10 w-full py-0 pl-8 pr-3 text-xs md:h-9"
           />
         </div>
@@ -1241,13 +1247,16 @@ export function LorebooksPanel() {
           placement="panel"
           selectedCount={selectedLorebookIds.size}
           extraAction={
-            <LibrarySelectionExtraActions
-              disabled={selectedLorebookIds.size === 0}
-              onMove={folderNodes.length > 0 ? handleMoveSelected : undefined}
-              onCampaigns={
-                organizer.campaignsAvailable ? () => organizer.openCampaignPicker([...selectedLorebookIds]) : undefined
-              }
-            />
+            <>
+              <LorebookSelectionEnableActions selectedIds={selectedLorebookIds} lorebooks={lorebooks} />
+              <LibrarySelectionExtraActions
+                disabled={selectedLorebookIds.size === 0}
+                onMove={folderNodes.length > 0 ? handleMoveSelected : undefined}
+                onCampaigns={
+                  organizer.campaignsAvailable ? () => organizer.openCampaignPicker([...selectedLorebookIds]) : undefined
+                }
+              />
+            </>
           }
           onExport={() => void handleExportSelected()}
           onDelete={handleDeleteSelected}
@@ -1261,6 +1270,7 @@ export function LorebooksPanel() {
 
 function LorebookRow({
   lorebook,
+  inChat,
   characterName,
   folderPath,
   campaignBadges,
@@ -1279,6 +1289,8 @@ function LorebookRow({
   onTouchStart,
 }: {
   lorebook: Lorebook;
+  /** Feeds the open chat right now (small dot beside the name). */
+  inChat?: boolean;
   characterName?: string;
   /** Folder breadcrumb, shown while searching. */
   folderPath?: string;
@@ -1387,6 +1399,7 @@ function LorebookRow({
       <div className={cn("min-w-0 flex-1", !selectionMode && "pr-0 max-md:pr-24 [@media(pointer:coarse)]:pr-24")}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="min-w-0 truncate text-sm font-medium">{lorebook.name}</span>
+          {inChat && <LorebookInChatDot />}
           {!lorebook.enabled && (
             <span className="shrink-0 rounded bg-[var(--muted)]/50 px-1 py-0.5 text-[0.5625rem] text-[var(--muted-foreground)]">
               {localizeUi("ui.panels.lorebookrow.off")}
@@ -1461,5 +1474,19 @@ function LorebookRow({
         </div>
       )}
     </div>
+  );
+}
+
+function LorebookInChatDot() {
+  const { t: localizeUi } = useUiTranslation();
+  const label = localizeUi("ui.panels.lorebookrow.inThisChat");
+  return (
+    <span
+      data-lorebook-in-chat
+      role="img"
+      className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--primary)]"
+      title={label}
+      aria-label={label}
+    />
   );
 }

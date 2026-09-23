@@ -1,4 +1,4 @@
-import { CardLibraryPreview } from "./CardLibraryPreview";
+import { MemoCardLibraryPreview } from "./CardLibraryPreview";
 import { CharacterPhoto } from "../ui/CharacterPhoto";
 import { AvatarImage } from "./AvatarImage";
 import {
@@ -439,9 +439,10 @@ export function CharacterLibraryView() {
   }, [characters, initialCharacter.data, isPersonaLibrary, personas]);
 
   const filteredCards = useMemo(() => {
-    const query = parseCardLibrarySearchQuery(search);
+    // Filter on the deferred query so each keystroke paints the input before re-filtering the grid.
+    const query = parseCardLibrarySearchQuery(deferredSearch);
     return cards.filter((card) => matchesCardLibrarySearch(card, query));
-  }, [cards, search]);
+  }, [cards, deferredSearch]);
 
   const sortedCards = useMemo(() => {
     const list = [...filteredCards];
@@ -723,12 +724,7 @@ export function CharacterLibraryView() {
                 const isSelected = selectedId === card.id;
                 return (
                   <Fragment key={card.id}>
-                    <CardLibraryPreview
-                      card={card}
-                      kind={kind}
-                      isSelected={isSelected}
-                      onClick={() => setSelectedId(card.id)}
-                    />
+                    <MemoCardLibraryPreview card={card} kind={kind} isSelected={isSelected} onSelect={setSelectedId} />
 
                     {isSelected && (
                       <div className="col-span-full lg:hidden">

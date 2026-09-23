@@ -43,7 +43,7 @@ try {
   await db.insert(schema.campaignMemoryEntities).values([
     entity("s1-mira", "s1", "card-mira", "Mira"),
     entity("s2-mira", "s2", "card-mira", "Mira"),
-    entity("s1-vigil", "s1", "card-vigil", "Vigil"),
+    entity("s1-quenby", "s1", "card-quenby", "Quenby"),
   ]);
   await db.insert(schema.campaignMemoryFacts).values([{
     factId: "f-s1", chatId: "s1", subjectEntityId: "s1-mira", predicate: "decision",
@@ -63,10 +63,10 @@ try {
   const page = detail.entity;
   const oldFact = detail.facts.items.find((item: any) => item.factId === "f-s1");
   const list = (await app.inject({ method: "GET", url: "/s2/memory/entities" })).json();
-  const vigil = list.items.find((item: any) => item.aliases[0] === "Vigil");
+  const quenby = list.items.find((item: any) => item.aliases[0] === "Quenby");
   assert.equal(page.originChatId, "s2");
   assert.equal(oldFact.originChatId, "s1");
-  assert.equal(vigil.originChatId, "s1");
+  assert.equal(quenby.originChatId, "s1");
   const writeChat = (record: any) => record.originChatId ?? "s2";
   const post = (chatId: string, payload: unknown) =>
     app.inject({ method: "POST", url: `/${chatId}/memory/mutations`, payload });
@@ -79,15 +79,15 @@ try {
     },
   });
   const knowledge = await post(writeChat(page), {
-    operationId: "who-knows", action: "create", recordType: "knowledge", reason: "Vigil knows",
+    operationId: "who-knows", action: "create", recordType: "knowledge", reason: "Quenby knows",
     input: { holderEntityId: page.entityId, factId: oldFact.factId, epistemicState: "knows", learnedFrom: [], manualLock: false },
   });
   const relationship = await post(writeChat(page), {
     operationId: "rel", action: "create", recordType: "relationship", reason: "allies",
-    input: { sourceEntityId: page.entityId, targetEntityId: vigil.entityId, type: "ally-of", inverseLabel: "ally of", status: "active", evidence: [], manualLock: false },
+    input: { sourceEntityId: page.entityId, targetEntityId: quenby.entityId, type: "ally-of", inverseLabel: "ally of", status: "active", evidence: [], manualLock: false },
   });
   // A: the page's anchor id (s2-mira) is swapped for Mira's row in session 1 (same library card), so it succeeds.
-  // B and C cannot be mapped: session 2 holds no copy of the session 1 fact and no page for Vigil, and a record
+  // B and C cannot be mapped: session 2 holds no copy of the session 1 fact and no page for Quenby, and a record
   // written into a chat must reference that chat's rows. They are refused with a clear 409 instead of the storage
   // layer's bare INVALID_REFERENCE, so the wiki can tell the user to write it in the other session.
   assert.deepEqual(
@@ -108,16 +108,16 @@ try {
     `wiki writes that combine projected ids map to the write chat or fail clearly:\n${correction.body}\n${knowledge.body}\n${relationship.body}`,
   );
   assert.equal(correction.json().subjectEntityId, "s1-mira", "the correction's subject is mapped into session 1");
-  assert.match(relationship.json().error.message, /Vigil has no page in that session yet/);
+  assert.match(relationship.json().error.message, /Quenby has no page in that session yet/);
 
-  // Once session 2 has its own page for Vigil, the same relationship write maps the session 1 id and succeeds.
-  await db.insert(schema.campaignMemoryEntities).values([entity("s2-vigil", "s2", "card-vigil", "Vigil")]);
+  // Once session 2 has its own page for Quenby, the same relationship write maps the session 1 id and succeeds.
+  await db.insert(schema.campaignMemoryEntities).values([entity("s2-quenby", "s2", "card-quenby", "Quenby")]);
   const mapped = await post("s2", {
     operationId: "rel-2", action: "create", recordType: "relationship", reason: "allies",
-    input: { sourceEntityId: page.entityId, targetEntityId: "s1-vigil", type: "ally-of", inverseLabel: "ally of", status: "active", evidence: [], manualLock: false },
+    input: { sourceEntityId: page.entityId, targetEntityId: "s1-quenby", type: "ally-of", inverseLabel: "ally of", status: "active", evidence: [], manualLock: false },
   });
   assert.equal(mapped.statusCode, 200, mapped.body);
-  assert.equal(mapped.json().targetEntityId, "s2-vigil");
+  assert.equal(mapped.json().targetEntityId, "s2-quenby");
   console.log("bughunt projection cross-session write regression passed");
 } finally {
   await app?.close().catch(() => undefined);

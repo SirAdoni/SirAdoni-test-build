@@ -1,8 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { DEFAULT_MEDIA_GENERATION_CONCURRENCY } from "@marinara-engine/shared";
 import { logger } from "../../lib/logger.js";
-import { reportDiagnosticError } from "../../lib/diagnostic-operation.js";
-import { getDiagnosticContext } from "../../lib/diagnostics.js";
+import { createDiagnostic } from "../../lib/diagnostics.js";
+import { logEvent, type JobKind, type Outcome } from "../../lib/log-events.js";
+import { safeHost } from "../llm/provider-error.js";
 import { timeStoryboardStage } from "../game/storyboard-progress.js";
 
 type MediaGenerationQueueTask<T> = () => Promise<T>;
@@ -274,6 +275,8 @@ interface MediaGenerationRequestArgs<T> {
   priority?: MediaGenerationPriority;
   /** ChatGPT Subscription images use an isolated ten-request provider pool. */
   permitProfile?: MediaGenerationPermitProfile;
+  /** Which media the request produces; names the `${kind}.queue` operation in the log. Defaults to image. */
+  kind?: "image" | "video";
 }
 
 async function runAfterConnectionQueue<T>(
@@ -308,68 +311,83 @@ async function runAfterConnectionQueue<T>(
   }
 }
 
+/** Queue waits longer than this are logged at info instead of debug. */
+const MEDIA_QUEUE_SLOW_WAIT_MS = 5_000;
+
+/** The host part of a queue key such as `image:https://host/path`, or its prefix when it holds no URL. Never the full URL. */
+export function mediaConnectionKeyHost(connectionKey: string): string {
+  const key = connectionKey.trim();
+  if (!key) return "default";
+  const urlStart = key.search(/https?:\/\//i);
+  if (urlStart >= 0) return safeHost(key.slice(urlStart)) ?? "unparsed";
+  const colon = key.indexOf(":");
+  // Connection ids and service names carry no secrets; keep them short.
+  return (colon > 0 ? key.slice(0, colon) : key).slice(0, 80);
+}
+
+function outcomeOf(error: unknown, signal?: AbortSignal): { outcome: Outcome; errorCode: string; errorId: string } {
+  const reference = createDiagnostic(error);
+  const cancelled = signal?.aborted === true || reference.code === "ME_CANCELLED";
+  return { outcome: cancelled ? "cancelled" : "failed", errorCode: reference.code, errorId: reference.errorId };
+}
+
 /**
  * Serialize media provider requests per configured connection when the caller's
  * global queue preference is enabled, then acquire the selected provider pool.
  * Callers that disable the preference bypass only the FIFO, never the permit.
+ *
+ * Writes one `media.queue` line when the request settles: debug normally, info
+ * when it waited more than five seconds for its turn and permit. Failures are not
+ * reported here (the caller owns the one failure line); the settle line carries
+ * the errorId so the two can be matched.
  */
 export async function runMediaGenerationRequest<T>(args: MediaGenerationRequestArgs<T>): Promise<T> {
+  const kind = args.kind ?? "image";
+  const priority = args.priority ?? "foreground";
+  const permitProfile = args.permitProfile ?? "shared";
   const startedAt = Date.now();
-  const context = getDiagnosticContext();
-  logger.info(
-    {
-      ...context,
-      operation: "image.queue",
-      stage: "start",
-      priority: args.priority ?? "foreground",
-      permitProfile: args.permitProfile ?? "shared",
-    },
-    "Image generation queue operation started",
-  );
+  let turnAt: number | undefined;
+  let grantedAt: number | undefined;
+  const settleLine = (fields: { outcome: Outcome; errorCode?: string; errorId?: string }) => {
+    const now = Date.now();
+    const waitMs = (grantedAt ?? now) - startedAt;
+    const pool = mediaGenerationPermitPools[permitProfile];
+    logEvent(waitMs > MEDIA_QUEUE_SLOW_WAIT_MS ? "info" : "debug", "media.queue", {
+      operation: `${kind}.queue`,
+      kind: kind as JobKind,
+      connectionKey: mediaConnectionKeyHost(args.connectionKey),
+      permitProfile,
+      priority,
+      queued: args.queue,
+      waitMs,
+      turnWaitMs: (turnAt ?? grantedAt ?? now) - startedAt,
+      runMs: grantedAt === undefined ? 0 : now - grantedAt,
+      activePermits: pool.activePermits,
+      queuedWaiters: pool.foregroundWaiters.length + pool.backgroundWaiters.length,
+      ...fields,
+    });
+  };
+  // The task keeps the caller's diagnostic context; only the settle line names the queue operation.
   try {
     const result = await runAfterConnectionQueue(args, async () => {
+      turnAt = Date.now();
       // Invariant: acquire AFTER the per-connection turn. Otherwise a full pool
       // could be held by tasks waiting on connection turns behind that pool.
       const releasePermit = await timeStoryboardStage("Provider slot wait", () =>
         acquireGlobalPermit(args.signal, args.priority, args.permitProfile),
       );
+      grantedAt = Date.now();
       try {
         if (args.signal?.aborted) throw mediaGenerationAbortError(args.signal);
-        return await heldMediaPermit.run(args.permitProfile ?? "shared", () => args.task());
+        return await heldMediaPermit.run(permitProfile, () => args.task());
       } finally {
         releasePermit();
       }
     });
-    logger.info(
-      {
-        ...context,
-        operation: "image.queue",
-        stage: "success",
-        priority: args.priority ?? "foreground",
-        permitProfile: args.permitProfile ?? "shared",
-        elapsedMs: Date.now() - startedAt,
-      },
-      "Image generation queue operation completed",
-    );
+    settleLine({ outcome: "ok" });
     return result;
   } catch (error) {
-    const diagnostic = reportDiagnosticError(error, {
-      ...context,
-      operation: "image.queue",
-      stage: args.signal?.aborted ? "cancelled" : "failure",
-    });
-    logger.warn(
-      {
-        ...context,
-        diagnostic,
-        operation: "image.queue",
-        stage: args.signal?.aborted ? "cancelled" : "failure",
-        priority: args.priority ?? "foreground",
-        permitProfile: args.permitProfile ?? "shared",
-        elapsedMs: Date.now() - startedAt,
-      },
-      "Image generation queue operation failed",
-    );
+    settleLine(outcomeOf(error, args.signal));
     throw error;
   }
 }
@@ -381,4 +399,117 @@ export async function runImageGenerationRequest<T>(
   args: Omit<MediaGenerationRequestArgs<T>, "priority" | "permitProfile">,
 ): Promise<T> {
   return runAfterConnectionQueue(args, args.task);
+}
+
+// ── Media provider diagnostics ───────────────────────────────────────────────
+// Shared by image, video and Atlas Cloud adapters. Unexpected provider bodies are
+// logged by shape only; long-running provider tasks are polled through one helper
+// so every provider writes the same `job.progress` lines.
+
+/** The shape of a provider response for a log line: type, top-level keys and size. Never its text. */
+export function providerResponseShape(value: unknown, text?: string): Record<string, unknown> {
+  const isRecord = !!value && typeof value === "object" && !Array.isArray(value);
+  return {
+    bodyType: Array.isArray(value) ? "array" : value === null ? "null" : typeof value,
+    ...(isRecord ? { topLevelKeys: Object.keys(value as Record<string, unknown>).slice(0, 20) } : {}),
+    ...(Array.isArray(value) ? { itemCount: value.length } : {}),
+    ...(text !== undefined ? { bodyBytes: Buffer.byteLength(text) } : {}),
+  };
+}
+
+export interface ProviderTaskPollResult<T> {
+  /** The provider's own status word for this poll (for example "queued", "running", "done"). */
+  providerStatus: string | null;
+  /** True when the task finished; `value` is then returned from pollProviderTask. */
+  done: boolean;
+  value?: T;
+}
+
+/** Thrown when a provider task outlives its deadline; carries the task id and last provider status. */
+export class ProviderTaskTimeoutError extends Error {
+  constructor(
+    readonly provider: string,
+    readonly providerTaskId: string,
+    readonly lastProviderStatus: string | null,
+    deadlineMs: number,
+  ) {
+    super(
+      `${provider} task ${providerTaskId} did not finish within ${Math.round(deadlineMs / 1000)} seconds` +
+        (lastProviderStatus ? ` (last status: ${lastProviderStatus})` : ""),
+    );
+    this.name = "ProviderTaskTimeoutError";
+  }
+}
+
+/**
+ * Polls a provider task until `poll` reports done, then returns its value. Waits
+ * `intervalMs` (through `wait`, which should honour the request's abort signal)
+ * before every poll. `poll` throws for a failed task.
+ *
+ * Logs info `job.progress` state accepted at the start, debug state progress on
+ * each providerStatus change (with pollCount and elapsedMs), and one terminal
+ * line: info for completed or cancelled, warn for failed. A thrown error gets
+ * `providerTaskId` and `lastProviderStatus` attached when it has none.
+ */
+export async function pollProviderTask<T>(args: {
+  provider: string;
+  taskId: string;
+  kind?: JobKind;
+  poll: (pollCount: number) => Promise<ProviderTaskPollResult<T>>;
+  intervalMs: number;
+  deadlineMs?: number;
+  wait: (ms: number) => Promise<void>;
+}): Promise<T> {
+  const startedAt = Date.now();
+  const base = { kind: args.kind ?? ("video" as JobKind), provider: args.provider, providerTaskId: args.taskId };
+  let pollCount = 0;
+  let lastProviderStatus: string | null = null;
+  logEvent("info", "job.progress", { ...base, state: "accepted" });
+  try {
+    while (true) {
+      if (args.deadlineMs !== undefined && Date.now() - startedAt >= args.deadlineMs) {
+        throw new ProviderTaskTimeoutError(args.provider, args.taskId, lastProviderStatus, args.deadlineMs);
+      }
+      await args.wait(args.intervalMs);
+      pollCount += 1;
+      const step = await args.poll(pollCount);
+      if (step.providerStatus !== lastProviderStatus) {
+        lastProviderStatus = step.providerStatus;
+        logEvent("debug", "job.progress", {
+          ...base,
+          state: "progress",
+          providerStatus: step.providerStatus,
+          pollCount,
+          elapsedMs: Date.now() - startedAt,
+        });
+      }
+      if (step.done) {
+        logEvent("info", "job.progress", {
+          ...base,
+          state: "completed",
+          outcome: "ok",
+          providerStatus: step.providerStatus,
+          pollCount,
+          elapsedMs: Date.now() - startedAt,
+        });
+        return step.value as T;
+      }
+    }
+  } catch (error) {
+    if (error && typeof error === "object" && Object.isExtensible(error)) {
+      const target = error as { providerTaskId?: unknown; lastProviderStatus?: unknown };
+      if (target.providerTaskId === undefined) target.providerTaskId = args.taskId;
+      if (target.lastProviderStatus === undefined) target.lastProviderStatus = lastProviderStatus;
+    }
+    const failure = outcomeOf(error);
+    logEvent(failure.outcome === "cancelled" ? "info" : "warn", "job.progress", {
+      ...base,
+      state: failure.outcome === "cancelled" ? "cancelled" : "failed",
+      ...failure,
+      lastProviderStatus,
+      pollCount,
+      elapsedMs: Date.now() - startedAt,
+    });
+    throw error;
+  }
 }

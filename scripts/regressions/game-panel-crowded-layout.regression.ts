@@ -6,7 +6,7 @@ import {
   type GamePanelLayoutItem,
 } from "../../packages/client/src/lib/game-panel-layout.js";
 
-// The 11 desktop panels of a Session 12 style HUD at 1440x900 (surface 1440x849),
+// The 11 desktop panels of a crowded HUD at 1440x900 (surface 1440x849),
 // measured from the live game: natural content heights and the default anchors a
 // fresh profile gives them (left-column widgets pile up at 48 + slot * 44).
 const SURFACE = { width: 1440, height: 849 };
@@ -15,12 +15,12 @@ const SESSION_12: Spec[] = [
   { id: "toolbar", x: 528, y: 48, width: 900, height: 34 },
   { id: "map", x: 12, y: 48, width: 320, height: 382 },
   { id: "narration", x: 272, y: 608, width: 896, height: 225 },
-  { id: "widget:widget_notes", x: 12, y: 400, width: 384, height: 306 },
-  { id: "widget:widget_household_guests_bonds", x: 12, y: 444, width: 336, height: 217 },
-  { id: "widget:widget_concubines", x: 12, y: 488, width: 448, height: 161 },
-  { id: "widget:widget_candidates", x: 12, y: 532, width: 348, height: 87 },
-  { id: "widget:widget_expected_arrivals", x: 12, y: 576, width: 325, height: 68 },
-  { id: "widget:widget_open_invitations", x: 701, y: 400, width: 727, height: 199 },
+  { id: "widget:widget_a", x: 12, y: 400, width: 384, height: 306 },
+  { id: "widget:widget_b", x: 12, y: 444, width: 336, height: 217 },
+  { id: "widget:widget_c", x: 12, y: 488, width: 448, height: 161 },
+  { id: "widget:widget_d", x: 12, y: 532, width: 348, height: 87 },
+  { id: "widget:widget_e", x: 12, y: 576, width: 325, height: 68 },
+  { id: "widget:widget_f", x: 701, y: 400, width: 727, height: 199 },
   { id: "scene-presence", x: 560, y: 746, width: 320, height: 87 },
   { id: "storyboard", x: 1060, y: 48, width: 368, height: 392 },
 ];
@@ -80,7 +80,7 @@ function inBounds(panels: Resolved[], bounds = SURFACE): void {
 //    wide widget that the greedy pass stranded forced every cap down to 64px.
 {
   const { overflow, panels } = resolve(SESSION_12);
-  assert.equal(overflow, false, "the Session 12 HUD fits at 1440x900");
+  assert.equal(overflow, false, "the crowded HUD fits at 1440x900");
   assert.deepEqual(overlaps(panels), [], "no panel overlaps another after reflow");
   inBounds(panels);
   const byId = new Map(panels.map((panel) => [panel.id, panel]));
@@ -103,12 +103,12 @@ function inBounds(panels: Resolved[], bounds = SURFACE): void {
   const crushedEra = SESSION_12.map((spec) => {
     const pile: Record<string, [number, number]> = {
       map: [12, 29],
-      "widget:widget_notes": [12, 316],
-      "widget:widget_household_guests_bonds": [12, 388],
-      "widget:widget_concubines": [12, 460],
-      "widget:widget_candidates": [12, 532],
-      "widget:widget_expected_arrivals": [12, 680],
-      "widget:widget_open_invitations": [701, 483],
+      "widget:widget_a": [12, 316],
+      "widget:widget_b": [12, 388],
+      "widget:widget_c": [12, 460],
+      "widget:widget_d": [12, 532],
+      "widget:widget_e": [12, 680],
+      "widget:widget_f": [701, 483],
       "scene-presence": [560, 694],
       narration: [272, 766],
       storyboard: [1060, 70],

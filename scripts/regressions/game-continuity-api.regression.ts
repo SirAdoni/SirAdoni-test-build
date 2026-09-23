@@ -49,7 +49,7 @@ try {
   assert.deepEqual(before.json().counts, {});
 
   await addMessage(chat.id, "user", "We enter the old hall.");
-  const assistant = await addMessage(chat.id, "assistant", "Robert promises to return before dawn.");
+  const assistant = await addMessage(chat.id, "assistant", "Edmund promises to return before dawn.");
   await chatsStorage.updateMetadata(chat.id, { gameLorebookKeeperEnabled: true });
 
   const enabled = await app.inject({

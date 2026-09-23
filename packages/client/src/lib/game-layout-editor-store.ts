@@ -137,6 +137,50 @@ export function useIsFrontPanel(key: string): boolean {
   );
 }
 
+// ── Multi-select (Shift+click while editing), per layout scope, in selection order ──
+
+const selections = new Map<string, string[]>();
+const selectionEmitter = createEmitter();
+const EMPTY_SELECTION: string[] = [];
+
+export function readPanelSelection(scopeId: string): string[] {
+  return selections.get(scopeId) ?? EMPTY_SELECTION;
+}
+
+export function togglePanelSelection(scopeId: string, panelId: string): void {
+  const current = readPanelSelection(scopeId);
+  const next = current.includes(panelId) ? current.filter((id) => id !== panelId) : [...current, panelId];
+  if (next.length) selections.set(scopeId, next);
+  else selections.delete(scopeId);
+  selectionEmitter.emit();
+}
+
+export function clearPanelSelection(scopeId: string): void {
+  if (!selections.has(scopeId)) return;
+  selections.delete(scopeId);
+  selectionEmitter.emit();
+}
+
+export function subscribePanelSelection(listener: () => void): () => void {
+  return selectionEmitter.subscribe(listener);
+}
+
+export function usePanelSelection(scopeId: string): string[] {
+  return useSyncExternalStore(
+    selectionEmitter.subscribe,
+    () => readPanelSelection(scopeId),
+    () => EMPTY_SELECTION,
+  );
+}
+
+export function usePanelSelected(scopeId: string, panelId: string): boolean {
+  return useSyncExternalStore(
+    selectionEmitter.subscribe,
+    () => readPanelSelection(scopeId).includes(panelId),
+    () => false,
+  );
+}
+
 // ── Live drag overlay (one interaction at a time) ──
 
 export interface LayoutDragOverlay {
@@ -277,12 +321,19 @@ export function useLayoutHistoryState(scopeId: string): { canUndo: boolean; canR
   );
 }
 
-function applySnapshotToScope(scopeId: string, snapshot: LayoutSnapshot): void {
+/** Returns false when storage refused the write; the previous layout is then kept. */
+function applySnapshotToScope(scopeId: string, snapshot: LayoutSnapshot): boolean {
   const storage = safeStorage();
-  if (!storage) return;
-  applyLayoutSnapshot(storage, scopeId, snapshot);
+  if (!storage) return false;
+  let applied = false;
+  try {
+    applied = applyLayoutSnapshot(storage, scopeId, snapshot);
+  } catch {
+    /* Storage unavailable: keep the current layout. */
+  }
   hiddenEmitter.emit();
   window.dispatchEvent(new CustomEvent(GAME_PANEL_STACK_CHANGE_EVENT, { detail: { chatId: scopeId } }));
+  return applied;
 }
 
 /** Step back. Returns true when a snapshot was applied (the caller remounts the panels). */
@@ -291,8 +342,9 @@ export function undoLayout(scopeId: string): boolean {
   const history = histories.get(scopeId);
   if (!history?.past.length) return false;
   const next = undoLayoutHistory(history);
+  // A refused write leaves the layout where it was, so the history must not move either.
+  if (!applySnapshotToScope(scopeId, next.present)) return false;
   histories.set(scopeId, next);
-  applySnapshotToScope(scopeId, next.present);
   historyEmitter.emit();
   return true;
 }
@@ -302,22 +354,26 @@ export function redoLayout(scopeId: string): boolean {
   const history = histories.get(scopeId);
   if (!history?.future.length) return false;
   const next = redoLayoutHistory(history);
+  if (!applySnapshotToScope(scopeId, next.present)) return false;
   histories.set(scopeId, next);
-  applySnapshotToScope(scopeId, next.present);
   historyEmitter.emit();
   return true;
 }
 
-/** Apply a whole layout (saved, imported or empty for defaults) as one undoable step. */
-export function applyLayoutAsStep(scopeId: string, snapshot: LayoutSnapshot): void {
+/**
+ * Apply a whole layout (saved, imported or empty for defaults) as one undoable step.
+ * Returns false when storage refused it and the current layout was kept.
+ */
+export function applyLayoutAsStep(scopeId: string, snapshot: LayoutSnapshot): boolean {
   flushPendingRecord(scopeId);
-  applySnapshotToScope(scopeId, snapshot);
+  if (!applySnapshotToScope(scopeId, snapshot)) return false;
   const history = histories.get(scopeId);
   if (history) {
     const storage = safeStorage();
     if (storage) histories.set(scopeId, pushLayoutHistory(history, captureLayoutSnapshot(storage, scopeId)));
     historyEmitter.emit();
   }
+  return true;
 }
 
 export function captureCurrentLayout(scopeId: string): LayoutSnapshot {
@@ -465,9 +521,12 @@ export function readSavedLayouts(): SavedLayout[] {
   return savedCache.layouts;
 }
 
+/** Returns false when storage is unavailable or full, so callers can report it. */
 export function writeSavedLayouts(layouts: SavedLayout[]): boolean {
+  const storage = safeStorage();
+  if (!storage) return false;
   try {
-    safeStorage()?.setItem(SAVED_LAYOUTS_STORAGE_KEY, serializeSavedLayouts(layouts));
+    storage.setItem(SAVED_LAYOUTS_STORAGE_KEY, serializeSavedLayouts(layouts));
     savedEmitter.emit();
     return true;
   } catch {

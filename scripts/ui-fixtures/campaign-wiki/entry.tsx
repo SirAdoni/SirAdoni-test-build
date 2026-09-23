@@ -904,7 +904,7 @@ async function main() {
       if (control.crossSessionOnce) {
         control.crossSessionOnce = false;
         return crossSessionRefusal(
-          "Mira Thorne has no page in that session yet, so this record cannot be written there. Add Mira Thorne to that session first.",
+          "Mira Stonebridge has no page in that session yet, so this record cannot be written there. Add Mira Stonebridge to that session first.",
         );
       }
       if (!mutation[1] && control.failApplyOnce) {
@@ -1032,7 +1032,7 @@ async function main() {
             error: {
               code: "CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE",
               message:
-                "Mira Thorne has no page in that session yet, so this record cannot be written there. Add Mira Thorne to that session first.",
+                "Mira Stonebridge has no page in that session yet, so this record cannot be written there. Add Mira Stonebridge to that session first.",
             },
           }),
           { status: 409, headers: { "Content-Type": "application/json" } },

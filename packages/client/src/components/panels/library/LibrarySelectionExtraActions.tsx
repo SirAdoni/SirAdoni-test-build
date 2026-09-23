@@ -4,6 +4,7 @@
 // ──────────────────────────────────────────────
 import { FolderInput, Swords } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { SELECTION_EXTRA_ACTION_BUTTON_CLASS, SELECTION_EXTRA_ACTION_LABEL_CLASS } from "../../ui/selection-action-classes";
 
 interface LibrarySelectionExtraActionsProps {
   disabled?: boolean;
@@ -20,12 +21,12 @@ export function LibrarySelectionExtraActions({ disabled, onMove, onCampaigns }: 
           type="button"
           onClick={onMove}
           disabled={disabled}
-          className="mari-chrome-control min-w-0 flex-1 px-2 py-2 text-xs"
+          className={SELECTION_EXTRA_ACTION_BUTTON_CLASS}
           title={localizeUi("ui.panels.libraryorganize.moveToFolder")}
           aria-label={localizeUi("ui.panels.libraryorganize.moveToFolder")}
         >
           <FolderInput size="0.75rem" className="shrink-0" />
-          <span className="truncate max-[400px]:sr-only">{localizeUi("lorebook.editor.batch.move")}</span>
+          <span className={SELECTION_EXTRA_ACTION_LABEL_CLASS}>{localizeUi("lorebook.editor.batch.move")}</span>
         </button>
       )}
       {onCampaigns && (
@@ -33,12 +34,12 @@ export function LibrarySelectionExtraActions({ disabled, onMove, onCampaigns }: 
           type="button"
           onClick={onCampaigns}
           disabled={disabled}
-          className="mari-chrome-control min-w-0 flex-1 px-2 py-2 text-xs"
+          className={SELECTION_EXTRA_ACTION_BUTTON_CLASS}
           title={localizeUi("ui.panels.libraryorganize.addOrRemoveFromCampaign")}
           aria-label={localizeUi("ui.panels.libraryorganize.addOrRemoveFromCampaign")}
         >
           <Swords size="0.75rem" className="shrink-0" />
-          <span className="truncate max-[400px]:sr-only">{localizeUi("ui.panels.libraryorganize.campaign")}</span>
+          <span className={SELECTION_EXTRA_ACTION_LABEL_CLASS}>{localizeUi("ui.panels.libraryorganize.campaign")}</span>
         </button>
       )}
     </>

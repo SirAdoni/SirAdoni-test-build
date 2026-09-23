@@ -168,7 +168,7 @@ try {
 
   const codex = buildCampaignCodex({
     gameId: "game-1",
-    gameName: "Ashes of Vel",
+    gameName: "Ashes of Orm",
     generatedAt: "2026-09-22T12:00:00.000Z",
     sessions: [
       {
@@ -177,7 +177,7 @@ try {
         name: "Session one",
         entities: [
           entity("s1", "mira-1", "character", ["Mira"], { summary: "A courier." }),
-          entity("s1", "vel-1", "location", ["Vel"]),
+          entity("s1", "vel-1", "location", ["Orm"]),
           entity("s1", "guild-1", "organization", ["Ash Guild"]),
         ],
         facts: [
@@ -187,13 +187,13 @@ try {
         knowledge: [],
         events: [
           event("s1", "e1", order(1), {
-            transitions: ["Mira arrives in Vel."],
+            transitions: ["Mira arrives in Orm."],
             participantEntityIds: ["mira-1"],
             locationEntityId: "vel-1",
             campaignTime: "Day 1, dusk",
           }),
         ],
-        currentState: [state("s1", "st1", "mira-1", "location", "Vel", "e1", order(1))],
+        currentState: [state("s1", "st1", "mira-1", "location", "Orm", "e1", order(1))],
         relationships: [relationship("s1", "r1", "mira-1", "guild-1", "member_of", "active")],
       },
       {
@@ -203,7 +203,7 @@ try {
         entities: [
           // Same person, new record id, one new alias: folds into the session-1 entry.
           entity("s2", "mira-2", "character", ["mira", "The Courier"], { summary: "A courier on the run." }),
-          entity("s2", "vel-2", "location", ["Vel"]),
+          entity("s2", "vel-2", "location", ["Orm"]),
           entity("s2", "guild-2", "organization", ["Ash Guild"]),
         ],
         facts: [
@@ -219,7 +219,7 @@ try {
           }),
           event("s2", "e-empty", order(4), {}),
         ],
-        currentState: [state("s2", "st2", "mira-2", "location", "Vel docks", "e2", order(3))],
+        currentState: [state("s2", "st2", "mira-2", "location", "Orm docks", "e2", order(3))],
         relationships: [relationship("s2", "r2", "mira-2", "guild-2", "member_of", "ended")],
       },
     ],
@@ -233,14 +233,14 @@ try {
   assert.equal(codex.entities.length, 3, "one entry per real entity across sessions");
   assert.deepEqual(
     codex.entities.map((item) => `${item.kind}:${item.name}`),
-    ["character:Mira", "location:Vel", "organization:Ash Guild"],
+    ["character:Mira", "location:Orm", "organization:Ash Guild"],
     "grouped in kind order",
   );
   const mira = codex.entities[0]!;
   assert.deepEqual(mira.aliases, ["The Courier"], "new aliases join, case-duplicates of the name do not");
   assert.equal(mira.summary, "A courier on the run.", "the newest summary wins");
   assert.deepEqual(mira.sessions, [1, 2]);
-  assert.deepEqual(mira.currentState, [{ label: "Location", value: "Vel docks", session: 2 }], "newest state wins");
+  assert.deepEqual(mira.currentState, [{ label: "Location", value: "Orm docks", session: 2 }], "newest state wins");
   assert.deepEqual(
     mira.facts,
     [
@@ -260,10 +260,10 @@ try {
   assert.deepEqual(codex.events[0], {
     session: 1,
     campaignTime: "Day 1, dusk",
-    summary: "Mira arrives in Vel.",
-    location: "Vel",
+    summary: "Mira arrives in Orm.",
+    location: "Orm",
     participants: ["Mira"],
-    changes: [{ label: "Mira, location", value: "Vel", session: 1 }],
+    changes: [{ label: "Mira, location", value: "Orm", session: 1 }],
   });
   assert.deepEqual(codex.events[1]!.participants, ["Mira", "Ash Guild"]);
 
@@ -273,7 +273,7 @@ try {
   }
 
   const markdown = renderCampaignCodexMarkdown(codex);
-  assert.match(markdown, /^# Ashes of Vel: Campaign Codex\n/);
+  assert.match(markdown, /^# Ashes of Orm: Campaign Codex\n/);
   assert.match(markdown, /## Characters\n\n### Mira\n/);
   assert.match(markdown, /\*\*Also known as:\*\* The Courier/);
   assert.match(markdown, /\*\*Seen in:\*\* Session 1, Session 2/);
@@ -289,7 +289,7 @@ try {
   assert.match(markdown, /## Factions and organizations/);
   assert.match(
     markdown,
-    /## Timeline\n\n### Session 1\n\n- \*\*Day 1, dusk\.\*\* Mira arrives in Vel\. \*At Vel\.\* \*With Mira\.\*\n  - Mira, location: Vel/,
+    /## Timeline\n\n### Session 1\n\n- \*\*Day 1, dusk\.\*\* Mira arrives in Orm\. \*At Orm\.\* \*With Mira\.\*\n  - Mira, location: Orm/,
   );
   assert.doesNotMatch(markdown, /a queen/, "proposed facts stay out");
   assert.doesNotMatch(markdown, /—/, "no em dashes");
@@ -350,7 +350,7 @@ try {
     await db.insert(schema.chats).values({
       id,
       name:
-        id === "chat-1" ? "Ashes of Vel" : id === "chat-lone" ? "Lone Road — Session 3" : "Ashes of Vel — Session 2",
+        id === "chat-1" ? "Ashes of Orm" : id === "chat-lone" ? "Lone Road — Session 3" : "Ashes of Orm — Session 2",
       mode: "game",
       groupId: id === "chat-lone" ? "game-lone" : "game-9",
       metadata: JSON.stringify({ gameId: "game-9", gameSessionNumber: number, ...extra }),
@@ -392,7 +392,7 @@ try {
   const loaded = await loadCampaignCodex(db, "chat-2");
   assert.ok(loaded);
   assert.equal(loaded.gameId, "game-9");
-  assert.equal(loaded.gameName, "Ashes of Vel");
+  assert.equal(loaded.gameName, "Ashes of Orm");
   assert.deepEqual(
     loaded.sessions.map((session) => session.number),
     [1, 2],

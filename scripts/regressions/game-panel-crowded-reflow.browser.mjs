@@ -3,7 +3,7 @@ import { build } from "esbuild";
 import { chromium } from "@playwright/test";
 import { resolve } from "node:path";
 
-// Real FloatingGamePanel with the 11 panels of a Session 12 style HUD on a 1440x900
+// Real FloatingGamePanel with the 11 panels of a crowded HUD on a 1440x900
 // screen (surface 1440x849). The rebuild regression crushed every panel, narration
 // included, to 64px here. This also covers stored layouts from before the rebuild,
 // positions saved while panels were crushed, and that automatic reflow writes nothing.
@@ -12,12 +12,12 @@ const PANELS = [
   { id: "toolbar", width: 900, height: 34, props: "side='hud_right'" },
   { id: "map", width: 320, height: 382, props: "height={420} autoGrow" },
   { id: "narration", width: 896, height: 225, props: "bottom autoGrow reserveSpace" },
-  { id: "widget:widget_notes", width: 384, height: 306, props: "autoGrow allowTuck" },
-  { id: "widget:widget_household_guests_bonds", width: 336, height: 217, props: "autoGrow allowTuck" },
-  { id: "widget:widget_concubines", width: 448, height: 161, props: "autoGrow allowTuck" },
-  { id: "widget:widget_candidates", width: 348, height: 87, props: "autoGrow allowTuck" },
-  { id: "widget:widget_expected_arrivals", width: 325, height: 68, props: "allowTuck" },
-  { id: "widget:widget_open_invitations", width: 727, height: 199, props: "autoGrow allowTuck side='hud_right'" },
+  { id: "widget:widget_a", width: 384, height: 306, props: "autoGrow allowTuck" },
+  { id: "widget:widget_b", width: 336, height: 217, props: "autoGrow allowTuck" },
+  { id: "widget:widget_c", width: 448, height: 161, props: "autoGrow allowTuck" },
+  { id: "widget:widget_d", width: 348, height: 87, props: "autoGrow allowTuck" },
+  { id: "widget:widget_e", width: 325, height: 68, props: "allowTuck" },
+  { id: "widget:widget_f", width: 727, height: 199, props: "autoGrow allowTuck side='hud_right'" },
   { id: "scene-presence", width: 320, height: 87, props: "side='hud_right' bottom" },
   { id: "storyboard", width: 368, height: 392, props: "side='hud_right' autoGrow overflowVisible fillHeight" },
 ];
@@ -67,12 +67,12 @@ const CRUSHED_ERA = {
   toolbar: [528, 48],
   map: [12, 29],
   narration: [272, 766],
-  "widget:widget_notes": [12, 316],
-  "widget:widget_household_guests_bonds": [12, 388],
-  "widget:widget_concubines": [12, 460],
-  "widget:widget_candidates": [12, 532],
-  "widget:widget_expected_arrivals": [12, 680],
-  "widget:widget_open_invitations": [701, 483],
+  "widget:widget_a": [12, 316],
+  "widget:widget_b": [12, 388],
+  "widget:widget_c": [12, 460],
+  "widget:widget_d": [12, 532],
+  "widget:widget_e": [12, 680],
+  "widget:widget_f": [701, 483],
   "scene-presence": [560, 694],
   storyboard: [1060, 70],
 };
@@ -120,10 +120,10 @@ try {
       localStorage.setItem(`${prefix}narration:size-v2:growth`, "bottom");
       // A fixed-height widget whose stored height is below the minimum: treat it as unset.
       localStorage.setItem(
-        `${prefix}widget:widget_expected_arrivals:size-v2`,
+        `${prefix}widget:widget_e:size-v2`,
         JSON.stringify({ width: 325, height: 40, manualWidth: false }),
       );
-      localStorage.setItem(`${prefix}widget:widget_expected_arrivals:size-v2:growth`, "fixed");
+      localStorage.setItem(`${prefix}widget:widget_e:size-v2:growth`, "fixed");
     },
     { panels: PANELS, positions: CRUSHED_ERA },
   );
@@ -178,8 +178,8 @@ try {
   );
   assert.ok(
     // The old code clamped it to a firm 64px; unset, it sizes to its content (reflow may trim a few px).
-    byId.get("widget:widget_expected_arrivals").height > 64.5,
-    `a stored height below the minimum is treated as unset (${byId.get("widget:widget_expected_arrivals").height})`,
+    byId.get("widget:widget_e").height > 64.5,
+    `a stored height below the minimum is treated as unset (${byId.get("widget:widget_e").height})`,
   );
   const overlapping = [];
   for (let i = 0; i < boxes.length; i += 1)
@@ -205,12 +205,7 @@ try {
   // The only size rewrite is dropping the invalid stored height; reflow heights are never saved.
   assert.deepEqual(
     sizeWrites,
-    [
-      [
-        "marinara-game-panel:s12:floating:widget:widget_expected_arrivals:size-v2",
-        JSON.stringify({ width: 325, manualWidth: false }),
-      ],
-    ],
+    [["marinara-game-panel:s12:floating:widget:widget_e:size-v2", JSON.stringify({ width: 325, manualWidth: false })]],
     "automatic reflow never writes a size",
   );
   assert.deepEqual(

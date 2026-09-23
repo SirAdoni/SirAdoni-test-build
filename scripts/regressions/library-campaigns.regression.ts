@@ -42,7 +42,7 @@ try {
   await lorebook("world");
   await lorebook("expansion");
   await lorebook("hero-notes");
-  await lorebook("keeper", { chatId: "vald-2" });
+  await lorebook("keeper", { chatId: "ash-2" });
   await lorebook("embedded", { characterId: "hero", hiddenFromLibrary: "true" });
   await lorebook("unused");
   await db.insert(lorebookCharacterLinks).values({
@@ -68,21 +68,21 @@ try {
       ...extra,
     });
   await gameChat(
-    "vald-1",
-    "Valdenmoor",
+    "ash-1",
+    "Cinderholt",
     {
-      gameId: "vald",
+      gameId: "ash",
       gameSessionNumber: 1,
       gameSetupConfig: { partyCharacterIds: ["hero", "npc:guard"], gmCharacterId: "gm", activeLorebookIds: ["world"] },
       activeLorebookIds: ["world"],
     },
-    { characterIds: JSON.stringify(["hero"]), personaId: "player", groupId: "vald", updatedAt: t(2) },
+    { characterIds: JSON.stringify(["hero"]), personaId: "player", groupId: "ash", updatedAt: t(2) },
   );
   await gameChat(
-    "vald-2",
-    "Valdenmoor — Session 2",
+    "ash-2",
+    "Cinderholt — Session 2",
     {
-      gameId: "vald",
+      gameId: "ash",
       gameSessionNumber: 2,
       gamePartyCharacterIds: ["hero", "rogue"],
       gameNpcs: [
@@ -91,7 +91,7 @@ try {
       ],
       activeLorebookIds: ["world", "expansion", "deleted-book"],
     },
-    { characterIds: JSON.stringify(["hero", "rogue"]), groupId: "vald", lastMessageAt: t(30), updatedAt: t(20) },
+    { characterIds: JSON.stringify(["hero", "rogue"]), groupId: "ash", lastMessageAt: t(30), updatedAt: t(20) },
   );
   await gameChat(
     "other-1",
@@ -113,21 +113,21 @@ try {
   let campaigns = await storage.list();
   assert.deepEqual(
     campaigns.map((campaign) => campaign.id),
-    ["vald", "side"],
+    ["ash", "side"],
     "one campaign per gameId, most recently played first; non-game chats are ignored",
   );
-  const vald = campaigns[0]!;
-  assert.equal(vald.name, "Valdenmoor", "name comes from the latest session without its session suffix");
-  assert.equal(vald.sessionCount, 2);
-  assert.equal(vald.lastPlayedAt, t(30), "last played uses the newest message");
+  const ash = campaigns[0]!;
+  assert.equal(ash.name, "Cinderholt", "name comes from the latest session without its session suffix");
+  assert.equal(ash.sessionCount, 2);
+  assert.equal(ash.lastPlayedAt, t(30), "last played uses the newest message");
   assert.deepEqual(
-    [...vald.characterIds].sort(),
+    [...ash.characterIds].sort(),
     ["gm", "hero", "npc-card", "rogue"],
     "party, GM and linked NPC cards; npc: placeholders dropped",
   );
-  assert.deepEqual(vald.personaIds, ["player"]);
+  assert.deepEqual(ash.personaIds, ["player"]);
   assert.deepEqual(
-    [...vald.lorebookIds].sort(),
+    [...ash.lorebookIds].sort(),
     ["expansion", "hero-notes", "keeper", "world"],
     "active, chat-owned and character-linked books; hidden and deleted books dropped",
   );
@@ -136,27 +136,27 @@ try {
   assert.equal(await storage.list(), campaigns, "an unchanged library serves the cached list");
 
   // Manual links.
-  assert.equal(await storage.addItems("vald", "character", ["spare"]), true);
+  assert.equal(await storage.addItems("ash", "character", ["spare"]), true);
   campaigns = await storage.list();
   assert.ok(campaigns[0]!.characterIds.includes("spare"), "manual add shows up (cache invalidated)");
   assert.ok(campaigns[0]!.manualKeys.includes("character:spare"));
 
-  assert.equal(await storage.removeItems("vald", "character", ["rogue", "spare"]), true);
+  assert.equal(await storage.removeItems("ash", "character", ["rogue", "spare"]), true);
   campaigns = await storage.list();
   assert.equal(campaigns[0]!.characterIds.includes("rogue"), false, "removing a derived item hides it");
   assert.equal(campaigns[0]!.characterIds.includes("spare"), false, "removing a manual item drops it");
-  const rows = await db.select().from(libraryCampaignLinks).where(eq(libraryCampaignLinks.campaignId, "vald"));
+  const rows = await db.select().from(libraryCampaignLinks).where(eq(libraryCampaignLinks.campaignId, "ash"));
   assert.deepEqual(
     rows.map((row) => `${row.itemId}:${row.mode}`),
     ["rogue:exclude"],
     "derived removal is an exclusion; manual removal deletes the include row",
   );
 
-  await storage.addItems("vald", "character", ["rogue"]);
+  await storage.addItems("ash", "character", ["rogue"]);
   campaigns = await storage.list();
   assert.ok(campaigns[0]!.characterIds.includes("rogue"), "adding back clears the exclusion");
   assert.equal(
-    (await db.select().from(libraryCampaignLinks).where(eq(libraryCampaignLinks.campaignId, "vald"))).length,
+    (await db.select().from(libraryCampaignLinks).where(eq(libraryCampaignLinks.campaignId, "ash"))).length,
     0,
     "no stale rows remain after add-back",
   );
@@ -169,8 +169,8 @@ try {
   assert.equal(campaigns[0]!.sessionCount, 2);
 
   // List filters used by the Lorebooks and Characters panels.
-  const onlyVald = await resolveLibraryCampaignFilter(db, "lorebook", "vald");
-  const lorebookPage = await createLorebooksStorage(db).listPage({ limit: 50, offset: 0, ids: onlyVald });
+  const onlyAsh = await resolveLibraryCampaignFilter(db, "lorebook", "ash");
+  const lorebookPage = await createLorebooksStorage(db).listPage({ limit: 50, offset: 0, ids: onlyAsh });
   assert.deepEqual(lorebookPage.items.map((item: { id: string }) => item.id).sort(), [
     "expansion",
     "hero-notes",
@@ -217,11 +217,11 @@ try {
   assert.equal(side.lorebookIds.includes("world"), false, "the swapped-out lorebook leaves the campaign");
 
   // Deleted items: their manual include rows no longer count as members or manual keys.
-  await storage.addItems("vald", "character", ["spare"]);
+  await storage.addItems("ash", "character", ["spare"]);
   await db.delete(characters).where(eq(characters.id, "spare"));
-  const valdAfterDelete = (await storage.list()).find((campaign) => campaign.id === "vald")!;
-  assert.equal(valdAfterDelete.characterIds.includes("spare"), false, "a deleted character is no member");
-  assert.equal(valdAfterDelete.manualKeys.includes("character:spare"), false, "nor a manual key");
+  const ashAfterDelete = (await storage.list()).find((campaign) => campaign.id === "ash")!;
+  assert.equal(ashAfterDelete.characterIds.includes("spare"), false, "a deleted character is no member");
+  assert.equal(ashAfterDelete.manualKeys.includes("character:spare"), false, "nor a manual key");
 
   // Concurrent adds of the same item both succeed and leave a single include row.
   await Promise.all([

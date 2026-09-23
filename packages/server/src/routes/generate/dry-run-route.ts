@@ -98,7 +98,8 @@ import {
 import { filterPromptMessagesForCharacterAudience } from "../../services/generation/prompt-message-scope.js";
 import { applyAllSegmentEdits } from "../../services/game/segment-edits.js";
 import { applyRegexScriptsToPromptMessages } from "../../services/regex/regex-application.js";
-import { sendSseEvent, startSseReply } from "./sse.js";
+import { emitSseFailure, sendSseEvent, startSseReply } from "./sse.js";
+import { replyWithDiagnostic } from "../../lib/http-diagnostics.js";
 import {
   appendReadableAttachmentsToContent,
   postProcessMessages,
@@ -668,6 +669,10 @@ export async function registerDryRunRoute(app: FastifyInstance) {
         const timelineIds = new Set(scopedMessages.slice(0, index).map((message) => message.id));
         chatMessages = chatMessages.filter((message) => timelineIds.has(message.id));
       }
+    }
+    if (regenerateMessageId) {
+      // Match /generate: the message being regenerated never stays in the history, in any mode.
+      chatMessages = chatMessages.filter((message: any) => message.id !== regenerateMessageId);
     }
     const dryRunBeholderState = await loadPriorBeholderState({
       agentsStore: createAgentsStorage(app.db),
@@ -1998,16 +2003,20 @@ export async function registerDryRunRoute(app: FastifyInstance) {
         });
       }
     } catch (err) {
-      logger.error(err, "[dryRun] Advanced Memory preparation failed");
-      const message = err instanceof Error ? err.message : "Dry run memory preparation failed";
       if (streaming && !returnPrompt) {
         startSseReply(reply, { "X-Accel-Buffering": "no" });
-        sendSseEvent(reply, { type: "error", data: message });
+        emitSseFailure(reply, err, {
+          event: "dry_run.memory.failed",
+          message: "Dry run Advanced Memory preparation failed",
+        });
         sendSseEvent(reply, { type: "done", data: "" });
         reply.raw.end();
         return;
       }
-      return reply.status(500).send({ error: message });
+      return replyWithDiagnostic(reply, 500, err, {
+        message: err instanceof Error ? undefined : "Dry run memory preparation failed",
+        event: "dry_run.memory.failed",
+      });
     }
     const fit = advancedContext
       ? { messages: advancedContext.providerMessages, maxTokensForSend: advancedContext.maxTokens }
@@ -2076,11 +2085,14 @@ export async function registerDryRunRoute(app: FastifyInstance) {
       const runId = randomUUID();
       activeDryRuns.set(runId, { abortController, chatId });
 
+      // Listen on the response: req.raw has usually closed already once the body was read.
+      let completed = false;
       const onClose = () => {
+        if (completed || reply.raw.writableEnded) return;
         abortController.abort();
         activeDryRuns.delete(runId);
       };
-      req.raw.on("close", onClose);
+      reply.raw.on("close", onClose);
 
       startSseReply(reply, { "X-Accel-Buffering": "no" });
       sendSseEvent(reply, { type: "dryrun_started", data: { runId } });
@@ -2138,6 +2150,12 @@ export async function registerDryRunRoute(app: FastifyInstance) {
           signal: abortController.signal,
         });
 
+        if (abortController.signal.aborted || result.finishReason === "abort") {
+          sendSseEvent(reply, { type: "aborted", data: full ? { content: full } : "" });
+          sendSseEvent(reply, { type: "done", data: "" });
+          return;
+        }
+
         if (result.content && !full.endsWith(result.content)) {
           await onToken(result.content);
         }
@@ -2150,12 +2168,14 @@ export async function registerDryRunRoute(app: FastifyInstance) {
           sendSseEvent(reply, { type: "done", data: "" });
           return;
         }
-        logger.error(err, "[dryRun] Streaming generation failed");
-        const message = err instanceof Error ? err.message : "Dry run generation failed";
-        sendSseEvent(reply, { type: "error", data: message });
+        emitSseFailure(reply, err, {
+          event: "dry_run.generation.failed",
+          message: "Dry run streaming generation failed",
+        });
         sendSseEvent(reply, { type: "done", data: "" });
       } finally {
-        req.raw.off("close", onClose);
+        completed = true;
+        reply.raw.off("close", onClose);
         activeDryRuns.delete(runId);
         clearInterval(keepaliveTimer);
         reply.raw.end();
@@ -2172,11 +2192,14 @@ export async function registerDryRunRoute(app: FastifyInstance) {
     const runId = providedRunId || randomUUID();
     activeDryRuns.set(runId, { abortController, chatId });
 
+    // Listen on the response: req.raw has usually closed already once the body was read.
+    let completed = false;
     const onClose = () => {
+      if (completed || reply.raw.writableEnded) return;
       abortController.abort();
       activeDryRuns.delete(runId);
     };
-    req.raw.on("close", onClose);
+    reply.raw.on("close", onClose);
 
     reply.header("x-dryrun-runid", runId);
 
@@ -2205,6 +2228,13 @@ export async function registerDryRunRoute(app: FastifyInstance) {
         signal: abortController.signal,
       });
 
+      if (abortController.signal.aborted || result.finishReason === "abort") {
+        completed = true;
+        const partialContent = (result.content ?? "").trimEnd();
+        return reply.send({ aborted: true, runId, ...(partialContent ? { partialContent } : {}) });
+      }
+
+      completed = true;
       return reply.send({
         content: (result.content ?? "").trimEnd(),
         runId,
@@ -2213,11 +2243,13 @@ export async function registerDryRunRoute(app: FastifyInstance) {
       if (abortController.signal.aborted || (err && typeof err === "object" && (err as any).name === "AbortError")) {
         return reply.send({ aborted: true, runId });
       }
-      logger.error(err, "[dryRun] Generation failed");
-      const message = err instanceof Error ? err.message : "Dry run generation failed";
-      return reply.status(500).send({ error: message, runId });
+      return replyWithDiagnostic(reply, 500, err, {
+        message: err instanceof Error ? undefined : "Dry run generation failed",
+        body: { runId },
+      });
     } finally {
-      req.raw.off("close", onClose);
+      completed = true;
+      reply.raw.off("close", onClose);
       activeDryRuns.delete(runId);
     }
   });

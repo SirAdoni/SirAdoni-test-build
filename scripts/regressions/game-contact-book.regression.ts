@@ -56,7 +56,7 @@ try {
     chat("session-unknown", 0, { gameSessionNumber: undefined, gameNpcs: [{ id: "npc-solo", name: "Solo" }] }),
     chat("branch", 3, { branchParentChatId: "session-2" }),
   ]);
-  await db.insert(schema.personas).values({ id: "persona-1", name: "Robert", createdAt: now, updatedAt: now });
+  await db.insert(schema.personas).values({ id: "persona-1", name: "Edmund", createdAt: now, updatedAt: now });
   await db.insert(schema.characters).values({
     id: "char-bob",
     data: json({ name: "Bob", extensions: { avatarCrop: { srcX: 0.2, srcY: 0.1, srcWidth: 0.6, srcHeight: 0.75 } } }),
@@ -91,12 +91,12 @@ try {
   await db
     .insert(schema.messages)
     .values([
-      scene("session-1", "message-1", ["Robert", "Alice", "Bob", "Eve"]),
-      scene("session-2", "message-2", ["Robert", "Alice", "Bob", "Eve", "Carol", "Guards"]),
-      scene("session-2-duplicate", "message-duplicate", ["Robert", "Alice", "DuplicateOnly"]),
-      scene("session-3-future", "message-3", ["Robert", "Alice"]),
-      scene("session-unknown", "message-unknown", ["Robert", "Solo"]),
-      scene("branch", "message-branch", ["Robert", "Alice", "Bob"]),
+      scene("session-1", "message-1", ["Edmund", "Alice", "Bob", "Eve"]),
+      scene("session-2", "message-2", ["Edmund", "Alice", "Bob", "Eve", "Carol", "Guards"]),
+      scene("session-2-duplicate", "message-duplicate", ["Edmund", "Alice", "DuplicateOnly"]),
+      scene("session-3-future", "message-3", ["Edmund", "Alice"]),
+      scene("session-unknown", "message-unknown", ["Edmund", "Solo"]),
+      scene("branch", "message-branch", ["Edmund", "Alice", "Bob"]),
     ]);
   const provenance = json({ source: "regression", sourceRevision: "1", actor: "system" });
   await db.insert(schema.campaignMemoryEntities).values([

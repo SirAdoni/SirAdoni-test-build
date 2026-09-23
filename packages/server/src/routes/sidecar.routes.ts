@@ -5,6 +5,9 @@
 
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { logger, logDebugOverride } from "../lib/logger.js";
+import { reportDiagnosticError } from "../lib/diagnostic-operation.js";
+import { createDiagnostic } from "../lib/diagnostics.js";
+import { logEvent, logRecovered, logRepeated } from "../lib/log-events.js";
 import { z } from "zod";
 import { sidecarModelService } from "../services/sidecar/sidecar-model.service.js";
 import { sidecarSpeechService } from "../services/sidecar/sidecar-speech.service.js";
@@ -92,11 +95,23 @@ async function requireConversationCallsForSpeech(reply: FastifyReply): Promise<b
 export const sidecarRoutes: FastifyPluginAsync = async (app) => {
   registerSequentialGameTasks(app, ["/analyze-scene"]);
   app.get("/status", async () => {
-    void sidecarProcessService
-      .syncForCurrentConfig({ suppressKnownFailure: true, allowRuntimeInstall: false })
-      .catch((error) => {
-        logger.error(error, "[sidecar] Background sync from /status failed");
-      });
+    void sidecarProcessService.syncForCurrentConfig({ suppressKnownFailure: true, allowRuntimeInstall: false }).then(
+      () => logRecovered("sidecar.sync:status"),
+      (error) => {
+        logRepeated(
+          "sidecar.sync:status",
+          "warn",
+          {
+            event: "sidecar.sync",
+            trigger: "status",
+            outcome: "failed",
+            err: error,
+            errorCode: createDiagnostic(error).code,
+          },
+          "[sidecar] Background sync from /status failed",
+        );
+      },
+    );
 
     const status = sidecarModelService.getStatus();
     return {
@@ -241,7 +256,22 @@ export const sidecarRoutes: FastifyPluginAsync = async (app) => {
     return { models };
   });
 
+  // The close handler below cancels process-wide downloads and installs, so only
+  // one setup stream may own that work at a time. The owner releases it when it
+  // finishes or disconnects (its disconnect already cancels the shared work).
+  let activeSetupStream: object | null = null;
+
   async function handleDownloadSse(reply: FastifyReply, task: () => Promise<void>): Promise<void> {
+    if (activeSetupStream) {
+      reply.status(409).send({ error: "Another sidecar download or runtime install is already in progress" });
+      return;
+    }
+    const streamOwner = {};
+    activeSetupStream = streamOwner;
+    const releaseSetupStream = () => {
+      if (activeSetupStream === streamOwner) activeSetupStream = null;
+    };
+    const startedAt = Date.now();
     reply.hijack();
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -251,6 +281,7 @@ export const sidecarRoutes: FastifyPluginAsync = async (app) => {
 
     let completed = false;
     const cancelActiveWork = () => {
+      releaseSetupStream();
       if (completed) return;
       sidecarModelService.cancelDownload();
       mlxRuntimeService.cancelInstall();
@@ -284,9 +315,28 @@ export const sidecarRoutes: FastifyPluginAsync = async (app) => {
     try {
       await task();
       completed = true;
+      logEvent("info", "sidecar.download", {
+        stage: "sidecar.download",
+        outcome: "ok",
+        phase: lastProgressPhase,
+        label: lastProgressLabel,
+        elapsedMs: Date.now() - startedAt,
+      });
       sendEvent({ done: true });
     } catch (error) {
-      if (reply.raw.destroyed) {
+      const clientGone = reply.raw.destroyed;
+      const ref = reportDiagnosticError(error, { stage: "sidecar.download" }, undefined, {
+        level: clientGone ? "info" : "warn",
+        event: "sidecar.download",
+        message: "[sidecar] Download failed",
+        fields: {
+          outcome: clientGone ? "cancelled" : "failed",
+          phase: lastProgressPhase,
+          label: lastProgressLabel,
+          elapsedMs: Date.now() - startedAt,
+        },
+      });
+      if (clientGone) {
         return;
       }
       sendEvent({
@@ -294,10 +344,13 @@ export const sidecarRoutes: FastifyPluginAsync = async (app) => {
         phase: lastProgressPhase,
         label: lastProgressLabel,
         error: error instanceof Error ? error.message : "Download failed",
+        errorId: ref.errorId,
+        code: ref.code,
       });
     } finally {
       sidecarModelService.removeProgressListener(listener);
       completed = true;
+      releaseSetupStream();
       if (!reply.raw.destroyed && !reply.raw.writableEnded) {
         try {
           reply.raw.end();
@@ -330,20 +383,42 @@ export const sidecarRoutes: FastifyPluginAsync = async (app) => {
 
     let lastProgressPhase: SidecarDownloadProgress["phase"] = "model";
     let lastProgressLabel: string | undefined;
+    const startedAt = Date.now();
     try {
       await task((progress) => {
         lastProgressPhase = progress.phase;
         lastProgressLabel = progress.label;
         if (progress.status === "downloading") sendEvent(progress);
       });
+      logEvent("info", "sidecar.download", {
+        stage: "sidecar.download",
+        outcome: "ok",
+        phase: lastProgressPhase,
+        label: lastProgressLabel,
+        elapsedMs: Date.now() - startedAt,
+      });
       sendEvent({ done: true });
     } catch (error) {
-      if (!reply.raw.destroyed) {
+      const clientGone = reply.raw.destroyed;
+      const ref = reportDiagnosticError(error, { stage: "sidecar.download" }, undefined, {
+        level: clientGone ? "info" : "warn",
+        event: "sidecar.download",
+        message: "[sidecar] Speech model download failed",
+        fields: {
+          outcome: clientGone ? "cancelled" : "failed",
+          phase: lastProgressPhase,
+          label: lastProgressLabel,
+          elapsedMs: Date.now() - startedAt,
+        },
+      });
+      if (!clientGone) {
         sendEvent({
           status: "error",
           phase: lastProgressPhase,
           label: lastProgressLabel,
           error: error instanceof Error ? error.message : "Local Whisper download failed",
+          errorId: ref.errorId,
+          code: ref.code,
         });
       }
     } finally {

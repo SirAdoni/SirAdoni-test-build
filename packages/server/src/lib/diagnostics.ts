@@ -1,5 +1,5 @@
 import type { DiagnosticReference } from "@marinara-engine/shared";
-import { AsyncLocalStorage } from "node:async_hooks";
+import { AsyncLocalStorage, AsyncResource } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 
 export interface DiagnosticContext {
@@ -18,6 +18,8 @@ export interface DiagnosticContext {
 
 const contexts = new AsyncLocalStorage<DiagnosticContext>();
 const references = new WeakMap<object, DiagnosticReference>();
+const reported = new WeakSet<object>();
+const MAX_CAUSE_LINKS = 8;
 const MAX_TEXT = 2_000;
 const SECRET_KEYS =
   /(?:authorization|cookie|password|passwd|secret|api[_-]?key|access[_-]?key|private[_-]?key|credential|jwt|bearer|token)/i;
@@ -29,6 +31,43 @@ export function getDiagnosticContext(): DiagnosticContext {
 
 export function withDiagnosticContext<T>(context: DiagnosticContext, work: () => T): T {
   return contexts.run({ ...getDiagnosticContext(), ...context }, work);
+}
+
+/**
+ * Starts a fresh context store that does not inherit the caller's. Use it for
+ * requests, timers, workers and package ticks, so they never carry a stale
+ * requestId or stage from whatever happened to schedule them.
+ */
+export function runWithRootDiagnosticContext<T>(context: DiagnosticContext, work: () => T): T {
+  return contexts.run({ ...context }, work);
+}
+
+/** Binds a callback to the context active now, for callbacks run later by an emitter or pool. */
+export function bindCurrentDiagnosticContext<F extends (...args: any[]) => any>(fn: F): F {
+  return AsyncResource.bind(fn) as F;
+}
+
+export type DiagnosticLevel = "info" | "warn" | "error";
+
+/** Default log level for a failure of the given ME_* code. */
+export function levelFor(code: string): DiagnosticLevel {
+  if (code === "ME_CANCELLED") return "info";
+  if (code === "ME_VALIDATION" || code === "ME_AUTH" || code === "ME_RATE_LIMIT") return "warn";
+  return "error";
+}
+
+/** Records that this error object already has its one full log line, so later layers only log a debug pointer. */
+export function markDiagnosticReported(error: unknown): void {
+  if (error && (typeof error === "object" || typeof error === "function")) reported.add(error as object);
+}
+
+export function wasDiagnosticReported(error: unknown): boolean {
+  return !!error && (typeof error === "object" || typeof error === "function") && reported.has(error as object);
+}
+
+/** True for environment variable names whose values must never be logged. */
+export function isSecretEnvKey(key: string): boolean {
+  return SECRET_KEYS.test(key) || /PASS|SECRET|KEY|TOKEN|CREDENTIAL|PRIVATE/i.test(key);
 }
 
 function errorName(error: unknown) {
@@ -61,6 +100,7 @@ function classify(error: unknown, explicit?: string, depth = 0): string {
   if (status !== undefined) return "ME_HTTP_ERROR";
   if (name.includes("validation") || name === "zoderror") return "ME_VALIDATION";
   if (name.includes("session") && name.includes("review")) return "ME_SESSION_REVIEW";
+  if (name === "storagewriterleaseerror") return "ME_STORAGE_LEASE";
   if (
     name.includes("storage") ||
     code.startsWith("SQLITE") ||
@@ -94,11 +134,47 @@ export function sanitizeDiagnosticText(text: string, limit = MAX_TEXT): string {
   return value.length > limit ? `${value.slice(0, limit)}…[TRUNCATED]` : value;
 }
 
+const EXTRA_ERROR_KEYS = [
+  "code",
+  "status",
+  "statusCode",
+  "providerCode",
+  "retryAfterMs",
+  "errno",
+  "syscall",
+  "signal",
+  "killed",
+  "exitCode",
+  "errorCode",
+  "packageId",
+  "stage",
+  "operation",
+  "providerRequestId",
+  "host",
+  "retryAttempts",
+  "primaryErrorId",
+  "timeoutMs",
+  "attempt",
+  "httpStatus",
+] as const;
+const PAYLOAD_KEYS =
+  /^(headers?|body|query|cookies?|media|response|rawJson|images?|files?|raw|rawText|responsePreview|preview|reasoning|imagePrompt|fullResponse)$/i;
+
 export function sanitizeDiagnosticValue(
   value: unknown,
   depth = 0,
   seen = new WeakSet<object>(),
   debug = false,
+): unknown {
+  return sanitizeInner(value, depth, seen, debug, 0);
+}
+
+function sanitizeInner(
+  value: unknown,
+  depth: number,
+  seen: WeakSet<object>,
+  debug: boolean,
+  causeLinks: number,
 ): unknown {
   if (depth > 5) return "[TRUNCATED]";
   if (typeof value === "string") return sanitizeDiagnosticText(value, debug ? 128_000 : 8_000);
@@ -107,34 +183,72 @@ export function sanitizeDiagnosticValue(
   seen.add(value);
   if (value instanceof Error) {
     const result: Record<string, unknown> = { name: value.name, message: sanitizeDiagnosticText(value.message) };
-    for (const key of ["code", "status", "statusCode", "providerCode", "retryAfterMs"]) {
+    for (const key of EXTRA_ERROR_KEYS) {
       const item = (value as any)[key];
       if (item !== undefined && (typeof item === "string" || typeof item === "number" || typeof item === "boolean"))
         result[key] = typeof item === "string" ? sanitizeDiagnosticText(item) : item;
     }
     if (value.stack) result.stack = sanitizeDiagnosticText(value.stack, 8_000);
-    if (value.cause) result.cause = sanitizeDiagnosticValue(value.cause, depth + 1, seen, debug);
+    const aggregate = (value as AggregateError).errors;
+    if (Array.isArray(aggregate))
+      result.errors = aggregate.slice(0, 8).map((item) => sanitizeInner(item, depth + 1, seen, debug, 0));
+    // The cause chain has its own link budget instead of the nesting depth, so
+    // a wrapper of a wrapper still shows the root cause.
+    if (value.cause !== undefined && value.cause !== null) {
+      if (causeLinks < MAX_CAUSE_LINKS) result.cause = sanitizeInner(value.cause, 0, seen, debug, causeLinks + 1);
+      else result.causeTruncated = true;
+    }
     return result;
   }
-  if (Array.isArray(value))
-    return value.slice(0, 32).map((item) => sanitizeDiagnosticValue(item, depth + 1, seen, debug));
+  if (Array.isArray(value)) return value.slice(0, 32).map((item) => sanitizeInner(item, depth + 1, seen, debug, 0));
   const result: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value).slice(0, 64)) {
+    // An already-serialized error (the file writer sanitizes a second time) keeps
+    // the same cause-link budget as a live Error instead of the nesting depth.
+    if (key === "cause" && item !== null && typeof item === "object") {
+      if (causeLinks < MAX_CAUSE_LINKS) result[key] = sanitizeInner(item, 0, seen, debug, causeLinks + 1);
+      else result.causeTruncated = true;
+      continue;
+    }
     const numericCount = /(?:tokens|tokenCount)$/i.test(key) && typeof item === "number";
-    const payload =
-      /^(headers?|body|query|cookies?|media|response|rawJson|images?|files?)$/i.test(key) ||
-      (!debug && /^(prompt|messages|content)$/i.test(key));
+    const payload = PAYLOAD_KEYS.test(key) || (!debug && /^(prompt|messages|content)$/i.test(key));
     result[key] =
       (!numericCount && SECRET_KEYS.test(key)) || payload
         ? "[REDACTED]"
-        : sanitizeDiagnosticValue(
+        : sanitizeInner(
             typeof item === "string" && /^(url|originalUrl)$/i.test(key) ? item.split(/[?#]/, 1)[0] : item,
             depth + 1,
             seen,
             debug,
+            0,
           );
   }
   return result;
+}
+
+function isObjectLike(value: unknown): value is object {
+  return !!value && (typeof value === "object" || typeof value === "function");
+}
+
+/** Finds a reference already minted for a cause or an aggregated error, so one incident keeps one errorId. */
+function linkedReference(error: unknown): DiagnosticReference | undefined {
+  let current: unknown = error;
+  for (let link = 0; link < MAX_CAUSE_LINKS; link++) {
+    const next = isObjectLike(current) ? (current as any).cause : undefined;
+    if (!isObjectLike(next) || next === current) break;
+    const found = references.get(next);
+    if (found) return found;
+    current = next;
+  }
+  const aggregate = isObjectLike(error) ? (error as AggregateError).errors : undefined;
+  if (Array.isArray(aggregate)) {
+    for (const item of aggregate.slice(0, 8)) {
+      if (!isObjectLike(item)) continue;
+      const found = references.get(item);
+      if (found) return found;
+    }
+  }
+  return undefined;
 }
 
 export function createDiagnostic(error: unknown, context?: DiagnosticContext, code?: string): DiagnosticReference {
@@ -143,9 +257,10 @@ export function createDiagnostic(error: unknown, context?: DiagnosticContext, co
     const previous = references.get(error);
     if (previous) return previous;
   }
+  const linked = linkedReference(error);
   const reference: DiagnosticReference = {
     code: classify(error, code),
-    errorId: randomUUID(),
+    errorId: linked?.errorId ?? randomUUID(),
     ...(supplied.requestId ? { requestId: supplied.requestId } : {}),
     ...(supplied.operation ? { operation: supplied.operation } : {}),
     ...(supplied.stage ? { stage: supplied.stage } : {}),

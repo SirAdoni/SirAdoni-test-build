@@ -791,8 +791,13 @@ export function GameCombatUI({
   }, [combatLogEntries.length, narration]);
 
   useEffect(() => {
-    combatLogEndRef.current?.scrollIntoView({ block: "end" });
-  }, [combatLogEntries.length]);
+    // Scroll only the log's own scroller. scrollIntoView also scrolls every ancestor, which yanked the
+    // page and the game view on each new entry, and it never ran when the mobile log drawer opened.
+    let scroller = combatLogEndRef.current?.parentElement ?? null;
+    while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
+    if (scroller && scroller !== document.body && scroller !== document.documentElement)
+      scroller.scrollTop = scroller.scrollHeight;
+  }, [combatLogEntries.length, openDrawer]);
 
   const visibleCombatDialogue = useMemo(() => {
     const combatants = [...party, ...enemies];
@@ -1811,7 +1816,9 @@ export function GameCombatUI({
       setSelectedSkillId(null);
       setSelectedItemName(normalizedItemName);
       const itemEffect = getCombatItemEffect(normalizedItemName, combatItemEffects);
-      if (combatItemTargetsEnemies(itemEffect) || (itemEffect?.target === "ally" && party.length > 1)) {
+      // Only offer an ally picker when there is more than one living ally to choose between.
+      const livingAllies = party.filter((member) => member.hp > 0).length;
+      if (combatItemTargetsEnemies(itemEffect) || (itemEffect?.target === "ally" && livingAllies > 1)) {
         setPhase("target-select");
         return;
       }
@@ -1963,7 +1970,7 @@ export function GameCombatUI({
                     combatant={enemy}
                     side="enemy"
                     isTargetable={phase === "target-select" && selectingEnemyTarget}
-                    isActive={turnOrder[0]?.id === enemy.id && phase === "animating"}
+                    isActive={activeCombatAction?.attackerId === enemy.id}
                     onSelect={() => handleTargetSelect(enemy.id)}
                     damagePopups={damagePopups.filter((p) => p.targetId === enemy.id)}
                     sideCount={enemies.length}
@@ -1983,7 +1990,7 @@ export function GameCombatUI({
                     isTargetable={phase === "target-select" && selectingAllyTarget}
                     isActive={
                       (phase === "player-turn" && i === activePlayerIndex) ||
-                      (turnOrder[0]?.id === member.id && phase === "animating")
+                      activeCombatAction?.attackerId === member.id
                     }
                     onSelect={
                       phase === "target-select" && selectingAllyTarget ? () => handleTargetSelect(member.id) : undefined
@@ -2502,7 +2509,7 @@ export function GameCombatUI({
                       isTargetable={phase === "target-select" && selectingAllyTarget}
                       isActive={
                         (phase === "player-turn" && i === activePlayerIndex) ||
-                        (turnOrder[0]?.id === member.id && phase === "animating")
+                        activeCombatAction?.attackerId === member.id
                       }
                       onSelect={
                         phase === "target-select" && selectingAllyTarget
@@ -2599,7 +2606,7 @@ export function GameCombatUI({
               combatant={enemy}
               side="enemy"
               isTargetable={phase === "target-select" && selectingEnemyTarget}
-              isActive={turnOrder[0]?.id === enemy.id && phase === "animating"}
+              isActive={activeCombatAction?.attackerId === enemy.id}
               onSelect={() => handleTargetSelect(enemy.id)}
               damagePopups={damagePopups.filter((p) => p.targetId === enemy.id)}
               dialogueLines={combatDialogueLayout.byCombatantId.get(enemy.id)}
@@ -2619,7 +2626,7 @@ export function GameCombatUI({
               isTargetable={phase === "target-select" && selectingAllyTarget}
               isActive={
                 (phase === "player-turn" && i === activePlayerIndex) ||
-                (turnOrder[0]?.id === member.id && phase === "animating")
+                activeCombatAction?.attackerId === member.id
               }
               onSelect={
                 phase === "target-select" && selectingAllyTarget ? () => handleTargetSelect(member.id) : undefined

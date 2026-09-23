@@ -131,7 +131,7 @@ try {
   await cross.getByRole("button", { name: "Apply reviewed change", exact: true }).click();
   await cross.locator("[data-campaign-wiki-cross-session]").waitFor();
   const crossBody = await cross.locator("body").innerText();
-  record("editor save cross-session 409 shows the specific message, not the reload banner", crossBody.includes("Not saved: this change points at a record from another session.") && crossBody.includes("Mira Thorne has no page in that session yet") && !crossBody.includes("This record changed since it was loaded") && !crossBody.includes("could not be saved") && await crossSummary.inputValue() === "Draft kept on cross-session refusal", crossBody.slice(0, 400));
+  record("editor save cross-session 409 shows the specific message, not the reload banner", crossBody.includes("Not saved: this change points at a record from another session.") && crossBody.includes("Mira Stonebridge has no page in that session yet") && !crossBody.includes("This record changed since it was loaded") && !crossBody.includes("could not be saved") && await crossSummary.inputValue() === "Draft kept on cross-session refusal", crossBody.slice(0, 400));
   await cross.evaluate(() => { window.__wikiMock.crossSessionOnce = true; });
   await crossSummary.fill("Draft kept on cross-session preview");
   await cross.getByRole("button", { name: "Review preview", exact: true }).click();

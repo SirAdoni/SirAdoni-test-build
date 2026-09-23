@@ -257,6 +257,7 @@ export function useCreateGame() {
       // Collapse sidebar when starting a new game to maximize game area
       useUIStore.getState().setSidebarOpen(false);
       qc.invalidateQueries({ queryKey: chatKeys.list() });
+      qc.invalidateQueries({ queryKey: chatKeys.detail(res.sessionChat.id) });
     },
     onError: (err) => {
       console.error("[createGame] Error:", err);

@@ -28,7 +28,7 @@ try {
       characterIds: JSON.stringify(["mira", "npc:bandit", "__professor_mari__"]),
       personaCharacterId: "self",
       metadata: JSON.stringify({
-        gamePartyCharacterIds: ["mira", "npc:tracked", "aldric"],
+        gamePartyCharacterIds: ["mira", "npc:tracked", "leofric"],
         gameNpcs: [{ id: "npc-1", characterId: "sela" }, { id: "npc-2", characterId: null }, "junk"],
         gameGmMode: "character",
         gameGmCharacterId: "narrator",
@@ -39,7 +39,7 @@ try {
       {
         mira: ["member", "party"],
         self: ["persona"],
-        aldric: ["party"],
+        leofric: ["party"],
         sela: ["npc"],
         narrator: ["gm"],
       },
@@ -52,8 +52,8 @@ try {
       metadata: JSON.stringify({ gamePartyCharacterIds: ["x"] }),
     });
     assert.equal(roleplay.size, 0, "game metadata is only read for game chats; bad JSON is empty");
-    assert.equal(gameNameFromChatName("Valdenmoor — Session 12"), "Valdenmoor");
-    assert.equal(gameNameFromChatName("Valdenmoor - Session 3"), "Valdenmoor");
+    assert.equal(gameNameFromChatName("Brindlemere — Session 12"), "Brindlemere");
+    assert.equal(gameNameFromChatName("Brindlemere - Session 3"), "Brindlemere");
     assert.equal(gameNameFromChatName("Plain"), "Plain");
     const games = groupGameUsage([
       {
@@ -100,7 +100,7 @@ try {
       updatedAt: at(1),
     } as never);
   await card("mira", "Mira");
-  await card("aldric", "Aldric");
+  await card("leofric", "Leofric");
   await card("sela", "Sela", { libraryCategory: "npcs" });
   await card("lonely", "Lonely");
   await card("orphan-npc", "Orphan", { marinara: { gameNpc: { autoCreated: true } } });
@@ -118,15 +118,15 @@ try {
     } as never);
   await chat("rp-1", { characterIds: JSON.stringify(["mira"]), lastMessageAt: at(5) });
   await chat("session-1", {
-    name: "Valdenmoor — Session 1",
+    name: "Brindlemere — Session 1",
     mode: "game",
     groupId: "game-1",
     characterIds: JSON.stringify(["mira"]),
-    metadata: JSON.stringify({ gameId: "game-1", gamePartyCharacterIds: ["mira", "aldric"] }),
+    metadata: JSON.stringify({ gameId: "game-1", gamePartyCharacterIds: ["mira", "leofric"] }),
     lastMessageAt: at(8),
   });
   await chat("session-2", {
-    name: "Valdenmoor — Session 2",
+    name: "Brindlemere — Session 2",
     mode: "game",
     groupId: "game-1",
     metadata: JSON.stringify({ gameId: "game-1", gameNpcs: [{ id: "n", characterId: "sela" }] }),
@@ -148,7 +148,7 @@ try {
 
   const index = createCharacterUsageIndex();
   const summary = await index.summary(db);
-  assert.deepEqual(Object.keys(summary).sort(), ["aldric", "mira", "sela"], "the internal Mari chat does not count");
+  assert.deepEqual(Object.keys(summary).sort(), ["leofric", "mira", "sela"], "the internal Mari chat does not count");
   assert.deepEqual(summary.mira, { chats: 2, games: 1, lastActivityAt: at(8) });
   assert.equal(index.builds, 1);
   await index.summary(db);
@@ -163,7 +163,7 @@ try {
     ],
     "newest first, with roles",
   );
-  assert.equal(mira.games[0]?.gameName, "Valdenmoor");
+  assert.equal(mira.games[0]?.gameName, "Brindlemere");
 
   // A chat change invalidates: the next request sees it.
   await db
@@ -177,14 +177,14 @@ try {
   assert.equal((await index.summary(db)).mira?.chats, 1);
 
   // Message counts are opt-in and cached per chat.
-  await chat("rp-2", { characterIds: JSON.stringify(["aldric"]), lastMessageAt: at(3) });
+  await chat("rp-2", { characterIds: JSON.stringify(["leofric"]), lastMessageAt: at(3) });
   for (let i = 0; i < 2; i += 1) {
     await db
       .insert(messages)
       .values({ id: `n-${i}`, chatId: "rp-2", role: "user", content: "x", createdAt: at(3) } as never);
   }
-  const aldric = await index.forCharacter(db, "aldric");
-  const counted = await index.countMessages(db, aldric.chats);
+  const leofric = await index.forCharacter(db, "leofric");
+  const counted = await index.countMessages(db, leofric.chats);
   assert.deepEqual(counted, { counts: { "session-1": 0, "rp-2": 2 }, truncated: false });
 
   // ── Routes ──
@@ -209,11 +209,11 @@ try {
         ["orphan-npc", "npcs"],
       ],
     );
-    const detail = await get("/aldric");
+    const detail = await get("/leofric");
     assert.equal(detail.status, 200);
     assert.equal(detail.body.messageCounts, null, "no counts unless asked");
     assert.equal(detail.body.games.length, 1);
-    const withCounts = await get("/aldric?counts=1");
+    const withCounts = await get("/leofric?counts=1");
     assert.deepEqual(withCounts.body.messageCounts, { "session-1": 0, "rp-2": 2 });
     assert.equal((await get("/missing")).status, 404);
     assert.ok((await get("/summary")).body.characters.sela);

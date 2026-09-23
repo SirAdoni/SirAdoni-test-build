@@ -7,7 +7,7 @@ import {
   reanchorContinuityReceipt,
   retireContinuityReceipt,
 } from "./continuity-retirement.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { DB } from "../../db/connection.js";
 import { createChatsStorage } from "../storage/chats.storage.js";
 import { createGameStateStorage } from "../storage/game-state.storage.js";
@@ -36,7 +36,16 @@ import type { GameContinuityTelemetryEntry } from "../storage/game-continuity.st
 import { publishContinuityReceipt } from "./continuity-publication.js";
 import { captureContinuityHolderSnapshot, ensureContinuityHolderReferences } from "./continuity-holder-snapshot.js";
 import { logger } from "../../lib/logger.js";
-import { createDiagnostic } from "../../lib/diagnostics.js";
+import {
+  createDiagnostic,
+  getDiagnosticContext,
+  markDiagnosticReported,
+  runWithRootDiagnosticContext,
+  wasDiagnosticReported,
+} from "../../lib/diagnostics.js";
+import { reportDiagnosticError } from "../../lib/diagnostic-operation.js";
+import { logEvent } from "../../lib/log-events.js";
+import { registerWorkerGauge } from "../../lib/worker-gauges.js";
 import type {
   GameContinuityContextSource,
   GameContinuityMetadata,
@@ -193,17 +202,42 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
   let providerDelayMs = 0;
   let resumeTimer: ReturnType<typeof setTimeout> | null = null;
   let pauseCode: string | null = null;
+  // Breaker episode bookkeeping for the log: when the first pause of an episode started and how many
+  // failures were logged at debug while it was paused. The first answered stage closes the episode.
+  let pauseStartedAt = 0;
+  let suppressedFailures = 0;
+  const isPaused = (): boolean => Date.now() < providerPausedUntil;
   const pauseProvider = (code: string, reason: string): void => {
     if (Date.now() < providerPausedUntil) return; // a concurrent worker already started this pause
     providerDelayMs = providerDelayMs ? Math.min(providerDelayMs * 2, backoff.max) : backoff.initial;
     providerPausedUntil = Date.now() + providerDelayMs;
     pauseCode = code;
+    if (!pauseStartedAt) {
+      pauseStartedAt = Date.now();
+      suppressedFailures = 0;
+    }
     logger.warn(
-      { code, delayMs: providerDelayMs },
+      {
+        event: "continuity.breaker",
+        state: "running",
+        errorCode: code,
+        delayMs: providerDelayMs,
+        consecutiveFailures: transientFailures,
+        affectedJobs: pending.length + active,
+      },
       "[game-continuity] %s; pausing continuity work for %dms",
       reason,
       providerDelayMs,
     );
+  };
+  const closeBreakerEpisode = (): void => {
+    if (!pauseStartedAt) return;
+    logger.info(
+      { event: "continuity.breaker", state: "recovered", pausedMs: Date.now() - pauseStartedAt, suppressedFailures },
+      "[game-continuity] provider answered again; continuity work resumed",
+    );
+    pauseStartedAt = 0;
+    suppressedFailures = 0;
   };
   const pauseForProviderLimit = (): void =>
     pauseProvider(CONTINUITY_PROVIDER_LIMITED, "provider rate/usage limit reached");
@@ -239,7 +273,7 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
         try {
           await retireContinuityReceipt(db, older.id, `Replaced by receipt ${published.id}, which read the same text.`);
         } catch (error) {
-          logger.warn({ err: error, receiptId: older.id }, "[game-continuity] could not retire replaced receipt");
+          logger.warn({ err: error, jobId: older.id }, "[game-continuity] could not retire replaced receipt");
         }
       }
     }
@@ -247,14 +281,11 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
       try {
         await options.onPublished(published);
       } catch (error) {
-        createDiagnostic(
+        reportDiagnosticError(
           error,
-          { operation: "game.continuity", stage: "published-callback", chatId: published.chatId },
+          { operation: "game.continuity", stage: "published-callback", chatId: published.chatId, jobId: published.id },
           "CONTINUITY_PUBLISHED_CALLBACK_FAILED",
-        );
-        logger.error(
-          { err: error, code: "CONTINUITY_PUBLISHED_CALLBACK_FAILED", receiptId: published.id },
-          "[game-continuity] published callback failed",
+          { event: "continuity.publish", message: "[game-continuity] published callback failed" },
         );
       }
     }
@@ -292,7 +323,17 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
   ): Promise<GameContinuityReceipt> => {
     if (stopped) throw new Error("CONTINUITY_STOPPED");
     if (status === "verified") await current(receipt);
-    return storage.save({ ...receipt, status, updatedAt: new Date().toISOString() });
+    const saved = await storage.save({ ...receipt, status, updatedAt: new Date().toISOString() });
+    // Terminal states (failed, stale) get their own job.state line from the caller.
+    if (status !== "failed" && status !== "stale")
+      logEvent("debug", "job.state", {
+        jobKind: "continuity",
+        state: "progress",
+        stage: status,
+        jobId: receipt.id,
+        chatId: receipt.chatId,
+      });
+    return saved;
   };
   const enqueuePending = (receipt: GameContinuityReceipt): void => {
     if (
@@ -303,6 +344,14 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
     )
       return;
     pending.push({ id: receipt.id, chatId: receipt.chatId });
+    logEvent("debug", "job.state", {
+      jobKind: "continuity",
+      state: "accepted",
+      jobId: receipt.id,
+      chatId: receipt.chatId,
+      backfill: isHistoricalBackfill(receipt),
+      triggeredByRequestId: getDiagnosticContext().requestId,
+    });
     void pump();
   };
   /**
@@ -369,7 +418,7 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
       updatedAt: now,
     });
     logger.info(
-      { code: CONTINUITY_CONTEXT_OVERFLOW, receiptId: receipt.id, splitInto },
+      { errorCode: CONTINUITY_CONTEXT_OVERFLOW, jobId: receipt.id, splitInto },
       "[game-continuity] oversized batch split into two halves",
     );
     for (const half of halves) enqueuePending(half);
@@ -387,6 +436,7 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
     let receipt: GameContinuityReceipt | null = null;
     let abort: AbortController | null = null;
     let countedAttempt = false;
+    const startedAt = Date.now();
     try {
       if (stopped) return false;
       receipt = await storage.get(id);
@@ -397,6 +447,21 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
         await checkpoint(
           { ...receipt, errorCode: "CONTINUITY_ATTEMPTS_EXCEEDED", error: "The worker reached its retry limit." },
           "failed",
+        );
+        logger.warn(
+          {
+            event: "job.state",
+            jobKind: "continuity",
+            jobId: id,
+            chatId: receipt.chatId,
+            attempt: receipt.attempts,
+            maxAttempts: 3,
+            state: "failed",
+            outcome: "failed",
+            errorCode: "CONTINUITY_ATTEMPTS_EXCEEDED",
+            willRetry: false,
+          },
+          "[game-continuity] batch reached its retry limit",
         );
         return false;
       }
@@ -423,6 +488,14 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
           error: undefined,
           updatedAt: new Date().toISOString(),
         });
+        logEvent("debug", "job.state", {
+          jobKind: "continuity",
+          state: "running",
+          jobId: id,
+          chatId: receipt.chatId,
+          attempt: receipt.attempts,
+          maxAttempts: 3,
+        });
       }
       await current(receipt);
       abort = new AbortController();
@@ -438,6 +511,7 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
         transientFailures = 0;
         transientReceiptIds.clear();
         if (pauseCode === CONTINUITY_PROVIDER_UNRESPONSIVE) pauseCode = null;
+        closeBreakerEpisode();
         return answer;
       };
       const chat = await chats.getById(receipt.chatId);
@@ -538,6 +612,23 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
         await current(receipt);
         receipt = (await publishActual(receipt.id)) ?? receipt;
       }
+      logEvent(
+        "info",
+        "job.state",
+        {
+          jobKind: "continuity",
+          state: "completed",
+          outcome: "ok",
+          jobId: id,
+          chatId: receipt.chatId,
+          attempt: receipt.attempts,
+          reviewStatus: reviewed.status,
+          published: receipt.status === "published",
+          repairAttempts: reviewed.repairAttempts,
+          elapsedMs: Date.now() - startedAt,
+        },
+        "[game-continuity] batch completed",
+      );
       return false;
     } catch (error) {
       if (stopped) return false;
@@ -558,6 +649,7 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
         // receipt at its last durable checkpoint, and trip the cross-batch breaker after N in a row.
         transientFailures += 1;
         transientReceiptIds.add(id);
+        const pausedBefore = isPaused();
         const tripped = transientFailures >= unresponsiveThreshold;
         if (tripped) pauseProvider(CONTINUITY_PROVIDER_UNRESPONSIVE, "provider stopped answering continuity stages");
         try {
@@ -584,7 +676,14 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
         } catch (checkpointError) {
           if (!stopped) logger.error(checkpointError, "[game-continuity] failed to persist transient failure");
         }
-        if (!stopped) logger.warn({ code, receiptId: id }, "[game-continuity] transient provider failure");
+        if (!stopped) {
+          // While the breaker holds the pump, each receipt's transient failure is expected: debug only.
+          if (pausedBefore) suppressedFailures += 1;
+          logger[pausedBefore ? "debug" : "warn"](
+            { event: "continuity.stage", outcome: "failed", errorCode: code, jobId: id, transient: true },
+            "[game-continuity] transient provider failure",
+          );
+        }
         return true;
       }
       if (
@@ -601,6 +700,7 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
       if (code === CONTINUITY_PROVIDER_LIMITED) {
         // Quota exhaustion is not the batch's fault: give back the attempt this execution counted and
         // keep the batch resumable with a visible reason, then stop the whole runtime for a while.
+        if (isPaused()) suppressedFailures += 1;
         pauseForProviderLimit();
         try {
           await storage.save({
@@ -632,7 +732,29 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
       } catch (checkpointError) {
         if (!stopped) logger.error(checkpointError, "[game-continuity] failed to persist worker error");
       }
-      if (!stopped) logger.warn(error, "[game-continuity] worker stage failed for receipt %s", id);
+      if (!stopped) {
+        const final = !stale && currentReceipt.attempts >= 3;
+        const willRetry = !stale && currentReceipt.attempts < 3;
+        logger[final ? "error" : "warn"](
+          {
+            event: "job.state",
+            jobKind: "continuity",
+            jobId: id,
+            chatId: currentReceipt.chatId,
+            attempt: currentReceipt.attempts,
+            maxAttempts: 3,
+            state: final ? "failed" : stale ? "expired" : "progress",
+            outcome: final ? "failed" : undefined,
+            errorCode: code || "CONTINUITY_WORKER_FAILED",
+            errorId: createDiagnostic(error).errorId,
+            willRetry,
+            elapsedMs: Date.now() - startedAt,
+            ...(wasDiagnosticReported(error) ? {} : { err: error }),
+          },
+          "[game-continuity] batch attempt failed",
+        );
+        markDiagnosticReported(error);
+      }
       return !stale && currentReceipt.attempts < 3;
     } finally {
       if (abort) controllers.delete(abort);
@@ -643,7 +765,12 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
   let refrozenConfigChanged = 0;
   // Receipts per chat, read once per pump pass for the config-change sibling check.
   const chatReceipts = new Map<string, GameContinuityReceipt[]>();
-  async function pump(): Promise<void> {
+  // The pump runs in its own root context, so admission lines never carry the requestId or stage of
+  // whatever request or worker happened to enqueue the job (resumeTimer re-enters here as well).
+  function pump(): Promise<void> {
+    return runWithRootDiagnosticContext({ operation: "game.continuity.pump" }, pumpQueue);
+  }
+  async function pumpQueue(): Promise<void> {
     if (pumping || stopped) return;
     const pausedFor = providerPausedUntil - Date.now();
     if (pausedFor > 0) {
@@ -781,9 +908,22 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
         activeChats.set(item.chatId, occupied ? { ...occupied, count: occupied.count + 1 } : { mode, count: 1 });
         activeIds.add(item.id);
         active += 1;
-        void process(item.id, mode)
+        void runWithRootDiagnosticContext(
+          {
+            operation: "game.continuity",
+            operationId: randomUUID(),
+            jobId: item.id,
+            chatId: item.chatId,
+            attempt: queued.attempts + 1,
+          },
+          () => process(item.id, mode),
+        )
           .catch((error) => {
-            logger.error(error, "[game-continuity] worker promise failed for receipt %s", item.id);
+            logger.error(
+              { err: error, event: "job.state", jobKind: "continuity", jobId: item.id, chatId: item.chatId },
+              "[game-continuity] worker promise failed for receipt %s",
+              item.id,
+            );
             return false;
           })
           .then(async (shouldRequeue) => {
@@ -816,9 +956,15 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
       const message = error instanceof Error ? error.message : String(error);
       const code = errorCodeOf(error, message);
       if (isTransientCode(code)) {
+        const pausedBefore = isPaused();
         pauseProvider(CONTINUITY_PROVIDER_UNAVAILABLE, "continuity connection is unavailable");
         retryAfterPause = true;
-        if (!stopped) logger.warn({ code }, "[game-continuity] admission paused; pending work remains queued");
+        if (pausedBefore) suppressedFailures += 1;
+        if (!stopped)
+          logger[pausedBefore ? "debug" : "warn"](
+            { event: "continuity.breaker", errorCode: code, pending: pending.length },
+            "[game-continuity] admission paused; pending work remains queued",
+          );
       } else if (!stopped) {
         logger.error(error, "[game-continuity] pump admission failed");
       }
@@ -965,11 +1111,132 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
     });
   }
 
+  const unregisterGauge = registerWorkerGauge("continuity", () => ({
+    pending: pending.length,
+    active,
+    pausedUntil: providerPausedUntil > Date.now() ? providerPausedUntil : null,
+  }));
+
+  /** One warn for a whole recovery pass instead of one per receipt or chat whose configuration could not be read. */
+  type ConfigFailures = {
+    count: number;
+    firstErrorCode?: string;
+    sampleJobId?: string;
+    sampleChatId?: string;
+    firstError?: unknown;
+  };
+  const noteConfigFailure = (
+    failures: ConfigFailures,
+    error: unknown,
+    sample: { jobId?: string; chatId?: string },
+  ): void => {
+    failures.count += 1;
+    if (failures.count > 1) return;
+    failures.firstError = error;
+    failures.firstErrorCode =
+      errorCodeOf(error, error instanceof Error ? error.message : String(error)) || createDiagnostic(error).code;
+    failures.sampleJobId = sample.jobId;
+    failures.sampleChatId = sample.chatId;
+  };
+
+  async function reconcileChat(
+    chatId: string,
+    reconcileOptions: { changedMessageIds?: Iterable<string> },
+    configFailures?: ConfigFailures,
+  ): Promise<GameContinuityReceipt[]> {
+    if (stopped) return [];
+    const chat = await chats.getById(chatId);
+    if (!chat || chat.mode !== "game") return [];
+    const changedMessageIds = [...(reconcileOptions.changedMessageIds ?? [])];
+    if (changedMessageIds.length > 0) {
+      // Edits, deletes, hides and swipes take the memory read from the old text back out, whatever the mode.
+      try {
+        const current = prepareContinuitySources(await chats.listMessages(chatId), objectValue(chat.metadata));
+        for (const receipt of findSourceChangedReceipts(await storage.list(chatId), current, changedMessageIds)) {
+          // Each receipt on its own: one that cannot be rewritten no longer skips every receipt after it.
+          try {
+            const reanchoredSources = planContinuityReanchor(receipt, current);
+            // Storage refuses a reanchor its history cannot survive (null); that receipt is retired instead.
+            if (reanchoredSources && (await reanchorContinuityReceipt(db, receipt.id, reanchoredSources))) continue;
+            await retireContinuityReceipt(
+              db,
+              receipt.id,
+              "A message this receipt was read from was edited, deleted, hidden or swiped away.",
+            );
+          } catch (error) {
+            logger.warn(
+              { err: error, chatId, jobId: receipt.id },
+              "[game-continuity] could not reanchor or retire a receipt for changed messages",
+            );
+          }
+        }
+      } catch (error) {
+        logger.warn({ err: error, chatId }, "[game-continuity] could not retire receipts for changed messages");
+      }
+    }
+    let config: Awaited<ReturnType<typeof readContinuityConfig>>;
+    try {
+      config = await readContinuityConfig(db, chatId);
+    } catch (error) {
+      if (configFailures) noteConfigFailure(configFailures, error, { chatId });
+      else
+        logger.warn(
+          { err: error, event: "continuity.reconcile", outcome: "failed", chatId },
+          "[game-continuity] unable to reconcile chat %s",
+          chatId,
+        );
+      return [];
+    }
+    if (config.mode === "off") return storage.list(chatId);
+    const metadata = objectValue(chat.metadata);
+    const continuity = objectValue(metadata.gameContinuity);
+    const boundary = typeof continuity.activationMessageId === "string" ? continuity.activationMessageId : "";
+    if (!boundary && typeof continuity.activationAt !== "string") return storage.list(chatId);
+    const messages = await chats.listMessages(chatId);
+    const boundaryIndex = boundary ? messages.findIndex((message) => message.id === boundary) : -1;
+    const chatMetadata = objectValue(chat.metadata);
+    const prepared = prepareContinuitySources(messages, chatMetadata);
+    const existing = await storage.list(chatId);
+    const activationAt = typeof config.activationAt === "string" ? Date.parse(config.activationAt) : Number.NaN;
+    for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
+      const message = messages[messageIndex]!;
+      if (message.role !== "assistant") continue;
+      if (boundaryIndex >= 0 && messageIndex < boundaryIndex) continue;
+      if (boundaryIndex < 0 && Number.isNaN(activationAt)) continue;
+      if (boundaryIndex < 0 && !Number.isNaN(activationAt) && Date.parse(String(message.createdAt)) < activationAt)
+        continue;
+      const snapshot = await gameStates.getByMessage(message.id, message.activeSwipeIndex ?? 0);
+      const followedByUser = messageIndex + 1 < messages.length && messages[messageIndex + 1]?.role === "user";
+      if ((snapshot as { committed?: unknown } | null)?.committed === 1 || (!snapshot && followedByUser)) {
+        await enqueuePreparedBatches({
+          chatId,
+          assistantMessageId: message.id,
+          sessionNumber: Number(metadata.gameSessionNumber ?? 0),
+          config,
+          prepared,
+          existing,
+        });
+      }
+    }
+    return storage.list(chatId);
+  }
+
   return {
     async start() {
       if (stopped) return;
+      const startedAt = Date.now();
+      const counts = {
+        scanned: 0,
+        published: 0,
+        publishFailed: 0,
+        markedFailed: 0,
+        requeued: 0,
+        configUnavailable: 0,
+      };
+      const configFailures: ConfigFailures = { count: 0 };
       for (let receipt of await storage.list()) {
         if (stopped) return;
+        counts.scanned += 1;
         // Batches that ended unresolved before withholding existed get the same final step now: the records the
         // reviewer named stay withheld on the receipt and the rest becomes verified, then continues as usual.
         if (receipt.status === "unresolved" && receipt.repairAttempts >= 3 && receipt.review && !receipt.errorCode) {
@@ -989,7 +1256,7 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
               });
             } catch (error) {
               logger.warn(
-                { err: error, receiptId: receipt.id },
+                { err: error, jobId: receipt.id, chatId: receipt.chatId },
                 "[game-continuity] could not withhold flagged records",
               );
             }
@@ -1001,113 +1268,93 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
           try {
             config = await readContinuityConfig(db, receipt.chatId);
           } catch (error) {
-            logger.warn(error, "[game-continuity] unable to resolve receipt config %s", receipt.id);
+            noteConfigFailure(configFailures, error, { jobId: receipt.id, chatId: receipt.chatId });
+            counts.configUnavailable += 1;
             await persistPublicationFailure(receipt, "CONTINUITY_CONFIG_UNAVAILABLE");
             continue;
           }
           if (config.mode === "active") {
             try {
-              await publishVerified(receipt, config);
+              const result = await publishVerified(receipt, config);
+              if (result?.status === "published") counts.published += 1;
             } catch (error) {
+              counts.publishFailed += 1;
               await persistPublicationFailure((await storage.get(receipt.id)) ?? receipt, error);
-              logger.error(error, "[game-continuity] startup publication failed for receipt %s", receipt.id);
+              logger.error(
+                {
+                  err: error,
+                  event: "continuity.publish",
+                  outcome: "failed",
+                  jobId: receipt.id,
+                  chatId: receipt.chatId,
+                },
+                "[game-continuity] startup publication failed for receipt %s",
+                receipt.id,
+              );
             }
           }
         } else if (resumable(receipt.status)) {
-          if (receipt.attempts >= 3 && (receipt.errorCode || receipt.error))
+          if (receipt.attempts >= 3 && (receipt.errorCode || receipt.error)) {
             await storage.save({
               ...receipt,
               status: "failed",
               errorCode: "CONTINUITY_ATTEMPTS_EXCEEDED",
               error: "The worker reached its retry limit during restart recovery.",
             });
-          else enqueuePending(receipt);
+            counts.markedFailed += 1;
+          } else {
+            enqueuePending(receipt);
+            counts.requeued += 1;
+          }
         }
       }
+      const configUnavailableReceipts = configFailures.count;
       for (const chat of await chats.list()) {
         if (stopped) break;
         if (chat.mode !== "game") continue;
         // One chat with malformed memory must not fail the Engine's boot or leave every later chat unreconciled.
         try {
-          await this.reconcileChat(chat.id);
+          await reconcileChat(chat.id, {}, configFailures);
         } catch (error) {
-          logger.warn({ err: error, chatId: chat.id }, "[game-continuity] startup reconcile failed for chat");
+          logger.warn(
+            { err: error, event: "continuity.reconcile", outcome: "failed", chatId: chat.id },
+            "[game-continuity] startup reconcile failed for chat",
+          );
         }
       }
+      if (stopped) return;
+      if (configFailures.count > 0)
+        logger.warn(
+          {
+            event: "job.state",
+            jobKind: "continuity",
+            state: "recovered",
+            outcome: "failed",
+            errorCode: "CONTINUITY_CONFIG_UNAVAILABLE",
+            firstErrorCode: configFailures.firstErrorCode,
+            sampleJobId: configFailures.sampleJobId,
+            sampleChatId: configFailures.sampleChatId,
+            count: configFailures.count,
+            receipts: configUnavailableReceipts,
+            chats: configFailures.count - configUnavailableReceipts,
+            err: configFailures.firstError,
+          },
+          "[game-continuity] continuity configuration could not be read for %d receipts or chats during startup recovery",
+          configFailures.count,
+        );
+      logEvent(
+        "info",
+        "job.state",
+        { jobKind: "continuity", state: "recovered", ...counts, elapsedMs: Date.now() - startedAt },
+        "[game-continuity] startup recovery finished",
+      );
     },
     async reconcileChat(chatId: string, reconcileOptions: { changedMessageIds?: Iterable<string> } = {}) {
-      if (stopped) return [];
-      const chat = await chats.getById(chatId);
-      if (!chat || chat.mode !== "game") return [];
-      const changedMessageIds = [...(reconcileOptions.changedMessageIds ?? [])];
-      if (changedMessageIds.length > 0) {
-        // Edits, deletes, hides and swipes take the memory read from the old text back out, whatever the mode.
-        try {
-          const current = prepareContinuitySources(await chats.listMessages(chatId), objectValue(chat.metadata));
-          for (const receipt of findSourceChangedReceipts(await storage.list(chatId), current, changedMessageIds)) {
-            // Each receipt on its own: one that cannot be rewritten no longer skips every receipt after it.
-            try {
-              const reanchoredSources = planContinuityReanchor(receipt, current);
-              // Storage refuses a reanchor its history cannot survive (null); that receipt is retired instead.
-              if (reanchoredSources && (await reanchorContinuityReceipt(db, receipt.id, reanchoredSources))) continue;
-              await retireContinuityReceipt(
-                db,
-                receipt.id,
-                "A message this receipt was read from was edited, deleted, hidden or swiped away.",
-              );
-            } catch (error) {
-              logger.warn(
-                { err: error, chatId, receiptId: receipt.id },
-                "[game-continuity] could not reanchor or retire a receipt for changed messages",
-              );
-            }
-          }
-        } catch (error) {
-          logger.warn({ err: error, chatId }, "[game-continuity] could not retire receipts for changed messages");
-        }
-      }
-      let config: Awaited<ReturnType<typeof readContinuityConfig>>;
-      try {
-        config = await readContinuityConfig(db, chatId);
-      } catch (error) {
-        logger.warn(error, "[game-continuity] unable to reconcile chat %s", chatId);
-        return [];
-      }
-      if (config.mode === "off") return storage.list(chatId);
-      const metadata = objectValue(chat.metadata);
-      const continuity = objectValue(metadata.gameContinuity);
-      const boundary = typeof continuity.activationMessageId === "string" ? continuity.activationMessageId : "";
-      if (!boundary && typeof continuity.activationAt !== "string") return storage.list(chatId);
-      const messages = await chats.listMessages(chatId);
-      const boundaryIndex = boundary ? messages.findIndex((message) => message.id === boundary) : -1;
-      const chatMetadata = objectValue(chat.metadata);
-      const prepared = prepareContinuitySources(messages, chatMetadata);
-      const existing = await storage.list(chatId);
-      const activationAt = typeof config.activationAt === "string" ? Date.parse(config.activationAt) : Number.NaN;
-      for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
-        const message = messages[messageIndex]!;
-        if (message.role !== "assistant") continue;
-        if (boundaryIndex >= 0 && messageIndex < boundaryIndex) continue;
-        if (boundaryIndex < 0 && Number.isNaN(activationAt)) continue;
-        if (boundaryIndex < 0 && !Number.isNaN(activationAt) && Date.parse(String(message.createdAt)) < activationAt)
-          continue;
-        const snapshot = await gameStates.getByMessage(message.id, message.activeSwipeIndex ?? 0);
-        const followedByUser = messageIndex + 1 < messages.length && messages[messageIndex + 1]?.role === "user";
-        if ((snapshot as { committed?: unknown } | null)?.committed === 1 || (!snapshot && followedByUser)) {
-          await enqueuePreparedBatches({
-            chatId,
-            assistantMessageId: message.id,
-            sessionNumber: Number(metadata.gameSessionNumber ?? 0),
-            config,
-            prepared,
-            existing,
-          });
-        }
-      }
-      return storage.list(chatId);
+      return reconcileChat(chatId, reconcileOptions);
     },
     async stop() {
       stopped = true;
+      unregisterGauge();
       pending.length = 0;
       parked.clear();
       if (unparkTimer) clearTimeout(unparkTimer);

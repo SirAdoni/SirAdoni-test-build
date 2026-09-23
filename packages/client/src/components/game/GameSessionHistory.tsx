@@ -440,7 +440,10 @@ export function GameSessionHistory({
             </span>
           </div>
           <button
+            type="button"
             onClick={onClose}
+            aria-label={localizeUi("ui.chat.maripromptpreviewmodal.close")}
+            title={localizeUi("ui.chat.maripromptpreviewmodal.close")}
             className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
           >
             <X size={16} />
@@ -733,6 +736,8 @@ export function GameSessionHistory({
               return (
                 <div key={session.sessionNumber} className="rounded-lg border border-[var(--border)] bg-[var(--card)]">
                   <button
+                    type="button"
+                    aria-expanded={isExpanded}
                     onClick={() => setExpandedSession(isExpanded ? null : session.sessionNumber)}
                     className="flex w-full flex-wrap items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-[var(--accent)]"
                   >

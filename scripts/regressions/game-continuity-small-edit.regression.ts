@@ -55,11 +55,11 @@ try {
       id: "a1",
       chatId: "chat",
       role: "assistant",
-      content: "Elsevere says she is two hundred and seven. The rain is heavy on the drive.",
+      content: "Ismene says she is two hundred and seven. The rain is heavy on the drive.",
       createdAt: t(2),
     },
     { id: "u2", chatId: "chat", role: "user", content: "Let her in.", createdAt: t(3) },
-    { id: "a2", chatId: "chat", role: "assistant", content: "Audrey opens the door. Poppy signs.", createdAt: t(4) },
+    { id: "a2", chatId: "chat", role: "assistant", content: "Beatrix opens the door. Juniper signs.", createdAt: t(4) },
     { id: "u3", chatId: "chat", role: "user", content: "Good.", createdAt: t(5) },
   ]);
 
@@ -82,11 +82,11 @@ try {
           id: "model-id",
           kind: "other",
           text: quote,
-          subjects: ["Elsevere"],
+          subjects: ["Ismene"],
           conditions: [],
           status: "asserted",
           evidence: [{ messageId: assistant.messageId, quote }],
-          keys: ["Elsevere"],
+          keys: ["Ismene"],
         },
       ],
       dispositions,
@@ -130,7 +130,7 @@ try {
   extracted.length = 0;
 
   // 1. A typo fix outside the quoted sentence: no re-read of either turn, memory kept and still fresh.
-  const fixed = "Elsevere says she is two hundred and seven. The rain is very heavy on the drive.";
+  const fixed = "Ismene says she is two hundred and seven. The rain is very heavy on the drive.";
   await setContent("a1", fixed);
   await continuity.reconcileChat("chat", { changedMessageIds: ["a1"] });
   await settle();
@@ -148,19 +148,19 @@ try {
   );
 
   // 2. An edit that changes the quoted sentence: this turn is retired and re-read; the next turn is not.
-  await setContent("a1", "Elsevere says she is a high elf. The rain is very heavy on the drive.");
+  await setContent("a1", "Ismene says she is a high elf. The rain is very heavy on the drive.");
   await continuity.reconcileChat("chat", { changedMessageIds: ["a1"] });
   assert.equal((await storage.get(r1.id))?.errorCode, CONTINUITY_SOURCE_RETIRED);
   await settle();
   assert.deepEqual(extracted, ["a1"], "only the edited turn is read again, not its neighbour");
   assert.equal((await storage.get(r2.id))?.status, "published", "the next turn keeps its reading");
-  assert.deepEqual(await factTexts(), ["Audrey opens the door.", "Elsevere says she is a high elf."]);
+  assert.deepEqual(await factTexts(), ["Beatrix opens the door.", "Ismene says she is a high elf."]);
 
   // 3. A large rewrite that happens to keep the quote is still read again.
   extracted.length = 0;
   await setContent(
     "a1",
-    `Elsevere says she is a high elf. ${"She has been cutting the western ward-join for two months without asking. ".repeat(4)}`,
+    `Ismene says she is a high elf. ${"She has been cutting the western ward-join for two months without asking. ".repeat(4)}`,
   );
   await continuity.reconcileChat("chat", { changedMessageIds: ["a1"] });
   await settle();

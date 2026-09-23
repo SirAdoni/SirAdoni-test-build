@@ -14,7 +14,7 @@ import { parseContinuityJson, readContinuityConfig } from "./continuity-provider
 /**
  * Movements and relationships from published continuity records.
  *
- * Extraction reads each turn into plain-text records ("Ilyrien returned with the woman to the library"). The
+ * Extraction reads each turn into plain-text records ("Faelan returned with the woman to the library"). The
  * transition layer can only move a person or link two people when it knows exactly who and where, and guessing
  * that from wording left current state nearly empty and relationships at zero. This pass asks the continuity model
  * one narrow question about records that are already verified and published: which of them state that a named

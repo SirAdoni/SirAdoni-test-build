@@ -37,12 +37,12 @@ try {
     revision: 0,
   };
   await db.insert(schema.apiConnections).values({ id: "conn", name: "Continuity test", provider: "custom", model: "test-model", createdAt: now, updatedAt: now });
-  await db.insert(schema.chats).values({ id: chatId, name: "Continuity", mode: "game", connectionId: "conn", metadata: JSON.stringify({ gameContinuity: { mode: "active" }, gameNpcs: [{ id: "npc-ada", name: "Ada Vale" }, { id: "npc-cole", name: "Cole Marsh" }, { id: "npc-bess", name: "Bess Yarrow" }], spatialContext }), createdAt: now, updatedAt: now });
+  await db.insert(schema.chats).values({ id: chatId, name: "Continuity", mode: "game", connectionId: "conn", metadata: JSON.stringify({ gameContinuity: { mode: "active" }, gameNpcs: [{ id: "npc-ada", name: "Ada Vale" }, { id: "npc-cole", name: "Cole Marsh" }, { id: "npc-tilda", name: "Tilda Pennock" }], spatialContext }), createdAt: now, updatedAt: now });
   const texts: Record<string, string> = {
     m1: "Ada and Cole swore the pact at The Ford.",
-    m2: "Rowan invites Bess to come to The Ford once the vigil ends.",
-    m3: "Bess arrived at The Ford at dusk.",
-    m4: "Bess reached the Old Mill before dawn.",
+    m2: "Rowan invites Tilda to come to The Ford once the vigil ends.",
+    m3: "Tilda arrived at The Ford at dusk.",
+    m4: "Tilda reached the Old Mill before dawn.",
     m5: "Ada and Cole are allies now.",
   };
   await db.insert(schema.messages).values(Object.entries(texts).map(([id, content], index) => ({ id, chatId, role: "assistant", content, createdAt: `2026-09-16T00:0${index}:00.000Z` })));
@@ -52,7 +52,7 @@ try {
   await db.insert(schema.campaignMemoryEntities).values([
     entity("ent-ada", "character", "game-npcs", "npc-ada", ["Ada Vale"]),
     entity("ent-cole", "character", "game-npcs", "npc-cole", ["Cole Marsh"]),
-    entity("ent-bess", "character", "game-npcs", "npc-bess", ["Bess Yarrow"]),
+    entity("ent-tilda", "character", "game-npcs", "npc-tilda", ["Tilda Pennock"]),
     entity("ent-ford", "location", "spatial-context", "ford", ["The Ford"]),
   ]);
   const messages = await db.select().from(schema.messages).where(eq(schema.messages.chatId, chatId));
@@ -60,9 +60,9 @@ try {
   const config = await readContinuityConfig(db, chatId);
   const raw = [
     { kind: "event" as const, text: "Ada Vale and Cole Marsh swore the pact at The Ford.", subjects: ["Ada Vale", "Cole Marsh"], conditions: [], status: "completed" as const, keys: ["pact"], evidence: [{ messageId: "m1", quote: "Ada and Cole swore the pact at The Ford." }] },
-    { kind: "promise" as const, text: "Rowan Mercer invited Bess Yarrow to The Ford once the vigil ends.", subjects: ["Rowan Mercer", "Bess Yarrow"], conditions: ["the vigil ends"], status: "proposed" as const, keys: ["invitation", "arrival"], evidence: [{ messageId: "m2", quote: "Rowan invites Bess to come to The Ford once the vigil ends." }] },
-    { kind: "event" as const, text: "Bess Yarrow arrived at The Ford at dusk.", subjects: ["Bess Yarrow"], conditions: [], status: "completed" as const, keys: ["arrival"], evidence: [{ messageId: "m3", quote: "Bess arrived at The Ford at dusk." }] },
-    { kind: "event" as const, text: "Bess Yarrow reached the Old Mill before dawn.", subjects: ["Bess Yarrow"], conditions: [], status: "completed" as const, keys: ["arrival"], evidence: [{ messageId: "m4", quote: "Bess reached the Old Mill before dawn." }] },
+    { kind: "promise" as const, text: "Rowan Mercer invited Tilda Pennock to The Ford once the vigil ends.", subjects: ["Rowan Mercer", "Tilda Pennock"], conditions: ["the vigil ends"], status: "proposed" as const, keys: ["invitation", "arrival"], evidence: [{ messageId: "m2", quote: "Rowan invites Tilda to come to The Ford once the vigil ends." }] },
+    { kind: "event" as const, text: "Tilda Pennock arrived at The Ford at dusk.", subjects: ["Tilda Pennock"], conditions: [], status: "completed" as const, keys: ["arrival"], evidence: [{ messageId: "m3", quote: "Tilda arrived at The Ford at dusk." }] },
+    { kind: "event" as const, text: "Tilda Pennock reached the Old Mill before dawn.", subjects: ["Tilda Pennock"], conditions: [], status: "completed" as const, keys: ["arrival"], evidence: [{ messageId: "m4", quote: "Tilda reached the Old Mill before dawn." }] },
     { kind: "decision" as const, text: "Ada Vale and Cole Marsh are allies now.", subjects: ["Ada Vale", "Cole Marsh"], conditions: [], status: "completed" as const, keys: ["relationship"], evidence: [{ messageId: "m5", quote: "Ada and Cole are allies now." }] },
   ];
   const records: GameContinuityRecord[] = raw.map((record) => ({ ...record, id: createGameContinuityRecordId("receipt-1", record) }));
@@ -73,7 +73,7 @@ try {
   const holders = [
     { entityId: "ent-ada", kind: "character" as const, store: "game-npcs" as const, recordId: "npc-ada", name: "Ada Vale" },
     { entityId: "ent-cole", kind: "character" as const, store: "game-npcs" as const, recordId: "npc-cole", name: "Cole Marsh" },
-    { entityId: "ent-bess", kind: "character" as const, store: "game-npcs" as const, recordId: "npc-bess", name: "Bess Yarrow" },
+    { entityId: "ent-tilda", kind: "character" as const, store: "game-npcs" as const, recordId: "npc-tilda", name: "Tilda Pennock" },
   ];
   const receipt: GameContinuityReceipt = {
     id: "receipt-1", chatId, sessionNumber: 1, sourceHash: hash({ source: "receipt-1" }), sources: prepared, context: [], configHash: config.hash, config: config.frozen, status: "verified", attempts: 1, repairAttempts: 0, records,
@@ -117,10 +117,10 @@ try {
   const arrival = outcomeFor(arrivalRecord.id)!;
   assert.equal(arrival.class, "movement");
   assert.equal(arrival.status, "applied");
-  const bessLocation = first.state.find((row: any) => row.entityId === "ent-bess" && row.property === "location");
-  assert.equal(parse(bessLocation!.value), "ent-ford");
-  assert.equal(parse(first.state.find((row: any) => row.entityId === "ent-bess" && row.property === "presence")!.value), "present");
-  assert.equal(first.state.filter((row: any) => row.entityId !== "ent-bess").length, 0, "nobody else gained state");
+  const tildaLocation = first.state.find((row: any) => row.entityId === "ent-tilda" && row.property === "location");
+  assert.equal(parse(tildaLocation!.value), "ent-ford");
+  assert.equal(parse(first.state.find((row: any) => row.entityId === "ent-tilda" && row.property === "presence")!.value), "present");
+  assert.equal(first.state.filter((row: any) => row.entityId !== "ent-tilda").length, 0, "nobody else gained state");
   assert.equal(first.events.filter((row: any) => parse(row.transitions).includes(arrival.transitionId)).length, 1);
 
   // Unregistered location: journaled pending with the reason, no state change.
@@ -131,7 +131,7 @@ try {
   const millJournal = first.journal.find((row: any) => row.operationId === `${mill.transitionId}/pending`);
   assert.ok(millJournal, "the unresolved location is journaled pending");
   assert.match(parse(millJournal!.after).reasons.join(" "), /no registered location alias/u);
-  assert.equal(parse(bessLocation!.value), "ent-ford", "an unresolved arrival keeps the last known location");
+  assert.equal(parse(tildaLocation!.value), "ent-ford", "an unresolved arrival keeps the last known location");
 
   // Relationship: a qualitative kind between the two subjects, never a score.
   const ally = outcomeFor(allyRecord.id)!;

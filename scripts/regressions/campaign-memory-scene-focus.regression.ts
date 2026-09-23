@@ -12,7 +12,7 @@ import {
 // the latest turns now come right after those present, and their current state is shown to the GM.
 const provenance = { source: "regression", sourceRevision: "1", actor: "user" as const };
 const order = "m1|2026-01-01T00:00:00.000Z|m1";
-const content = "The ledger says Elsevere repaired the ward. Poppy repaired the fittings.";
+const content = "The ledger says Ismene repaired the ward. Juniper repaired the fittings.";
 const sourceHash = createHash("sha256").update(content).digest("hex");
 const entity = (entityId: string, alias: string, kind: CampaignMemoryEntity["kind"] = "character"): CampaignMemoryEntity => ({
   entityId,
@@ -50,25 +50,25 @@ const fact = (factId: string, subjectEntityId: string, quote: string): CampaignM
 });
 
 const entities = [
-  entity("elsevere", "Lady Elsevere Aldareth"),
-  entity("poppy", "Poppy Lark"),
+  entity("ismene", "Lady Ismene Varrow"),
+  entity("juniper", "Juniper Talbot"),
   entity("library", "Moonrise Library", "location"),
   entity("al", "Al"),
 ];
 
 // Only registered names count, whole words, case and accents ignored; short aliases never match inside prose.
 assert.deepEqual(
-  resolveFocusEntityIds(entities, ["Where is lady elsevere aldareth now?", "She left the moonrise library."]),
-  ["elsevere", "library"],
+  resolveFocusEntityIds(entities, ["Where is lady ismene varrow now?", "She left the moonrise library."]),
+  ["ismene", "library"],
 );
 assert.deepEqual(resolveFocusEntityIds(entities, ["Al went to the hall. Always."]), [], "aliases under four letters are ignored");
-assert.deepEqual(resolveFocusEntityIds(entities, ["Poppy Larkspur"]), [], "a name inside a longer word is not a mention");
+assert.deepEqual(resolveFocusEntityIds(entities, ["Juniper Talbotson"]), [], "a name inside a longer word is not a mention");
 
 const base = {
   chatId: "chat",
   audience: { kind: "gm" as const },
   entities,
-  facts: [fact("poppy-fact", "poppy", "Poppy repaired the fittings."), fact("elsevere-fact", "elsevere", "Elsevere repaired the ward.")],
+  facts: [fact("juniper-fact", "juniper", "Juniper repaired the fittings."), fact("ismene-fact", "ismene", "Ismene repaired the ward.")],
   knowledge: [],
   events: [],
   currentState: [],
@@ -82,8 +82,8 @@ const unfocused = buildCampaignMemoryContext({ ...base, maxCharacters: oneFactBu
 assert.equal(unfocused.includedIds.length, 1, "the budget fits exactly one fact");
 
 for (const [focus, expected] of [
-  [["elsevere"], "elsevere-fact"],
-  [["poppy"], "poppy-fact"],
+  [["ismene"], "ismene-fact"],
+  [["juniper"], "juniper-fact"],
 ] as const) {
   const focused = buildCampaignMemoryContext({ ...base, maxCharacters: oneFactBudget, focusEntityIds: focus });
   assert.deepEqual(focused.includedIds, [expected], `the scene about ${focus[0]} keeps that person's memory`);
@@ -92,17 +92,17 @@ for (const [focus, expected] of [
 const presentWins = buildCampaignMemoryContext({
   ...base,
   maxCharacters: oneFactBudget,
-  presentEntityIds: ["poppy"],
-  focusEntityIds: ["elsevere"],
+  presentEntityIds: ["juniper"],
+  focusEntityIds: ["ismene"],
 });
-assert.deepEqual(presentWins.includedIds, ["poppy-fact"], "someone physically present still comes first");
+assert.deepEqual(presentWins.includedIds, ["juniper-fact"], "someone physically present still comes first");
 
 const characterAudience = buildCampaignMemoryContext({
   ...base,
-  audience: { kind: "character", entityId: "poppy" },
+  audience: { kind: "character", entityId: "juniper" },
   maxCharacters: 10_000,
-  focusEntityIds: ["elsevere"],
+  focusEntityIds: ["ismene"],
 });
-assert.ok(!characterAudience.text.includes("Elsevere repaired"), "focus never grants a character knowledge");
+assert.ok(!characterAudience.text.includes("Ismene repaired"), "focus never grants a character knowledge");
 
 console.log("campaign-memory-scene-focus regression passed");

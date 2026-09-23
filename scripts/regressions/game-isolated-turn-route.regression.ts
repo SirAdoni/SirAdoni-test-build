@@ -57,7 +57,7 @@ const provider = createServer(async (_request, response) => {
     "Fara — housemaid",
     "Kessa — housemaid",
     "Leni — relief maid",
-    "Hesta — head cook",
+    "Gilly — head cook",
     "Ameline — resident companion",
   ];
   const oversizedScene = Array.from({ length: 24 }, (_, beat) => ({

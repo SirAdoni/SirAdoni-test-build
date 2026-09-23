@@ -11,6 +11,7 @@ import {
   type FocusEvent,
   type PointerEvent,
   type RefObject,
+  type TouchEvent as ReactTouchEvent,
 } from "react";
 import type { GameMap, GameActiveState, SpatialContextResponse } from "@marinara-engine/shared";
 import { GameGridMap } from "./GameGridMap";
@@ -465,9 +466,80 @@ function buildMapOptions(map: GameMap | null, maps?: GameMap[]): GameMap[] {
   });
 }
 
-function nextMapZoom(current: number, delta: number): number {
-  const next = Math.round((current + delta) * 100) / 100;
+function clampMapZoom(value: number): number {
+  const next = Math.round(value * 100) / 100;
   return Math.min(MAP_ZOOM_MAX, Math.max(MAP_ZOOM_MIN, next));
+}
+
+function nextMapZoom(current: number, delta: number): number {
+  return clampMapZoom(current + delta);
+}
+
+/**
+ * Node maps compute their SVG viewBox from node coordinates. A node with a
+ * missing or non-numeric x/y (hand-edited or partial model output) turns the
+ * whole viewBox into NaN and the map renders blank. Park such nodes on a row
+ * below the valid ones instead.
+ */
+function sanitizeNodeMapCoordinates(map: GameMap): GameMap {
+  const nodes = map.nodes;
+  if (!nodes?.length) return map;
+  const toFinite = (value: unknown): number | null => {
+    const num = typeof value === "string" && value.trim() ? Number(value) : value;
+    return typeof num === "number" && Number.isFinite(num) ? num : null;
+  };
+  if (nodes.every((node) => toFinite(node.x) === node.x && toFinite(node.y) === node.y)) return map;
+  const validXs: number[] = [];
+  const validYs: number[] = [];
+  for (const node of nodes) {
+    const x = toFinite(node.x);
+    const y = toFinite(node.y);
+    if (x != null && y != null) {
+      validXs.push(x);
+      validYs.push(y);
+    }
+  }
+  const baseX = validXs.length ? Math.min(...validXs) : 0;
+  const baseY = validYs.length ? Math.max(...validYs) + 80 : 0;
+  let parked = 0;
+  return {
+    ...map,
+    nodes: nodes.map((node) => {
+      const x = toFinite(node.x);
+      const y = toFinite(node.y);
+      if (x != null && y != null) return x === node.x && y === node.y ? node : { ...node, x, y };
+      const slot = parked++;
+      return { ...node, x: baseX + (slot % 5) * 60, y: baseY + Math.floor(slot / 5) * 60 };
+    }),
+  };
+}
+
+function getTouchDistance(touches: ReactTouchEvent<HTMLElement>["touches"]): number {
+  const first = touches[0];
+  const second = touches[1];
+  if (!first || !second) return 0;
+  return Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
+}
+
+/** Two-finger pinch on a local map drives the same zoom state as the +/- buttons. */
+function usePinchZoom(zoom: number, setZoom: (zoom: number) => void) {
+  const pinchRef = useRef<{ distance: number; zoom: number } | null>(null);
+  const onTouchStart = (event: ReactTouchEvent<HTMLElement>) => {
+    if (event.touches.length !== 2) return;
+    const distance = getTouchDistance(event.touches);
+    pinchRef.current = distance > 0 ? { distance, zoom } : null;
+  };
+  const onTouchMove = (event: ReactTouchEvent<HTMLElement>) => {
+    const start = pinchRef.current;
+    if (!start || event.touches.length !== 2) return;
+    const distance = getTouchDistance(event.touches);
+    if (distance <= 0) return;
+    setZoom(clampMapZoom(start.zoom * (distance / start.distance)));
+  };
+  const onTouchEnd = (event: ReactTouchEvent<HTMLElement>) => {
+    if (event.touches.length < 2) pinchRef.current = null;
+  };
+  return { onTouchStart, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd };
 }
 
 interface MapZoomControlsProps {
@@ -674,6 +746,9 @@ export function GameMapPanel({
       onZoomIn={() => setMapZoom((current) => nextMapZoom(current, MAP_ZOOM_STEP))}
     />
   );
+  const pinchZoom = usePinchZoom(mapZoom, setMapZoom);
+  const showsZoomableLocalMap =
+    !collapsed && effectiveMapView === "local" && !!map && !(map.type === "node" && hasWorldMap);
 
   if (!map && !hasWorldMap) {
     return (
@@ -703,7 +778,8 @@ export function GameMapPanel({
     );
   }
 
-  const mapName = effectiveMapView === "world" ? "World map" : map?.name || "Local map";
+  const mapName =
+    effectiveMapView === "world" ? localizeUi("ui.game.mobilemapbutton.worldMap") : map?.name || "Local map";
   const shouldMarquee = mapName.length > 18;
   const stateCfg = gameState ? STATE_CONFIG[gameState] : null;
   const StateIcon = stateCfg?.icon ?? null;
@@ -720,6 +796,8 @@ export function GameMapPanel({
           "game-map-container flex h-full flex-col gap-1 overflow-hidden p-2",
           "w-full",
         )}
+        style={showsZoomableLocalMap ? { touchAction: "pan-x pan-y" } : undefined}
+        {...(showsZoomableLocalMap ? pinchZoom : {})}
       >
         <div
           role="button"
@@ -879,7 +957,7 @@ export function GameMapPanel({
           ) : (
             <GameNodeMap
               fillPanel
-              map={map}
+              map={sanitizeNodeMapCoordinates(map)}
               onNodeClick={(nodeId) => onMove(nodeId)}
               selectedNodeId={typeof selectedPosition === "string" ? selectedPosition : null}
               disabled={mapInteractionDisabled}
@@ -967,6 +1045,8 @@ export function MobileMapButton({
       onZoomIn={() => setMapZoom((current) => nextMapZoom(current, MAP_ZOOM_STEP))}
     />
   );
+  const pinchZoom = usePinchZoom(mapZoom, setMapZoom);
+  const showsZoomableLocalMap = effectiveMapView === "local" && !!map && !(map.type === "node" && hasWorldMap);
 
   useEffect(() => {
     if (!open) return;
@@ -1166,14 +1246,18 @@ export function MobileMapButton({
               </button>
             </div>
 
-            {hasWorldMap && map && effectiveMapView === "local" && map.type !== "node" && (
+            {hasWorldMap && effectiveMapView === "local" && map?.type !== "node" && (
               <div className={cn("border-b px-2 py-1.5", GAME_MAP_DIVIDER_CLASS)}>
                 <GameMapViewTabs value={effectiveMapView} onChange={setMapViewMode} />
               </div>
             )}
 
             {/* Map body */}
-            <div className="scrollbar-hide min-h-0 overflow-auto p-2 overscroll-contain">
+            <div
+              className="scrollbar-hide min-h-0 overflow-auto p-2 overscroll-contain"
+              style={showsZoomableLocalMap ? { touchAction: "pan-x pan-y" } : undefined}
+              {...(showsZoomableLocalMap ? pinchZoom : {})}
+            >
               {effectiveMapView === "local" && map?.type === "node" && hasWorldMap ? (
                 <LocalMapCapability
                   chatId={chatId}
@@ -1264,7 +1348,7 @@ export function MobileMapButton({
                 />
               ) : (
                 <GameNodeMap
-                  map={map}
+                  map={sanitizeNodeMapCoordinates(map)}
                   onNodeClick={handleNodeTap}
                   selectedNodeId={selectedNode}
                   disabled={mapInteractionDisabled}

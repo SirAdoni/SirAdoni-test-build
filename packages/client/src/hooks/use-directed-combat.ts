@@ -46,6 +46,16 @@ export function useDirectedCombat(input: {
     queryKey: key,
     queryFn: async () => {
       const result = await api.post<{ session: DirectedCombatView }>("/game/combat/director/start", initial.current);
+      // A refetch (focus, remount) can answer after a command already moved the same battle on.
+      // Keep the newer revision so the next command is not sent against a stale one and dropped.
+      const cached = qc.getQueryData<DirectedCombatView>(key);
+      if (
+        cached &&
+        cached.id === result.session.id &&
+        cached.instanceId === result.session.instanceId &&
+        cached.revision > result.session.revision
+      )
+        return cached;
       return result.session;
     },
     staleTime: 0,

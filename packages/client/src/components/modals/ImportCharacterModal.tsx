@@ -13,6 +13,7 @@ import {
   type EmbeddedLorebookImportPreview,
 } from "../../lib/character-import";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { toast } from "sonner";
 
 interface Props {
   open: boolean;
@@ -238,6 +239,19 @@ export function ImportCharacterModal({ open, onClose }: Props) {
     handleFiles(Array.from(e.dataTransfer.files));
   };
 
+  // Nothing has been written while the embedded-lorebook question is open, so
+  // leaving it (Cancel, the X, Escape, the backdrop) cancels the whole import and
+  // says so, instead of silently dropping the files.
+  const cancelPendingImport = () => {
+    if (!pendingLorebookChoice) return;
+    setPendingLorebookChoice(null);
+    toast.info(
+      localizeUi("ui.modals.importcharactermodal.importCancelled", {
+        count: pendingLorebookChoice.files.length,
+      }),
+    );
+  };
+
   const reset = () => {
     setStatus("idle");
     setResults([]);
@@ -250,6 +264,7 @@ export function ImportCharacterModal({ open, onClose }: Props) {
     <Modal
       open={open}
       onClose={() => {
+        cancelPendingImport();
         reset();
         onClose();
       }}
@@ -286,17 +301,24 @@ export function ImportCharacterModal({ open, onClose }: Props) {
                 <div className="mt-3 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
                   <button
                     type="button"
-                    onClick={() => void handleFiles(pendingLorebookChoice.files, false)}
-                    className="rounded-lg border border-[var(--border)] px-3 py-2 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+                    onClick={cancelPendingImport}
+                    className="min-h-9 rounded-lg px-3 py-2 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
                   >
-                    {localizeUi("ui.modals.importcharactermodal.noImport")}
+                    {localizeUi("chat.delete.dialog.cancel")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleFiles(pendingLorebookChoice.files, false)}
+                    className="min-h-9 rounded-lg border border-[var(--border)] px-3 py-2 text-xs font-medium text-[var(--foreground)] transition-colors hover:bg-[var(--accent)]"
+                  >
+                    {localizeUi("ui.modals.importcharactermodal.importWithoutLorebook")}
                   </button>
                   <button
                     type="button"
                     onClick={() => void handleFiles(pendingLorebookChoice.files, true)}
-                    className="rounded-lg bg-[var(--primary)] px-3 py-2 text-xs font-semibold text-[var(--primary-foreground)] transition-opacity hover:opacity-90"
+                    className="min-h-9 rounded-lg bg-[var(--primary)] px-3 py-2 text-xs font-semibold text-[var(--primary-foreground)] transition-opacity hover:opacity-90"
                   >
-                    {localizeUi("ui.modals.importcharactermodal.importLorebook")}
+                    {localizeUi("ui.modals.importcharactermodal.importWithLorebook")}
                   </button>
                 </div>
               </div>

@@ -358,25 +358,25 @@ function personaFormFromPersona(persona: Persona): PersonaFormData {
 
 type PersonaGalleryMediaTab = "images" | "clips";
 
-function personaGalleryClipSourceLabel(source: CharacterGalleryClip["source"]) {
+function personaGalleryClipSourceLabel(source: CharacterGalleryClip["source"], localize: (key: string) => string) {
   switch (source) {
     case "game-scene":
-      return "Game scene";
+      return localize("ui.characters.clipsource.gameScene");
     case "scene-video":
-      return "Scene video";
+      return localize("ui.characters.clipsource.sceneVideo");
     case "conversation-call":
-      return "Call presence";
+      return localize("ui.characters.clipsource.callPresence");
     case "conversation-call-custom":
-      return "Custom call clip";
+      return localize("ui.characters.clipsource.customCallClip");
     case "uploaded-video":
-      return "Uploaded video";
+      return localize("ui.characters.clipsource.uploadedVideo");
     default:
-      return "Video";
+      return localize("ui.chat.chatgallery.video");
   }
 }
 
-function formatPersonaClipDate(value: string | null) {
-  if (!value) return "Not generated";
+function formatPersonaClipDate(value: string | null, localize: (key: string) => string) {
+  if (!value) return localize("ui.personas.personaclipcard.notGenerated");
   return new Date(value).toLocaleDateString();
 }
 
@@ -1134,8 +1134,11 @@ function PersonaClipCard({
   onDelete: (clip: CharacterGalleryClip) => void | Promise<void>;
 }) {
   const { t: localizeUi } = useUiTranslation();
-  const sourceLabel = clip.origin === "uploaded" ? "Uploaded" : personaGalleryClipSourceLabel(clip.source);
-  const dateLabel = formatPersonaClipDate(clip.updatedAt ?? clip.createdAt);
+  const sourceLabel =
+    clip.origin === "uploaded"
+      ? localizeUi("ui.characters.clipsource.uploaded")
+      : personaGalleryClipSourceLabel(clip.source, localizeUi);
+  const dateLabel = formatPersonaClipDate(clip.updatedAt ?? clip.createdAt, localizeUi);
   const isReady = clip.status === "ready" && Boolean(clip.url);
   const canDelete = canDeletePersonaGalleryClip(clip);
   const isCallVideoClip = clip.source === "conversation-call" || clip.source === "conversation-call-custom";
@@ -1176,7 +1179,7 @@ function PersonaClipCard({
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold text-[var(--foreground)]">
-              {clip.label || personaName || "Clip"}
+              {clip.label || personaName || localizeUi("ui.characters.clipsource.clip")}
             </p>
             <p className="mt-0.5 truncate text-[0.6875rem] text-[var(--muted-foreground)]">
               {clip.chatName

@@ -228,14 +228,20 @@ export interface AssemblerOutput {
   /** Agent types whose runtime data was consumed by enabled agent_data sections. */
   runtimeAgentTypesUsed?: string[];
   advancedMemoryPlacements?: AdvancedMemoryPlacement[];
+  /** Ids of enabled sections dropped because marker expansion failed. */
+  skippedSections?: string[];
 }
 
-export function parsePresetParameters(raw: string): GenerationParameters {
+export function parsePresetParameters(raw: string, presetId?: string): GenerationParameters {
   let parsed: unknown = null;
   try {
     parsed = JSON.parse(raw) as unknown;
-  } catch {
+  } catch (err) {
     // Malformed legacy rows should not leave generation parameters undefined.
+    logger.warn(
+      { event: "prompt.preset.params_invalid", presetId, chars: raw?.length ?? 0, err },
+      "[prompt] Preset parameters are not valid JSON; using defaults",
+    );
   }
   const merged =
     parsed && typeof parsed === "object" && !Array.isArray(parsed)
@@ -243,6 +249,15 @@ export function parsePresetParameters(raw: string): GenerationParameters {
       : { ...DEFAULT_GENERATION_PARAMS };
   const result = generationParametersSchema.safeParse(merged);
   if (result.success) return result.data;
+  logger.warn(
+    {
+      event: "prompt.preset.params_invalid",
+      presetId,
+      chars: raw?.length ?? 0,
+      invalidFields: result.error.issues.map((issue) => issue.path.join(".")).slice(0, 20),
+    },
+    "[prompt] Preset parameters failed validation; keeping the valid fields",
+  );
 
   const out: GenerationParameters = { ...DEFAULT_GENERATION_PARAMS };
   const source = merged as Record<string, unknown>;
@@ -264,7 +279,7 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
   const wrapFormat = (input.preset.wrapFormat || "xml") as WrapFormat;
   const chatSummary = input.advancedMemory ? null : (input.chatSummary ?? null);
   const advancedMemoryPlacements: AdvancedMemoryPlacement[] = [];
-  const parameters = parsePresetParameters(input.preset.parameters);
+  const parameters = parsePresetParameters(input.preset.parameters, input.preset.id);
   const sectionOrder = JSON.parse(input.preset.sectionOrder) as string[];
   const variableValues = JSON.parse(input.preset.variableValues) as Record<string, string>;
   // Preset text can safely delay all character macros until the responder is known.
@@ -522,6 +537,7 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
   let outletScanAttempted = false;
   let idMacroCardMarkerSection: ResolvedSection | null = null;
   const runtimeAgentTypesUsed = new Set<string>();
+  const skippedSections: string[] = [];
 
   if (input.fullLorebookContext) await ensureLorebookScan(markerCtx);
 
@@ -599,7 +615,18 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
         runtimeAgentTypesUsed,
       });
     } catch (err) {
-      logger.warn(err, "[prompt] Skipping section %s after marker expansion failed", section.id);
+      let markerType: string | undefined;
+      try {
+        markerType = section.markerConfig ? (JSON.parse(section.markerConfig) as MarkerConfig).type : undefined;
+      } catch {
+        markerType = undefined;
+      }
+      skippedSections.push(section.id);
+      logger.warn(
+        { event: "prompt.section.skipped", sectionId: section.id, markerType, presetId: input.preset.id, err },
+        "[prompt] Skipping section %s after marker expansion failed",
+        section.id,
+      );
       continue;
     }
 
@@ -776,7 +803,11 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
   }
 
   // ── Final: Drop any messages with empty/whitespace-only content ──
-  finalMessages = finalMessages.filter((m) => m.content?.trim());
+  // Keep empty messages that carry attachments or assistant reasoning metadata (same rule as mergeAdjacentMessages).
+  finalMessages = finalMessages.filter(
+    (m) =>
+      m.content?.trim() || m.images?.length || m.files?.length || (m.role === "assistant" && m.providerMetadata),
+  );
 
   return {
     messages: finalMessages,
@@ -799,6 +830,7 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
       : {}),
     ...(runtimeAgentTypesUsed.size > 0 ? { runtimeAgentTypesUsed: Array.from(runtimeAgentTypesUsed) } : {}),
     ...(input.advancedMemory ? { advancedMemoryPlacements } : {}),
+    ...(skippedSections.length > 0 ? { skippedSections } : {}),
   };
 }
 

@@ -8,7 +8,7 @@
 import { OpenAIProvider } from "../llm/providers/openai.provider.js";
 import type { BaseLLMProvider } from "../llm/base-provider.js";
 import { utilitySidecarService } from "./utility-sidecar.service.js";
-import { logger } from "../../lib/logger.js";
+import { logRepeated } from "../../lib/log-events.js";
 
 /** Model name reported to llama-server; it serves whatever single model it loaded. */
 export const UTILITY_SIDECAR_MODEL = "utility-sidecar";
@@ -41,11 +41,24 @@ export async function getUtilitySidecarProvider(): Promise<BaseLLMProvider | nul
     try {
       status = await utilitySidecarService.ensureRunning();
     } catch (error) {
-      logger.warn(error, "[utility-sidecar] Could not start the slot; falling back to the agent connection");
+      logRepeated(
+        "utility_sidecar.fallback:start-threw",
+        "warn",
+        { event: "utility_sidecar.fallback", reason: "start-threw", err: error },
+        "[utility-sidecar] Could not start the slot; falling back to the agent connection",
+      );
       return null;
     }
   }
-  if (!status.ready || !status.baseUrl) return null;
+  if (!status.ready || !status.baseUrl) {
+    logRepeated(
+      "utility_sidecar.fallback:not-ready",
+      "info",
+      { event: "utility_sidecar.fallback", reason: "not-ready" },
+      "[utility-sidecar] Slot not ready; falling back to the agent connection",
+    );
+    return null;
+  }
   const existing = cached;
   if (existing && existing.baseUrl === status.baseUrl) return existing.provider;
   const provider = new OpenAIProvider(`${status.baseUrl}/v1`, "sk-local");

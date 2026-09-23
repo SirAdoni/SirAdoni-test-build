@@ -44,6 +44,7 @@ import { useGameAssetStore } from "../../stores/game-asset.store";
 import { useChatStore } from "../../stores/chat.store";
 import { useUIStore } from "../../stores/ui.store";
 import { ttsService } from "../../lib/tts-service";
+import { isModalOverlayOpen } from "../../lib/modal-overlay-registry";
 import { GameChoiceCards } from "./GameChoiceCards";
 import { GameNarration } from "./GameNarration";
 import { StoryboardBackgroundControls } from "./StoryboardBackgroundControls";
@@ -520,6 +521,41 @@ export function GameSessionReplay({
     setActiveStoryboardSegmentIndex(null);
   }, [turnIndex, turns.length]);
 
+  const seekTurn = useCallback(
+    (nextIndex: number) => {
+      if (nextIndex < 0 || nextIndex >= turns.length) return;
+      setTurnIndex(nextIndex);
+      setTurnComplete(false);
+      setReplayComplete(false);
+      setActiveStoryboardSegmentIndex(null);
+    },
+    [turns.length],
+  );
+
+  // Stop replay narration audio if the replay unmounts without Exit (for example on a scene scope change).
+  useEffect(() => () => ttsService.stop(), []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" && event.key !== "Escape") return;
+      if (isModalOverlayOpen()) return;
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (
+        target &&
+        (target.isContentEditable ||
+          target.closest("input, textarea, select, [contenteditable='true'], [role='slider'], [role='dialog']"))
+      ) {
+        return;
+      }
+      event.preventDefault();
+      if (event.key === "Escape") exitReplay();
+      else seekTurn(turnIndex + (event.key === "ArrowRight" ? 1 : -1));
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [exitReplay, seekTurn, turnIndex]);
+
   const restart = useCallback(() => {
     presentedTurnIdRef.current = null;
     setReplayRun((run) => run + 1);
@@ -647,13 +683,16 @@ export function GameSessionReplay({
       />
 
       <div className="pointer-events-auto absolute left-3 right-3 top-3 z-40 flex items-center justify-between gap-3 md:left-4 md:right-4">
-        <div className="flex min-w-0 items-center gap-2 rounded-xl border border-white/15 bg-black/70 px-3 py-2 text-white shadow-lg backdrop-blur-md">
+        <div
+          className="flex min-w-0 items-center gap-2 rounded-xl border border-white/15 bg-black/70 px-3 py-2 text-white shadow-lg backdrop-blur-md"
+          title={localizeUi("ui.game.gamesessionreplay.keyboardHint")}
+        >
           <History size={14} className="shrink-0 text-[var(--primary)]" />
           <div className="min-w-0">
             <div className="truncate text-xs font-semibold">
               {localizeUi("game.toolbar.session")} {sessionNumber} {localizeUi("ui.game.gamesessionreplay.replay")}
             </div>
-            <div className="text-[0.625rem] text-white/55">
+            <div className="text-[0.625rem] tabular-nums text-white/55" aria-live="polite">
               {localizeUi("ui.game.gamesurfacecomponent.turn")} {turnIndex + 1} {localizeUi("ui.noodle.noodlehome.of")}{" "}
               {turns.length} {localizeUi("ui.game.gamesessionreplay.readOnly")}
             </div>

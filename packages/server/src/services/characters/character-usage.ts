@@ -213,11 +213,20 @@ export function groupGameUsage(usages: readonly CharacterChatUsage[]): Character
     .sort((left, right) => right.lastActivityAt.localeCompare(left.lastActivityAt));
 }
 
+type MessageStoreProbe = {
+  getTableWriteGeneration?: (table: string) => number;
+  getResidentChatUnits?: () => ReadonlySet<string>;
+};
+
 export function createCharacterUsageIndex() {
   const perChat = new Map<string, CachedChat>();
   let byCharacter = new Map<string, CharacterChatUsage[]>();
   let builds = 0;
-  const messageCounts = new Map<string, { key: string; count: number }>();
+  // `generation` is the messages table write generation when the count was taken. Deleting,
+  // trashing or restoring an earlier message leaves the chat row untouched, so the row key
+  // alone would keep a stale count; a changed generation forces a recount unless the chat's
+  // unit is not resident (every message write loads its chat's unit first).
+  const messageCounts = new Map<string, { key: string; generation: number; count: number }>();
 
   async function refresh(db: DB) {
     const rows = (await db.select().from(chats)) as ChatRow[];
@@ -280,16 +289,24 @@ export function createCharacterUsageIndex() {
     /** Message counts for up to MESSAGE_COUNT_LIMIT of the given chats, newest first. */
     async countMessages(db: DB, usages: readonly CharacterChatUsage[]) {
       const counts: Record<string, number> = {};
+      const store = (db as { _fileStore?: MessageStoreProbe })._fileStore;
+      const generation = store?.getTableWriteGeneration?.("messages") ?? -1;
+      const resident = store?.getResidentChatUnits?.() ?? null;
       for (const usage of usages.slice(0, MESSAGE_COUNT_LIMIT)) {
         const row = perChat.get(usage.chatId);
         const key = `${row?.updatedAt ?? ""}|${row?.lastMessageAt ?? ""}`;
         const cached = messageCounts.get(usage.chatId);
-        if (cached && cached.key === key) {
+        if (
+          cached &&
+          cached.key === key &&
+          generation >= 0 &&
+          (cached.generation === generation || (resident !== null && !resident.has(usage.chatId)))
+        ) {
           counts[usage.chatId] = cached.count;
           continue;
         }
         const count = await db.count(messages, eq(messages.chatId, usage.chatId));
-        messageCounts.set(usage.chatId, { key, count });
+        messageCounts.set(usage.chatId, { key, generation, count });
         counts[usage.chatId] = count;
       }
       return { counts, truncated: usages.length > MESSAGE_COUNT_LIMIT };

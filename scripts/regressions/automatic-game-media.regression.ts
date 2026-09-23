@@ -89,7 +89,7 @@ try {
     return injected(request);
   };
 
-  async function makeChat(metadata: Record<string, unknown>, content = "Robert enters the chamber.") {
+  async function makeChat(metadata: Record<string, unknown>, content = "Edmund enters the chamber.") {
     const chat = await chats.create({ name: "Automatic media proof", mode: "game", characterIds: [] });
     assert(chat);
     const merged = {

@@ -62,6 +62,11 @@ function clampUnit(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+/** True when play() was refused by the browser's autoplay policy (a later gesture can fix it). */
+function isAutoplayBlock(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { name?: unknown }).name === "NotAllowedError";
+}
+
 function setAmbientAudioSession(): void {
   if (typeof navigator === "undefined") return;
   const audioSession = (navigator as NavigatorWithAudioSession).audioSession;
@@ -86,6 +91,8 @@ class GameAudioManager {
   private nextAmbientElement: LoopingAudioLayer | null = null;
   private sfxPool: HTMLAudioElement[] = [];
   private sfxIndex = 0;
+  /** Which playSfx call currently owns each pooled element. */
+  private sfxOwners = new Map<HTMLAudioElement, number>();
   private sfxAudioContext: AudioContext | null = null;
   private proceduralSfxTimers = new Set<ReturnType<typeof setTimeout>>();
   private sfxGeneration = 0;
@@ -116,7 +123,32 @@ class GameAudioManager {
       this.sfxPool.push(el);
     }
     this.attachInteractionListener();
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", this.handleVisibilityChange);
+    }
   }
+
+  /**
+   * iOS suspends (or "interrupts") the AudioContext when the tab is backgrounded or the phone locks, and
+   * buffer-based music stays silent after returning until something resumes it. Resume on return, and
+   * if the browser wants a gesture for that, resume on the next tap.
+   */
+  private handleVisibilityChange = (): void => {
+    if (document.visibilityState !== "visible") return;
+    const ctx = this.sfxAudioContext;
+    if (!ctx || ctx.state === "running" || ctx.state === "closed") return;
+    this.audioContextUnlocked = false;
+    void ctx
+      .resume()
+      .catch(() => undefined)
+      .then(() => {
+        if ((ctx.state as string) === "running") {
+          this.audioContextUnlocked = true;
+        } else {
+          this.ensureGestureListener();
+        }
+      });
+  };
 
   /** Track user interaction so we know autoplay is allowed. */
   private attachInteractionListener(): void {
@@ -728,7 +760,7 @@ class GameAudioManager {
 
         this.fadeInterval = interval;
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (this.nextMusicElement !== newAudio) {
           newAudio.stop();
           return;
@@ -737,13 +769,18 @@ class GameAudioManager {
         this.nextMusicElement = null;
         newAudio.stop();
 
-        // Autoplay blocked — queue for retry on user gesture
-        this.pendingMusic = { tag, manifest };
         this.currentMusicTag = tag;
         if (oldAudio) {
           oldAudio.setMuted(this.isMuted);
           oldAudio.setVolume(this.musicVolume);
         }
+        // Only an autoplay block is worth a retry on the next gesture. A missing or undecodable file
+        // would otherwise be refetched on every click for the rest of the session.
+        if (!isAutoplayBlock(err)) {
+          console.warn("[audio] Music playback failed:", tag, err);
+          return;
+        }
+        this.pendingMusic = { tag, manifest };
         this.ensureGestureListener();
       });
   }
@@ -800,8 +837,13 @@ class GameAudioManager {
     const url = this.resolveAssetUrl(tag, manifest);
     const audio = this.sfxPool[this.sfxIndex % SFX_POOL_SIZE]!;
     this.sfxIndex++;
+    const playId = this.sfxIndex;
+    this.sfxOwners.set(audio, playId);
     let remainingPlays = Number.isFinite(loopCount) ? Math.max(1, Math.min(5, Math.floor(loopCount))) : 1;
     const playProceduralFallback = () => {
+      // When the pool wraps, reassigning src aborts this play() with an AbortError; that is not a
+      // failure of this effect and must not fire a synthesized beep for it.
+      if (this.sfxOwners.get(audio) !== playId) return;
       if (generation !== this.sfxGeneration || remainingPlays <= 0) return;
       const fallbackPlays = remainingPlays;
       remainingPlays = 0;
@@ -879,13 +921,15 @@ class GameAudioManager {
 
         console.warn("[audio] Ambient playback failed:", tag, err);
         this.nextAmbientElement = null;
-        this.pendingAmbient = { tag, manifest };
         this.currentAmbientTag = previousAmbientTag;
         this.ambientElement = previousAmbient ?? null;
         if (previousAmbient) {
           previousAmbient.setMuted(this.isMuted);
           previousAmbient.setVolume(this.ambientVolume);
         }
+        // Retry on the next gesture only when autoplay policy blocked it, not for a broken file.
+        if (!isAutoplayBlock(err)) return;
+        this.pendingAmbient = { tag, manifest };
         this.ensureGestureListener();
       });
   }
@@ -931,14 +975,14 @@ class GameAudioManager {
     this.musicVolume = Math.max(0, Math.min(1, music));
     this.sfxVolume = Math.max(0, Math.min(1, sfx));
     this.ambientVolume = Math.max(0, Math.min(1, ambient));
-    if (!this.isMuted) {
-      if (!this.fadeInterval || !this.nextMusicElement) {
-        this.musicElement?.setVolume(this.musicVolume);
-        this.nextMusicElement?.setVolume(this.musicVolume);
-      }
-      this.ambientElement?.setVolume(this.ambientVolume);
-      this.nextAmbientElement?.setVolume(this.ambientVolume);
+    // Layers apply their own mute, so store the new level even while muted; otherwise unmuting
+    // brings back the volume from before the slider moved.
+    if (!this.fadeInterval || !this.nextMusicElement) {
+      this.musicElement?.setVolume(this.musicVolume);
+      this.nextMusicElement?.setVolume(this.musicVolume);
     }
+    this.ambientElement?.setVolume(this.ambientVolume);
+    this.nextAmbientElement?.setVolume(this.ambientVolume);
     for (const el of this.sfxPool) {
       this.setElementLayerVolume(el, this.sfxVolume);
     }

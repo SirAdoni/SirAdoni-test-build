@@ -512,6 +512,12 @@ export function GameSetupWizard({
   const { t: localizeUi } = useUiTranslation();
   const prefersReducedMotion = useReducedMotion();
   const [step, setStep] = useState(0);
+  // Start sits exactly where Next was: ignore clicks right after a step change, so a double-click on Next cannot
+  // start the game before the summary is seen.
+  const stepEnteredAtRef = useRef(0);
+  useEffect(() => {
+    stepEnteredAtRef.current = Date.now();
+  }, [step]);
   const panelRef = useRef<HTMLDivElement>(null);
   const { data: installedPackages, isLoading: experiencesLoading } = useInstalledCapabilityPackages(true);
   const experiences = useMemo(() => selectGameExperiencePackages(installedPackages), [installedPackages]);
@@ -1194,7 +1200,8 @@ export function GameSetupWizard({
       );
 
       setStep(0);
-      setGameName(imported.gameName);
+      // maxLength only limits typing, so values from a shared file are clamped to the same limits here.
+      setGameName(imported.gameName.slice(0, 200));
       setGenres(importedGenres.length > 0 ? importedGenres : ["Fantasy"]);
       setCustomGenre("");
       setSetting(config.setting);
@@ -1209,13 +1216,13 @@ export function GameSetupWizard({
       setRating(config.rating);
       setLanguage(config.language?.trim() || "English");
       setAutoTranslate(config.autoTranslate === true);
-      setTranslationLanguage(config.translationOutputTargetLang?.trim() || "en");
+      setTranslationLanguage(config.translationOutputTargetLang?.trim().slice(0, 100) || "en");
       setGmMode(config.gmMode);
       setGmCharacterId(config.gmCharacterId ?? null);
       setPartyCharacterIds(config.partyCharacterIds);
       setPersonaId(config.personaId ?? null);
-      setPlayerGoals(config.playerGoals);
-      setPreferences(imported.preferences);
+      setPlayerGoals(config.playerGoals.slice(0, 2000));
+      setPreferences(imported.preferences.slice(0, 5000));
       setGmSearch("");
       setPartySearch("");
       setPartyFolderId("");
@@ -1280,10 +1287,10 @@ export function GameSetupWizard({
       setPromptPresetId(config.promptPresetId ?? null);
       setGamePresentation(importedStoryboardGamePrompt ? "anime" : "standard");
       setCustomGamePromptEnabled(Boolean(importedCustomPrompt));
-      setGameSystemPromptDraft(importedCustomPrompt || importedBasePrompt);
+      setGameSystemPromptDraft((importedCustomPrompt || importedBasePrompt).slice(0, 16000));
       setGameSystemPromptEdited(Boolean(importedCustomPrompt));
-      setGameSpecialInstructions(config.gameSpecialInstructions?.trim() || "");
-      const importedSpatialMapInstructions = config.spatialMapInstructions?.trim() || "";
+      setGameSpecialInstructions(config.gameSpecialInstructions?.trim().slice(0, 2000) || "");
+      const importedSpatialMapInstructions = config.spatialMapInstructions?.trim().slice(0, 4000) || "";
       const importedSpatialMapDraftOptions = resolveGameSpatialMapDraftOptions(
         config.spatialMapDraftSize,
         config.spatialMapTargetLocationCount,
@@ -1340,9 +1347,9 @@ export function GameSetupWizard({
 
     return {
       ...buildExperienceSetup(activeExperience, experienceSeed, isNewGame),
-      genre: genres.join(", ") || "Fantasy",
-      setting: setting || `A ${(genres[0] ?? "fantasy").toLowerCase()} world`,
-      tone: tones.join(", ") || "Heroic",
+      genre: genres.join(", ").slice(0, 200) || "Fantasy",
+      setting: setting.trim() || `A ${(genres[0] ?? "fantasy").toLowerCase()} world`,
+      tone: tones.join(", ").slice(0, 200) || "Heroic",
       difficulty: normalizeGameDifficulty(difficulty),
       combatStyle,
       ...(activeRuleset
@@ -1376,8 +1383,13 @@ export function GameSetupWizard({
       rating,
       gmMode,
       gmCharacterId: gmMode === "character" && gmCharacterId ? gmCharacterId : undefined,
-      partyCharacterIds,
-      playerGoals: playerGoals || "Have an adventure",
+      // The party picker hides the GM character, so a member later chosen as GM could not be removed
+      // from the party by hand. Never send the same character as both.
+      partyCharacterIds:
+        gmMode === "character" && gmCharacterId
+          ? partyCharacterIds.filter((id) => id !== gmCharacterId)
+          : partyCharacterIds,
+      playerGoals: playerGoals.trim() || "Have an adventure",
       personaId: personaId ?? undefined,
       sceneConnectionId: sceneModelValue && sceneModelValue !== "local" ? sceneModelValue : undefined,
       enableAgents: enableAgents || undefined,
@@ -1672,6 +1684,7 @@ export function GameSetupWizard({
                       <input
                         type="text"
                         value={gameName}
+                        maxLength={200}
                         onChange={(e) => setGameName(e.target.value)}
                         placeholder={localizeUi("ui.game.gamesetupwizard.nameYourAdventure")}
                         className={GAME_SETUP_INPUT_CLASS}
@@ -1838,7 +1851,7 @@ export function GameSetupWizard({
                           type="text"
                           value={customGenre}
                           onChange={(e) => setCustomGenre(e.target.value)}
-                          onKeyDown={(e) => e.key === "Enter" && addCustomGenre()}
+                          onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && addCustomGenre()}
                           placeholder={localizeUi("ui.game.gamesetupwizard.addCustomGenre")}
                           className="flex-1 rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs text-[var(--foreground)] outline-none ring-1 ring-transparent transition-all placeholder:text-[var(--muted-foreground)] focus:ring-[var(--primary)]/40"
                         />
@@ -1935,7 +1948,7 @@ export function GameSetupWizard({
                           type="text"
                           value={customTone}
                           onChange={(e) => setCustomTone(e.target.value)}
-                          onKeyDown={(e) => e.key === "Enter" && addCustomTone()}
+                          onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && addCustomTone()}
                           placeholder={localizeUi("ui.game.gamesetupwizard.addCustomTone")}
                           className="flex-1 rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs text-[var(--foreground)] outline-none ring-1 ring-transparent transition-all placeholder:text-[var(--muted-foreground)] focus:ring-[var(--primary)]/40"
                         />
@@ -3139,6 +3152,7 @@ export function GameSetupWizard({
                       </label>
                       <textarea
                         value={playerGoals}
+                        maxLength={2000}
                         onChange={(e) => setPlayerGoals(e.target.value)}
                         placeholder={localizeUi("ui.game.gamesetupwizard.whatDoYouWantToAchieve")}
                         rows={3}
@@ -3172,6 +3186,7 @@ export function GameSetupWizard({
                       </label>
                       <textarea
                         value={preferences}
+                        maxLength={5000}
                         onChange={(e) => setPreferences(e.target.value)}
                         placeholder={localizeUi("ui.game.gamesetupwizard.anyExtraDetailsForTheGm")}
                         rows={3}
@@ -3964,7 +3979,10 @@ export function GameSetupWizard({
                     </button>
                     <button
                       type="button"
-                      onClick={handleComplete}
+                      onClick={() => {
+                        if (Date.now() - stepEnteredAtRef.current < 400) return;
+                        void handleComplete();
+                      }}
                       disabled={isLoading || !canStart}
                       className={GAME_SETUP_PRIMARY_BUTTON_CLASS}
                       title={canStartMessage ?? undefined}

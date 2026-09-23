@@ -959,7 +959,13 @@ export async function injectGameGmPromptRuntime(args: {
       appendGameGmCampaignMemory(args.messages, campaignMemory);
     } catch (err) {
       logger.error(
-        { err, code: "CAMPAIGN_MEMORY_PROJECTION_UNAVAILABLE", chatId: args.chatId },
+        {
+          event: "prompt.campaign_memory.unavailable",
+          outcome: "failed",
+          errorCode: "CAMPAIGN_MEMORY_PROJECTION_UNAVAILABLE",
+          chatId: args.chatId,
+          err,
+        },
         "Campaign memory projection unavailable; preserving the existing GM prompt",
       );
       appendGameGmCampaignMemory(args.messages, {

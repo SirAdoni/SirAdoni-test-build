@@ -358,7 +358,9 @@ export async function readChatGPTImageSse(response: Response, signal?: AbortSign
 
   const decoder = new TextDecoder();
   let transcript = "";
-  let pendingFrames = "";
+  let pendingChunks: string[] = [];
+  // Last few characters of pending data, so a frame separator split across chunks is still seen.
+  let boundaryTail = "";
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -366,9 +368,16 @@ export async function readChatGPTImageSse(response: Response, signal?: AbortSign
       if (done) break;
       const chunk = decoder.decode(value, { stream: true });
       transcript += chunk;
-      pendingFrames += chunk;
-      const frames = pendingFrames.split(/\r?\n\r?\n/);
-      pendingFrames = frames.pop() ?? "";
+      pendingChunks.push(chunk);
+      // Only probe the new data for a separator. Joining and splitting the whole pending
+      // frame on every chunk is quadratic for multi-MB base64 image frames.
+      const probe = boundaryTail + chunk;
+      boundaryTail = probe.slice(-3);
+      if (!/\r?\n\r?\n/.test(probe)) continue;
+      const frames = pendingChunks.join("").split(/\r?\n\r?\n/);
+      const rest = frames.pop() ?? "";
+      pendingChunks = rest ? [rest] : [];
+      boundaryTail = rest.slice(-3);
       for (const frame of frames) {
         // A completed tool image is already usable. Do not occupy a generation slot
         // waiting for trailing assistant prose or a stream that never closes.

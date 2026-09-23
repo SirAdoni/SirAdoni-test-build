@@ -28,6 +28,10 @@ import {
 import { pixelizeImage, PixelizeInputError } from "../services/image/pixelize.service.js";
 import { clampByte, clampUnit, getSharp, type RgbColor } from "../services/image/sharp-runtime.js";
 import { logger } from "../lib/logger.js";
+import { createDiagnostic, sanitizeDiagnosticText } from "../lib/diagnostics.js";
+import { reportDiagnosticError } from "../lib/diagnostic-operation.js";
+import { replyWithDiagnostic, routeLabel } from "../lib/http-diagnostics.js";
+import { logEvent, type Outcome } from "../lib/log-events.js";
 import { SPRITE_RENAME_RATE_LIMIT } from "../middleware/rate-limit.js";
 
 const spriteRenameQueues = new Map<string, Promise<void>>();
@@ -254,6 +258,89 @@ function isSpriteGenerationTimeoutError(err: unknown): boolean {
   if (err instanceof SpriteGenerationTimeoutError) return true;
   const e = err as { name?: unknown; message?: unknown; code?: unknown } | null | undefined;
   return e?.code === "ME_TIMEOUT" || (e?.name === "AbortError" && e?.message === "Generation job timed out");
+}
+
+interface SpriteProgress {
+  /** 1-based position of the cell, absent for a step that covers the whole sheet. */
+  step?: number;
+  total: number;
+  expression?: string;
+  /** Set for a non-generation step such as "background_cleanup". */
+  stage?: string;
+  startedAt: number;
+}
+
+/**
+ * One `job.progress` line per sprite cell: debug when it worked, warn without a
+ * stack when it failed (the job carries on with the other cells).
+ */
+function logSpriteProgress(progress: SpriteProgress, error?: unknown, msg?: string): void {
+  const { startedAt, ...fields } = progress;
+  const elapsedMs = Date.now() - startedAt;
+  if (error === undefined) {
+    logEvent("debug", "job.progress", { kind: "sprite", ...fields, outcome: "ok", elapsedMs }, msg);
+    return;
+  }
+  const reference = createDiagnostic(error);
+  const errMessage = error instanceof Error ? error.message : typeof error === "string" ? error : "Unexpected error";
+  logEvent(
+    "warn",
+    "job.progress",
+    {
+      kind: "sprite",
+      ...fields,
+      outcome: "failed",
+      errorCode: reference.code,
+      errorId: reference.errorId,
+      errMessage: sanitizeDiagnosticText(errMessage, 300),
+      elapsedMs,
+    },
+    msg ?? "Sprite step failed",
+  );
+}
+
+/** One `job.summary` line per sprite job: info when every cell worked, warn when any failed. */
+function logSpriteSummary(ok: number, failed: number, total: number, startedAt: number): void {
+  logEvent(
+    failed > 0 ? "warn" : "info",
+    "job.summary",
+    { kind: "sprite", ok, failed, total, elapsedMs: Date.now() - startedAt },
+    "Sprite job finished",
+  );
+}
+
+/**
+ * Replies to a failed sprite job. Timeouts and cancellations are expected
+ * outcomes, so they log at warn (cancelled or failed); anything else logs at error.
+ */
+function replySpriteJobFailure(
+  reply: FastifyReply,
+  err: unknown,
+  fallbackMessage: string,
+  startedAt: number,
+): FastifyReply {
+  const timedOut = isSpriteGenerationTimeoutError(err);
+  const reference = createDiagnostic(err, undefined, timedOut ? "ME_TIMEOUT" : undefined);
+  const cancelled = reference.code === "ME_CANCELLED";
+  const outcome: Outcome = cancelled ? "cancelled" : "failed";
+  const status = timedOut ? 504 : 500;
+  const fields = { kind: "sprite", outcome, elapsedMs: Date.now() - startedAt };
+  if (timedOut || cancelled) {
+    const request = reply.request;
+    const route = routeLabel(request);
+    reportDiagnosticError(err, { stage: "http" }, undefined, {
+      event: "request.error",
+      level: "warn",
+      message: `${request.method} ${route} -> ${status}`,
+      fields: { method: request.method, route, statusCode: status, ...fields },
+    });
+  }
+  const failedExpressions = (err as { failedExpressions?: unknown } | null)?.failedExpressions;
+  return replyWithDiagnostic(reply, status, err, {
+    message: (err as { message?: unknown } | null)?.message ? String((err as Error).message) : fallbackMessage,
+    body: Array.isArray(failedExpressions) ? { failedExpressions } : undefined,
+    fields,
+  });
 }
 
 function spriteGenerationAbortError(signal: AbortSignal): Error {
@@ -2143,7 +2230,10 @@ export async function spritesRoutes(app: FastifyInstance) {
     try {
       resolveFfmpegCommand();
     } catch (err: any) {
-      return reply.status(500).send({ error: err?.message || "Animated expression GIF conversion is unavailable" });
+      return replyWithDiagnostic(reply, 500, err, {
+        message: err?.message || "Animated expression GIF conversion is unavailable",
+        fields: { kind: "sprite", stage: "ffmpeg" },
+      });
     }
 
     const videoSettings = normalizeVideoGenerationUserSettings(
@@ -2170,6 +2260,7 @@ export async function spritesRoutes(app: FastifyInstance) {
     }
     const resolved = resolveVideoConnection(conn as unknown as VideoGenerationConnection);
     const videoFallback = await resolveVideoConnectionFallback(connections, conn.id);
+    const jobStartedAt = Date.now();
 
     try {
       return await generationJobs.run(
@@ -2182,8 +2273,9 @@ export async function spritesRoutes(app: FastifyInstance) {
           const cells: Array<{ expression: string; base64: string; mimeType: "image/gif" }> = [];
           const failedExpressions: Array<{ expression: string; error: string }> = [];
 
-          for (const expression of expressions) {
+          for (const [index, expression] of expressions.entries()) {
             throwIfSpriteGenerationAborted(spriteSignal);
+            const progress = { step: index + 1, total: expressions.length, expression, startedAt: Date.now() };
             try {
               const prompt = await buildAnimatedExpressionPrompt({
                 promptOverridesStorage,
@@ -2220,15 +2312,17 @@ export async function spritesRoutes(app: FastifyInstance) {
                 base64: gif.toString("base64"),
                 mimeType: "image/gif",
               });
+              logSpriteProgress(progress);
             } catch (expressionErr: any) {
               throwIfSpriteGenerationAborted(spriteSignal);
               const msg = String(expressionErr?.message || "Generation failed")
                 .replace(/<[^>]*>/g, "")
                 .slice(0, 300);
-              logger.warn(expressionErr, 'Animated expression "%s" generation failed; skipping', expression);
+              logSpriteProgress(progress, expressionErr, "Animated expression generation failed; skipping");
               failedExpressions.push({ expression, error: msg });
             }
           }
+          logSpriteSummary(cells.length, failedExpressions.length, expressions.length, jobStartedAt);
 
           if (cells.length === 0) {
             const allFailedError = new Error("All animated expression generations failed");
@@ -2245,14 +2339,7 @@ export async function spritesRoutes(app: FastifyInstance) {
         },
       );
     } catch (err: any) {
-      logger.error(err, "Animated expression generation failed");
-      const failedExpressions = Array.isArray(err?.failedExpressions)
-        ? { failedExpressions: err.failedExpressions }
-        : {};
-      return reply.status(isSpriteGenerationTimeoutError(err) ? 504 : 500).send({
-        error: err?.message || "Animated expression generation failed",
-        ...failedExpressions,
-      });
+      return replySpriteJobFailure(reply, err, "Animated expression generation failed", jobStartedAt);
     }
   });
 
@@ -2346,6 +2433,7 @@ export async function spritesRoutes(app: FastifyInstance) {
     const resolvedRefs = dedupeImageReferences(
       rawRefs.map(resolveReferenceImageBase64).filter((r): r is string => !!r),
     ).slice(0, referenceImageLimit);
+    const jobStartedAt = Date.now();
 
     try {
       return await generationJobs.run(
@@ -2365,8 +2453,9 @@ export async function spritesRoutes(app: FastifyInstance) {
               model: imgModel,
             });
 
-            for (const expression of plan.expressions) {
+            for (const [index, expression] of plan.expressions.entries()) {
               throwIfSpriteGenerationAborted(spriteSignal);
+              const progress = { step: index + 1, total: plan.expressions.length, expression, startedAt: Date.now() };
               try {
                 const request = await buildIndividualFullBodyExpressionRequest({
                   body,
@@ -2415,24 +2504,26 @@ export async function spritesRoutes(app: FastifyInstance) {
                   try {
                     spriteBuffer = (await removeSpriteBackgroundPng(spriteBuffer, cleanupStrength)).buffer;
                   } catch (bgErr) {
-                    logger.warn(
+                    logSpriteProgress(
+                      { ...progress, stage: "background_cleanup" },
                       bgErr,
-                      'Full-body expression background cleanup failed for "%s"; continuing with the generated image',
-                      expression,
+                      "Full-body expression background cleanup failed; continuing with the generated image",
                     );
                   }
                 }
 
                 cells.push({ expression, base64: spriteBuffer.toString("base64") });
+                logSpriteProgress(progress);
               } catch (expressionErr: any) {
                 throwIfSpriteGenerationAborted(spriteSignal);
                 const message = String(expressionErr?.message || "Generation failed")
                   .replace(/<[^>]*>/g, "")
                   .slice(0, 300);
-                logger.warn(expressionErr, 'Full-body expression sprite "%s" generation failed; skipping', expression);
+                logSpriteProgress(progress, expressionErr, "Full-body expression sprite generation failed; skipping");
                 failedExpressions.push({ expression, error: message });
               }
             }
+            logSpriteSummary(cells.length, failedExpressions.length, plan.expressions.length, jobStartedAt);
 
             if (cells.length === 0) {
               const allFailedError = new Error("All full-body expression generations failed");
@@ -2452,8 +2543,9 @@ export async function spritesRoutes(app: FastifyInstance) {
             const cells: Array<{ expression: string; base64: string }> = [];
             const failedExpressions: Array<{ expression: string; error: string }> = [];
 
-            for (const expression of plan.expressions) {
+            for (const [index, expression] of plan.expressions.entries()) {
               throwIfSpriteGenerationAborted(spriteSignal);
+              const progress = { step: index + 1, total: plan.expressions.length, expression, startedAt: Date.now() };
               try {
                 let expressionPrompt = await loadPrompt(plan.promptOverridesStorage, SPRITES_SINGLE_PORTRAIT, {
                   appearance: body.appearance?.trim() || "",
@@ -2516,7 +2608,11 @@ export async function spritesRoutes(app: FastifyInstance) {
                   try {
                     spriteBuffer = (await removeSpriteBackgroundPng(spriteBuffer, cleanupStrength)).buffer;
                   } catch (bgErr) {
-                    logger.warn(bgErr, "Expression sprite background cleanup failed; continuing with original image");
+                    logSpriteProgress(
+                      { ...progress, stage: "background_cleanup" },
+                      bgErr,
+                      "Expression sprite background cleanup failed; continuing with original image",
+                    );
                   }
                 }
 
@@ -2524,15 +2620,17 @@ export async function spritesRoutes(app: FastifyInstance) {
                   expression,
                   base64: spriteBuffer.toString("base64"),
                 });
+                logSpriteProgress(progress);
               } catch (expressionErr: any) {
                 throwIfSpriteGenerationAborted(spriteSignal);
                 const msg = String(expressionErr?.message || "Generation failed")
                   .replace(/<[^>]*>/g, "")
                   .slice(0, 300);
-                logger.warn(expressionErr, 'Expression sprite "%s" generation failed; skipping', expression);
+                logSpriteProgress(progress, expressionErr, "Expression sprite generation failed; skipping");
                 failedExpressions.push({ expression, error: msg });
               }
             }
+            logSpriteSummary(cells.length, failedExpressions.length, plan.expressions.length, jobStartedAt);
 
             if (cells.length === 0) {
               const allFailedError = new Error("All expression generations failed");
@@ -2575,11 +2673,16 @@ export async function spritesRoutes(app: FastifyInstance) {
           // Keep this resilient: if cleanup fails, continue with the original image rather than throwing.
           if (shouldCleanBackground) {
             const originalSheetBuffer = sheetBuffer;
+            const cleanupStartedAt = Date.now();
             try {
               sheetBuffer = (await removeSpriteBackgroundPng(sheetBuffer, cleanupStrength)).buffer;
               metadata = await sharp(sheetBuffer).metadata();
             } catch (bgErr) {
-              logger.warn(bgErr, "Sprite background cleanup failed; continuing with original image");
+              logSpriteProgress(
+                { total: plan.expressions.length, stage: "background_cleanup", startedAt: cleanupStartedAt },
+                bgErr,
+                "Sprite background cleanup failed; continuing with original image",
+              );
               sheetBuffer = originalSheetBuffer;
               metadata = await sharp(sheetBuffer).metadata();
             }
@@ -2602,6 +2705,12 @@ export async function spritesRoutes(app: FastifyInstance) {
               const left = col * cellWidth;
               const top = row * cellHeight;
 
+              const progress = {
+                step: idx + 1,
+                total: plan.expressions.length,
+                expression,
+                startedAt: Date.now(),
+              };
               cellPromises.push(
                 (async () => {
                   let cellBuffer = await sharp(sheetBuffer)
@@ -2612,9 +2721,14 @@ export async function spritesRoutes(app: FastifyInstance) {
                     try {
                       cellBuffer = (await removeSpriteBackgroundPng(cellBuffer, cleanupStrength)).buffer;
                     } catch (bgErr) {
-                      logger.warn(bgErr, 'Sprite background cleanup failed for "%s"; using the sheet crop', expression);
+                      logSpriteProgress(
+                        { ...progress, stage: "background_cleanup" },
+                        bgErr,
+                        "Sprite background cleanup failed; using the sheet crop",
+                      );
                     }
                   }
+                  logSpriteProgress(progress);
                   return {
                     expression,
                     base64: cellBuffer.toString("base64"),
@@ -2625,6 +2739,7 @@ export async function spritesRoutes(app: FastifyInstance) {
           }
 
           const cells = await Promise.all(cellPromises);
+          logSpriteSummary(cells.length, 0, plan.expressions.length, jobStartedAt);
 
           return {
             sheetBase64: sheetBuffer.toString("base64"),
@@ -2633,14 +2748,7 @@ export async function spritesRoutes(app: FastifyInstance) {
         },
       );
     } catch (err: any) {
-      logger.error(err, "Sprite sheet generation failed");
-      const failedExpressions = Array.isArray(err?.failedExpressions)
-        ? { failedExpressions: err.failedExpressions }
-        : {};
-      return reply.status(isSpriteGenerationTimeoutError(err) ? 504 : 500).send({
-        error: err?.message || "Sprite sheet generation failed",
-        ...failedExpressions,
-      });
+      return replySpriteJobFailure(reply, err, "Sprite sheet generation failed", jobStartedAt);
     }
   });
 
@@ -2694,9 +2802,9 @@ export async function spritesRoutes(app: FastifyInstance) {
         builtinProcessed: engineCounts.builtin,
       };
     } catch (err: any) {
-      logger.error(err, "Sprite cleanup failed");
-      return reply.status(500).send({
-        error: err?.message || "Sprite cleanup failed",
+      return replyWithDiagnostic(reply, 500, err, {
+        message: err?.message || "Sprite cleanup failed",
+        fields: { kind: "sprite", stage: "background_cleanup", engine: cleanupEngine },
       });
     }
   });

@@ -7,6 +7,7 @@ import { useDialogFocusScope } from "../../hooks/use-dialog-focus-scope";
 import {
   AlertTriangle,
   Camera,
+  ClipboardCopy,
   Heart,
   Info,
   Pencil,
@@ -28,7 +29,8 @@ import type {
   RulesetLiveState,
   RulesetSheetEnvelope,
 } from "@marinara-engine/shared";
-import { cn, getAvatarCropStyle } from "../../lib/utils";
+import { toast } from "sonner";
+import { cn, copyToClipboard, getAvatarCropStyle } from "../../lib/utils";
 import { GameRulesetSheet } from "./GameRulesetSheet";
 import { DraftNumberInput } from "../ui/DraftNumberInput";
 import { CharacterPhoto } from "../ui/CharacterPhoto";
@@ -337,9 +339,19 @@ export function GameCharacterSheet({
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   useDialogFocusScope(true, dialogRef);
+  const isEditingRef = useRef(isEditing);
+  isEditingRef.current = isEditing;
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+      // Closing discards the unsaved draft, so while editing Escape only leaves the focused field
+      // (which also commits a pending number edit). Cancel and the close button still exit.
+      if (isEditingRef.current) {
+        const dialog = dialogRef.current;
+        if (dialog && dialog !== document.activeElement && dialog.contains(document.activeElement)) dialog.focus();
+        return;
+      }
+      onClose();
     };
     document.addEventListener("keydown", closeOnEscape);
     return () => document.removeEventListener("keydown", closeOnEscape);
@@ -443,7 +455,9 @@ export function GameCharacterSheet({
   const removeAttribute = (index: number) => {
     setDraft((prev) => {
       const next = prev.attributes.filter((_, attrIndex) => attrIndex !== index);
-      return { ...prev, attributes: next.length > 0 ? next : DEFAULT_ATTRIBUTES.map((attr) => ({ ...attr })) };
+      // An empty list is a valid sheet (createDraft keeps it empty too), so removing the last
+      // attribute must not quietly bring back all six defaults.
+      return { ...prev, attributes: next };
     });
   };
 
@@ -508,6 +522,47 @@ export function GameCharacterSheet({
     }
   };
 
+  // Plain text of what the sheet shows (the saved sheet, not an unsaved draft), for pasting into notes or chat.
+  const buildSheetText = () => {
+    const lines: string[] = [card.level != null ? card.title + " (" + localizeUi("ui.game.gamecharactersheet.lvl") + " " + card.level + ")" : card.title];
+    const description = previewGameCard?.shortDescription || (!previewGameCard?.class ? card.subtitle : undefined);
+    if (previewGameCard?.class) lines.push(localizeUi("ui.game.gamecharactersheet.class") + ": " + previewGameCard.class);
+    if (description) lines.push(description);
+    const pushSection = (title: string, entries: string[]) => {
+      if (entries.length === 0) return;
+      lines.push("", title + ":", ...entries.map((entry) => "- " + entry));
+    };
+    const attributeEntries = hasRpgAttributes
+      ? displayRpgStats.attributes.map((attr) => attr.name + " " + attr.value + " (" + formatAttributeModifier(attr.value) + ")")
+      : [];
+    const poolEntries = previewRpgPools.map((pool) => pool.name + ": " + pool.value + "/" + pool.max);
+    pushSection(localizeUi("ui.characters.statstab.attributes"), [...attributeEntries, ...poolEntries]);
+    pushSection(
+      localizeUi("editor.tabs.stats"),
+      (card.stats ?? []).map((stat) => stat.name + ": " + stat.value + "/" + (stat.max ?? 100)),
+    );
+    pushSection(localizeUi("ui.game.gamecharactersheet.abilities"), previewGameCard?.abilities ?? []);
+    pushSection(localizeUi("ui.game.gamecharactersheet.strengths"), previewGameCard?.strengths ?? []);
+    pushSection(localizeUi("ui.game.gamecharactersheet.weaknesses"), previewGameCard?.weaknesses ?? []);
+    pushSection(
+      localizeUi("ui.game.gamecharactersheet.details"),
+      Object.entries(previewGameCard?.extra ?? {}).map(([key, value]) => key.replace(/_/g, " ") + ": " + value),
+    );
+    pushSection(
+      localizeUi("ui.game.gamecharactersheet.traits"),
+      Object.entries(card.customFields ?? {}).map(([key, value]) => key + ": " + value),
+    );
+    return lines.join("\n");
+  };
+
+  const handleCopyAsText = async () => {
+    if (await copyToClipboard(buildSheetText())) {
+      toast.success(localizeUi("ui.game.gamecharactersheet.sheetCopied"));
+    } else {
+      toast.error(localizeUi("ui.game.gamecharactersheet.sheetCopyFailed"));
+    }
+  };
+
   return createPortal(
     <div
       data-game-skip-bg-nav="true"
@@ -527,7 +582,7 @@ export function GameCharacterSheet({
         )}
         onClick={(e) => e.stopPropagation()}
       >
-        {(onSave || onRegenerate) && (
+        {(onSave || onRegenerate || !isEditing) && (
           <div className="absolute right-11 top-3 z-10 flex max-w-[calc(100%-4rem)] flex-wrap items-center justify-end gap-1 sm:right-12 sm:gap-2">
             {isEditing ? (
               <>
@@ -578,7 +633,17 @@ export function GameCharacterSheet({
                 </button>
               </>
             ) : (
-              onSave && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void handleCopyAsText()}
+                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg p-0 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--foreground)] sm:h-auto sm:w-auto sm:p-1.5"
+                  title={localizeUi("ui.game.gamecharactersheet.copyAsText")}
+                  aria-label={localizeUi("ui.game.gamecharactersheet.copyAsText")}
+                >
+                  <ClipboardCopy size={14} />
+                </button>
+                {onSave && (
                 <button
                   onClick={() => {
                     // Reseed on entry: the parked draft can hold residue from
@@ -597,7 +662,8 @@ export function GameCharacterSheet({
                   <Pencil size={13} />
                   <span className="hidden sm:inline">{localizeUi("ui.game.gamecharactersheet.editSheet")}</span>
                 </button>
-              )
+                )}
+              </>
             )}
           </div>
         )}
@@ -651,7 +717,14 @@ export function GameCharacterSheet({
               className="sr-only"
               tabIndex={-1}
             />
-            <div className="min-w-0 flex-1 pr-20 sm:pr-64">
+            {/* On phones the header buttons float over this row: the title (or the level badge, when
+                there is one) keeps clear of them, and the edit toolbar is wider than the view one. */}
+            <div
+              className={cn(
+                "min-w-0 flex-1 sm:pr-64",
+                card.level == null && (isEditing ? "pr-40" : "pr-24"),
+              )}
+            >
               <h2
                 className="scrollbar-hide max-w-full touch-pan-x overflow-x-auto whitespace-nowrap text-lg font-bold text-[var(--foreground)] [-webkit-overflow-scrolling:touch] sm:truncate sm:overflow-hidden"
                 title={card.title}
@@ -680,7 +753,12 @@ export function GameCharacterSheet({
               )}
             </div>
             {card.level != null && (
-              <div className="mr-16 flex items-center gap-1 rounded border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-input-bg)] px-1.5 py-0.5 sm:mr-0">
+              <div
+                className={cn(
+                  "flex items-center gap-1 rounded border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-input-bg)] px-1.5 py-0.5 sm:mr-0",
+                  isEditing ? "mr-40" : "mr-24",
+                )}
+              >
                 <span className="text-[0.4375rem] uppercase tracking-wider text-[var(--muted-foreground)]">
                   {localizeUi("ui.game.gamecharactersheet.lvl")}
                 </span>
@@ -789,7 +867,7 @@ export function GameCharacterSheet({
                       </div>
                       {draft.pools.map((pool, index) => (
                         <div
-                          key={`${pool.name}-${index}`}
+                          key={`pool-${index}`}
                           className="grid grid-cols-[2rem_minmax(0,1fr)_5rem_5rem_auto] gap-2 max-sm:grid-cols-1"
                         >
                           <input
@@ -836,7 +914,7 @@ export function GameCharacterSheet({
                     </div>
                     <div className="space-y-2">
                       {draft.attributes.map((attr, index) => (
-                        <div key={`${attr.name}-${index}`} className="grid grid-cols-[minmax(0,1fr)_7rem_auto] gap-2">
+                        <div key={`attribute-${index}`} className="grid grid-cols-[minmax(0,1fr)_7rem_auto] gap-2">
                           <input
                             type="text"
                             value={attr.name}

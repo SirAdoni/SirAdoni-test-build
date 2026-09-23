@@ -5,7 +5,16 @@
 // session out in order, with the game's own segment parsing, edits and
 // deletions, a campaign-wide search with next/previous, and filters by session
 // and speaker. Long campaigns render a window of turns at a time.
-import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { ChevronDown, ChevronUp, Loader2, Search } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Modal } from "../ui/Modal";
@@ -329,7 +338,12 @@ export function GameLogModal({
                   <span className="h-px flex-1 bg-[var(--border)]" />
                   <span className="max-w-[80%] truncate text-[0.6875rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
                     {sessionLabel(entry.sessionIndex)}
-                    {sessionName ? <span className="font-normal normal-case tracking-normal">{` · ${sessionName}`}</span> : null}
+                    {sessionName ? (
+                      <span className="font-normal normal-case tracking-normal">
+                        {" · "}
+                        {sessionName}
+                      </span>
+                    ) : null}
                   </span>
                   <span className="h-px flex-1 bg-[var(--border)]" />
                 </div>
@@ -459,7 +473,9 @@ export function GameLogModal({
               ))}
             </select>
           </div>
-          {targetNotice && <p className="text-[0.6875rem] text-[var(--muted-foreground)]">{t("ui.game.log.targetHidden")}</p>}
+          {targetNotice && (
+            <p className="text-[0.6875rem] text-[var(--muted-foreground)]">{t("ui.game.log.targetHidden")}</p>
+          )}
           {omittedSessions.length > 0 && (
             <p className="text-[0.6875rem] text-[var(--muted-foreground)]">
               {t("ui.game.log.sessionsOmitted", { sessions: omittedSessions.join(", ") })}

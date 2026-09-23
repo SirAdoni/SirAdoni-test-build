@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 // Pulse 3 exit criterion: current state overrides stale biography text where they conflict.
-// A card says the character lives in Ashford; a current-state row says she is in the capital.
+// A card says the character lives in Dunmere; a current-state row says she is in the capital.
 const root = mkdtempSync(join(tmpdir(), "marinara-gm-state-precedence-"));
 process.env.DATA_DIR = root;
 process.env.FILE_STORAGE_DIR = join(root, "storage");
@@ -76,7 +76,7 @@ try {
       characterIds: [],
       chars: {
         getById: async (id: string) =>
-          id === "card-mira" ? { data: { name: "Mira", description: "Mira lives in Ashford and has never left it." } } : null,
+          id === "card-mira" ? { data: { name: "Mira", description: "Mira lives in Dunmere and has never left it." } } : null,
         getPersona: async () => null,
       },
       chats: { getById: async () => null, updateMetadata: async () => null },
@@ -94,7 +94,7 @@ try {
   const without = await runtime(false);
   const withMemory = await runtime(true);
   assert.equal(stableHash(withMemory), stableHash(without), "campaign memory never changes the stable cache prefix");
-  assert.match(without.map((message) => message.content).join("\n"), /lives in Ashford/u, "the stale card is still in the prompt");
+  assert.match(without.map((message) => message.content).join("\n"), /lives in Dunmere/u, "the stale card is still in the prompt");
   assert.equal(without.some((message) => message.providerMetadata?.marinaraCampaignMemory), false);
   const block = withMemory.at(-1);
   assert.equal(block.contextKind, "injection");
@@ -107,11 +107,11 @@ try {
   assert.equal(
     lines[header + 1],
     `char-mira.location = the capital (since ${order(1)}, source event event-mira)`,
-    "the current-state line names the new location, not Ashford",
+    "the current-state line names the new location, not Dunmere",
   );
   const firstFact = lines.findIndex((line) => line.startsWith("[fact "));
   assert.ok(firstFact > header, "current state renders ahead of facts");
-  assert.doesNotMatch(block.content.slice(0, block.content.indexOf("[fact ")), /Ashford/u);
+  assert.doesNotMatch(block.content.slice(0, block.content.indexOf("[fact ")), /Dunmere/u);
   const metadata = block.providerMetadata.marinaraCampaignMemory;
   assert.equal(metadata.precedence, "campaign-memory-over-cards");
   assert.equal(metadata.currentStateCount, 3, "GM sees state for present and event-referenced entities");

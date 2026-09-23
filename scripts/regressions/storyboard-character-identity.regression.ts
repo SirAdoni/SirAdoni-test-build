@@ -7,10 +7,10 @@ import { selectStoryboardMentionedLibraryCharacterNames } from "../../packages/s
 import { buildSceneIllustrationProviderPrompt } from "../../packages/server/src/services/game/game-asset-generation.js";
 import { buildChatGPTDirectImageRequest } from "../../packages/server/src/services/image/openai-chatgpt-image.js";
 
-const npc = { id: "npc-card-outside-party", data: JSON.stringify({ name: "Vigil" }) };
-assert.deepEqual(uniqueStoryboardCards([npc, { id: "other", data: '{"name":"Someone Else"}' }], ["Vigil"]), [npc]);
+const npc = { id: "npc-card-outside-party", data: JSON.stringify({ name: "Quenby" }) };
+assert.deepEqual(uniqueStoryboardCards([npc, { id: "other", data: '{"name":"Someone Else"}' }], ["Quenby"]), [npc]);
 assert.deepEqual(
-  uniqueStoryboardCards([npc, { ...npc, id: "duplicate" }], ["Vigil"]),
+  uniqueStoryboardCards([npc, { ...npc, id: "duplicate" }], ["Quenby"]),
   [],
   "ambiguous names cannot substitute the wrong photo",
 );
@@ -20,38 +20,38 @@ assert.deepEqual(
   "library membership never adds scene participants",
 );
 const mentionedRows = [
-  { id: "vigil-card", data: JSON.stringify({ name: "Vigil" }) },
+  { id: "quenby-card", data: JSON.stringify({ name: "Quenby" }) },
   { id: "player-card", data: JSON.stringify({ name: "Rowan Mercer" }) },
   { id: "unmentioned-card", data: JSON.stringify({ name: "Someone Else" }) },
 ];
 assert.deepEqual(
   selectStoryboardMentionedLibraryCharacterNames({
-    sourceNarration: "Vigil stands at the worktable while Rowan Mercer watches from the door.",
+    sourceNarration: "Quenby stands at the worktable while Rowan Mercer watches from the door.",
     sections: [],
     rows: mentionedRows,
   }),
-  ["Vigil", "Rowan Mercer"],
+  ["Quenby", "Rowan Mercer"],
   "source-mentioned library cards are eligible even when absent from party/presence state",
 );
 assert.deepEqual(
   selectStoryboardMentionedLibraryCharacterNames({
-    sourceNarration: "Vigil stands at the worktable.",
+    sourceNarration: "Quenby stands at the worktable.",
     sections: [],
-    rows: [mentionedRows[0]!, { id: "ambiguous-vigil", data: JSON.stringify({ name: "Vigil" }) }],
+    rows: [mentionedRows[0]!, { id: "ambiguous-quenby", data: JSON.stringify({ name: "Quenby" }) }],
   }),
-  ["Vigil"],
+  ["Quenby"],
   "mention discovery remains separate from photo selection so duplicate names can be rejected by uniqueStoryboardCards",
 );
 assert.deepEqual(
   uniqueStoryboardCards(
-    [mentionedRows[0]!, { id: "ambiguous-vigil", data: JSON.stringify({ name: "Vigil" }) }],
-    ["Vigil"],
+    [mentionedRows[0]!, { id: "ambiguous-quenby", data: JSON.stringify({ name: "Quenby" }) }],
+    ["Quenby"],
   ),
   [],
   "ambiguous source-mentioned cards do not select a photo",
 );
 const identity = compactStoryboardCharacterIdentity(
-  "Vigil's Appearance: OVERALL: bronze automaton.\nBUILD: tall.\nFACE: metallic face, amber lantern eyes.\nHAIR: cast bronze waves.\nATTIRE: old armor.\nGRACE: unknown.",
+  "Quenby's Appearance: OVERALL: bronze automaton.\nBUILD: tall.\nFACE: metallic face, amber lantern eyes.\nHAIR: cast bronze waves.\nATTIRE: old armor.\nGRACE: unknown.",
 );
 assert.match(identity, /bronze automaton/);
 assert.match(identity, /cast bronze waves/);
@@ -70,7 +70,7 @@ const currentWardrobe = compactStoryboardCharacterIdentity(
 assert.match(currentWardrobe, /fully covered green uniform/);
 assert.doesNotMatch(currentWardrobe, /unrelated history/);
 const incidentCardProjection = compactStoryboardCharacterIdentity(
-  "Kasimira Morvant's Appearance: OVERALL: a vampire frozen at 26, a breathtaking night-court beauty, the high art of imperial flesh-shaping worn with deliberate restraint. HEIGHT AND FACE: heart-shaped face, straight slim nose, full lips, white teeth. BUILD: statuesque and curvy. ATTIRE: current scene clothing is a dark formal gown. PRIVATE: concubine and sexual history are irrelevant to this image.",
+  "Jadwiga Rookwood's Appearance: OVERALL: a vampire frozen at 26, a breathtaking night-court beauty, the high art of imperial flesh-shaping worn with deliberate restraint. HEIGHT AND FACE: heart-shaped face, straight slim nose, full lips, white teeth. BUILD: statuesque and curvy. ATTIRE: current scene clothing is a dark formal gown. PRIVATE: concubine and sexual history are irrelevant to this image.",
 );
 assert.match(incidentCardProjection, /heart-shaped face|straight slim nose|dark formal gown/);
 assert.doesNotMatch(incidentCardProjection, /concubine|sexual history|private/iu);
@@ -92,20 +92,20 @@ assert.doesNotMatch(multilinePrivateSection, /secret private prose/);
 const references = ["data:image/png;base64,LOCATION", "data:image/png;base64,VIGIL"];
 const result = await buildSceneIllustrationProviderPrompt({
   chatId: "proof",
-  prompt: "Vigil serves tea in her new pink uniform.",
+  prompt: "Quenby serves tea in her new pink uniform.",
   imgModel: "gpt-image-2.5-sunburst",
   imgSource: "openai_chatgpt",
   imgBaseUrl: "http://invalid",
   imgApiKey: "",
   referenceImages: references,
-  characterReferenceNames: ["Vigil"],
+  characterReferenceNames: ["Quenby"],
   locationReferenceImageAttached: true,
   characterDescriptions: [identity],
   ensureCharacterAppearance: true,
   useGamePromptTemplate: false,
   maxPromptCharacters: 8000,
 });
-assert.match(result.prompt, /Reference image 2 is Vigil/);
+assert.match(result.prompt, /Reference image 2 is Quenby/);
 assert.match(result.prompt, /Reference image 1 is the established LOCATION/);
 assert.match(result.prompt, /bronze automaton/);
 assert.match(result.prompt, /new pink uniform/);
@@ -119,7 +119,7 @@ assert.deepEqual(
   request.body.images,
   references.map((image_url) => ({ image_url })),
 );
-assert.match(String(request.body.prompt), /Reference image 2 is Vigil/);
+assert.match(String(request.body.prompt), /Reference image 2 is Quenby/);
 console.info(
   "Storyboard NPC identity: non-party lookup, ambiguity protection, compact identity, labeled reference order and direct image payload passed.",
 );

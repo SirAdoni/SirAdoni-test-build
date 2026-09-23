@@ -135,6 +135,7 @@ import {
   BookOpen,
   BarChart3,
   Gauge,
+  ListChecks,
   HardDrive,
   LifeBuoy,
   SlidersHorizontal,
@@ -171,6 +172,10 @@ import { TrackerCardColorSettings } from "./settings/TrackerCardColorSettings";
 import { PromptOverridesEditor } from "./settings/PromptOverridesEditor";
 import { BackgroundPicker } from "./settings/BackgroundPicker";
 import { RequestTimeoutSettings } from "./settings/RequestTimeoutSettings";
+import {
+  GENERATION_JOB_TRACKING_CONTROL_ID,
+  GenerationJobTrackingSettings,
+} from "./settings/GenerationJobTrackingSettings";
 import { CustomGenerationParametersSettings } from "./settings/CustomGenerationParametersSettings";
 import { TextSnippetsSettings } from "./settings/TextSnippetsSettings";
 import { UsageDashboardSettings } from "./settings/UsageDashboardSettings";
@@ -288,6 +293,7 @@ type SettingsSectionId =
   | "support-diagnostics"
   | "usage-dashboard"
   | "request-timeouts"
+  | "generation-job-tracking"
   | "parameters"
   | "message-tools"
   | "backup-export"
@@ -550,6 +556,13 @@ const SETTINGS_SECTIONS: readonly SettingsSectionMeta[] = [
     label: "Request timeouts",
     description: "Adjust how long text, agents and media wait for a slow backend.",
     aliases: ["timeout", "slow", "koboldcpp", "images", "video", "seconds", "backend"],
+  },
+  {
+    id: "generation-job-tracking",
+    tab: "advanced",
+    label: "Generation job tracking",
+    description: "Save media job status and results so they survive a refresh, a closed tab or a dropped connection.",
+    aliases: ["jobs", "generation jobs", "background", "recover", "reconnect", "refresh", "queue", "logs"],
   },
   {
     id: "parameters",
@@ -8865,6 +8878,15 @@ function AdvancedSettings() {
         {...getSettingsSectionAnchorProps("request-timeouts")}
       >
         <RequestTimeoutSettings />
+      </SettingsSection>
+
+      <SettingsSection
+        title={localizeUi("settings.generationJobTracking.title")}
+        description={localizeUi("settings.generationJobTracking.searchDescription")}
+        icon={<ListChecks size="0.875rem" />}
+        {...getSettingsSectionAnchorProps("generation-job-tracking")}
+      >
+        <GenerationJobTrackingSettings anchorId={getSettingsControlAnchorId(GENERATION_JOB_TRACKING_CONTROL_ID)} />
       </SettingsSection>
 
       <SettingsSection

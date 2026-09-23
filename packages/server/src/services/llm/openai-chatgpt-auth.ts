@@ -1,9 +1,10 @@
-import { mkdir, readFile, writeFile, chmod } from "node:fs/promises";
+import { mkdir, readFile, writeFile, chmod, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { APP_VERSION, type ModelParameterCapabilities, type StoredEffortLevel } from "@marinara-engine/shared";
 import { logger } from "../../lib/logger.js";
 import { safeFetch } from "../../utils/security.js";
+import { LLMHttpError, sanitizeApiError } from "./base-provider.js";
 
 export const OPENAI_CHATGPT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
 
@@ -179,6 +180,22 @@ function authFromJson(auth: CodexAuthJson, authFilePath: string, refreshed: bool
   };
 }
 
+/** A typed HTTP failure with a sanitized, bounded body excerpt; the OAuth `error` string becomes providerCode. */
+async function authHttpError(label: string, res: Response): Promise<LLMHttpError> {
+  const text = await res.text().catch(() => "");
+  let parsed: JsonRecord | null = null;
+  try {
+    parsed = asRecord(JSON.parse(text));
+  } catch {
+    parsed = null;
+  }
+  const code = parsed?.error;
+  return new LLMHttpError(`${label} (${res.status}): ${sanitizeApiError(text, 200)}`, {
+    status: res.status,
+    providerCode: typeof code === "string" ? code : undefined,
+  });
+}
+
 async function refreshAuth(auth: CodexAuthJson, authFilePath: string): Promise<OpenAIChatGPTAuth> {
   const tokens = auth.tokens;
   const refreshToken = stringValue(tokens?.refresh_token);
@@ -186,6 +203,7 @@ async function refreshAuth(auth: CodexAuthJson, authFilePath: string): Promise<O
     throw new Error(`Codex ChatGPT access token is stale, but no refresh token is available. Run \`codex login\`.`);
   }
 
+  const startedAt = Date.now();
   const res = await safeFetch(REFRESH_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -200,8 +218,7 @@ async function refreshAuth(auth: CodexAuthJson, authFilePath: string): Promise<O
   });
 
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Failed to refresh Codex ChatGPT login (${res.status}): ${text.slice(0, 200)}`);
+    throw await authHttpError("Failed to refresh Codex ChatGPT login", res);
   }
 
   const response = (await res.json()) as JsonRecord;
@@ -218,9 +235,26 @@ async function refreshAuth(auth: CodexAuthJson, authFilePath: string): Promise<O
   auth.last_refresh = new Date().toISOString();
 
   await mkdir(dirname(authFilePath), { recursive: true });
-  await writeFile(authFilePath, `${JSON.stringify(auth, null, 2)}\n`, "utf8");
-  await chmod(authFilePath, 0o600).catch(() => {});
-  logger.info("[openai-chatgpt] Refreshed local Codex ChatGPT auth token");
+  // Write a sibling temp file and rename it over auth.json so a crash mid-write can never leave a
+  // truncated file (and lose the rotated refresh token) for us or the Codex CLI to read.
+  const tmpPath = `${authFilePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await writeFile(tmpPath, `${JSON.stringify(auth, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    await chmod(tmpPath, 0o600).catch(() => {});
+    await rename(tmpPath, authFilePath);
+  } catch (err) {
+    await unlink(tmpPath).catch(() => {});
+    throw err;
+  }
+  logger.debug(
+    {
+      event: "llm.auth.refresh",
+      outcome: "ok",
+      elapsedMs: Date.now() - startedAt,
+      expiresInS: typeof response.expires_in === "number" ? response.expires_in : undefined,
+    },
+    "Refreshed local Codex ChatGPT auth token",
+  );
 
   return authFromJson(auth, authFilePath, true);
 }
@@ -311,8 +345,7 @@ export async function fetchOpenAIChatGPTModels(
   });
 
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`ChatGPT model catalog returned ${res.status}: ${text.slice(0, 200)}`);
+    throw await authHttpError("ChatGPT model catalog request failed", res);
   }
 
   const json = (await res.json()) as JsonRecord;

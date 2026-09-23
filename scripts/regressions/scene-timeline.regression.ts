@@ -25,18 +25,18 @@ const evidenced = (base: GameSceneVisit, presenceEvidence: Array<{ name: string;
 appendSceneVisits(scenes, "one", [
   visit(
     "Gate",
-    ["Robert", "Vigil", "Ferrant"],
-    [{ text: "Robert chose the lesson.", quote: "Learn it the hard way." }],
+    ["Edmund", "Quenby", "Ferrant"],
+    [{ text: "Edmund chose the lesson.", quote: "Learn it the hard way." }],
   ),
 ]);
-appendSceneVisits(scenes, "two", [visit("Gate", ["Robert"])]);
-assert.deepEqual(scenes[0].present, ["Robert", "Vigil", "Ferrant"], "Silence must not remove occupants");
-const departure = visit("Gate", ["Robert", "Vigil"], [], [{ name: "Ferrant", quote: "Ferrant leaves." }]);
+appendSceneVisits(scenes, "two", [visit("Gate", ["Edmund"])]);
+assert.deepEqual(scenes[0].present, ["Edmund", "Quenby", "Ferrant"], "Silence must not remove occupants");
+const departure = visit("Gate", ["Edmund", "Quenby"], [], [{ name: "Ferrant", quote: "Ferrant leaves." }]);
 validateSceneEvidence([departure], "Ferrant leaves.");
 appendSceneVisits(scenes, "three", [departure]);
-assert.deepEqual(scenes[0].present, ["Robert", "Vigil"]);
+assert.deepEqual(scenes[0].present, ["Edmund", "Quenby"]);
 assert(scenes[0].participants.includes("Ferrant"), "A departure must remain in scene history");
-appendSceneVisits(scenes, "four", [visit("Hall", ["Robert", "Vireska"]), visit("Gate", ["Robert"])]);
+appendSceneVisits(scenes, "four", [visit("Hall", ["Edmund", "Ludmila"]), visit("Gate", ["Edmund"])]);
 assert.deepEqual(
   scenes.map((scene) => scene.location),
   ["Gate", "Hall", "Gate"],
@@ -45,11 +45,11 @@ assert.deepEqual(
   scenes.map((scene) => scene.closed),
   [true, true, false],
 );
-assert(!scenes[2].present.includes("Vigil"), "Old location occupants cannot leak into a later visit");
+assert(!scenes[2].present.includes("Quenby"), "Old location occupants cannot leak into a later visit");
 assert.throws(() => validateSceneEvidence([departure], "Ferrant remains."), /quote/);
 validateSceneEvidence(
-  [evidenced(visit("Hall", ["Robert"], [], []), [{ name: "Robert", quote: "Robert enters the hall." }])],
-  "Robert enters the hall.",
+  [evidenced(visit("Hall", ["Edmund"], [], []), [{ name: "Edmund", quote: "Edmund enters the hall." }])],
+  "Edmund enters the hall.",
   { requirePresenceEvidence: true },
 );
 assert.throws(
@@ -78,31 +78,31 @@ validateSceneEvidence(
   "Spring enters the hall.",
   { requirePresenceEvidence: true, knownCharacterNames: ["Spring"], knownLocationNames: ["Spring"] },
 );
-const carried = evidenced(visit("Hall", ["Robert", "Vigil"]), [
-  { name: "Robert", quote: "Robert enters the hall." },
-  { name: "Vigil", quote: "Vigil enters the hall." },
+const carried = evidenced(visit("Hall", ["Edmund", "Quenby"]), [
+  { name: "Edmund", quote: "Edmund enters the hall." },
+  { name: "Quenby", quote: "Quenby enters the hall." },
 ]);
 validateSceneEvidence(
-  [carried, evidenced(visit("Hall", ["Robert", "Vigil"]), [])],
-  "Robert enters the hall. Vigil enters the hall.",
+  [carried, evidenced(visit("Hall", ["Edmund", "Quenby"]), [])],
+  "Edmund enters the hall. Quenby enters the hall.",
   {
     requirePresenceEvidence: true,
   },
 );
 assert.throws(
-  () => validateSceneEvidence([visit("Gate", [], [{ text: "Vigil chose.", quote: "invented" }])], "Robert chose."),
+  () => validateSceneEvidence([visit("Gate", [], [{ text: "Quenby chose.", quote: "invented" }])], "Edmund chose."),
   /quote/,
 );
 const oldHash = sceneTurnHash(sceneTurnHash("seed", "user choice"), "old swipe");
-const hintSource = "She replied, and I would rather that room be the Empress's.";
-const incorrectQuote = "but I would rather that room be the Empress's.";
+const hintSource = "She replied, and I would rather that room be the Regent's.";
+const incorrectQuote = "but I would rather that room be the Regent's.";
 assert(sceneEvidenceHint(hintSource, incorrectQuote).includes(hintSource));
 assert.equal(sceneEvidenceHint(hintSource + hintSource, incorrectQuote), "", "Ambiguous anchors are not suggested");
 assert.throws(
   () => validateSceneEvidence([visit("Hall", [], [{ text: "Claim", quote: incorrectQuote }])], hintSource),
   /quote/,
 );
-const formatting = visit("Hall", ["Robert"], [{ text: "Exact words retained.", quote: "“The core  glows. [Ready?]”" }]);
+const formatting = visit("Hall", ["Edmund"], [{ text: "Exact words retained.", quote: "“The core  glows. [Ready?]”" }]);
 const formattingSource = "The core\nglows. [Ready?]";
 validateSceneEvidence([formatting], formattingSource);
 assert.equal(formatting.facts[0].quote, formattingSource, "Store the exact source substring after formatting repair");
@@ -156,28 +156,28 @@ const recapScenes: GameSceneTimelineEntry[] = [
 appendSceneVisits(
   recapScenes,
   "recap",
-  [evidenced(visit("New place", ["Robert"], [], []), [{ name: "Robert", quote: "Robert enters New place." }])],
+  [evidenced(visit("New place", ["Edmund"], [], []), [{ name: "Edmund", quote: "Edmund enters New place." }])],
   { resetCurrentPresence: true },
 );
 assert.deepEqual(
   recapScenes.map((scene) => scene.present),
-  [["Robert"]],
+  [["Edmund"]],
 );
 assert.equal(recapScenes[0]?.closed, false);
 appendSceneVisits(recapScenes, "empty-recap", [evidenced(visit("New place", []), [])], { resetCurrentPresence: true });
 assert.deepEqual(recapScenes[0].present, []);
 assert(recapScenes[0].participants.includes("Old companion"), "Historical participants remain in history");
-validateSceneEvidence([evidenced(visit("Hall", ["Robert"]), []), evidenced(visit("Hall", ["Vigil"]), [])], "Silence.", {
+validateSceneEvidence([evidenced(visit("Hall", ["Edmund"]), []), evidenced(visit("Hall", ["Quenby"]), [])], "Silence.", {
   requirePresenceEvidence: true,
-  previous: { location: "Hall", present: ["Robert", "Vigil"] },
+  previous: { location: "Hall", present: ["Edmund", "Quenby"] },
 });
 assert.throws(
   () =>
-    validateSceneEvidence([evidenced(visit("Garden", ["Vigil"]), [])], "Robert enters the garden.", {
+    validateSceneEvidence([evidenced(visit("Garden", ["Quenby"]), [])], "Edmund enters the garden.", {
       requirePresenceEvidence: true,
-      previous: { location: "Hall", present: ["Vigil"] },
+      previous: { location: "Hall", present: ["Quenby"] },
     }),
-  /Vigil/,
+  /Quenby/,
 );
 assert(sceneTurnSchema.safeParse({ visits: [visit("Hall", ["Legacy character"])] }).success);
 const service = readFileSync(
@@ -213,26 +213,26 @@ assert.match(service, /validateSceneEvidence\(saved\.visits, turn\.source, \{\s*
 assert.match(service, /previous: isOpeningRecap \? null/);
 assert.match(service, /presenceEvidence !== undefined/);
 
-const boundary = "user: Enter. assistant: Ferrant leads them across the court. Vireska welcomes them in the hall.";
+const boundary = "user: Enter. assistant: Ferrant leads them across the court. Ludmila welcomes them in the hall.";
 const boundaryVisits = [
-  visit("Court", ["Robert"], [{ text: "They cross.", quote: "Ferrant leads them across the court." }]),
+  visit("Court", ["Edmund"], [{ text: "They cross.", quote: "Ferrant leads them across the court." }]),
   visit(
     "Hall",
-    ["Robert", "Vireska"],
-    [{ text: "Vireska welcomes them.", quote: "Vireska welcomes them in the hall." }],
+    ["Edmund", "Ludmila"],
+    [{ text: "Ludmila welcomes them.", quote: "Ludmila welcomes them in the hall." }],
   ),
 ];
-assert(!sceneReviewSource(boundary, boundaryVisits, 0).includes("Vireska"));
+assert(!sceneReviewSource(boundary, boundaryVisits, 0).includes("Ludmila"));
 assert(!sceneReviewSource(boundary, boundaryVisits, 1).includes("Ferrant"));
 assert.equal(
-  sceneReviewSource("user: The party rests. assistant: The fire burns low.", [visit("Camp", ["Robert"])], 0),
+  sceneReviewSource("user: The party rests. assistant: The fire burns low.", [visit("Camp", ["Edmund"])], 0),
   "user: The party rests. assistant: The fire burns low.",
   "a factless scene continuation must retain its source for factual review",
 );
 assert.equal(
   sceneReviewSource(
     "user: The party rests. assistant: A private later scene begins.",
-    [visit("Camp", ["Robert"]), visit("Tower", ["Robert"], [{ text: "Later fact.", quote: "private later scene" }])],
+    [visit("Camp", ["Edmund"]), visit("Tower", ["Edmund"], [{ text: "Later fact.", quote: "private later scene" }])],
     0,
   ),
   "",

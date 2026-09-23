@@ -140,7 +140,10 @@ assert.equal(isGlobalSearchShortcut(key("f", { ctrlKey: true })), false, "Ctrl+F
 assert.equal(isGlobalSearchShortcut(key("F", { ctrlKey: true, shiftKey: true, altKey: true })), false);
 assert.equal(isGlobalSearchShortcut({ ...key("כ", { ctrlKey: true, shiftKey: true }), code: "KeyF" }), true);
 // Windows AltGr arrives as Ctrl+Alt, so AltGr+Shift+F must not open search.
-assert.equal(isGlobalSearchShortcut({ ...key("F", { ctrlKey: true, shiftKey: true, altKey: true }), code: "KeyF" }), false);
+assert.equal(
+  isGlobalSearchShortcut({ ...key("F", { ctrlKey: true, shiftKey: true, altKey: true }), code: "KeyF" }),
+  false,
+);
 assert.equal(isGlobalSearchShortcut({ ...key("F", { ctrlKey: true, shiftKey: true }), repeat: true }), false);
 // It may replace only the palette: never a dialog underneath the palette, nor one open on its own.
 assert.equal(canOpenGlobalSearchFromShortcut(0, false), true, "nothing open");
@@ -186,6 +189,25 @@ const source = (path: string) => readFileSync(new URL(`../../packages/client/src
 const bindings: Array<[string, RegExp]> = [
   ["components/command-palette/CommandPaletteHost.tsx", /isPaletteShortcut\(event\)/u],
   ["components/command-palette/CommandPaletteHost.tsx", /isShortcutsHelpKey\(event\) && !isTypingTarget/u],
+  // Cross-feature: palette commands open their own dialogs and the app shows one dialog at a
+  // time, so neither the palette nor "?" may open over a dialog the user is in.
+  [
+    "components/command-palette/CommandPaletteHost.tsx",
+    /isPaletteShortcut\(event\)\) \{\s*const palette = useCommandPaletteStore\.getState\(\);\s*if \(!canOpenGlobalSearchFromShortcut\(countModalOverlays\(\), palette\.paletteOpen\)\) return;/u,
+  ],
+  [
+    "components/command-palette/CommandPaletteHost.tsx",
+    /!isTypingTarget\(event\.target\) && countModalOverlays\(\) === 0/u,
+  ],
+  // The snippet picker and the chat guide listen inside the chat screen, which an open editor replaces.
+  [
+    "components/command-palette/CommandPaletteHost.tsx",
+    /id: "action:insert-snippet",[\s\S]*?hasAnyDetailOpen\(\)[\s\S]*?run: requestSnippetPicker/u,
+  ],
+  [
+    "components/command-palette/CommandPaletteHost.tsx",
+    /id: "action:chat-guide",[\s\S]*?when: \(\) => activeChatMode\(\) !== null && !useUIStore\.getState\(\)\.hasAnyDetailOpen\(\)/u,
+  ],
   ["components/command-palette/CommandPaletteHost.tsx", /isGlobalSearchShortcut\(event\)/u],
   ["components/command-palette/CommandPalette.tsx", /event\.key === "ArrowDown"/u],
   ["components/chat/SnippetPicker.tsx", /event\.key === "ArrowDown"/u],

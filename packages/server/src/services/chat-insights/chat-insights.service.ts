@@ -30,6 +30,8 @@ import { chats, characters, messages } from "../../db/schema/index.js";
 import { eq, inArray } from "../../db/file-query.js";
 import { createCharactersStorage } from "../storage/characters.storage.js";
 import { resolveChatUserIdentity } from "../chat-user-identity.js";
+import { orFallback } from "../../lib/best-effort.js";
+import { applySegmentEdits, collectSegmentOverlays } from "../game/segment-edits.js";
 
 type ChatRow = typeof chats.$inferSelect;
 type MessageRow = typeof messages.$inferSelect;
@@ -158,6 +160,26 @@ function parseDateBound(value: string | null | undefined, endOfDay: boolean): nu
   return parseChatTimestamp(trimmed);
 }
 
+/**
+ * The text search and chat stats read for each message. Game Mode narration shows (and the
+ * campaign log and story exports read) its segment edits and deletions, so neither may match,
+ * count or quote text the player replaced or removed.
+ */
+function createVisibleContentReader(chat: ChatRow): (row: MessageRow) => string {
+  if (chat.mode !== "game" || typeof chat.metadata !== "string" || !chat.metadata.includes("segment")) {
+    return (row) => row.content;
+  }
+  const { editsByMessage, deletesByMessage } = collectSegmentOverlays(parseRecord(chat.metadata));
+  if (editsByMessage.size === 0 && deletesByMessage.size === 0) return (row) => row.content;
+  return (row) => {
+    if (row.role !== "assistant" && row.role !== "narrator") return row.content;
+    const edits = editsByMessage.get(row.id);
+    const deletes = deletesByMessage.get(row.id);
+    if (!edits && !deletes) return row.content;
+    return applySegmentEdits(row.content, edits ?? {}, deletes ?? new Set());
+  };
+}
+
 export async function searchAllChats(db: DB, params: GlobalChatSearchParams): Promise<GlobalChatSearchResponse> {
   const query = compileChatSearchQuery(params.query ?? "");
   const limit = clampInteger(params.limit, 30, 1, GLOBAL_SEARCH_MAX_LIMIT);
@@ -208,7 +230,8 @@ export async function searchAllChats(db: DB, params: GlobalChatSearchParams): Pr
     }
     response.scannedChats += 1;
     const rows = await listChatMessages(db, chat.id);
-    const pending: Array<{ row: MessageRow; index: number }> = [];
+    const readContent = createVisibleContentReader(chat);
+    const pending: Array<{ row: MessageRow; index: number; content: string }> = [];
     // Newest matches first inside each chat, so recent context surfaces sooner.
     for (let index = rows.length - 1; index >= 0; index -= 1) {
       const row = rows[index]!;
@@ -218,17 +241,18 @@ export async function searchAllChats(db: DB, params: GlobalChatSearchParams): Pr
         const time = parseChatTimestamp(row.createdAt);
         if (time === null || (from !== null && time < from) || (to !== null && time > to)) continue;
       }
-      if (!matchesChatSearchQuery(row.content, query)) continue;
+      const content = readContent(row);
+      if (!matchesChatSearchQuery(content, query)) continue;
       if (!isReaderVisibleMessage(row)) continue;
       matched += 1;
-      if (matched > offset && matched <= wanted) pending.push({ row, index });
+      if (matched > offset && matched <= wanted) pending.push({ row, index, content });
       if (matched > wanted) break;
     }
     if (pending.length === 0) continue;
     await names.load(pending.map(({ row }) => row.characterId ?? "").filter(Boolean));
-    for (const { row, index } of pending) {
+    for (const { row, index, content } of pending) {
       const rowRole = normalizeRole(row.role);
-      const snippet = buildChatSearchSnippet(row.content, query);
+      const snippet = buildChatSearchSnippet(content, query);
       const result: GlobalChatSearchResult = {
         chatId: chat.id,
         chatName: chat.name,
@@ -273,10 +297,15 @@ export async function computeStoredChatStats(db: DB, chat: ChatRow, params: Chat
   const rows = await listChatMessages(db, chat.id);
   const names = createCharacterNameCache(db);
   await names.load([...parseIdList(chat.characterIds), ...rows.map((row) => row.characterId ?? "").filter(Boolean)]);
-  const identity = await resolveChatUserIdentity(createCharactersStorage(db), chat).catch(() => null);
+  const identity = await orFallback(resolveChatUserIdentity(createCharactersStorage(db), chat), null, {
+    event: "storage.read.fallback",
+    stage: "chat-user-identity",
+    chatId: chat.id,
+  });
   const userName = identity?.name?.trim() || "You";
   const primaryCharacter = names.get(parseIdList(chat.characterIds)[0]) ?? chat.name;
 
+  const readContent = createVisibleContentReader(chat);
   const messageNumbers = new Map<string, number>();
   const input: ChatStatsMessage[] = [];
   rows.forEach((row, index) => {
@@ -295,7 +324,7 @@ export async function computeStoredChatStats(db: DB, chat: ChatRow, params: Chat
       role,
       speakerKey,
       speakerName,
-      content: row.content,
+      content: readContent(row),
       createdAt: row.createdAt,
       tokensPrompt: usage?.prompt ?? null,
       tokensCompletion: usage?.completion ?? null,

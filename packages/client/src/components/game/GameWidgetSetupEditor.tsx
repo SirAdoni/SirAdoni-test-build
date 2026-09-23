@@ -577,6 +577,7 @@ export function GameWidgetSetupEditor({ widgets, onChange, disabled, className }
                   <input
                     value={widget.label}
                     disabled={disabled}
+                    maxLength={120}
                     onChange={(event) => replaceWidget(widget.id, { label: event.target.value })}
                     className="w-full rounded-lg border border-[var(--border)] bg-[var(--secondary)] px-2.5 py-2 text-xs text-[var(--foreground)]"
                   />
@@ -924,6 +925,7 @@ function ExtendedTextField({
         {localizeUi(type === "note" ? "ui.game.widgeteditormodal.text" : "ui.game.widgeteditormodal.items")}
       </span>
       <textarea
+        dir="auto"
         value={draft}
         disabled={disabled}
         rows={3}

@@ -66,6 +66,7 @@ import {
 import { useTranslation as useUiTranslation } from "react-i18next";
 
 import { CommandPaletteHost } from "../command-palette/CommandPaletteHost";
+import { GenerationJobsRecoveryHost } from "../generation-jobs/GenerationJobsRecoveryHost";
 
 const ChatArea = lazy(() => import("../chat/ChatArea").then((module) => ({ default: module.ChatArea })));
 const CharacterEditor = lazy(() =>
@@ -1556,6 +1557,7 @@ export function AppShell() {
       )}
       <ProfessorMariFloatingAssistantHost active={professorMariFloatingActive} />
       <CommandPaletteHost />
+      <GenerationJobsRecoveryHost />
       <div data-component="MobileMusicWidgetLayer" className="contents">
         {isMobile && musicDjInstalled ? (
           <>

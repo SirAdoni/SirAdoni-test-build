@@ -9,7 +9,7 @@ const disposableDataDir = mkdtempSync(join(tmpdir(), "marinara-session-review-fi
 process.env.DATA_DIR = disposableDataDir;
 const { fitSessionConclusionMessages } = await import("../../packages/server/src/routes/game.routes.js");
 const transcript =
-  "[user] Robert: I want you to learn through experience.\n\n[assistant] Rosamund: I cannot issue an order quickly enough. Brynna: That is the lesson. Kasimira: Create distance or use the choker.\n\n[user OOC correction] Preserve who made the decision.";
+  "[user] Edmund: I want you to learn through experience.\n\n[assistant] Gwenllian: I cannot issue an order quickly enough. Hilde: That is the lesson. Jadwiga: Create distance or use the choker.\n\n[user OOC correction] Preserve who made the decision.";
 const messages: ChatMessage[] = [
   {
     role: "system",
@@ -19,7 +19,7 @@ const messages: ChatMessage[] = [
 ];
 assert.match(messages[0].content, /Phase exception.*FACTUAL REVIEW PHASE/);
 const draft = {
-  summary: "Vigil chose her learning method. Robert and Kasimira enjoyed a fight.",
+  summary: "Quenby chose her learning method. Edmund and Jadwiga enjoyed a fight.",
   resumePoint: "At the gate.",
   partyDynamics: "",
   partyState: "Rested.",
@@ -72,23 +72,23 @@ await reviewSessionSummary({
   },
 });
 const relatedContinuity = {
-  campaignProgression: { partyArcs: [{ name: "Vigil", arc: "Vigil chose her learning method." }] },
-  characterCards: [{ name: "Kasimira", strengths: ["Experienced"] }],
+  campaignProgression: { partyArcs: [{ name: "Quenby", arc: "Quenby chose her learning method." }] },
+  characterCards: [{ name: "Jadwiga", strengths: ["Experienced"] }],
 };
 const original = structuredClone({ draft, relatedContinuity });
 const attribution = {
   path: ["summary", "summary"],
-  before: "Vigil chose her learning method.",
-  after: "Robert chose Vigil's learning method.",
+  before: "Quenby chose her learning method.",
+  after: "Edmund chose Quenby's learning method.",
   reason: "Decision ownership",
-  quote: "Robert: I want you to learn through experience.",
+  quote: "Edmund: I want you to learn through experience.",
 };
 const reaction = {
   path: ["summary", "keyDiscoveries"],
-  value: "Rosamund could not give orders fast enough. Kasimira instructed them to create distance or use the choker.",
+  value: "Gwenllian could not give orders fast enough. Jadwiga instructed them to create distance or use the choker.",
   reason: "Restore the witnessed lesson",
   quote:
-    "Rosamund: I cannot issue an order quickly enough. Brynna: That is the lesson. Kasimira: Create distance or use the choker.",
+    "Gwenllian: I cannot issue an order quickly enough. Hilde: That is the lesson. Jadwiga: Create distance or use the choker.",
 };
 const reviewed = {
   decisionChecks: [{ id: 0, quote: attribution.quote }],
@@ -111,11 +111,11 @@ const run = (value: unknown) =>
     },
   });
 const result = await run(reviewed);
-assert.equal(result.summary.summary, "Robert chose Vigil's learning method. Robert and Kasimira enjoyed a fight.");
+assert.equal(result.summary.summary, "Edmund chose Quenby's learning method. Edmund and Jadwiga enjoyed a fight.");
 assert.deepEqual(result.summary.keyDiscoveries, [reaction.value]);
 assert.equal(
   (result.relatedContinuity.campaignProgression as typeof relatedContinuity.campaignProgression).partyArcs[0].arc,
-  "Robert chose Vigil's learning method.",
+  "Edmund chose Quenby's learning method.",
 );
 assert.deepEqual(result.relatedContinuity.characterCards, relatedContinuity.characterCards);
 assert.deepEqual({ draft, relatedContinuity }, original, "Source objects are never mutated");
@@ -174,10 +174,10 @@ await reviewSessionSummary({
     targetAttempts++;
     if (targetAttempts === 1) {
       assert.match(request.at(-1)!.content, /PLAYER-TURN SOURCE INDEX/);
-      assert.match(request.at(-1)!.content, /Robert: I want you to learn through experience/);
+      assert.match(request.at(-1)!.content, /Edmund: I want you to learn through experience/);
       const index = request.at(-1)!.content.split("FACTUAL REVIEW PHASE")[0];
       assert.match(index, /\[user OOC correction\] Preserve who made the decision/);
-      assert.ok(!index.includes("Rosamund:"), "The index separates direct player input from GM narration");
+      assert.ok(!index.includes("Gwenllian:"), "The index separates direct player input from GM narration");
       return JSON.stringify({
         decisionChecks: reviewed.decisionChecks,
         corrections: [{ ...attribution, before: "A paraphrased target", quote: "A fabricated source quote" }],
@@ -213,7 +213,7 @@ await assert.rejects(
   /cut off/,
 );
 assert.equal(failures, 2);
-const quoteSource = "[assistant] She says, and I would rather that room be the Empress's.";
+const quoteSource = "[assistant] She says, and I would rather that room be the Regent's.";
 let quoteAttempts = 0;
 await reviewSessionSummary({
   transcript: quoteSource,
@@ -230,12 +230,12 @@ await reviewSessionSummary({
         {
           path: ["summary", "summary"],
           before: "garden",
-          after: "Empress's room",
+          after: "Regent's room",
           reason: "Preserve the stated preference.",
           quote:
             quoteAttempts === 1
-              ? "but I would rather that room be the Empress's."
-              : "and I would rather that room be the Empress's.",
+              ? "but I would rather that room be the Regent's."
+              : "and I would rather that room be the Regent's.",
         },
       ],
       additions: [],
@@ -244,8 +244,8 @@ await reviewSessionSummary({
   },
 });
 assert.equal(quoteAttempts, 2, "Paraphrased evidence must be repaired, not accepted");
-const literal = await run({ corrections: [{ ...attribution, after: "Robert said $& literally." }], additions: [] });
-assert.ok(literal.summary.summary.startsWith("Robert said $& literally."));
+const literal = await run({ corrections: [{ ...attribution, after: "Edmund said $& literally." }], additions: [] });
+assert.ok(literal.summary.summary.startsWith("Edmund said $& literally."));
 process.stdout.write(
   "Session summary review regression passed: attribution, consequences, linked arcs, literal edits, complete evidence, preserved prefix, and bounded retries.\n",
 );

@@ -201,7 +201,14 @@ const DOC_ORDER: Record<string, string[]> = {
     "writing-rulesets.md",
   ],
   integrations: ["home-assistant.md", "discord-mirror.md", "message-translation.md", "haptic-feedback.md"],
-  development: ["architecture-map.md", "frontend.md", "file-storage.md", "noodle-internals.md", "ios-pwa-safe-area.md"],
+  development: [
+    "architecture-map.md",
+    "frontend.md",
+    "file-storage.md",
+    "generation-jobs.md",
+    "noodle-internals.md",
+    "ios-pwa-safe-area.md",
+  ],
 };
 
 interface DocSummary {

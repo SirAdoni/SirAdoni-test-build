@@ -109,7 +109,10 @@ import {
   resolveChatSummaryConnection,
   resolveChatSummaryTemperatureOptions,
 } from "../services/chat-summary/connection-resolution.js";
-import { generateMissingConversationSummaries } from "../services/conversation/auto-summary.service.js";
+import {
+  conversationSummaryFailureFields,
+  generateMissingConversationSummaries,
+} from "../services/conversation/auto-summary.service.js";
 import { clearChatActivity, recordUserReaction } from "../services/conversation/autonomous.service.js";
 import { rebuildMemoryChunks } from "../services/memory-recall.js";
 import { createAdvancedMemoryService } from "../services/advanced-memory.js";
@@ -1999,17 +2002,9 @@ export async function chatsRoutes(app: FastifyInstance) {
       maxMissingDays,
     });
 
-    for (const failure of result.failedDays) {
-      logger.warn(
-        { chatId: req.params.id, date: failure.date, err: failure.error },
-        "[conversation-summary] manual backfill failed day summary",
-      );
-    }
-    for (const failure of result.failedWeeks) {
-      logger.warn(
-        { chatId: req.params.id, weekKey: failure.weekKey, err: failure.error },
-        "[conversation-summary] manual backfill failed week summary",
-      );
+    const summaryFailure = conversationSummaryFailureFields(req.params.id, result);
+    if (summaryFailure) {
+      logger.warn({ ...summaryFailure, trigger: "manual" }, "[conversation-summary] manual backfill had failures");
     }
 
     const hasNewSummaries =

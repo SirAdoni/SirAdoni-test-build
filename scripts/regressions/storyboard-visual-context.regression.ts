@@ -25,27 +25,27 @@ const app = await buildApp();
 try {
   const history: VisualSourceMessage[] = [
     { id: "u1", role: "user", content: "I sit on the table and continue working on the magical nexus core." },
-    { id: "a1", role: "assistant", content: "Vigil stands beside the table. Diagrams surround the nexus core." },
+    { id: "a1", role: "assistant", content: "Quenby stands beside the table. Diagrams surround the nexus core." },
     { id: "u2", role: "user", content: "The first painting I liked was of a statue I made." },
-    { id: "a2", role: "assistant", content: "Vigil asks what the statue was of." },
+    { id: "a2", role: "assistant", content: "Quenby asks what the statue was of." },
     { id: "future", role: "user", content: "I stop working and leave for the gardens." },
   ];
   const position = {
-    subject: "Robert",
+    subject: "Edmund",
     kind: "position" as const,
-    fact: "Robert sits on the tabletop.",
+    fact: "Edmund sits on the tabletop.",
     messageId: "u1",
     quote: "I sit on the table",
   };
   const activity = {
-    subject: "Robert",
+    subject: "Edmund",
     kind: "activity" as const,
-    fact: "Robert works on the magical nexus core.",
+    fact: "Edmund works on the magical nexus core.",
     messageId: "u1",
     quote: "continue working on the magical nexus core",
   };
   const facts = [position, activity];
-  const locationContext = "Robert's Chambers: a dark walnut writing table.";
+  const locationContext = "Edmund's Chambers: a dark walnut writing table.";
   let analystCalls = 0;
   const state = await resolveStoryboardVisualState({
     history,
@@ -228,7 +228,7 @@ try {
   const locationFact = {
     subject: "Room",
     kind: "location" as const,
-    fact: "Dark walnut writing table in Robert's Chambers.",
+    fact: "Dark walnut writing table in Edmund's Chambers.",
     messageId: "locationContext",
     quote: "a dark walnut writing table",
   };
@@ -567,7 +567,7 @@ try {
   const gapHistory = [
     ...history.slice(0, 4),
     { id: "gap", role: "assistant", content: "x".repeat(65000) },
-    { id: "gap-end", role: "assistant", content: "Vigil asks another question." },
+    { id: "gap-end", role: "assistant", content: "Quenby asks another question." },
   ];
   const gap = await resolveStoryboardVisualState({
     history: gapHistory,
@@ -612,7 +612,7 @@ try {
   assert.throws(
     () =>
       validateVisualFacts(
-        { openingFacts: [{ ...position, messageId: "a2", quote: "Vigil asks" }], closingFacts: [], uncertainties: [] },
+        { openingFacts: [{ ...position, messageId: "a2", quote: "Quenby asks" }], closingFacts: [], uncertainties: [] },
         history.slice(0, 4),
       ),
     /source quote/,
@@ -649,7 +649,7 @@ try {
   const nextHistory = [
     ...history.slice(0, 4),
     { id: "u3", role: "user", content: "Tell me more." },
-    { id: "a3", role: "assistant", content: "Vigil continues speaking." },
+    { id: "a3", role: "assistant", content: "Quenby continues speaking." },
   ];
   await resolveStoryboardVisualState({
     history: nextHistory,
@@ -678,9 +678,9 @@ try {
         openingFacts: [],
         closingFacts: [
           {
-            subject: "Robert",
+            subject: "Edmund",
             kind: "location",
-            fact: "Robert is in the gardens.",
+            fact: "Edmund is in the gardens.",
             messageId: "a3",
             quote: "You arrive in the gardens.",
           },
@@ -697,7 +697,7 @@ try {
     verifyStoryboardVisualPlan({
       context,
       locationContext,
-      frames: [{ imagePrompt: "Robert stands in the Root Vault, painting.", characters: ["Robert"] }],
+      frames: [{ imagePrompt: "Edmund stands in the Root Vault, painting.", characters: ["Edmund"] }],
       complete: async () => ({ consistent: false, reason: "Wrong room, posture and activity." }),
     }),
     /Wrong room, posture and activity/,
@@ -725,8 +725,8 @@ try {
     context,
     locationContext,
     sourceMessages: history.slice(0, 4),
-    characterAppearanceContext: "Robert has established high-elf features.",
-    frames: [{ imagePrompt: "Robert works on the nexus core while Vigil talks.", characters: ["Robert", "Vigil"] }],
+    characterAppearanceContext: "Edmund has established high-elf features.",
+    frames: [{ imagePrompt: "Edmund works on the nexus core while Quenby talks.", characters: ["Edmund", "Quenby"] }],
     complete: async (system, input) => {
       assert.match(system, /separate locationContext source/);
       assert.match(input, /I sit on the table/);
@@ -739,8 +739,8 @@ try {
   });
 
   const storyboardFrames = [
-    { imagePrompt: "Robert sits on the tabletop working on the magical nexus core.", characters: ["Robert"] },
-    { imagePrompt: "Vigil stands beside the table and asks a question.", characters: ["Vigil"] },
+    { imagePrompt: "Edmund sits on the tabletop working on the magical nexus core.", characters: ["Edmund"] },
+    { imagePrompt: "Quenby stands beside the table and asks a question.", characters: ["Quenby"] },
   ];
   let repairReviewCalls = 0;
   const repairedStoryboardFrames = await reviewAndCorrectStoryboardVisualPlan({
@@ -758,13 +758,13 @@ try {
           reason: "Corrected all material continuity issues: the repaired plan is grounded.",
           corrections: [],
           correctedFrames: [
-            { imagePrompt: "Robert sits on the tabletop working on the magical nexus core.", characters: ["Robert"] },
-            { imagePrompt: "Vigil stands beside the table and asks a question.", characters: ["Vigil"] },
+            { imagePrompt: "Edmund sits on the tabletop working on the magical nexus core.", characters: ["Edmund"] },
+            { imagePrompt: "Quenby stands beside the table and asks a question.", characters: ["Quenby"] },
           ],
         };
       }
       assert.deepEqual(payload.originalFrames, storyboardFrames);
-      assert.equal(payload.frames[0].characters[0], "Robert");
+      assert.equal(payload.frames[0].characters[0], "Edmund");
       return { consistent: true, reason: "The repaired candidate is grounded." };
     },
   });
@@ -806,18 +806,18 @@ try {
           corrections: [
             {
               index: 0,
-              imagePrompt: "Robert sits on the tabletop and works on the nexus core.",
-              characters: ["Robert"],
+              imagePrompt: "Edmund sits on the tabletop and works on the nexus core.",
+              characters: ["Edmund"],
             },
           ],
         };
       }
-      assert.equal(payload.frames[0].imagePrompt, "Robert sits on the tabletop and works on the nexus core.");
+      assert.equal(payload.frames[0].imagePrompt, "Edmund sits on the tabletop and works on the nexus core.");
       return { consistent: true, reason: "The sparse repair is grounded." };
     },
   });
   assert.equal(sparseRepairCalls, 2, "Sparse repairs receive one bounded verification");
-  assert.equal(sparseRepaired[0]?.imagePrompt, "Robert sits on the tabletop and works on the nexus core.");
+  assert.equal(sparseRepaired[0]?.imagePrompt, "Edmund sits on the tabletop and works on the nexus core.");
   assert.deepEqual(sparseRepaired[1], storyboardFrames[1]);
 
   let soundSparseCalls = 0;
@@ -831,13 +831,13 @@ try {
         consistent: true,
         reason: "The plan is grounded.",
         corrections: [
-          { index: 0, imagePrompt: "Robert sits on the tabletop and works on the nexus core.", characters: ["Robert"] },
+          { index: 0, imagePrompt: "Edmund sits on the tabletop and works on the nexus core.", characters: ["Edmund"] },
         ],
       };
     },
   });
   assert.equal(soundSparseCalls, 1, "A consistent sparse repair keeps the existing one-call contract");
-  assert.equal(soundSparse[0]?.imagePrompt, "Robert sits on the tabletop and works on the nexus core.");
+  assert.equal(soundSparse[0]?.imagePrompt, "Edmund sits on the tabletop and works on the nexus core.");
 
   let matchingDualShapeCalls = 0;
   const matchingDualShape = await reviewAndCorrectStoryboardVisualPlan({
@@ -850,10 +850,10 @@ try {
         consistent: false,
         reason: "The first shot needed a posture repair.",
         corrections: [
-          { index: 0, imagePrompt: "Robert sits on the tabletop and works on the nexus core.", characters: ["Robert"] },
+          { index: 0, imagePrompt: "Edmund sits on the tabletop and works on the nexus core.", characters: ["Edmund"] },
         ],
         correctedFrames: [
-          { imagePrompt: "Robert sits on the tabletop and works on the nexus core.", characters: ["Robert"] },
+          { imagePrompt: "Edmund sits on the tabletop and works on the nexus core.", characters: ["Edmund"] },
           storyboardFrames[1]!,
         ],
         repairVerified: true,
@@ -861,7 +861,7 @@ try {
     },
   });
   assert.equal(matchingDualShapeCalls, 1, "Matching sparse and full repairs are accepted without another review");
-  assert.equal(matchingDualShape[0]?.imagePrompt, "Robert sits on the tabletop and works on the nexus core.");
+  assert.equal(matchingDualShape[0]?.imagePrompt, "Edmund sits on the tabletop and works on the nexus core.");
 
   await assert.rejects(
     reviewAndCorrectStoryboardVisualPlan({
@@ -871,9 +871,9 @@ try {
       complete: async () => ({
         consistent: false,
         reason: "Conflicting repair payloads.",
-        corrections: [{ index: 0, imagePrompt: "Different correction.", characters: ["Robert"] }],
+        corrections: [{ index: 0, imagePrompt: "Different correction.", characters: ["Edmund"] }],
         correctedFrames: [
-          { imagePrompt: "Robert sits on the tabletop and works on the nexus core.", characters: ["Robert"] },
+          { imagePrompt: "Edmund sits on the tabletop and works on the nexus core.", characters: ["Edmund"] },
           storyboardFrames[1]!,
         ],
       }),
@@ -918,7 +918,7 @@ try {
 
   const { buildSceneIllustrationProviderPrompt } =
     await import("../../packages/server/src/services/game/game-asset-generation.js");
-  const reviewedShot = "Robert sits on the tabletop working on the magical nexus core while Vigil asks a question.";
+  const reviewedShot = "Edmund sits on the tabletop working on the magical nexus core while Quenby asks a question.";
   for (const promptOverride of [undefined, reviewedShot]) {
     const prompt = await buildSceneIllustrationProviderPrompt({
       chatId: "proof",
@@ -931,7 +931,7 @@ try {
       imgApiKey: "",
       useGamePromptTemplate: false,
     });
-    assert.match(prompt.prompt, /Robert sits on the tabletop/);
+    assert.match(prompt.prompt, /Edmund sits on the tabletop/);
     assert.match(prompt.prompt, /magical nexus core/);
     assert.ok(prompt.prompt.indexOf(locationContext) < prompt.prompt.indexOf(reviewedShot));
     assert.doesNotMatch(prompt.prompt, /openingFacts|closingFacts|messageId|SOURCE-GROUNDED PHYSICAL SCENE/);
@@ -955,7 +955,7 @@ try {
       gameStoryboardIllustrationPlannerTemplateIds: ["proof"],
     },
     setupConfig: null,
-    latestState: { location: "Robert's Chambers" },
+    latestState: { location: "Edmund's Chambers" },
     sourceNarration: history[3]!.content,
     sections: [],
     keyframeCount: 1,

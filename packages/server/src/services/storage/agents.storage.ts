@@ -5,6 +5,8 @@ import { eq, ne, and, desc, lte, notInArray } from "../../db/file-query.js";
 import type { DB } from "../../db/connection.js";
 import { agentConfigs, agentRuns, agentMemory, messages } from "../../db/schema/index.js";
 import { newId, now } from "../../utils/id-generator.js";
+import { reportDiagnosticError } from "../../lib/diagnostic-operation.js";
+import { parseStoredJson } from "./stored-json.js";
 import {
   BUILT_IN_AGENTS,
   getDefaultBuiltInAgentSettings,
@@ -56,12 +58,8 @@ function isRemovedBuiltInAgentType(type: string): boolean {
   return REMOVED_BUILT_IN_AGENT_TYPES.has(type);
 }
 
-function parseRunData(value: string): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
+function parseRunData(value: string, runId = "unknown"): unknown {
+  return parseStoredJson<unknown>(value, value, { table: "agent_runs", rowId: runId, field: "resultData" });
 }
 
 function mergeBuiltInCreateUpdate(
@@ -96,7 +94,7 @@ function serializeRunWithConfig(row: { agent_runs: AgentRunRow; agent_configs: A
     chatId: row.agent_runs.chatId,
     messageId: row.agent_runs.messageId,
     resultType: row.agent_runs.resultType,
-    resultData: parseRunData(row.agent_runs.resultData),
+    resultData: parseRunData(row.agent_runs.resultData, row.agent_runs.id),
     tokensUsed: row.agent_runs.tokensUsed,
     durationMs: row.agent_runs.durationMs,
     success: row.agent_runs.success === "true",
@@ -168,8 +166,17 @@ export function createAgentsStorage(db: DB) {
         createdAt: timestamp,
         updatedAt: timestamp,
       });
-    } catch {
-      // Another request may have materialized the row first.
+    } catch (error) {
+      // Another request may have materialized the row first: that race is benign.
+      const materialized = (await getById(id)) ?? (await getByType(type));
+      if (materialized) return materialized;
+      reportDiagnosticError(error, undefined, undefined, {
+        event: "storage.materialize",
+        level: "warn",
+        message: "[agents] Could not materialize the built-in agent config",
+        fields: { table: "agent_configs", agentType: type },
+      });
+      throw error;
     }
 
     return (await getById(id)) ?? getByType(type);
@@ -383,7 +390,7 @@ export function createAgentsStorage(db: DB) {
         )
         .orderBy(desc(messages.createdAt), desc(agentRuns.createdAt));
       const run = rows.find((row) => (row.agent_runs.swipeIndex ?? 0) === row.messages.activeSwipeIndex)?.agent_runs;
-      return run ? parseRunData(run.resultData) : null;
+      return run ? parseRunData(run.resultData, run.id) : null;
     },
 
     /** Get the most recent successful run of an agent type in a given chat. */

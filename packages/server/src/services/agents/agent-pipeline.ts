@@ -15,6 +15,7 @@ import type { BaseLLMProvider } from "../llm/base-provider.js";
 import {
   executeAgent,
   executeAgentBatch,
+  logAgentFailure,
   resolveAgentResultType,
   type AgentExecConfig,
   type AgentToolContext,
@@ -233,13 +234,16 @@ async function executeGroup(
       AGENT_GROUP_MAX_CONCURRENT_TOOL_CALLS,
     );
   }
+  const toolStartedAt = new Map<string, number>();
   const toolResultsPromise = settleAgentJobsWithConcurrencyLimit(
     toolAgents,
     AGENT_GROUP_MAX_CONCURRENT_TOOL_CALLS,
-    (agent) =>
-      (resolveAgentContext
-        ? Promise.resolve(resolveAgentContext(agent, buildAgentContext(agent, context)))
-        : Promise.resolve(buildAgentContext(agent, context))
+    (agent) => {
+      toolStartedAt.set(agent.id, Date.now());
+      return (
+        resolveAgentContext
+          ? Promise.resolve(resolveAgentContext(agent, buildAgentContext(agent, context)))
+          : Promise.resolve(buildAgentContext(agent, context))
       )
         .then((agentContext) =>
           runWithConnectionLimit(() =>
@@ -249,13 +253,19 @@ async function executeGroup(
         .then((result) => {
           safeOnResult(result);
           return result;
-        }),
+        });
+    },
   ).then((settled) =>
     settled.map((entry, index) => {
       if (entry.status === "fulfilled") return entry.value;
 
       const agent = toolAgents[index]!;
-      logger.error(entry.reason, "[agent-pipeline] Tool agent FAILED for %s", agent.type);
+      logAgentFailure(entry.reason, {
+        agentType: agent.type,
+        agentId: agent.id,
+        phase: agent.phase,
+        elapsedMs: Date.now() - (toolStartedAt.get(agent.id) ?? Date.now()),
+      });
       const errorResult: AgentResult = {
         agentId: agent.id,
         agentType: agent.type,
@@ -324,9 +334,17 @@ async function executePhase(
     );
   }
 
-  const settled = await settleAgentJobsWithConcurrencyLimit(groups, groupLimit, (group) =>
-    executeGroup(group, context, connectionLimiters.get(providerKey(group.provider))!, onResult, resolveAgentContext),
-  );
+  const groupStartedAt = new Map<AgentGroup, number>();
+  const settled = await settleAgentJobsWithConcurrencyLimit(groups, groupLimit, (group) => {
+    groupStartedAt.set(group, Date.now());
+    return executeGroup(
+      group,
+      context,
+      connectionLimiters.get(providerKey(group.provider))!,
+      onResult,
+      resolveAgentContext,
+    );
+  });
 
   const results: AgentResult[] = [];
   for (let i = 0; i < settled.length; i++) {
@@ -336,22 +354,9 @@ async function executePhase(
     } else {
       // Group rejected — log and produce error results so they're visible
       const group = groups[i]!;
-      if (entry.reason instanceof Error) {
-        logger.error(
-          entry.reason,
-          '[agent-pipeline] Group REJECTED in phase "%s": [%s]',
-          phase,
-          group.agents.map((a) => a.type).join(", "),
-        );
-      } else {
-        logger.error(
-          '[agent-pipeline] Group REJECTED in phase "%s": [%s] %s',
-          phase,
-          group.agents.map((a) => a.type).join(", "),
-          String(entry.reason),
-        );
-      }
+      const elapsedMs = Date.now() - (groupStartedAt.get(group) ?? Date.now());
       for (const agent of group.agents) {
+        logAgentFailure(entry.reason, { agentType: agent.type, agentId: agent.id, phase, elapsedMs });
         const errorResult: AgentResult = {
           agentId: agent.id,
           agentType: agent.type,

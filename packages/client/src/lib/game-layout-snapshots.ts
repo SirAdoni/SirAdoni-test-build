@@ -22,6 +22,7 @@ export const LAYOUT_SNAPSHOT_FORMAT = "marinara-game-layout";
 export const LAYOUT_SNAPSHOT_VERSION = 1;
 export const SAVED_LAYOUTS_STORAGE_KEY = "marinara-game-layouts:v1";
 export const LAYOUT_HISTORY_LIMIT = 50;
+export const LAYOUT_IMPORT_MAX_CHARS = 512 * 1024;
 
 const PANEL_PREFIX = "marinara-game-panel:";
 const STACK_PREFIX = "marinara-game-panel-stacks:";
@@ -63,8 +64,26 @@ export function captureLayoutSnapshot(storage: LayoutStorage, scopeId: string): 
   return { entries };
 }
 
-/** Write the snapshot's keys and remove every other key under the scope. */
-export function applyLayoutSnapshot(storage: LayoutStorage, scopeId: string, snapshot: LayoutSnapshot): void {
+/**
+ * Write the snapshot's keys and remove every other key under the scope.
+ * Returns false and restores the previous layout when storage refuses a write (quota).
+ */
+export function applyLayoutSnapshot(storage: LayoutStorage, scopeId: string, snapshot: LayoutSnapshot): boolean {
+  const previous = captureLayoutSnapshot(storage, scopeId);
+  try {
+    writeLayoutSnapshot(storage, scopeId, snapshot);
+    return true;
+  } catch {
+    try {
+      writeLayoutSnapshot(storage, scopeId, previous);
+    } catch {
+      /* Best effort. */
+    }
+    return false;
+  }
+}
+
+function writeLayoutSnapshot(storage: LayoutStorage, scopeId: string, snapshot: LayoutSnapshot): void {
   const prefix = layoutPanelPrefix(scopeId);
   const stackKey = layoutStackKey(scopeId);
   const wanted = new Map<string, string>();
@@ -222,6 +241,8 @@ export function exportLayoutJson(name: string, snapshot: LayoutSnapshot): string
 
 /** Parse exported JSON (one layout or a list of them). Returns null when it is not a layout. */
 export function parseLayoutJson(text: string): Array<{ name: string; snapshot: LayoutSnapshot }> | null {
+  // A real layout is a few KB; refuse pasted blobs that could fill localStorage.
+  if (typeof text !== "string" || text.length > LAYOUT_IMPORT_MAX_CHARS) return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);

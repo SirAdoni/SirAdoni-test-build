@@ -4023,9 +4023,9 @@ const cases: RegressionCase[] = [
   {
     name: "Game Extra Instructions retain system authority without duplicating user-authored text",
     run() {
-      const sentinel = "Ysolde never waived royal style or ordinary courtesy.";
+      const sentinel = "Isaura never waived royal style or ordinary courtesy.";
       const messages = [
-        { role: "system" as const, content: "<gm>Base GM prompt</gm>\n\n<lore>Ysolde waived royal style.</lore>" },
+        { role: "system" as const, content: "<gm>Base GM prompt</gm>\n\n<lore>Isaura waived royal style.</lore>" },
         { role: "user" as const, content: "Continue." },
       ];
       const authorityPrompt = buildGameSpecialInstructionsPrompt(sentinel);
@@ -4044,15 +4044,15 @@ const cases: RegressionCase[] = [
         gameActiveState: "dialogue",
         sessionNumber: 3,
         map: null,
-        partyNames: ["Princess Ysolde"],
+        partyNames: ["Princess Isaura"],
         playerName: "Rowan",
       });
-      assert.doesNotMatch(reminder, /SPECIAL INSTRUCTIONS|Ysolde never waived royal style/u);
+      assert.doesNotMatch(reminder, /SPECIAL INSTRUCTIONS|Isaura never waived royal style/u);
       assert.equal(
         (
           [messages[0]!.content, messages[1]!.content, reminder]
             .join("\n")
-            .match(/Ysolde never waived royal style/gu) ?? []
+            .match(/Isaura never waived royal style/gu) ?? []
         ).length,
         1,
         "the provider-visible Game prompt must contain user-authored Extra Instructions exactly once",
@@ -4178,7 +4178,7 @@ const cases: RegressionCase[] = [
       const visibleSummary = formatSessionConclusionMessage({
         sessionNumber: 4,
         summary: "Calista chose to make the day a deliberate presentation of her art to Rowan.",
-        resumePoint: "Resume at dawn in the Moonrise courtyard for Brynna's date.",
+        resumePoint: "Resume at dawn in the Moonrise courtyard for Hilde's date.",
         partyDynamics: "Calista and Rowan established an explicitly romantic relationship.",
         partyState: "The household is rested; Calista's throat is strained.",
         keyDiscoveries: [],
@@ -4227,14 +4227,14 @@ const cases: RegressionCase[] = [
     run() {
       const summary = {
         sessionNumber: 4,
-        summary: "Rowan said the date was for him to know and appreciate Brynna.",
-        resumePoint: "At dawn, Brynna waits in the courtyard; Rowan's response and actions remain unresolved.",
+        summary: "Rowan said the date was for him to know and appreciate Hilde.",
+        resumePoint: "At dawn, Hilde waits in the courtyard; Rowan's response and actions remain unresolved.",
         partyDynamics: "Calista and Rowan had consensual sex, initiated on Calista's terms.",
         partyState: "Everyone returned safely to Moonrise.",
         keyDiscoveries: [],
         characterMoments: [
           "Calista said being held afterward was the part she most wanted remembered.",
-          "Brynna said she was tired of having to prove her usefulness.",
+          "Hilde said she was tired of having to prove her usefulness.",
         ],
         littleDetails: [],
         statsSnapshot: {},
@@ -4243,7 +4243,7 @@ const cases: RegressionCase[] = [
       };
       const recapPrompt = buildRecapPrompt(
         [summary],
-        '[Brynna] She waits beneath the arch.\n[state: {"time":"dawn"}]',
+        '[Hilde] She waits beneath the arch.\n[state: {"time":"dawn"}]',
         "nsfw",
       );
 
@@ -4257,10 +4257,10 @@ const cases: RegressionCase[] = [
       assert.match(recapPrompt, /consensual adult sexual intimacy plainly but non-graphically/u);
       assert.match(recapPrompt, /Do not euphemize it as "chosen intimacy," "became close,"/u);
       assert.match(recapPrompt, /stop before the player character's next voluntary action/u);
-      assert.match(recapPrompt, /Rowan said the date was for him to know and appreciate Brynna/u);
-      assert.match(recapPrompt, /Brynna said she was tired of having to prove her usefulness/u);
+      assert.match(recapPrompt, /Rowan said the date was for him to know and appreciate Hilde/u);
+      assert.match(recapPrompt, /Hilde said she was tired of having to prove her usefulness/u);
       assert.match(recapPrompt, /Calista said being held afterward was the part she most wanted remembered/u);
-      assert.match(recapPrompt, /\[Brynna\] She waits beneath the arch\./u);
+      assert.match(recapPrompt, /\[Hilde\] She waits beneath the arch\./u);
       assert.doesNotMatch(recapPrompt, /\[state:/u);
       assert.doesNotMatch(recapPrompt, /Write a dramatic|Write 2(?:–|-)3 paragraphs/u);
       assert.doesNotMatch(buildRecapPrompt([summary], null, "sfw"), /consensual adult sexual intimacy/u);
@@ -4284,7 +4284,7 @@ const cases: RegressionCase[] = [
         playerName: "Rowan Mercer",
         personaCard:
           "Name: Rowan Mercer\nNature: High-elf demigod magus\nPersonality: Fundamentally good; heals strangers who ask kindly and donates gold to legitimate charities.",
-        partyNames: ["Ilyrien"],
+        partyNames: ["Faelan"],
       });
       const conclusionPrompt = buildSessionConclusionPrompt({
         language: null,
@@ -4309,7 +4309,7 @@ const cases: RegressionCase[] = [
           "Name: Rowan Mercer\nPersonality: Fundamentally good, generous, protective, and slow to anger.",
         playerCharacterNames: ["Rowan Mercer"],
         sessionNumber: 3,
-        partyNames: ["Ilyrien"],
+        partyNames: ["Faelan"],
         existingEntries: [
           {
             name: "Player Revelations - Session 2",
@@ -4318,7 +4318,7 @@ const cases: RegressionCase[] = [
             content: "Rowan always touches his sword when worried.",
           },
         ],
-        transcriptText: "Rowan: The offer is withdrawn. Personhood protection remains.",
+        transcriptText: "Rowan: The offer is withdrawn. Sanctuary protection remains.",
       });
 
       assert.match(fairness, /genuinely good protagonist may remain genuinely good/u);
@@ -4403,9 +4403,9 @@ const cases: RegressionCase[] = [
         persona: { name: "Rowan Mercer", description: "A generous demigod and protector." },
         recentMessages: [
           { role: "user", content: "I offer the village protection." },
-          { role: "assistant", content: "Maybelle claims Rowan always obeys her." },
+          { role: "assistant", content: "Corvina claims Rowan always obeys her." },
         ],
-        mainResponse: "Maybelle repeats her claim.",
+        mainResponse: "Corvina repeats her claim.",
       });
       const settingOverrideConfig = makeRegressionAgentConfig({
         id: "custom:derived-continuity",
@@ -4517,7 +4517,7 @@ const cases: RegressionCase[] = [
         availableSfx: [],
         activeWidgets: [],
         trackedNpcs: [],
-        characterNames: ["Rowan Mercer", "Maybelle"],
+        characterNames: ["Rowan Mercer", "Corvina"],
         currentBackground: "market-square",
         currentMusic: null,
         currentWeather: "rainy",
@@ -4525,7 +4525,7 @@ const cases: RegressionCase[] = [
       };
       const sceneSystem = buildSceneAnalyzerSystemPrompt(sceneContext);
       const sceneUser = buildSceneAnalyzerUserPrompt(
-        "Maybelle calls Rowan reckless. Later, the rain stops.",
+        "Corvina calls Rowan reckless. Later, the rain stops.",
         "I offer shelter without answering her accusation.",
         sceneContext,
       );
@@ -4565,14 +4565,14 @@ const cases: RegressionCase[] = [
         npcs: [],
         sessionSummaries: [],
         sessionNumber: 3,
-        partyNames: ["Ilyrien"],
-        partyCards: [{ name: "Ilyrien", card: "Name: Ilyrien\nPersonality: Precise and loyal." }],
+        partyNames: ["Faelan"],
+        partyCards: [{ name: "Faelan", card: "Name: Faelan\nPersonality: Precise and loyal." }],
         playerName: "Rowan Mercer",
         playerCard: playerCanon,
         gmCharacterCard: null,
         difficulty: "Casual",
         genre: "Heroic fantasy",
-        setting: "Valdenmoor",
+        setting: "Brindlemere",
         tone: "Heroic",
         rating: "nsfw",
         gameSystemPrompt: null,
@@ -4593,7 +4593,7 @@ const cases: RegressionCase[] = [
         gameActiveState: "dialogue",
         sessionNumber: 3,
         map: null,
-        partyNames: ["Ilyrien"],
+        partyNames: ["Faelan"],
         playerName: "Rowan Mercer",
         rating: "nsfw",
       });
@@ -4647,8 +4647,8 @@ const cases: RegressionCase[] = [
     name: "Game authorial continuity preserves corrections without promoting NPC claims or replaying directions",
     run() {
       const history = [
-        { role: "assistant", content: "[To the GM] Good farmers are scarce. Brynna's date is Day 16." },
-        { role: "user", content: "[To the GM] Make Brynna on Day 15. Retcon it." },
+        { role: "assistant", content: "[To the GM] Good farmers are scarce. Hilde's date is Day 16." },
+        { role: "user", content: "[To the GM] Make Hilde on Day 15. Retcon it." },
         { role: "user", content: "[To the GM] At meals, let the ladies converse. 40–60 paragraphs." },
         { role: "user", content: "[To the GM] Is the farmer secretly a spy?" },
         { role: "user", content: "I tell her, '[To the GM] this is spoken dialogue.'" },
@@ -4656,7 +4656,7 @@ const cases: RegressionCase[] = [
         ...Array.from({ length: 200 }, () => ({ role: "assistant", content: "An unrelated scene." })),
       ];
       const retained = buildGameAuthorialContinuityPrompt(history);
-      assert.match(retained, /Make Brynna on Day 15\. Retcon it/u);
+      assert.match(retained, /Make Hilde on Day 15\. Retcon it/u);
       assert.match(retained, /40–60 paragraphs/u);
       assert.match(retained, /Questions, suggestions, and hypotheticals are not confirmed facts/u);
       assert.match(retained, /Scene-specific directions apply only to their original scene/u);
@@ -4698,8 +4698,8 @@ const cases: RegressionCase[] = [
     run() {
       const playerCanon = [
         "Name: Rowan Mercer",
-        "Elowen is his chosen teacher and the only person whose instructions he treats as binding.",
-        "Maybelle is trusted household family, but Rowan has not agreed to obey her.",
+        "Maelis is his chosen teacher and the only person whose instructions he treats as binding.",
+        "Corvina is trusted household family, but Rowan has not agreed to obey her.",
       ].join("\n");
       const baseContext = {
         gameActiveState: "dialogue" as const,
@@ -4709,14 +4709,14 @@ const cases: RegressionCase[] = [
         npcs: [],
         sessionSummaries: [],
         sessionNumber: 4,
-        partyNames: ["Maybelle"],
-        partyCards: [{ name: "Maybelle", card: "Name: Maybelle\nRole: Trusted household caretaker." }],
+        partyNames: ["Corvina"],
+        partyCards: [{ name: "Corvina", card: "Name: Corvina\nRole: Trusted household caretaker." }],
         playerName: "Rowan Mercer",
         playerCard: playerCanon,
         gmCharacterCard: null,
         difficulty: "Casual",
         genre: "Heroic fantasy",
-        setting: "Valdenmoor",
+        setting: "Brindlemere",
         tone: "Heroic",
         gameSystemPrompt: null,
       };
@@ -4726,13 +4726,13 @@ const cases: RegressionCase[] = [
         gameActiveState: "dialogue",
         sessionNumber: 4,
         map: null,
-        partyNames: ["Maybelle"],
+        partyNames: ["Corvina"],
         playerName: "Rowan Mercer",
         rating: "sfw",
       });
       const seal = buildPlayerCanonRecencySeal("Rowan Mercer");
       const partyPrompt = buildPartySystemPrompt({
-        partyCards: [{ name: "Maybelle", card: "Name: Maybelle\nRole: Trusted household caretaker." }],
+        partyCards: [{ name: "Corvina", card: "Name: Corvina\nRole: Trusted household caretaker." }],
         playerName: "Rowan Mercer",
         gameActiveState: "dialogue",
       });
@@ -4832,7 +4832,7 @@ const cases: RegressionCase[] = [
         ["OOC: Stop and explain the mistake.", "gm"],
         ["[To the party] Who saw that?", "party"],
         ["[ PARTY ] Who saw that?", "party"],
-        ["I tell Maybelle, '[To the GM] is a UI prefix.'", undefined],
+        ["I tell Corvina, '[To the GM] is a UI prefix.'", undefined],
         [null, undefined],
       ] as const) {
         assert.equal(resolveGameAddressMode(input), expected);
@@ -4842,7 +4842,7 @@ const cases: RegressionCase[] = [
         gameActiveState: "dialogue",
         sessionNumber: 4,
         map: null,
-        partyNames: ["Maybelle", "Calista"],
+        partyNames: ["Corvina", "Calista"],
         playerName: "Rowan Mercer",
         addressMode: "gm",
         playerInventory: [{ name: "Honey roll hidden in a closed Bag of Holding", quantity: 11 }],
@@ -4862,7 +4862,7 @@ const cases: RegressionCase[] = [
         gameActiveState: "dialogue",
         sessionNumber: 4,
         map: null,
-        partyNames: ["Maybelle"],
+        partyNames: ["Corvina"],
         playerName: "Rowan Mercer",
         addressMode: "party",
       });
@@ -4873,7 +4873,7 @@ const cases: RegressionCase[] = [
   {
     name: "Game prompts keep UI inventory GM-only and do not pressure the full party to answer",
     run() {
-      const partyNames = ["Maybelle", "Calista", "Mirah", "Liveth"];
+      const partyNames = ["Corvina", "Calista", "Zerah", "Quilla"];
       const reminderContext = {
         gameActiveState: "dialogue" as const,
         sessionNumber: 4,
@@ -4910,7 +4910,7 @@ const cases: RegressionCase[] = [
         gmCharacterCard: null,
         difficulty: "Casual",
         genre: "Heroic fantasy",
-        setting: "Valdenmoor",
+        setting: "Brindlemere",
         tone: "Heroic",
         playerNotes: "Privately investigate the Milkwell books.",
         gameSystemPrompt: null,
@@ -5134,7 +5134,7 @@ const cases: RegressionCase[] = [
         gmCharacterCard: null,
         difficulty: "Casual",
         genre: "Fantasy romance",
-        setting: "Valdenmoor",
+        setting: "Brindlemere",
         tone: "Heroic",
         rating: "sfw",
         gameSystemPrompt: null,
@@ -5211,10 +5211,10 @@ const cases: RegressionCase[] = [
     async run() {
       const characterRows = new Map([
         [
-          "maybelle",
+          "corvina",
           {
-            name: "Maybelle",
-            description: "{{char}} lights Maybelle's fire.",
+            name: "Corvina",
+            description: "{{char}} lights Corvina's fire.",
             personality: "Steady.",
             scenario: "",
             mes_example: "",
@@ -5254,8 +5254,8 @@ const cases: RegressionCase[] = [
       ]);
       const primaryMacroContext: MacroContext = {
         user: "Rowan Mercer",
-        char: "Maybelle",
-        characters: ["Maybelle", "Calista", "Market Warden"],
+        char: "Corvina",
+        characters: ["Corvina", "Calista", "Market Warden"],
         variables: {},
       };
       const isolatedOnly = resolveGameCharacterCardMacros(
@@ -5288,7 +5288,7 @@ const cases: RegressionCase[] = [
           gameSystemPrompt: "{{setvar::mood::calm}}{{setvar::trail::start}} Run the game.",
           customGmPrompt: "Final mood: {{getvar::mood}}. Final trail: {{getvar::trail}}.",
           gameGmCharacterId: "archivist",
-          gamePartyCharacterIds: ["maybelle", "singer", "npc:market-warden"],
+          gamePartyCharacterIds: ["corvina", "singer", "npc:market-warden"],
           gameCharacterCards: [
             { name: "Calista", class: "{{char}}'s guardian" },
             { name: "Market Warden", class: "{{char}}'s witness" },
@@ -5305,7 +5305,7 @@ const cases: RegressionCase[] = [
             },
           ],
         },
-        characterIds: ["maybelle", "singer", "npc:market-warden"],
+        characterIds: ["corvina", "singer", "npc:market-warden"],
         chars: {
           async getById(id) {
             const data = characterRows.get(id);
@@ -5332,7 +5332,7 @@ const cases: RegressionCase[] = [
       });
 
       const prompt = messages[0]!.content;
-      assert.match(prompt, /Description: Maybelle lights Maybelle's fire\./u);
+      assert.match(prompt, /Description: Corvina lights Corvina's fire\./u);
       assert.match(prompt, /Description: Calista guards Calista's gate\./u);
       assert.match(prompt, /Opening mood: calm\. The user conditional survives\./u);
       assert.match(prompt, /Character System Instructions: Remember that Calista speaks for herself\./u);
@@ -5341,9 +5341,9 @@ const cases: RegressionCase[] = [
       assert.match(prompt, /Description: Market Warden keeps the public ledger\./u);
       assert.match(prompt, /Class: Market Warden's witness/u);
       assert.match(prompt, /Description: The Archivist adjudicates the scene\./u);
-      assert.doesNotMatch(prompt, /Description: Maybelle guards Calista's gate\./u);
-      assert.doesNotMatch(prompt, /Description: Maybelle keeps the public ledger\./u);
-      assert.doesNotMatch(prompt, /Description: Maybelle adjudicates the scene\./u);
+      assert.doesNotMatch(prompt, /Description: Corvina guards Calista's gate\./u);
+      assert.doesNotMatch(prompt, /Description: Corvina keeps the public ledger\./u);
+      assert.doesNotMatch(prompt, /Description: Corvina adjudicates the scene\./u);
     },
   },
   {
@@ -5359,16 +5359,16 @@ const cases: RegressionCase[] = [
         extra: { voice: "Measured" },
         rpgStats: { hp: { value: 900, max: 900 } },
       };
-      const ilyrienStats = { hp: { value: 73, max: 80 }, attributes: [{ key: "DEX", value: 17 }] };
-      const ilyrienCard = {
-        name: "Ilyrien",
+      const faelanStats = { hp: { value: 73, max: 80 }, attributes: [{ key: "DEX", value: 17 }] };
+      const faelanCard = {
+        name: "Faelan",
         shortDescription: "Ward architect",
         class: "Mage",
         abilities: ["Ward lattice"],
         strengths: ["Precision"],
         weaknesses: ["Residual hesitation"],
         extra: {},
-        rpgStats: ilyrienStats,
+        rpgStats: faelanStats,
       };
 
       const applied = applySessionConclusionPayload(
@@ -5389,7 +5389,7 @@ const cases: RegressionCase[] = [
             plotTwists: [],
             partyArcs: [
               { name: "  ROWAN MERCER  ", arc: "Must be humbled", goal: "Accept moral correction" },
-              { name: "Ilyrien", arc: "Perfect the living ward", goal: "Stabilize the lattice" },
+              { name: "Faelan", arc: "Perfect the living ward", goal: "Stabilize the lattice" },
             ],
           },
           characterCards: [
@@ -5403,7 +5403,7 @@ const cases: RegressionCase[] = [
               extra: { temptation: "Sovereign power" },
             },
             {
-              name: "Ilyrien",
+              name: "Faelan",
               shortDescription: "Restored ward architect",
               class: "Wardwright",
               abilities: ["Ward lattice", "Clean combat casting"],
@@ -5419,7 +5419,7 @@ const cases: RegressionCase[] = [
           currentPlotTwists: [],
           currentPartyArcs: [],
           currentMorale: 70,
-          currentCards: [playerCard, ilyrienCard],
+          currentCards: [playerCard, faelanCard],
           playerCharacterNames: ["Rowan Mercer"],
         },
       );
@@ -5428,9 +5428,9 @@ const cases: RegressionCase[] = [
       assert.deepEqual(applied.updatedCards[0], playerCard);
       assert.equal(applied.updatedCardCount, 1);
       assert.equal(applied.updatedCards[1]!.class, "Wardwright");
-      assert.deepEqual(applied.updatedCards[1]!.rpgStats, ilyrienStats);
+      assert.deepEqual(applied.updatedCards[1]!.rpgStats, faelanStats);
       assert.deepEqual(applied.updatedPartyArcs, [
-        { name: "Ilyrien", arc: "Perfect the living ward", goal: "Stabilize the lattice" },
+        { name: "Faelan", arc: "Perfect the living ward", goal: "Stabilize the lattice" },
       ]);
 
       const playerPromptParts: string[] = [];
@@ -5467,9 +5467,9 @@ const cases: RegressionCase[] = [
         sessionNumber: 3,
         entries: [
           {
-            entryName: "Bellowes Hall - Session 3",
+            entryName: "Pemberly Hall - Session 3",
             tag: "location",
-            keys: ["Bellowes", "Meadowkine", "Ossa"],
+            keys: ["Pemberly", "Sedgecombe", "Ossa"],
             description: "Optional partnership withdrawn.",
             content: "Rowan withdrew the optional partnership while preserving personhood protection.",
           },
@@ -9077,22 +9077,22 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
     run() {
       const metadata = {
         gameCharacterCards: [
-          { name: "Maybelle Meadowsweet" },
+          { name: "Corvina Fernhollow" },
           { name: "Calista Venn" },
-          { name: "Brynna Coldstream" },
+          { name: "Hilde Birchfield" },
         ],
         spatialContext: {
-          locations: [{ name: "Moonrise Tower" }, { name: "Williams Manor" }],
+          locations: [{ name: "Moonrise Tower" }, { name: "Hartwell Manor" }],
         },
       };
       const options = gameNpcSanitizationOptionsFromMetadata(metadata);
-      assert.equal(isNarrationNpcNameExcluded("Maybelle", options.protectedCharacterNames ?? []), true);
+      assert.equal(isNarrationNpcNameExcluded("Corvina", options.protectedCharacterNames ?? []), true);
 
       const sanitized = sanitizeGameNpcAvatarUrls(
         [
           {
-            id: "audrey-full",
-            name: "Audrey Justinia",
+            id: "beatrix-full",
+            name: "Beatrix Hallam",
             emoji: "👤",
             description: "The household's diplomatic organizer.",
             descriptionSource: "model",
@@ -9101,21 +9101,21 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
             notes: ["Trusted."],
           },
           {
-            id: "audrey",
-            name: "Audrey",
+            id: "beatrix",
+            name: "Beatrix",
             emoji: "👤",
-            description: 'Audrey said, "A countess wants you tonight."',
+            description: 'Beatrix said, "A countess wants you tonight."',
             descriptionSource: "narration",
             location: "",
             reputation: 0,
             notes: [],
-            avatarUrl: "/api/avatars/file/audrey.png",
+            avatarUrl: "/api/avatars/file/beatrix.png",
           },
           {
-            id: "maybelle",
-            name: "Maybelle",
+            id: "corvina",
+            name: "Corvina",
             emoji: "👤",
-            description: "Maybelle asked everyone to arrive openly.",
+            description: "Corvina asked everyone to arrive openly.",
             descriptionSource: "narration",
             location: "",
             reputation: 0,
@@ -9147,7 +9147,7 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
             emoji: "👤",
             description: "A fishwife who holds the market-stage rights.",
             descriptionSource: "narration",
-            location: "Casternhall",
+            location: "Wexmoor",
             reputation: 0,
             notes: [],
           },
@@ -9157,9 +9157,9 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
 
       assert.deepEqual(
         sanitized.map((npc) => npc.name),
-        ["Audrey Justinia", "Nell Barrow"],
+        ["Beatrix Hallam", "Nell Barrow"],
       );
-      assert.equal(sanitized[0]?.avatarUrl, "/api/avatars/file/audrey.png");
+      assert.equal(sanitized[0]?.avatarUrl, "/api/avatars/file/beatrix.png");
       assert.equal(sanitized[0]?.description, "The household's diplomatic organizer.");
       assert.equal(sanitized[0]?.reputation, 75);
     },
@@ -9168,8 +9168,8 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
     name: "game transcript export labels composite assistant turns as Narrator",
     run() {
       const names = new Map([
-        ["maybelle-id", "Maybelle Meadowsweet"],
-        ["brynna-id", "Brynna Coldstream"],
+        ["corvina-id", "Corvina Fernhollow"],
+        ["hilde-id", "Hilde Birchfield"],
       ]);
       assert.equal(
         resolveTranscriptExportDisplayName({
@@ -9177,7 +9177,7 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
           role: "assistant",
           characterId: null,
           characterNamesById: names,
-          primaryCharacterName: "Maybelle Meadowsweet",
+          primaryCharacterName: "Corvina Fernhollow",
         }),
         "Narrator",
       );
@@ -9185,9 +9185,9 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         resolveTranscriptExportDisplayName({
           mode: "game",
           role: "assistant",
-          characterId: "brynna-id",
+          characterId: "hilde-id",
           characterNamesById: names,
-          primaryCharacterName: "Maybelle Meadowsweet",
+          primaryCharacterName: "Corvina Fernhollow",
         }),
         "Narrator",
       );
@@ -9195,7 +9195,7 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         resolveTranscriptExportCharacterId({
           mode: "game",
           role: "assistant",
-          characterId: "maybelle-id",
+          characterId: "corvina-id",
         }),
         null,
       );
@@ -9205,17 +9205,17 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
           role: "assistant",
           characterId: null,
           characterNamesById: names,
-          primaryCharacterName: "Maybelle Meadowsweet",
+          primaryCharacterName: "Corvina Fernhollow",
         }),
-        "Maybelle Meadowsweet",
+        "Corvina Fernhollow",
       );
       assert.equal(
         resolveTranscriptExportCharacterId({
           mode: "roleplay",
           role: "assistant",
-          characterId: "maybelle-id",
+          characterId: "corvina-id",
         }),
-        "maybelle-id",
+        "corvina-id",
       );
     },
   },
@@ -9224,7 +9224,7 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
     run() {
       assert.deepEqual(
         extractNarrationNpcCandidates(
-          "House Williams, the strongest duchy, protected Milkwell Union, a cheese guild, at dawn.",
+          "House Hartwell, the strongest duchy, protected Milkwell Union, a cheese guild, at dawn.",
           [],
         ),
         [],
@@ -9238,7 +9238,7 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
             "She says nothing.",
             "You've said that aloud.",
             "I'd have said so before any court.",
-            "Ilyrien's already asked twice.",
+            "Faelan's already asked twice.",
           ].join("\n"),
           [],
         ),
@@ -9256,17 +9256,17 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         "a role-gated personal appositive should still introduce a named NPC",
       );
       assert.deepEqual(
-        extractNarrationNpcCandidates("Maybelle enters and closes the rain-dark door.", [], ["Lady Maybelle"]),
+        extractNarrationNpcCandidates("Corvina enters and closes the rain-dark door.", [], ["Lady Corvina"]),
         [
           {
-            name: "Lady Maybelle",
-            description: "Maybelle enters and closes the rain-dark door.",
+            name: "Lady Corvina",
+            description: "Corvina enters and closes the rain-dark door.",
           },
         ],
         "a boundary-safe direct mention must introduce a uniquely matching known NPC without requiring dialogue",
       );
       assert.equal(
-        extractNarrationNpcCandidates("Maybellene enters the hall.", [], ["Lady Maybelle"]).length,
+        extractNarrationNpcCandidates("Corvinalla enters the hall.", [], ["Lady Corvina"]).length,
         0,
         "known-name detection must not match inside a longer word",
       );
@@ -12850,21 +12850,21 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       assert.equal(findCharAvatarFuzzy("John Smith", avatars), "/api/avatars/file/john-smith.png");
 
       const relatives = new Map<string, string>();
-      addNameLookupEntry(relatives, "Warmagus Ilyrien Vasseth", "Ilyrien: midnight-blue battle robes");
-      assert.equal(findCharAvatarFuzzy("Ilyrien Vasseth", relatives), "Ilyrien: midnight-blue battle robes");
-      assert.equal(findCharAvatarFuzzy("Ilyrien", relatives), "Ilyrien: midnight-blue battle robes");
+      addNameLookupEntry(relatives, "Spellwarden Faelan Drummond", "Faelan: midnight-blue battle robes");
+      assert.equal(findCharAvatarFuzzy("Faelan Drummond", relatives), "Faelan: midnight-blue battle robes");
+      assert.equal(findCharAvatarFuzzy("Faelan", relatives), "Faelan: midnight-blue battle robes");
       assert.equal(
-        findCharAvatarFuzzy("Mereth Vasseth", relatives),
+        findCharAvatarFuzzy("Mereth Drummond", relatives),
         undefined,
         "a relative without a library entry must not inherit appearance through a shared surname",
       );
-      addNameLookupEntry(relatives, "Mereth Vasseth", "Mereth: russet working dress");
+      addNameLookupEntry(relatives, "Mereth Drummond", "Mereth: russet working dress");
       assert.equal(findCharAvatarFuzzy("Mereth", relatives), "Mereth: russet working dress");
-      assert.equal(findCharAvatarFuzzy("Mereth Vasseth", relatives), "Mereth: russet working dress");
-      assert.equal(findCharAvatarFuzzy("Vasseth", relatives), undefined, "shared surname remains ambiguous");
-      assert.equal(findCharAvatarFuzzy("Someone Vasseth", relatives), undefined);
+      assert.equal(findCharAvatarFuzzy("Mereth Drummond", relatives), "Mereth: russet working dress");
+      assert.equal(findCharAvatarFuzzy("Drummond", relatives), undefined, "shared surname remains ambiguous");
+      assert.equal(findCharAvatarFuzzy("Someone Drummond", relatives), undefined);
       assert.equal(
-        findCharAvatarFuzzy("Mereth Vasseth", new Map([["Warmagus Ilyrien Vasseth", "daughter"]])),
+        findCharAvatarFuzzy("Mereth Drummond", new Map([["Spellwarden Faelan Drummond", "daughter"]])),
         undefined,
         "legacy maps without registered aliases must also reject surname-only overlap",
       );

@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 import { startFixtureServer, stopFixtureServer } from "../lib/fixture-server.mjs";
 
+// Screenshots land here; set GAME_HUD_SCREENSHOT_DIR to keep them.
+const screenshotDir = process.env.GAME_HUD_SCREENSHOT_DIR || os.tmpdir();
 let fixture;
 let browser;
 const geometryObservations = [];
@@ -16,7 +19,7 @@ async function runMobileWidgetAssertions(page, base) {
     await page.goto(`${base}/?mobile=1`);
     const tray = page.locator("[data-mobile-widget-tray]");
     await tray.waitFor();
-    const buttons = tray.getByRole("button");
+    const buttons = tray.locator("button:not([data-mobile-arrange-button])");
     assert.equal(await buttons.count(), 6, `${viewport.width}: all mobile widget buttons render`);
     const firstBox = await buttons.nth(0).boundingBox();
     const lastBox = await buttons.nth(5).boundingBox();
@@ -73,8 +76,52 @@ async function runMobileWidgetAssertions(page, base) {
     await lastDialog.getByRole("button", { name: /close/i }).click();
     await lastDialog.waitFor({ state: "hidden" });
   }
+  await runMobileArrangeAssertions(page, base);
   await page.setViewportSize({ width: 1440, height: 900 });
   console.log("mobile widget fixture passed: horizontal row, 44px targets, scroll reachability, bounded modal");
+}
+
+async function runMobileArrangeAssertions(page, base) {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${base}/?mobile=1`);
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  const tray = page.locator("[data-mobile-widget-tray]");
+  await tray.waitFor();
+  const pills = tray.locator("button:not([data-mobile-arrange-button])");
+  const labels = async () => pills.evaluateAll((items) => items.map((item) => item.getAttribute("aria-label")));
+  assert.deepEqual(await labels(), ["Left 1", "Left 2", "Left 3", "Left 4", "Left 5", "Right 1"]);
+  const arrange = tray.getByRole("button", { name: "Arrange widgets" });
+  await arrange.scrollIntoViewIfNeeded();
+  const arrangeBox = await arrange.boundingBox();
+  assert.ok(arrangeBox && arrangeBox.width >= 40 && arrangeBox.height >= 40, "arrange button is a 40px target");
+  await arrange.click();
+  const sheet = page.getByRole("dialog", { name: "Arrange widgets" });
+  await sheet.waitFor();
+  // Layout sizes, not bounding boxes: the modal's open animation scales the panel.
+  const sizes = await sheet
+    .locator("[data-mobile-arrange-item] button")
+    .evaluateAll((items) => items.map((item) => [item.offsetWidth, item.offsetHeight]));
+  assert.equal(sizes.length, 18, "six rows with up, down and hide controls");
+  assert.ok(sizes.every(([w, h]) => w >= 40 && h >= 40), `arrange sheet controls are 40px targets ${JSON.stringify(sizes)}`);
+  assert.ok(await sheet.getByRole("button", { name: "Move Left 1 up" }).isDisabled(), "first item cannot move up");
+  await sheet.getByRole("button", { name: "Move Left 3 up" }).click();
+  await sheet.getByRole("button", { name: "Move Left 3 up" }).click();
+  await sheet.getByRole("button", { name: "Hide Left 5" }).click();
+  await sheet.getByRole("button", { name: "Show Left 5" }).waitFor();
+  await page.screenshot({ path: `${screenshotDir}/mobile-arrange-sheet-390.png` });
+  // The tray behind the sheet updates live because both rails share one hook.
+  assert.deepEqual(await labels(), ["Left 3", "Left 1", "Left 2", "Left 4", "Right 1"], "reorder and hide apply live");
+  await page.keyboard.press("Escape");
+  await sheet.waitFor({ state: "hidden" });
+  await page.reload();
+  await tray.waitFor();
+  assert.deepEqual(await labels(), ["Left 3", "Left 1", "Left 2", "Left 4", "Right 1"], "reorder persists, hidden stays hidden");
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  assert.ok(overflow <= 0, `no horizontal page scroll at 390px (overflow=${overflow})`);
+  await page.screenshot({ path: `${screenshotDir}/mobile-arrange-tray-390.png` });
+  await page.evaluate(() => localStorage.clear());
+  console.log("mobile arrange fixture passed: reorder persists, hidden stays hidden, 40px targets, no page scroll");
 }
 
 try {

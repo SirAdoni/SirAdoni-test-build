@@ -257,6 +257,7 @@ import { FloatingGamePanel, GamePanelContext } from "./FloatingGamePanel";
 import { GameLayoutEditToolbar } from "./GameLayoutEditToolbar";
 import { GAME_PANEL_INTERACTIVE_LAYER } from "../../lib/game-panel-layout";
 import { GameWidgetPanel, GameWidgetSessionPrepModal, MobileWidgetPanel } from "./GameWidgetPanel";
+import { MobileWidgetArrangeButton } from "./GameMobileArrange";
 import { WeatherEffects } from "../chat/WeatherEffects";
 import { GameInventory, type InventoryItem as GameInventoryItem } from "./GameInventory";
 import { addInventoryQuantity, renameInventoryIdentity, updateInventoryQuantity } from "./game-inventory-identity";
@@ -971,6 +972,16 @@ export function combatSkillsFromSheet(value: unknown): Combatant["skills"] {
   }
 
   return skills.length > 0 ? skills : undefined;
+}
+
+/** Index of the stored game card for a sheet title: exact (case-insensitive) first, else the lenient
+ * name match the sheet display uses. */
+function findStoredCardIndex(cards: Array<Record<string, unknown>>, title: string): number {
+  const wanted = title.toLowerCase();
+  const exact = cards.findIndex((entry) => typeof entry.name === "string" && entry.name.toLowerCase() === wanted);
+  if (exact >= 0) return exact;
+  const lenient = findNamedEntry(cards, title, (card) => (typeof card.name === "string" ? card.name : null));
+  return lenient ? cards.indexOf(lenient) : -1;
 }
 
 export function findGameCombatCard(
@@ -3398,6 +3409,9 @@ function GameSurfaceComponent({
   const compactHudWidgetsRef = useRef(compactHudWidgets);
   const compactHudReleaseWidthRef = useRef<number | null>(null);
   const lastProcessedMsgRef = useRef<string | null>(null);
+  // Turn key that was current when "Retry turn" started. A cancelled or failed retry leaves that key in
+  // place, and it must not be processed a second time (state transitions and inventory would replay).
+  const retryTurnOriginalKeyRef = useRef<string | null>(null);
   const weatherMsgRef = useRef<string | null>(null);
   const sceneAnalysisTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Leaving the game must not let the 120 s fallback play this chat's music on another screen.
@@ -5310,6 +5324,14 @@ function GameSurfaceComponent({
     }
     const turnKey = narrationTurnKey(msg);
     if (lastProcessedMsgRef.current === turnKey) return;
+    // A retry that was cancelled or failed still leaves the old turn as latest. It was already processed
+    // before the retry, so restore the processed marker and show it instead of replaying its effects.
+    if (turnKey && retryTurnOriginalKeyRef.current === turnKey) {
+      if (useChatStore.getState().streamingChatId === activeChatId) return;
+      lastProcessedMsgRef.current = turnKey;
+      markSceneReady(msg.id!);
+      return;
+    }
     if (isRestoredRef.current) {
       lastProcessedMsgRef.current = turnKey;
       return;
@@ -7131,6 +7153,11 @@ function GameSurfaceComponent({
     interruptedInteractiveCommandKeysRef.current.delete(interactiveCommandKey(activeChatId, msg.id));
     sceneReadyMsgIdRef.current = "__retry_turn__";
     setSceneReadyTick((tick) => tick + 1);
+    // Remember the turn being retried: use-generate fires generation-complete even on abort or error,
+    // and the processing guard uses this key to skip the unchanged old turn instead of replaying it.
+    const originalTurnKey = narrationTurnKey(msg);
+    const originalNarrationDoneTurnKey = narrationDoneTurnKey;
+    retryTurnOriginalKeyRef.current = originalTurnKey;
     lastProcessedMsgRef.current = null;
 
     try {
@@ -7144,8 +7171,22 @@ function GameSurfaceComponent({
       }
     } catch {
       /* generate handles its own error toast */
+    } finally {
+      retryTurnOriginalKeyRef.current = null;
+      const latest = latestAssistantMsgRef.current;
+      if (
+        originalTurnKey &&
+        latest?.id &&
+        narrationTurnKey(latest) === originalTurnKey &&
+        useChatStore.getState().activeChatId === activeChatId
+      ) {
+        // Retry was cancelled or failed: the old turn is still the latest and was already processed.
+        lastProcessedMsgRef.current = originalTurnKey;
+        if (originalNarrationDoneTurnKey === originalTurnKey) setNarrationDoneTurnKey(originalTurnKey);
+        markSceneReady(latest.id);
+      }
     }
-  }, [activeChatId, generate, isStreaming, localizeUi]);
+  }, [activeChatId, generate, isStreaming, localizeUi, markSceneReady, narrationDoneTurnKey]);
 
   const handleRetryYoutubeMusic = useCallback(async () => {
     if (!activeChatId || !useJsonMusicDjGameMusic || isStreaming || sceneAnalysis.isPending) return;
@@ -7939,7 +7980,10 @@ function GameSurfaceComponent({
           updatedJournal = res.journal;
         } else {
           const nextNpcs = currentNpcs.filter((npc) => normalizeGameNpcJournalName(npc.name) !== target);
-          const prunedJournal = pruneGameJournalNpc(chatMeta.gameJournal, npcName);
+          // The server remove route only matches by id. Prune a fresh copy of the journal instead of the
+          // cached chatMeta one, so entries the server added since the last refetch are not overwritten.
+          const fresh = await api.get<{ journal?: Journal | null }>(`/game/${activeChatId}/journal`);
+          const prunedJournal = pruneGameJournalNpc(fresh?.journal ?? chatMeta.gameJournal, npcName);
           await updateChatMetadata.mutateAsync({
             id: activeChatId,
             gameNpcs: nextNpcs,
@@ -8039,7 +8083,14 @@ function GameSurfaceComponent({
       const normalizedItemName = normalizeInventoryName(itemName);
       if (!normalizedItemName) return;
 
-      const updatedInventory = addInventoryUnit(inventoryItems, normalizedItemName);
+      // Match by { itemId, name } like remove and rename do. A name-only add picks the wrong row when two
+      // identified rows share a name (or appends a duplicate row); fall back to it only when no row matches.
+      const itemIdentity = { itemId: item.itemId, name: normalizedItemName };
+      const incrementUnit = <T extends { itemId?: string; name: string; quantity: number }>(items: T[]): T[] => {
+        const incremented = updateInventoryQuantity(items, itemIdentity, 1);
+        return incremented !== items ? incremented : addInventoryUnit(items, normalizedItemName);
+      };
+      const updatedInventory = incrementUnit(inventoryItems);
       if (updatedInventory === inventoryItems) {
         toast.error(localizeUi("ui.game.gamesurfacecomponent.failedToIncreaseValue1", { value1: normalizedItemName }));
         return;
@@ -8050,7 +8101,7 @@ function GameSurfaceComponent({
       const nextPlayerStats = currentPlayerStats
         ? {
             ...currentPlayerStats,
-            inventory: addInventoryUnit(currentPlayerStats.inventory, normalizedItemName),
+            inventory: incrementUnit(currentPlayerStats.inventory),
           }
         : null;
       const shouldPatchGameState =
@@ -8166,7 +8217,15 @@ function GameSurfaceComponent({
       if (!activeChatId) return;
 
       const normalizedItemName = normalizeInventoryName(itemName);
-      const updatedInventory = removeInventoryUnit(inventoryItems, normalizedItemName);
+      // The combat menu only knows the display name. Resolve it to the first matching row's
+      // { itemId, name } so both inventories consume that exact row, like remove and rename do; a bare
+      // name refuses to pick between identified rows that share it and reported the item as gone.
+      const wantedName = normalizedItemName.toLowerCase();
+      const matchedRow = inventoryItems.find((row) => normalizeInventoryName(row.name).toLowerCase() === wantedName) as
+        | { itemId?: string; name: string }
+        | undefined;
+      const itemIdentity = { itemId: matchedRow?.itemId, name: normalizedItemName };
+      const updatedInventory = removeInventoryUnit(inventoryItems, itemIdentity);
       if (updatedInventory === inventoryItems) {
         toast.error(
           localizeUi("ui.game.gamesurfacecomponent.value1IsNoLongerInYourInventory", {
@@ -8180,7 +8239,7 @@ function GameSurfaceComponent({
       const currentPlayerStats = currentGameState?.chatId === activeChatId ? currentGameState.playerStats : null;
       const nextPlayerStats = currentPlayerStats
         ? (() => {
-            const updatedDetailedInventory = removeInventoryUnit(currentPlayerStats.inventory, normalizedItemName);
+            const updatedDetailedInventory = removeInventoryUnit(currentPlayerStats.inventory, itemIdentity);
             return updatedDetailedInventory === currentPlayerStats.inventory
               ? currentPlayerStats
               : { ...currentPlayerStats, inventory: updatedDetailedInventory };
@@ -10168,9 +10227,7 @@ function GameSurfaceComponent({
       const currentCards = Array.isArray(chatMeta.gameCharacterCards)
         ? (chatMeta.gameCharacterCards as Array<Record<string, unknown>>)
         : [];
-      const currentIndex = currentCards.findIndex(
-        (entry) => typeof entry.name === "string" && entry.name.toLowerCase() === normalizedTitle.toLowerCase(),
-      );
+      const currentIndex = findStoredCardIndex(currentCards, normalizedTitle);
 
       const sanitizedGameCard = gameCard
         ? {
@@ -10211,7 +10268,9 @@ function GameSurfaceComponent({
           // This editor only knows the fields above. The game's copy of the ruleset sheet lives on
           // the same card and is edited elsewhere, so it rides along instead of being dropped.
           const rulesetSheet = currentCards[currentIndex]?.rulesetSheet;
-          updatedCards[currentIndex] = rulesetSheet ? { ...sanitizedGameCard, rulesetSheet } : sanitizedGameCard;
+          const storedName = currentCards[currentIndex]?.name;
+          const saved = typeof storedName === "string" ? { ...sanitizedGameCard, name: storedName } : sanitizedGameCard;
+          updatedCards[currentIndex] = rulesetSheet ? { ...saved, rulesetSheet } : saved;
         } else {
           updatedCards.push(sanitizedGameCard);
         }
@@ -10248,11 +10307,7 @@ function GameSurfaceComponent({
       const cards = Array.isArray(chatMeta.gameCharacterCards)
         ? (chatMeta.gameCharacterCards as Array<Record<string, unknown>>)
         : [];
-      const wanted = cardTitle.trim().toLowerCase();
-      return {
-        cards,
-        index: cards.findIndex((entry) => typeof entry.name === "string" && entry.name.toLowerCase() === wanted),
-      };
+      return { cards, index: findStoredCardIndex(cards, cardTitle.trim()) };
     },
     [chatMeta.gameCharacterCards],
   );
@@ -12810,7 +12865,8 @@ function GameSurfaceComponent({
                             layoutEditing ? "ui.game.floatingPanel.doneEditing" : "ui.game.floatingPanel.editLayout",
                           )}
                           onClick={() => setLayoutEditing((value) => !value)}
-                          className={getChatToolbarButtonClass({ open: layoutEditing })}
+                          // Panels are inline below the desktop width, so there is no layout to edit.
+                          className={cn(getChatToolbarButtonClass({ open: layoutEditing }), "max-lg:hidden")}
                         >
                           <Pencil size={14} aria-hidden="true" />
                         </button>
@@ -13637,6 +13693,7 @@ function GameSurfaceComponent({
                               chatId={activeChatId}
                               layout="horizontal"
                             />
+                            <MobileWidgetArrangeButton widgets={normalizedWidgets} chatId={activeChatId} />
                           </div>
                         ) : undefined;
 
@@ -14219,9 +14276,10 @@ function GameSurfaceComponent({
                     onIncrementItem={handleIncrementInventoryItem}
                     onReorderItem={handleReorderInventoryItem}
                     canInteract={sessionInteractive && narrationDone && !isStreaming}
-                    onUseItem={(itemName) => {
+                    onUseItem={(item) => {
                       setInventoryOpen(false);
-                      sendMessage(`I use my ${itemName}.`);
+                      // GameInventory passes the whole item; interpolating it sent "I use my [object Object]."
+                      sendMessage(`I use my ${item.name}.`);
                     }}
                   />
 

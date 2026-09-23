@@ -528,7 +528,13 @@ export function RandomTablesTool({ chatId, className }: { chatId: string | null;
               {tables.map((table) => (
                 <option key={table.id} value={table.id}>
                   {table.name}
-                  {table.gameId ? "" : ` (${t("ui.randomTables.scopeGlobal")})`}
+                  {table.gameId ? null : (
+                    <>
+                      {" ("}
+                      {t("ui.randomTables.scopeGlobal")}
+                      {")"}
+                    </>
+                  )}
                 </option>
               ))}
             </select>

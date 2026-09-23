@@ -64,12 +64,12 @@ function present(overrides: Partial<PresentCharacter> = {}): PresentCharacter {
 
 assert.equal(isEligibleGameNpcCharacterName("Goblin Archer 1"), false, "generic combat mobs must not get cards");
 assert.equal(isGameNpcRelationalLabel("Your father"), true);
-assert.equal(isGameNpcRelationalLabel("Liveth Corren's father"), true);
-assert.equal(isGameNpcRelationalLabel("Father Aldren"), false, "a real titled name must remain eligible");
+assert.equal(isGameNpcRelationalLabel("Quilla Tallis's father"), true);
+assert.equal(isGameNpcRelationalLabel("Father Bertolf"), false, "a real titled name must remain eligible");
 assert.equal(isEligibleGameNpcCharacterName("Your father"), false, "relationship labels must not get cards");
 assert.equal(isEligibleGameNpcCharacterName("Elara Vale"), true, "specific named NPCs must remain eligible");
 for (const fragment of [
-  "Bramble who",
+  "Thistle who",
   "But you",
   "Cook",
   "Da",
@@ -80,7 +80,7 @@ for (const fragment of [
   "I'd have",
   "I've",
   "If it",
-  "Ilyrien's already",
+  "Faelan's already",
   "It",
   "It is",
   "Nobody has",
@@ -94,9 +94,9 @@ for (const fragment of [
   assert.equal(isPlausibleNarrationNpcName(fragment), false, `narration fragment ${fragment} must not become an NPC`);
 }
 assert.equal(isPlausibleNarrationNpcName("Dorra"), true);
-assert.equal(isPlausibleNarrationNpcName("Under-Gardener Pell Marrow"), true);
-assert.equal(isPlausibleNarrationNpcName("Aensyl of the Rootmother's Line"), true);
-assert.equal(isPlausibleNarrationNpcName("Mirah hai-Tal"), true);
+assert.equal(isPlausibleNarrationNpcName("Under-Gardener Tobias Marrow"), true);
+assert.equal(isPlausibleNarrationNpcName("Ferelith of the Deepwood's Line"), true);
+assert.equal(isPlausibleNarrationNpcName("Zerah al-Oren"), true);
 assert.equal(isPlausibleNarrationNpcName("שרה"), true);
 assert.equal(buildStableGameNpcId("Elara Vale"), "npc:elara-vale");
 assert.equal(
@@ -183,17 +183,17 @@ assert.deepEqual(
 );
 assert.deepEqual(
   sanitizeGameNpcAvatarUrls(
-    [npc({ id: "npc:mirah", name: "Mirah", characterId: "auto-mirah", descriptionSource: "narration" })],
+    [npc({ id: "npc:zerah", name: "Zerah", characterId: "auto-zerah", descriptionSource: "narration" })],
     {
-      protectedCharacterNames: ["mirah hai tal", "Mirah hai-Tal"],
-      autoCreatedCharacterIds: ["auto-mirah"],
+      protectedCharacterNames: ["zerah al oren", "Zerah al-Oren"],
+      autoCreatedCharacterIds: ["auto-zerah"],
     },
   ),
   [],
   "a provenance-confirmed automatic short alias must not duplicate a protected Character card",
 );
 assert.deepEqual(
-  sanitizeGameNpcAvatarUrls([npc({ id: "npc:robert", name: "Rowan", descriptionSource: "narration" })], {
+  sanitizeGameNpcAvatarUrls([npc({ id: "npc:edmund", name: "Rowan", descriptionSource: "narration" })], {
     protectedCharacterNames: ["Rowan Mercer"],
   }),
   [],
@@ -306,10 +306,10 @@ assert.equal(aliasedIntroductionCandidate[0]?.gender, null, "private setup gende
 assert.equal(aliasedIntroductionCandidate[0]?.pronouns, null, "private setup pronouns must not enter Character cards");
 assert.doesNotMatch(JSON.stringify(aliasedIntroductionCandidate), /serves the usurper|hidden war room|secret model/u);
 
-assert.equal(findUnambiguousGameNpcNameMatch("Maybelle", ["Lady Maybelle"]), 0);
+assert.equal(findUnambiguousGameNpcNameMatch("Corvina", ["Lady Corvina"]), 0);
 assert.equal(findUnambiguousGameNpcNameMatch("Elara", ["Captain Elara"]), 0);
 assert.equal(
-  findUnambiguousGameNpcNameMatch("Halvern Corren", ["Master Founder Halvern Corren"]),
+  findUnambiguousGameNpcNameMatch("Halvern Tallis", ["Master Founder Halvern Tallis"]),
   0,
   "profession titles must not split a short narration name from its existing roster identity",
 );
@@ -333,18 +333,18 @@ assert.ok(
 const titleAliasedIntroduction = mergeNarrationNpcObservations(
   [
     npc({
-      id: "npc:lady-maybelle",
-      name: "Lady Maybelle",
+      id: "npc:lady-corvina",
+      name: "Lady Corvina",
       description: "Private setup dossier.",
       descriptionSource: "model",
       observedDescription: undefined,
     }),
   ],
-  [{ name: "Maybelle", description: "Maybelle enters carrying a basket of eggs." }],
+  [{ name: "Corvina", description: "Corvina enters carrying a basket of eggs." }],
 );
 assert.equal(titleAliasedIntroduction.length, 1);
-assert.equal(titleAliasedIntroduction[0]?.name, "Lady Maybelle");
-assert.equal(titleAliasedIntroduction[0]?.observedDescription, "Maybelle enters carrying a basket of eggs.");
+assert.equal(titleAliasedIntroduction[0]?.name, "Lady Corvina");
+assert.equal(titleAliasedIntroduction[0]?.observedDescription, "Corvina enters carrying a basket of eggs.");
 
 const plannedJournalNpc = npc({
   id: "npc:planned",
@@ -520,35 +520,35 @@ assert.equal(
 const legacyHalvernRoster = [
   npc({
     id: "setup-halvern",
-    name: "Master Founder Halvern Corren",
+    name: "Master Founder Halvern Tallis",
     characterId: null,
-    description: "Master founder of the Corren bell-foundry.",
+    description: "Master founder of the Tallis bell-foundry.",
     descriptionSource: "model",
   }),
   npc({
-    id: "npc:halvern-corren",
-    name: "Halvern Corren",
+    id: "npc:halvern-tallis",
+    name: "Halvern Tallis",
     characterId: "card-halvern",
-    description: "Halvern Corren appears in the current scene.",
+    description: "Halvern Tallis appears in the current scene.",
     descriptionSource: "narration",
   }),
 ];
 const sanitizedHalvernRoster = sanitizeGameNpcAvatarUrls(legacyHalvernRoster);
 assert.equal(sanitizedHalvernRoster.length, 1, "a linked title alias must collapse to one persisted NPC row");
-assert.equal(sanitizedHalvernRoster[0]?.id, "npc:halvern-corren");
-assert.equal(sanitizedHalvernRoster[0]?.name, "Master Founder Halvern Corren");
+assert.equal(sanitizedHalvernRoster[0]?.id, "npc:halvern-tallis");
+assert.equal(sanitizedHalvernRoster[0]?.name, "Master Founder Halvern Tallis");
 assert.deepEqual(
   [...changedGameNpcRosterIds(legacyHalvernRoster, sanitizedHalvernRoster)].sort(),
-  ["npc:halvern-corren", "setup-halvern"],
+  ["npc:halvern-tallis", "setup-halvern"],
   "sanitizer-only alias cleanup must mark both the removed setup row and changed linked row for persistence rollback",
 );
 
-const contradictoryCorrenProctors = sanitizeGameNpcAvatarUrls([
-  npc({ id: "setup-ilsabet", name: "Proctor Ilsabet Corren", descriptionSource: "model" }),
-  npc({ id: "npc:proctor-hanne-corren", name: "Proctor Hanne Corren", descriptionSource: "narration" }),
+const contradictoryTallisProctors = sanitizeGameNpcAvatarUrls([
+  npc({ id: "setup-wenna", name: "Proctor Wenna Tallis", descriptionSource: "model" }),
+  npc({ id: "npc:proctor-hanne-tallis", name: "Proctor Hanne Tallis", descriptionSource: "narration" }),
 ]);
 assert.equal(
-  contradictoryCorrenProctors.length,
+  contradictoryTallisProctors.length,
   2,
   "different given names must remain distinct even when narration contradicts setup continuity",
 );

@@ -861,7 +861,7 @@ export interface HudWidgetConfig {
   // checklist: tasks with a done flag
   tasks?: Array<{ text: string; done: boolean }>;
 
-  // schedule / calendar: dated entries ("Day 21, dusk" / "Rusk strike"), kept in day order.
+  // schedule / calendar: dated entries ("Day 21, dusk" / "Oriel strike"), kept in day order.
   // calendar also uses value (today's day number), max (days per week) and text (date label).
   entries?: Array<{ when: string; text: string }>;
 

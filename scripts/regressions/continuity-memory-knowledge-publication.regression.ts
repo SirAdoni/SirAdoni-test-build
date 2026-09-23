@@ -97,11 +97,11 @@ try {
   // Belief/listener contract: being told a speaker's assessment grants the
   // listener awareness of the communication, never the speaker's belief.
   await db.insert(schema.characters).values([
-    { id: "belief-speaker", data: JSON.stringify({ name: "Robert" }), createdAt: now, updatedAt: now },
-    { id: "belief-listener", data: JSON.stringify({ name: "Mirah" }), createdAt: now, updatedAt: now },
+    { id: "belief-speaker", data: JSON.stringify({ name: "Edmund" }), createdAt: now, updatedAt: now },
+    { id: "belief-listener", data: JSON.stringify({ name: "Zerah" }), createdAt: now, updatedAt: now },
   ]);
   await db.insert(schema.chats).values({ id: "belief-chat", name: "Belief Listener", mode: "game", connectionId: "conn", characterIds: JSON.stringify(["belief-speaker", "belief-listener"]), metadata: JSON.stringify({ gameContinuity: { mode: "active" } }), createdAt: now, updatedAt: now });
-  const beliefQuote = "Robert tells Mirah: Bess is brilliant.";
+  const beliefQuote = "Edmund tells Zerah: Tilda is brilliant.";
   await db.insert(schema.messages).values({ id: "belief-m1", chatId: "belief-chat", role: "assistant", content: beliefQuote, createdAt: now });
   await db.insert(schema.lorebooks).values({ id: "belief-book", name: "Belief Keeper", chatId: "belief-chat", enabled: "false", sourceAgentId: "game-lorebook-keeper", createdAt: now, updatedAt: now });
   await db.insert(schema.campaignMemoryEntities).values([
@@ -114,23 +114,23 @@ try {
   const beliefConfig = await readContinuityConfig(db, "belief-chat");
   const beliefRaw = {
     kind: "reaction" as const,
-    text: "Robert believes Bess is brilliant.",
-    subjects: ["Bess"],
+    text: "Edmund believes Tilda is brilliant.",
+    subjects: ["Tilda"],
     conditions: [],
     status: "asserted" as const,
-    keys: ["Bess", "brilliant"],
+    keys: ["Tilda", "brilliant"],
     evidence: [{ messageId: "belief-m1", quote: beliefQuote }],
-    knowledge: { scope: "belief" as const, holders: ["Robert"], holderRefs: ["belief-speaker-entity"] },
+    knowledge: { scope: "belief" as const, holders: ["Edmund"], holderRefs: ["belief-speaker-entity"] },
   };
   const communicationRaw = {
     kind: "event" as const,
-    text: "Robert communicated his assessment of Bess to Mirah.",
-    subjects: ["Robert", "Mirah", "Bess"],
+    text: "Edmund communicated his assessment of Tilda to Zerah.",
+    subjects: ["Edmund", "Zerah", "Tilda"],
     conditions: [],
     status: "completed" as const,
     keys: ["communication", "assessment"],
     evidence: [{ messageId: "belief-m1", quote: beliefQuote }],
-    knowledge: { scope: "private" as const, holders: ["Robert", "Mirah"], holderRefs: ["belief-speaker-entity", "belief-listener-entity"] },
+    knowledge: { scope: "private" as const, holders: ["Edmund", "Zerah"], holderRefs: ["belief-speaker-entity", "belief-listener-entity"] },
   };
   const beliefRecord = { ...beliefRaw, id: createGameContinuityRecordId("belief-receipt", beliefRaw) };
   const communicationRecord = { ...communicationRaw, id: createGameContinuityRecordId("belief-receipt", communicationRaw) };
@@ -140,8 +140,8 @@ try {
     dispositions: [{ messageId: "belief-m1", status: "covered", reason: "speaker assessment and communication" }],
     review: { findings: [], dispositions: [{ messageId: "belief-m1", status: "covered", reason: "clean" }] }, entryIds: [],
     knowledgeHolders: [
-      { entityId: "belief-speaker-entity", kind: "character", store: "characters", recordId: "belief-speaker", name: "Robert" },
-      { entityId: "belief-listener-entity", kind: "character", store: "characters", recordId: "belief-listener", name: "Mirah" },
+      { entityId: "belief-speaker-entity", kind: "character", store: "characters", recordId: "belief-speaker", name: "Edmund" },
+      { entityId: "belief-listener-entity", kind: "character", store: "characters", recordId: "belief-listener", name: "Zerah" },
     ], createdAt: now, updatedAt: now,
   };
   await createGameContinuityStorage(db).enqueue(beliefReceipt);
@@ -173,20 +173,20 @@ try {
   assert.doesNotMatch(listenerContext.text, /believes/);
 
   // A later, independently evidenced agreement is the explicit authorization
-  // for Mirah's own belief; hearing Robert's assessment remains insufficient.
-  const agreementQuote = "Mirah agrees: Bess is brilliant.";
+  // for Zerah's own belief; hearing Edmund's assessment remains insufficient.
+  const agreementQuote = "Zerah agrees: Tilda is brilliant.";
   await db.insert(schema.messages).values({ id: "belief-m2", chatId: "belief-chat", role: "assistant", content: agreementQuote, createdAt: "2026-09-13T00:01:00.000Z" });
   const agreementMessages = await db.select().from(schema.messages).where(eq(schema.messages.chatId, "belief-chat"));
   const agreementPrepared = prepareContinuitySources(agreementMessages, { gameContinuity: { mode: "active" } });
   const agreementRaw = {
     kind: "reaction" as const,
-    text: "Mirah agrees that Bess is brilliant.",
-    subjects: ["Mirah", "Bess"],
+    text: "Zerah agrees that Tilda is brilliant.",
+    subjects: ["Zerah", "Tilda"],
     conditions: [],
     status: "asserted" as const,
-    keys: ["agreement", "Bess"],
+    keys: ["agreement", "Tilda"],
     evidence: [{ messageId: "belief-m2", quote: agreementQuote }],
-    knowledge: { scope: "belief" as const, holders: ["Mirah"], holderRefs: ["belief-listener-entity"] },
+    knowledge: { scope: "belief" as const, holders: ["Zerah"], holderRefs: ["belief-listener-entity"] },
   };
   const agreementRecord = { ...agreementRaw, id: createGameContinuityRecordId("agreement-receipt", agreementRaw) };
   const agreementReceipt: GameContinuityReceipt = {

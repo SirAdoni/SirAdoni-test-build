@@ -52,12 +52,12 @@ try {
   });
   const entry = (name: string, extra: Record<string, unknown>) =>
     request("POST", `/api/lorebooks/${book.id}/entries`, { lorebookId: book.id, name, ...extra });
-  const city = await entry("Valdenmoor", {
-    keys: ["Valdenmoor"],
-    content: "The capital, ruled by Queen Sybel.",
+  const city = await entry("Brindlemere", {
+    keys: ["Brindlemere"],
+    content: "The capital, ruled by Queen Adalwen.",
     preventRecursion: false,
   });
-  const queen = await entry("Queen Sybel", { keys: ["Sybel"], content: "A silver-haired monarch." });
+  const queen = await entry("Queen Adalwen", { keys: ["Adalwen"], content: "A silver-haired monarch." });
   const constant = await entry("Rules", { constant: true, content: "World rules." });
   const gated = await entry("Harbor", {
     keys: ["harbor"],
@@ -76,11 +76,11 @@ try {
 
   // ── Test tool ──
   const result = await request("POST", `/api/lorebooks/${book.id}/test`, {
-    text: "We rode to Valdenmoor by the harbor. Rumours say elves live nearby.",
+    text: "We rode to Brindlemere by the harbor. Rumours say elves live nearby.",
   });
   const activatedById = new Map(result.activated.map((item: { entryId: string }) => [item.entryId, item]));
   assert.equal(result.recursive, true);
-  assert.deepEqual((activatedById.get(city.id) as any).matchedKeys, ["Valdenmoor"], "reports the key that matched");
+  assert.deepEqual((activatedById.get(city.id) as any).matchedKeys, ["Brindlemere"], "reports the key that matched");
   assert.deepEqual((activatedById.get(constant.id) as any).matchedKeys, ["[constant]"]);
   const recursive = activatedById.get(queen.id) as any;
   assert.ok(recursive, "recursion follows activated content like generation does");

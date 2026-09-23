@@ -58,6 +58,7 @@ import { eq } from "../db/file-query.js";
 import { IMPORTED_GAME_ENGINE_ANCHOR_PREFIX } from "../db/file-backed-store.js";
 import { chats as chatsTable } from "../db/schema/index.js";
 import { logger, logDebugOverride } from "../lib/logger.js";
+import { logSuppressed, orFallback } from "../lib/best-effort.js";
 import { registerSequentialGameTasks, retainSequentialGameTask } from "../services/game/sequential-tasks.js";
 import type { DiagnosticContext } from "../lib/diagnostics.js";
 import { readImageDimensionsFromFile } from "../utils/image-metadata.js";
@@ -156,6 +157,14 @@ import {
 } from "../services/game/session-summary-refresh.js";
 import { buildRecapPrompt, buildSessionCombatResetPatch } from "../services/game/session.service.js";
 import { buildMapGenerationPrompt } from "../services/game/map.service.js";
+import { validateGeneratedGameMap } from "../services/game/game-map-validate.js";
+import {
+  JournalEntryMovedError,
+  journalEntryExpectedFromQuery,
+  journalEntryExpectedSchema,
+  journalEntryMatchesExpected,
+  mergeJournalEntryExpected,
+} from "../services/game/journal-entry-guard.js";
 import {
   identifyGeneratedGameMap,
   getGameMapId,
@@ -1862,7 +1871,11 @@ async function galleryImageBelongsToGameScope(
   const meta = parseMeta(chat.metadata);
   const gameId = readTrimmedString(meta.gameId) || chat.groupId || "";
   if (!gameId) return false;
-  const sessions = await chats.listByGroup(gameId).catch(() => []);
+  const sessions = await orFallback(chats.listByGroup(gameId), [], {
+    event: "storage.read.fallback",
+    stage: "chats.list-by-group",
+    chatId: chat.id,
+  });
   return sessions.some((session) => session.mode === "game" && session.id === imageChatId);
 }
 
@@ -2238,8 +2251,8 @@ const regenerateCharacterSheetSchema = z.object({
 const removePartyMemberSchema = z.object({
   chatId: z.string().min(1),
   characterName: z.string().min(1).max(200),
-  /** The party member's id when the caller knows it: two members can share a name (a library "Mira" and an
-   * NPC "Mira"), and the name alone is then ambiguous. */
+  /** The party member's id when the caller knows it: two members can share a name (a library "Brannoc" and an
+   * NPC "Brannoc"), and the name alone is then ambiguous. */
   characterId: z.string().min(1).max(200).optional(),
 });
 
@@ -9386,8 +9399,13 @@ export async function gameRoutes(app: FastifyInstance) {
             timeOfDay: previousState?.time,
           });
         }
-      } catch {
-        /* non-fatal */
+      } catch (err) {
+        logSuppressed(err, {
+          event: "game.checkpoint.persist",
+          stage: "session_start",
+          chatId: newChat.id,
+          errorCode: "GAME_CHECKPOINT_FAILED",
+        });
       }
 
       const updatedChat = await chats.getById(newChat.id);
@@ -9783,8 +9801,13 @@ export async function gameRoutes(app: FastifyInstance) {
               timeOfDay: latestState.time,
             });
           }
-        } catch {
-          /* non-fatal */
+        } catch (err) {
+          logSuppressed(err, {
+            event: "game.checkpoint.persist",
+            stage: "session_end",
+            chatId,
+            errorCode: "GAME_CHECKPOINT_FAILED",
+          });
         }
 
         logger.info("[game/session/conclude] Session %d concluded for chat %s", sessionNumber, chatId);
@@ -9980,8 +10003,13 @@ export async function gameRoutes(app: FastifyInstance) {
             timeOfDay: latestState.time,
           });
         }
-      } catch {
-        /* non-fatal */
+      } catch (err) {
+        logSuppressed(err, {
+          event: "game.checkpoint.persist",
+          stage: "session_end.apply_json",
+          chatId,
+          errorCode: "GAME_CHECKPOINT_FAILED",
+        });
       }
 
       retainSequentialGameTask(
@@ -11607,8 +11635,13 @@ export async function gameRoutes(app: FastifyInstance) {
             timeOfDay: snap.time,
           });
         }
-      } catch {
-        /* non-fatal */
+      } catch (err) {
+        logSuppressed(err, {
+          event: "game.checkpoint.persist",
+          stage: enteringCombat ? "combat_start" : "combat_end",
+          chatId,
+          errorCode: "GAME_CHECKPOINT_FAILED",
+        });
       }
     }
 
@@ -11668,12 +11701,19 @@ export async function gameRoutes(app: FastifyInstance) {
       );
     }
 
-    let map: GameMap;
+    let parsedMap: unknown;
     try {
-      map = parseJSON(mapContent) as GameMap;
+      parsedMap = parseJSON(mapContent);
     } catch {
-      throw new Error("Failed to parse map from AI response");
+      return reply.status(422).send({ error: "Failed to parse map from AI response", code: "MAP_INVALID" });
     }
+    const mapValidation = validateGeneratedGameMap(parsedMap);
+    if (!mapValidation.ok) {
+      return reply
+        .status(422)
+        .send({ error: `The AI returned an unusable map: ${mapValidation.error}. Try generating again.`, code: "MAP_INVALID" });
+    }
+    const map: GameMap = mapValidation.map;
 
     let hydratedMeta: Record<string, unknown> | null = null;
     const updatedChat = await chats.patchMetadata(chatId, async (freshMeta) => {
@@ -12651,25 +12691,35 @@ export async function gameRoutes(app: FastifyInstance) {
     "/:chatId/journal/entries/:entryIndex",
     async (req, reply) => {
       const entryIndex = z.coerce.number().int().nonnegative().parse(req.params.entryIndex);
-      const { title, content } = z
+      const { title, content, expected } = z
         .object({
           title: z.string().trim().min(1).max(500),
           content: z.string().max(20_000),
+          expected: journalEntryExpectedSchema,
         })
         .parse(req.body);
       const chats = createChatsStorage(app.db);
       let nextJournal: Journal | null = null;
-      const updated = await chats.patchMetadata(req.params.chatId, (current) => {
-        const journal = (current.gameJournal as Journal) ?? createJournal();
-        const entry = journal.entries[entryIndex];
-        if (!entry) {
-          throw Object.assign(new Error("Journal entry not found"), { statusCode: 404 });
+      let updated: Awaited<ReturnType<typeof chats.patchMetadata>>;
+      try {
+        updated = await chats.patchMetadata(req.params.chatId, (current) => {
+          const journal = (current.gameJournal as Journal) ?? createJournal();
+          const entry = journal.entries[entryIndex];
+          if (!entry) {
+            throw Object.assign(new Error("Journal entry not found"), { statusCode: 404 });
+          }
+          if (!journalEntryMatchesExpected(entry, expected)) throw new JournalEntryMovedError();
+          const entries = [...journal.entries];
+          entries[entryIndex] = { ...entry, title, content };
+          nextJournal = { ...journal, entries };
+          return { gameJournal: nextJournal };
+        });
+      } catch (err) {
+        if (err instanceof JournalEntryMovedError) {
+          return reply.status(409).send({ error: err.message, code: err.code });
         }
-        const entries = [...journal.entries];
-        entries[entryIndex] = { ...entry, title, content };
-        nextJournal = { ...journal, entries };
-        return { gameJournal: nextJournal };
-      });
+        throw err;
+      }
       if (!updated || !nextJournal) return reply.status(404).send({ error: "Chat not found" });
 
       return { journal: nextJournal };
@@ -12681,19 +12731,36 @@ export async function gameRoutes(app: FastifyInstance) {
     "/:chatId/journal/entries/:entryIndex",
     async (req, reply) => {
       const entryIndex = z.coerce.number().int().nonnegative().parse(req.params.entryIndex);
+      const bodyExpected = z
+        .object({ expected: journalEntryExpectedSchema })
+        .passthrough()
+        .optional()
+        .nullable()
+        .parse(req.body ?? undefined)?.expected;
+      const expected = mergeJournalEntryExpected(bodyExpected, journalEntryExpectedFromQuery(req.query));
       const chats = createChatsStorage(app.db);
       let nextJournal: Journal | null = null;
-      const updated = await chats.patchMetadata(req.params.chatId, (current) => {
-        const journal = (current.gameJournal as Journal) ?? createJournal();
-        if (!journal.entries[entryIndex]) {
-          throw Object.assign(new Error("Journal entry not found"), { statusCode: 404 });
+      let updated: Awaited<ReturnType<typeof chats.patchMetadata>>;
+      try {
+        updated = await chats.patchMetadata(req.params.chatId, (current) => {
+          const journal = (current.gameJournal as Journal) ?? createJournal();
+          const entry = journal.entries[entryIndex];
+          if (!entry) {
+            throw Object.assign(new Error("Journal entry not found"), { statusCode: 404 });
+          }
+          if (!journalEntryMatchesExpected(entry, expected)) throw new JournalEntryMovedError();
+          nextJournal = {
+            ...journal,
+            entries: journal.entries.filter((_, index) => index !== entryIndex),
+          };
+          return { gameJournal: nextJournal };
+        });
+      } catch (err) {
+        if (err instanceof JournalEntryMovedError) {
+          return reply.status(409).send({ error: err.message, code: err.code });
         }
-        nextJournal = {
-          ...journal,
-          entries: journal.entries.filter((_, index) => index !== entryIndex),
-        };
-        return { gameJournal: nextJournal };
-      });
+        throw err;
+      }
       if (!updated || !nextJournal) return reply.status(404).send({ error: "Chat not found" });
 
       return { journal: nextJournal };
@@ -14426,9 +14493,11 @@ export async function gameRoutes(app: FastifyInstance) {
     const imgConnId = await resolveGameImageConnectionId(meta, agents);
     const setupCfgForScene = meta.gameSetupConfig as Record<string, unknown> | null;
     const artStyleForScene = resolveGameSetupArtStylePrompt(setupCfgForScene);
-    const latestSceneState = await createGameStateStorage(app.db)
-      .getLatest(input.chatId)
-      .catch(() => null);
+    const latestSceneState = await orFallback(createGameStateStorage(app.db).getLatest(input.chatId), null, {
+      event: "storage.read.fallback",
+      stage: "game-state.latest",
+      chatId: input.chatId,
+    });
     const imagePromptInstructions =
       typeof meta.gameImagePromptInstructions === "string"
         ? compactImagePromptInstructions(meta.gameImagePromptInstructions)
@@ -14763,8 +14832,8 @@ export async function gameRoutes(app: FastifyInstance) {
       if (parsed.background) {
         try {
           await chats.patchMetadata(input.chatId, { gameSceneBackground: parsed.background });
-        } catch {
-          /* non-fatal */
+        } catch (err) {
+          logSuppressed(err, { event: "game.scene.persist", stage: "scene-background", chatId: input.chatId });
         }
       }
 
@@ -15056,7 +15125,11 @@ export async function gameRoutes(app: FastifyInstance) {
       // Include canonical earlier sessions in the same game, but never branches,
       // the current/future session, or an ambiguous alternate session number.
       const currentSessionNumber = gameSessionNumberFromMeta(meta);
-      const sameGameSessions = await chats.listByGroup(gameId).catch(() => []);
+      const sameGameSessions = await orFallback(chats.listByGroup(gameId), [], {
+        event: "storage.read.fallback",
+        stage: "chats.list-by-group",
+        chatId: input.chatId,
+      });
       const priorSessionNumberCounts = new Map<number, number>();
       for (const session of sameGameSessions) {
         const sessionMeta = parseMeta(session.metadata);
@@ -16430,9 +16503,15 @@ export async function gameRoutes(app: FastifyInstance) {
       const provider = await createGameMainProvider(connections, conn, baseUrl);
 
       const setupCfg = ownerMode === "game" ? ((meta.gameSetupConfig as Record<string, unknown> | null) ?? null) : null;
-      const latestState = await createGameStateStorage(app.db)
-        .getByChatAndMessage(input.chatId, input.messageId, input.swipeIndex)
-        .catch(() => null);
+      const latestState = await orFallback(
+        createGameStateStorage(app.db).getByChatAndMessage(input.chatId, input.messageId, input.swipeIndex),
+        null,
+        {
+          event: "storage.read.fallback",
+          stage: "game-state.by-message",
+          chatId: input.chatId,
+        },
+      );
       // A global latest tracker can be from a different turn/swipe (or days stale).
       // The same message-scoped spatial projection feeds both planning and rendering.
       const fallbackState = {
@@ -17180,9 +17259,15 @@ export async function gameRoutes(app: FastifyInstance) {
 
       const snapshot =
         ownerMode === "game"
-          ? await createGameStateStorage(app.db)
-              .getByChatAndMessage(input.chatId, input.messageId, input.swipeIndex)
-              .catch(() => null)
+          ? await orFallback(
+              createGameStateStorage(app.db).getByChatAndMessage(input.chatId, input.messageId, input.swipeIndex),
+              null,
+              {
+                event: "storage.read.fallback",
+                stage: "game-state.by-message",
+                chatId: input.chatId,
+              },
+            )
           : null;
       const storyboardRow = await storyboards.update(planningStoryboardId!, {
         chatId: input.chatId,
@@ -17821,9 +17906,11 @@ export async function gameRoutes(app: FastifyInstance) {
     );
     const aspectRatio = input.aspectRatio ?? activeVideoDefaults.aspectRatio;
 
-    const latestState = await createGameStateStorage(app.db)
-      .getLatest(input.chatId)
-      .catch(() => null);
+    const latestState = await orFallback(createGameStateStorage(app.db).getLatest(input.chatId), null, {
+      event: "storage.read.fallback",
+      stage: "game-state.latest",
+      chatId: input.chatId,
+    });
     const messages = await chats.listMessages(input.chatId);
     const setupConfig = (meta.gameSetupConfig as Record<string, unknown> | null) ?? null;
     const galleryItems = await gallery.listByChatId(input.chatId).catch(() => []);
@@ -18021,9 +18108,11 @@ export async function gameRoutes(app: FastifyInstance) {
     const useAvatarReferences = input.useAvatarReferences ?? meta.gameImageUseAvatarReferences !== false;
     const includeCharacterAppearance =
       input.includeCharacterAppearance ?? meta.gameImageIncludeCharacterAppearance !== false;
-    const latestImageState = await createGameStateStorage(app.db)
-      .getLatest(input.chatId)
-      .catch(() => null);
+    const latestImageState = await orFallback(createGameStateStorage(app.db).getLatest(input.chatId), null, {
+      event: "storage.read.fallback",
+      stage: "game-state.latest",
+      chatId: input.chatId,
+    });
     const requestDebug = input.debugMode === true;
     const debugOverrideEnabled = requestDebug || isDebugAgentsEnabled();
     const debugLogsEnabled = debugOverrideEnabled || logger.isLevelEnabled("debug");
@@ -18488,9 +18577,11 @@ export async function gameRoutes(app: FastifyInstance) {
       const useAvatarReferences = input.useAvatarReferences ?? meta.gameImageUseAvatarReferences !== false;
       const includeCharacterAppearance =
         input.includeCharacterAppearance ?? meta.gameImageIncludeCharacterAppearance !== false;
-      const latestImageState = await createGameStateStorage(app.db)
-        .getLatest(input.chatId)
-        .catch(() => null);
+      const latestImageState = await orFallback(createGameStateStorage(app.db).getLatest(input.chatId), null, {
+        event: "storage.read.fallback",
+        stage: "game-state.latest",
+        chatId: input.chatId,
+      });
       const latestTurnNarration =
         meta.gameImageDynamicPromptEnabled === true
           ? selectLatestGameTurnNarration(await chats.listMessages(input.chatId))

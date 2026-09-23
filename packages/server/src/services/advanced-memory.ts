@@ -27,7 +27,8 @@ import {
 import type { DB } from "../db/connection.js";
 import { and, eq } from "../db/file-query.js";
 import { advancedMemoryRecords } from "../db/schema/advanced-memory.js";
-import { logger, logDebugOverride } from "../lib/logger.js";
+import { logRecovered, logRepeated } from "../lib/log-events.js";
+import { logDebugOverride } from "../lib/logger.js";
 import { tryParseJsonRecord } from "../lib/json-repair.js";
 import { newId, now } from "../utils/id-generator.js";
 import { createChatsStorage, withChatMetadataPatchQueue } from "./storage/chats.storage.js";
@@ -129,7 +130,18 @@ type Context = {
   names: Map<string, string>;
   individual: boolean;
   recordCache?: StoredRecord[];
+  /** Validated as-of snapshot reused by put() within one preparation scene instead of reloading the chat per record. */
+  snapshot?: Context;
 };
+type ValidationIndex = {
+  byId: Map<string, AdvancedMemoryMessage>;
+  position: Map<string, number>;
+  eligible: Map<string, Set<string>>;
+  manual: ReturnType<typeof normalizeChatSummaryEntries>;
+  macroRevision: string;
+};
+// Keyed by context, then by message array, so derived data cannot outlive either.
+const validationIndexes = new WeakMap<Context, WeakMap<readonly AdvancedMemoryMessage[], ValidationIndex>>();
 type Scene = { id: string; start: number; end: number; closed: boolean };
 const activeOperations = new Map<
   string,
@@ -638,9 +650,30 @@ export function createAdvancedMemoryService(db: DB, { includeExcerptsInStatus = 
     return (ctx.recordCache ??= await records(ctx.chatId));
   }
 
+  /** Per-context, per-source derived data, so validating many records does not rescan the whole chat each time. */
+  function validationIndex(ctx: Context, source: readonly AdvancedMemoryMessage[]): ValidationIndex {
+    let bySource = validationIndexes.get(ctx);
+    if (!bySource) validationIndexes.set(ctx, (bySource = new WeakMap()));
+    let index = bySource.get(source);
+    if (!index) {
+      index = {
+        byId: new Map(source.map((message) => [message.id, message])),
+        // First occurrence wins, matching findIndex.
+        position: new Map(source.map((message, position) => [message.id, position] as const).reverse()),
+        eligible: new Map(),
+        manual: normalizeChatSummaryEntries(ctx.metadata.summaryEntries, {
+          legacySummary: typeof ctx.metadata.summary === "string" ? ctx.metadata.summary : null,
+        }),
+        macroRevision: hash(normalizeChatMacroVariables(ctx.metadata.macroVariables)),
+      };
+      bySource.set(source, index);
+    }
+    return index;
+  }
+
   function recordValid(ctx: Context, record: StoredRecord, source = ctx.messages): boolean {
-    const byId = new Map(source.map((message) => [message.id, message]));
-    const covered = record.messageIds.map((id) => byId.get(id));
+    const index = validationIndex(ctx, source);
+    const covered = record.messageIds.map((id) => index.byId.get(id));
     if (!covered.length || covered.some((message) => !message)) return false;
     // Finished archive entries keep their source IDs and index across text edits,
     // swipes, illustrations and live cutoffs. Recall reads the current messages.
@@ -658,33 +691,35 @@ export function createAdvancedMemoryService(db: DB, { includeExcerptsInStatus = 
       record.kind === "continuity" &&
       record.dependencies.length > 0 &&
       record.dependencies.every((dependency) => dependency.id.startsWith("summary:"));
-    const eligibleIds = new Set(
-      (summaryOnly
-        ? source
-        : (record.kind === "scene" || record.kind === "excerpt") &&
-            !(record.kind === "excerpt" && record.audienceCharacterIds.length)
-          ? sceneSource(ctx, source)
-          : allowed(ctx, source, record.kind === "excerpt" ? record.audienceCharacterIds : archiveAudience)
-      ).map((message) => message.id),
-    );
+    const sceneView =
+      (record.kind === "scene" || record.kind === "excerpt") &&
+      !(record.kind === "excerpt" && record.audienceCharacterIds.length);
+    const audience = record.kind === "excerpt" ? record.audienceCharacterIds : archiveAudience;
+    // Cache each eligibility view per source so validating many records does not rescan the chat each time.
+    const eligibleKey = summaryOnly ? "all" : sceneView ? "scene" : `audience:${[...audience].sort().join("\0")}`;
+    let eligible = index.eligible.get(eligibleKey);
+    if (!eligible) {
+      eligible = new Set(
+        (summaryOnly ? source : sceneView ? sceneSource(ctx, source) : allowed(ctx, source, audience)).map(
+          (message) => message.id,
+        ),
+      );
+      index.eligible.set(eligibleKey, eligible);
+    }
     const structural = record.kind === "scene" && record.id === record.sceneId;
     // A partial summary may be empty while retaining discontiguous audience-scoped coverage.
-    if (!structural && record.messageIds.some((id) => !eligibleIds.has(id))) return false;
-    const first = source.findIndex((message) => message.id === record.messageIds[0]);
-    const last = source.findIndex((message) => message.id === record.messageIds.at(-1));
+    if (!structural && record.messageIds.some((id) => !eligible.has(id))) return false;
+    const first = index.position.get(record.messageIds[0]!) ?? -1;
+    const last = index.position.get(record.messageIds.at(-1)!) ?? -1;
     if (first < 0 || last < first) return false;
     if (record.kind === "scene" || record.kind === "excerpt") {
-      const expected = source.slice(first, last + 1).filter((message) => structural || eligibleIds.has(message.id));
+      const expected = source.slice(first, last + 1).filter((message) => structural || eligible.has(message.id));
       if (expected.map((message) => message.id).join("\0") !== record.messageIds.join("\0")) return false;
     }
-    const manual = normalizeChatSummaryEntries(ctx.metadata.summaryEntries, {
-      legacySummary: typeof ctx.metadata.summary === "string" ? ctx.metadata.summary : null,
-    });
+    const manual = index.manual;
     if (
       record.dependencies.some(
-        (dependency) =>
-          dependency.id === "macro-variables" &&
-          dependency.revision !== hash(normalizeChatMacroVariables(ctx.metadata.macroVariables)),
+        (dependency) => dependency.id === "macro-variables" && dependency.revision !== index.macroRevision,
       )
     )
       return false;
@@ -770,13 +805,26 @@ export function createAdvancedMemoryService(db: DB, { includeExcerptsInStatus = 
     return fresh;
   }
 
-  async function put(ctx: Context, record: StoredRecord, options: AdvancedMemoryOperationOptions) {
-    const selected = record.messageIds
-      .map((id) => ctx.messages.find((message) => message.id === id))
-      .filter((message): message is AdvancedMemoryMessage => !!message);
-    const fresh = await validateSnapshot(ctx, selected, options);
+  /** Reload the chat, check the given sources are unchanged, and return it trimmed to this operation's messages. */
+  async function snapshotAsOf(
+    ctx: Context,
+    source: readonly AdvancedMemoryMessage[],
+    options: AdvancedMemoryOperationOptions,
+  ): Promise<Context> {
+    const fresh = await validateSnapshot(ctx, source, options);
     const end = fresh.messages.findIndex((message) => message.id === ctx.messages.at(-1)?.id);
-    const asOf = { ...fresh, messages: fresh.messages.slice(0, end + 1) };
+    return { ...fresh, messages: fresh.messages.slice(0, end + 1) };
+  }
+
+  async function put(ctx: Context, record: StoredRecord, options: AdvancedMemoryOperationOptions) {
+    abortIfNeeded(options.signal);
+    let asOf = ctx.snapshot;
+    if (!asOf) {
+      const selected = record.messageIds
+        .map((id) => ctx.messages.find((message) => message.id === id))
+        .filter((message): message is AdvancedMemoryMessage => !!message);
+      asOf = await snapshotAsOf(ctx, selected, options);
+    }
     if (!recordValid(asOf, record) || !dependenciesValid(record, await operationRecords(ctx), asOf))
       throw new Error("Memory sources or summary corrections changed during preparation; retry");
     const row = recordRow(record);
@@ -1158,6 +1206,7 @@ export function createAdvancedMemoryService(db: DB, { includeExcerptsInStatus = 
         signal: options.signal,
         inputType: "document",
       });
+      logRecovered(`ltm.recall:document:${space}`, { source: space }, "[advanced-memory] embeddings working again");
       if (vectors[0]?.length) {
         record.embedding = vectors[0];
         record.embeddingSpaceId = space;
@@ -1165,7 +1214,12 @@ export function createAdvancedMemoryService(db: DB, { includeExcerptsInStatus = 
       }
     } catch (error) {
       abortIfNeeded(options.signal);
-      logger.warn(error, "[advanced-memory] Embedding unavailable; retaining bounded textual memory");
+      logRepeated(
+        `ltm.recall:document:${space}`,
+        "warn",
+        { event: "ltm.recall", stage: "embed.document", outcome: "failed", source: space, err: error },
+        "[advanced-memory] Embedding unavailable; retaining bounded textual memory",
+      );
     }
   }
 
@@ -1495,6 +1549,8 @@ export function createAdvancedMemoryService(db: DB, { includeExcerptsInStatus = 
       const scene = scenes[index]!;
       const fullSource = ctx.messages.slice(scene.start, scene.end + 1);
       const scaffold = buildRecord(ctx, scene, "scene", [], fullSource, "");
+      // Validate the whole chat once per scene; put() reuses it instead of reloading the chat for every record.
+      ctx.snapshot = await snapshotAsOf(ctx, ctx.messages, options);
       await put(ctx, scaffold, options);
       retained.add(scaffold.id);
       if (options.closedOnly && !scene.closed) {
@@ -1551,6 +1607,8 @@ export function createAdvancedMemoryService(db: DB, { includeExcerptsInStatus = 
             ...corrections.map((item) => `User-corrected scene summary (honor its corrections):\n${item.content}`),
           ];
           if (!record) {
+            // A paid summary can take long; its writes revalidate against a fresh reload.
+            ctx.snapshot = undefined;
             await progress(ctx, { stage: "summarizing", completed: index, total: scenes.length }, options);
             candidate.dependencies = [
               ...entries.map((entry) => ({ id: `summary:${entry.id}`, revision: hash(entry) })),
@@ -1603,6 +1661,7 @@ export function createAdvancedMemoryService(db: DB, { includeExcerptsInStatus = 
           await embedRecord(ctx, record, embeddingOptions, options);
         }
         await progress(ctx, { stage: "indexing", completed: index, total: scenes.length }, options);
+        ctx.snapshot ??= await snapshotAsOf(ctx, ctx.messages, options);
         for (let offset = 0; offset < source.length; offset += 3) {
           const chunk = source.slice(offset, offset + 3);
           const candidate = buildRecord(ctx, scene, "excerpt", [], chunk, logMessages(ctx, chunk));
@@ -1618,6 +1677,7 @@ export function createAdvancedMemoryService(db: DB, { includeExcerptsInStatus = 
         }
       }
     }
+    ctx.snapshot = undefined;
     await validateSnapshot(ctx, ctx.messages, options);
     // Replacement records are complete before removing superseded generated scopes/ranges.
     // User corrections and explicit exclusions always remain available.
@@ -2772,10 +2832,21 @@ export function createAdvancedMemoryService(db: DB, { includeExcerptsInStatus = 
               }),
             )
           )[0];
+          logRecovered(
+            `ltm.recall:query:${vectorSpace}`,
+            { source: vectorSpace },
+            "[advanced-memory] query embeddings working again",
+          );
         }
       } catch (error) {
         abortIfNeeded(input.signal);
-        logger.warn(error, "[advanced-memory] Query embedding failed; using bounded lexical recall");
+        const source = vectorSpace ?? "unresolved";
+        logRepeated(
+          `ltm.recall:query:${source}`,
+          "warn",
+          { event: "ltm.recall", stage: "embed.query", outcome: "failed", source, chatId: ctx.chatId, err: error },
+          "[advanced-memory] Query embedding failed; using bounded lexical recall",
+        );
       }
     }
     const recentEligible = eligible.slice(-20);
@@ -3461,7 +3532,8 @@ export function createAdvancedMemoryService(db: DB, { includeExcerptsInStatus = 
         record.dependencies = record.dependencies.map((dependency) =>
           dependency.id === "boundary" ? { ...dependency, revision: idMap.get(dependency.revision) ?? "" } : dependency,
         );
-        const previous = existing.find((item) => sameIdentity(item, record));
+        const previous =
+          existing.find((item) => sameIdentity(item, record)) ?? existing.find((item) => item.id === record.id);
         if (previous) {
           // Backups retain original copies. Consolidate only records imported
           // in this operation; never broaden an existing local correction.
@@ -3488,6 +3560,15 @@ export function createAdvancedMemoryService(db: DB, { includeExcerptsInStatus = 
           }
           recordIdMap.set(String(value.id), previous.id);
           continue; // Import never overwrites local user corrections.
+        }
+        // Scaffold ids derive from the scene anchor alone, so a local scaffold (possibly hidden preparation work)
+        // may already hold this id with different coverage. Keep the local row instead of failing the import.
+        if (
+          scaffold &&
+          (await db.select().from(advancedMemoryRecords).where(eq(advancedMemoryRecords.id, record.id))).length
+        ) {
+          recordIdMap.set(String(value.id), record.id);
+          continue;
         }
         await db.insert(advancedMemoryRecords).values({
           ...record,

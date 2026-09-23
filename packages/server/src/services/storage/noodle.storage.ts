@@ -57,6 +57,7 @@ import {
 import type { DB } from "../../db/connection.js";
 import { isFileUniqueConstraintError } from "../../db/file-schema.js";
 import { logger } from "../../lib/logger.js";
+import { parseStoredJson, type StoredJsonLocation } from "./stored-json.js";
 import {
   NOODLE_FAN_ACTIVITY_MAX_ACTIVITIES_PER_CREATOR,
   parsePersistedNoodleFanActivityDayPlan,
@@ -241,17 +242,13 @@ export type NoodlerCreatorReplyClaimResult =
   | { status: "exhausted" }
   | { status: "ineligible" };
 
-function parseRecord(value: unknown): Record<string, unknown> {
+function parseRecord(
+  value: unknown,
+  where: StoredJsonLocation = { table: "noodle", rowId: "unknown", field: "record" },
+): Record<string, unknown> {
   if (!value) return {};
-  if (typeof value === "string") {
-    try {
-      const parsed = JSON.parse(value);
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
-    } catch {
-      return {};
-    }
-  }
-  return typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  const parsed = parseStoredJson<unknown>(value, {}, where);
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
 }
 
 function emptyNoodleAccountSettings(): NoodleAccountSettings {
@@ -612,7 +609,7 @@ function mapPost(row: PostRow): NoodlePost {
     quotePostId: row.quotePostId ?? null,
     source: row.source === "generated" ? "generated" : "manual",
     access: row.access === "public" ? "public" : "locked",
-    metadata: parseRecord(row.metadata),
+    metadata: parseRecord(row.metadata, { table: "noodle_posts", rowId: row.id, field: "metadata" }),
     authorSnapshot: parseAuthorSnapshot(row.authorSnapshot),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -1879,7 +1876,11 @@ export function createNoodleStorage(db: DB) {
         row.imageState === "closed"
           ? row.imageState
           : "none") as NoodlerPreparedImageState,
-        payload: parseRecord(row.payload) as NoodlerPreparedPostPayload,
+        payload: parseRecord(row.payload, {
+          table: "noodler_prepared_posts",
+          rowId: row.id,
+          field: "payload",
+        }) as NoodlerPreparedPostPayload,
       }));
     },
 
@@ -2002,7 +2003,11 @@ export function createNoodleStorage(db: DB) {
               .where(eq(noodlerPreparedPosts.id, current.id));
             return false;
           }
-          const payload = parseRecord(current.payload) as NoodlerPreparedPostPayload;
+          const payload = parseRecord(current.payload, {
+            table: "noodler_prepared_posts",
+            rowId: current.id,
+            field: "payload",
+          }) as NoodlerPreparedPostPayload;
           if (typeof payload.content !== "string" || !payload.content.trim()) {
             await tx
               .update(noodlerPreparedPosts)

@@ -653,7 +653,7 @@ export function applySegmentEdits(
   return anyApplied ? output.join("\n\n") : content;
 }
 
-function collectSegmentOverlays(chatMeta: Record<string, unknown>) {
+export function collectSegmentOverlays(chatMeta: Record<string, unknown>) {
   const editsByMessage = new Map<string, Record<number, SegmentEditValue>>();
   const deletesByMessage = new Map<string, Set<number>>();
   for (const [key, value] of Object.entries(chatMeta)) {

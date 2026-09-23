@@ -13,14 +13,14 @@ import type { GameContinuityRecord, GameContinuitySource } from "@marinara-engin
 // names are now withheld with the findings, omissions are kept on the receipt without blocking, and the rest
 // publishes with a clean review of exactly what is published. Anything that cannot be isolated stays unresolved.
 const sources: GameContinuitySource[] = [
-  { messageId: "m1", swipeIndex: 0, hash: "h1", role: "user", content: "Robert offers the well-right. Maybelle says it must wait for the clause." },
-  { messageId: "m2", swipeIndex: 0, hash: "h2", role: "assistant", content: "Audrey signs the register. Kasimira says, in her experience, soft men never reach for the latch." },
+  { messageId: "m1", swipeIndex: 0, hash: "h1", role: "user", content: "Edmund offers the well-right. Corvina says it must wait for the clause." },
+  { messageId: "m2", swipeIndex: 0, hash: "h2", role: "assistant", content: "Beatrix signs the register. Jadwiga says, in her experience, soft men never reach for the latch." },
 ];
 const make = (text: string, messageId: string, quote: string): GameContinuityRecord => {
   const base = {
     kind: "decision" as const,
     text,
-    subjects: ["Robert"],
+    subjects: ["Edmund"],
     conditions: [],
     status: "completed" as const,
     evidence: [{ messageId, quote }],
@@ -28,9 +28,9 @@ const make = (text: string, messageId: string, quote: string): GameContinuityRec
   };
   return { ...base, id: createGameContinuityRecordId("gch_test", base) };
 };
-const sound = make("Audrey signed the register.", "m2", "Audrey signs the register.");
-const flagged = make("Kasimira said soft men never reach for the latch.", "m2", "soft men never reach for the latch");
-const offer = make("Robert offered the well-right.", "m1", "Robert offers the well-right.");
+const sound = make("Beatrix signed the register.", "m2", "Beatrix signs the register.");
+const flagged = make("Jadwiga said soft men never reach for the latch.", "m2", "soft men never reach for the latch");
+const offer = make("Edmund offered the well-right.", "m1", "Edmund offers the well-right.");
 const extraction = {
   records: [sound, flagged, offer],
   dispositions: [
@@ -43,19 +43,19 @@ const conditionFinding = {
   messageId: "m2",
   quote: "in her experience",
   recordIds: [flagged.id],
-  detail: "The record drops Kasimira's hedge.",
+  detail: "The record drops Jadwiga's hedge.",
 };
 const offerFinding = {
   kind: "condition" as const,
   messageId: "m1",
   quote: "it must wait for the clause",
   recordIds: [offer.id],
-  detail: "Maybelle's restriction is missing.",
+  detail: "Corvina's restriction is missing.",
 };
 const omission = {
   kind: "omission" as const,
   messageId: "m2",
-  quote: "Audrey signs the register.",
+  quote: "Beatrix signs the register.",
   recordIds: [],
   detail: "The register number is not recorded.",
 };

@@ -13,17 +13,17 @@ type Candidate = {
 const present = [
   "Rowan Mercer",
   "Caden Vale",
-  "Vashti Orlane",
-  "Liveth Corren",
-  "Princess Ysolde",
+  "Rozalind Dulac",
+  "Quilla Tallis",
+  "Princess Isaura",
   "Neris Voss",
 ];
 const library: Candidate[] = [
   { id: "player", name: "Rowan Mercer", avatarUrl: "/player.png" },
   { id: "warden", name: "Caden Vale", avatarUrl: "/warden.png" },
-  { id: "vashti", name: "Vashti Orlane", avatarUrl: "/vashti.png" },
-  { id: "liveth", name: "Liveth Corren", avatarUrl: "/liveth.png" },
-  { id: "princess", name: "Princess Ysolde", avatarUrl: "/princess.png" },
+  { id: "rozalind", name: "Rozalind Dulac", avatarUrl: "/rozalind.png" },
+  { id: "quilla", name: "Quilla Tallis", avatarUrl: "/quilla.png" },
+  { id: "princess", name: "Princess Isaura", avatarUrl: "/princess.png" },
   {
     id: "oracle",
     name: "Neris Voss",
@@ -41,7 +41,7 @@ const library: Candidate[] = [
 const resolved = resolveScenePresence(present, [], library);
 assert.deepEqual(
   resolved.sceneMembers.map((member) => member.id),
-  ["player", "warden", "vashti", "liveth", "princess", "oracle"],
+  ["player", "warden", "rozalind", "quilla", "princess", "oracle"],
   "every recorded occupant resolves to its canonical library identity",
 );
 assert.equal(resolved.sceneExtras.length, 0, "unrelated library cards are never admitted");
@@ -72,23 +72,23 @@ assert.match(
 );
 
 const duplicate = resolveScenePresence(
-  ["Vashti Orlane", "Neris Voss", "Absent Character"],
+  ["Rozalind Dulac", "Neris Voss", "Absent Character"],
   [],
-  [...library, { id: "vashti-copy", name: "Vashti Orlane", avatarUrl: "/other-vashti.png" }],
+  [...library, { id: "rozalind-copy", name: "Rozalind Dulac", avatarUrl: "/other-rozalind.png" }],
 );
 assert.deepEqual(
   duplicate.sceneMembers.map((member) => member.id),
   ["oracle"],
   "duplicate library names stay unresolved while unique identities still resolve",
 );
-assert.deepEqual(duplicate.sceneExtras, ["Vashti Orlane", "Absent Character"]);
+assert.deepEqual(duplicate.sceneExtras, ["Rozalind Dulac", "Absent Character"]);
 
 const existingStable = resolveScenePresence(
-  ["Vashti Orlane"],
-  [{ id: "known-vashti", name: "Vashti Orlane", avatarUrl: "/known.png" }],
+  ["Rozalind Dulac"],
+  [{ id: "known-rozalind", name: "Rozalind Dulac", avatarUrl: "/known.png" }],
   [
-    { id: "vashti-a", name: "Vashti Orlane" },
-    { id: "vashti-b", name: "Vashti Orlane" },
+    { id: "rozalind-a", name: "Rozalind Dulac" },
+    { id: "rozalind-b", name: "Rozalind Dulac" },
   ],
 );
-assert.equal(existingStable.sceneMembers[0]?.id, "known-vashti", "a known stable identity survives library ambiguity");
+assert.equal(existingStable.sceneMembers[0]?.id, "known-rozalind", "a known stable identity survives library ambiguity");

@@ -30,34 +30,34 @@ const bundle = await build({
       void initReactI18next;
       const image = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="200"><rect width="100" height="100" fill="red"/><rect y="100" width="100" height="100" fill="blue"/></svg>');
       const libraryRaw = {
-        description: 'Vigil library description', personality: 'Vigil library personality',
+        description: 'Quenby library description', personality: 'Quenby library personality',
         extensions: {
-          backstory: 'Vigil library backstory', appearance: 'Vigil library appearance', aboutMe: 'Vigil library about me',
+          backstory: 'Quenby library backstory', appearance: 'Quenby library appearance', aboutMe: 'Quenby library about me',
           rpgStats: { enabled: true, hp: { current: 200, max: 200 },
-            pools: [{ name: 'Bulwark', current: 100, max: 100 }, { name: 'The Vow', current: 100, max: 100 }],
+            pools: [{ name: 'Aegis', current: 100, max: 100 }, { name: 'Tenacity', current: 100, max: 100 }],
             attributes: { STR: 20, DEX: 10, CON: 19, INT: 13, WIS: 16, CHA: 11 } },
         },
       };
       const libraryProfile = normalizeGameCharacterLibraryProfile(libraryRaw);
       const cards = {
-        library: {title:'Vigil', avatarUrl:image, avatarCrop:{srcX:0,srcY:0,srcWidth:1,srcHeight:.5}, libraryProfile},
+        library: {title:'Quenby', avatarUrl:image, avatarCrop:{srcX:0,srcY:0,srcWidth:1,srcHeight:.5}, libraryProfile},
         cleared: {title:'Calista', avatarUrl:image, avatarCrop:null},
-        explicit: {title:'Dame Honoria Stell', avatarUrl:image, avatarCrop:{srcX:0,srcY:0,srcWidth:1,srcHeight:.5}, libraryProfile,
+        explicit: {title:'Dame Wynne Brack', avatarUrl:image, avatarCrop:{srcX:0,srcY:0,srcWidth:1,srcHeight:.5}, libraryProfile,
           gameCard: { shortDescription:'Explicit card description', class:'Explicit class', abilities:[], strengths:[], weaknesses:[], extra:{},
             rpgStats:{ attributes:[{name:'STR',value:7}], hp:{value:77,max:77}, pools:[{name:'HP',value:77,max:77,color:'#ef4444'},{name:'Custom',value:33,max:44,color:'#a78bfa'}] } } },
         disabled: {title:'No Stats', avatarUrl:image, avatarCrop:{srcX:0,srcY:0,srcWidth:1,srcHeight:.5}, libraryProfile,
           gameCard: { shortDescription:'No stats card', class:'No stats class', abilities:[], strengths:[], weaknesses:[], extra:{} }},
       };
       const sceneCards = ensureSceneCharacterCards(cards,
-        [{id:'scene:mentor', name:'Elowen', avatarUrl:image, avatarCrop:{srcX:0,srcY:.5,srcWidth:1,srcHeight:.5}}],
-        [{id:'scene:mentor', name:'Elowen', avatarUrl:image,
-          libraryProfile:{description:'Elowen library description', appearance:'Elowen library appearance', level:12,
+        [{id:'scene:mentor', name:'Maelis', avatarUrl:image, avatarCrop:{srcX:0,srcY:.5,srcWidth:1,srcHeight:.5}}],
+        [{id:'scene:mentor', name:'Maelis', avatarUrl:image,
+          libraryProfile:{description:'Maelis library description', appearance:'Maelis library appearance', level:12,
             rpgStats:{attributes:[{name:'WIS',value:18}], hp:{value:120,max:120}, pools:[]}}}], [], 1);
       const members = [
-        {id:'scene:vigil', name:'Vigil', avatarUrl:image, avatarCrop:{srcX:0,srcY:.5,srcWidth:1,srcHeight:.5}},
-        {id:'scene:mentor', name:'Elowen', avatarUrl:image, avatarCrop:{srcX:0,srcY:.5,srcWidth:1,srcHeight:.5}},
+        {id:'scene:quenby', name:'Quenby', avatarUrl:image, avatarCrop:{srcX:0,srcY:.5,srcWidth:1,srcHeight:.5}},
+        {id:'scene:mentor', name:'Maelis', avatarUrl:image, avatarCrop:{srcX:0,srcY:.5,srcWidth:1,srcHeight:.5}},
         {id:'cleared', name:'Calista', avatarUrl:image, avatarCrop:{srcX:0,srcY:.5,srcWidth:1,srcHeight:.5}},
-        {id:'scene:honoria-stell', name:'Honoria Stell', avatarUrl:image, avatarCrop:{srcX:0,srcY:.5,srcWidth:1,srcHeight:.5}},
+        {id:'scene:wynne-brack', name:'Wynne Brack', avatarUrl:image, avatarCrop:{srcX:0,srcY:.5,srcWidth:1,srcHeight:.5}},
         {id:'disabled', name:'No Stats', avatarUrl:image, avatarCrop:{srcX:0,srcY:.5,srcWidth:1,srcHeight:.5}},
       ];
       function App() {
@@ -105,24 +105,24 @@ try {
     await page.addScriptTag({ content: bundle.outputFiles[0].text });
     await page.waitForTimeout(100);
     if (pageErrors.length) throw new Error(`browser page errors before portrait: ${pageErrors.join(" | ")}`);
-    const vigil = page.locator('img[alt="Vigil"]:visible').first();
-    await vigil.waitFor();
-    assert.equal(await vigil.evaluate((img) => img.style.top), "0%", "uses card face crop instead of scene body crop");
+    const quenby = page.locator('img[alt="Quenby"]:visible').first();
+    await quenby.waitFor();
+    assert.equal(await quenby.evaluate((img) => img.style.top), "0%", "uses card face crop instead of scene body crop");
     const singer = page.locator('img[alt="Calista"]:visible').first();
     assert.equal(await singer.evaluate((img) => img.style.top), "", "cleared card crop does not resurrect stale member crop");
     if (viewport.width < 640) {
       await page.getByRole("button", { name: "Open party members" }).click();
-      await page.getByTitle("Vigil - Click to open character sheet").first().click();
-    } else await vigil.click();
-    const dialog = page.getByRole("dialog", { name: "Vigil", exact: true });
+      await page.getByTitle("Quenby - Click to open character sheet").first().click();
+    } else await quenby.click();
+    const dialog = page.getByRole("dialog", { name: "Quenby", exact: true });
     await dialog.waitFor();
     const dialogText = await dialog.innerText();
-    for (const expected of ["Vigil library description", "Vigil library personality", "Vigil library backstory", "Vigil library appearance", "Vigil library about me", "200/200", "Bulwark", "The Vow", "20", "10", "19", "13", "16", "11"]) assert.ok(dialogText.includes(expected), `Vigil sheet contains ${expected}`);
+    for (const expected of ["Quenby library description", "Quenby library personality", "Quenby library backstory", "Quenby library appearance", "Quenby library about me", "200/200", "Aegis", "Tenacity", "20", "10", "19", "13", "16", "11"]) assert.ok(dialogText.includes(expected), `Quenby sheet contains ${expected}`);
     assert.ok(!/LVL\s*9/i.test(dialogText), "library profile does not invent LVL 9");
     assert.ok(!dialogText.includes("Character data will populate as the story progresses"), "library profile is not empty");
     assert.ok((await dialog.boundingBox()).height > 80, "sheet escapes clipped game layer");
     assert.equal(await dialog.isVisible(), true, "library sheet is visible in screenshot state");
-    await page.screenshot({ path: resolve(screenshotDir, `vigil-${viewport.width}.png`), fullPage: true });
+    await page.screenshot({ path: resolve(screenshotDir, `quenby-${viewport.width}.png`), fullPage: true });
     await page.getByRole("button", { name: "Edit sheet" }).click();
     await page.getByRole("button", { name: "Save sheet" }).click();
     await page.waitForTimeout(0);
@@ -131,35 +131,35 @@ try {
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "detached" });
 
-    const mentor = page.locator('img[alt="Elowen"]:visible').first();
+    const mentor = page.locator('img[alt="Maelis"]:visible').first();
     if (viewport.width < 640) {
       await page.getByRole("button", { name: "Open party members" }).click();
-      await page.getByTitle("Elowen - Click to open character sheet").first().click();
+      await page.getByTitle("Maelis - Click to open character sheet").first().click();
     } else await mentor.click();
-    const mentorDialog = page.getByRole("dialog", { name: "Elowen", exact: true });
+    const mentorDialog = page.getByRole("dialog", { name: "Maelis", exact: true });
     await mentorDialog.waitFor();
     const mentorText = await mentorDialog.innerText();
-    assert.ok(mentorText.includes("Elowen library description"), "scene-only library character opens a populated sheet");
-    assert.ok(mentorText.includes("Elowen library appearance"), "scene-only library profile survives sheet wiring");
+    assert.ok(mentorText.includes("Maelis library description"), "scene-only library character opens a populated sheet");
+    assert.ok(mentorText.includes("Maelis library appearance"), "scene-only library profile survives sheet wiring");
     await page.keyboard.press("Escape");
     await mentorDialog.waitFor({ state: "detached" });
 
-    const explicitAvatar = page.locator('img[alt="Honoria Stell"]:visible').first();
+    const explicitAvatar = page.locator('img[alt="Wynne Brack"]:visible').first();
     if (viewport.width < 640) {
       await page.getByRole("button", { name: "Open party members" }).click();
-      await page.getByTitle("Honoria Stell - Click to open character sheet").first().click();
+      await page.getByTitle("Wynne Brack - Click to open character sheet").first().click();
     } else await explicitAvatar.click();
-    const explicitDialog = page.getByRole("dialog", { name: "Dame Honoria Stell", exact: true });
+    const explicitDialog = page.getByRole("dialog", { name: "Dame Wynne Brack", exact: true });
     await explicitDialog.waitFor();
     const explicitText = await explicitDialog.innerText();
     assert.ok(explicitText.includes("77/77") && explicitText.includes("Custom") && explicitText.includes("33/44"), "explicit game card stats win");
-    assert.ok(!explicitText.includes("200/200") && !explicitText.includes("Bulwark"), "library stats do not override explicit game card stats");
+    assert.ok(!explicitText.includes("200/200") && !explicitText.includes("Aegis"), "library stats do not override explicit game card stats");
     await page.getByRole("button", { name: "Edit sheet" }).click();
     await page.getByRole("button", { name: "Save sheet" }).click();
     await page.waitForTimeout(0);
     const saved = await page.evaluate(() => window.__savedGameCard);
     assert.equal(saved.rpgStats.hp.value, 77, "save preserves explicit game card HP");
-    assert.ok(!JSON.stringify(saved).includes("Vigil library"), "save does not copy library profile into game card");
+    assert.ok(!JSON.stringify(saved).includes("Quenby library"), "save does not copy library profile into game card");
     await page.keyboard.press("Escape");
     await explicitDialog.waitFor({ state: "detached" });
 
@@ -171,7 +171,7 @@ try {
     const disabledDialog = page.getByRole("dialog", { name: "No Stats", exact: true });
     await disabledDialog.waitFor();
     const disabledText = await disabledDialog.innerText();
-    assert.ok(disabledText.includes("No stats card") && !disabledText.includes("200/200") && !disabledText.includes("Bulwark"), "disabled game stats do not restore library stats");
+    assert.ok(disabledText.includes("No stats card") && !disabledText.includes("200/200") && !disabledText.includes("Aegis"), "disabled game stats do not restore library stats");
     await page.close();
   }
 

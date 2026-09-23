@@ -20,7 +20,14 @@ type DiagnosticMessage = {
 
 export type ClaudeCacheDiagnosticAttempt = {
   cacheRequestId: string;
+  /** Date.now() when the attempt began; gives the failure line its elapsedMs. */
+  startedAt?: number;
 };
+
+/** Per-message detail lines are debug unless MARINARA_CACHE_DIAGNOSTICS=1 (read per call). */
+function perItemLevel(): "info" | "debug" {
+  return process.env.MARINARA_CACHE_DIAGNOSTICS === "1" ? "info" : "debug";
+}
 
 function hash(value: unknown): string {
   return createHash("sha256")
@@ -122,6 +129,7 @@ export function beginClaudeCacheDiagnostic(
   },
 ): ClaudeCacheDiagnosticAttempt {
   const cacheRequestId = randomUUID();
+  const startedAt = Date.now();
   try {
     const retained = messages.slice(0, MAX_MESSAGES);
     const prefixHashes: string[] = [];
@@ -151,8 +159,9 @@ export function beginClaudeCacheDiagnostic(
       system: systemSummary(info.systemPrompt),
     };
     logger.info(base, "Claude SDK request attempt");
-    for (let start = 0; start < retained.length; start += BATCH_SIZE) {
-      logger.info(
+    const detailLevel = perItemLevel();
+    for (let start = 0; start < retained.length && logger.isLevelEnabled(detailLevel); start += BATCH_SIZE) {
+      logger[detailLevel](
         {
           cacheRequestId,
           observationBoundary: "sdk-input",
@@ -165,7 +174,7 @@ export function beginClaudeCacheDiagnostic(
         "Claude SDK request input batch",
       );
     }
-    return { cacheRequestId };
+    return { cacheRequestId, startedAt };
   } catch {
     try {
       logger.warn(
@@ -175,7 +184,7 @@ export function beginClaudeCacheDiagnostic(
     } catch {
       /* diagnostics never block generation */
     }
-    return { cacheRequestId };
+    return { cacheRequestId, startedAt };
   }
 }
 
@@ -248,12 +257,16 @@ export function logClaudeCacheInit(attempt: ClaudeCacheDiagnosticAttempt, init: 
 
 export function logClaudeCacheFailure(attempt: ClaudeCacheDiagnosticAttempt, error: unknown): void {
   try {
-    logger.info(
+    const record = error && typeof error === "object" ? (error as Record<string, unknown>) : {};
+    logger.warn(
       {
         cacheRequestId: attempt.cacheRequestId,
         observationBoundary: "sdk-input",
         providerEvent: "failure",
         errorName: error instanceof Error ? (bounded(error.name, 128) ?? "Error") : typeof error,
+        httpStatus: safeStatus(record.status) ?? safeStatus(record.api_error_status),
+        terminalReason: bounded(record.terminal_reason, 128) ?? null,
+        ...(attempt.startedAt !== undefined ? { elapsedMs: Date.now() - attempt.startedAt } : {}),
       },
       "Claude SDK provider failure",
     );

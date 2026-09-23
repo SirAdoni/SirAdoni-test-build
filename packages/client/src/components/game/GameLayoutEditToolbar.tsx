@@ -4,6 +4,9 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from "react";
 import { createPortal } from "react-dom";
 import {
+  AlignEndVertical,
+  AlignStartHorizontal,
+  AlignStartVertical,
   ArrowDownToLine,
   ArrowUpToLine,
   Check,
@@ -11,10 +14,12 @@ import {
   Eye,
   EyeOff,
   Layers2,
+  LayoutDashboard,
   LayoutTemplate,
   Lock,
   LockOpen,
   Magnet,
+  MoveHorizontal,
   PanelsTopLeft,
   Pencil,
   Redo2,
@@ -34,6 +39,7 @@ import {
   LayoutPopoverSection,
 } from "./GameLayoutPopover";
 import {
+  readGamePanelStacks,
   registeredGamePanelStates,
   scheduleGamePanelLayout,
   subscribeGamePanelRegistry,
@@ -46,12 +52,15 @@ import {
   renameSavedLayout,
   type SavedLayout,
 } from "../../lib/game-layout-snapshots";
+import { arrangePanels, measureFloatingPanels, writeArrangedSnapshot, type ArrangeMode } from "../../lib/game-layout-arrange";
 import {
   applyLayoutAsStep,
   beginLayoutEditSession,
   captureCurrentLayout,
+  clearPanelSelection,
   dispatchLayoutLockAll,
   endLayoutEditSession,
+  isLayoutCollisionsEnabled,
   isLayoutPopoverOpen,
   isPanelHidden,
   readSavedLayouts,
@@ -68,6 +77,8 @@ import {
   useLayoutHistoryState,
   useLayoutSnapEnabled,
   useLayoutToolbarDock,
+  usePanelSelection,
+  readPanelSelection,
   useSavedLayouts,
   writeSavedLayouts,
 } from "../../lib/game-layout-editor-store";
@@ -180,10 +191,16 @@ export function GameLayoutEditToolbar({ editing, onDone, onLayoutApplied }: Prop
     setHost(surface?.current ?? null);
   }, [editing, surface]);
   useEffect(() => {
-    if (!scopeId) return;
-    if (editing) beginLayoutEditSession(scopeId);
-    else endLayoutEditSession(scopeId);
+    if (!scopeId || !editing) return;
+    beginLayoutEditSession(scopeId);
+    // Ending on cleanup covers a chat switch while editing too: the old scope's session
+    // must end, or returning to it later keeps a stale undo baseline.
+    return () => endLayoutEditSession(scopeId);
   }, [editing, scopeId]);
+  useEffect(() => {
+    // Below the desktop width panels are inline and there is nothing to edit.
+    if (editing && !desktop) onDone();
+  }, [desktop, editing, onDone]);
   if (!context || !editing || !desktop || !host || !scopeId) return null;
   return (
     <>
@@ -375,6 +392,31 @@ function LayoutToolbar({
   const redo = useCallback(() => {
     if (redoLayout(scopeId)) onLayoutApplied();
   }, [onLayoutApplied, scopeId]);
+  const selection = usePanelSelection(scopeId);
+  const arrange = (mode: ArrangeMode) => {
+    const bounds = { width: surface.clientWidth, height: surface.clientHeight };
+    const panels = measureFloatingPanels(surface);
+    const changes = arrangePanels(mode, panels, {
+      bounds,
+      stacks: readGamePanelStacks(scopeId),
+      selection: readPanelSelection(scopeId),
+      collisions: isLayoutCollisionsEnabled(),
+    });
+    if (!changes.size) return;
+    applyLayoutAsStep(scopeId, writeArrangedSnapshot(captureCurrentLayout(scopeId), panels, changes, bounds));
+    onLayoutApplied();
+  };
+  useEffect(() => {
+    // Clicking empty surface clears the multi-select; leaving edit mode does too.
+    const onPointerDown = (event: PointerEvent) => {
+      if (!(event.target as HTMLElement | null)?.closest?.("[data-game-floating-panel]")) clearPanelSelection(scopeId);
+    };
+    surface.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      surface.removeEventListener("pointerdown", onPointerDown);
+      clearPanelSelection(scopeId);
+    };
+  }, [scopeId, surface]);
 
   // All-locked hint: shown on entry when nothing can move yet.
   const [hint, setHint] = useState<"pending" | "shown" | "dismissed">("pending");
@@ -412,10 +454,15 @@ function LayoutToolbar({
         // Leave other dialogs (for example a settings modal) their own Esc.
         if ((event.target as HTMLElement | null)?.closest?.('[role="dialog"]:not([data-layout-popover])')) return;
         event.preventDefault();
+        if (readPanelSelection(scopeId).length) {
+          clearPanelSelection(scopeId);
+          return;
+        }
         doneRef.current();
         return;
       }
-      if (!(event.ctrlKey || event.metaKey) || isEditableTarget(event.target)) return;
+      // Alt is excluded: AltGr on Windows reports Ctrl+Alt for ordinary characters.
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || isEditableTarget(event.target)) return;
       if (key === "z" && !event.shiftKey) {
         event.preventDefault();
         undo();
@@ -426,7 +473,7 @@ function LayoutToolbar({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [menu, redo, undo]);
+  }, [menu, redo, scopeId, undo]);
 
   const lockAll = (locked: boolean) => {
     dispatchLayoutLockAll(scopeId, locked);
@@ -490,6 +537,30 @@ function LayoutToolbar({
           <Layers2 size={14} aria-hidden="true" />
         </ToolbarButton>
         <Divider />
+        <ToolbarButton label={t("ui.game.layoutEditor.tidy")} onClick={() => arrange("tidy")} name="tidy">
+          <LayoutDashboard size={14} aria-hidden="true" />
+        </ToolbarButton>
+        {selection.length >= 2 && (
+          <>
+            <ToolbarButton label={t("ui.game.layoutEditor.alignLeft")} onClick={() => arrange("left")} name="align-left">
+              <AlignStartVertical size={14} aria-hidden="true" />
+            </ToolbarButton>
+            <ToolbarButton label={t("ui.game.layoutEditor.alignRight")} onClick={() => arrange("right")} name="align-right">
+              <AlignEndVertical size={14} aria-hidden="true" />
+            </ToolbarButton>
+            <ToolbarButton label={t("ui.game.layoutEditor.alignTop")} onClick={() => arrange("top")} name="align-top">
+              <AlignStartHorizontal size={14} aria-hidden="true" />
+            </ToolbarButton>
+            <ToolbarButton
+              label={t("ui.game.layoutEditor.matchWidth")}
+              onClick={() => arrange("matchWidth")}
+              name="match-width"
+            >
+              <MoveHorizontal size={14} aria-hidden="true" />
+            </ToolbarButton>
+          </>
+        )}
+        <Divider />
         <ToolbarButton label={t("ui.game.layoutEditor.lockAll")} onClick={() => lockAll(true)} name="lock-all">
           <Lock size={14} aria-hidden="true" />
         </ToolbarButton>
@@ -510,7 +581,7 @@ function LayoutToolbar({
           {hiddenCount > 0 && (
             <span
               data-layout-hidden-count
-              className="rounded-full bg-[var(--marinara-chat-chrome-accent)] px-1.5 text-[0.625rem] font-semibold leading-4 text-white"
+              className="rounded-full bg-[var(--marinara-chat-chrome-accent)] px-1.5 text-[0.625rem] font-semibold leading-4 text-[var(--primary-foreground)]"
             >
               {hiddenCount}
             </span>
@@ -544,7 +615,7 @@ function LayoutToolbar({
           data-layout-tool="done"
           onClick={onDone}
           title={t("ui.game.layoutEditor.doneHint")}
-          className="ml-0.5 flex h-7 items-center gap-1 rounded-lg bg-[var(--marinara-chat-chrome-accent)] px-2.5 text-[0.75rem] font-semibold text-white shadow-sm transition-[filter] hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--marinara-chat-chrome-accent)]"
+          className="ml-0.5 flex h-7 items-center gap-1 rounded-lg bg-[var(--marinara-chat-chrome-accent)] px-2.5 text-[0.75rem] font-semibold text-[var(--primary-foreground)] shadow-sm transition-[filter] hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--marinara-chat-chrome-accent)]"
         >
           <Check size={14} aria-hidden="true" />
           {t("ui.game.layoutEditor.done")}
@@ -653,7 +724,7 @@ function PanelsMenu({ scopeId }: { scopeId: string }) {
                         : "text-[var(--marinara-chat-chrome-highlight-text)]"
                     }`}
                   >
-                    {isHidden ? <EyeOff size={13} aria-hidden="true" /> : <Eye size={13} aria-hidden="true" />}
+                    {isHidden ? <EyeOff size={12} aria-hidden="true" /> : <Eye size={12} aria-hidden="true" />}
                   </button>
                 ) : (
                   <span
@@ -695,7 +766,8 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
   const [exportText, setExportText] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
-  const [importError, setImportError] = useState(false);
+  const [importError, setImportError] = useState<"invalid" | "storage" | null>(null);
+  const [storageFull, setStorageFull] = useState(false);
 
   const save = () => {
     const next = addSavedLayout(
@@ -705,12 +777,14 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
       Date.now(),
       newLayoutId(),
     );
-    writeSavedLayouts(next);
-    setName("");
+    const saved = writeSavedLayouts(next);
+    setStorageFull(!saved);
+    if (saved) setName("");
   };
   const apply = (layout: SavedLayout) => {
-    applyLayoutAsStep(scopeId, layout.snapshot);
-    onApplied();
+    const applied = applyLayoutAsStep(scopeId, layout.snapshot);
+    setStorageFull(!applied);
+    if (applied) onApplied();
   };
   const copy = async (key: string, json: string) => {
     try {
@@ -726,19 +800,33 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
   const runImport = () => {
     const parsed = parseLayoutJson(importText);
     if (!parsed) {
-      setImportError(true);
+      setImportError("invalid");
       return;
     }
     let next = readSavedLayouts();
     for (const item of parsed) next = addSavedLayout(next, item.name, item.snapshot, Date.now(), newLayoutId());
-    writeSavedLayouts(next);
+    if (!writeSavedLayouts(next)) {
+      setImportError("storage");
+      return;
+    }
     setImportText("");
-    setImportError(false);
+    setImportError(null);
     setImportOpen(false);
   };
+  // The rename field unmounts on Enter or Esc: focus goes back to the rename button so it
+  // stays inside the popover. Esc must not commit through the blur that follows.
+  const renameCancelled = useRef(false);
+  const renameReturn = useRef<string | null>(null);
+  useEffect(() => {
+    if (renaming || !renameReturn.current) return;
+    const id = renameReturn.current;
+    renameReturn.current = null;
+    renameCancelled.current = false;
+    document.querySelector<HTMLElement>(`[data-layout-rename="${CSS.escape(id)}"]`)?.focus();
+  }, [renaming]);
   const commitRename = () => {
-    if (!renaming) return;
-    writeSavedLayouts(renameSavedLayout(readSavedLayouts(), renaming.id, renaming.value, Date.now()));
+    if (!renaming || renameCancelled.current) return;
+    setStorageFull(!writeSavedLayouts(renameSavedLayout(readSavedLayouts(), renaming.id, renaming.value, Date.now())));
     setRenaming(null);
   };
   const iconButton =
@@ -767,12 +855,17 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
           <button
             type="submit"
             data-layout-save
-            className="flex h-7 shrink-0 items-center gap-1 rounded-md bg-[var(--marinara-chat-chrome-accent)] px-2.5 text-xs font-semibold text-white hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--marinara-chat-chrome-accent)]"
+            className="flex h-7 shrink-0 items-center gap-1 rounded-md bg-[var(--marinara-chat-chrome-accent)] px-2.5 text-xs font-semibold text-[var(--primary-foreground)] hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--marinara-chat-chrome-accent)]"
           >
             <Save size={12} aria-hidden="true" />
             {t("ui.game.layoutEditor.saveLayout")}
           </button>
         </form>
+        {storageFull && (
+          <p role="alert" className="mt-1 px-1 text-[0.6875rem] text-[var(--destructive)]">
+            {t("ui.game.layoutEditor.storageFull")}
+          </p>
+        )}
       </LayoutPopoverSection>
       <LayoutPopoverSection title={t("ui.game.layoutEditor.savedHeading")}>
         {layouts.length === 0 ? (
@@ -798,10 +891,13 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
                     onKeyDown={(event) => {
                       if (event.key === "Enter") {
                         event.preventDefault();
+                        renameReturn.current = layout.id;
                         commitRename();
                       } else if (event.key === "Escape") {
                         event.preventDefault();
                         event.stopPropagation();
+                        renameCancelled.current = true;
+                        renameReturn.current = layout.id;
                         setRenaming(null);
                       }
                     }}
@@ -824,9 +920,10 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
                   className={iconButton}
                   aria-label={t("ui.game.layoutEditor.renameLayout", { name: layout.name })}
                   title={t("ui.game.layoutEditor.renameLayout", { name: layout.name })}
+                  data-layout-rename={layout.id}
                   onClick={() => setRenaming({ id: layout.id, value: layout.name })}
                 >
-                  <Pencil size={11} aria-hidden="true" />
+                  <Pencil size={12} aria-hidden="true" />
                 </button>
                 <button
                   type="button"
@@ -840,9 +937,9 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
                   onClick={() => void copy(layout.id, exportLayoutJson(layout.name, layout.snapshot))}
                 >
                   {copied === layout.id ? (
-                    <Check size={11} aria-hidden="true" />
+                    <Check size={12} aria-hidden="true" />
                   ) : (
-                    <Copy size={11} aria-hidden="true" />
+                    <Copy size={12} aria-hidden="true" />
                   )}
                 </button>
                 <button
@@ -872,7 +969,7 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
                     setConfirmDelete(null);
                   }}
                 >
-                  <Trash2 size={11} aria-hidden="true" />
+                  <Trash2 size={12} aria-hidden="true" />
                   {confirmDelete === layout.id && <span>{t("ui.game.layoutEditor.deleteShort")}</span>}
                 </button>
               </li>
@@ -916,13 +1013,15 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
               value={importText}
               onChange={(event) => {
                 setImportText(event.target.value);
-                setImportError(false);
+                setImportError(null);
               }}
               className="h-24 w-full resize-none rounded-md border border-[var(--marinara-chat-chrome-input-border,var(--marinara-chat-chrome-panel-border))] bg-transparent p-1.5 font-mono text-[0.625rem] text-[var(--marinara-chat-chrome-panel-text)] outline-none focus:border-[var(--marinara-chat-chrome-accent)]"
             />
             {importError && (
               <p role="alert" className="text-[0.6875rem] text-[var(--destructive)]">
-                {t("ui.game.layoutEditor.importError")}
+                {importError === "storage"
+                  ? t("ui.game.layoutEditor.importStorageFull")
+                  : t("ui.game.layoutEditor.importError")}
               </p>
             )}
             <button
@@ -946,8 +1045,9 @@ function LayoutsMenu({ scopeId, onApplied }: { scopeId: string; onApplied: () =>
               return;
             }
             setConfirmReset(false);
-            applyLayoutAsStep(scopeId, { entries: {} });
-            onApplied();
+            const reset = applyLayoutAsStep(scopeId, { entries: {} });
+            setStorageFull(!reset);
+            if (reset) onApplied();
           }}
         >
           {confirmReset ? t("ui.game.layoutEditor.resetAllConfirm") : t("ui.game.layoutEditor.resetAll")}

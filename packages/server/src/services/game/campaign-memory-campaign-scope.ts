@@ -346,11 +346,11 @@ async function buildCampaignMemoryProjection(db: DB, chatId: string): Promise<Ca
     if (candidates.size !== 1) continue;
     const target = [...candidates][0]!;
     // No side-by-side check here: a tracked NPC with a library card's exact name in the same session is the tracker
-    // registering the card's character a second time (Countess Lisaveta had both in Sessions 7 to 9), not a
+    // registering the card's character a second time (a long campaign had both for one character over three sessions), not a
     // namesake. The check still guards the one-word fold below, where "Ash" and "Ash Vale" can be two people.
     fold(key, target);
   }
-  // A tracked NPC first met under a single name ("Liveth") and later under the full name ("Liveth Corren") is the
+  // A tracked NPC first met under a single name ("Aria") and later under the full name ("Aria Stanmore") is the
   // same person when exactly one other entity of that kind has a name starting with that word. Names are computed
   // once per group and multi-word names indexed by first word, so a long campaign's pass stays linear. Folding only
   // moves single-word names into the target, so the index stays exact while the pass runs.

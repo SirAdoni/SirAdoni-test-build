@@ -29,10 +29,10 @@ try {
   } });
   const now = "2026-09-13T00:00:00.000Z";
   await db.insert(schema.apiConnections).values({ id: "conn", name: "Continuity test", provider: "custom", model: "test-model", createdAt: now, updatedAt: now });
-  await db.insert(schema.chats).values({ id: "chat", name: "Continuity", mode: "game", connectionId: "conn", metadata: JSON.stringify({ gameContinuity: { mode: "active" }, gameNpcs: [{ id: "npc-bess", name: "Bess Yarrow" }] }), createdAt: now, updatedAt: now });
+  await db.insert(schema.chats).values({ id: "chat", name: "Continuity", mode: "game", connectionId: "conn", metadata: JSON.stringify({ gameContinuity: { mode: "active" }, gameNpcs: [{ id: "npc-tilda", name: "Tilda Pennock" }] }), createdAt: now, updatedAt: now });
   await db.insert(schema.messages).values([
-    { id: "m1", chatId: "chat", role: "user", content: "Rowan offers Bess a place if she completes the vigil.", createdAt: now },
-    { id: "m2", chatId: "chat", role: "assistant", content: "Bess has not arrived; the offer remains open.", createdAt: "2026-09-13T00:00:01.000Z" },
+    { id: "m1", chatId: "chat", role: "user", content: "Rowan offers Tilda a place if she completes the vigil.", createdAt: now },
+    { id: "m2", chatId: "chat", role: "assistant", content: "Tilda has not arrived; the offer remains open.", createdAt: "2026-09-13T00:00:01.000Z" },
   ]);
   await db.insert(schema.lorebooks).values({ id: "keeper", name: "Keeper", chatId: "chat", enabled: "false", sourceAgentId: "game-lorebook-keeper", createdAt: now, updatedAt: now });
   const messages = await db.select().from(schema.messages);
@@ -40,18 +40,18 @@ try {
   const config = await readContinuityConfig(db, "chat");
   const source = prepared[0]!;
   const rawRecords = [
-    { kind: "promise" as const, text: "Rowan Mercer offered Bess Yarrow a place if she completed the vigil.", subjects: ["Rowan Mercer", "Bess Yarrow"], conditions: ["Bess Yarrow completes the vigil"], status: "proposed" as const, keys: ["offer", "vigil"], evidence: [{ messageId: source.messageId, quote: "Rowan offers Bess a place if she completes the vigil." }], knowledge: { scope: "world" as const, holders: ["Bess Yarrow"] } },
-    { kind: "event" as const, text: "Bess Yarrow has not arrived and the offer remains open.", subjects: ["Bess Yarrow"], conditions: ["before arrival"], status: "asserted" as const, keys: ["non-arrival"], evidence: [{ messageId: "m2", quote: "Bess has not arrived; the offer remains open." }] },
+    { kind: "promise" as const, text: "Rowan Mercer offered Tilda Pennock a place if she completed the vigil.", subjects: ["Rowan Mercer", "Tilda Pennock"], conditions: ["Tilda Pennock completes the vigil"], status: "proposed" as const, keys: ["offer", "quenby"], evidence: [{ messageId: source.messageId, quote: "Rowan offers Tilda a place if she completes the vigil." }], knowledge: { scope: "world" as const, holders: ["Tilda Pennock"] } },
+    { kind: "event" as const, text: "Tilda Pennock has not arrived and the offer remains open.", subjects: ["Tilda Pennock"], conditions: ["before arrival"], status: "asserted" as const, keys: ["non-arrival"], evidence: [{ messageId: "m2", quote: "Tilda has not arrived; the offer remains open." }] },
   ];
   const records = rawRecords.map((record) => ({ ...record, id: createGameContinuityRecordId("receipt-good", record) }));
   const entryId = `gce_${hash("receipt-good").slice(0, 32)}`;
   const entryContent = records.map((record) => [`[${record.kind}/${record.status}] ${record.text}`, `Subjects: ${record.subjects.join(", ")}`, `Conditions: ${record.conditions.join("; ")}`, `Evidence: ${record.evidence.map((item) => `[${item.messageId}] ${item.quote}`).join(" | ")}`].filter(Boolean).join("\n")).join("\n\n");
-  await db.insert(schema.lorebookEntries).values({ id: entryId, lorebookId: "keeper", name: "Game continuity 1", content: entryContent, keys: JSON.stringify(["offer", "vigil", "non-arrival"]), dynamicState: JSON.stringify({ receiptId: "receipt-good", publishedContentHash: hash(entryContent), source: "incremental-game-continuity" }), createdAt: now, updatedAt: now });
-  await db.insert(schema.campaignMemoryEntities).values({ entityId: "npc-owner", chatId: "chat", kind: "character", owner: JSON.stringify({ type: "existing", store: "game-npcs", recordId: "npc-bess" }), aliases: JSON.stringify(["Bess Yarrow"]), tags: JSON.stringify(["npc"]), attributes: "{}", status: "active", manualLock: 0, provenance: JSON.stringify({ source: "regression", sourceRevision: "npc", actor: "user" }), createdAt: now, updatedAt: now });
+  await db.insert(schema.lorebookEntries).values({ id: entryId, lorebookId: "keeper", name: "Game continuity 1", content: entryContent, keys: JSON.stringify(["offer", "quenby", "non-arrival"]), dynamicState: JSON.stringify({ receiptId: "receipt-good", publishedContentHash: hash(entryContent), source: "incremental-game-continuity" }), createdAt: now, updatedAt: now });
+  await db.insert(schema.campaignMemoryEntities).values({ entityId: "npc-owner", chatId: "chat", kind: "character", owner: JSON.stringify({ type: "existing", store: "game-npcs", recordId: "npc-tilda" }), aliases: JSON.stringify(["Tilda Pennock"]), tags: JSON.stringify(["npc"]), attributes: "{}", status: "active", manualLock: 0, provenance: JSON.stringify({ source: "regression", sourceRevision: "npc", actor: "user" }), createdAt: now, updatedAt: now });
   await db.insert(schema.campaignMemoryEntities).values({ entityId: "imported-owner", chatId: "chat", kind: "lore", owner: JSON.stringify({ type: "existing", store: "lorebook-entries", recordId: entryId }), aliases: "[]", tags: JSON.stringify(["imported"]), summary: "Imported locked owner", attributes: "{}", status: "active", manualLock: 1, provenance: JSON.stringify({ source: "imported", sourceRevision: "legacy", actor: "import", origin: { sourceChatId: "chat", sourceRecordId: entryId } }), createdAt: now, updatedAt: now });
   const receipt: GameContinuityReceipt = {
     id: "receipt-good", chatId: "chat", sessionNumber: 1, sourceHash: hash({ source: "receipt-good" }), sources: prepared, context: [], configHash: config.hash, config: config.frozen, status: "verified", attempts: 1, repairAttempts: 0, records,
-    dispositions: prepared.map((item) => ({ messageId: item.messageId, status: "covered" as const, reason: "explicit source" })), review: { findings: [], dispositions: prepared.map((item) => ({ messageId: item.messageId, status: "covered" as const, reason: "clean" })) }, knowledgeHolders: [{ entityId: "npc-owner", kind: "character", store: "game-npcs", recordId: "npc-bess", name: "Bess Yarrow" }], entryIds: [], createdAt: now, updatedAt: now,
+    dispositions: prepared.map((item) => ({ messageId: item.messageId, status: "covered" as const, reason: "explicit source" })), review: { findings: [], dispositions: prepared.map((item) => ({ messageId: item.messageId, status: "covered" as const, reason: "clean" })) }, knowledgeHolders: [{ entityId: "npc-owner", kind: "character", store: "game-npcs", recordId: "npc-tilda", name: "Tilda Pennock" }], entryIds: [], createdAt: now, updatedAt: now,
   };
   await createGameContinuityStorage(db).enqueue(receipt);
   const counts = async () => ({ loreEntries: (await db.select().from(schema.lorebookEntries)).length, entities: (await db.select().from(schema.campaignMemoryEntities)).length, facts: (await db.select().from(schema.campaignMemoryFacts)).length, journal: (await db.select().from(schema.campaignMemoryMutationJournal)).length });
@@ -74,8 +74,8 @@ try {
   assert.ok(entity);
   assert.equal(entity.manualLock, 1);
   assert.deepEqual(JSON.parse(entity.owner), { type: "existing", store: "lorebook-entries", recordId: entryId });
-  // Record 1 names "Rowan Mercer" (no entity) and "Bess Yarrow" (npc-owner): one
-  // per-subject fact plus the lore fallback. Record 2 names only Bess: one per-subject fact.
+  // Record 1 names "Rowan Mercer" (no entity) and "Tilda Pennock" (npc-owner): one
+  // per-subject fact plus the lore fallback. Record 2 names only Tilda: one per-subject fact.
   assert.equal((await db.select().from(schema.campaignMemoryFacts)).length, 3);
   assert.equal((await db.select().from(schema.campaignMemoryMutationJournal)).length, 4);
   const factRows = await db.select().from(schema.campaignMemoryFacts);
@@ -90,11 +90,11 @@ try {
       assert.equal(row.predicate, `continuity.${record.kind}`);
       assert.deepEqual(value.subjects, record.subjects);
       assert.deepEqual(value.unresolvedSubjects, [{ name: "Rowan Mercer", reason: "no-candidate" }], "the fallback reports every unresolved subject");
-      assert.deepEqual(value.resolvedSubjects, [{ name: "Bess Yarrow", entityId: "npc-owner" }]);
+      assert.deepEqual(value.resolvedSubjects, [{ name: "Tilda Pennock", entityId: "npc-owner" }]);
     } else {
       assert.equal(row.subjectEntityId, "npc-owner", "resolved subjects publish on the subject entity");
       assert.equal(row.predicate, record.kind, "per-subject facts use the record kind as predicate");
-      assert.equal(value.subject, "Bess Yarrow");
+      assert.equal(value.subject, "Tilda Pennock");
       assert.deepEqual(value.conditions, record.conditions);
       assert.deepEqual(value.evidence, JSON.parse(row.evidence));
     }
@@ -120,17 +120,17 @@ try {
   await db.transaction((tx: any) => publishContinuityMemory(tx, receipt, { id: entryId, lorebookId: entry.lorebookId, name: entry.name }, messages, prepared));
   assert.equal((await db.select().from(schema.campaignMemoryKnowledge)).length, 1, "replay remains duplicate-free");
 
-  await db.insert(schema.campaignMemoryEntities).values({ entityId: "npc-owner-2", chatId: "chat", kind: "character", owner: JSON.stringify({ type: "existing", store: "game-npcs", recordId: "npc-bess" }), aliases: JSON.stringify(["Bess Yarrow"]), tags: JSON.stringify(["npc"]), attributes: "{}", status: "active", manualLock: 0, provenance: JSON.stringify({ source: "regression", sourceRevision: "npc-2", actor: "user" }), createdAt: now, updatedAt: now });
+  await db.insert(schema.campaignMemoryEntities).values({ entityId: "npc-owner-2", chatId: "chat", kind: "character", owner: JSON.stringify({ type: "existing", store: "game-npcs", recordId: "npc-tilda" }), aliases: JSON.stringify(["Tilda Pennock"]), tags: JSON.stringify(["npc"]), attributes: "{}", status: "active", manualLock: 0, provenance: JSON.stringify({ source: "regression", sourceRevision: "npc-2", actor: "user" }), createdAt: now, updatedAt: now });
   await db.delete(schema.campaignMemoryKnowledge).where(eq(schema.campaignMemoryKnowledge.factId, promiseFact.factId));
-  const ambiguousReceipt = { ...receipt, knowledgeHolders: [...receipt.knowledgeHolders!, { entityId: "npc-owner-2", kind: "character" as const, store: "game-npcs" as const, recordId: "npc-bess", name: "Bess Yarrow" }] };
+  const ambiguousReceipt = { ...receipt, knowledgeHolders: [...receipt.knowledgeHolders!, { entityId: "npc-owner-2", kind: "character" as const, store: "game-npcs" as const, recordId: "npc-tilda", name: "Tilda Pennock" }] };
   await db.transaction((tx: any) => publishContinuityMemory(tx, ambiguousReceipt, { id: entryId, lorebookId: entry.lorebookId, name: entry.name }, messages, prepared));
   assert.equal((await db.select().from(schema.campaignMemoryKnowledge)).length, 0, "ambiguous holder names do not grant knowledge");
   const ambiguousFallback = (await db.select().from(schema.campaignMemoryFacts)).filter((row) => row.subjectEntityId === entityId && JSON.parse(row.value).recordId === records[1]!.id);
   assert.equal(ambiguousFallback.length, 1, "an ambiguous subject keeps the record on the lore-entity fallback");
-  assert.deepEqual(JSON.parse(ambiguousFallback[0]!.value).unresolvedSubjects, [{ name: "Bess Yarrow", reason: "ambiguous-candidates" }], "the ambiguous subject is reported on the fallback");
+  assert.deepEqual(JSON.parse(ambiguousFallback[0]!.value).unresolvedSubjects, [{ name: "Tilda Pennock", reason: "ambiguous-candidates" }], "the ambiguous subject is reported on the fallback");
   assert.equal((await db.select().from(schema.campaignMemoryFacts)).filter((row) => row.subjectEntityId === "npc-owner-2").length, 0, "ambiguous candidates never receive a per-subject fact");
-  await db.insert(schema.campaignMemoryEntities).values({ entityId: "npc-other", chatId: "chat", kind: "character", owner: JSON.stringify({ type: "existing", store: "game-npcs", recordId: "npc-bess" }), aliases: JSON.stringify(["Other Holder"]), tags: JSON.stringify(["npc"]), attributes: "{}", status: "active", manualLock: 0, provenance: JSON.stringify({ source: "regression", sourceRevision: "npc-other", actor: "user" }), createdAt: now, updatedAt: now });
-  const invalidPairReceipt = { ...receipt, knowledgeHolders: [...receipt.knowledgeHolders!, { entityId: "npc-other", kind: "character" as const, store: "game-npcs" as const, recordId: "npc-bess", name: "Other Holder" }], records: receipt.records.map((record, index) => index === 0 ? { ...record, knowledge: { ...record.knowledge!, holderRefs: ["npc-other"] } } : record) };
+  await db.insert(schema.campaignMemoryEntities).values({ entityId: "npc-other", chatId: "chat", kind: "character", owner: JSON.stringify({ type: "existing", store: "game-npcs", recordId: "npc-tilda" }), aliases: JSON.stringify(["Other Holder"]), tags: JSON.stringify(["npc"]), attributes: "{}", status: "active", manualLock: 0, provenance: JSON.stringify({ source: "regression", sourceRevision: "npc-other", actor: "user" }), createdAt: now, updatedAt: now });
+  const invalidPairReceipt = { ...receipt, knowledgeHolders: [...receipt.knowledgeHolders!, { entityId: "npc-other", kind: "character" as const, store: "game-npcs" as const, recordId: "npc-tilda", name: "Other Holder" }], records: receipt.records.map((record, index) => index === 0 ? { ...record, knowledge: { ...record.knowledge!, holderRefs: ["npc-other"] } } : record) };
   await db.transaction((tx: any) => publishContinuityMemory(tx, invalidPairReceipt, { id: entryId, lorebookId: entry.lorebookId, name: entry.name }, messages, prepared));
   assert.equal((await db.select().from(schema.campaignMemoryKnowledge)).length, 0, "invalid explicit holder/name pairing does not grant knowledge");
   await db.update(schema.campaignMemoryFacts).set({ manualLock: 1 }).where(eq(schema.campaignMemoryFacts.factId, promiseFact.factId));

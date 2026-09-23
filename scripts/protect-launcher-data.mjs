@@ -237,6 +237,7 @@ const SHARDED_TABLES = [
   "mari_instructions",
   "mari_workspace_context",
   "generation_usage",
+  "generation_job_records",
 ];
 const PRIMARY_KEY_COLUMNS = {
   campaign_memory_current_state: "stateId",

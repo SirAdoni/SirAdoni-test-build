@@ -54,8 +54,8 @@ try {
   const config = await readContinuityConfig(db, "chat");
   const record = {
     kind: "decision" as const,
-    text: "Lisaveta was married and buried her husband.",
-    subjects: ["Lisaveta"],
+    text: "Maritza was married and buried her husband.",
+    subjects: ["Maritza"],
     conditions: [],
     status: "completed" as const,
     evidence: [{ messageId: "m2", quote: "She speaks of the husband she buried years ago." }],

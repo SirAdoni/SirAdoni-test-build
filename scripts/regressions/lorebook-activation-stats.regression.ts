@@ -46,8 +46,8 @@ try {
   const book = await request("POST", "/api/lorebooks", { name: "Stats World" });
   const entry = (name: string, extra: Record<string, unknown>) =>
     request("POST", `/api/lorebooks/${book.id}/entries`, { lorebookId: book.id, name, ...extra });
-  const city = await entry("Valdenmoor", { keys: ["Valdenmoor"], content: "The capital." });
-  const queen = await entry("Queen Sybel", { keys: ["Sybel"], content: "A monarch." });
+  const city = await entry("Brindlemere", { keys: ["Brindlemere"], content: "The capital." });
+  const queen = await entry("Queen Adalwen", { keys: ["Adalwen"], content: "A monarch." });
 
   // ── Activation statistics ──
   const statsUrl = `/api/lorebooks/${book.id}/activation-stats`;

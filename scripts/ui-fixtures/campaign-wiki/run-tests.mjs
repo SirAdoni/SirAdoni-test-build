@@ -244,7 +244,7 @@ try {
     const crossAlert = crossDetails.getByRole("alert");
     await crossAlert.waitFor(WAIT);
     const crossText = await crossAlert.innerText();
-    record("fact pin cross-session 409 shows the specific message", crossText.includes("Not saved: this change points at a record from another session.") && crossText.includes("Mira Thorne has no page in that session yet") && !crossText.includes("changed since it was loaded") && (await crossAlert.getByRole("button", { name: "Reload", exact: true }).count()) === 0, crossText);
+    record("fact pin cross-session 409 shows the specific message", crossText.includes("Not saved: this change points at a record from another session.") && crossText.includes("Mira Stonebridge has no page in that session yet") && !crossText.includes("changed since it was loaded") && (await crossAlert.getByRole("button", { name: "Reload", exact: true }).count()) === 0, crossText);
 
     await factRow(desktop, /Holds the northern archive key/).click();
     await desktop.locator('[data-component="campaign-wiki-fact-details"]').first().getByRole("button", { name: "Correct", exact: true }).click();

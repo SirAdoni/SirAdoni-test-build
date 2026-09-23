@@ -40,8 +40,8 @@ try {
 
   // ── Seeded randomness is deterministic and in range ──
   {
-    const a = createSeededRng("valdenmoor");
-    const b = createSeededRng("valdenmoor");
+    const a = createSeededRng("brindlemere");
+    const b = createSeededRng("brindlemere");
     const seqA = Array.from({ length: 20 }, () => a());
     assert.deepEqual(
       seqA,
@@ -206,19 +206,19 @@ try {
     const rows = buildLorebookTableRows(
       [
         { name: "Mira", folderId: "npcs", tag: "npc", enabled: true },
-        { name: "Aldric", folderId: "nobles", tag: "NPC", enabled: true },
+        { name: "Leofric", folderId: "nobles", tag: "NPC", enabled: true },
         { name: "mira", folderId: "npcs", tag: "npc", enabled: true },
         { name: "Hidden", folderId: "npcs", tag: "npc", enabled: false },
-        { name: "Ashford", folderId: "places", tag: "location", enabled: true },
+        { name: "Dunmere", folderId: "places", tag: "location", enabled: true },
       ],
       { folderIds: ["npcs", "nobles"] },
     );
-    assert.deepEqual(rows, [{ text: "Aldric" }, { text: "Mira" }], "sorted, deduplicated, disabled skipped");
+    assert.deepEqual(rows, [{ text: "Leofric" }, { text: "Mira" }], "sorted, deduplicated, disabled skipped");
     assert.deepEqual(
-      buildLorebookTableRows([{ name: "Ashford", folderId: null, tag: "Location", enabled: true }], {
+      buildLorebookTableRows([{ name: "Dunmere", folderId: null, tag: "Location", enabled: true }], {
         tag: "location",
       }),
-      [{ text: "Ashford" }],
+      [{ text: "Dunmere" }],
     );
   }
 
@@ -281,7 +281,7 @@ try {
   const createdAt = new Date().toISOString();
   await db.insert(chats).values({
     id: "session-1",
-    name: "Valdenmoor — Session 1",
+    name: "Brindlemere — Session 1",
     mode: "game",
     groupId: "game-1",
     metadata: JSON.stringify({ gameId: "game-1" }),
@@ -447,8 +447,8 @@ try {
         .insert(lorebookEntries)
         .values({ id, lorebookId: "lb-1", name, folderId, tag, createdAt, updatedAt: createdAt } as never);
     await entry("e1", "Mira", "f-npcs", "npc");
-    await entry("e2", "Lady Aldric", "f-nobles", "npc");
-    await entry("e3", "Ashford", null, "location");
+    await entry("e2", "Lady Leofric", "f-nobles", "npc");
+    await entry("e3", "Dunmere", null, "location");
     await db.insert(lorebookEntries).values({
       id: "e4",
       lorebookId: "lb-1",
@@ -479,7 +479,7 @@ try {
     assert.equal(fromFolder.status, 200);
     assert.deepEqual(
       fromFolder.body.rows.map((row: { text: string }) => row.text),
-      ["Lady Aldric", "Mira"],
+      ["Lady Leofric", "Mira"],
       'subfolders are included by default; a disabled entry (stored as "false") is not',
     );
     const topOnly = await call("POST", "/from-lorebook", {
@@ -499,7 +499,7 @@ try {
       lorebookId: "lb-1",
       tag: "Location",
     });
-    assert.deepEqual(byTag.body.rows, [{ text: "Ashford" }]);
+    assert.deepEqual(byTag.body.rows, [{ text: "Dunmere" }]);
     assert.equal((await call("POST", "/from-lorebook", { name: "None", lorebookId: "lb-1" })).status, 400);
     assert.equal(
       (await call("POST", "/from-lorebook", { name: "None", lorebookId: "lb-1", tag: "nothing" })).status,

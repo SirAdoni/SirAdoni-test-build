@@ -16,25 +16,25 @@ other();
 const retried = claimStoryboardTurn("chat", "turn-a", 0);
 assert.ok(retried);
 retried();
-assert.deepEqual(parseStoryboardCast('["Vigil","Rowan Mercer"]'), ["Vigil", "Rowan Mercer"]);
-assert.deepEqual(parseStoryboardCast("Vigil, Rowan Mercer"), ["Vigil", "Rowan Mercer"]);
+assert.deepEqual(parseStoryboardCast('["Quenby","Rowan Mercer"]'), ["Quenby", "Rowan Mercer"]);
+assert.deepEqual(parseStoryboardCast("Quenby, Rowan Mercer"), ["Quenby", "Rowan Mercer"]);
 let calls = 0;
 const args = {
-  context: "Vigil has a bronze body and stands by the table.",
+  context: "Quenby has a bronze body and stands by the table.",
   locationContext: "Workshop",
-  frames: [{ imagePrompt: "Vigil sits by the table.", characters: ["Vigil"] }],
+  frames: [{ imagePrompt: "Quenby sits by the table.", characters: ["Quenby"] }],
   complete: async () => {
     calls++;
     return {
       consistent: true,
       reason: "Corrected posture",
-      corrections: [{ index: 0, imagePrompt: "Vigil stands by the table.", characters: ["Vigil"] }],
+      corrections: [{ index: 0, imagePrompt: "Quenby stands by the table.", characters: ["Quenby"] }],
     };
   },
 };
 const corrected = await reviewAndCorrectStoryboardVisualPlan(args);
 assert.equal(calls, 1, "correction needs no full rewrite or second review call");
-assert.equal(corrected[0]!.imagePrompt, "Vigil stands by the table.");
+assert.equal(corrected[0]!.imagePrompt, "Quenby stands by the table.");
 await assert.rejects(
   reviewAndCorrectStoryboardVisualPlan({
     ...args,

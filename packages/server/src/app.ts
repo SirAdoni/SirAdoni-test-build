@@ -4,7 +4,7 @@
 import { forgetCampaignMemoryCache, warmCampaignMemoryCache } from "./services/game/campaign-memory-campaign-scope.js";
 import { structurePublishedContinuity } from "./services/game/continuity-structure.js";
 import { holdInjectUntilRegistered } from "./lib/fastify-inject-gate.js";
-import Fastify, { LogController, type FastifyBaseLogger, type FastifyInstance } from "fastify";
+import Fastify, { type FastifyBaseLogger, type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
@@ -32,12 +32,7 @@ import { existsSync } from "fs";
 import { join, resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { getBuildCommit, getBuildLabel } from "./config/build-info.js";
-import {
-  getNodeEnv,
-  isRequestLoggingDisabled,
-  isAutoCreateDefaultConnectionDisabled,
-  getFileStorageDir,
-} from "./config/runtime-config.js";
+import { getNodeEnv, isAutoCreateDefaultConnectionDisabled, getFileStorageDir } from "./config/runtime-config.js";
 import { corsDelegate } from "./config/cors-config.js";
 import { sidecarProcessService } from "./services/sidecar/sidecar-process.service.js";
 import { startServerAutonomousScheduler } from "./services/conversation/server-autonomous-scheduler.service.js";
@@ -62,8 +57,17 @@ import { getPreviousSessionStatus, getUncleanExitHistory } from "./lib/session-p
 import { protectTerminalLogger } from "./lib/logger.js";
 import { openCodeSessionHook } from "./utils/opencode-session.js";
 import { logger } from "./lib/logger.js";
-import { withDiagnosticContext } from "./lib/diagnostics.js";
-import { sanitizeDiagnosticText } from "./lib/diagnostics.js";
+import { runWithRootDiagnosticContext, sanitizeDiagnosticText, type DiagnosticContext } from "./lib/diagnostics.js";
+import { reportDiagnosticError } from "./lib/diagnostic-operation.js";
+import { logSuppressed } from "./lib/best-effort.js";
+import {
+  kDiagnosticContext,
+  MarinaraLogController,
+  routeLabel,
+  sanitizeIncomingRequestId,
+} from "./lib/http-diagnostics.js";
+import { startup } from "./lib/startup-timeline.js";
+import { randomUUID } from "node:crypto";
 import { flushLorebookActivationStats } from "./services/lorebook/activation-stats.js";
 import { createGameContinuityRuntime, type ContinuityRuntime } from "./services/game/continuity-runtime.js";
 
@@ -102,13 +106,34 @@ function resolveServerOs(): string {
 
 const SERVER_OS = resolveServerOs();
 
+type RequestWithDiagnosticContext = { [kDiagnosticContext]?: DiagnosticContext };
+type ShutdownServiceRecord = { stage: string; elapsedMs: number; outcome: "ok" | "failed" };
+
 /** Shared request correlation and response normalization hooks for HTTP tests and the live app. */
 export function registerDiagnosticHttpHooks(app: FastifyInstance): void {
   app.addHook("onRequest", (request, _reply, done) => {
-    const requestPath = request.url.split(/[?#]/, 1)[0] ?? request.url;
-    withDiagnosticContext({ requestId: request.id, operation: request.routeOptions.url ?? requestPath }, () => done());
+    // A fresh root store: a request never inherits the socket's or a timer's stale context.
+    const context: DiagnosticContext = { requestId: request.id, operation: `${request.method} ${routeLabel(request)}` };
+    (request as unknown as RequestWithDiagnosticContext)[kDiagnosticContext] = context;
+    runWithRootDiagnosticContext(context, () => done());
+  });
+  // Body parsing runs in the HTTP parser's async context. This first preValidation hook
+  // rebinds the request's root context before validation, preHandler and the handler.
+  app.addHook("preValidation", (request, _reply, done) => {
+    runWithRootDiagnosticContext(
+      (request as unknown as RequestWithDiagnosticContext)[kDiagnosticContext] ?? { requestId: request.id },
+      () => done(),
+    );
+  });
+  app.addHook("onRequestAbort", (request, done) => {
+    logger.info(
+      { event: "request.aborted", requestId: request.id, method: request.method, route: routeLabel(request) },
+      "Client aborted request",
+    );
+    done();
   });
   app.addHook("onSend", async (req, reply, payload) => {
+    reply.header("x-request-id", req.id);
     if (req.url.startsWith("/api/") && !reply.hasHeader("Cache-Control")) {
       reply.header("Cache-Control", "no-store");
     }
@@ -118,15 +143,25 @@ export function registerDiagnosticHttpHooks(app: FastifyInstance): void {
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && "error" in parsed) {
           const record = parsed as Record<string, unknown>;
           if (!record.code || !record.errorId) {
-            const { reportDiagnosticError } = await import("./lib/diagnostic-operation.js");
-            const reference = reportDiagnosticError(
-              Object.assign(new Error(typeof record.error === "string" ? record.error : `HTTP ${reply.statusCode}`), {
-                statusCode: reply.statusCode,
-              }),
+            const route = routeLabel(req);
+            const status = reply.statusCode;
+            const synthetic = Object.assign(
+              new Error(typeof record.error === "string" ? record.error : `HTTP ${status}`),
               {
-                requestId: req.id,
-                operation: req.routeOptions.url ?? req.url.split(/[?#]/, 1)[0] ?? req.url,
-                stage: "http",
+                statusCode: status,
+              },
+            );
+            // No frames: the error was rebuilt from a response body, so a stack would only point here.
+            synthetic.stack = `${synthetic.name}: ${synthetic.message}`;
+            const reference = reportDiagnosticError(
+              synthetic,
+              { requestId: req.id, operation: `${req.method} ${route}`, stage: "http" },
+              undefined,
+              {
+                level: status >= 500 ? "error" : "info",
+                event: "request.error",
+                message: `${req.method} ${route} -> ${status}`,
+                fields: { method: req.method, route, statusCode: status },
               },
             );
             const normalized = {
@@ -154,9 +189,31 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
     // Keep Fastify and application records on the same Pino instance so
     // request context, sinks, and runtime level changes stay correlated.
     loggerInstance: logger as FastifyBaseLogger,
-    logController: new LogController({ disableRequestLogging: isRequestLoggingDisabled() }),
+    // One request.end line per request, labelled `requestId`; LOG_DISABLE_REQUEST_LOGGING moves it from info to debug.
+    logController: new MarinaraLogController(),
+    // UUIDs never collide across boots. A well-formed client x-request-id is honoured for end-to-end tracing.
+    genReqId: (req) => sanitizeIncomingRequestId(req.headers["x-request-id"]) ?? randomUUID(),
     bodyLimit: MAX_UPLOAD_BYTES, // General-route default; transfer routes opt into streamed or unbounded imports.
     ...(https && { https }),
+  });
+  // Early-boot detector: anything that boots Fastify (inject, ready) before registration
+  // finishes makes every later plugin fail with "Root plugin has already booted".
+  let registrationDone = false;
+  app.addHook("onReady", function (done) {
+    if (!registrationDone) {
+      logger.error(
+        {
+          event: "startup.early_boot",
+          errorCode: "ME_EARLY_BOOT",
+          stage: startup.currentStage,
+          stack: new Error("Fastify booted before registration finished").stack,
+        },
+        "[startup] Fastify booted before route registration finished; later plugins will fail with 'Root plugin has already booted'",
+      );
+    } else {
+      logger.debug({ event: "startup.phase", stage: "fastify.ready" }, "Fastify ready");
+    }
+    done();
   });
   protectTerminalLogger(app.log, getNodeEnv() !== "production");
   // Hold internal inject() calls until every route, hook and package is registered (see fastify-inject-gate.ts).
@@ -175,16 +232,20 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
   // auto-allowed regardless of configuration. @fastify/cors expects the
   // delegator to be returned from a factory function passed as the plugin
   // options. See cors-config.ts.
-  await app.register(cors, () => corsDelegate);
+  await startup.phase("plugins.cors", async () => {
+    await app.register(cors, () => corsDelegate);
+  });
 
-  await app.register(multipart, {
-    limits: {
-      fileSize: MAX_UPLOAD_BYTES,
-    },
+  await startup.phase("plugins.multipart", async () => {
+    await app.register(multipart, {
+      limits: {
+        fileSize: MAX_UPLOAD_BYTES,
+      },
+    });
   });
 
   // ── Storage ──
-  const db = await getDB();
+  const db = (await startup.phase("storage.init", () => getDB())) as DB;
   app.decorate("db", db);
   // Accessor decoration: game routes assign the service from an encapsulated
   // child context, and a plain property would only shadow on that child. The
@@ -210,89 +271,129 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
   });
   app.decorate("gameContinuity", gameContinuity);
   app.addHook("onClose", async () => {
+    const closeStarted = performance.now();
+    const services: ShutdownServiceRecord[] = [];
     try {
-      const stopResults = await Promise.allSettled([
-        app.sessionSummaryRefresh?.stop(),
-        gameContinuity.stop(),
-        capabilityModuleRuntime.stop(),
-        personalServerExtensionRuntime.stop(),
-        sidecarProcessService.stop(),
+      const named: Array<[string, () => Promise<unknown> | unknown]> = [
+        ["sessionSummaryRefresh", () => app.sessionSummaryRefresh?.stop()],
+        ["gameContinuity", () => gameContinuity.stop()],
+        ["capabilityModuleRuntime", () => capabilityModuleRuntime.stop()],
+        ["personalExtensions", () => personalServerExtensionRuntime.stop()],
+        ["sidecar", () => sidecarProcessService.stop()],
         // Write the last batched lorebook activation counts while the database is still open.
-        flushLorebookActivationStats(),
-      ]);
-      for (const result of stopResults) {
-        if (result.status === "rejected") {
-          app.log.error(result.reason, "Failed to stop a server runtime service during shutdown");
-        }
-      }
+        ["lorebookActivationStats", () => flushLorebookActivationStats()],
+      ];
+      await Promise.all(
+        named.map(async ([name, stop]) => {
+          const started = performance.now();
+          try {
+            await stop();
+            const elapsedMs = Math.round(performance.now() - started);
+            services.push({ stage: name, elapsedMs, outcome: "ok" });
+            if (elapsedMs > 2_000) {
+              logger.warn(
+                { event: "shutdown.service", stage: name, outcome: "ok", elapsedMs },
+                "[shutdown] %s took %d ms to stop",
+                name,
+                elapsedMs,
+              );
+            }
+          } catch (err) {
+            const elapsedMs = Math.round(performance.now() - started);
+            services.push({ stage: name, elapsedMs, outcome: "failed" });
+            logger.error(
+              { err, event: "shutdown.service", stage: name, outcome: "failed", elapsedMs },
+              "[shutdown] Failed to stop %s",
+              name,
+            );
+          }
+        }),
+      );
     } finally {
       await closeDB();
+      logger.info(
+        { event: "shutdown.complete", elapsedMs: Math.round(performance.now() - closeStarted), services },
+        "[shutdown] Runtime services stopped",
+      );
     }
   });
 
   // Existing installations retain their selected capabilities. Downloadable
   // package updates are offered in the client and never applied at startup.
   if (getNodeEnv() !== "test") {
-    try {
-      const removedCorePackages = await capabilityPackageManager.pruneNonDownloadableCorePackages();
-      if (removedCorePackages.length > 0) {
-        app.log.info("Removed obsolete downloadable copies of core features: %s", removedCorePackages.join(", "));
-      }
-      await migrateLegacyCapabilities(db, hadUserStateBeforeStartup);
-      const noodleMigration =
-        await capabilityPackageManager.migrateExtractedNoodleAvailability(hadUserStateBeforeStartup);
-      if ("pending" in noodleMigration && noodleMigration.pending) {
-        app.log.debug("Optional Noodle package is not in the active catalog yet; migration remains pending");
-      } else if (noodleMigration.migrated) {
-        app.log.info("Installed the optional Noodle package for an upgraded profile");
-      }
-    } catch (error) {
-      app.log.warn(error, "Optional package availability migration did not complete; it will retry next startup");
-    }
+    await startup.phase(
+      "package.prune",
+      async () => {
+        const removedCorePackages = await capabilityPackageManager.pruneNonDownloadableCorePackages();
+        startup.record("removedCorePackages", removedCorePackages);
+        if (removedCorePackages.length > 0) {
+          app.log.info("Removed obsolete downloadable copies of core features: %s", removedCorePackages.join(", "));
+        }
+      },
+      { optional: true },
+    );
+    await startup.phase("package.migrate-legacy", () => migrateLegacyCapabilities(db, hadUserStateBeforeStartup), {
+      optional: true,
+    });
+    await startup.phase(
+      "package.migrate-noodle",
+      async () => {
+        const noodleMigration =
+          await capabilityPackageManager.migrateExtractedNoodleAvailability(hadUserStateBeforeStartup);
+        startup.record("noodleMigration", noodleMigration);
+        if ("pending" in noodleMigration && noodleMigration.pending) {
+          app.log.debug("Optional Noodle package is not in the active catalog yet; migration remains pending");
+        } else if (noodleMigration.migrated) {
+          app.log.info("Installed the optional Noodle package for an upgraded profile");
+        }
+      },
+      { optional: true },
+    );
   }
   resetTurnGameRegistry();
 
   // ── Seed defaults ──
-  await seedDefaultPreset(db);
-  await seedProfessorMari(db);
+  await startup.phase("seed.preset", () => seedDefaultPreset(db));
+  await startup.phase("seed.mari", () => seedProfessorMari(db));
   if (isAutoCreateDefaultConnectionDisabled()) {
     app.log.info("Skipping default OpenRouter Free connection seed because AUTO_CREATE_DEFAULT_CONNECTION is disabled");
   } else {
-    await seedDefaultConnection(db);
+    await startup.phase("seed.connection", () => seedDefaultConnection(db));
   }
-  await seedDefaultRegexScripts(db);
-  await migrateLegacyDefaultAgentPrompts(db);
-  await migrateCharacterExtendedDescriptionsToLorebooks(db);
-  try {
-    await migrateTtsSettingsToAudioConnection(db);
-  } catch (error) {
-    app.log.warn(error, "TTS audio-connection migration did not complete; it will retry next startup");
-  }
-  await seedDefaultBackgrounds();
-  await seedDefaultGameAssets();
+  await startup.phase("seed.regex", () => seedDefaultRegexScripts(db));
+  await startup.phase("migration.agent-prompts", () => migrateLegacyDefaultAgentPrompts(db));
+  await startup.phase("migration.extended-descriptions", () => migrateCharacterExtendedDescriptionsToLorebooks(db));
+  // Optional: a failure retries next startup.
+  await startup.phase("migration.tts-audio", () => migrateTtsSettingsToAudioConnection(db), { optional: true });
+  await startup.phase("seed.backgrounds", () => seedDefaultBackgrounds());
+  await startup.phase("seed.game-assets", () => seedDefaultGameAssets());
 
   // ── Ensure default asset directories exist, then build manifest ──
-  ensureAssetDirs();
-  buildAssetManifest();
+  await startup.phase("assets.manifest", () => {
+    ensureAssetDirs();
+    buildAssetManifest();
+  });
 
   // ── Recover orphaned gallery images (files on disk without DB records) ──
-  await recoverGalleryImages(db);
+  await startup.phase("gallery.recover", () => recoverGalleryImages(db));
 
   // Legacy extension payloads and any out-of-band code changes are retained as
   // disabled drafts. Execution always requires approval of the exact hash.
-  const personalExtensionTrust = await preparePersonalExtensionTrust(db);
-  if (personalExtensionTrust.legacyRecordsQuarantined > 0) {
-    app.log.info(
-      "Quarantined %d legacy extension record(s) as Personal Extension drafts",
-      personalExtensionTrust.legacyRecordsQuarantined,
-    );
-  }
-  if (personalExtensionTrust.changedRecordsDisabled > 0) {
-    app.log.warn(
-      "Disabled %d Personal Extension record(s) because stored code changed outside the approval flow",
-      personalExtensionTrust.changedRecordsDisabled,
-    );
-  }
+  await startup.phase("extensions.trust", async () => {
+    const personalExtensionTrust = await preparePersonalExtensionTrust(db);
+    if (personalExtensionTrust.legacyRecordsQuarantined > 0) {
+      app.log.info(
+        "Quarantined %d legacy extension record(s) as Personal Extension drafts",
+        personalExtensionTrust.legacyRecordsQuarantined,
+      );
+    }
+    if (personalExtensionTrust.changedRecordsDisabled > 0) {
+      app.log.warn(
+        "Disabled %d Personal Extension record(s) because stored code changed outside the approval flow",
+        personalExtensionTrust.changedRecordsDisabled,
+      );
+    }
+  });
 
   // Share the originating chat session with nested provider calls and retries.
   app.addHook("preHandler", openCodeSessionHook);
@@ -333,42 +434,37 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
 
   // API file routes use reply.sendFile even when the client build is absent.
   // Decorate once without exposing a static route; production assets register below.
-  await app.register(fastifyStatic, { serve: false });
-
   // ── Routes ──
-  await registerRoutes(app);
-  await Promise.all([app.sessionSummaryRefresh?.start(), gameContinuity.start()]);
+  await startup.phase("routes.register", async () => {
+    await app.register(fastifyStatic, { serve: false });
+    await registerRoutes(app);
+  });
+  await startup.phase("workers.start", async () => {
+    await Promise.all([app.sessionSummaryRefresh?.start(), gameContinuity.start()]);
+  });
   // Hash earlier session transcripts once in the background, so the first GM turn after a restart stays fast.
   const campaignWarmTimer = setTimeout(() => {
     void warmCampaignMemoryCache(db).catch((error) =>
-      logger.warn({ err: error }, "[campaign-memory] background warm-up of earlier sessions failed"),
+      logSuppressed(error, { event: "continuity.stage", stage: "campaign-memory.warm" }),
     );
   }, 15_000);
   campaignWarmTimer.unref?.();
-  await androidLocalLoginRoute(app);
+  await startup.phase("routes.android-login", () => androidLocalLoginRoute(app));
 
   // Trusted downloaded server capabilities register while Fastify is still mutable.
-  await capabilityModuleRuntime.start(app);
-  try {
-    await migrateLegacyGameMapsAtBoot(db);
-  } catch (error) {
-    // A single malformed legacy chat must never prevent the host from booting.
-    app.log.warn({ err: error }, "[migration] Legacy game map conversion did not complete");
-  }
+  await startup.phase("capability.runtime", () => capabilityModuleRuntime.start(app));
+  // Optional: a single malformed legacy chat must never prevent the host from booting.
+  await startup.phase("migration.legacy-game-maps", () => migrateLegacyGameMapsAtBoot(db), { optional: true });
   // A package can install its own art during activate(), which runs AFTER the boot-time scan above, so
   // without this its assets stay invisible to everything reading the manifest until the NEXT restart.
-  // Idempotent — the same scan the upload routes already re-run. Guarded because it walks files a package
+  // Idempotent: the same scan the upload routes already re-run. Optional because it walks files a package
   // just wrote: a stale manifest costs that package its art, failing to boot costs the user everything.
-  try {
-    buildAssetManifest();
-  } catch (error) {
-    app.log.warn({ err: error }, "[capability] post-activation asset rescan failed; manifest may be stale");
-  }
-  await personalServerExtensionRuntime.start(db);
+  await startup.phase("assets.rescan-after-packages", () => buildAssetManifest(), { optional: true });
+  await startup.phase("extensions.runtime", () => personalServerExtensionRuntime.start(db));
   // Server-backed agent definitions are visible only after their runtime reaches
   // functional readiness. Packages without a server entrypoint remain available
   // as soon as their verified files are installed.
-  await initializeCapabilityAgentRegistry();
+  await startup.phase("agents.registry", () => initializeCapabilityAgentRegistry());
 
   // ── Server-side autonomous conversation scheduler ──
   startServerAutonomousScheduler(app);
@@ -387,10 +483,12 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
   const clientDist = resolve(__dirname, "..", "..", "client", "dist");
   const clientIndex = resolve(clientDist, "index.html");
   if (existsSync(clientIndex)) {
-    await app.register(fastifyStatic, createClientStaticOptions(clientDist));
+    await startup.phase("client.static", async () => {
+      await app.register(fastifyStatic, createClientStaticOptions(clientDist));
 
-    // Only navigation falls back to HTML; missing modules must remain a 404.
-    app.setNotFoundHandler(createClientNotFoundHandler(clientIndex));
+      // Only navigation falls back to HTML; missing modules must remain a 404.
+      app.setNotFoundHandler(createClientNotFoundHandler(clientIndex));
+    });
   } else {
     app.log.warn(
       "Client build entry not found at %s; serving API only. Run `pnpm build` to build the frontend.",
@@ -435,6 +533,8 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
       previousSession: getPreviousSessionStatus(),
       uncleanExitCount: getUncleanExitHistory().length,
       timestamp: new Date().toISOString(),
+      startup: startup.summary(),
+      buildIntegrity: startup.facts.buildIntegrity ?? null,
       capabilityPackages: {
         status: capabilityPackages
           ? capabilityPackages.every((item) => item.ready || item.status === "restart-required")
@@ -452,6 +552,7 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
     };
   });
 
+  registrationDone = true;
   releaseInjectGate();
   return app;
 }

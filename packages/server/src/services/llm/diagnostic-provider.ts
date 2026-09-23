@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { DiagnosticContext } from "../../lib/diagnostics.js";
-import { getDiagnosticContext, withDiagnosticContext } from "../../lib/diagnostics.js";
+import {
+  createDiagnostic,
+  getDiagnosticContext,
+  markDiagnosticReported,
+  withDiagnosticContext,
+} from "../../lib/diagnostics.js";
 import { reportDiagnosticError } from "../../lib/diagnostic-operation.js";
 import { logger } from "../../lib/logger.js";
 import type { ChatCompletionResult, ChatMessage, ChatOptions, LLMUsage } from "./base-provider.js";
@@ -33,12 +38,97 @@ function safeLength(value: unknown): number | undefined {
   return typeof value === "string" ? value.length : undefined;
 }
 
-function logFailure(context: ProviderOperationContext, error: unknown, startedAt: number, stage: string): void {
-  const diagnostic = reportDiagnosticError(error, { ...context, stage });
-  logger.error(
-    { ...context, ...diagnostic, diagnostic, stage, elapsedMs: Date.now() - startedAt },
-    "LLM provider operation failed",
-  );
+type CallKind = "stream" | "complete" | "embed";
+type FailureStage = "cancelled" | "partial-stream" | "failure";
+
+function numberField(error: unknown, key: string): number | undefined {
+  const value = error && typeof error === "object" ? (error as Record<string, unknown>)[key] : undefined;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function stringField(error: unknown, key: string): string | undefined {
+  const value = error && typeof error === "object" ? (error as Record<string, unknown>)[key] : undefined;
+  return typeof value === "string" && value ? value : undefined;
+}
+
+function usageFields(usage: LLMUsage | void | undefined) {
+  return usage
+    ? {
+        promptTokens: usage.promptTokens,
+        completionTokens: usage.completionTokens,
+        totalTokens: usage.totalTokens,
+        cachedPromptTokens: usage.cachedPromptTokens,
+        cacheWritePromptTokens: usage.cacheWritePromptTokens,
+        finishReason: usage.finishReason,
+      }
+    : undefined;
+}
+
+function logStart(context: ProviderOperationContext, callKind: CallKind): void {
+  logger.debug({ ...context, event: "llm.call", stage: "start", callKind }, "LLM provider call started");
+}
+
+/** Writes the one line for a failed provider call, chosen by stage. */
+function logFailure(
+  context: ProviderOperationContext,
+  error: unknown,
+  startedAt: number,
+  stage: FailureStage,
+  callKind: CallKind,
+): void {
+  const elapsedMs = Date.now() - startedAt;
+  if (stage === "failure") {
+    reportDiagnosticError(error, { ...context, stage }, undefined, {
+      event: "llm.call",
+      message: "LLM provider call failed",
+      fields: {
+        outcome: "failed",
+        stage,
+        elapsedMs,
+        httpStatus: numberField(error, "status"),
+        providerCode: stringField(error, "providerCode"),
+        retryAfterMs: numberField(error, "retryAfterMs"),
+        retryAttempts: numberField(error, "retryAttempts"),
+        callKind,
+      },
+    });
+    return;
+  }
+  const diagnostic = createDiagnostic(error, { ...context, stage });
+  if (stage === "cancelled") {
+    logger.info(
+      {
+        ...context,
+        event: "llm.call",
+        stage,
+        outcome: "cancelled",
+        callKind,
+        elapsedMs,
+        errorId: diagnostic.errorId,
+        errorCode: diagnostic.code,
+      },
+      "LLM provider call cancelled",
+    );
+  } else {
+    logger.warn(
+      {
+        ...context,
+        event: "llm.call",
+        stage,
+        outcome: "failed",
+        degraded: true,
+        callKind,
+        elapsedMs,
+        httpStatus: numberField(error, "status"),
+        providerCode: stringField(error, "providerCode"),
+        errorId: diagnostic.errorId,
+        errorCode: diagnostic.code,
+        err: error,
+      },
+      "LLM provider stream failed after partial output",
+    );
+  }
+  markDiagnosticReported(error);
 }
 
 function logCompletion(context: ProviderOperationContext, startedAt: number, result: ChatCompletionResult): void {
@@ -46,22 +136,17 @@ function logCompletion(context: ProviderOperationContext, startedAt: number, res
   const degraded = result.finishReason === "error";
   const record = {
     ...context,
+    event: "llm.call",
+    callKind: "complete",
     stage: cancelled ? "cancelled" : degraded ? "partial-stream" : "success",
+    outcome: cancelled ? "cancelled" : degraded ? "failed" : "ok",
+    ...(degraded ? { degraded: true } : {}),
     elapsedMs: Date.now() - startedAt,
     finishReason: result.finishReason,
     outputLength: safeLength(result.content),
-    usage: result.usage
-      ? {
-          promptTokens: result.usage.promptTokens,
-          completionTokens: result.usage.completionTokens,
-          totalTokens: result.usage.totalTokens,
-          cachedPromptTokens: result.usage.cachedPromptTokens,
-          cacheWritePromptTokens: result.usage.cacheWritePromptTokens,
-          finishReason: result.usage.finishReason,
-        }
-      : undefined,
+    usage: usageFields(result.usage),
   };
-  if (cancelled) logger.warn(record, "LLM provider completion cancelled");
+  if (cancelled) logger.info(record, "LLM provider completion cancelled");
   else if (degraded) logger.warn(record, "LLM provider completion degraded after partial output");
   else logger.info(record, "LLM provider completion succeeded");
 }
@@ -84,6 +169,7 @@ function wrapChatIterator(
       error,
       startedAt,
       signal?.aborted ? "cancelled" : outputLength > 0 ? "partial-stream" : "failure",
+      "stream",
     );
   };
   const finishSuccess = (usage: LLMUsage | void) => {
@@ -97,22 +183,17 @@ function wrapChatIterator(
         : "success";
     const record = {
       ...context,
+      event: "llm.call",
+      callKind: "stream",
       stage,
+      outcome: stage === "cancelled" ? "cancelled" : stage === "partial-stream" ? "failed" : "ok",
+      ...(stage === "partial-stream" ? { degraded: true } : {}),
       elapsedMs: Date.now() - startedAt,
       firstYieldMs,
       outputLength,
-      usage: usage
-        ? {
-            promptTokens: usage.promptTokens,
-            completionTokens: usage.completionTokens,
-            totalTokens: usage.totalTokens,
-            cachedPromptTokens: usage.cachedPromptTokens,
-            cacheWritePromptTokens: usage.cacheWritePromptTokens,
-            finishReason: usage.finishReason,
-          }
-        : undefined,
+      usage: usageFields(usage),
     };
-    if (stage === "cancelled") logger.warn(record, "LLM provider stream cancelled");
+    if (stage === "cancelled") logger.info(record, "LLM provider stream cancelled");
     else if (stage === "partial-stream") logger.warn(record, "LLM provider stream degraded after partial output");
     else logger.info(record, "LLM provider stream succeeded");
   };
@@ -139,7 +220,16 @@ function wrapChatIterator(
           if (!settled) {
             settled = true;
             logger.info(
-              { ...context, stage: "cancelled", elapsedMs: Date.now() - startedAt, outputLength },
+              {
+                ...context,
+                event: "llm.call",
+                callKind: "stream",
+                stage: "cancelled",
+                outcome: "cancelled",
+                elapsedMs: Date.now() - startedAt,
+                firstYieldMs,
+                outputLength,
+              },
               "LLM provider stream closed early",
             );
           }
@@ -191,12 +281,12 @@ class DiagnosticProvider extends BaseLLMProvider {
   chat(messages: ChatMessage[], options: ChatOptions): AsyncGenerator<string, LLMUsage | void, unknown> {
     const context = operationContext(this.providerName, this.connectionId, options.model);
     const startedAt = Date.now();
-    logger.info({ ...context, stage: "start" }, "LLM provider stream started");
+    logStart(context, "stream");
     try {
       const iterator = withDiagnosticContext(context, () => this.provider.chat(messages, options));
       return wrapChatIterator(iterator, context, startedAt, options.signal);
     } catch (error) {
-      logFailure(context, error, startedAt, options.signal?.aborted ? "cancelled" : "failure");
+      logFailure(context, error, startedAt, options.signal?.aborted ? "cancelled" : "failure", "stream");
       throw error;
     }
   }
@@ -204,12 +294,12 @@ class DiagnosticProvider extends BaseLLMProvider {
   override chatComplete(messages: ChatMessage[], options: ChatOptions): Promise<ChatCompletionResult> {
     const startedAt = Date.now();
     const context = operationContext(this.providerName, this.connectionId, options.model);
-    logger.info({ ...context, stage: "start" }, "LLM provider completion started");
+    logStart(context, "complete");
     let result: Promise<ChatCompletionResult>;
     try {
       result = withDiagnosticContext(context, () => this.provider.chatComplete(messages, options));
     } catch (error) {
-      logFailure(context, error, startedAt, "failure");
+      logFailure(context, error, startedAt, "failure", "complete");
       throw error;
     }
     return result.then(
@@ -218,7 +308,7 @@ class DiagnosticProvider extends BaseLLMProvider {
         return value;
       },
       (error) => {
-        logFailure(context, error, startedAt, options.signal?.aborted ? "cancelled" : "failure");
+        logFailure(context, error, startedAt, options.signal?.aborted ? "cancelled" : "failure", "complete");
         throw error;
       },
     );
@@ -227,24 +317,32 @@ class DiagnosticProvider extends BaseLLMProvider {
   override embed(texts: string[], model: string, signal?: AbortSignal): Promise<number[][]> {
     const startedAt = Date.now();
     const context = operationContext(this.providerName, this.connectionId, model);
-    logger.info({ ...context, stage: "start" }, "LLM provider embedding started");
+    logStart(context, "embed");
     let result: Promise<number[][]>;
     try {
       result = withDiagnosticContext(context, () => this.provider.embed(texts, model, signal));
     } catch (error) {
-      logFailure(context, error, startedAt, "failure");
+      logFailure(context, error, startedAt, "failure", "embed");
       throw error;
     }
     return result.then(
       (value) => {
         logger.info(
-          { ...context, stage: "success", elapsedMs: Date.now() - startedAt, outputLength: value.length },
+          {
+            ...context,
+            event: "llm.call",
+            callKind: "embed",
+            stage: "success",
+            outcome: "ok",
+            elapsedMs: Date.now() - startedAt,
+            outputLength: value.length,
+          },
           "LLM provider embedding succeeded",
         );
         return value;
       },
       (error) => {
-        logFailure(context, error, startedAt, signal?.aborted ? "cancelled" : "failure");
+        logFailure(context, error, startedAt, signal?.aborted ? "cancelled" : "failure", "embed");
         throw error;
       },
     );

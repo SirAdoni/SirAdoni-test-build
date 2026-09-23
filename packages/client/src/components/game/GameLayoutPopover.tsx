@@ -63,7 +63,9 @@ export function GameLayoutPopover({
     const spaceAbove = rect.top - 6 - margin;
     const openAbove = height > spaceBelow && spaceAbove > spaceBelow;
     const maxHeight = Math.max(160, openAbove ? spaceAbove : spaceBelow);
-    const top = openAbove ? Math.max(margin, rect.top - 6 - Math.min(height, maxHeight)) : below;
+    const top = openAbove
+      ? Math.max(margin, rect.top - 6 - Math.min(height, maxHeight))
+      : Math.max(margin, Math.min(below, window.innerHeight - margin - Math.min(height, maxHeight)));
     setPosition((current) =>
       current && current.left === left && current.top === top && current.maxHeight === maxHeight
         ? current

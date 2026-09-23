@@ -1106,19 +1106,19 @@ const autoTravelGameProjection: ResolvedOwnerSpatialProjection = {
   ownerMode: "game",
   currentLocationId: "great_hall",
   knownLocations: [
-    { id: "great_hall", path: "Williams Estate > Great Hall" },
-    { id: "roberts_chambers", path: "Williams Estate > Robert's Chambers" },
+    { id: "great_hall", path: "Hartwell Estate > Great Hall" },
+    { id: "roberts_chambers", path: "Hartwell Estate > Edmund's Chambers" },
   ],
 };
 const autoTravelMetadata = { spatialContextAutoTravelNowEnabled: true };
 assert.deepEqual(
-  resolveTrackerSpatialMoveDirective("Robert's Chambers", autoTravelGameProjection, autoTravelMetadata),
+  resolveTrackerSpatialMoveDirective("Edmund's Chambers", autoTravelGameProjection, autoTravelMetadata),
   { type: "move", destinationId: "roberts_chambers" },
   "an exact World State location may reconcile a narrated cross-tree move when travel-now is enabled",
 );
 assert.deepEqual(
   resolveTrackerSpatialMoveDirective(
-    "Williams Estate > Robert's Chambers",
+    "Hartwell Estate > Edmund's Chambers",
     autoTravelGameProjection,
     JSON.stringify(autoTravelMetadata),
   ),
@@ -1126,18 +1126,18 @@ assert.deepEqual(
   "a full known breadcrumb is accepted from serialized chat metadata",
 );
 assert.equal(
-  resolveTrackerSpatialMoveDirective("Robert's Chambers", autoTravelGameProjection, {}),
+  resolveTrackerSpatialMoveDirective("Edmund's Chambers", autoTravelGameProjection, {}),
   null,
   "tracker guidance cannot bypass adjacency when automatic narrated travel is disabled",
 );
 assert.equal(
   resolveTrackerSpatialMoveDirective(
-    "Robert's Chambers",
+    "Edmund's Chambers",
     {
       ...autoTravelGameProjection,
       knownLocations: [
         ...(autoTravelGameProjection.knownLocations ?? []),
-        { id: "other_chambers", path: "Frostkeep > Robert's Chambers" },
+        { id: "other_chambers", path: "Frostkeep > Edmund's Chambers" },
       ],
     },
     autoTravelMetadata,

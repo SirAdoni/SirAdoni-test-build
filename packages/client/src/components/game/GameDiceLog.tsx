@@ -112,12 +112,12 @@ function RollRow({ record }: { record: DiceLogRecord }) {
   const breakdown = `[${record.rolls.join(", ")}]${modifier}`;
   return (
     <li className="flex items-start gap-2 rounded-md px-2 py-1.5 hover:bg-secondary/50">
-      <span className="mt-0.5 w-10 shrink-0 text-[0.625rem] tabular-nums text-muted-foreground">
+      <span className="mt-0.5 w-12 shrink-0 whitespace-nowrap text-[0.625rem] tabular-nums text-muted-foreground">
         {formatTime(record.createdAt)}
       </span>
       <div className="min-w-0 flex-1">
         <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-foreground">
-          <span className="font-medium">{record.notation}</span>
+          <span className="min-w-0 break-all font-medium">{record.notation}</span>
           <span className="text-muted-foreground">{t(SOURCE_KEYS[record.source] ?? SOURCE_KEYS.gm)}</span>
           {record.critical && (
             <span className="rounded bg-emerald-500/15 px-1 text-[0.625rem] font-semibold text-emerald-600 dark:text-emerald-400">
@@ -157,6 +157,19 @@ export function GameDiceLog({ chatId }: { chatId: string }) {
   useEffect(() => setSides(null), [scope, chatId]);
 
   const hasD20 = Boolean(stats?.bySides.some((entry) => entry.sides === 20));
+
+  // Summary strip: the most thrown die against a fair one, and the d20 extremes as rates.
+  const summary = useMemo(() => {
+    const top = stats?.bySides[0];
+    if (!top || top.dice === 0) return null;
+    const d20 = stats.bySides.find((entry) => entry.sides === 20);
+    const rate = (count: number) => (d20 && d20.dice > 0 ? formatNumber((count / d20.dice) * 100) : null);
+    return {
+      top,
+      high: rate(stats.natural20s),
+      low: rate(stats.natural1s),
+    };
+  }, [stats]);
 
   return (
     <section className="space-y-3" aria-label={t("ui.game.diceLog.title")}>
@@ -233,6 +246,22 @@ export function GameDiceLog({ chatId }: { chatId: string }) {
               hint={t("ui.game.diceLog.fumbleCount", { count: stats.fumbles })}
             />
           </div>
+
+          {summary && (
+            <p className="flex flex-wrap gap-x-3 gap-y-0.5 text-[0.6875rem] tabular-nums text-muted-foreground">
+              <span>
+                {t("ui.game.gamedicelog.mostRolled", {
+                  sides: summary.top.sides,
+                  count: summary.top.dice,
+                  average: formatNumber(summary.top.average),
+                  expected: formatNumber(summary.top.expected),
+                })}
+              </span>
+              {summary.high !== null && summary.low !== null && (
+                <span>{t("ui.game.gamedicelog.d20Rates", { high: summary.high, low: summary.low })}</span>
+              )}
+            </p>
+          )}
 
           {chartStats && (
             <div className="space-y-2 rounded-lg border border-border p-2.5">

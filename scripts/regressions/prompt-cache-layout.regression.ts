@@ -352,14 +352,14 @@ assert.equal(shouldUseFullLorebookContext("claude_subscription", true), false);
 
 const gameAssistant = {
   role: "assistant" as const,
-  content: "Maybelle answers from the grove gate.",
+  content: "Corvina answers from the grove gate.",
   contextKind: "history" as const,
   providerMetadata: { id: "assistant-1" },
   images: ["data:image/png;base64,portrait"],
 };
 const gameUser = {
   role: "user" as const,
-  content: "Please ask Maybelle to bring you to Honoria.",
+  content: "Please ask Corvina to bring you to Odrana.",
   contextKind: "history" as const,
   providerMetadata: { id: "user-1" },
 };
@@ -384,8 +384,8 @@ assert.deepEqual(
     "Static lore",
     "Current runtime context",
     "Current dynamic lore",
-    "Maybelle answers from the grove gate.",
-    "Please ask Maybelle to bring you to Honoria.",
+    "Corvina answers from the grove gate.",
+    "Please ask Corvina to bring you to Odrana.",
   ],
   "the preceding assistant moves across runtime and dynamic-lore blocks to the current user turn",
 );
@@ -424,8 +424,8 @@ assert.deepEqual(
     "GM system prompt",
     "Older history",
     '<spatial_context mode="game" authority="application">Current path: Great Hall</spatial_context>',
-    "Maybelle answers from the grove gate.",
-    "Please ask Maybelle to bring you to Honoria.",
+    "Corvina answers from the grove gate.",
+    "Please ask Corvina to bring you to Odrana.",
   ],
   "the spatial block moves from the system prefix to the current turn",
 );
@@ -439,7 +439,7 @@ assert.deepEqual(
   keepGameDialogueAdjacent([gmPrompt, { ...gmPrompt, content: "User prompt section" }, olderGameHistory, gameUser]).map(
     (message) => message.content,
   ),
-  ["GM system prompt", "User prompt section", "Older history", "Please ask Maybelle to bring you to Honoria."],
+  ["GM system prompt", "User prompt section", "Older history", "Please ask Corvina to bring you to Odrana."],
   "unmarked system sections keep their place",
 );
 assert.deepEqual(

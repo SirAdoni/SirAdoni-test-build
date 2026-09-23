@@ -10,6 +10,7 @@ import { withConnectionFallbackProvider } from "../llm/connection-fallback-provi
 import { resolveBaseUrl } from "../generation/connection-base-url.js";
 import { fitMessagesToModelAccessContext, resolveModelAccessPolicy } from "../generation/model-access-policy.js";
 import { runDiagnosticOperation } from "../../lib/diagnostic-operation.js";
+import { createDiagnostic } from "../../lib/diagnostics.js";
 import { logger, logDebugOverride } from "../../lib/logger.js";
 import { isDebugAgentsEnabled } from "../../config/runtime-config.js";
 import {
@@ -56,6 +57,28 @@ export const CONTINUITY_ERROR_CODES = {
 } as const;
 export type ContinuityErrorCode = (typeof CONTINUITY_ERROR_CODES)[keyof typeof CONTINUITY_ERROR_CODES] | string;
 const CODE_PATTERN = /^CONTINUITY_[A-Z_]+$/u;
+/**
+ * Stage failures the runtime handles without spending the batch's attempt or that end the batch as
+ * stale (provider pauses, runtime stop, a changed configuration or source). They log one warn line
+ * without the stack; the runtime writes the batch's own job.state line.
+ */
+const TRANSIENT_STAGE_CODES: ReadonlySet<string> = new Set([
+  "CONTINUITY_TIMEOUT",
+  "CONTINUITY_PROVIDER_UNAVAILABLE",
+  "CONTINUITY_CONNECTION_UNAVAILABLE",
+  "CONTINUITY_PROVIDER_LIMITED",
+  "CONTINUITY_ABORTED",
+  "CONTINUITY_CONFIG_CHANGED",
+  "CONTINUITY_SOURCE_CHANGED",
+  "CONTINUITY_CONTEXT_CHANGED",
+]);
+const TRANSIENT_DIAGNOSTIC_CODES: ReadonlySet<string> = new Set(["ME_TIMEOUT", "ME_NETWORK", "ME_RATE_LIMIT"]);
+/** True when a stage failure is an expected, handled provider or runtime condition rather than a defect. */
+export function isTransientContinuityStageError(error: unknown): boolean {
+  const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+  if (typeof code === "string" && TRANSIENT_STAGE_CODES.has(code)) return true;
+  return TRANSIENT_DIAGNOSTIC_CODES.has(createDiagnostic(error).code);
+}
 const CODE_PREFIX_PATTERN = /^(CONTINUITY_[A-Z_]+)\s*[:\s]\s*([\s\S]*)$/u;
 const CONTEXT_OVERFLOW_PATTERNS = [
   /prompt is too long/iu,
@@ -533,14 +556,18 @@ export async function completeContinuityStageDetailed(
           cause: reason,
         });
   };
-  return runDiagnosticOperation({ operation: "game.continuity", stage, chatId: receipt.chatId }, async () => {
-    try {
-      const content = await runStage();
-      return { content, telemetry: telemetry() };
-    } catch (error) {
-      throw normalizeContinuityError(error, { timedOut, aborted: signal?.aborted === true, telemetry: telemetry() });
-    }
-  });
+  return runDiagnosticOperation(
+    { operation: "game.continuity", stage, chatId: receipt.chatId, jobId: receipt.id },
+    async () => {
+      try {
+        const content = await runStage();
+        return { content, telemetry: telemetry() };
+      } catch (error) {
+        throw normalizeContinuityError(error, { timedOut, aborted: signal?.aborted === true, telemetry: telemetry() });
+      }
+    },
+    { isTransient: isTransientContinuityStageError },
+  );
 
   async function runStage(): Promise<Record<string, unknown>> {
     const current = await readContinuityConfig(db, receipt.chatId, {
@@ -584,12 +611,13 @@ export async function completeContinuityStageDetailed(
       fallbackConnection: fallback,
       fallbackBaseUrl,
       category: "agents",
+      // The usual primary pick is routine (debug); only a fallback switch is worth an info line.
       onProviderUsed: (origin) =>
-        logger.info(
+        logger[origin.kind === "fallback" ? "info" : "debug"](
           {
             operation: "game.continuity",
             stage,
-            receiptId: receipt.id,
+            jobId: receipt.id,
             chatId: receipt.chatId,
             connectionId: origin.kind === "fallback" ? fallback?.id : primary.id,
             provider: origin.kind === "fallback" ? origin.provider : primary.provider,
@@ -629,6 +657,7 @@ export async function completeContinuityStageDetailed(
     // A stage that times out while the connection is rate limited is a provider quota problem, not a
     // slow or broken batch; the runtime backs off instead of spending one of the batch's attempts.
     let rateLimited = false;
+    let succeeded = false;
     providerStartedAt = Date.now();
     try {
       const result = await provider
@@ -659,13 +688,27 @@ export async function completeContinuityStageDetailed(
       if (result.finishReason !== "stop")
         throw new Error(`CONTINUITY_PROVIDER_FINISH_${result.finishReason || "UNKNOWN"}`);
       if (!result.content?.trim()) throw new Error("CONTINUITY_EMPTY_RESPONSE");
-      return parseContinuityJson(result.content) as Record<string, unknown>;
+      const parsed = parseContinuityJson(result.content) as Record<string, unknown>;
+      succeeded = true;
+      return parsed;
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
+      // One line per stage call; a failure's details are logged once by runDiagnosticOperation.
       logger.debug(
-        { stage, chatId: receipt.chatId, elapsedMs: Date.now() - startedAtMs, providerMs, timeoutMs },
-        "[game-continuity] stage completed",
+        {
+          event: "continuity.stage",
+          outcome: succeeded ? "ok" : "failed",
+          stage,
+          chatId: receipt.chatId,
+          jobId: receipt.id,
+          elapsedMs: Date.now() - startedAtMs,
+          providerMs,
+          timeoutMs,
+          ...(usage === undefined ? {} : { usage }),
+        },
+        "[game-continuity] stage %s",
+        succeeded ? "completed" : "failed",
       );
     }
   }

@@ -27,6 +27,7 @@ import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 import { useTranslation } from "react-i18next";
 import { useCommandPaletteStore } from "../../stores/command-palette.store";
 import { isApplePlatform } from "../../lib/keyboard-shortcuts";
+import { GenerationJobsActivityDot } from "../generation-jobs/GenerationJobsActivityDot";
 import {
   PersonalExtensionContributionsMenu,
   PersonalExtensionTopbarButtons,
@@ -475,6 +476,7 @@ export function TopBar({ mobileTopbarNavigation }: { mobileTopbarNavigation: boo
           aria-label={localize("Generation jobs")}
         >
           <Clock3 size={15} className={TOPBAR_ACCENT_ICON_CLASS} />
+          <GenerationJobsActivityDot />
         </button>
 
         <PersonalExtensionTopbarButtons />

@@ -30,6 +30,7 @@
 import { existsSync, statSync, watch, watchFile, unwatchFile, type FSWatcher } from "node:fs";
 import { basename, dirname } from "node:path";
 import { logger, refreshConsoleLogLevel } from "../lib/logger.js";
+import { isSecretEnvKey } from "../lib/diagnostics.js";
 import { getEnvFilePath, getLogLevel, reloadRuntimeEnv, type EnvReloadResult } from "./runtime-config.js";
 import { personalServerExtensionRuntime } from "../services/extensions/personal-server-extension-runtime.js";
 
@@ -78,8 +79,16 @@ const RESTART_REQUIRED_KEYS = new Set<string>([
   "MARINARA_ENV_WATCH",
 ]);
 
-// Keys whose values must be masked when logged.
-const SENSITIVE_KEYS = new Set<string>(["BASIC_AUTH_PASS", "ADMIN_SECRET", "ENCRYPTION_KEY", "GIPHY_API_KEY"]);
+// The only keys whose values may appear in a log line. Every other key is logged
+// by name with a presence marker; secret keys (isSecretEnvKey) also hide length.
+const LOGGABLE_VALUE_KEYS = new Set<string>([
+  "LOG_LEVEL",
+  "LOG_FILE_LEVEL",
+  "PORT",
+  "HOST",
+  "CORS_ORIGINS",
+  "MARINARA_LITE",
+]);
 
 /** Debounce window for fs.watch events — editors fire several per save. */
 export const ENV_WATCH_DEBOUNCE_MS = 250;
@@ -104,13 +113,13 @@ export function resolveEnvWatchMode(rawValue: string | undefined): "watch" | "po
   return rawValue?.trim().toLowerCase() === "poll" ? "poll" : "watch";
 }
 
-function maskValue(key: string, value: string | undefined): string {
+/** How a changed .env value appears in the log: the value only for LOGGABLE_VALUE_KEYS. */
+export function maskValue(key: string, value: string | undefined): string {
   if (value === undefined) return "<unset>";
-  if (SENSITIVE_KEYS.has(key)) {
-    if (!value) return "<empty>";
-    return `<set, length=${value.length}>`;
-  }
-  return value === "" ? "<empty>" : value;
+  if (value === "") return "<empty>";
+  if (isSecretEnvKey(key)) return "<set>";
+  if (!LOGGABLE_VALUE_KEYS.has(key)) return `<set, length=${value.length}>`;
+  return value;
 }
 
 function describeKey(key: string): string {
@@ -135,33 +144,37 @@ function applyExternalExtensionsGate(diff: EnvReloadResult) {
   void personalServerExtensionRuntime.enforceExternalPolicy();
 }
 
-function logDiff(diff: EnvReloadResult) {
+/**
+ * One `config.reload` line per effective change. `added` and `updated` read
+ * `KEY=<masked>`, `removed` lists names. The line is a warn when a changed key
+ * only takes effect after a restart (`restartRequired`).
+ */
+export function logDiff(diff: EnvReloadResult, envPath: string = getEnvFilePath()) {
   const totalChanges = diff.added.length + diff.updated.length + diff.removed.length;
   if (totalChanges === 0) {
-    logger.debug("[env-watcher] .env modified, no effective changes");
+    logger.debug(
+      { event: "config.reload", outcome: "skipped", envPath },
+      "[env-watcher] .env modified, no effective changes",
+    );
     return;
   }
 
-  const restartKeys: string[] = [];
-  for (const key of [...diff.added, ...diff.updated, ...diff.removed]) {
-    if (RESTART_REQUIRED_KEYS.has(key)) restartKeys.push(key);
-  }
-
-  if (diff.added.length > 0) {
-    logger.info(`[env-watcher] Added: ${diff.added.map(describeKey).join(", ")}`);
-  }
-  if (diff.updated.length > 0) {
-    logger.info(`[env-watcher] Updated: ${diff.updated.map(describeKey).join(", ")}`);
-  }
-  if (diff.removed.length > 0) {
-    logger.info(`[env-watcher] Removed: ${diff.removed.join(", ")}`);
-  }
-
-  if (restartKeys.length > 0) {
-    logger.warn(
-      `[env-watcher] These variables changed but require a server restart to take effect: ${restartKeys.join(", ")}`,
-    );
-  }
+  const restartRequired = [...diff.added, ...diff.updated, ...diff.removed].filter((key) =>
+    RESTART_REQUIRED_KEYS.has(key),
+  );
+  logger[restartRequired.length > 0 ? "warn" : "info"](
+    {
+      event: "config.reload",
+      outcome: "ok",
+      added: diff.added.map(describeKey),
+      updated: diff.updated.map(describeKey),
+      removed: [...diff.removed],
+      restartRequired,
+      envPath,
+    },
+    "[env-watcher] .env changed (%d keys)",
+    totalChanges,
+  );
 }
 
 export interface EnvWatcherHandle {
@@ -176,12 +189,12 @@ export function startEnvWatcher(): EnvWatcherHandle {
   const runReload = (): EnvReloadResult | null => {
     try {
       const diff = reloadRuntimeEnv();
-      logDiff(diff);
+      logDiff(diff, envPath);
       applyLogLevel(diff);
       applyExternalExtensionsGate(diff);
       return diff;
     } catch (err) {
-      logger.error(err, "[env-watcher] Failed to reload .env");
+      logger.error({ event: "config.reload", outcome: "failed", envPath, err }, "[env-watcher] Failed to reload .env");
       return null;
     }
   };

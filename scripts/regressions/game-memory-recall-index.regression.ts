@@ -27,13 +27,13 @@ try {
   await db.insert(chats).values({ id: "conversation-memory", name: "Conversation Memory", mode: "conversation" });
   await db.insert(chats).values({ id: "conversation-label", name: "Conversation Labels", mode: "conversation" });
 
-  const longScene = `Vigil remains in the archive hall. ${"The old shelves hold a clue. ".repeat(900)}`;
+  const longScene = `Quenby remains in the archive hall. ${"The old shelves hold a clue. ".repeat(900)}`;
   for (let index = 0; index < 6; index += 1) {
     await db.insert(messages).values({
       id: `game-message-${index}`,
       chatId: "game-memory",
       role: index % 2 === 0 ? "user" : "assistant",
-      characterId: index % 2 === 0 ? null : "maybelle",
+      characterId: index % 2 === 0 ? null : "corvina",
       content: index === 1 ? longScene : `Game turn ${index}`,
       createdAt: `2026-09-13T10:00:0${index}.000Z`,
     });
@@ -42,7 +42,7 @@ try {
   await chunkAndEmbedMessages(
     db,
     "game-memory",
-    { userName: "Robert", characterNames: { maybelle: "Maybelle" } },
+    { userName: "Edmund", characterNames: { corvina: "Corvina" } },
     { embeddingSource },
   );
   let stored = await db.select().from(memoryChunks).where(eq(memoryChunks.chatId, "game-memory"));
@@ -52,8 +52,8 @@ try {
     "every split Game embedding part carries the historical transcript marker",
   );
   const initialTranscript = stored.map((chunk) => chunk.content).join("\n");
-  assert.match(initialTranscript, /Vigil remains/u, "original VN character names remain inside transcript content");
-  assert.doesNotMatch(initialTranscript, /Maybelle: Vigil/u, "Game assistant turns use the GM speaker label");
+  assert.match(initialTranscript, /Quenby remains/u, "original VN character names remain inside transcript content");
+  assert.doesNotMatch(initialTranscript, /Corvina: Quenby/u, "Game assistant turns use the GM speaker label");
   assert.match(initialTranscript, /Game Master:/u, "Game assistant turns are labeled Game Master");
 
   const importedId = "imported-game-memory";
@@ -83,7 +83,7 @@ try {
   await chunkAndEmbedMessages(
     db,
     "game-memory",
-    { userName: "Robert", characterNames: { maybelle: "Maybelle" } },
+    { userName: "Edmund", characterNames: { corvina: "Corvina" } },
     { embeddingSource },
   );
   stored = await db.select().from(memoryChunks).where(eq(memoryChunks.chatId, "game-memory"));
@@ -112,7 +112,7 @@ try {
   await chunkAndEmbedMessages(
     db,
     "conversation-label",
-    { userName: "Robert", characterNames: { dottore: "Dottore" } },
+    { userName: "Edmund", characterNames: { dottore: "Dottore" } },
     { embeddingSource },
   );
   const conversationLabelChunks = await db

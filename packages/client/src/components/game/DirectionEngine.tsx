@@ -18,51 +18,118 @@ function getBackgroundBlurStyle(blurPx: number): Pick<CSSProperties, "filter" | 
   };
 }
 
+function isBlackBackground(value: string | null): boolean {
+  return !value || value === "black";
+}
+
+/** How long the incoming background takes to fade in over the old one. */
+const BACKGROUND_FADE_MS = 700;
+
 function CrossfadeBackground({ url, blurPx = 0 }: { url?: string; blurPx?: number }) {
-  const [layers, setLayers] = useState<{ front: string | null; back: string | null; fading: boolean }>({
+  // front: the image on top (fades in from 0 while `entering` flips to false).
+  // back: the previous image, kept fully opaque underneath until the fade finishes.
+  const [layers, setLayers] = useState<{ front: string | null; back: string | null; entering: boolean; key: number }>({
     front: url ?? null,
     back: null,
-    fading: false,
+    entering: false,
+    key: 0,
   });
-  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const frontRef = useRef<string | null>(url ?? null);
+  const pendingRef = useRef<{
+    img: HTMLImageElement | null;
+    raf: number | undefined;
+    timer: ReturnType<typeof setTimeout> | undefined;
+  }>({ img: null, raf: undefined, timer: undefined });
   const backgroundBlurStyle = getBackgroundBlurStyle(blurPx);
 
   useEffect(() => {
     const incoming = url ?? null;
-    if (incoming === layers.front) return;
-    clearTimeout(timerRef.current);
-    // Push current front to back, set new url as front, start fading
-    setLayers({ front: incoming, back: layers.front, fading: true });
-    timerRef.current = setTimeout(() => {
-      setLayers((prev) => ({ ...prev, back: null, fading: false }));
-    }, 750);
-    return () => clearTimeout(timerRef.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const pending = pendingRef.current;
+    // A newer change cancels any preload that has not finished yet.
+    if (pending.img) {
+      pending.img.onload = null;
+      pending.img.onerror = null;
+      pending.img = null;
+    }
+    if (incoming === frontRef.current) return;
+
+    const commit = () => {
+      pending.img = null;
+      if (pending.raf !== undefined) cancelAnimationFrame(pending.raf);
+      pending.raf = undefined;
+      clearTimeout(pending.timer);
+      const previous = frontRef.current;
+      frontRef.current = incoming;
+      if (isBlackBackground(incoming)) {
+        setLayers((prev) => ({ front: incoming, back: null, entering: false, key: prev.key + 1 }));
+        return;
+      }
+      setLayers((prev) => ({ front: incoming, back: previous ?? "black", entering: true, key: prev.key + 1 }));
+      // Wait two frames so the new layer paints at opacity 0 before transitioning to 1.
+      pending.raf = requestAnimationFrame(() => {
+        pending.raf = requestAnimationFrame(() => {
+          pending.raf = undefined;
+          setLayers((prev) => ({ ...prev, entering: false }));
+          pending.timer = setTimeout(() => {
+            setLayers((prev) => ({ ...prev, back: null }));
+          }, BACKGROUND_FADE_MS + 50);
+        });
+      });
+    };
+
+    if (isBlackBackground(incoming)) {
+      commit();
+      return;
+    }
+    // Keep the old image on screen until the new one has loaded (or failed).
+    const img = new Image();
+    pending.img = img;
+    img.onload = img.onerror = () => {
+      if (pendingRef.current.img === img) commit();
+    };
+    img.src = incoming as string;
   }, [url]);
 
-  const isBlack = !layers.front || layers.front === "black";
+  useEffect(() => {
+    const pending = pendingRef.current;
+    return () => {
+      if (pending.img) {
+        pending.img.onload = null;
+        pending.img.onerror = null;
+        pending.img = null;
+      }
+      if (pending.raf !== undefined) cancelAnimationFrame(pending.raf);
+      pending.raf = undefined;
+      clearTimeout(pending.timer);
+    };
+  }, []);
+
+  const isBlack = isBlackBackground(layers.front);
 
   return (
     <>
-      {/* Back layer (old image, fading out) */}
-      {layers.back && layers.back !== "black" && (
-        <div
-          className="absolute inset-0 bg-cover bg-center bg-no-repeat"
-          style={{
-            backgroundImage: `url(${JSON.stringify(layers.back)})`,
-            opacity: layers.fading ? 0 : 1,
-            transition: "opacity 700ms ease-in-out, filter 180ms ease-out, transform 180ms ease-out",
-            ...backgroundBlurStyle,
-          }}
-        />
-      )}
+      {/* Back layer (previous image, stays opaque under the incoming one) */}
+      {layers.back &&
+        (layers.back === "black" ? (
+          <div className="absolute inset-0 bg-black" />
+        ) : (
+          <div
+            className="absolute inset-0 bg-cover bg-center bg-no-repeat"
+            style={{
+              backgroundImage: `url(${JSON.stringify(layers.back)})`,
+              transition: "filter 180ms ease-out, transform 180ms ease-out",
+              ...backgroundBlurStyle,
+            }}
+          />
+        ))}
       {/* Front layer (new image, fading in) */}
       {!isBlack && (
         <div
+          key={layers.key}
           className="absolute inset-0 bg-cover bg-center bg-no-repeat"
           style={{
             backgroundImage: `url(${JSON.stringify(layers.front)})`,
-            opacity: layers.fading ? 1 : 1,
+            opacity: layers.entering ? 0 : 1,
             transition: "opacity 700ms ease-in-out, filter 180ms ease-out, transform 180ms ease-out",
             ...backgroundBlurStyle,
           }}
@@ -127,6 +194,16 @@ export function DirectionEngine({
     setActiveEffects((prev) => [...prev, ...newEffects]);
   }, [directions]);
 
+  // Nested removal timers outlive the effect cleanup on purpose; clear them on unmount.
+  const removalTimersRef = useRef(new Set<ReturnType<typeof setTimeout>>());
+  useEffect(() => {
+    const removalTimers = removalTimersRef.current;
+    return () => {
+      removalTimers.forEach(clearTimeout);
+      removalTimers.clear();
+    };
+  }, []);
+
   // Auto-expire effects: mark as expiring first, then remove after fade-out.
   // Phase 2 (removal) is scheduled inside Phase 1's callback so it isn't
   // cancelled by React's effect cleanup when Phase 1 triggers a state update.
@@ -153,9 +230,11 @@ export function DirectionEngine({
       timers.push(
         setTimeout(() => {
           setActiveEffects((prev) => prev.map((e) => (e.id === eff.id ? { ...e, expiring: true } : e)));
-          setTimeout(() => {
+          const removal = setTimeout(() => {
+            removalTimersRef.current.delete(removal);
             setActiveEffects((prev) => prev.filter((e) => e.id !== eff.id));
           }, FADE_OUT_MS);
+          removalTimersRef.current.add(removal);
         }, remaining),
       );
     }

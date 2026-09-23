@@ -44,7 +44,7 @@ try {
   const crossAlert = crossForm.getByRole("alert").filter({ hasText: "Not saved: this change points at a record from another session." });
   await crossAlert.waitFor();
   const crossText = await crossAlert.innerText();
-  record("cross-session 409 on a transition shows the specific message", crossText.includes("Mira Thorne has no page in that session yet") && (await crossForm.getByText("This commitment changed since it was loaded.").count()) === 0 && (await crossForm.getByRole("button", { name: "Reload", exact: true }).count()) === 0, crossText);
+  record("cross-session 409 on a transition shows the specific message", crossText.includes("Mira Stonebridge has no page in that session yet") && (await crossForm.getByText("This commitment changed since it was loaded.").count()) === 0 && (await crossForm.getByRole("button", { name: "Reload", exact: true }).count()) === 0, crossText);
   await crossForm.getByRole("button", { name: /^Cancel$/ }).click();
   await crossForm.waitFor({ state: "detached" });
   await ev(page, () => { window.__wikiMock.transitions.length = 0; });

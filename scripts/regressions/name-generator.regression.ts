@@ -78,7 +78,7 @@ assert.ok(
 // ── Learned style ──
 const extracted = extractTrainingNames([
   "Seraphine Valdes",
-  "The Court of Morgravia",
+  "The Court of Quennevar",
   "Lady Isolde",
   "celestine lowercase is skipped",
   "Oriane, Maelis; Aurelie",
@@ -88,7 +88,7 @@ const extracted = extractTrainingNames([
 assert.deepEqual(extracted, [
   "Seraphine",
   "Valdes",
-  "Morgravia",
+  "Quennevar",
   "Isolde",
   "Oriane",
   "Maelis",

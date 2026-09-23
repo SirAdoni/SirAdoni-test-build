@@ -53,11 +53,10 @@ import {
 } from "lucide-react";
 import { getCharacterTitle } from "../../lib/character-display";
 import {
-  formatCardLibraryMeta,
-  getCardLibrarySummary,
-  matchesCardLibrarySearch,
+  matchesCardLibrarySearchIndex,
   parseCardLibrarySearchQuery,
 } from "../../lib/card-library-search";
+import { buildCharacterSearchIndex } from "./library/character-search-index";
 import { useUIStore, type CharacterLibrarySort } from "../../stores/ui.store";
 import { sortPanelFolders } from "../../lib/panel-sort";
 import { useTouchFolderDrag } from "../../hooks/use-touch-folder-drag";
@@ -66,8 +65,10 @@ import type { CharacterCatalogEntry } from "@marinara-engine/shared";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { formatEstimatedTokens } from "../../lib/character-token-count";
 import { SelectionActionBar } from "../ui/SelectionActionBar";
+import { SELECTION_EXTRA_ACTION_BUTTON_CLASS, SELECTION_EXTRA_ACTION_LABEL_CLASS } from "../ui/selection-action-classes";
 import { TouchDragHandle } from "../ui/TouchDragHandle";
 import { buildLibraryFolderView, type LibraryFolderNode } from "../../lib/library-folder-view";
+import { LibrarySearchInput } from "./library/LibrarySearchInput";
 import { CAMPAIGN_FILTER_ALL, LibraryCampaignBar } from "./library/LibraryCampaignBar";
 import { LibraryCampaignBadges } from "./library/LibraryCampaignBadges";
 import { LibraryCampaignRoster } from "./library/LibraryCampaignRoster";
@@ -317,6 +318,12 @@ export function CharactersPanel() {
     [bulkTagsOpen, parsedCharacterMap, selectedCharacterIds],
   );
 
+  // Search fields are normalized once per loaded list, not once per keystroke.
+  const searchIndexById = useMemo(
+    () => new Map(parsedCharacters.map((c) => [c.id, buildCharacterSearchIndex(c, getCharacterTags(c))])),
+    [parsedCharacters],
+  );
+
   const filteredCharacters = useMemo(() => {
     let list = parsedCharacters;
     const query = parseCardLibrarySearchQuery(deferredSearch);
@@ -345,31 +352,11 @@ export function CharactersPanel() {
       });
     }
     list = list.filter((c) => {
-      const tags = getCharacterTags(c);
-      return matchesCardLibrarySearch(
-        {
-          name: c.parsed.name,
-          title: getCharacterTitle({ name: c.parsed.name ?? "", comment: c.comment }),
-          meta: formatCardLibraryMeta(c.parsed.creator, c.parsed.character_version),
-          summary: getCardLibrarySummary([
-            c.parsed.summary,
-            c.parsed.creator_notes,
-            c.parsed.description,
-            c.parsed.personality,
-          ]),
-          tags,
-          sections: [
-            { content: c.parsed.description },
-            { content: c.parsed.personality },
-            { content: c.parsed.scenario },
-            { content: c.parsed.first_mes },
-          ],
-        },
-        query,
-      );
+      const index = searchIndexById.get(c.id);
+      return index ? matchesCardLibrarySearchIndex(index, query) : true;
     });
     return list;
-  }, [parsedCharacters, deferredSearch, includedTags, excludedTags, favFilter]);
+  }, [parsedCharacters, searchIndexById, deferredSearch, includedTags, excludedTags, favFilter]);
 
   // Collect all unique tags across characters for the filter bar
   const allTags = useMemo(() => {
@@ -527,7 +514,9 @@ export function CharactersPanel() {
       .map((g) => ({ ...g, memberIds: parseGroupMemberIds(g.characterIds) }))
       .sort(
         (a, b) =>
-          (a.createdAt ?? "").localeCompare(b.createdAt ?? "") || a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
+          (a.createdAt ?? "").localeCompare(b.createdAt ?? "") ||
+          a.name.localeCompare(b.name) ||
+          a.id.localeCompare(b.id),
       );
   }, [groups]);
 
@@ -1627,9 +1616,9 @@ export function CharactersPanel() {
       <div className="flex gap-1.5">
         <div className="relative flex-1">
           <Search size="0.8125rem" className="mari-chrome-field-icon absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
+          <LibrarySearchInput
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onValueChange={setSearch}
             placeholder={t("search.panels.characters")}
             className="mari-chrome-field h-10 w-full py-0 pl-8 pr-3 text-xs md:h-9"
           />
@@ -1907,19 +1896,21 @@ export function CharactersPanel() {
                 disabled={selectedCharacterIds.size === 0}
                 onMove={parsedGroups.length > 0 ? handleMoveSelected : undefined}
                 onCampaigns={
-                  organizer.campaignsAvailable ? () => organizer.openCampaignPicker([...selectedCharacterIds]) : undefined
+                  organizer.campaignsAvailable
+                    ? () => organizer.openCampaignPicker([...selectedCharacterIds])
+                    : undefined
                 }
               />
               <button
                 type="button"
                 onClick={() => setBulkTagsOpen(true)}
                 disabled={selectedCharacterIds.size === 0}
-                className="mari-chrome-control min-w-0 flex-1 px-2 py-2 text-xs"
+                className={SELECTION_EXTRA_ACTION_BUTTON_CLASS}
                 title={localizeUi("characters.bulkTags.action")}
                 aria-label={localizeUi("characters.bulkTags.action")}
               >
                 <Tags size="0.75rem" className="shrink-0" />
-                <span className="truncate max-[400px]:sr-only">{localizeUi("characters.bulkTags.actionShort")}</span>
+                <span className={SELECTION_EXTRA_ACTION_LABEL_CLASS}>{localizeUi("characters.bulkTags.actionShort")}</span>
               </button>
             </>
           }

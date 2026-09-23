@@ -26,6 +26,9 @@ import type {
 } from "@marinara-engine/shared";
 import { getDataDir } from "../../utils/data-dir.js";
 import { downloadFileWithProgress, isAbortError, retry } from "./sidecar-download.js";
+import { logger } from "../../lib/logger.js";
+import { createDiagnostic } from "../../lib/diagnostics.js";
+import { describeChildFailure } from "../../lib/child-process-diagnostics.js";
 import { assertInsideDir } from "../../utils/security.js";
 import {
   LLAMA_CPP_RUNTIME_MANIFEST,
@@ -276,7 +279,18 @@ class SidecarRuntimeService {
 
     this.diagnosticsRefreshPromise = this.detectCapabilities()
       .then(() => undefined)
-      .catch(() => undefined)
+      .catch((err) => {
+        logger.warn(
+          {
+            err,
+            event: "sidecar.start",
+            stage: "capabilities",
+            outcome: "failed",
+            errorCode: createDiagnostic(err).code,
+          },
+          "[sidecar] Runtime capability detection failed",
+        );
+      })
       .finally(() => {
         this.diagnosticsRefreshPromise = null;
       });
@@ -608,6 +622,7 @@ class SidecarRuntimeService {
           retries: 3,
           baseDelayMs: 750,
           shouldRetry: (error) => !isAbortError(error),
+          label: options.asset.name,
         },
       );
 
@@ -628,6 +643,19 @@ class SidecarRuntimeService {
         if (attempt >= 2 || isAbortError(error)) {
           throw error;
         }
+        logger.warn(
+          {
+            err: error,
+            event: "sidecar.download",
+            stage: "extract",
+            outcome: "failed",
+            label: options.asset.name,
+            attempt,
+            maxAttempts: 2,
+            errorCode: createDiagnostic(error).code,
+          },
+          "[sidecar] Runtime archive extraction failed; downloading it again",
+        );
       }
     }
 
@@ -645,12 +673,20 @@ class SidecarRuntimeService {
     }
 
     if (archivePath.endsWith(".tar.gz")) {
-      await execFileAsync("tar", ["-tzf", archivePath], { windowsHide: true, timeout: 120_000 }).then(({ stdout }) => {
-        for (const entry of stdout.split(/\r?\n/u).filter(Boolean)) {
-          assertInsideDir(targetDir, join(targetDir, entry));
+      const runTar = async (args: string[]): Promise<string> => {
+        const startedAt = Date.now();
+        try {
+          const { stdout } = await execFileAsync("tar", args, { windowsHide: true, timeout: 120_000 });
+          return stdout;
+        } catch (error) {
+          throw describeChildFailure(error, { command: "tar", timeoutMs: 120_000, startedAt }).error;
         }
-      });
-      await execFileAsync("tar", ["-xzf", archivePath, "-C", targetDir], { windowsHide: true, timeout: 120_000 });
+      };
+      const listing = await runTar(["-tzf", archivePath]);
+      for (const entry of listing.split(/\r?\n/u).filter(Boolean)) {
+        assertInsideDir(targetDir, join(targetDir, entry));
+      }
+      await runTar(["-xzf", archivePath, "-C", targetDir]);
       return;
     }
 
@@ -787,6 +823,11 @@ class SidecarRuntimeService {
         }
       } catch {
         // Try the next command.
+        logger.debug(
+          { event: "sidecar.start", stage: "system-runtime-lookup", command },
+          "[sidecar] %s found no llama-server",
+          command,
+        );
       }
     }
 

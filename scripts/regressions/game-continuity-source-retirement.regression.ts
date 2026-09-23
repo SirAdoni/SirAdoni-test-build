@@ -49,7 +49,7 @@ try {
   await db.insert(lorebooks).values({ id: "book", name: "Book", chatId: "chat", createdAt: t(0), updatedAt: t(0) });
   await db.insert(messages).values([
     { id: "u1", chatId: "chat", role: "user", content: "Who is at the door?", createdAt: t(1) },
-    { id: "a1", chatId: "chat", role: "assistant", content: "Elsevere says she is fifty-one.", createdAt: t(2) },
+    { id: "a1", chatId: "chat", role: "assistant", content: "Ismene says she is fifty-one.", createdAt: t(2) },
     { id: "u2", chatId: "chat", role: "user", content: "Let her in.", createdAt: t(3) },
   ]);
 
@@ -66,11 +66,11 @@ try {
                 id: "model-id",
                 kind: "other",
                 text: assistant.content,
-                subjects: ["Elsevere"],
+                subjects: ["Ismene"],
                 conditions: [],
                 status: "asserted",
                 evidence: [{ messageId: assistant.messageId, quote: assistant.content }],
-                keys: ["Elsevere"],
+                keys: ["Ismene"],
               },
             ]
           : [],
@@ -115,7 +115,7 @@ try {
   const first = await continuity.enqueueCommittedTurn({ chatId: "chat", assistantMessageId: "a1", sessionNumber: 1 });
   assert.ok(first);
   await waitUntil(async () => (await storage.get(first.id))?.status === "published", "first publication");
-  assert.deepEqual(await factTexts(), ["Elsevere says she is fifty-one."]);
+  assert.deepEqual(await factTexts(), ["Ismene says she is fifty-one."]);
   assert.equal((await generatedEntries()).length, 1, "publication writes a generated lore entry");
 
   // 2. Reconciles that name no changed message, or a message the receipt did not read, retire nothing.
@@ -130,13 +130,13 @@ try {
   );
 
   // 3. The player corrects the turn. The old reading is retired and the corrected text is read again.
-  await setContent("a1", "Elsevere says she is two hundred and seven.");
+  await setContent("a1", "Ismene says she is two hundred and seven.");
   await continuity.reconcileChat("chat", { changedMessageIds: ["a1"] });
   const retired = await storage.get(first.id);
   assert.equal(retired?.status, "stale");
   assert.equal(retired?.errorCode, CONTINUITY_SOURCE_RETIRED);
   assert.ok(
-    !(await factTexts()).includes("Elsevere says she is fifty-one."),
+    !(await factTexts()).includes("Ismene says she is fifty-one."),
     "the fact read from the old text is no longer live",
   );
   const retractedOld = (await memory.listFacts({ chatId: "chat" })).find((fact) =>
@@ -144,17 +144,17 @@ try {
   );
   assert.equal(retractedOld?.status, "retracted", "the old fact is kept as retracted for the audit trail");
   await waitUntil(
-    async () => (await factTexts()).includes("Elsevere says she is two hundred and seven."),
+    async () => (await factTexts()).includes("Ismene says she is two hundred and seven."),
     "the corrected text to be read and published",
   );
-  assert.deepEqual(await factTexts(), ["Elsevere says she is two hundred and seven."], "only the corrected fact is live");
+  assert.deepEqual(await factTexts(), ["Ismene says she is two hundred and seven."], "only the corrected fact is live");
   assert.equal((await generatedEntries()).length, 1, "the old generated lore entry was replaced, not duplicated");
 
   // 4. Undoing the edit brings the original text back; it is read again under a new id instead of being lost.
-  await setContent("a1", "Elsevere says she is fifty-one.");
+  await setContent("a1", "Ismene says she is fifty-one.");
   await continuity.reconcileChat("chat", { changedMessageIds: ["a1"] });
   await waitUntil(
-    async () => (await factTexts()).includes("Elsevere says she is fifty-one."),
+    async () => (await factTexts()).includes("Ismene says she is fifty-one."),
     "the restored text to be read again",
   );
   const restored = (await storage.list("chat")).filter((receipt) => receipt.status === "published");

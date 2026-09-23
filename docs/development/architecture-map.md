@@ -312,3 +312,4 @@ For the next cleanup PR, use this order:
 
 - [Frontend Architecture (Developers)](frontend.md)
 - [File-Native Storage (Developers)](file-storage.md)
+- [Generation Jobs and Job Tracking (Developers)](generation-jobs.md)

@@ -21,7 +21,7 @@ import { CharacterLinkedContent } from "../characters/CharacterReferences";
 const MUTED = "text-[var(--marinara-chat-chrome-panel-muted)]";
 const TEXT = "text-[var(--marinara-chat-chrome-panel-text)]";
 const TRACK = "bg-[var(--marinara-chat-chrome-panel-divider)]";
-const ROW = "text-[0.5625rem] leading-snug";
+const ROW = "text-[0.5625rem] leading-snug [overflow-wrap:anywhere]";
 const GAIN = "#22c55e";
 const LOSS = "#ef4444";
 
@@ -47,11 +47,21 @@ const DEFAULT_ACCENT: Record<string, string> = {
   calendar: "#60a5fa",
 };
 
+/**
+ * Accent or status colour used as TEXT: blended toward the panel text colour, so pale accents (yellow, amber,
+ * light blue) stay readable on light panels and dark ones on dark panels. Fills and borders keep the raw accent.
+ */
+const ink = (color: string) => "color-mix(in srgb, " + color + " 70%, var(--marinara-chat-chrome-panel-text))";
+
 /** "+3" / "-2" / "0" for amounts and day offsets. */
 const signed = (n: number) => (n > 0 ? "+" + n : String(n));
 
+// <bdi> isolates each entry and picks its direction from its own text, so Hebrew or Arabic lines keep their
+// punctuation and numbers in place inside the left-to-right panel.
 const Linked = ({ children }: { children: string }) => (
-  <CharacterLinkedContent currentNames>{children}</CharacterLinkedContent>
+  <bdi>
+    <CharacterLinkedContent currentNames>{children}</CharacterLinkedContent>
+  </bdi>
 );
 
 function Empty() {
@@ -148,7 +158,7 @@ function ExtendedWidgetView({ widget }: { widget: HudWidget }) {
                 <span
                   aria-hidden
                   className="mt-px shrink-0 leading-none"
-                  style={{ color: task.done ? accent : undefined }}
+                  style={{ color: task.done ? ink(accent) : undefined }}
                 >
                   {task.done ? "☑" : "☐"}
                 </span>
@@ -171,7 +181,7 @@ function ExtendedWidgetView({ widget }: { widget: HudWidget }) {
           {entries.map((entry, i) => (
             <div key={i} className={ROW}>
               {entry.when && (
-                <div className="text-[0.5rem] font-semibold uppercase tracking-wide" style={{ color: accent }}>
+                <div className="text-[0.5rem] font-semibold uppercase tracking-wide" style={{ color: ink(accent) }}>
                   {entry.when}
                 </div>
               )}
@@ -224,7 +234,10 @@ function ExtendedWidgetView({ widget }: { widget: HudWidget }) {
       return (
         <div className="space-y-1">
           <div className="flex items-baseline gap-1.5">
-            <span className="text-base font-bold tabular-nums leading-none" style={{ color: urgent ? LOSS : accent }}>
+            <span
+              className="min-w-0 text-base font-bold tabular-nums leading-none [overflow-wrap:anywhere]"
+              style={{ color: ink(urgent ? LOSS : accent) }}
+            >
               {value}
             </span>
             {c.text && <span className={cn("text-[0.5625rem]", MUTED)}>{c.text}</span>}
@@ -250,13 +263,13 @@ function ExtendedWidgetView({ widget }: { widget: HudWidget }) {
             />
             <div className="absolute left-1/2 top-[-2px] h-[10px] w-px bg-[var(--marinara-chat-chrome-panel-muted)]" />
           </div>
-          <div className={cn("flex justify-between gap-2 text-[0.5rem]", MUTED)}>
+          <div className={cn("flex justify-between gap-2 text-[0.5rem] [overflow-wrap:anywhere]", MUTED)}>
             <span className={cn(value < 0 && "font-semibold text-[var(--marinara-chat-chrome-panel-text)]")}>
-              {left}
+              <bdi>{left}</bdi>
             </span>
             <span className="tabular-nums">{signed(value)}</span>
             <span className={cn(value > 0 && "font-semibold text-[var(--marinara-chat-chrome-panel-text)]")}>
-              {right}
+              <bdi>{right}</bdi>
             </span>
           </div>
         </div>
@@ -279,13 +292,13 @@ function ExtendedWidgetView({ widget }: { widget: HudWidget }) {
               />
             ))}
           </div>
-          <div className="text-[0.6875rem] font-semibold" style={{ color: accent }}>
-            {levels[current]}
+          <div className="text-[0.6875rem] font-semibold [overflow-wrap:anywhere]" style={{ color: ink(accent) }}>
+            <bdi>{levels[current]}</bdi>
           </div>
           {current < levels.length - 1 && (
             <div className={cn("text-[0.5rem]", MUTED)}>
               {"→ "}
-              {levels[current + 1]}
+              <bdi>{levels[current + 1]}</bdi>
             </div>
           )}
         </Rows>
@@ -306,7 +319,7 @@ function ExtendedWidgetView({ widget }: { widget: HudWidget }) {
                 <span
                   aria-hidden
                   className="w-2.5 shrink-0 text-center leading-none"
-                  style={{ color: now || past ? accent : undefined }}
+                  style={{ color: now || past ? ink(accent) : undefined }}
                 >
                   {past ? "✓" : now ? (type === "stages" ? "●" : "▶") : type === "stages" ? "○" : i + 1}
                 </span>
@@ -327,7 +340,8 @@ function ExtendedWidgetView({ widget }: { widget: HudWidget }) {
           {tags.map((tag, i) => (
             <span
               key={i}
-              className={cn("rounded-full border px-1.5 py-px text-[0.5rem]", TEXT)}
+              dir="auto"
+              className={cn("max-w-full rounded-full border px-1.5 py-px text-[0.5rem] [overflow-wrap:anywhere]", TEXT)}
               style={{ borderColor: accent, background: "color-mix(in srgb, " + accent + " 14%, transparent)" }}
             >
               {tag}
@@ -344,14 +358,20 @@ function ExtendedWidgetView({ widget }: { widget: HudWidget }) {
       return (
         <div className="space-y-1">
           <div className="flex items-baseline gap-1">
-            <span className="text-sm font-bold tabular-nums leading-none" style={{ color: accent }}>
+            <span
+              className="min-w-0 text-sm font-bold tabular-nums leading-none [overflow-wrap:anywhere]"
+              style={{ color: ink(accent) }}
+            >
               {value.toLocaleString()}
             </span>
             {c.text && <span className={cn("text-[0.5625rem]", MUTED)}>{c.text}</span>}
           </div>
           {transactions.map((entry, i) => (
             <div key={i} className={cn("flex gap-1.5", ROW)}>
-              <span className="w-9 shrink-0 text-right tabular-nums" style={{ color: entry.amount >= 0 ? GAIN : LOSS }}>
+              <span
+                className="min-w-[2.25rem] shrink-0 text-right tabular-nums"
+                style={{ color: ink(entry.amount >= 0 ? GAIN : LOSS) }}
+              >
                 {signed(entry.amount)}
               </span>
               <span className={cn("min-w-0", MUTED)}>
@@ -368,7 +388,7 @@ function ExtendedWidgetView({ widget }: { widget: HudWidget }) {
       return (
         <Rows empty={!items.length}>
           {items.map((item, i) => (
-            <div key={i} className={cn(ROW, i === 0 ? TEXT : MUTED)} style={{ opacity: 1 - i * 0.1 }}>
+            <div key={i} className={cn(ROW, i === 0 ? TEXT : MUTED)} style={{ opacity: Math.max(0.6, 1 - i * 0.1) }}>
               <Linked>{item}</Linked>
             </div>
           ))}
@@ -385,7 +405,7 @@ function ExtendedWidgetView({ widget }: { widget: HudWidget }) {
               <span
                 aria-hidden
                 className="w-2.5 shrink-0 text-center font-bold leading-none"
-                style={{ color: rumor.status === "confirmed" ? GAIN : rumor.status === "false" ? LOSS : accent }}
+                style={{ color: ink(rumor.status === "confirmed" ? GAIN : rumor.status === "false" ? LOSS : accent) }}
               >
                 {rumor.status === "confirmed" ? "✓" : rumor.status === "false" ? "✗" : "?"}
               </span>
@@ -409,7 +429,7 @@ function ExtendedWidgetView({ widget }: { widget: HudWidget }) {
                 <span className={cn(i === 0 && "font-semibold", TEXT)}>
                   <Linked>{stat.name}</Linked>
                 </span>
-                <span className="tabular-nums" style={{ color: i === 0 ? accent : undefined }}>
+                <span className="shrink-0 tabular-nums" style={{ color: i === 0 ? ink(accent) : undefined }}>
                   {stat.value}
                 </span>
               </div>
@@ -429,8 +449,10 @@ function ExtendedWidgetView({ widget }: { widget: HudWidget }) {
             type === "bars" ? (
               <div key={i + ":" + meter.name} className="space-y-px">
                 <div className={cn("flex justify-between gap-2", ROW)}>
-                  <span className={TEXT}>{meter.name}</span>
-                  <span className={cn("tabular-nums", MUTED)}>
+                  <span dir="auto" className={cn("min-w-0", TEXT)}>
+                    {meter.name}
+                  </span>
+                  <span className={cn("shrink-0 tabular-nums", MUTED)}>
                     {meter.value}
                     {"/"}
                     {meter.max}
@@ -440,7 +462,9 @@ function ExtendedWidgetView({ widget }: { widget: HudWidget }) {
               </div>
             ) : (
               <div key={i + ":" + meter.name} className={cn("flex items-center justify-between gap-2", ROW)}>
-                <span className={cn("min-w-0", TEXT)}>{meter.name}</span>
+                <span dir="auto" className={cn("min-w-0", TEXT)}>
+                  {meter.name}
+                </span>
                 {meter.max <= 12 ? (
                   <Pips value={meter.value} max={meter.max} accent={accent} />
                 ) : (
@@ -465,7 +489,7 @@ function ExtendedWidgetView({ widget }: { widget: HudWidget }) {
       const upcoming = calendarUpcoming(c).slice(0, 3);
       return (
         <div className="space-y-1.5">
-          <div className="text-[0.625rem] font-semibold" style={{ color: accent }}>
+          <div className="text-[0.625rem] font-semibold [overflow-wrap:anywhere]" style={{ color: ink(accent) }}>
             {c.text || localizeUi("ui.game.extendedwidgets.dayValue", { value: today })}
           </div>
           <div className="grid gap-[2px]" style={{ gridTemplateColumns: "repeat(" + week + ", minmax(0, 1fr))" }}>
@@ -475,10 +499,15 @@ function ExtendedWidgetView({ widget }: { widget: HudWidget }) {
                 <div
                   key={day}
                   className={cn(
-                    "relative flex h-4 items-center justify-center rounded-sm text-[0.5rem] tabular-nums",
+                    "relative flex h-4 items-center justify-center overflow-hidden rounded-sm text-[0.5rem] tabular-nums",
                     isToday ? "font-bold" : day < today ? MUTED : TEXT,
                   )}
-                  style={isToday ? { background: accent, color: "#fff" } : { opacity: day < today ? 0.5 : 1 }}
+                  // Darkened fill: white digits on a pale accent (the default light blue) were hard to read.
+                  style={
+                    isToday
+                      ? { background: "color-mix(in srgb, " + accent + " 72%, #000)", color: "#fff" }
+                      : { opacity: day < today ? 0.5 : 1 }
+                  }
                 >
                   {day}
                   {eventDays.has(day) && (
@@ -493,7 +522,7 @@ function ExtendedWidgetView({ widget }: { widget: HudWidget }) {
           </div>
           {upcoming.map((entry, i) => (
             <div key={i} className={cn("flex gap-1.5", ROW)}>
-              <span className="w-5 shrink-0 text-right tabular-nums" style={{ color: accent }}>
+              <span className="min-w-[1.25rem] shrink-0 text-right tabular-nums" style={{ color: ink(accent) }}>
                 {entry.inDays === null ? "•" : entry.inDays === 0 ? "●" : signed(entry.inDays)}
               </span>
               <span className={TEXT}>

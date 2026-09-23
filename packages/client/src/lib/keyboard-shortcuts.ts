@@ -23,13 +23,13 @@ export const KEYBOARD_SHORTCUT_GROUPS: readonly KeyboardShortcutGroup[] = [
     id: "general",
     titleKey: "shortcuts.groups.general",
     shortcuts: [
-      // CommandPaletteHost
+      // CommandPaletteHost (not while another dialog is open)
       { keys: [["Mod", "K"]], labelKey: "shortcuts.general.palette" },
       // CommandPaletteHost (not while another dialog is open)
       { keys: [["Mod", "Shift", "F"]], labelKey: "shortcuts.general.globalSearch" },
       // CommandPalette
       { keys: [["↑"], ["↓"], ["Enter"]], labelKey: "shortcuts.general.paletteNavigate" },
-      // CommandPaletteHost (ignored while typing)
+      // CommandPaletteHost (ignored while typing or while a dialog is open)
       { keys: [["?"]], labelKey: "shortcuts.general.help" },
       // Modal.tsx and every popover's Escape listener
       { keys: [["Esc"]], labelKey: "shortcuts.general.close" },

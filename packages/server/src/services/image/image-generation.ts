@@ -40,11 +40,15 @@ import {
   supportsNovelAiCharacterPrompts,
 } from "./character-prompts.js";
 import { isImageLocalUrlsEnabled } from "../../config/runtime-config.js";
-import { runMediaGenerationRequest, type MediaGenerationPermitProfile } from "./image-generation-queue.js";
+import {
+  providerResponseShape,
+  runMediaGenerationRequest,
+  type MediaGenerationPermitProfile,
+} from "./image-generation-queue.js";
 import { generateRunPodComfyUI } from "./runpod-comfyui.service.js";
 import { logger, logDebugOverride } from "../../lib/logger.js";
-import { reportDiagnosticError } from "../../lib/diagnostic-operation.js";
-import { getDiagnosticContext } from "../../lib/diagnostics.js";
+import { createDiagnostic } from "../../lib/diagnostics.js";
+import { logEvent } from "../../lib/log-events.js";
 import {
   assertInsideDir,
   normalizeLoopbackUrl,
@@ -113,20 +117,21 @@ import { captureImageRequestInspection, type ImageRequestInspectionHandle } from
 // (prepareNovelAiDirectorReferenceImages) hard-throws when sharp is unavailable.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SharpFn = any;
-let _sharp: SharpFn | null = null;
-let _sharpLoadAttempted = false;
-async function tryLoadSharp(): Promise<SharpFn | null> {
-  if (_sharp || _sharpLoadAttempted) return _sharp;
-  _sharpLoadAttempted = true;
-  try {
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore - optional native dep
-    const mod = await import("sharp");
-    _sharp = (mod.default ?? mod) as SharpFn;
-    return _sharp;
-  } catch {
-    return null;
-  }
+// Memoise the in-flight load so concurrent first callers all await the same import
+// instead of seeing a "load attempted" flag before sharp has actually resolved.
+let _sharpPromise: Promise<SharpFn | null> | null = null;
+function tryLoadSharp(): Promise<SharpFn | null> {
+  _sharpPromise ??= (async () => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-ignore - optional native dep
+      const mod = await import("sharp");
+      return (mod.default ?? mod) as SharpFn;
+    } catch {
+      return null;
+    }
+  })();
+  return _sharpPromise;
 }
 
 async function resizeBase64ToExactSize(
@@ -313,55 +318,38 @@ export async function generateImage(
 ): Promise<ImageGenResult> {
   const startedAt = Date.now();
   const provider = resolveImageBackend(source, baseUrl, serviceHint, request.model);
-  const context = getDiagnosticContext();
-  logger.info(
-    {
-      ...context,
-      operation: "image.generation",
-      stage: "start",
-      provider,
-      model: request.model,
-      promptCharacters: request.prompt.length,
-      suppliedReferenceCount: request.referenceImages?.length ?? (request.referenceImage ? 1 : 0),
-      width: request.width,
-      height: request.height,
-    },
-    "Image generation started",
-  );
+  const base = { kind: "image" as const, provider, model: request.model };
+  logEvent("debug", "media.generate", {
+    ...base,
+    state: "running",
+    promptCharacters: request.prompt.length,
+    suppliedReferenceCount: request.referenceImages?.length ?? (request.referenceImage ? 1 : 0),
+    width: request.width,
+    height: request.height,
+  });
   try {
     const result = await generateImageWithFallback(source, baseUrl, apiKey, serviceHint, request);
-    logger.info(
-      {
-        ...context,
-        operation: "image.generation",
-        stage: "success",
-        provider,
-        model: request.model,
-        elapsedMs: Date.now() - startedAt,
-      },
-      "Image generation completed",
-    );
+    const effective = result.effectiveConnection;
+    logEvent("info", "media.generate", {
+      ...base,
+      outcome: "ok",
+      elapsedMs: Date.now() - startedAt,
+      fallbackUsed: !!effective,
+      effectiveProvider: effective ? effective.provider : provider,
+      effectiveModel: effective ? effective.model : request.model,
+    });
     return result;
   } catch (error) {
-    const diagnostic = reportDiagnosticError(error, {
-      ...context,
-      operation: "image.generation",
-      stage: request.signal?.aborted ? "cancelled" : "failure",
-      provider,
-      model: request.model,
+    // The caller (job, route or agent) owns the one failure line; this is the pointer to it.
+    const reference = createDiagnostic(error);
+    const cancelled = request.signal?.aborted === true || reference.code === "ME_CANCELLED";
+    logEvent("debug", "media.generate", {
+      ...base,
+      outcome: cancelled ? "cancelled" : "failed",
+      elapsedMs: Date.now() - startedAt,
+      errorCode: reference.code,
+      errorId: reference.errorId,
     });
-    logger.warn(
-      {
-        ...context,
-        diagnostic,
-        operation: "image.generation",
-        stage: request.signal?.aborted ? "cancelled" : "failure",
-        provider,
-        model: request.model,
-        elapsedMs: Date.now() - startedAt,
-      },
-      "Image generation failed",
-    );
     throw error;
   }
 }
@@ -546,11 +534,21 @@ async function generateImageWithFallback(
     }
     const fallback = request.fallback;
     if (!fallback || request.signal?.aborted || isConnectionAdmissionFailure(error)) throw error;
-    logger.warn(
-      error,
-      "[illustrator-fallback] Primary image generation failed; retrying with connection %s (%s)",
-      fallback.connectionId,
-      fallback.model,
+    const primaryFailure = createDiagnostic(error);
+    logEvent(
+      "warn",
+      "media.fallback",
+      {
+        kind: "image",
+        fromProvider: resolvedSource,
+        fromModel: request.model,
+        toConnectionId: fallback.connectionId,
+        toModel: fallback.model,
+        errorId: primaryFailure.errorId,
+        errorCode: primaryFailure.code,
+        err: error,
+      },
+      "Primary image generation failed; retrying with the fallback connection",
     );
     try {
       await (request.onFallback ?? notifyGenerationFallback)({
@@ -3362,11 +3360,18 @@ async function generateOpenRouter(baseUrl: string, apiKey: string, request: Imag
   const message = choice?.message;
   const imageUrl = extractImageUrlFromMessage(message);
   if (!imageUrl) {
-    logger.warn(
-      "[image-gen] OpenRouter response had no extractable image. model=%s finish_reason=%s shape=%s",
-      request.model ?? "(default)",
-      choice?.finish_reason ?? "(none)",
-      JSON.stringify(message ?? data).slice(0, 800),
+    logEvent(
+      "warn",
+      "provider.response.unexpected",
+      {
+        kind: "image",
+        provider: "openrouter",
+        model: request.model,
+        finishReason: choice?.finish_reason ?? null,
+        ...providerResponseShape(message ?? data),
+        bodyBytes: buffer.length,
+      },
+      "OpenRouter image response had no extractable image",
     );
     const content =
       message && typeof message === "object" && typeof (message as Record<string, unknown>).content === "string"
@@ -3599,10 +3604,14 @@ function replaceComfyUiPlaceholders(value: unknown, replacements: Record<string,
     const exactReplacement = replacements[value];
     if (exactReplacement !== undefined) return exactReplacement;
 
-    return Object.entries(replacements).reduce(
-      (resolved, [placeholder, replacement]) => resolved.replaceAll(placeholder, String(replacement)),
-      value,
-    );
+    // Single pass with a callback: no "$" pattern expansion in the inserted text, and
+    // text that was already inserted is never scanned for further placeholders.
+    const keys = Object.keys(replacements)
+      .filter((key) => key.length > 0)
+      .sort((a, b) => b.length - a.length)
+      .map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    if (keys.length === 0) return value;
+    return value.replace(new RegExp(keys.join("|"), "g"), (match) => String(replacements[match]));
   }
 
   if (Array.isArray(value)) {
@@ -3754,59 +3763,110 @@ async function generateComfyUI(baseUrl: string, request: ImageGenRequest): Promi
   // Poll for completion. Default is longer than most image requests so slow/editing workflows can finish.
   const pollTimeoutMs = Math.max(1000, COMFYUI_GEN_TIMEOUT_SECONDS * 1000);
   const pollStartedAt = Date.now();
-  while (Date.now() - pollStartedAt < pollTimeoutMs) {
-    await sleepWithAbort(1000, request.signal);
+  // Set once ComfyUI reports the prompt as ended (outputs, failure or completion), so an
+  // error after that point does not try to cancel a prompt that is no longer queued.
+  let promptEnded = false;
+  try {
+    while (Date.now() - pollStartedAt < pollTimeoutMs) {
+      await sleepWithAbort(1000, request.signal);
 
-    const historyResp = await localImageBackendFetch(`${base}/history/${promptId}`, {
-      signal: imageRequestSignal(request),
-    });
-    if (!historyResp.ok) continue;
+      const historyResp = await localImageBackendFetch(`${base}/history/${promptId}`, {
+        signal: imageRequestSignal(request),
+      });
+      if (!historyResp.ok) continue;
 
-    const history = (await historyResp.json()) as Record<string, ComfyUiHistoryEntry>;
+      const history = (await historyResp.json()) as Record<string, ComfyUiHistoryEntry>;
 
-    const entry = history[promptId];
-    const statusError = getComfyUiStatusError(entry?.status);
-    if (statusError) throw new Error(`ComfyUI workflow failed: ${statusError}`);
-    if (!entry?.outputs) {
-      if (isComfyUiStatusComplete(entry?.status)) {
-        throw new Error("ComfyUI workflow completed without image outputs.");
+      const entry = history[promptId];
+      const statusError = getComfyUiStatusError(entry?.status);
+      if (statusError) {
+        promptEnded = true;
+        throw new Error(`ComfyUI workflow failed: ${statusError}`);
       }
-      continue;
-    }
+      if (!entry?.outputs) {
+        if (isComfyUiStatusComplete(entry?.status)) {
+          promptEnded = true;
+          throw new Error("ComfyUI workflow completed without image outputs.");
+        }
+        continue;
+      }
+      promptEnded = true;
 
-    // Video Helper Suite's Video Combine reports animated WebP files as "gifs".
-    for (const outputKey of COMFYUI_OUTPUT_FILE_KEYS) {
-      for (const nodeOutput of Object.values(entry.outputs)) {
-        const outputFiles = nodeOutput[outputKey];
-        if (outputFiles && outputFiles.length > 0) {
-          const img = outputFiles[0]!;
-          const params = new URLSearchParams({
-            filename: img.filename,
-            subfolder: img.subfolder || "",
-            type: img.type || "output",
-          });
+      // Video Helper Suite's Video Combine reports animated WebP files as "gifs".
+      for (const outputKey of COMFYUI_OUTPUT_FILE_KEYS) {
+        for (const nodeOutput of Object.values(entry.outputs)) {
+          const outputFiles = nodeOutput[outputKey];
+          if (outputFiles && outputFiles.length > 0) {
+            const img = outputFiles[0]!;
+            const params = new URLSearchParams({
+              filename: img.filename,
+              subfolder: img.subfolder || "",
+              type: img.type || "output",
+            });
 
-          const imgResp = await localImageBackendFetch(`${base}/view?${params}`, {
-            signal: imageRequestSignal(request),
-          });
-          if (!imgResp.ok) {
-            throw new Error(`ComfyUI image fetch failed (${imgResp.status})`);
+            const imgResp = await localImageBackendFetch(`${base}/view?${params}`, {
+              signal: imageRequestSignal(request),
+            });
+            if (!imgResp.ok) {
+              throw new Error(`ComfyUI image fetch failed (${imgResp.status})`);
+            }
+
+            const arrayBuffer = await imgResp.arrayBuffer();
+            const base64 = Buffer.from(arrayBuffer).toString("base64");
+            const { mimeType, ext } = imageResultMetadata(img.filename, imgResp.headers.get("content-type"), base64);
+            return { base64, mimeType, ext };
           }
-
-          const arrayBuffer = await imgResp.arrayBuffer();
-          const base64 = Buffer.from(arrayBuffer).toString("base64");
-          const { mimeType, ext } = imageResultMetadata(img.filename, imgResp.headers.get("content-type"), base64);
-          return { base64, mimeType, ext };
         }
       }
+
+      if (isComfyUiStatusComplete(entry.status)) {
+        throw new Error("ComfyUI workflow completed without image outputs.");
+      }
+      // Outputs are present but not final yet; the prompt may still be running.
+      promptEnded = false;
     }
 
-    if (isComfyUiStatusComplete(entry.status)) {
-      throw new Error("ComfyUI workflow completed without image outputs.");
-    }
+    throw new Error(`ComfyUI generation timed out after ${Math.round(pollTimeoutMs / 1000)} seconds`);
+  } catch (err) {
+    // Abort, deadline or lost connection: tell ComfyUI to drop the prompt so it does not
+    // keep holding the GPU after Marinara has given up on it. Best effort, not awaited.
+    if (!promptEnded) void cancelComfyUiPrompt(base, promptId);
+    throw err;
   }
+}
 
-  throw new Error(`ComfyUI generation timed out after ${Math.round(pollTimeoutMs / 1000)} seconds`);
+/**
+ * Best-effort cancel of a ComfyUI prompt that Marinara stopped waiting for. Interrupts it
+ * only when it is the one currently running (a bare /interrupt would stop whatever prompt
+ * is running, possibly another client's); otherwise removes it from the pending queue.
+ */
+export async function cancelComfyUiPrompt(base: string, promptId: string): Promise<void> {
+  try {
+    const queueResp = await localImageBackendFetch(`${base}/queue`, { signal: AbortSignal.timeout(5000) });
+    const queueJson = queueResp.ok
+      ? ((await queueResp.json().catch(() => null)) as { queue_running?: unknown } | null)
+      : null;
+    const running =
+      Array.isArray(queueJson?.queue_running) &&
+      queueJson.queue_running.some((item) => Array.isArray(item) && item[1] === promptId);
+    if (running) {
+      await localImageBackendFetch(`${base}/interrupt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt_id: promptId }),
+        signal: AbortSignal.timeout(5000),
+      });
+    } else {
+      await localImageBackendFetch(`${base}/queue`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ delete: [promptId] }),
+        signal: AbortSignal.timeout(5000),
+      });
+    }
+  } catch (err) {
+    logger.warn(err, "[comfyui] Failed to cancel abandoned prompt %s", promptId);
+  }
 }
 
 // ── SwarmUI ──

@@ -65,3 +65,35 @@ export function matchesCardLibrarySearch(document: CardLibrarySearchDocument, qu
     .filter((value): value is string => typeof value === "string")
     .some((value) => includesTextForMatch(value, query.text));
 }
+
+/**
+ * A card's search fields normalized once. Normalizing long descriptions on every keystroke
+ * dominated library search time; build this once per loaded card list and reuse it.
+ */
+export type CardLibrarySearchIndex = {
+  tags: ReadonlySet<string>;
+  texts: readonly string[];
+};
+
+export function buildCardLibrarySearchIndex(document: CardLibrarySearchDocument): CardLibrarySearchIndex {
+  const tags = document.tags ?? [];
+  const texts = [
+    document.name,
+    document.title,
+    document.meta,
+    document.summary,
+    ...tags,
+    ...(document.sections ?? []).map((section) => section.content),
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => normalizeTextForMatch(value))
+    .filter(Boolean);
+  return { tags: new Set(tags.map((tag) => normalizeTextForMatch(tag))), texts };
+}
+
+/** Same answer as matchesCardLibrarySearch on the document the index was built from. */
+export function matchesCardLibrarySearchIndex(index: CardLibrarySearchIndex, query: CardLibrarySearchQuery): boolean {
+  if (query.excludedTags.some((tag) => index.tags.has(tag))) return false;
+  if (!query.text) return true;
+  return index.texts.some((text) => text.includes(query.text));
+}

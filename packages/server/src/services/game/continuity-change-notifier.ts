@@ -1,6 +1,8 @@
 import type { FastifyInstance } from "fastify";
+import { randomUUID } from "node:crypto";
 import { createChatsStorage } from "../storage/chats.storage.js";
 import { logger } from "../../lib/logger.js";
+import { runWithRootDiagnosticContext } from "../../lib/diagnostics.js";
 import { forgetCampaignMemoryCache } from "./campaign-memory-campaign-scope.js";
 
 /**
@@ -17,13 +19,35 @@ export function createContinuityChangeNotifier(app: FastifyInstance, delayMs = 2
   let closed = false;
 
   async function run(chatId: string, changedMessageIds: string[]): Promise<void> {
+    const startedAt = Date.now();
     try {
       const chat = await chats.getById(chatId);
       if (!chat || chat.mode !== "game") return;
       await app.gameContinuity.reconcileChat(chatId, { changedMessageIds });
       await app.sessionSummaryRefresh?.onDependencyChanged(chatId);
+      logger.debug(
+        {
+          event: "continuity.reconcile",
+          chatId,
+          changedMessages: changedMessageIds.length,
+          outcome: "ok",
+          elapsedMs: Date.now() - startedAt,
+        },
+        "[game-continuity] source change reconciled",
+      );
     } catch (error) {
-      logger.warn(error, "[game-continuity] source change reconcile failed for chat %s", chatId);
+      logger.warn(
+        {
+          event: "continuity.reconcile",
+          chatId,
+          changedMessages: changedMessageIds.length,
+          outcome: "failed",
+          elapsedMs: Date.now() - startedAt,
+          err: error,
+        },
+        "[game-continuity] source change reconcile failed for chat %s",
+        chatId,
+      );
     }
   }
 
@@ -48,7 +72,11 @@ export function createContinuityChangeNotifier(app: FastifyInstance, delayMs = 2
         timers.delete(chatId);
         const ids = [...(changedMessages.get(chatId) ?? [])];
         changedMessages.delete(chatId);
-        void run(chatId, ids);
+        // A debounce timer carries whichever request context armed it first; start a fresh root instead.
+        void runWithRootDiagnosticContext(
+          { operation: "game.continuity.reconcile", operationId: randomUUID(), chatId },
+          () => run(chatId, ids),
+        );
       }, delayMs);
       timer.unref?.();
       timers.set(chatId, timer);
