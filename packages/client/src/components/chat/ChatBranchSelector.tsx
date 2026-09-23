@@ -330,7 +330,10 @@ export function ChatBranchSelector({
                   type="button"
                   onClick={() => setOpen(false)}
                   aria-label={localizeUi("ui.chat.chatbranchselector.closeChatBranches")}
-                  className={NEUTRAL_PANEL_CLOSE_BUTTON}
+                  className={cn(
+                    NEUTRAL_PANEL_CLOSE_BUTTON,
+                    "shrink-0 max-md:flex max-md:h-9 max-md:w-9 max-md:items-center max-md:justify-center",
+                  )}
                 >
                   <X size={NEUTRAL_PANEL_CLOSE_ICON_SIZE} />
                 </button>
@@ -416,7 +419,7 @@ export function ChatBranchSelector({
                   <div
                     key={branch.id}
                     className={cn(
-                      "flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition-colors",
+                      "flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition-colors max-md:gap-2 max-md:px-2",
                       isActive ? "bg-[var(--accent)]/70 text-[var(--foreground)]" : "hover:bg-[var(--accent)]/45",
                     )}
                   >
@@ -441,17 +444,17 @@ export function ChatBranchSelector({
 
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-sm font-medium">{getChatDisplayName(branch)}</div>
-                        <div className="text-[0.6875rem] text-[var(--muted-foreground)]">
+                        <div className="truncate text-[0.6875rem] text-[var(--muted-foreground)]">
                           {localizeUi("chat.branches.updatedAt", { date: updatedAt })}
                         </div>
                       </div>
                     </button>
 
-                    <div className="flex shrink-0 items-center gap-1">
+                    <div className="flex shrink-0 items-center gap-1 max-md:gap-0">
                       <button
                         type="button"
                         onClick={() => void handleRenameBranch(branch)}
-                        className="rounded-lg p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+                        className="rounded-lg p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] max-md:flex max-md:h-9 max-md:w-9 max-md:items-center max-md:justify-center"
                         title={localizeUi("ui.chat.chatbranchselector.renameBranch_09bac0c")}
                         aria-label={localizeUi("chat.branches.renameLabel", {
                           name: getChatDisplayName(branch),
@@ -463,7 +466,7 @@ export function ChatBranchSelector({
                         type="button"
                         onClick={() => void handleDeleteBranch(branch.id)}
                         disabled={deleteChat.isPending}
-                        className="rounded-lg p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:opacity-50"
+                        className="rounded-lg p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] max-md:flex max-md:h-9 max-md:w-9 max-md:items-center max-md:justify-center"
                         title={localizeUi("ui.chat.chatbranchselector.deleteBranch_5478e60")}
                         aria-label={localizeUi("chat.branches.deleteLabel", {
                           name: getChatDisplayName(branch),

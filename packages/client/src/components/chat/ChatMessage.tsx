@@ -2,6 +2,7 @@ import { useMessagePresetVariables } from "../../hooks/use-message-preset-variab
 // ──────────────────────────────────────────────
 // Chat: Message — mode-aware rendering
 // ──────────────────────────────────────────────
+import { AvatarImage } from "../characters/AvatarImage";
 import { createPortal } from "react-dom";
 import { cn, copyToClipboard, getAvatarCropStyle, isLegacyAvatarCrop } from "../../lib/utils";
 import { normalizeAvatarCrop, type AvatarCrop } from "@marinara-engine/shared";
@@ -112,7 +113,6 @@ import { MESSAGE_ACTION_ICON_SIZE, MessageActionButton, useMessageActionMenu } f
 import { MessageMarkIndicators, MessageMarksAction, readMessageMarks } from "./MessageMarks";
 import { RoleplayStoryboardMessageMedia } from "./RoleplayStoryboardMessageMedia";
 import { MessageEditTextarea } from "./MessageEditTextarea";
-import { applyTextareaQuoteFormat } from "../../lib/textarea-quotes";
 import { GenerationTokenUsage } from "./GenerationTokenUsage";
 import { CharacterPhoto } from "../ui/CharacterPhoto";
 
@@ -777,99 +777,6 @@ function HiddenFromAIMessageSummary({
     </button>
   );
 }
-
-/** Isolated edit textarea — uncontrolled to avoid React re-renders on every keystroke. */
-const EditTextarea = memo(function EditTextarea({
-  initialContent,
-  fontSize,
-  quoteFormat,
-  saving,
-  onSave,
-  onCancel,
-}: {
-  initialContent: string;
-  fontSize: string | number | undefined;
-  quoteFormat: QuoteFormat;
-  saving: boolean;
-  onSave: (content: string) => void | Promise<void>;
-  onCancel: () => void;
-}) {
-  const { t: localizeUi } = useUiTranslation();
-  const ref = useRef<HTMLTextAreaElement>(null);
-
-  const autoResize = useCallback(() => {
-    const el = ref.current;
-    if (!el) return;
-    // Find the nearest scrollable ancestor so we can freeze its scroll
-    // position while we re-measure the textarea height.
-    const scroller = el.closest("[data-chat-scroll]") as HTMLElement | null;
-    const scrollTop = scroller?.scrollTop ?? 0;
-    el.style.height = "0";
-    el.style.height = el.scrollHeight + "px";
-    if (scroller) scroller.scrollTop = scrollTop;
-  }, []);
-
-  useLayoutEffect(() => {
-    if (ref.current) {
-      autoResize();
-      if (window.matchMedia("(max-width: 767px)").matches) ref.current.setSelectionRange(0, 0);
-      ref.current.focus({ preventScroll: true });
-    }
-  }, [autoResize]);
-
-  const handleSave = useCallback(() => {
-    if (ref.current) void onSave(formatTextQuotes(ref.current.value, quoteFormat));
-  }, [onSave, quoteFormat]);
-
-  return (
-    <div className="relative isolate z-20 flex flex-col gap-2 max-md:gap-0">
-      <textarea
-        ref={ref}
-        data-chat-message-editor="true"
-        defaultValue={formatTextQuotes(initialContent, quoteFormat)}
-        readOnly={saving}
-        aria-busy={saving}
-        aria-keyshortcuts="Control+Enter Meta+Enter"
-        rows={1}
-        onInput={(event) => {
-          applyTextareaQuoteFormat(event.currentTarget, quoteFormat, event.nativeEvent as InputEvent);
-          autoResize();
-        }}
-        onKeyDown={(e) => {
-          if (saving) return;
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSave();
-          if (e.key === "Escape") onCancel();
-        }}
-        className="relative z-0 w-full resize-none overflow-y-auto overscroll-contain rounded-lg bg-black/30 px-3 py-2 text-white outline-none ring-1 ring-white/20 focus:ring-blue-400/50 max-md:max-h-[min(60dvh,32rem)]"
-        style={{ fontSize, lineHeight: 1.5 }}
-      />
-      <div className="pointer-events-auto relative z-30 flex items-center justify-end gap-1.5">
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={saving}
-          aria-label={localizeUi("ui.chat.edittextarea.cancelEdit")}
-          className="pointer-events-auto relative z-30 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-white/40 hover:bg-white/10 hover:text-white/70 disabled:pointer-events-none disabled:opacity-50"
-          title={localizeUi("ui.chat.edittextarea.cancelEsc")}
-        >
-          <X size="0.8125rem" />
-        </button>
-        <button
-          type="button"
-          onClick={handleSave}
-          disabled={saving}
-          aria-label={localizeUi("ui.chat.edittextarea.saveEdit")}
-          className="pointer-events-auto relative z-30 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-emerald-400/70 hover:bg-emerald-400/10 hover:text-emerald-400 disabled:pointer-events-none disabled:opacity-50"
-          title={localizeUi("ui.chat.edittextarea.saveCmdEnter")}
-        >
-          <Check size="0.8125rem" />
-        </button>
-      </div>
-    </div>
-  );
-});
-
-void EditTextarea;
 
 /** Props for a single rendered chat message, including optional scene fork actions. */
 interface ChatMessageProps {
@@ -3309,7 +3216,12 @@ export const ChatMessage = memo(function ChatMessage({
                   wrapperClassName="block h-full w-full"
                   onUpdate={onUpdateCharacter}
                 >
-                  <img src={displayAvatarUrl} alt="" className="h-full w-full object-cover" style={vnAvatarCropStyle} />
+                  <AvatarImage
+                    src={displayAvatarUrl}
+                    alt=""
+                    className="h-full w-full object-cover"
+                    style={vnAvatarCropStyle}
+                  />
                 </CharacterPhoto>
               ) : (
                 <button
@@ -3318,7 +3230,12 @@ export const ChatMessage = memo(function ChatMessage({
                   onClick={() => openImageLightbox(displayAvatarUrl)}
                   aria-label={localizeUi("ui.chat.chatmessage.openValue1Avatar", { value1: displayName })}
                 >
-                  <img src={displayAvatarUrl} alt="" className="h-full w-full object-cover" style={vnAvatarCropStyle} />
+                  <AvatarImage
+                    src={displayAvatarUrl}
+                    alt=""
+                    className="h-full w-full object-cover"
+                    style={vnAvatarCropStyle}
+                  />
                 </button>
               )
             ) : (
@@ -3626,11 +3543,10 @@ export const ChatMessage = memo(function ChatMessage({
                       wrapperClassName="relative inline-flex items-center gap-1"
                       onUpdate={onUpdateCharacter}
                     >
-                      <img
+                      <AvatarImage
                         src={displayAvatarUrl}
                         alt=""
                         loading="lazy"
-                        decoding="async"
                         className="h-full w-full object-cover"
                         style={compactAvatarCropStyle}
                       />
@@ -3645,11 +3561,10 @@ export const ChatMessage = memo(function ChatMessage({
                       onClick={() => openImageLightbox(displayAvatarUrl)}
                       aria-label={localizeUi("ui.chat.chatmessage.openValue1Avatar", { value1: displayName })}
                     >
-                      <img
+                      <AvatarImage
                         src={displayAvatarUrl}
                         alt=""
                         loading="lazy"
-                        decoding="async"
                         className="h-full w-full object-cover"
                         style={compactAvatarCropStyle}
                       />
@@ -3827,11 +3742,10 @@ export const ChatMessage = memo(function ChatMessage({
                             wrapperClassName="absolute inset-0 block"
                             onUpdate={onUpdateCharacter}
                           >
-                            <img
+                            <AvatarImage
                               src={displayAvatarUrl}
                               alt=""
                               loading="lazy"
-                              decoding="async"
                               className="h-full w-full object-cover object-top"
                               style={panelAvatarCropStyle}
                             />
@@ -3846,11 +3760,10 @@ export const ChatMessage = memo(function ChatMessage({
                             onClick={() => openImageLightbox(displayAvatarUrl)}
                             aria-label={localizeUi("ui.chat.chatmessage.openValue1Avatar", { value1: displayName })}
                           >
-                            <img
+                            <AvatarImage
                               src={displayAvatarUrl}
                               alt=""
                               loading="lazy"
-                              decoding="async"
                               className="h-full w-full object-cover object-top"
                               style={panelAvatarCropStyle}
                             />
@@ -4144,11 +4057,10 @@ export const ChatMessage = memo(function ChatMessage({
                   wrapperClassName="relative inline-flex items-center gap-1"
                   onUpdate={onUpdateCharacter}
                 >
-                  <img
+                  <AvatarImage
                     src={displayAvatarUrl}
                     alt=""
                     loading="lazy"
-                    decoding="async"
                     className="h-full w-full object-cover"
                     style={avatarCropStyle}
                   />
@@ -4160,11 +4072,10 @@ export const ChatMessage = memo(function ChatMessage({
                   onClick={() => openImageLightbox(displayAvatarUrl)}
                   aria-label={localizeUi("ui.chat.chatmessage.openValue1Avatar", { value1: displayName })}
                 >
-                  <img
+                  <AvatarImage
                     src={displayAvatarUrl}
                     alt=""
                     loading="lazy"
-                    decoding="async"
                     className="h-full w-full object-cover"
                     style={avatarCropStyle}
                   />

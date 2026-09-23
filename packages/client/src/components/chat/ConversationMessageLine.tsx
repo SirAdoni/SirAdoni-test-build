@@ -1,6 +1,7 @@
 // ──────────────────────────────────────────────
 // Linear message layout (chat-style rows)
 // ──────────────────────────────────────────────
+import { AvatarImage } from "../characters/AvatarImage";
 import { User } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { PendingTypingDots } from "./PendingTypingDots";
@@ -115,7 +116,7 @@ export function ConversationMessageLine({ ctx }: { ctx: MessageRenderContext }) 
                 )}
                 onUpdate={onUpdateCharacter ? () => onUpdateCharacter(characterId) : undefined}
               >
-                <img
+                <AvatarImage
                   src={avatarUrl}
                   alt=""
                   loading="lazy"
@@ -138,7 +139,7 @@ export function ConversationMessageLine({ ctx }: { ctx: MessageRenderContext }) 
                 )}
               >
                 {avatarUrl ? (
-                  <img
+                  <AvatarImage
                     src={avatarUrl}
                     alt=""
                     loading="lazy"
@@ -154,7 +155,7 @@ export function ConversationMessageLine({ ctx }: { ctx: MessageRenderContext }) 
             ) : (
               <div className={cn("relative h-10 w-10 overflow-hidden bg-[var(--accent)]", avatarCornerClass)}>
                 {avatarUrl ? (
-                  <img
+                  <AvatarImage
                     src={avatarUrl}
                     alt=""
                     loading="lazy"

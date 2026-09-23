@@ -154,6 +154,8 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
 
   const jumpToMessage = (messageNumber: number) => {
     useChatStore.getState().requestGotoMessage(chatId, messageNumber);
+    // On phones the panel covers most of the transcript, so close it to reveal the match.
+    if (window.matchMedia("(max-width: 767px)").matches) setOpen(false);
   };
 
   return (

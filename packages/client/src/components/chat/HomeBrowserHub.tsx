@@ -2671,37 +2671,37 @@ export function HomeBrowserHub({
                   <div className="grid w-full max-w-md grid-cols-3 gap-2" aria-label={t("home.shortcuts.label")}>
                     <HomeNewChatLauncher
                       mode="conversation"
-                      className="group !h-auto !min-h-11 !w-full !gap-1.5 !border-[color-mix(in_srgb,var(--home-chat-mode-accent)_35%,var(--border))] !bg-[color-mix(in_srgb,var(--home-chat-mode-accent)_7%,var(--card))] !px-2 !py-1 !text-center sm:!min-h-9"
+                      className="group !h-auto !min-h-11 !w-full !gap-1.5 !border-[color-mix(in_srgb,var(--home-chat-mode-accent)_35%,var(--border))] !bg-[color-mix(in_srgb,var(--home-chat-mode-accent)_7%,var(--card))] !px-1.5 !py-1.5 !text-center max-sm:!flex-col max-sm:!gap-1 sm:!min-h-9 sm:!px-2 sm:!py-1"
                       ariaLabel={t("home.shortcuts.newConversation")}
                     >
                       <ShortcutIcon tone={HOME_CHAT_MODE_ACCENTS.conversation}>
                         <ChatModeIcon mode="conversation" size="1rem" className="mari-rgb-static-icon" />
                       </ShortcutIcon>
-                      <span className="text-[0.65rem] font-bold text-[var(--foreground)] sm:text-xs">
+                      <span className="max-w-full truncate text-[0.65rem] font-bold text-[var(--foreground)] sm:text-xs">
                         {t("home.recentChats.mode.conversation")}
                       </span>
                     </HomeNewChatLauncher>
                     <HomeNewChatLauncher
                       mode="roleplay"
-                      className="group !h-auto !min-h-11 !w-full !gap-1.5 !border-[color-mix(in_srgb,var(--home-chat-mode-accent)_35%,var(--border))] !bg-[color-mix(in_srgb,var(--home-chat-mode-accent)_7%,var(--card))] !px-2 !py-1 !text-center sm:!min-h-9"
+                      className="group !h-auto !min-h-11 !w-full !gap-1.5 !border-[color-mix(in_srgb,var(--home-chat-mode-accent)_35%,var(--border))] !bg-[color-mix(in_srgb,var(--home-chat-mode-accent)_7%,var(--card))] !px-1.5 !py-1.5 !text-center max-sm:!flex-col max-sm:!gap-1 sm:!min-h-9 sm:!px-2 sm:!py-1"
                       ariaLabel={t("home.shortcuts.newRoleplay")}
                     >
                       <ShortcutIcon tone={HOME_CHAT_MODE_ACCENTS.roleplay}>
                         <ChatModeIcon mode="roleplay" size="1rem" className="mari-rgb-static-icon" />
                       </ShortcutIcon>
-                      <span className="text-[0.65rem] font-bold text-[var(--foreground)] sm:text-xs">
+                      <span className="max-w-full truncate text-[0.65rem] font-bold text-[var(--foreground)] sm:text-xs">
                         {t("home.recentChats.mode.roleplay")}
                       </span>
                     </HomeNewChatLauncher>
                     <HomeNewChatLauncher
                       mode="game"
-                      className="group !h-auto !min-h-11 !w-full !gap-1.5 !border-[color-mix(in_srgb,var(--home-chat-mode-accent)_35%,var(--border))] !bg-[color-mix(in_srgb,var(--home-chat-mode-accent)_7%,var(--card))] !px-2 !py-1 !text-center sm:!min-h-9"
+                      className="group !h-auto !min-h-11 !w-full !gap-1.5 !border-[color-mix(in_srgb,var(--home-chat-mode-accent)_35%,var(--border))] !bg-[color-mix(in_srgb,var(--home-chat-mode-accent)_7%,var(--card))] !px-1.5 !py-1.5 !text-center max-sm:!flex-col max-sm:!gap-1 sm:!min-h-9 sm:!px-2 sm:!py-1"
                       ariaLabel={t("home.shortcuts.newGame")}
                     >
                       <ShortcutIcon tone={HOME_CHAT_MODE_ACCENTS.game}>
                         <ChatModeIcon mode="game" size="1rem" className="mari-rgb-static-icon" />
                       </ShortcutIcon>
-                      <span className="text-[0.65rem] font-bold text-[var(--foreground)] sm:text-xs">
+                      <span className="max-w-full truncate text-[0.65rem] font-bold text-[var(--foreground)] sm:text-xs">
                         {t("home.recentChats.mode.game")}
                       </span>
                     </HomeNewChatLauncher>

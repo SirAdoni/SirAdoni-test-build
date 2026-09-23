@@ -1,6 +1,7 @@
 // ──────────────────────────────────────────────
 // Grouped multi-speaker message layout (merged group chat / Name: text format)
 // ──────────────────────────────────────────────
+import { AvatarImage } from "../characters/AvatarImage";
 import { Fragment, type ReactNode, type RefObject } from "react";
 import { normalizeTextForMatch } from "@marinara-engine/shared";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
@@ -263,7 +264,7 @@ export function ConversationMessageGrouped({
                             wrapperClassName="block h-full w-full"
                             onUpdate={onUpdateCharacter ? () => onUpdateCharacter(segSelfId) : undefined}
                           >
-                            <img
+                            <AvatarImage
                               src={segAvatar}
                               alt=""
                               loading="lazy"
@@ -272,7 +273,7 @@ export function ConversationMessageGrouped({
                             />
                           </CharacterPhoto>
                         ) : (
-                          <img
+                          <AvatarImage
                             src={segAvatar}
                             alt=""
                             loading="lazy"
@@ -350,7 +351,7 @@ export function ConversationMessageGrouped({
                             wrapperClassName="block h-full w-full"
                             onUpdate={onUpdateCharacter ? () => onUpdateCharacter(segSelfId) : undefined}
                           >
-                            <img
+                            <AvatarImage
                               src={segAvatar}
                               alt=""
                               loading="lazy"
@@ -359,7 +360,7 @@ export function ConversationMessageGrouped({
                             />
                           </CharacterPhoto>
                         ) : (
-                          <img
+                          <AvatarImage
                             src={segAvatar}
                             alt=""
                             loading="lazy"

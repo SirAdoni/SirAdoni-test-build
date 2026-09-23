@@ -1,4 +1,5 @@
 import { createPortal } from "react-dom";
+import { AvatarImage } from "../characters/AvatarImage";
 import {
   useCallback,
   useEffect,
@@ -576,9 +577,10 @@ export function ConversationPresenceCard({
                   wrapperClassName="relative inline-flex shrink-0 items-center gap-0.5"
                   onUpdate={() => openCharacterDetail(characters[0].id)}
                 >
-                  <img
+                  <AvatarImage
+                    iconSize="0.75rem"
                     src={characters[0].avatarUrl}
-                    alt={characters[0].name}
+                    alt=""
                     className="h-full w-full object-cover"
                     style={getAvatarCropStyle(characters[0].avatarCrop)}
                   />
@@ -615,9 +617,10 @@ export function ConversationPresenceCard({
                       wrapperClassName="relative inline-flex shrink-0 items-center gap-0.5"
                       onUpdate={() => openCharacterDetail(character.id)}
                     >
-                      <img
+                      <AvatarImage
+                        iconSize="0.75rem"
                         src={character.avatarUrl}
-                        alt={character.name}
+                        alt=""
                         className="h-full w-full object-cover"
                         style={getAvatarCropStyle(character.avatarCrop)}
                       />
@@ -732,9 +735,9 @@ export function ConversationPresenceCard({
                             className="relative block h-9 w-9 shrink-0 overflow-hidden rounded-xl ring-1 ring-[var(--border)]/80"
                             onUpdate={() => openCharacterDetail(character.id)}
                           >
-                            <img
+                            <AvatarImage
                               src={character.avatarUrl}
-                              alt={character.name}
+                              alt=""
                               className="h-full w-full object-cover"
                               style={getAvatarCropStyle(character.avatarCrop)}
                             />

@@ -5811,7 +5811,7 @@ assert.match(
   /function ConversationStartMarkers[\s\S]*className=\{cn\("w-full", panel \? "mb-1 px-1" : "mb-0\.5 px-2"\)\}/u,
   "Roleplay New Start dividers must span user and assistant message bodies",
 );
-assert.match(chatMessageSource, /pointer-events-auto relative z-30 flex h-11 w-11/u);
+// The live message editor (MessageEditTextarea) carries the 44px edit controls; see below.
 assert.equal(
   chatMessageSource.match(/\(showActions \|\| editing\) && "opacity-100"/gu)?.length,
   2,

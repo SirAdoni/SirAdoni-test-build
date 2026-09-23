@@ -1,6 +1,7 @@
 // ──────────────────────────────────────────────
 // Bubble message layout (Messenger-style)
 // ──────────────────────────────────────────────
+import { AvatarImage } from "../characters/AvatarImage";
 import { User } from "lucide-react";
 import { normalizeTextForMatch, splitGroupedSegmentDisplayLines } from "@marinara-engine/shared";
 import { cn } from "../../lib/utils";
@@ -131,7 +132,7 @@ export function ConversationMessageBubble({ ctx }: { ctx: MessageRenderContext }
                   )}
                   onUpdate={onUpdateCharacter ? () => onUpdateCharacter(characterId) : undefined}
                 >
-                  <img
+                  <AvatarImage
                     src={avatarUrl}
                     alt=""
                     loading="lazy"
@@ -153,7 +154,7 @@ export function ConversationMessageBubble({ ctx }: { ctx: MessageRenderContext }
                   )}
                 >
                   {avatarUrl ? (
-                    <img
+                    <AvatarImage
                       src={avatarUrl}
                       alt=""
                       loading="lazy"
@@ -169,7 +170,7 @@ export function ConversationMessageBubble({ ctx }: { ctx: MessageRenderContext }
               ) : (
                 <div className={cn("relative h-10 w-10 overflow-hidden bg-[var(--accent)]", avatarCornerClass)}>
                   {avatarUrl ? (
-                    <img
+                    <AvatarImage
                       src={avatarUrl}
                       alt=""
                       loading="lazy"
