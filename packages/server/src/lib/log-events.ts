@@ -59,6 +59,7 @@ export type EventName =
   | "generation.finished"
   | "generation.abort"
   | "generation.empty_response"
+  | "generation.influence_consume"
   | "agent.result"
   | "agent.run"
   | "agent.batch"

@@ -120,11 +120,8 @@ export async function downloadFileWithProgress(options: DownloadFileOptions): Pr
   } catch {
     // Best-effort cleanup for stale temp files.
   }
-  try {
-    if (existsSync(options.destPath)) unlinkSync(options.destPath);
-  } catch {
-    // Best-effort cleanup for stale destination files.
-  }
+  // Leave any existing destination in place until the new file has been verified:
+  // renameSync below replaces it atomically, so a failed or aborted download keeps it.
 
   const startedAt = Date.now();
   const host = hostOf(options.url);

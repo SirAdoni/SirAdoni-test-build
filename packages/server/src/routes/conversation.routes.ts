@@ -405,6 +405,34 @@ export async function conversationRoutes(app: FastifyInstance) {
   const chars = createCharactersStorage(app.db);
   const connections = createConnectionsStorage(app.db);
 
+  /**
+   * Seed a chat's in-memory activity state from its transcript once per
+   * process (#5592 PR-B). Repeat calls make no transcript read. Concurrent
+   * callers share one in-flight read; the latch lands only after the seed
+   * succeeds, so a rejected read is retried by the next call.
+   */
+  async function ensureAutonomousActivitySeeded(chatId: string): Promise<void> {
+    if (seededAutonomousActivityChats.has(chatId)) return;
+    let seeding = autonomousActivitySeeds.get(chatId);
+    if (!seeding) {
+      seeding = (async () => {
+        const seedMessages = await chats.listMessages(chatId);
+        initializeActivityFromMessages(
+          chatId,
+          seedMessages as Array<{ role: string; createdAt?: string; characterId?: string | null }>,
+        );
+        seededAutonomousActivityChats.add(chatId);
+      })();
+      autonomousActivitySeeds.set(chatId, seeding);
+      // The .finally chain is a DERIVED promise: when the seed rejects, it
+      // rejects too, and leaving it unhandled would trip the process-level
+      // unhandledRejection exit. The caller still awaits (and surfaces) the
+      // original rejection below.
+      void seeding.finally(() => autonomousActivitySeeds.delete(chatId)).catch(() => undefined);
+    }
+    await seeding;
+  }
+
   async function rememberConversationTimeZone(timeZone: string): Promise<number> {
     const allChats = await chats.list();
     let updatedChats = 0;
@@ -789,8 +817,11 @@ export async function conversationRoutes(app: FastifyInstance) {
           "free time",
           scheduleNow,
         );
+        // Patch only the keys this route owns. charData was read before the
+        // (slow) LLM call, so spreading its extensions would revert any
+        // extension change made meanwhile; the storage transaction merges
+        // these keys into the live row.
         const extensions = {
-          ...(charData.extensions ?? {}),
           conversationStatus: status,
           conversationSchedule: fullSchedule,
         };
@@ -886,8 +917,8 @@ export async function conversationRoutes(app: FastifyInstance) {
             !characterOwnsSchedule &&
             (currentExtensions.conversationStatus !== status || currentExtensions.conversationActivity !== activity)
           ) {
+            // Partial patch: the storage merge keeps every other live key.
             const extensions: Record<string, unknown> = {
-              ...currentExtensions,
               conversationStatus: status,
               conversationActivity: activity,
             };
@@ -916,8 +947,8 @@ export async function conversationRoutes(app: FastifyInstance) {
           charData!.extensions?.conversationStatus !== status ||
           charData!.extensions?.conversationActivity !== activity
         ) {
-          const extensions = {
-            ...(charData!.extensions ?? {}),
+          // Partial patch: the storage merge keeps every other live key.
+          const extensions: Record<string, unknown> = {
             conversationStatus: status,
             conversationActivity: activity,
           };
@@ -964,6 +995,10 @@ export async function conversationRoutes(app: FastifyInstance) {
   app.post<{
     Body: { chatId: string; userStatus?: AutonomousUserStatus };
   }>("/activity/presence", async (req, reply) => {
+    // Never (re)create activity state for a deleted or unknown chat: nothing
+    // would ever remove it again.
+    const chat = await chats.getById(req.body.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
     recordAutonomousClientPresence(req.body.chatId, normalizeAutonomousUserStatus(req.body.userStatus));
     return reply.send({ ok: true });
   });
@@ -976,11 +1011,11 @@ export async function conversationRoutes(app: FastifyInstance) {
   }>("/autonomous/check", async (req, reply) => {
     const { chatId } = req.body;
     const userStatus = normalizeAutonomousUserStatus(req.body.userStatus);
+    const chat = await chats.getById(chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
     if (req.body.source !== "server") {
       recordAutonomousClientPresence(chatId, userStatus);
     }
-    const chat = await chats.getById(chatId);
-    if (!chat) return reply.status(404).send({ error: "Chat not found" });
 
     const meta = typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : (chat.metadata ?? {});
     const promptTimeZone = resolveConversationTimeZone(meta);
@@ -1022,8 +1057,10 @@ export async function conversationRoutes(app: FastifyInstance) {
       const charData = JSON.parse(charRow.data as string);
       const currentStatus = charData.extensions?.conversationStatus;
       if (currentStatus !== status) {
-        const extensions = { ...(charData.extensions ?? {}), conversationStatus: status };
-        await chars.update(cid, { extensions } as any, undefined, { skipVersionSnapshot: true });
+        // Partial patch: the storage merge keeps every other live key.
+        await chars.update(cid, { extensions: { conversationStatus: status } } as Partial<CharacterData>, undefined, {
+          skipVersionSnapshot: true,
+        });
       }
     }
 
@@ -1035,30 +1072,7 @@ export async function conversationRoutes(app: FastifyInstance) {
     // user is actually looking at. After the seed, the in-memory activity
     // tracker answers everything this route needs, and an evicted unit stays
     // on disk until a message is genuinely due.
-    if (!seededAutonomousActivityChats.has(chatId)) {
-      // One in-flight seed per chat: latching BEFORE the read would let a
-      // concurrent check proceed unseeded (and a rejected read would latch
-      // the chat with no state until restart). Concurrent checks await the
-      // same promise; the latch lands only after the seed succeeds.
-      let seeding = autonomousActivitySeeds.get(chatId);
-      if (!seeding) {
-        seeding = (async () => {
-          const seedMessages = await chats.listMessages(chatId);
-          initializeActivityFromMessages(
-            chatId,
-            seedMessages as Array<{ role: string; createdAt?: string; characterId?: string | null }>,
-          );
-          seededAutonomousActivityChats.add(chatId);
-        })();
-        autonomousActivitySeeds.set(chatId, seeding);
-        // The .finally chain is a DERIVED promise: when the seed rejects, it
-        // rejects too, and leaving it unhandled would trip the process-level
-        // unhandledRejection exit. The route still awaits (and surfaces) the
-        // original rejection below.
-        void seeding.finally(() => autonomousActivitySeeds.delete(chatId)).catch(() => undefined);
-      }
-      await seeding;
-    }
+    await ensureAutonomousActivitySeeded(chatId);
 
     // Filter out characters busy in an active scene
     const sceneBusyCharIds = await resolveSceneBusyCharacterIds(chats, chatId, meta);
@@ -1268,11 +1282,9 @@ export async function conversationRoutes(app: FastifyInstance) {
     for (const busyId of sceneBusyCharIds) {
       delete filteredSchedules[busyId];
     }
-    const messages = await chats.listMessages(chatId);
-    initializeActivityFromMessages(
-      chatId,
-      messages as Array<{ role: string; createdAt?: string; characterId?: string | null }>,
-    );
+    // Seed once per process, shared with /autonomous/check, instead of reading
+    // the whole transcript on every exchange check.
+    await ensureAutonomousActivitySeeded(chatId);
 
     const result = checkCharacterExchange(
       chatId,

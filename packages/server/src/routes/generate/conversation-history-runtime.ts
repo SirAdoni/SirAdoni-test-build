@@ -209,6 +209,8 @@ export async function prepareConversationPromptHistory(args: {
   fallbackBaseUrl?: string;
   summaryEmbeddingOptions?: MemoryRecallEmbeddingOptions;
   summaryVectorizerAvailable?: boolean;
+  /** Request abort signal, passed to the summary LLM calls so Stop cancels them. */
+  signal?: AbortSignal;
 }): Promise<{ finalMessages: GenerationPromptMessage[]; importantMemoryBlock: string | null }> {
   const rolloverHour = Math.max(
     0,
@@ -295,6 +297,7 @@ export async function prepareConversationPromptHistory(args: {
     rolloverHour,
     timeZone: args.promptTimeZone,
     maxMissingDays: 2,
+    signal: args.signal,
   });
 
   const summaryFailure = conversationSummaryFailureFields(args.chatId, summaryRun);

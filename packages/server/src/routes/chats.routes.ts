@@ -117,6 +117,8 @@ import {
   conversationSummaryFailureFields,
   generateMissingConversationSummaries,
 } from "../services/conversation/auto-summary.service.js";
+import { resolveConversationTimeZone } from "../services/conversation/timezone.js";
+import { logSuppressed } from "../lib/best-effort.js";
 import { clearChatActivity, recordUserReaction } from "../services/conversation/autonomous.service.js";
 import { rebuildMemoryChunks } from "../services/memory-recall.js";
 import { createAdvancedMemoryService } from "../services/advanced-memory.js";
@@ -177,7 +179,13 @@ import {
 import { buildCommittedTrackerContextBlock } from "../services/generation/committed-tracker-context.js";
 import { normalizeBeholderState } from "../services/agents/beholder-state.js";
 import { parseLorebookWriteApprovalText } from "./generate/agent-write-approval.js";
-import { getLorebookNamingScheme, persistLorebookKeeperUpdates } from "./generate/lorebook-keeper-utils.js";
+import {
+  CUSTOM_LOREBOOK_BACKFILL_CURSOR_KEY,
+  getLorebookNamingScheme,
+  persistLorebookKeeperUpdates,
+  readCustomLorebookBackfillCursorPayload,
+  shouldAdvanceCustomLorebookBackfillCursor,
+} from "./generate/lorebook-keeper-utils.js";
 import {
   clampRoleplaySummaryMaxTokens,
   formatRoleplaySummaryChatLog,
@@ -1451,7 +1459,10 @@ export async function chatsRoutes(app: FastifyInstance) {
   app.patch<{ Params: { id: string } }>("/:id/metadata", async (req, reply) => {
     const chat = await storage.getById(req.params.id);
     if (!chat) return reply.status(404).send({ error: "Chat not found" });
-    const incoming = req.body as Record<string, unknown>;
+    const incoming = req.body as Record<string, unknown> | undefined;
+    if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) {
+      return reply.status(400).send({ error: "Request body must be a JSON object" });
+    }
     // Validate Discord webhook URL if provided
     if (typeof incoming.discordWebhookUrl === "string" && incoming.discordWebhookUrl.trim()) {
       const url = incoming.discordWebhookUrl.trim();
@@ -1919,6 +1930,35 @@ export async function chatsRoutes(app: FastifyInstance) {
         sourceMessageRefs: approvalRefs,
         updates,
       });
+      // A custom-agent backfill chunk only advances its cursor once its proposal is
+      // committed; without this, approval mode would re-run the same chunk forever.
+      const backfillCursor = readCustomLorebookBackfillCursorPayload(payload.backfillCursor);
+      if (backfillCursor) {
+        try {
+          const agentsStore = createAgentsStorage(app.db);
+          const memory = await agentsStore.getMemory(backfillCursor.agentConfigId, req.params.id);
+          const currentCursor =
+            typeof memory[CUSTOM_LOREBOOK_BACKFILL_CURSOR_KEY] === "string"
+              ? (memory[CUSTOM_LOREBOOK_BACKFILL_CURSOR_KEY] as string)
+              : null;
+          const orderedMessageIds = (await storage.listMessages(req.params.id)).map((message) => message.id);
+          if (shouldAdvanceCustomLorebookBackfillCursor(orderedMessageIds, currentCursor, backfillCursor.messageId)) {
+            await agentsStore.setMemory(
+              backfillCursor.agentConfigId,
+              req.params.id,
+              CUSTOM_LOREBOOK_BACKFILL_CURSOR_KEY,
+              backfillCursor.messageId,
+            );
+          }
+        } catch (err) {
+          logSuppressed(err, {
+            event: "agent.run",
+            stage: "backfill-cursor.approval-commit",
+            chatId: req.params.id,
+            agentConfigId: backfillCursor.agentConfigId,
+          });
+        }
+      }
       return { ok: true, targetLorebookId };
     }
 
@@ -2002,6 +2042,8 @@ export async function chatsRoutes(app: FastifyInstance) {
       personaName,
       charIdToName,
       rolloverHour: Math.max(0, Math.min(11, Math.floor((chatMeta.dayRolloverHour as number | undefined) ?? 4))),
+      // Bucket days in the chat's own time zone, like the generation path does.
+      timeZone: resolveConversationTimeZone(chatMeta),
       maxTokens: clampRoleplaySummaryMaxTokens(chatMeta.summaryMaxTokens),
       maxMissingDays,
     });
@@ -2040,7 +2082,7 @@ export async function chatsRoutes(app: FastifyInstance) {
 
   // Connect two chats bidirectionally
   app.post<{ Params: { id: string } }>("/:id/connect", async (req, reply) => {
-    const { targetChatId } = req.body as { targetChatId: string };
+    const { targetChatId } = (req.body ?? {}) as { targetChatId?: string };
     if (!targetChatId || typeof targetChatId !== "string") {
       return reply.status(400).send({ error: "targetChatId is required" });
     }
@@ -2115,13 +2157,15 @@ export async function chatsRoutes(app: FastifyInstance) {
       const meta = parseExtra(chat.metadata) as Record<string, unknown>;
       const originId = meta.sceneOriginChatId;
       if (typeof originId === "string" && originId) {
-        const origin = await storage.getById(originId);
-        if (origin) {
-          const originMeta = parseExtra(origin.metadata) as Record<string, unknown>;
-          delete originMeta.activeSceneChatId;
-          delete originMeta.sceneBusyCharIds;
-          await storage.updateMetadata(originId, originMeta);
-        }
+        // Only clear the pointer when it still names this chat: a concluded scene keeps its
+        // sceneOriginChatId while the origin may already point at a newer running scene.
+        // Queued patch so a concurrent metadata write on the origin is not overwritten.
+        const deletedChatId = req.params.id;
+        await storage.patchMetadata(originId, (current) =>
+          current.activeSceneChatId === deletedChatId
+            ? { activeSceneChatId: undefined, sceneBusyCharIds: undefined }
+            : {},
+        );
       }
     }
     const activeGenerations = (
@@ -2131,10 +2175,12 @@ export async function chatsRoutes(app: FastifyInstance) {
     ).activeGenerations;
     activeGenerations?.get(req.params.id)?.abortController?.abort();
     activeGenerations?.delete(req.params.id);
-    clearChatActivity(req.params.id);
     // Disconnect from partner chat before deleting
     await storage.disconnectChat(req.params.id);
     await storage.remove(req.params.id);
+    // Clear after the row is gone so an in-flight autonomous check that still
+    // found the chat cannot recreate the activity state afterwards.
+    clearChatActivity(req.params.id);
     return reply.status(204).send();
   });
 
@@ -2453,7 +2499,7 @@ export async function chatsRoutes(app: FastifyInstance) {
 
   // Bulk delete messages (moves them to the chat's trash)
   app.post<{ Params: { chatId: string } }>("/:chatId/messages/bulk-delete", async (req, reply) => {
-    const { messageIds } = req.body as { messageIds: string[] };
+    const { messageIds } = (req.body ?? {}) as { messageIds?: string[] };
     if (!Array.isArray(messageIds) || messageIds.length === 0) {
       return reply.status(400).send({ error: "messageIds array is required" });
     }
@@ -2516,7 +2562,7 @@ export async function chatsRoutes(app: FastifyInstance) {
 
   // Edit message content
   app.patch<{ Params: { chatId: string; messageId: string } }>("/:chatId/messages/:messageId", async (req, reply) => {
-    const { content } = req.body as { content: string };
+    const { content } = (req.body ?? {}) as { content?: string };
     if (typeof content !== "string") return reply.status(400).send({ error: "content is required" });
     const updated = await storage.updateMessageContent(req.params.messageId, content);
     if (!updated) return reply.status(404).send({ error: "Message not found" });
@@ -2648,7 +2694,7 @@ export async function chatsRoutes(app: FastifyInstance) {
   app.patch<{ Params: { chatId: string }; Body: { messageIds: string[]; hidden: boolean } }>(
     "/:chatId/messages/bulk-hidden",
     async (req, reply) => {
-      const { messageIds, hidden } = req.body;
+      const { messageIds, hidden } = (req.body ?? {}) as Partial<{ messageIds: string[]; hidden: boolean }>;
       if (!Array.isArray(messageIds) || messageIds.length === 0) {
         return reply.status(400).send({ error: "messageIds must be a non-empty array" });
       }
@@ -3941,18 +3987,22 @@ export async function chatsRoutes(app: FastifyInstance) {
   });
 
   // Add a swipe
-  app.post<{ Params: { chatId: string; messageId: string } }>("/:chatId/messages/:messageId/swipes", async (req) => {
-    const { content, silent } = req.body as { content: string; silent?: boolean };
-    const swipe = await storage.addSwipe(req.params.messageId, content, silent);
-    continuityChanges.notify(req.params.chatId, [req.params.messageId]);
-    return swipe;
-  });
+  app.post<{ Params: { chatId: string; messageId: string } }>(
+    "/:chatId/messages/:messageId/swipes",
+    async (req, reply) => {
+      const { content, silent } = (req.body ?? {}) as { content?: string; silent?: boolean };
+      if (typeof content !== "string") return reply.status(400).send({ error: "content is required" });
+      const swipe = await storage.addSwipe(req.params.messageId, content, silent);
+      continuityChanges.notify(req.params.chatId, [req.params.messageId]);
+      return swipe;
+    },
+  );
 
   // Add multiple swipes in one round trip. Used for alternate greetings during chat setup.
   app.post<{ Params: { chatId: string; messageId: string } }>(
     "/:chatId/messages/:messageId/swipes/bulk",
     async (req, reply) => {
-      const { contents, silent } = req.body as { contents?: unknown; silent?: boolean };
+      const { contents, silent } = (req.body ?? {}) as { contents?: unknown; silent?: boolean };
       if (!Array.isArray(contents)) {
         return reply.status(400).send({ error: "contents must be a non-empty array of strings" });
       }
@@ -4035,8 +4085,11 @@ export async function chatsRoutes(app: FastifyInstance) {
   // Set active swipe
   app.put<{ Params: { chatId: string; messageId: string } }>(
     "/:chatId/messages/:messageId/active-swipe",
-    async (req) => {
-      const { index } = req.body as { index: number };
+    async (req, reply) => {
+      const { index } = (req.body ?? {}) as { index?: unknown };
+      if (typeof index !== "number" || !Number.isInteger(index) || index < 0) {
+        return reply.status(400).send({ error: "index must be a non-negative integer" });
+      }
       const message = await storage.setActiveSwipe(req.params.messageId, index);
       continuityChanges.notify(req.params.chatId, [req.params.messageId]);
       return message;
@@ -4718,225 +4771,231 @@ export async function chatsRoutes(app: FastifyInstance) {
     });
 
     if (!newChat) return reply.status(500).send({ error: "Failed to create branch" });
-
-    // Copy metadata (preset, lorebooks, agents, persona settings, etc.) from source chat
-    // but keep branch labels separate from the stable thread name.
-    let settingsToKeep = { ...sourceMeta };
-    for (const key of ["summary", "summaryEntries", "lastAutomaticSummaryMessageId", "daySummaries", "weekSummaries"]) {
-      delete settingsToKeep[key];
-    }
-    delete settingsToKeep.gameNarrationIndex;
-    delete settingsToKeep.gameNarrationMessageId;
-    const sourceCutoffIndex = upToMessageId ? msgs.findIndex((msg) => msg.id === upToMessageId) : msgs.length - 1;
-    const sourceMessagesToCopy = msgs.slice(0, sourceCutoffIndex + 1);
-    const copiedSourceMessageIds = new Set(sourceMessagesToCopy.map((msg) => msg.id));
-    const firstOmittedMessage = msgs[sourceCutoffIndex + 1];
-    if (sourceChat.mode === "game" && firstOmittedMessage) {
-      if (settingsToKeep.gameJournal) {
-        settingsToKeep.gameJournal = trimJournalForBranch(
-          settingsToKeep.gameJournal as Journal,
-          copiedSourceMessageIds,
-          firstOmittedMessage.createdAt as string,
-        );
-      }
-      settingsToKeep.gameWidgetState = restoreBranchHudLists(sourceMeta, sourceMessagesToCopy);
-    }
-    const inheritedSourceEntries = sourceSummaryEntries.filter((entry) => {
-      if (!entry.messageIds?.length || !entry.messageIds.every((id) => copiedSourceMessageIds.has(id))) return false;
-      if (entry.rangeEndIndex && entry.rangeEndIndex > sourceMessagesToCopy.length) return false;
-      if (entry.hiddenMessageIds && !entry.hiddenMessageIds.every((id) => entry.messageIds!.includes(id))) return false;
-      return entry.hiddenMessageIds?.every((id) => copiedSourceMessageIds.has(id)) ?? true;
-    });
-    const inheritedHiddenIds = new Set(
-      inheritedSourceEntries.flatMap((entry) => entry.hiddenMessageIds ?? entry.messageIds ?? []),
-    );
-    const droppedHiddenIds = new Set(
-      sourceSummaryEntries
-        .filter((entry) => !inheritedSourceEntries.some((inherited) => inherited.id === entry.id))
-        .flatMap((entry) => entry.hiddenMessageIds ?? entry.messageIds ?? []),
-    );
-
-    // Copy messages from source chat, preserving every swipe and the active index.
-    // Preserve each message's original createdAt timestamp so ordering and
-    // display times remain identical to the source chat.
-    const sourceToBranchedMessageId = new Map<string, string>();
-    const sourceToCopiedSwipeIndexes = new Map<string, number[]>();
-    const copiedSourceMessages: typeof msgs = [];
-    const copiedMessageInputs: Parameters<typeof storage.createMessagesBatch>[1] = [];
-
-    for (const msg of msgs) {
-      const swipes = await storage.getSwipes(msg.id);
-      const messageExtra = await storage.prepareRoleplayInterruptionExtraForCopy(
-        sanitizeBranchedMessageExtra(parseExportMetadata(msg.extra)),
-      );
-      const clearSummaryHidden = droppedHiddenIds.has(msg.id) && !inheritedHiddenIds.has(msg.id);
-      if (clearSummaryHidden && messageExtra.hiddenFromAI === true) {
-        delete messageExtra.hiddenFromAI;
-      }
-      const activeSwipeIndex =
-        Number.isInteger(msg.activeSwipeIndex) && msg.activeSwipeIndex >= 0 ? msg.activeSwipeIndex : 0;
-      const copiedSwipes =
-        swipes.length > 0
-          ? await Promise.all(
-              swipes.map(
-                async (swipe: { index: number; content: string; extra?: unknown; createdAt?: string | null }) => {
-                  const swipeExtra = await storage.prepareRoleplayInterruptionExtraForCopy(
-                    sanitizeBranchedMessageExtra(parseExportMetadata(swipe.extra)),
-                  );
-                  if (clearSummaryHidden && swipeExtra.hiddenFromAI === true) delete swipeExtra.hiddenFromAI;
-                  const extra = swipe.index === activeSwipeIndex ? { ...swipeExtra, ...messageExtra } : swipeExtra;
-                  return {
-                    index: swipe.index,
-                    content: swipe.index === activeSwipeIndex ? msg.content : swipe.content,
-                    extra,
-                    createdAt: swipe.createdAt ?? null,
-                  };
-                },
-              ),
-            )
-          : [
-              {
-                index: 0,
-                content: msg.content,
-                extra: messageExtra,
-                createdAt: msg.createdAt as string,
-              },
-            ];
-      const activeSwipe = copiedSwipes.find((swipe) => swipe.index === activeSwipeIndex) ?? copiedSwipes[0];
-      const copiedActiveSwipeIndex = activeSwipe?.index ?? 0;
-
-      copiedMessageInputs.push({
-        role: msg.role as "user" | "assistant" | "system" | "narrator",
-        characterId: msg.characterId,
-        content: activeSwipe?.content ?? msg.content,
-        extra: activeSwipe?.extra ?? messageExtra,
-        activeSwipeIndex: copiedActiveSwipeIndex,
-        swipes: copiedSwipes,
-        createdAt: msg.createdAt as string,
-      });
-      copiedSourceMessages.push(msg);
-      sourceToCopiedSwipeIndexes.set(
-        msg.id,
-        copiedSwipes.map((swipe) => swipe.index),
-      );
-
-      // Stop if we hit the specified message
-      if (upToMessageId && msg.id === upToMessageId) break;
-    }
-
-    // A branch ending before the interrupting response keeps the full preceding message.
-    // Copy only; never restore or otherwise mutate the source chat while branching.
-    for (const omittedMessage of msgs.slice(sourceCutoffIndex + 1)) {
-      const omittedActivity = (
-        await storage.prepareRoleplayInterruptionExtraForCopy(parseExportMetadata(omittedMessage.extra))
-      ).roleplayCommandActivity;
-      if (Array.isArray(omittedActivity))
-        for (const item of omittedActivity) {
-          const receipt = readRoleplayInterruption(item?.interruption);
-          if (!receipt || receipt.restored || item.deleted || item.error) continue;
-          const copiedIndex = copiedSourceMessages.findIndex((message) => message.id === receipt.targetMessageId);
-          const copied = copiedMessageInputs[copiedIndex];
-          if (!copied) continue;
-          const swipe = copied.swipes?.find((candidate) => candidate.index === receipt.targetSwipeIndex);
-          if (swipe?.content === receipt.interruptedContent) {
-            swipe.content = receipt.originalContent;
-            if (copied.activeSwipeIndex === swipe.index && copied.content === receipt.interruptedContent)
-              copied.content = receipt.originalContent;
-          }
-        }
-    }
-    const branchedMessageIds = await storage.createMessagesBatch(newChat.id, copiedMessageInputs);
-    copiedSourceMessages.forEach((msg, index) => {
-      const branchedId = branchedMessageIds[index];
-      if (branchedId) sourceToBranchedMessageId.set(msg.id, branchedId);
-    });
-    await storage.remapRoleplayInterruptionTargets(newChat.id, sourceToBranchedMessageId);
-    const forkSourceMessage = copiedSourceMessages.at(-1);
-
-    // Continuity receipts belong to one transcript lineage. Rebuild them against
-    // copied message IDs instead of inheriting a source-chat activation anchor.
-    if (sourceChat.mode === "game" && settingsToKeep.gameContinuity) {
-      const continuity = { ...settingsToKeep.gameContinuity };
-      const mappedBoundary =
-        typeof continuity.activationMessageId === "string"
-          ? sourceToBranchedMessageId.get(continuity.activationMessageId)
-          : undefined;
-      if (mappedBoundary) continuity.activationMessageId = mappedBoundary;
-      else {
-        const latestAssistant = [...copiedSourceMessages].reverse().find((message) => message.role === "assistant");
-        continuity.activationMessageId = latestAssistant
-          ? sourceToBranchedMessageId.get(latestAssistant.id)
-          : undefined;
-        continuity.activationAt = new Date().toISOString();
-      }
-      settingsToKeep.gameContinuity = continuity;
-      delete settingsToKeep.gameLorebookKeeperLorebookId;
-    }
-
-    if (sourceChat.mode === "game" && settingsToKeep.gameJournal) {
-      const journal = settingsToKeep.gameJournal as Journal;
-      settingsToKeep.gameJournal = {
-        ...journal,
-        entries: journal.entries.map((entry) => ({
-          ...entry,
-          ...(entry.sourceMessageId && sourceToBranchedMessageId.has(entry.sourceMessageId)
-            ? { sourceMessageId: sourceToBranchedMessageId.get(entry.sourceMessageId) }
-            : {}),
-        })),
-      };
-    }
-
-    const inheritedEntries = inheritedSourceEntries.map((entry) => ({
-      ...entry,
-      messageIds: entry.messageIds!.map((id) => sourceToBranchedMessageId.get(id)!).filter(Boolean),
-      ...(entry.hiddenMessageIds
-        ? {
-            hiddenMessageIds: entry.hiddenMessageIds.map((id) => sourceToBranchedMessageId.get(id)!).filter(Boolean),
-          }
-        : {}),
-    }));
-    const inheritedAutomaticEntry = inheritedEntries.some((entry) => entry.origin === "automated");
-    const inheritedLastAutomaticSummaryMessageId =
-      inheritedAutomaticEntry && typeof sourceMeta.lastAutomaticSummaryMessageId === "string"
-        ? sourceToBranchedMessageId.get(sourceMeta.lastAutomaticSummaryMessageId)
-        : undefined;
-    const branchCharacterIds = resolveChatCharacterIds(newChat.characterIds);
-    settingsToKeep = remapAdvancedMemoryMetadata(settingsToKeep, sourceToBranchedMessageId, branchCharacterIds);
-    // #5406: `settingsToKeep` is the source metadata verbatim, which carries its
-    // `metadataWriteOrdinals` mirror. Inherit the source's write-ordinal counter too, or the
-    // branch's first allocation would come in BELOW the stamps it just copied and invert the
-    // "which store is newer" comparison for the life of the branch. Raised before the metadata
-    // write so no interleaved allocation can slip in under the floor. This snapshot can already
-    // be stale by the time the engine rows are copied further down, so the copy loop raises the
-    // floor a second time against what it actually copied.
-    await storage.raiseWriteOrdinalFloor(newChat.id, sourceChat.writeOrdinalCounter);
-    await storage.updateMetadata(newChat.id, {
-      ...settingsToKeep,
-      branchName: "New Branch",
-      branchParentChatId: sourceChat.id,
-      branchParentMessageId: forkSourceMessage?.id ?? null,
-      branchMessageId: forkSourceMessage ? (sourceToBranchedMessageId.get(forkSourceMessage.id) ?? null) : null,
-      summary: compileChatSummaryEntries(inheritedEntries),
-      summaryEntries: inheritedEntries,
-      ...(inheritedLastAutomaticSummaryMessageId
-        ? { lastAutomaticSummaryMessageId: inheritedLastAutomaticSummaryMessageId }
-        : {}),
-    });
-    // Fix updatedAt: createMessage sets the chat's updatedAt to each message's
-    // (preserved) timestamp, so after the loop the branched chat's updatedAt is
-    // the last source message's original time. Reset it to now so the branch
-    // appears at the top of the chat list as a freshly created chat.
-    // Also inherit the source chat's folder so the branch stays inside the
-    // same categorization tree (the new branch becomes the most-recently-
-    // updated row in its group, so the sidebar reads its folderId).
-    await storage.update(newChat.id, { folderId: sourceChat.folderId ?? null });
-
-    // Copy tracker snapshots from the source chat for every copied message.
-    // Each snapshot is keyed by (chatId, messageId, swipeIndex), so we must re-associate
-    // them to the new branch's message IDs. Copying all snapshots (not just the latest)
-    // ensures that branching a branch at an earlier point finds the correct tracker state
-    // for that specific message, not just the latest snapshot in the source chat.
     try {
+      // Copy metadata (preset, lorebooks, agents, persona settings, etc.) from source chat
+      // but keep branch labels separate from the stable thread name.
+      let settingsToKeep = { ...sourceMeta };
+      for (const key of [
+        "summary",
+        "summaryEntries",
+        "lastAutomaticSummaryMessageId",
+        "daySummaries",
+        "weekSummaries",
+      ]) {
+        delete settingsToKeep[key];
+      }
+      delete settingsToKeep.gameNarrationIndex;
+      delete settingsToKeep.gameNarrationMessageId;
+      const sourceCutoffIndex = upToMessageId ? msgs.findIndex((msg) => msg.id === upToMessageId) : msgs.length - 1;
+      const sourceMessagesToCopy = msgs.slice(0, sourceCutoffIndex + 1);
+      const copiedSourceMessageIds = new Set(sourceMessagesToCopy.map((msg) => msg.id));
+      const firstOmittedMessage = msgs[sourceCutoffIndex + 1];
+      if (sourceChat.mode === "game" && firstOmittedMessage) {
+        if (settingsToKeep.gameJournal) {
+          settingsToKeep.gameJournal = trimJournalForBranch(
+            settingsToKeep.gameJournal as Journal,
+            copiedSourceMessageIds,
+            firstOmittedMessage.createdAt as string,
+          );
+        }
+        settingsToKeep.gameWidgetState = restoreBranchHudLists(sourceMeta, sourceMessagesToCopy);
+      }
+      const inheritedSourceEntries = sourceSummaryEntries.filter((entry) => {
+        if (!entry.messageIds?.length || !entry.messageIds.every((id) => copiedSourceMessageIds.has(id))) return false;
+        if (entry.rangeEndIndex && entry.rangeEndIndex > sourceMessagesToCopy.length) return false;
+        if (entry.hiddenMessageIds && !entry.hiddenMessageIds.every((id) => entry.messageIds!.includes(id)))
+          return false;
+        return entry.hiddenMessageIds?.every((id) => copiedSourceMessageIds.has(id)) ?? true;
+      });
+      const inheritedHiddenIds = new Set(
+        inheritedSourceEntries.flatMap((entry) => entry.hiddenMessageIds ?? entry.messageIds ?? []),
+      );
+      const droppedHiddenIds = new Set(
+        sourceSummaryEntries
+          .filter((entry) => !inheritedSourceEntries.some((inherited) => inherited.id === entry.id))
+          .flatMap((entry) => entry.hiddenMessageIds ?? entry.messageIds ?? []),
+      );
+
+      // Copy messages from source chat, preserving every swipe and the active index.
+      // Preserve each message's original createdAt timestamp so ordering and
+      // display times remain identical to the source chat.
+      const sourceToBranchedMessageId = new Map<string, string>();
+      const sourceToCopiedSwipeIndexes = new Map<string, number[]>();
+      const copiedSourceMessages: typeof msgs = [];
+      const copiedMessageInputs: Parameters<typeof storage.createMessagesBatch>[1] = [];
+
+      for (const msg of msgs) {
+        const swipes = await storage.getSwipes(msg.id);
+        const messageExtra = await storage.prepareRoleplayInterruptionExtraForCopy(
+          sanitizeBranchedMessageExtra(parseExportMetadata(msg.extra)),
+        );
+        const clearSummaryHidden = droppedHiddenIds.has(msg.id) && !inheritedHiddenIds.has(msg.id);
+        if (clearSummaryHidden && messageExtra.hiddenFromAI === true) {
+          delete messageExtra.hiddenFromAI;
+        }
+        const activeSwipeIndex =
+          Number.isInteger(msg.activeSwipeIndex) && msg.activeSwipeIndex >= 0 ? msg.activeSwipeIndex : 0;
+        const copiedSwipes =
+          swipes.length > 0
+            ? await Promise.all(
+                swipes.map(
+                  async (swipe: { index: number; content: string; extra?: unknown; createdAt?: string | null }) => {
+                    const swipeExtra = await storage.prepareRoleplayInterruptionExtraForCopy(
+                      sanitizeBranchedMessageExtra(parseExportMetadata(swipe.extra)),
+                    );
+                    if (clearSummaryHidden && swipeExtra.hiddenFromAI === true) delete swipeExtra.hiddenFromAI;
+                    const extra = swipe.index === activeSwipeIndex ? { ...swipeExtra, ...messageExtra } : swipeExtra;
+                    return {
+                      index: swipe.index,
+                      content: swipe.index === activeSwipeIndex ? msg.content : swipe.content,
+                      extra,
+                      createdAt: swipe.createdAt ?? null,
+                    };
+                  },
+                ),
+              )
+            : [
+                {
+                  index: 0,
+                  content: msg.content,
+                  extra: messageExtra,
+                  createdAt: msg.createdAt as string,
+                },
+              ];
+        const activeSwipe = copiedSwipes.find((swipe) => swipe.index === activeSwipeIndex) ?? copiedSwipes[0];
+        const copiedActiveSwipeIndex = activeSwipe?.index ?? 0;
+
+        copiedMessageInputs.push({
+          role: msg.role as "user" | "assistant" | "system" | "narrator",
+          characterId: msg.characterId,
+          content: activeSwipe?.content ?? msg.content,
+          extra: activeSwipe?.extra ?? messageExtra,
+          activeSwipeIndex: copiedActiveSwipeIndex,
+          swipes: copiedSwipes,
+          createdAt: msg.createdAt as string,
+        });
+        copiedSourceMessages.push(msg);
+        sourceToCopiedSwipeIndexes.set(
+          msg.id,
+          copiedSwipes.map((swipe) => swipe.index),
+        );
+
+        // Stop if we hit the specified message
+        if (upToMessageId && msg.id === upToMessageId) break;
+      }
+
+      // A branch ending before the interrupting response keeps the full preceding message.
+      // Copy only; never restore or otherwise mutate the source chat while branching.
+      for (const omittedMessage of msgs.slice(sourceCutoffIndex + 1)) {
+        const omittedActivity = (
+          await storage.prepareRoleplayInterruptionExtraForCopy(parseExportMetadata(omittedMessage.extra))
+        ).roleplayCommandActivity;
+        if (Array.isArray(omittedActivity))
+          for (const item of omittedActivity) {
+            const receipt = readRoleplayInterruption(item?.interruption);
+            if (!receipt || receipt.restored || item.deleted || item.error) continue;
+            const copiedIndex = copiedSourceMessages.findIndex((message) => message.id === receipt.targetMessageId);
+            const copied = copiedMessageInputs[copiedIndex];
+            if (!copied) continue;
+            const swipe = copied.swipes?.find((candidate) => candidate.index === receipt.targetSwipeIndex);
+            if (swipe?.content === receipt.interruptedContent) {
+              swipe.content = receipt.originalContent;
+              if (copied.activeSwipeIndex === swipe.index && copied.content === receipt.interruptedContent)
+                copied.content = receipt.originalContent;
+            }
+          }
+      }
+      const branchedMessageIds = await storage.createMessagesBatch(newChat.id, copiedMessageInputs);
+      copiedSourceMessages.forEach((msg, index) => {
+        const branchedId = branchedMessageIds[index];
+        if (branchedId) sourceToBranchedMessageId.set(msg.id, branchedId);
+      });
+      await storage.remapRoleplayInterruptionTargets(newChat.id, sourceToBranchedMessageId);
+      const forkSourceMessage = copiedSourceMessages.at(-1);
+
+      // Continuity receipts belong to one transcript lineage. Rebuild them against
+      // copied message IDs instead of inheriting a source-chat activation anchor.
+      if (sourceChat.mode === "game" && settingsToKeep.gameContinuity) {
+        const continuity = { ...settingsToKeep.gameContinuity };
+        const mappedBoundary =
+          typeof continuity.activationMessageId === "string"
+            ? sourceToBranchedMessageId.get(continuity.activationMessageId)
+            : undefined;
+        if (mappedBoundary) continuity.activationMessageId = mappedBoundary;
+        else {
+          const latestAssistant = [...copiedSourceMessages].reverse().find((message) => message.role === "assistant");
+          continuity.activationMessageId = latestAssistant
+            ? sourceToBranchedMessageId.get(latestAssistant.id)
+            : undefined;
+          continuity.activationAt = new Date().toISOString();
+        }
+        settingsToKeep.gameContinuity = continuity;
+        delete settingsToKeep.gameLorebookKeeperLorebookId;
+      }
+
+      if (sourceChat.mode === "game" && settingsToKeep.gameJournal) {
+        const journal = settingsToKeep.gameJournal as Journal;
+        settingsToKeep.gameJournal = {
+          ...journal,
+          entries: journal.entries.map((entry) => ({
+            ...entry,
+            ...(entry.sourceMessageId && sourceToBranchedMessageId.has(entry.sourceMessageId)
+              ? { sourceMessageId: sourceToBranchedMessageId.get(entry.sourceMessageId) }
+              : {}),
+          })),
+        };
+      }
+
+      const inheritedEntries = inheritedSourceEntries.map((entry) => ({
+        ...entry,
+        messageIds: entry.messageIds!.map((id) => sourceToBranchedMessageId.get(id)!).filter(Boolean),
+        ...(entry.hiddenMessageIds
+          ? {
+              hiddenMessageIds: entry.hiddenMessageIds.map((id) => sourceToBranchedMessageId.get(id)!).filter(Boolean),
+            }
+          : {}),
+      }));
+      const inheritedAutomaticEntry = inheritedEntries.some((entry) => entry.origin === "automated");
+      const inheritedLastAutomaticSummaryMessageId =
+        inheritedAutomaticEntry && typeof sourceMeta.lastAutomaticSummaryMessageId === "string"
+          ? sourceToBranchedMessageId.get(sourceMeta.lastAutomaticSummaryMessageId)
+          : undefined;
+      const branchCharacterIds = resolveChatCharacterIds(newChat.characterIds);
+      settingsToKeep = remapAdvancedMemoryMetadata(settingsToKeep, sourceToBranchedMessageId, branchCharacterIds);
+      // #5406: `settingsToKeep` is the source metadata verbatim, which carries its
+      // `metadataWriteOrdinals` mirror. Inherit the source's write-ordinal counter too, or the
+      // branch's first allocation would come in BELOW the stamps it just copied and invert the
+      // "which store is newer" comparison for the life of the branch. Raised before the metadata
+      // write so no interleaved allocation can slip in under the floor. This snapshot can already
+      // be stale by the time the engine rows are copied further down, so the copy loop raises the
+      // floor a second time against what it actually copied.
+      await storage.raiseWriteOrdinalFloor(newChat.id, sourceChat.writeOrdinalCounter);
+      await storage.updateMetadata(newChat.id, {
+        ...settingsToKeep,
+        branchName: "New Branch",
+        branchParentChatId: sourceChat.id,
+        branchParentMessageId: forkSourceMessage?.id ?? null,
+        branchMessageId: forkSourceMessage ? (sourceToBranchedMessageId.get(forkSourceMessage.id) ?? null) : null,
+        summary: compileChatSummaryEntries(inheritedEntries),
+        summaryEntries: inheritedEntries,
+        ...(inheritedLastAutomaticSummaryMessageId
+          ? { lastAutomaticSummaryMessageId: inheritedLastAutomaticSummaryMessageId }
+          : {}),
+      });
+      // Fix updatedAt: createMessage sets the chat's updatedAt to each message's
+      // (preserved) timestamp, so after the loop the branched chat's updatedAt is
+      // the last source message's original time. Reset it to now so the branch
+      // appears at the top of the chat list as a freshly created chat.
+      // Also inherit the source chat's folder so the branch stays inside the
+      // same categorization tree (the new branch becomes the most-recently-
+      // updated row in its group, so the sidebar reads its folderId).
+      await storage.update(newChat.id, { folderId: sourceChat.folderId ?? null });
+
+      // Copy tracker snapshots from the source chat for every copied message.
+      // Each snapshot is keyed by (chatId, messageId, swipeIndex), so we must re-associate
+      // them to the new branch's message IDs. Copying all snapshots (not just the latest)
+      // ensures that branching a branch at an earlier point finds the correct tracker state
+      // for that specific message, not just the latest snapshot in the source chat.
       if (sourceChat.mode === "roleplay") {
         await copyAdvancedMemoryRecords({
           db: app.db,
@@ -5329,6 +5388,7 @@ export async function chatsRoutes(app: FastifyInstance) {
       let combinedEntry: ChatSummaryEntry | null = null;
       let combinedEntries: ChatSummaryEntry[] = [];
       let combinedSummary: string | null = null;
+      let combineConflict = false;
       throwIfChatSummaryAborted(signal);
       const updatedChat = await storage.patchMetadata(req.params.id, (freshMeta) => {
         throwIfChatSummaryAborted(signal);
@@ -5337,7 +5397,9 @@ export async function chatsRoutes(app: FastifyInstance) {
         });
         const selected = entries.filter((entry) => requestedIds.has(entry.id));
         if (selected.length !== requestedIds.size) {
-          throw new Error("One or more selected summary entries changed while they were being combined");
+          // Another tab changed the selection during the LLM call: report a 409, not a 500.
+          combineConflict = true;
+          return {};
         }
 
         const messageIds = Array.from(new Set(selected.flatMap((entry) => entry.messageIds ?? [])));
@@ -5374,6 +5436,11 @@ export async function chatsRoutes(app: FastifyInstance) {
           summaryEntries: combinedEntries,
         };
       });
+      if (combineConflict) {
+        return reply
+          .status(409)
+          .send({ error: "One or more selected summary entries changed while they were being combined" });
+      }
       const persistedCombinedEntry = combinedEntry as ChatSummaryEntry | null;
       if (!updatedChat || !persistedCombinedEntry) {
         return reply.status(404).send({ error: "Chat not found" });
