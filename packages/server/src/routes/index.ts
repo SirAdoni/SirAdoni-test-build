@@ -53,6 +53,8 @@ import { privateNotebookRoutes } from "./private-notebook.routes.js";
 import { achievementsRoutes } from "./achievements.routes.js";
 import { gameRoutes } from "./game.routes.js";
 import { gameToolsRoutes } from "./game-tools.routes.js";
+import { randomTablesRoutes } from "./random-tables.routes.js";
+import { characterUsageRoutes } from "./character-usage.routes.js";
 import { combatDirectorRoutes } from "./combat-director.routes.js";
 import { campaignMemoryRoutes } from "./campaign-memory.routes.js";
 import { campaignMemoryWriteRoutes } from "./campaign-memory-write.routes.js";
@@ -142,6 +144,8 @@ export async function registerRoutes(app: FastifyInstance) {
   await app.register(gameContinuityBackfillRoutes, { prefix: "/api/game" });
   await app.register(campaignIndexRoutes, { prefix: "/api/game" });
   await app.register(gameToolsRoutes, { prefix: "/api/game-tools" });
+  await app.register(randomTablesRoutes, { prefix: "/api/random-tables" });
+  await app.register(characterUsageRoutes, { prefix: "/api/character-usage" });
   await app.register(gameAssetsRoutes, { prefix: "/api/game-assets" });
   await app.register(gameRulesetsRoutes, { prefix: "/api/game-rulesets" });
   await app.register(turnGamesRoutes, { prefix: "/api/turn-games" });

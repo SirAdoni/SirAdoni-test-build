@@ -7,7 +7,7 @@ import { api } from "../lib/api-client";
 import type { CampaignLogResponse } from "../lib/game-log";
 
 export type DiceLogScope = "session" | "game";
-export type DiceLogSource = "player" | "gm" | "skill_check";
+export type DiceLogSource = "player" | "gm" | "skill_check" | "table";
 
 export interface DiceLogRecord {
   id: string;

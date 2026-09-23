@@ -28,6 +28,7 @@ import { useTranslation, useTranslation as useUiTranslation } from "react-i18nex
 import { applyTextareaQuoteFormat } from "../../lib/textarea-quotes";
 import { SnippetPicker } from "../chat/SnippetPicker";
 import { useSnippetExpansion } from "../../hooks/use-snippet-expansion";
+import { CARD_ASSET_INSERT_EVENT, type CardAssetInsertDetail } from "../../lib/card-asset-links";
 
 interface Attachment {
   type: string;
@@ -248,6 +249,25 @@ export function GameInput({
     },
     [quoteFormat, storageKey],
   );
+
+  // Tools (a random table roll, a card asset) can drop text into the draft; it is never sent for the player.
+  useEffect(() => {
+    const handleInsert = (event: Event) => {
+      const detail = (event as CustomEvent<CardAssetInsertDetail>).detail;
+      if (!detail?.markdown || draftDisabled) return;
+      if (detail.chatId && draftKey && detail.chatId !== draftKey) return;
+      const current = inputRef.current?.value ?? "";
+      updateText(current.trim() ? `${current.replace(/\s+$/, "")}\n${detail.markdown}` : detail.markdown);
+      requestAnimationFrame(() => {
+        const el = inputRef.current;
+        if (!el) return;
+        el.style.height = "auto";
+        el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+      });
+    };
+    window.addEventListener(CARD_ASSET_INSERT_EVENT, handleInsert);
+    return () => window.removeEventListener(CARD_ASSET_INSERT_EVENT, handleInsert);
+  }, [draftDisabled, draftKey, updateText]);
 
   /** Clear the persisted draft */
   const clearDraft = useCallback(() => {

@@ -167,6 +167,7 @@ import {
 } from "../../lib/stat-icon-assignments";
 import { useQuoteFormatter } from "../../hooks/use-quote-formatter";
 import { LorebookAssignmentSection } from "../lorebooks/LorebookAssignmentSection";
+import { CharacterUsageSection } from "./CharacterUsageSection";
 import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
 
 // ── Tabs ──
@@ -1249,6 +1250,7 @@ export function CharacterEditor() {
                 removingAvatar={removeAvatar.isPending}
                 hasUnsavedChanges={dirty}
               />
+              <CharacterUsageSection key={characterId ?? "new"} characterId={characterId} />
             </section>
             <section data-editor-section="card">
               <CharacterCardTab formData={formData} updateField={updateField} updateExtension={updateExtension} />

@@ -81,6 +81,8 @@ import { CharacterPhoto } from "../ui/CharacterPhoto";
 import { AvatarImage } from "../characters/AvatarImage";
 import { CharacterCategoryFilter } from "../characters/CharacterCategoryFilter";
 import { CharacterDuplicatesModal } from "../characters/CharacterDuplicatesModal";
+import { CharacterUnusedModal } from "../characters/CharacterUnusedModal";
+import { CircleSlash } from "lucide-react";
 import { CharacterBulkTagsModal } from "../characters/CharacterBulkTagsModal";
 import type { CharacterLibraryCategory } from "@marinara-engine/shared";
 
@@ -272,6 +274,7 @@ export function CharactersPanel() {
   const [selectedCharacterIds, setSelectedCharacterIds] = useState<Set<string>>(new Set());
   const [exportingSelected, setExportingSelected] = useState(false);
   const [duplicatesOpen, setDuplicatesOpen] = useState(false);
+  const [unusedOpen, setUnusedOpen] = useState(false);
   const [bulkTagsOpen, setBulkTagsOpen] = useState(false);
 
   // Parse character data and filter by search
@@ -1620,6 +1623,15 @@ export function CharactersPanel() {
             <ScanSearch size="0.75rem" />
             {localizeUi("characters.duplicates.actionShort")}
           </button>
+          <button
+            type="button"
+            onClick={() => setUnusedOpen(true)}
+            className="mari-chrome-control mari-chrome-control--small shrink-0 text-[0.6875rem]"
+            title={localizeUi("characters.unused.action")}
+          >
+            <CircleSlash size="0.75rem" />
+            {localizeUi("characters.unused.actionShort")}
+          </button>
         </div>
         {parsedGroups.length > 0 && (
           <p className="mari-folder-helper">
@@ -1857,6 +1869,14 @@ export function CharactersPanel() {
         onClose={() => setDuplicatesOpen(false)}
         onOpenCharacter={(id) => {
           setDuplicatesOpen(false);
+          openCharacterDetailFromPanel(id);
+        }}
+      />
+      <CharacterUnusedModal
+        open={unusedOpen}
+        onClose={() => setUnusedOpen(false)}
+        onOpenCharacter={(id) => {
+          setUnusedOpen(false);
           openCharacterDetailFromPanel(id);
         }}
       />

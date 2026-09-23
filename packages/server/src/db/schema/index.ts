@@ -25,6 +25,7 @@ export * from "./game-scene-videos.js";
 export * from "./game-storyboards.js";
 export * from "./game-dice-pools.js";
 export * from "./game-dice-rolls.js";
+export * from "./random-tables.js";
 export * from "./game-rulesets.js";
 export * from "./regex-scripts.js";
 export * from "./gallery.js";

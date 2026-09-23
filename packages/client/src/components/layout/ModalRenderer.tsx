@@ -81,6 +81,9 @@ const ChatStatsModal = lazy(() =>
 const ActivityOverviewModal = lazy(() =>
   import("../modals/ActivityOverviewModal").then((module) => ({ default: module.ActivityOverviewModal })),
 );
+const RandomTablesModal = lazy(() =>
+  import("../modals/RandomTablesModal").then((module) => ({ default: module.RandomTablesModal })),
+);
 const NameGeneratorModal = lazy(() =>
   import("../modals/NameGeneratorModal").then((module) => ({ default: module.NameGeneratorModal })),
 );
@@ -249,6 +252,9 @@ export function ModalRenderer() {
           messageNumber={(modal?.props?.messageNumber as number | null | undefined) ?? null}
         />
       );
+      break;
+    case "random-tables":
+      content = <RandomTablesModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
       break;
     default:
       content = null;

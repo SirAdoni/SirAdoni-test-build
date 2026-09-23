@@ -33,6 +33,7 @@ import {
   USAGE_DASHBOARD_SETTINGS_CONTROL_ID,
 } from "../../lib/settings-targets";
 import { requestSnippetPicker } from "../../hooks/use-snippet-expansion";
+import { openRandomTables } from "../../lib/open-random-tables";
 import { chatKeys, useExportChat } from "../../hooks/use-chats";
 import { textSnippetKeys } from "../../hooks/use-text-snippets";
 import { useLaunchNewChat } from "../chat/HomeNewChatLauncher";
@@ -213,6 +214,13 @@ export function CommandPaletteHost() {
           !!useChatStore.getState().activeChatId &&
           (queryClient.getQueryData<{ snippets: unknown[] }>(textSnippetKeys.catalog)?.snippets.length ?? 0) > 0,
         run: requestSnippetPicker,
+      }),
+      registerCommand({
+        id: "action:random-tables",
+        section: "actions",
+        title: t("palette.actions.randomTables"),
+        keywords: ["oracle", "roll", "table", "random", "yes no", "dice", "gm"],
+        run: () => openRandomTables(),
       }),
       registerCommand({
         id: "action:manage-snippets",
