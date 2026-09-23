@@ -129,10 +129,34 @@ type JobStateExtra = EventFields & {
 };
 
 /**
+ * Provider errors often echo the request back ("Provider rejected \"<prompt>\""), and job logs must never carry
+ * prompt text. Keep the error's name, code, status and stack frames, but drop quoted spans from the message
+ * (and the stack's first line, which repeats it) and cap what is left.
+ */
+const QUOTED_SPAN = /(["'`\u201C\u2018])(?:(?!\1)[\s\S]){12,}?\1/gu;
+const JOB_ERROR_MESSAGE_MAX = 300;
+export function withoutEchoedPrompt(error: unknown): unknown {
+  if (!(error instanceof Error)) return error;
+  const message = error.message.replace(QUOTED_SPAN, "[quoted text removed]");
+  const capped = message.length > JOB_ERROR_MESSAGE_MAX ? `${message.slice(0, JOB_ERROR_MESSAGE_MAX)}...` : message;
+  if (capped === error.message) return error;
+  const copy = new Error(capped, error.cause === undefined ? undefined : { cause: error.cause });
+  copy.name = error.name;
+  for (const key of ["code", "status", "statusCode", "errorCode"] as const) {
+    const value = (error as unknown as Record<string, unknown>)[key];
+    if (value !== undefined) (copy as unknown as Record<string, unknown>)[key] = value;
+  }
+  const frames = (error.stack ?? "").split("\n").filter((line) => /^\s+at /u.test(line));
+  copy.stack = [`${error.name}: ${capped}`, ...frames].join("\n");
+  return copy;
+}
+
+/**
  * Writes one `job.state` line for a job. Info for accepted, running, completed,
  * cancelled and recovered; warn for failed and expired. Terminal states add a
  * small memory snapshot. elapsedMs counts from the job's createdAt.
  */
+
 export function logJobState(metadata: GenerationJobMetadata, state: JobState, extra: JobStateExtra = {}): void {
   const createdAt = Date.parse(metadata.createdAt);
   const kind = mediaKindOf(metadata.kind);
@@ -149,6 +173,7 @@ export function logJobState(metadata: GenerationJobMetadata, state: JobState, ex
       ...(Number.isFinite(createdAt) ? { elapsedMs: Math.max(0, Date.now() - createdAt) } : {}),
       ...(TERMINAL_JOB_STATES.has(state) ? memoryFields() : {}),
       ...extra,
+      ...("err" in extra ? { err: withoutEchoedPrompt(extra.err) } : {}),
     },
     `Generation job ${state}`,
   );

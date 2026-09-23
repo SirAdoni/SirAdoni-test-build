@@ -526,11 +526,11 @@ try {
   assert.equal(completedLine.outcome, "ok");
   assert.ok(completedLine.jobId && completedLine.kind, "job id and kind are present");
   for (const raw of jobLines) {
-    // The store's failure line carries the thrown error (err) by design of the logging pass; the
-    // lifecycle fields themselves must never hold prompt text, keys or provider messages.
+    // The store's failure line carries the thrown error (err) by design of the logging pass, with quoted
+    // spans stripped (withoutEchoedPrompt): a provider message that echoes the prompt must not leak it.
+    assert.ok(!raw.includes("PLANTED"), "no prompt text anywhere in job lines, err included");
     const { err: _err, ...fields } = JSON.parse(raw);
     const line = JSON.stringify(fields);
-    assert.ok(!line.includes("PLANTED"), "no prompt text in lifecycle lines");
     assert.ok(!line.includes(PLANTED_KEY), "no key in lifecycle lines");
     assert.ok(!line.includes("Provider rejected"), "no provider message in lifecycle lines");
   }
