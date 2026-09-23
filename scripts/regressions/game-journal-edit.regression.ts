@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Fastify from "../../packages/server/node_modules/fastify/fastify.js";
-import { gameRoutes } from "../../packages/server/src/routes/game.routes.js";
-import { createChatsStorage } from "../../packages/server/src/services/storage/chats.storage.js";
 
+// Isolate storage so a direct run never opens (or writes to) the real data dir or trips a live
+// engine's writer lease. Server modules are imported only after the env points at the temp dir.
+const dataDir = mkdtempSync(join(tmpdir(), "marinara-game-journal-edit-"));
+const fileStorageDir = join(dataDir, "file-storage");
+process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = fileStorageDir;
+process.env.MARINARA_FILE_STORAGE_DIR = fileStorageDir;
+
+const { gameRoutes } = await import("../../packages/server/src/routes/game.routes.js");
+const { createChatsStorage } = await import("../../packages/server/src/services/storage/chats.storage.js");
 const { getDB, closeDB } = await import("../../packages/server/src/db/connection.js");
 const db = await getDB();
 const chats = createChatsStorage(db);
@@ -88,4 +99,5 @@ try {
   await chats.remove(chat.id).catch(() => {});
   await app.close();
   await closeDB();
+  rmSync(dataDir, { recursive: true, force: true });
 }

@@ -7,6 +7,7 @@ import {
 import { normalizeAgentActivationScanDepth } from "../../routes/generate/agent-activation.js";
 import type { NoulQuestion } from "../decision/system-one.client.js";
 import { countMessagesSinceAgentRun } from "./agent-cadence.js";
+import { logSuppressed } from "../../lib/best-effort.js";
 
 export interface ActivationQuestionCandidate {
   agentId: string;
@@ -94,8 +95,9 @@ export async function evaluateActivationQuestions(args: {
         // Even the role/name wrappers may exceed a tiny user-selected budget.
         if (estimateTextTokens(JSON.stringify(state)) <= budget && questionTokens <= args.maxStateTokens + 250)
           answers = (await args.ask(state, questions)) ?? new Map();
-      } catch {
-        /* An injected transport must also fail open. */
+      } catch (error) {
+        // An injected transport must also fail open.
+        logSuppressed(error, { event: "agent.activationQuestions", stage: "ask", level: "debug" });
       }
       for (const candidate of candidates) {
         const probability = answers.get(candidate.agentId);

@@ -6859,7 +6859,7 @@ assert.match(
 );
 assert.match(
   backupRoutesSource,
-  /catch \(error\) \{\s*const message = getBackupErrorMessage[\s\S]*try \{[\s\S]*await saveAutomaticBackupSettings[\s\S]*catch \(settingsError\)[\s\S]*(?:Could not persist the automatic backup failure state|logSuppressed\(settingsError, \{ event: "backup\.automatic", stage: "saveFailureState" \}\))/u,
+  /catch \(error\) \{\s*(?:progress\.stage = automaticBackupStageOf\(error\) \?\? progress\.stage;\s*)?const message = getBackupErrorMessage[\s\S]*try \{[\s\S]*await saveAutomaticBackupSettings[\s\S]*catch \(settingsError\)[\s\S]*(?:Could not persist the automatic backup failure state|logSuppressed\(settingsError, \{ event: "backup\.automatic", stage: "saveFailureState" \}\))/u,
   "automatic-backup error reporting must not reject when its settings write also fails",
 );
 assert.match(
@@ -6979,9 +6979,16 @@ assert.match(localNotificationsSource, /window\.isSecureContext === false/u);
 assert.match(localNotificationsSource, /NotificationPermission \| "insecure" \| "unsupported"/u);
 const browserNotificationHelpSource =
   notificationSettingsSource.match(/const browserNotificationHelp =[\s\S]*?;\n/u)?.[0] ?? "";
-assert.match(browserNotificationHelpSource, /Browser notifications require HTTPS or localhost/u);
-assert.match(browserNotificationHelpSource, /Browser notifications are not available in this environment/u);
-assert.match(browserNotificationHelpSource, /Reset this site's notification permission/u);
+// The help strings are localized: resolve each localizeUi key to its English text.
+const englishUiStrings = JSON.parse(
+  readFileSync(new URL("../../packages/client/src/localization/locales/en.json", import.meta.url), "utf8"),
+) as Record<string, string>;
+const browserNotificationHelpText = [...browserNotificationHelpSource.matchAll(/localizeUi\("([^"]+)"\)/gu)]
+  .map(([, key]) => englishUiStrings[key!] ?? "")
+  .join("\n");
+assert.match(browserNotificationHelpText, /Browser notifications require HTTPS or localhost/u);
+assert.match(browserNotificationHelpText, /Browser notifications are not available in this environment/u);
+assert.match(browserNotificationHelpText, /Reset this site's notification permission/u);
 
 assert.equal(stripLeadingMessageTimestamps("[11.07 15:53] Character: Hello!"), "Character: Hello!");
 assert.equal(stripLeadingMessageTimestamps("[11.07.2026 15:53] Character: Hello!"), "Character: Hello!");
@@ -9872,10 +9879,17 @@ assert.equal(({} as { tags?: string[] }).tags, undefined, "Background metadata m
   const personasPanelSource = sidebarPanelSources.get("Personas")!;
   const charactersPanelSource = sidebarPanelSources.get("Characters")!;
   const presetsPanelSource = sidebarPanelSources.get("Presets")!;
+  // Characters and Lorebooks render folder headers through the shared LibraryFolderTree,
+  // which reserves more room because it shows more always-visible touch actions.
+  const libraryFolderTreeSource = readFileSync(
+    join(REPOSITORY_ROOT, "packages/client/src/components/panels/library/LibraryFolderTree.tsx"),
+    "utf8",
+  );
   for (const panelName of ["Characters", "Personas", "Lorebooks", "Agents", "Presets"]) {
+    const usesLibraryFolderTree = panelName === "Characters" || panelName === "Lorebooks";
     assert.match(
-      sidebarPanelSources.get(panelName)!,
-      /group relative flex cursor-pointer[^"\n]*max-md:pr-12 \[@media\(pointer:coarse\)\]:pr-12/u,
+      usesLibraryFolderTree ? libraryFolderTreeSource : sidebarPanelSources.get(panelName)!,
+      /group relative flex cursor-pointer[^"\n]*max-md:pr-(\d+) \[@media\(pointer:coarse\)\]:pr-\1/u,
       `${panelName} folder headers must reserve space for always-visible touch actions`,
     );
   }

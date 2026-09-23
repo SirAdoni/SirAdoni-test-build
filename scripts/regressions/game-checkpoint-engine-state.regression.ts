@@ -18,11 +18,13 @@
 // echo engine is registered so getTurnGameView has a valid engine and a trivially-comparable view.
 import assert from "node:assert/strict";
 import Fastify from "../../packages/server/node_modules/fastify/fastify.js";
-// Import from the built dist (not src): the server runner resolves `@marinara-engine/shared` to
-// dist/index.js via the package `exports`, and the turn-game engine registry is module-level state, so
-// registering here must target the SAME module instance the runner reads or getTurnGameEngine won't
-// see the echo engine.
-import { registerTurnGameEngine, type AnyTurnGameEngine } from "../../packages/shared/dist/index.js";
+// Import shared through the server's own package link. The turn-game engine registry is
+// module-level state, so registering here must target the SAME module instance the server reads,
+// or getTurnGameEngine won't see the echo engine. The runner starts tsx from packages/server, where
+// the server's bare `@marinara-engine/shared` import resolves through this link to its dist.
+// A path into ../../packages/shared/dist can be a different copy (or missing) in a worktree whose
+// server link points at another checkout, and scripts/ itself cannot resolve the bare specifier.
+import { registerTurnGameEngine, type AnyTurnGameEngine } from "../../packages/server/node_modules/@marinara-engine/shared/dist/index.js";
 import { gameRoutes } from "../../packages/server/src/routes/game.routes.js";
 import { createChatsStorage } from "../../packages/server/src/services/storage/chats.storage.js";
 import { createGameStateStorage } from "../../packages/server/src/services/storage/game-state.storage.js";

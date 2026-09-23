@@ -46,6 +46,12 @@ async function until<T>(
   }
 }
 
+// The base job store logs its own job.state line for every transition whatever the tracking
+// setting (logging pass). Only tracker lines, built by buildJobLogEvent, carry sourceKind.
+function isTrackerLifecycleLine(line: string): boolean {
+  return (line.includes('"job.state"') || line.includes('"job.progress"')) && line.includes('"sourceKind"');
+}
+
 const PLANTED_KEY = "sk-plantedSECRET0123456789abcdef";
 const PLANTED_PROMPT = "PLANTED-PROMPT moonlit harbor with a violet lighthouse";
 const ids = {
@@ -313,7 +319,7 @@ try {
   );
   assert.equal((await db.select().from(generationJobRecords)).length, 0);
   assert.ok(
-    !logLines.slice(logStart).some((line) => line.includes('"job.state"') || line.includes('"job.progress"')),
+    !logLines.slice(logStart).some(isTrackerLifecycleLine),
     "no lifecycle log lines while off",
   );
   const trackerTimer = async () =>
@@ -491,7 +497,7 @@ try {
   assert.equal(failed.trail.at(-1).outcome, "failed");
 
   // ── Log redaction ──
-  const jobLines = logLines.filter((line) => line.includes('"job.state"') || line.includes('"job.progress"'));
+  const jobLines = logLines.filter(isTrackerLifecycleLine);
   assert.ok(jobLines.length >= 10, "lifecycle lines were logged");
   const states = new Set(jobLines.map((line) => JSON.parse(line).state));
   for (const state of ["accepted", "running", "progress", "completed", "failed", "cancelled", "recovered"])

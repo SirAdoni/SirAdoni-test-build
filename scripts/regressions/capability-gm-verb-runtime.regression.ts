@@ -932,9 +932,11 @@ try {
   );
   // Ordering, because the two live in one `if`/fallthrough: the gate must be consulted BEFORE the
   // empty-response error is sent, or a verb-only turn is told it produced nothing.
+  // Prefix match: the frame may carry extra diagnostic fields after `data` (e.g. a spread ref).
+  const emptyErrorFrameAt = generateRoute.indexOf('sendSseEvent(reply, { type: "error", data: emptyResponseMessage');
+  assert.ok(emptyErrorFrameAt > 0, "the empty-response error frame must still exist");
   assert.ok(
-    generateRoute.indexOf(anchorGateCall[0]) <
-      generateRoute.indexOf('sendSseEvent(reply, { type: "error", data: emptyResponseMessage })'),
+    generateRoute.indexOf(anchorGateCall[0]) < emptyErrorFrameAt,
     "the verb count must reach the anchor gate ahead of the empty-response error frame",
   );
 

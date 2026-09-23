@@ -31,6 +31,7 @@ import { hostname, networkInterfaces, uptime } from "node:os";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { STORAGE_MIGRATION_NOTICE_SETTINGS_KEY, type StorageMigrationNotice } from "@marinara-engine/shared";
 import { logger } from "../lib/logger.js";
+import { logSuppressed } from "../lib/best-effort.js";
 import { diagnosticDetails, getDiagnosticContext, runWithRootDiagnosticContext } from "../lib/diagnostics.js";
 import { registerWorkerGauge } from "../lib/worker-gauges.js";
 import { getRuntimeMemorySnapshot } from "../utils/runtime-memory.js";
@@ -6193,8 +6194,9 @@ class FileTableStore {
     try {
       const stats = statSync(path);
       this.writtenFingerprints.set(path, { fingerprint, size: stats.size, mtimeMs: stats.mtimeMs });
-    } catch {
+    } catch (error) {
       // No record means the next flush simply writes again.
+      logSuppressed(error, { event: "storage.flush", stage: "fingerprint", level: "debug" });
     }
     return true;
   }

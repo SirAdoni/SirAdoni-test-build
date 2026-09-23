@@ -123,6 +123,7 @@ try {
         cwd: root,
         encoding: "utf8",
         timeout: 120_000,
+        windowsHide: true,
         env: {
           ...process.env,
           LOG_LEVEL: "silent",

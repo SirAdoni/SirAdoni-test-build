@@ -21,7 +21,7 @@ const { createPersonalExtensionSettingsStorage } =
 const { createPersonalExtensionsStorage } =
   await import("../../packages/server/src/services/extensions/personal-extension-storage.service.js");
 const { createFileNativeDB } = await import("../../packages/server/src/db/file-backed-store.js");
-const { SIDECAR_SPEECH_MODELS } = await import("@marinara-engine/shared");
+const { SIDECAR_SPEECH_MODELS } = await import("../../packages/server/node_modules/@marinara-engine/shared/dist/index.js");
 
 try {
   // 1. Concurrent storage patches keep every key.
@@ -90,7 +90,13 @@ try {
     writeFileSync(join(cacheDir, "config.json"), "{}");
 
     let finishLoad!: () => void;
-    const service = sidecarSpeechService as unknown as { loadingPromise: Promise<unknown> | null };
+    const service = sidecarSpeechService as unknown as {
+      loadingPromise: Promise<unknown> | null;
+      activeModelId: string | null;
+    };
+    // A real load sets activeModelId before loadingPromise, and deleteModel only
+    // waits for a load of the model it is deleting, so fake exactly that state.
+    service.activeModelId = model.id;
     service.loadingPromise = new Promise<unknown>((resolve) => {
       finishLoad = () => resolve({});
     });

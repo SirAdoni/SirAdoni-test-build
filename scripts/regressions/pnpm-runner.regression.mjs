@@ -141,6 +141,12 @@ async function verifyDirectDevInheritsPipedStdin() {
 import { createServer } from "node:http";
 const marker = process.env.MARINARA_PNPM_RUNNER_MARKER;
 const isServer = process.argv.includes("@marinara-engine/server");
+if (process.argv.includes("install")) {
+  // dev.mjs only installs when node_modules/.pnpm/lock.yaml differs from pnpm-lock.yaml.
+  // Fail at once instead of idling like the client until the readiness wait times out.
+  process.stderr.write("FAKE_PNPM_INSTALL_REQUESTED: the workspace install is stale; run pnpm install --frozen-lockfile\\n");
+  process.exit(1);
+}
 if (!isServer) {
   process.stdout.write("FAKE_PNPM_CLIENT_READY\\n");
   setInterval(() => {}, 1_000);

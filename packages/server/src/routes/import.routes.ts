@@ -29,6 +29,7 @@ import { normalizeTimestampOverrides } from "../services/import/import-timestamp
 import { getImportAllowedRoots } from "../config/runtime-config.js";
 import { requirePrivilegedAccess } from "../middleware/privileged-gate.js";
 import { assertInsideDir, safeCompareString, tokenForPath } from "../utils/security.js";
+import { logSuppressed } from "../lib/best-effort.js";
 
 const PICK_FOLDER_TIMEOUT_MS = 60_000; // 60s — prevents infinite hang on headless servers
 const FOLDER_TOKEN_TTL_MS = 15 * 60_000;
@@ -132,8 +133,8 @@ function pickFolder(): Promise<string | null> {
     const timer = setTimeout(() => {
       try {
         child?.kill();
-      } catch {
-        /* ignore */
+      } catch (error) {
+        logSuppressed(error, { event: "import.pickFolder", stage: "killTimedOutPicker", level: "debug" });
       }
       done(null);
     }, PICK_FOLDER_TIMEOUT_MS);
@@ -589,8 +590,9 @@ export async function importRoutes(app: FastifyInstance) {
           }
         }
       }
-    } catch {
-      // header parse failed — import without character link
+    } catch (error) {
+      // Header parse or character lookup failed: import without a character link.
+      logSuppressed(error, { event: "import.stChat", stage: "linkCharacter", level: "debug" });
     }
 
     return importSTChat(text, app.db, {

@@ -60,9 +60,9 @@
 //      cannot shadow the freshly restored world (#5418).
 import assert from "node:assert/strict";
 import Fastify from "../../packages/server/node_modules/fastify/fastify.js";
-// Shared must come from the built dist so the echo engine registers into the SAME module
-// instance the runner reads (see game-checkpoint-engine-state.regression.ts).
-import { registerTurnGameEngine, type AnyTurnGameEngine } from "../../packages/shared/dist/index.js";
+// Shared must come through the server's own package link, so the echo engine registers into the
+// SAME module instance the server reads (see game-checkpoint-engine-state.regression.ts).
+import { registerTurnGameEngine, type AnyTurnGameEngine } from "../../packages/server/node_modules/@marinara-engine/shared/dist/index.js";
 import { eq } from "../../packages/server/src/db/file-query.js";
 import { gameEngineState } from "../../packages/server/src/db/schema/index.js";
 import { rateLimitHook, resetRateLimitBucketsForTests } from "../../packages/server/src/middleware/rate-limit.js";

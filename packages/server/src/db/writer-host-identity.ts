@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { logSuppressed } from "../lib/best-effort.js";
 
 /** Keep identity outside synced campaign storage, stable across registry failures. */
 export function persistentWriterHostId(cachePath: string, readMachineId: () => string | null): string | null {
@@ -61,8 +62,9 @@ function readBootIdCache(cachePath: string): BootIdCacheRecord | null {
     ) {
       return value as BootIdCacheRecord;
     }
-  } catch {
+  } catch (error) {
     // Missing or unreadable: probe again.
+    logSuppressed(error, { event: "storage.writerIdentity", stage: "readCache", level: "debug" });
   }
   return null;
 }
@@ -101,8 +103,8 @@ export function cachedBootId(
     // Caching is an optimisation only; the probe result is still correct.
     try {
       rmSync(tmpPath, { force: true });
-    } catch {
-      /* best effort */
+    } catch (error) {
+      logSuppressed(error, { event: "storage.writerIdentity", stage: "cleanupTmp", level: "debug" });
     }
   }
   return bootId;

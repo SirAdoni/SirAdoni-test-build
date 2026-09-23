@@ -7,6 +7,8 @@ import { join } from "node:path";
 process.env.LOG_DIR = mkdtempSync(join(tmpdir(), "marinara-claude-cache-diagnostics-"));
 process.env.LOG_LEVEL = "info";
 process.env.LOG_FILE_LEVEL = "info";
+// Per-message input batch lines log at debug unless this flag is on (logging pass); the test reads them.
+process.env.MARINARA_CACHE_DIAGNOSTICS = "1";
 const { __setSdkForTesting, ClaudeSubscriptionProvider } =
   await import("../../packages/server/src/services/llm/providers/claude-subscription.provider.js");
 const { beginClaudeCacheDiagnostic, logClaudeCacheResult } =

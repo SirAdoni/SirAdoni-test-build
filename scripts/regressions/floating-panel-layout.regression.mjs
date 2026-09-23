@@ -62,7 +62,7 @@ try {
   const readPosition = () =>
     page.evaluate(() => JSON.parse(localStorage.getItem("marinara-game-panel:proof:floating:widget:proof")));
   assert.equal((await readPosition()).y, 220, "legacy pixel position must not be rescaled on mount");
-  const resize = page.getByRole("button", { name: "ui.game.floatingPanel.resize", exact: true });
+  const resize = page.getByRole("button", { name: "ui.game.floatingPanel.resizeNamed", exact: true });
   await resize.press("ArrowRight");
   await page.waitForFunction((key) => JSON.parse(localStorage.getItem(key)).manualWidth === true, sizeKey);
   assert.equal(Math.round((await panel.boundingBox()).width), 250);

@@ -173,7 +173,7 @@ try {
     // or between read and update) cannot be staged deterministically, so pin
     // that no status write spreads a previously read extensions snapshot.
     const source = readFileSync(
-      join(process.cwd(), "packages/server/src/routes/conversation.routes.ts"),
+      new URL("../../packages/server/src/routes/conversation.routes.ts", import.meta.url),
       "utf8",
     );
     for (const stale of ["...(charData.extensions ?? {})", "...(charData!.extensions ?? {})", "...currentExtensions"]) {

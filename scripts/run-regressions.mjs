@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import { createRequire } from "node:module";
 import path from "node:path";
 import readline from "node:readline";
@@ -147,8 +148,17 @@ const PINNED_REGRESSION_DEFAULTS = {
   CONTINUITY_REPAIR_TIMEOUT_MS: "0",
 };
 
-function regressionEnvironment() {
-  return { ...process.env, ...PINNED_REGRESSION_DEFAULTS };
+// Each file gets throwaway storage and an empty .env: the repo .env can point DATA_DIR and FILE_STORAGE_DIR at the
+// live engine's data, and a test that forgets to isolate itself must never open (or be blocked by) that store.
+function regressionEnvironment(scratchDir) {
+  const dataDir = path.join(scratchDir, "data");
+  return {
+    ...process.env,
+    ...PINNED_REGRESSION_DEFAULTS,
+    MARINARA_ENV_FILE: path.join(scratchDir, ".env"),
+    DATA_DIR: dataDir,
+    FILE_STORAGE_DIR: path.join(dataDir, "storage"),
+  };
 }
 
 function runRegression(relativePath) {
@@ -156,10 +166,11 @@ function runRegression(relativePath) {
   const startedAt = Date.now();
   process.stdout.write(`[${relativePath}] START\n`);
 
+  const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "marinara-regression-"));
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd,
-      env: regressionEnvironment(),
+      env: regressionEnvironment(scratchDir),
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -181,6 +192,11 @@ function runRegression(relativePath) {
       settled = true;
       clearTimeout(timeoutTimer);
       releaseActiveChild(child);
+      try {
+        fs.rmSync(scratchDir, { recursive: true, force: true, maxRetries: 3 });
+      } catch {
+        // A child that is still exiting can hold a file open on Windows; the temp dir is left for the OS to clean.
+      }
       resolve({ ...result, durationMs: Date.now() - startedAt });
     };
 

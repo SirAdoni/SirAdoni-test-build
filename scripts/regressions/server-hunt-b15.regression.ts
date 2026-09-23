@@ -91,7 +91,7 @@ const retrySource = readFileSync(
   // Main's scene-request anchor stays visible and announced.
   assert.match(block, /hiddenFromUser: !sceneRequest/u);
   assert.match(block, /if \(sceneRequest && anchoredMsg\?\.id\) \{\s*sendSseEvent\(reply, \{ type: "message_saved", data: anchoredMsg \}\)/u);
-  const { appendContinuationMessageContent } = await import("@marinara-engine/shared");
+  const { appendContinuationMessageContent } = await import("../../packages/server/node_modules/@marinara-engine/shared/dist/index.js");
   const merged = appendContinuationMessageContent("Earlier line", "[selfie: beach]", false);
   assert.ok(merged.includes("Earlier line") && merged.includes("[selfie: beach]"), "merge keeps both parts");
 }

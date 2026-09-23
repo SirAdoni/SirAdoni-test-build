@@ -7,9 +7,12 @@ const logDirectory = mkdtempSync(join(tmpdir(), "marinara-openai-cache-"));
 const previousLogDir = process.env.LOG_DIR;
 const previousLogLevel = process.env.LOG_LEVEL;
 const previousLogFileLevel = process.env.LOG_FILE_LEVEL;
+const previousCacheDiagnostics = process.env.MARINARA_CACHE_DIAGNOSTICS;
 process.env.LOG_DIR = logDirectory;
 process.env.LOG_LEVEL = "silent";
 process.env.LOG_FILE_LEVEL = "info";
+// Per-item input batch lines log at debug unless this flag is on (logging pass); the test reads them.
+process.env.MARINARA_CACHE_DIAGNOSTICS = "1";
 
 const originalFetch = globalThis.fetch;
 const calls: Array<{ body: Record<string, unknown>; serialized: string }> = [];
@@ -137,7 +140,8 @@ try {
   mode = "transport";
   await assert.rejects(
     () => complete([{ role: "user", content: "transport" }], { model: "gpt-5.6", stream: false }),
-    (error: unknown) => error === transportError,
+    // llmFetch wraps transport failures and keeps the original on `cause`.
+    (error: unknown) => error instanceof Error && error.name === "LLMTransportError" && error.cause === transportError,
   );
 
   mode = "normal";
@@ -227,6 +231,8 @@ try {
   else process.env.LOG_LEVEL = previousLogLevel;
   if (previousLogFileLevel === undefined) delete process.env.LOG_FILE_LEVEL;
   else process.env.LOG_FILE_LEVEL = previousLogFileLevel;
+  if (previousCacheDiagnostics === undefined) delete process.env.MARINARA_CACHE_DIAGNOSTICS;
+  else process.env.MARINARA_CACHE_DIAGNOSTICS = previousCacheDiagnostics;
   rmSync(logDirectory, { recursive: true, force: true });
 }
 

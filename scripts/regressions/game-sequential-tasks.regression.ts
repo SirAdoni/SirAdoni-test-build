@@ -23,7 +23,7 @@ const { createAgentsStorage } = await import("../../packages/server/src/services
 const { createConnectionsStorage } = await import("../../packages/server/src/services/storage/connections.storage.js");
 const { createLorebooksStorage } = await import("../../packages/server/src/services/storage/lorebooks.storage.js");
 const { OpenAIProvider } = await import("../../packages/server/src/services/llm/providers/openai.provider.js");
-const { createAgentConfigSchema, replaceBuiltInAgentDefinitions } = await import("../../packages/shared/dist/index.js");
+const { createAgentConfigSchema, replaceBuiltInAgentDefinitions } = await import("../../packages/server/node_modules/@marinara-engine/shared/dist/index.js");
 const db = await getDB();
 const chats = createChatsStorage(db);
 const app = Fastify();
@@ -281,7 +281,7 @@ try {
             type: "node",
             name: "Courtyard",
             description: "Quiet",
-            nodes: [],
+            nodes: [{ id: "gate", label: "Gate", emoji: "", x: 50, y: 50, discovered: true }],
             edges: [],
             partyPosition: "gate",
           });

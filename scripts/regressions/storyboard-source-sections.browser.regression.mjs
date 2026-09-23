@@ -10,6 +10,8 @@ const serverParser = resolve("packages/server/src/services/game/segment-edits.ts
 const sharedSkillCheck = resolve("packages/shared/src/utils/skill-check-tag.ts").replaceAll("\\", "/");
 const sharedSheetCommands = resolve("packages/shared/src/utils/sheet-command-tag.ts").replaceAll("\\", "/");
 const sharedDiceBranch = resolve("packages/shared/src/utils/dice-branch.ts").replaceAll("\\", "/");
+const sharedNarrationText = resolve("packages/shared/src/utils/game-narration-text.ts").replaceAll("\\", "/");
+const sharedHudWidgetExtended = resolve("packages/shared/src/utils/hud-widget-extended.ts").replaceAll("\\", "/");
 const sharedTextMatching = readFileSync(resolve("packages/shared/src/utils/text-matching.ts"), "utf8");
 const sharedQuoteFormat = readFileSync(resolve("packages/shared/src/utils/quote-format.ts"), "utf8");
 const importedNames = new Set(["default"]);
@@ -39,14 +41,14 @@ const bundle = await build({
       setup(buildApi) {
         buildApi.onResolve({ filter: /^(react|react\/jsx-runtime|lucide-react|react-i18next|@marinara-engine\/shared)$/ }, ({ path }) => ({ path, namespace: "fixture" }));
         buildApi.onResolve({ filter: /^(\.\.?\/|[A-Za-z]:)/ }, ({ path }) => {
-          if (/(?:game-storyboard-ui|GameNarration|segment-edits|game-tag-parser|dialogue-quotes|skill-check-tag|sheet-command-tag|dice-branch|dice-pool|dice-notation)(?:\.js|\.ts|\.tsx)?$/u.test(path)) return undefined;
+          if (/(?:game-storyboard-ui|GameNarration|segment-edits|game-tag-parser|dialogue-quotes|skill-check-tag|sheet-command-tag|dice-branch|dice-pool|dice-notation|game-narration-text|hud-widget-extended)(?:\.js|\.ts|\.tsx)?$/u.test(path)) return undefined;
           if (path.includes("live-state")) return { path: "fixture-ruleset-live-state", namespace: "fixture" };
           return { path, namespace: "fixture" };
         });
         buildApi.onLoad({ filter: /.*/, namespace: "fixture" }, ({ path }) => {
           if (path === "@marinara-engine/shared")
             return {
-              contents: `${sharedTextMatching}\n${sharedQuoteFormat}\nexport * from '${sharedSkillCheck}';export * from '${sharedSheetCommands}';export * from '${sharedDiceBranch}';export const formatSkillCheckResultSummary=()=>'';export const GAME_STORYBOARD_ANIMATION_DURATION_SECONDS_DEFAULT=5;export const GAME_STORYBOARD_ANIMATION_DURATION_SECONDS_MAX=30;export const GAME_STORYBOARD_ANIMATION_DURATION_SECONDS_MIN=1;export const GAME_STORYBOARD_KEYFRAME_COUNT_DEFAULT=4;export const GAME_STORYBOARD_KEYFRAME_COUNT_MAX=12;export const GAME_STORYBOARD_KEYFRAME_COUNT_MIN=1;`,
+              contents: `${sharedTextMatching}\n${sharedQuoteFormat}\nexport * from '${sharedSkillCheck}';export * from '${sharedSheetCommands}';export * from '${sharedDiceBranch}';export * from '${sharedNarrationText}';export * from '${sharedHudWidgetExtended}';export const formatSkillCheckResultSummary=()=>'';export const GAME_STORYBOARD_ANIMATION_DURATION_SECONDS_DEFAULT=5;export const GAME_STORYBOARD_ANIMATION_DURATION_SECONDS_MAX=30;export const GAME_STORYBOARD_ANIMATION_DURATION_SECONDS_MIN=1;export const GAME_STORYBOARD_KEYFRAME_COUNT_DEFAULT=4;export const GAME_STORYBOARD_KEYFRAME_COUNT_MAX=12;export const GAME_STORYBOARD_KEYFRAME_COUNT_MIN=1;`,
               loader: "ts",
               resolveDir: process.cwd(),
             };

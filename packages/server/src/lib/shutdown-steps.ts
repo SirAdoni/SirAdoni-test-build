@@ -96,8 +96,13 @@ export async function runShutdownStepsWithin(
           // log the late error instead of dropping it.
           try {
             onLateFailure(step.name, reason, elapsedMs);
-          } catch {
-            // Logging must never turn a late stop failure into an unhandled rejection.
+          } catch (reportError) {
+            // The logger itself threw; fall back to a process warning (stderr) instead of an
+            // unhandled rejection, so the late stop failure is still visible.
+            process.emitWarning(
+              `Shutdown step ${step.name} failed after its timeout and could not be logged: ${String(reportError)}`,
+              "MarinaraShutdownWarning",
+            );
           }
           return;
         }

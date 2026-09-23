@@ -705,8 +705,10 @@ for (const file of [...serverSourceFiles, ...sharedSourceFiles, ...clientSourceF
   for (const key of chatMetadataMutationKeys(source)) engineMetadataKeys.add(key);
   for (const key of parseChatMetadataReadKeys(source)) engineMetadataKeys.add(key);
   for (const pattern of [
-    /\bchatMeta(?:data)?\??\.\s*([a-z][a-zA-Z0-9]*)/g,
-    /\bchat\??\.metadata\??\.\s*([a-z][a-zA-Z0-9]*)/g,
+    // The lookahead skips method calls on a raw metadata string, such as a cheap
+    // chat.metadata.includes("...") precheck, which reads no key.
+    /\bchatMeta(?:data)?\??\.\s*([a-z][a-zA-Z0-9]*)(?![a-zA-Z0-9]|\s*\()/g,
+    /\bchat\??\.metadata\??\.\s*([a-z][a-zA-Z0-9]*)(?![a-zA-Z0-9]|\s*\()/g,
   ]) {
     for (const match of source.matchAll(pattern)) engineMetadataKeys.add(match[1]!);
   }
@@ -817,17 +819,20 @@ assert.deepEqual(
 // existing metadata, remaps Advanced Memory knowledge/narrator settings and roster anchors, and
 // rewrites summary, summaryEntries, and lastAutomaticSummaryMessageId. `advancedMemory` is now reserved;
 // `summary` and `last` already were. This is an audited variable payload, not a newly ignored literal.
-// The count is 15 because four former opaque game-route writes now use readable updater/literal
+// The count fell to 15 because four former opaque game-route writes now use readable updater/literal
 // patches: map hydration, final map selection, reputation updates, and party-turn NPC avatar sync.
 // Scene conclude/abandon/convert now share one conditional release helper instead of three
 // variable-payload writes: two fewer opaque calls. The helper only clears activeSceneChatId and
 // sceneBusyCharIds, covered by the existing `active` and `scene` reserved namespaces.
+// 14 since 3354c1c89: the generate-route retry map sync (applyRetryResultEffects) became a readable
+// patchMetadata updater that returns gameMap/gameMaps/activeGameMapId, covered by the reserved
+// `game` and `active` namespaces.
 // The other half of the boundary — a read off a parameter inside a helper — has no count
 // to pin, which is why sub-source 7 exists rather than a seventh sweep. The docs state both limits.
 assert.equal(
   unreadableWriteCalls,
-  15,
-  `chat-metadata writes this sweep cannot read statically changed: expected 15, found ${unreadableWriteCalls}. ` +
+  14,
+  `chat-metadata writes this sweep cannot read statically changed: expected 14, found ${unreadableWriteCalls}. ` +
     "This count is a boundary marker, not a budget, so do not simply edit the number to match. Read the " +
     "call this added by hand — the sites are listed below — and decide what it writes: if it commits a key " +
     "under a namespace that is not already in ENGINE_OWNED_METADATA_KEY_PREFIXES, add that namespace (or " +

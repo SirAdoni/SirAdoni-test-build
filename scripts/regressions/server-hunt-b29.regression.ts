@@ -6,9 +6,10 @@
  * 2. Cross-chat awareness: a sibling chat whose newest message is older than every
  *    requested window is skipped without reading its messages, and the message read for
  *    an active sibling is bounded by createdAt.
- * 3. Week schedule parsing: blocks missing "activity" or "time" (or non-object blocks,
- *    or a non-array day) are normalized instead of throwing, and resolveIntent tolerates
- *    a stored block without an activity.
+ * 3. Week schedule parsing: a draft with blocks missing "activity" or "time" (or
+ *    non-object blocks, or a non-array day) is rejected with a visible "invalid schedule"
+ *    error so the user can regenerate it, and resolveIntent tolerates a stored block
+ *    without an activity.
  */
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -44,6 +45,9 @@ try {
         });
       },
     };
+    // The summary timeout timer is unref'd (the server's listener keeps the loop alive in
+    // production). Nothing else here holds the loop open, so keep it alive until it fires.
+    const keepAlive = setInterval(() => {}, 1000);
     const result = await generateMissingConversationSummaries({
       messages: [{ id: "m1", role: "user", content: "Hello there.", createdAt: "2026-08-02T12:00:00.000Z" }],
       metadata: {},
@@ -54,7 +58,7 @@ try {
       now: new Date("2026-08-04T12:00:00.000Z"),
       timeZone: "UTC",
       timeoutMs: 30,
-    });
+    }).finally(() => clearInterval(keepAlive));
     assert.ok(seenSignal, "summary call must pass an AbortSignal to the provider");
     assert.equal(seenSignal.aborted, true, "timeout must abort the provider request");
     assert.equal(result.failedDays.length, 1);
@@ -159,13 +163,11 @@ try {
       },
     });
     const provider = { maxTokensOverrideValue: null, chatComplete: async () => ({ content }) };
-    const { schedule } = await generateCharacterSchedule(provider as never, "m", "Aria", "desc", "pers");
-    const monday = schedule.days.Monday!;
-    assert.equal(monday.length, 3, "non-object blocks are dropped");
-    assert.deepEqual(monday[0], { time: "12:00-13:00", activity: "free time", status: "online" });
-    assert.deepEqual(monday[1], { time: "13:00-14:00", activity: "free time", status: "idle" });
-    assert.deepEqual(monday[2], { time: "00:00-00:00", activity: "working", status: "dnd" });
-    assert.deepEqual(schedule.days.Tuesday, []);
+    await assert.rejects(
+      generateCharacterSchedule(provider as never, "m", "Aria", "desc", "pers"),
+      /invalid schedule for Monday/,
+      "an invalid week draft is rejected with a visible error instead of being saved",
+    );
 
     // A schedule already stored with a missing activity must not throw in resolveIntent.
     const now = new Date(2026, 8, 21, 12, 30); // a Monday

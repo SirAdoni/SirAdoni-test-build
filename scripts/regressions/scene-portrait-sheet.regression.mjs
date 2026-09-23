@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { chromium } from "@playwright/test";
-import { mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 
 const screenshotDir = resolve(".tmp/scene-sheet-repair");
@@ -92,6 +92,10 @@ const bundle = await build({
   }],
 });
 const assets = "packages/client/dist/assets";
+// The sheet layout depends on the built Tailwind CSS, so this test needs a client build first.
+if (!existsSync(assets)) {
+  throw new Error(`${assets} is missing. Build the client first (pnpm build, or pnpm --filter @marinara-engine/client build), then rerun.`);
+}
 const css = readFileSync(`${assets}/${readdirSync(assets).find((file) => /^index-.*\.css$/.test(file))}`, "utf8");
 const browser = await chromium.launch({ headless: true });
 const pageErrors = [];
@@ -105,10 +109,10 @@ try {
     await page.addScriptTag({ content: bundle.outputFiles[0].text });
     await page.waitForTimeout(100);
     if (pageErrors.length) throw new Error(`browser page errors before portrait: ${pageErrors.join(" | ")}`);
-    const quenby = page.locator('img[alt="Quenby"]:visible').first();
+    const quenby = page.locator('button[aria-label="Quenby"]:visible img').first();
     await quenby.waitFor();
     assert.equal(await quenby.evaluate((img) => img.style.top), "0%", "uses card face crop instead of scene body crop");
-    const singer = page.locator('img[alt="Calista"]:visible').first();
+    const singer = page.locator('button[aria-label="Calista"]:visible img').first();
     assert.equal(await singer.evaluate((img) => img.style.top), "", "cleared card crop does not resurrect stale member crop");
     if (viewport.width < 640) {
       await page.getByRole("button", { name: "Open party members" }).click();
@@ -131,7 +135,7 @@ try {
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "detached" });
 
-    const mentor = page.locator('img[alt="Maelis"]:visible').first();
+    const mentor = page.locator('button[aria-label="Maelis"]:visible img').first();
     if (viewport.width < 640) {
       await page.getByRole("button", { name: "Open party members" }).click();
       await page.getByTitle("Maelis - Click to open character sheet").first().click();
@@ -144,7 +148,7 @@ try {
     await page.keyboard.press("Escape");
     await mentorDialog.waitFor({ state: "detached" });
 
-    const explicitAvatar = page.locator('img[alt="Wynne Brack"]:visible').first();
+    const explicitAvatar = page.locator('button[aria-label="Wynne Brack"]:visible img').first();
     if (viewport.width < 640) {
       await page.getByRole("button", { name: "Open party members" }).click();
       await page.getByTitle("Wynne Brack - Click to open character sheet").first().click();
@@ -163,7 +167,7 @@ try {
     await page.keyboard.press("Escape");
     await explicitDialog.waitFor({ state: "detached" });
 
-    const disabledAvatar = page.locator('img[alt="No Stats"]:visible').first();
+    const disabledAvatar = page.locator('button[aria-label="No Stats"]:visible img').first();
     if (viewport.width < 640) {
       await page.getByRole("button", { name: "Open party members" }).click();
       await page.getByTitle("No Stats - Click to open character sheet").first().click();

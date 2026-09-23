@@ -42,6 +42,10 @@ $arguments = ($nodeArgs | ForEach-Object { '"' + $_ + '"' }) -join ' '
 $server = $null
 $socket = $null
 try {
+  # A host that launched this harness with Ctrl+C ignored (CREATE_NEW_PROCESS_GROUP or an
+  # inherited SetConsoleCtrlHandler(NULL, TRUE)) would pass that flag on to the server, and
+  # the native Ctrl+C below would then reach no handler. Clear it before spawning.
+  if (-not [ConsoleSignals]::SetConsoleCtrlHandler([IntPtr]::Zero, $false)) { throw 'Cannot enable Ctrl+C for the server' }
   Write-Phase 'Starting supervised production server'
   $server = Start-Process -FilePath (Get-Command node).Source -ArgumentList $arguments -NoNewWindow -PassThru -RedirectStandardOutput $outputFile -RedirectStandardError $errorFile
   Write-Phase "Supervisor started: $($server.Id)"

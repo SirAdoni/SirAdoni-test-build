@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const dataDir = mkdtempSync(join(tmpdir(), "marinara-hunt-b33-"));
@@ -16,7 +16,12 @@ const readSource = (relativePath: string) =>
 try {
   // ── 1. Built-in fallback must not re-run a configured agent that the main loop skipped ──
   // The registry starts empty; hydrate it through the same shared module instance the server resolves.
-  const { replaceBuiltInAgentDefinitions } = await import("@marinara-engine/shared");
+  // Follow the server package's own link to the shared package (packages/shared in a normal checkout,
+  // another tree when node_modules is shared by a worktree) so both sides load one dist/index.js.
+  const sharedPackageDir = realpathSync(join(repositoryRoot, "packages/server/node_modules/@marinara-engine/shared"));
+  const { replaceBuiltInAgentDefinitions } = (await import(
+    pathToFileURL(join(sharedPackageDir, "dist/index.js")).href
+  )) as typeof import("../../packages/shared/dist/index.js");
   replaceBuiltInAgentDefinitions([
     {
       id: "world-state",

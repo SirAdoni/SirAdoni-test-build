@@ -975,7 +975,8 @@ assert.match(
 );
 const galleryCreateIndex = generateRouteSource.indexOf("const galleryEntry = await galleryStore.create");
 const illustrationMessageLookupIndex = generateRouteSource.indexOf(
-  "const msgRow = await chats.getMessage(messageId)",
+  // One locked call now checks the message and active swipe inside the storage queue.
+  "await chats.appendSwipeAttachmentAndActiveMirror(messageId, targetSwipeIndex, attachment)",
   galleryCreateIndex,
 );
 assert.notEqual(galleryCreateIndex, -1, "Illustrator must persist generated images to Gallery");

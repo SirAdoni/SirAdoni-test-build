@@ -42,7 +42,7 @@ import {
   isEngineRollableSkillCheckTag,
   parseSkillCheckTagBody,
   serializeResolvedSkillCheckTag,
-} from "../../packages/shared/dist/index.js";
+} from "../../packages/server/node_modules/@marinara-engine/shared/dist/index.js";
 import type { SkillCheckModifierContext } from "../../packages/server/src/services/game/skill-check-resolution.service.js";
 import { parseGmTags } from "../../packages/client/src/lib/game-tag-parser.js";
 
@@ -506,7 +506,12 @@ assert.match(
 
 const generateRoutes = readFileSync(join(root, "packages/server/src/routes/generate.routes.ts"), "utf8");
 const resolutionAt = generateRoutes.indexOf("resolveSkillCheckTagsInContent(fullResponse");
-const contentReplaceAt = generateRoutes.indexOf(`type: "content_replace", data: fullResponse`);
+// Anchor on the post-processing emission. The tool loop also sends a content_replace frame
+// earlier in the file (after stripping a round's textual tool-call markup), before any final
+// text or check exists, so the first occurrence is not the one this ordering protects.
+const contentReplaceAt = generateRoutes.search(
+  /if \(contentReplaced\) \{\s*if \(!holdForTextRewrite\) \{\s*sendSseEvent\(reply, \{ type: "content_replace", data: fullResponse \}\);/u,
+);
 assert.ok(resolutionAt > 0, "generation post-processing must roll the GM's checks");
 assert.ok(contentReplaceAt > 0);
 assert.ok(
