@@ -335,17 +335,25 @@ export class GenerationJobTracker {
     return new Date(ms).toISOString();
   }
 
+  /**
+   * Adds the event to the job's trail and, unless the job store already wrote this transition's
+   * `job.state` line (accepted, running, settled), logs it. One line per
+   * transition: the store's line is the canonical one, the trail keeps the tracker's copy.
+   */
   private emit(
     job: LiveJob | null,
     row: GenerationJobRecordRow,
     event: GenerationJobLogEvent,
+    { log = true }: { log?: boolean } = {},
   ): GenerationJobLogEvent[] {
-    const level = event.state === "failed" ? "warn" : "info";
-    logger[level](
-      { ...event },
-      event.event === "job.progress" ? "Generation job progress" : "Generation job %s",
-      event.state,
-    );
+    if (log) {
+      const level = event.state === "failed" ? "warn" : "info";
+      logger[level](
+        { ...event },
+        event.event === "job.progress" ? "Generation job progress" : "Generation job %s",
+        event.state,
+      );
+    }
     const trail = appendTrail(job ? job.trail : parseTrail(row.trail), event);
     if (job) job.trail = trail;
     return trail;
@@ -425,7 +433,7 @@ export class GenerationJobTracker {
         startedMs: this.now(),
       };
       this.live.set(metadata.id, job);
-      this.emit(job, job.row, this.event(job.row, "accepted", "accept"));
+      this.emit(job, job.row, this.event(job.row, "accepted", "accept"), { log: false });
       this.persist(job, true);
       return;
     }
@@ -434,7 +442,7 @@ export class GenerationJobTracker {
     if (event.type === "running") {
       const at = this.iso();
       job.row = { ...job.row, status: "running", startedAt: at, updatedAt: at };
-      this.emit(job, job.row, this.event(job.row, "running", "work"));
+      this.emit(job, job.row, this.event(job.row, "running", "work"), { log: false });
       this.persist(job);
       job.heartbeat = setInterval(() => this.heartbeat(metadata.id), this.limits.progressIntervalMs);
       job.heartbeat.unref?.();
@@ -471,6 +479,7 @@ export class GenerationJobTracker {
         errorId: job.row.errorId ?? undefined,
         outcome,
       }),
+      { log: false },
     );
     this.persist(job);
   }

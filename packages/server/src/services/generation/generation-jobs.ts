@@ -140,6 +140,7 @@ export function logJobState(metadata: GenerationJobMetadata, state: JobState, ex
     state === "failed" || state === "expired" ? "warn" : "info",
     "job.state",
     {
+      operation: "generation.job",
       state,
       jobId: metadata.id,
       ...(kind ? { kind } : {}),

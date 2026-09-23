@@ -52,6 +52,11 @@ function isTrackerLifecycleLine(line: string): boolean {
   return (line.includes('"job.state"') || line.includes('"job.progress"')) && line.includes('"sourceKind"');
 }
 
+// Any job lifecycle line, from the store or the tracker.
+function isLifecycleLine(line: string): boolean {
+  return line.includes('"job.state"') || line.includes('"job.progress"');
+}
+
 const PLANTED_KEY = "sk-plantedSECRET0123456789abcdef";
 const PLANTED_PROMPT = "PLANTED-PROMPT moonlit harbor with a violet lighthouse";
 const ids = {
@@ -497,8 +502,21 @@ try {
   assert.equal(failed.trail.at(-1).outcome, "failed");
 
   // ── Log redaction ──
-  const jobLines = logLines.filter(isTrackerLifecycleLine);
+  const jobLines = logLines.filter(isLifecycleLine);
   assert.ok(jobLines.length >= 10, "lifecycle lines were logged");
+  // One line per transition: with tracking on, the store's job.state line is the only one for
+  // accepted, running and the settled state; the tracker keeps its copy in the trail only.
+  const perTransition = new Map<string, number>();
+  for (const line of jobLines) {
+    const parsed = JSON.parse(line);
+    if (!["accepted", "running", "completed", "failed", "cancelled"].includes(parsed.state)) continue;
+    // The "setting off" jobs run once per app (baseline and tracked-off) to compare them byte for byte.
+    if (parsed.jobId === ids.offDone || parsed.jobId === ids.offFail) continue;
+    const key = `${parsed.jobId}:${parsed.state}`;
+    perTransition.set(key, (perTransition.get(key) ?? 0) + 1);
+  }
+  assert.ok(perTransition.size >= 4, "transitions were logged");
+  for (const [key, count] of perTransition) assert.equal(count, 1, `exactly one log line for ${key}`);
   const states = new Set(jobLines.map((line) => JSON.parse(line).state));
   for (const state of ["accepted", "running", "progress", "completed", "failed", "cancelled", "recovered"])
     assert.ok(states.has(state), `a ${state} line was logged`);
@@ -507,7 +525,11 @@ try {
   assert.equal(typeof completedLine.elapsedMs, "number");
   assert.equal(completedLine.outcome, "ok");
   assert.ok(completedLine.jobId && completedLine.kind, "job id and kind are present");
-  for (const line of jobLines) {
+  for (const raw of jobLines) {
+    // The store's failure line carries the thrown error (err) by design of the logging pass; the
+    // lifecycle fields themselves must never hold prompt text, keys or provider messages.
+    const { err: _err, ...fields } = JSON.parse(raw);
+    const line = JSON.stringify(fields);
     assert.ok(!line.includes("PLANTED"), "no prompt text in lifecycle lines");
     assert.ok(!line.includes(PLANTED_KEY), "no key in lifecycle lines");
     assert.ok(!line.includes("Provider rejected"), "no provider message in lifecycle lines");
