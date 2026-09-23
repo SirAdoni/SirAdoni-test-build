@@ -45,6 +45,9 @@ import { CampaignWikiFacts } from "./CampaignWikiFacts";
 import { CampaignWikiInfobox, type CampaignWikiView } from "./CampaignWikiInfobox";
 import { CampaignWikiRail, KIND_ORDER, useKindTotals } from "./CampaignWikiRail";
 import { CampaignWikiOverview, TimelineEventPeople } from "./CampaignWikiOverview";
+import { CampaignWikiReview, useCampaignDuplicateCount } from "./CampaignWikiReview";
+import { CampaignWikiCanon } from "./CampaignWikiCanon";
+import { CampaignWikiLinksHere } from "./CampaignWikiLinksHere";
 import {
   EntityChipButton,
   EntityRefName,
@@ -379,6 +382,9 @@ function Detail({
               onSelect={onSelect}
               onCorrect={onCorrectFact}
             />
+          )}
+          {view === "facts" && detailOffset === 0 && (
+            <CampaignWikiLinksHere chatId={chatId} detail={detail} onSelect={onSelect} portraits={portraits} />
           )}
 
           {view === "knowledge" && (
@@ -895,7 +901,9 @@ function groupByMatchTier(items: CampaignMemoryEntityListItem[], query: string) 
   return groups.filter((group) => group.items.length > 0);
 }
 
-type ReaderView = "home" | "timeline";
+type ReaderView = "home" | "timeline" | ToolPage;
+/** Campaign-wide tool pages opened from the front page. */
+type ToolPage = "review" | "canon";
 type TimelineTab = "events" | "promises";
 
 export function CampaignWiki({
@@ -922,6 +930,8 @@ export function CampaignWiki({
   const [campaignTimeline, setCampaignTimeline] = useState(false);
   // Phones show the page list first; the front page opens like any other page.
   const [overviewOpen, setOverviewOpen] = useState(false);
+  const [toolPage, setToolPage] = useState<ToolPage | null>(null);
+  const reviewCount = useCampaignDuplicateCount(chatId);
   const [timelineTab, setTimelineTab] = useState<TimelineTab>("events");
   const [navCollapsed, setNavCollapsed] = useState(false);
   useEffect(() => onDirtyChange?.(editorDirty), [editorDirty, onDirtyChange]);
@@ -949,6 +959,7 @@ export function CampaignWiki({
     setEditing(false);
     setEditorDirty(false);
     setCampaignTimeline(false);
+    setToolPage(null);
     setSearchText("");
     setQuery("");
     setKind("all");
@@ -976,6 +987,7 @@ export function CampaignWiki({
     externalSelectedRef.current = selectedEntityId;
     setSelectedId(selectedEntityId);
     setCampaignTimeline(false);
+    setToolPage(null);
     setDetailOffset(0);
     setEditing(false);
     setEditorDirty(false);
@@ -1004,13 +1016,14 @@ export function CampaignWiki({
     [entities.data, selectedId],
   );
   const listGroups = useMemo(() => groupByMatchTier(entities.data?.items ?? [], query), [entities.data, query]);
-  const reading = Boolean(selectedId) || campaignTimeline || overviewOpen;
-  const view: ReaderView = campaignTimeline && !selectedId ? "timeline" : "home";
+  const reading = Boolean(selectedId) || campaignTimeline || overviewOpen || toolPage !== null;
+  const view: ReaderView = campaignTimeline && !selectedId ? "timeline" : toolPage && !selectedId ? toolPage : "home";
   const closeReading = () => {
     if (!confirmEditorExit()) return false;
     setSelectedId(null);
     setCampaignTimeline(false);
     setOverviewOpen(false);
+    setToolPage(null);
     setEditing(false);
     setEditorDirty(false);
     reportSelection(null);
@@ -1021,6 +1034,7 @@ export function CampaignWiki({
     setSelectedId(id);
     setCampaignTimeline(false);
     setOverviewOpen(false);
+    setToolPage(null);
     setDetailOffset(0);
     setEditing(false);
     setEditorDirty(false);
@@ -1039,6 +1053,10 @@ export function CampaignWiki({
   const showOverview = () => {
     if (!closeReading()) return;
     setOverviewOpen(true);
+  };
+  const showToolPage = (page: ToolPage) => {
+    if (!closeReading()) return;
+    setToolPage(page);
   };
   const chooseKind = (next: CampaignMemoryEntityKind | "all") => {
     setKind(next);
@@ -1138,7 +1156,7 @@ export function CampaignWiki({
           onSelect={selectEntity}
           portraits={portraits}
           timelineActive={campaignTimeline}
-          homeActive={!selectedId && !campaignTimeline}
+          homeActive={!selectedId && !campaignTimeline && !toolPage}
           onShowHome={showOverview}
           onShowTimeline={() => showTimeline()}
           onCollapse={() => setNavCollapsed(true)}
@@ -1210,6 +1228,8 @@ export function CampaignWiki({
                 )}
               </div>
             )}
+            {view === "review" && <CampaignWikiReview chatId={chatId} onSelect={selectEntity} portraits={portraits} />}
+            {view === "canon" && <CampaignWikiCanon chatId={chatId} onSelect={selectEntity} portraits={portraits} />}
             {selectedId && detail.isLoading && !shownDetail && (
               <div className="mx-auto max-w-[62rem] space-y-3 pt-2">
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -1229,6 +1249,9 @@ export function CampaignWiki({
                 onShowKind={showKind}
                 onShowTimeline={() => showTimeline("events")}
                 onShowPromises={() => showTimeline("promises")}
+                onShowCanon={() => showToolPage("canon")}
+                onShowReview={() => showToolPage("review")}
+                reviewCount={reviewCount}
                 portraits={portraits}
                 tools={importTools}
               />

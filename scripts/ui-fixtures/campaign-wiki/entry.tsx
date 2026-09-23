@@ -37,6 +37,16 @@ type MockControl = {
   crossSessionTransition: boolean;
   /** Query strings of every timeline request, in order. */
   timelineRequests: string[];
+  /** Duplicate review: every resolve request ({ chatId, groupId, body, status }). */
+  reviewResolves: Array<{ chatId: string; groupId: string; body: any; status: number }>;
+  /** The next duplicate resolve answers 409 CAMPAIGN_MEMORY_CAS_MISMATCH. */
+  reviewConflictOnce: boolean;
+  /** The next duplicate resolve answers 409 CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE. */
+  reviewCrossSessionOnce: boolean;
+  /** Chat ids of every duplicates list request. */
+  reviewListChats: string[];
+  /** Fact writes sent to another session chat ({ chatId, body }). */
+  sessionMutations: Array<{ chatId: string; body: any }>;
 };
 declare global {
   interface Window {
@@ -100,6 +110,196 @@ const factStates = [
   { predicate: "is trusted", value: true, conditions: [{ kind: "flag", value: true }], revision: 1 },
 ];
 const emptyPage = <T,>(items: T[], total = items.length, offset = 0, limit = 50) => ({ items, total, offset, limit });
+
+// ?review=none: no duplicate groups; ?review=legacy: an older server without review, facts or references routes.
+const REVIEW_MODE = new URL(window.location.href).searchParams.get("review") ?? "groups";
+type DuplicateFixture = {
+  chatId: string;
+  groupId: string;
+  subjectEntityId: string;
+  predicate: string;
+  reason: "overlapping-evidence" | "similar-text";
+  similarity: number | null;
+  facts: Array<{ factId: string; value: unknown; evidence: string[]; order: string; pinned?: boolean }>;
+};
+const duplicateGroups: DuplicateFixture[] =
+  REVIEW_MODE === "groups"
+    ? [
+        {
+          chatId: "chat-demo",
+          groupId: "dup-gate",
+          subjectEntityId: "entity-0",
+          predicate: "continuity.record",
+          reason: "overlapping-evidence",
+          similarity: 0.71,
+          facts: [
+            {
+              factId: "fact-dup-gate-1",
+              value: { text: "Ariadne swore to guard the northern gate until the thaw.", kind: "commitment" },
+              evidence: ["msg-gate"],
+              order: "m1|2026-09-11T12:00:00.000Z|msg-gate",
+            },
+            {
+              factId: "fact-dup-gate-2",
+              value: {
+                text: "Ariadne swore an oath to keep the northern gate closed until the thaw comes.",
+                kind: "commitment",
+              },
+              evidence: ["msg-gate", "msg-gate-2", "msg-gate-3"],
+              order: "m1|2026-09-12T12:00:00.000Z|msg-gate-2",
+            },
+          ],
+        },
+        {
+          chatId: "chat-demo",
+          groupId: "dup-occupation",
+          subjectEntityId: "entity-3",
+          predicate: "occupation",
+          reason: "similar-text",
+          similarity: 1,
+          facts: [
+            {
+              factId: "fact-dup-occ-1",
+              value: "Archivist of the north",
+              evidence: ["msg-occ"],
+              order: "m1|2026-09-10T12:00:00.000Z|msg-occ",
+            },
+            {
+              factId: "fact-dup-occ-2",
+              value: "archivist of the north",
+              evidence: ["msg-occ-2"],
+              order: "m1|2026-09-12T12:00:00.000Z|msg-occ-2",
+              pinned: true,
+            },
+          ],
+        },
+        {
+          chatId: "chat-session-1",
+          groupId: "dup-ferry",
+          subjectEntityId: "entity-1",
+          predicate: "continuity.record",
+          reason: "similar-text",
+          similarity: 0.86,
+          facts: [
+            {
+              factId: "fact-dup-ferry-1",
+              value: { text: "The ferry at Location 1 only runs at dawn.", kind: "rule" },
+              evidence: ["msg-ferry"],
+              order: "m1|2026-09-01T12:00:00.000Z|msg-ferry",
+            },
+            {
+              factId: "fact-dup-ferry-2",
+              value: { text: "The ferry at Location 1 runs only at dawn.", kind: "rule" },
+              evidence: ["msg-ferry-2"],
+              order: "m1|2026-09-02T12:00:00.000Z|msg-ferry-2",
+            },
+            {
+              factId: "fact-dup-ferry-3",
+              value: { text: "The Location 1 ferry only runs at dawn.", kind: "rule" },
+              evidence: ["msg-ferry-3"],
+              order: "m1|2026-09-03T12:00:00.000Z|msg-ferry-3",
+            },
+          ],
+        },
+      ]
+    : [];
+const duplicateRevisions: Record<string, number> = {};
+for (const group of duplicateGroups) for (const fact of group.facts) duplicateRevisions[fact.factId] = 2;
+function duplicateRecord(group: DuplicateFixture, fact: DuplicateFixture["facts"][number]) {
+  const value =
+    fact.pinned && typeof fact.value === "object" ? { ...(fact.value as object), pinned: true } : fact.value;
+  return {
+    factId: fact.factId,
+    chatId: group.chatId,
+    subjectEntityId: group.subjectEntityId,
+    predicate: group.predicate,
+    value: fact.pinned && typeof fact.value === "string" ? { text: fact.value, pinned: true } : value,
+    conditions: [],
+    status: "verified",
+    sourceRevision: "rev-3",
+    evidence: fact.evidence.map((messageId) => ({ messageId, quote: "Quoted line." })),
+    author: "system",
+    provenance,
+    manualLock: Boolean(fact.pinned),
+    revision: duplicateRevisions[fact.factId],
+    validFromOrder: fact.order,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+function duplicateView(group: DuplicateFixture) {
+  return {
+    groupId: group.groupId,
+    subjectEntityId: group.subjectEntityId,
+    predicate: group.predicate,
+    reason: group.reason,
+    similarity: group.similarity,
+    facts: group.facts.map((fact) => ({
+      factId: fact.factId,
+      receiptId: null,
+      status: "verified",
+      text:
+        fact.value && typeof fact.value === "object" && typeof (fact.value as { text?: unknown }).text === "string"
+          ? (fact.value as { text: string }).text
+          : JSON.stringify(fact.value),
+      evidenceMessageIds: fact.evidence,
+      sourceOrder: fact.order,
+      historical: false,
+    })),
+  };
+}
+// Pinned canon recorded in session 1 about Location 1; unpinning writes to chat-session-1.
+const sessionOnePinned: Record<string, Record<string, unknown>> = {
+  "fact-canon-ferry": {
+    factId: "fact-canon-ferry",
+    chatId: "chat-session-1",
+    subjectEntityId: "entity-1",
+    predicate: "continuity.record",
+    value: { text: "The ferryman never crosses after dark.", kind: "rule", pinned: true },
+    conditions: [],
+    status: "verified",
+    sourceRevision: "rev-1",
+    evidence: [{ messageId: "msg-canon-ferry", quote: "He never crosses after dark." }],
+    author: "user",
+    provenance,
+    manualLock: true,
+    revision: 3,
+    validFromOrder: "m1|2026-09-02T12:00:00.000Z|msg-canon-ferry",
+    createdAt: now,
+    updatedAt: now,
+    originChatId: "chat-session-1",
+    originSessionNumber: 1,
+  },
+  "fact-canon-toll": {
+    factId: "fact-canon-toll",
+    chatId: "chat-session-1",
+    subjectEntityId: "entity-1",
+    predicate: "continuity.record",
+    value: {
+      text: "The crossing toll is one silver coin, paid in advance.",
+      kind: "rule",
+      pinned: true,
+      lockedBeforePin: true,
+    },
+    conditions: [],
+    status: "verified",
+    sourceRevision: "rev-1",
+    evidence: [{ messageId: "msg-canon-toll", quote: "One silver, before you step aboard." }],
+    author: "user",
+    provenance,
+    manualLock: true,
+    revision: 1,
+    validFromOrder: "m1|2026-09-01T12:00:00.000Z|msg-canon-toll",
+    createdAt: now,
+    updatedAt: now,
+    originChatId: "chat-session-1",
+    originSessionNumber: 1,
+  },
+};
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+const missingRoute = (pathname: string) =>
+  json({ message: `Route GET:${pathname} not found`, error: "Not Found", statusCode: 404 }, 404);
 
 function InventoryHarness() {
   const [items, setItems] = React.useState<InventoryItem[]>([
@@ -307,6 +507,8 @@ function detail(id: string, offset: number, params: URLSearchParams = new URLSea
       eventId: "event-1",
       chatId: "chat-demo",
       occurrenceOrder: "12",
+      participantEntityIds: [id, "entity-3", "entity-2"],
+      locationEntityId: "entity-1",
       transitions: ["archive opened", "key secured"],
       evidence: [{ messageId: "msg-event", quote: "The archive opened after the eclipse.", sourceHash: "hash-event" }],
     },
@@ -314,6 +516,7 @@ function detail(id: string, offset: number, params: URLSearchParams = new URLSea
       eventId: "event-stale",
       chatId: "chat-demo",
       occurrenceOrder: "13",
+      participantEntityIds: [id, "entity-3"],
       transitions: ["stale cause transition"],
       evidence: [{ messageId: "msg-event-stale", quote: "Old event source", sourceHash: "hash-event-stale" }],
     },
@@ -378,7 +581,9 @@ function detail(id: string, offset: number, params: URLSearchParams = new URLSea
     ),
     events: emptyPage(events, events.length, 0, 20),
     relationships: emptyPage(relationships, relationships.length, 0, 20),
-    relatedEntities: entities.filter((item) => item.entityId === target),
+    relatedEntities: entities.filter(
+      (item) => [target, "entity-1", "entity-2", "entity-3"].includes(item.entityId) && item.entityId !== id,
+    ),
     referencedFacts: [
       ...factStates.map((item, index) => ({
         factId: `fact-${index}`,
@@ -436,6 +641,11 @@ async function main() {
     crossSessionOnce: false,
     crossSessionTransition: false,
     timelineRequests: [],
+    reviewResolves: [],
+    reviewConflictOnce: false,
+    reviewCrossSessionOnce: false,
+    reviewListChats: [],
+    sessionMutations: [],
   };
   const ownerWaiters: Array<() => void> = [];
   window.__wikiMock.releaseOwner = () => {
@@ -489,13 +699,144 @@ async function main() {
           id: "chat-demo",
           // Session chats are named "<campaign> — Session N"; the wiki front page shows the campaign name.
           name: "Fixture Campaign — Session 3",
+          mode: "game",
+          groupId: "group-fixture",
           metadata:
             control.branchMode === "no-metadata"
               ? {}
-              : { summary: null, ...(branch ? { campaignMemoryBranch: branch } : {}) },
+              : { summary: null, gameSessionNumber: 3, ...(branch ? { campaignMemoryBranch: branch } : {}) },
         }),
         { headers: { "Content-Type": "application/json" } },
       );
+    }
+    if (parsed.pathname === "/api/chats") {
+      // The game group: sessions 1-3 (this chat is 3), a branch of session 2 and a later session 4 (both skipped).
+      const session = (id: string, number: number, extra: Record<string, unknown> = {}) => ({
+        id,
+        name: `Fixture Campaign — Session ${number}`,
+        mode: "game",
+        groupId: "group-fixture",
+        createdAt: now,
+        updatedAt: now,
+        metadata: { gameSessionNumber: number, ...extra },
+      });
+      return json([
+        session("chat-demo", 3),
+        session("chat-session-2", 2),
+        session("chat-session-2-branch", 2, { branchName: "What if" }),
+        session("chat-session-1", 1),
+        session("chat-session-4", 4),
+        {
+          id: "chat-other",
+          name: "Other chat",
+          mode: "roleplay",
+          groupId: null,
+          createdAt: now,
+          updatedAt: now,
+          metadata: {},
+        },
+      ]);
+    }
+    const reviewList = parsed.pathname.match(/^\/api\/game\/([^/]+)\/memory\/review\/duplicates$/);
+    if (reviewList) {
+      control.reviewListChats.push(reviewList[1]);
+      if (REVIEW_MODE === "legacy") return missingRoute(parsed.pathname);
+      const groups = duplicateGroups.filter((group) => group.chatId === reviewList[1]).map(duplicateView);
+      return json({ groups, nextCursor: null });
+    }
+    const reviewResolve = parsed.pathname.match(/^\/api\/game\/([^/]+)\/memory\/review\/duplicates\/([^/]+)\/resolve$/);
+    if (reviewResolve && init?.method === "POST") {
+      const [, resolveChatId, rawGroupId] = reviewResolve;
+      const groupId = decodeURIComponent(rawGroupId);
+      const body = JSON.parse(String(init.body ?? "{}"));
+      const index = duplicateGroups.findIndex((group) => group.chatId === resolveChatId && group.groupId === groupId);
+      const refuse = (status: number, code: string, message: string) => {
+        control.reviewResolves.push({ chatId: resolveChatId, groupId, body, status });
+        return json({ error: { code, message } }, status);
+      };
+      if (control.reviewCrossSessionOnce) {
+        control.reviewCrossSessionOnce = false;
+        return refuse(
+          409,
+          "CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE",
+          "Location 1 has no page in that session yet. Add it there first.",
+        );
+      }
+      if (control.reviewConflictOnce) {
+        control.reviewConflictOnce = false;
+        for (const factId of Object.keys(body.expectedRevisions ?? {})) duplicateRevisions[factId] += 1;
+        return refuse(409, "CAMPAIGN_MEMORY_CAS_MISMATCH", "stale revision");
+      }
+      if (index < 0) return refuse(404, "CAMPAIGN_MEMORY_NOT_FOUND", "Campaign memory fact not found");
+      const stale = Object.entries(body.expectedRevisions ?? {}).some(
+        ([factId, revision]) => duplicateRevisions[factId] !== revision,
+      );
+      if (stale) return refuse(409, "CAMPAIGN_MEMORY_CAS_MISMATCH", "stale revision");
+      duplicateGroups.splice(index, 1);
+      control.reviewResolves.push({ chatId: resolveChatId, groupId, body, status: 200 });
+      return json({
+        groupId,
+        keepFactId: body.keepFactId,
+        retiredFactIds: body.retireFactIds,
+        linkedFactId: body.retireFactIds[0] ?? null,
+      });
+    }
+    const sectionFacts = parsed.pathname.match(/^\/api\/game\/([^/]+)\/memory\/entities\/([^/]+)\/facts$/);
+    if (sectionFacts && parsed.searchParams.get("scope") === "session") {
+      const records = duplicateGroups
+        .filter((group) => group.chatId === sectionFacts[1] && group.subjectEntityId === sectionFacts[2])
+        .flatMap((group) => group.facts.map((fact) => duplicateRecord(group, fact)));
+      return json(emptyPage(records, records.length, 0, 100));
+    }
+    const references = parsed.pathname.match(/^\/api\/game\/chat-demo\/memory\/entities\/([^/]+)\/references$/);
+    if (references) {
+      if (REVIEW_MODE === "legacy") return missingRoute(parsed.pathname);
+      return json({
+        facts: FACT_TOTAL,
+        knowledge: 3,
+        events: 12,
+        relationships: DUPES ? 4 : 1,
+        states: 3,
+        samples: {
+          facts: ["fact-0"],
+          knowledge: ["knowledge-1"],
+          events: ["event-1"],
+          relationships: ["rel-1"],
+          states: ["state-1"],
+        },
+      });
+    }
+    if (parsed.pathname === "/api/game/chat-demo/memory/facts") {
+      if (REVIEW_MODE === "legacy") return missingRoute(parsed.pathname);
+      const isPinned = (fact: any) =>
+        fact.manualLock &&
+        fact.status !== "retracted" &&
+        fact.value &&
+        typeof fact.value === "object" &&
+        fact.value.pinned === true;
+      const subjectOf = (entityId: string) => {
+        const found = entities.find((item) => item.entityId === entityId);
+        return { entityId, alias: found?.aliases[0] ?? entityId };
+      };
+      const q = (parsed.searchParams.get("q") ?? "").toLowerCase();
+      const all = [...allFacts("entity-0"), ...Object.values(sessionOnePinned)]
+        .filter((fact) => parsed.searchParams.get("pinned") !== "true" || isPinned(fact))
+        .filter((fact: any) => !q || `${fact.predicate} ${JSON.stringify(fact.value)}`.toLowerCase().includes(q))
+        .map((fact: any) => ({ ...fact, subject: subjectOf(fact.subjectEntityId) }));
+      const offset = Number(parsed.searchParams.get("offset") ?? 0);
+      const limit = Number(parsed.searchParams.get("limit") ?? 50);
+      return json(emptyPage(all.slice(offset, offset + limit), all.length, offset, limit));
+    }
+    const sessionMutation = parsed.pathname.match(/^\/api\/game\/(chat-session-\d)\/memory\/mutations$/);
+    if (sessionMutation && init?.method === "POST") {
+      const body = JSON.parse(String(init.body ?? "{}"));
+      control.sessionMutations.push({ chatId: sessionMutation[1], body });
+      const record = sessionOnePinned[body.recordId];
+      if (!record) return json({ error: { code: "CAMPAIGN_MEMORY_NOT_FOUND", message: "not found" } }, 404);
+      if (body.expectedRevision !== record.revision)
+        return json({ error: { code: "CAMPAIGN_MEMORY_CAS_MISMATCH", message: "stale revision" } }, 409);
+      Object.assign(record, body.patch ?? {}, { revision: Number(record.revision) + 1 });
+      return json(record);
     }
     if (parsed.pathname === "/api/characters")
       // char-3 has a slow portrait (initials until it loads), char-6 a missing one (falls back to initials).

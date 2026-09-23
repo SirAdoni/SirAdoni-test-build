@@ -7,7 +7,9 @@ import {
   ChevronRight,
   Database,
   History,
+  Layers,
   MapPin,
+  Pin,
   ScrollText,
   Sparkles,
   Wrench,
@@ -135,6 +137,9 @@ export function CampaignWikiOverview({
   onShowKind,
   onShowTimeline,
   onShowPromises,
+  onShowCanon,
+  onShowReview,
+  reviewCount,
   portraits,
   tools,
 }: {
@@ -145,6 +150,10 @@ export function CampaignWikiOverview({
   onShowKind: (kind: CampaignMemoryEntityKind) => void;
   onShowTimeline: () => void;
   onShowPromises: () => void;
+  onShowCanon: () => void;
+  onShowReview: () => void;
+  /** Duplicate groups waiting for review; null while unknown or on a server without review. */
+  reviewCount?: number | null;
   portraits: Map<string, string>;
   tools: ReactNode;
 }) {
@@ -394,6 +403,11 @@ export function CampaignWikiOverview({
                       {t("ui.game.campaignWiki.reader.tabCommitments", { defaultValue: "Promises & quests" })}
                     </QuickLink>
                   </li>
+                  <li>
+                    <QuickLink icon={<Pin size={15} />} onClick={onShowCanon}>
+                      {t("ui.game.campaignWiki.canon.title", { defaultValue: "Canon" })}
+                    </QuickLink>
+                  </li>
                   {has("lore") && (
                     <li>
                       <QuickLink icon={<BookOpen size={15} />} onClick={() => onShowKind("lore")}>
@@ -406,12 +420,42 @@ export function CampaignWikiOverview({
                     </li>
                   )}
                 </ul>
-                <details className="mt-3 rounded-xl border border-border px-3 py-2">
+                <details data-campaign-wiki-overview-tools className="mt-3 rounded-xl border border-border px-3 py-2">
                   <summary className="flex min-h-8 cursor-pointer items-center gap-1.5 text-xs font-semibold text-muted-foreground">
                     <Wrench size={13} aria-hidden="true" />
-                    {t("ui.game.campaignWiki.reader.tools", { defaultValue: "Tools" })}
+                    <span className="flex-1">{t("ui.game.campaignWiki.reader.tools", { defaultValue: "Tools" })}</span>
+                    {typeof reviewCount === "number" && reviewCount > 0 && (
+                      <span
+                        data-campaign-wiki-review-badge
+                        title={t("ui.game.campaignWiki.review.badge", {
+                          defaultValue: "{{count}} duplicates to review",
+                          count: reviewCount,
+                        })}
+                        className="rounded-full bg-primary/20 px-1.5 py-px text-[0.6875rem] font-bold tabular-nums text-foreground"
+                      >
+                        {reviewCount > 99 ? "99+" : reviewCount}
+                      </span>
+                    )}
                   </summary>
-                  <div className="mt-2 pb-1">{tools}</div>
+                  <div className="mt-2 space-y-3 pb-1">
+                    <button
+                      type="button"
+                      onClick={onShowReview}
+                      className="flex min-h-10 w-full items-center gap-2.5 rounded-lg border border-border px-2.5 text-left text-sm font-medium text-foreground transition-colors hover:border-primary/50 hover:bg-secondary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                    >
+                      <Layers size={15} className="shrink-0 text-primary" aria-hidden="true" />
+                      <span className="min-w-0 flex-1 truncate">
+                        {t("ui.game.campaignWiki.review.title", { defaultValue: "Review duplicates" })}
+                      </span>
+                      {typeof reviewCount === "number" && reviewCount > 0 && (
+                        <span className="rounded-full bg-primary/20 px-1.5 py-px text-[0.6875rem] font-bold tabular-nums">
+                          {reviewCount > 99 ? "99+" : reviewCount}
+                        </span>
+                      )}
+                      <ChevronRight size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+                    </button>
+                    {tools}
+                  </div>
                 </details>
               </section>
             </aside>

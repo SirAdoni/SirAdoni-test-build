@@ -18,6 +18,7 @@ const DEFAULT_RUNNERS = [
   ["run-commitment-conflict.mjs", "commitment-conflict-results.json"],
   ["run-branch-proof.mjs", "branch-results.json"],
   ["run-knowledge-setting-proof.mjs", "knowledge-setting-results.json"],
+  ["run-review-canon.mjs", "review-canon-results.json"],
 ];
 const EXTRA_RUNNERS = [["run-inventory-settings-proof.mjs", "inventory-settings-results.json"]];
 const args = process.argv.slice(2);

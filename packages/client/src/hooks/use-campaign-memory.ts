@@ -14,7 +14,7 @@ import type {
   CampaignMemoryRelationship,
   CampaignMemoryPage,
 } from "@marinara-engine/shared";
-import { api } from "../lib/api-client";
+import { ApiError, api } from "../lib/api-client";
 
 const campaignMemoryKeys = {
   all: ["campaign-memory"] as const,
@@ -484,4 +484,220 @@ export function useTransitionCampaignMemoryCommitment(chatId: string | null) {
       void queryClient.invalidateQueries({ queryKey: campaignMemoryKeys.all });
     },
   });
+}
+
+/** One fact of a duplicate group as GET /memory/review/duplicates sends it (the chat's own, unprojected fact). */
+export interface CampaignMemoryDuplicateFact {
+  factId: string;
+  receiptId: string | null;
+  status: CampaignMemoryFact["status"];
+  /** The continuity text, or the JSON of a plain value. */
+  text: string;
+  evidenceMessageIds: string[];
+  sourceOrder: string | null;
+  historical: boolean;
+}
+export interface CampaignMemoryDuplicateGroup {
+  groupId: string;
+  subjectEntityId: string;
+  predicate: string;
+  /** Oldest source first. */
+  facts: CampaignMemoryDuplicateFact[];
+  reason: "overlapping-evidence" | "similar-text";
+  similarity: number | null;
+}
+export interface CampaignMemoryDuplicatesPage {
+  groups: CampaignMemoryDuplicateGroup[];
+  nextCursor: string | null;
+}
+/** A session chat of the campaign; duplicate review reads and resolves per session chat. */
+export interface CampaignMemorySessionChat {
+  chatId: string;
+  sessionNumber: number | null;
+}
+/** A duplicate group labelled with the session chat it was found in (resolve goes to that chat). */
+export type CampaignMemorySessionDuplicateGroup = CampaignMemoryDuplicateGroup & CampaignMemorySessionChat;
+
+/** Groups per request (server maximum) and a cap on pages per session chat. */
+const DUPLICATES_PAGE = 100;
+const DUPLICATES_MAX_PAGES = 10;
+
+/** A 404 from a route an older server does not have; a memory 404 (missing chat or record) names its code. */
+function isMissingRoute(error: unknown) {
+  if (!(error instanceof ApiError) || error.status !== 404) return false;
+  const body = (error.payload ?? {}) as { error?: { code?: unknown } | string };
+  const code = error.code ?? (typeof body.error === "object" && body.error ? body.error.code : undefined);
+  return typeof code !== "string" || !code.startsWith("CAMPAIGN_MEMORY_");
+}
+
+/**
+ * Near-duplicate fact groups of every session chat of the campaign, each labelled with its session. `unsupported` is
+ * true when no session chat knows the route (an older server).
+ */
+export function useCampaignMemoryDuplicates(
+  sessions: CampaignMemorySessionChat[],
+  options: { enabled?: boolean } = {},
+) {
+  return useQuery({
+    queryKey: [
+      ...campaignMemoryKeys.all,
+      "duplicates",
+      sessions.map((session) => `${session.chatId}:${session.sessionNumber ?? ""}`).join(","),
+    ] as const,
+    queryFn: async () => {
+      const groups: CampaignMemorySessionDuplicateGroup[] = [];
+      let supported = 0;
+      let truncated = false;
+      for (const session of sessions) {
+        let cursor: string | null = null;
+        try {
+          for (let pageIndex = 0; pageIndex < DUPLICATES_MAX_PAGES; pageIndex += 1) {
+            const page: CampaignMemoryDuplicatesPage = await api.get<CampaignMemoryDuplicatesPage>(
+              withParams(`/game/${session.chatId}/memory/review/duplicates`, {
+                limit: DUPLICATES_PAGE,
+                cursor: cursor ?? undefined,
+              }),
+            );
+            for (const group of page.groups) groups.push({ ...group, ...session });
+            cursor = page.nextCursor;
+            if (!cursor) break;
+          }
+          supported += 1;
+          if (cursor) truncated = true;
+        } catch (error) {
+          if (!isMissingRoute(error)) throw error;
+        }
+      }
+      return { groups, unsupported: sessions.length > 0 && supported === 0, truncated };
+    },
+    enabled: sessions.length > 0 && options.enabled !== false,
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * The stored records (with revisions) of one duplicate group, read unprojected (`scope=session`) from the group's own
+ * session chat, so the ids match the group and the revisions are the ones resolve checks.
+ */
+export function useCampaignMemoryDuplicateRecords(group: CampaignMemorySessionDuplicateGroup | null) {
+  return useQuery({
+    queryKey: [...campaignMemoryKeys.all, "duplicate-records", group?.chatId ?? "", group?.groupId ?? ""] as const,
+    queryFn: async () => {
+      const wanted = new Set(group!.facts.map((fact) => fact.factId));
+      const found = new Map<string, CampaignMemoryFact>();
+      for (let offset = 0; found.size < wanted.size; offset += 100) {
+        const page = await api.get<CampaignMemoryPage<CampaignMemoryFact>>(
+          withParams(`/game/${group!.chatId}/memory/entities/${group!.subjectEntityId}/facts`, {
+            scope: "session",
+            offset,
+            limit: 100,
+          }),
+        );
+        for (const fact of page.items) if (wanted.has(fact.factId)) found.set(fact.factId, fact);
+        if (page.items.length === 0 || offset + page.items.length >= page.total) break;
+      }
+      return found;
+    },
+    enabled: Boolean(group),
+    staleTime: 30_000,
+  });
+}
+
+export interface CampaignMemoryDuplicateResolveRequest {
+  chatId: string;
+  groupId: string;
+  keepFactId: string;
+  retireFactIds: string[];
+  expectedRevisions: Record<string, number>;
+}
+export interface CampaignMemoryDuplicateResolveResult {
+  groupId: string;
+  keepFactId: string;
+  retiredFactIds: string[];
+  linkedFactId: string | null;
+}
+
+/** Keep one fact of a group and supersede the others, in the group's own session chat. A 409 means reload the group. */
+export function useResolveCampaignMemoryDuplicates() {
+  const queryClient = useQueryClient();
+  return useMutation<CampaignMemoryDuplicateResolveResult, unknown, CampaignMemoryDuplicateResolveRequest>({
+    mutationFn: ({ chatId, groupId, ...body }) =>
+      api.post<CampaignMemoryDuplicateResolveResult>(
+        `/game/${chatId}/memory/review/duplicates/${encodeURIComponent(groupId)}/resolve`,
+        body,
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: campaignMemoryKeys.all });
+    },
+  });
+}
+
+/** GET /memory/entities/:id/references: campaign-wide counts of the records naming a page, with a few sample ids. */
+export interface CampaignMemoryReferences {
+  facts: number;
+  knowledge: number;
+  events: number;
+  relationships: number;
+  states: number;
+  samples: Partial<Record<"facts" | "knowledge" | "events" | "relationships" | "states", string[]>>;
+}
+
+export function useCampaignMemoryReferences(chatId: string | null, entityId: string | null) {
+  return useQuery({
+    queryKey: [...campaignMemoryKeys.all, "references", chatId ?? "", entityId ?? ""] as const,
+    queryFn: () => api.get<CampaignMemoryReferences>(`/game/${chatId}/memory/entities/${entityId}/references`),
+    enabled: Boolean(chatId && entityId),
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+/** A fact from the campaign-wide GET /memory/facts, with its subject's name and origin session. */
+export type CampaignMemoryListedFact = CampaignMemoryFact & {
+  subject: { entityId: string; alias: string };
+  originChatId?: string;
+  originSessionNumber?: number;
+};
+
+const PINNED_PAGE = 100;
+
+/**
+ * Every pinned fact of the campaign (manualLock and value.pinned), newest session first, paged by offset.
+ * `unsupported` is true when the server has no GET /memory/facts yet (it answers 404); nothing else is fetched then.
+ */
+export function useCampaignMemoryPinnedFacts(chatId: string | null, options: { query?: string } = {}) {
+  const query = options.query?.trim() ?? "";
+  const result = useInfiniteQuery({
+    queryKey: [...campaignMemoryKeys.all, "pinned-facts", chatId ?? "", query] as const,
+    queryFn: async ({ pageParam }) => {
+      try {
+        return await api.get<CampaignMemoryPage<CampaignMemoryListedFact>>(
+          withParams(`/game/${chatId}/memory/facts`, {
+            pinned: "true",
+            q: query,
+            offset: pageParam,
+            limit: PINNED_PAGE,
+          }),
+        );
+      } catch (error) {
+        if (isMissingRoute(error)) return null;
+        throw error;
+      }
+    },
+    initialPageParam: 0,
+    getNextPageParam: (last: CampaignMemoryPage<CampaignMemoryListedFact> | null) => {
+      if (!last) return undefined;
+      const next = last.offset + last.items.length;
+      return last.items.length > 0 && next < last.total ? next : undefined;
+    },
+    enabled: Boolean(chatId),
+    staleTime: 30_000,
+  });
+  const pages = result.data?.pages ?? [];
+  return {
+    ...result,
+    unsupported: pages.length > 0 && pages[0] === null,
+    facts: pages.flatMap((page) => page?.items ?? []),
+    total: pages[0]?.total ?? 0,
+  };
 }
