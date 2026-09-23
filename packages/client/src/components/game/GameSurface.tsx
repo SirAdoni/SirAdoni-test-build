@@ -10567,10 +10567,10 @@ function GameSurfaceComponent({
       if (!sessionInteractive) return;
       const selectedChoice = choice.trim().replace(/\s+/g, " ");
       if (!selectedChoice) return;
+      const shownChoices = activeChoices;
       setActiveChoices(null);
       const pendingSpatialTransition = useChatStore.getState().pendingSpatialTransitions.get(activeChatId);
       void sendMessage(
-      const shownChoices = activeChoices;
         `[choice: ${selectedChoice}]`,
         undefined,
         pendingSpatialTransition?.status === "ready" ? pendingSpatialTransition.transition : undefined,
