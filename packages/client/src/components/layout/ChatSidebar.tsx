@@ -199,7 +199,7 @@ const MODE_CONFIG: Record<
     icon: <ChatModeIcon mode="conversation" size="0.875rem" />,
     label: "Conversation",
     shortLabel: "CONVO",
-    description: "A straightforward AI conversation — no roleplay elements.",
+    description: "A straightforward AI conversation with no roleplay elements.",
     logoModeClass: "mari-chat-logo-mode--conversation",
   },
   roleplay: {
@@ -1951,6 +1951,7 @@ function UserStatusFooter({
   onOpenScheduleManager: () => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
+  const localize = useLocalizedUiText();
   const userStatus = useUIStore((s) => s.userStatus);
   const userActivity = useUIStore((s) => s.userActivity);
   const recentUserActivities = useUIStore((s) => s.recentUserActivities);
@@ -2013,8 +2014,8 @@ function UserStatusFooter({
             >
               <span className={`h-2 w-2 rounded-full ${opt.color}`} />
               <div className="min-w-0 flex-1">
-                <div className="text-xs font-medium text-[var(--foreground)]">{opt.label}</div>
-                <div className="text-[0.625rem] text-[var(--muted-foreground)]">{opt.description}</div>
+                <div className="text-xs font-medium text-[var(--foreground)]">{localize(opt.label)}</div>
+                <div className="text-[0.625rem] text-[var(--muted-foreground)]">{localize(opt.description)}</div>
               </div>
             </button>
           ))}
@@ -2047,7 +2048,7 @@ function UserStatusFooter({
           aria-label={localizeUi("ui.layout.userstatusfooter.changeActivityStatus")}
         >
           <span className={`h-2 w-2 shrink-0 rounded-full ${current.color}`} />
-          <span className="mari-chrome-text max-w-20 truncate text-xs">{current.label}</span>
+          <span className="mari-chrome-text max-w-20 truncate text-xs">{localize(current.label)}</span>
         </button>
         <input
           value={userActivity}

@@ -225,12 +225,12 @@ export function ConversationSoundSetting() {
   );
   const browserNotificationHelp =
     browserPermission === "insecure"
-      ? "Browser notifications require HTTPS or localhost."
+      ? localizeUi("ui.panels.conversationsoundsetting.browserNeedsHttps")
       : browserPermission === "denied"
-        ? "Browser notifications are blocked. Reset this site's notification permission, then try again."
+        ? localizeUi("ui.panels.conversationsoundsetting.browserBlocked")
         : browserPermission === "unsupported"
-          ? "Browser notifications are not available in this environment."
-          : "Uses your browser's notification permission.";
+          ? localizeUi("ui.panels.conversationsoundsetting.browserUnavailable")
+          : localizeUi("ui.panels.conversationsoundsetting.browserPermissionHelp");
 
   useEffect(() => {
     let cancelled = false;
@@ -387,7 +387,7 @@ export function ConversationSoundSetting() {
           handleBrowserNotificationToggle(
             enabled,
             setConversationBrowserNotifications,
-            "Browser notifications enabled for autonomous messages.",
+            localizeUi("ui.panels.conversationsoundsetting.browserEnabledAutonomous"),
           )
         }
         help={browserNotificationHelp}
@@ -400,7 +400,7 @@ export function ConversationSoundSetting() {
           handleMobileNotificationToggle(
             enabled,
             setConversationMobileNotifications,
-            "Mobile notifications enabled for autonomous messages.",
+            localizeUi("ui.panels.conversationsoundsetting.mobileEnabledAutonomous"),
           )
         }
         disabled={!nativeNotificationsAvailable}
@@ -427,7 +427,7 @@ export function ConversationSoundSetting() {
           handleBrowserNotificationToggle(
             enabled,
             setGenerationBrowserNotifications,
-            "Browser notifications enabled for generation completions.",
+            localizeUi("ui.panels.conversationsoundsetting.browserEnabledGeneration"),
           )
         }
         help={browserNotificationHelp}
@@ -440,7 +440,7 @@ export function ConversationSoundSetting() {
           handleMobileNotificationToggle(
             enabled,
             setGenerationMobileNotifications,
-            "Mobile notifications enabled for generation completions.",
+            localizeUi("ui.panels.conversationsoundsetting.mobileEnabledGeneration"),
           )
         }
         disabled={!nativeNotificationsAvailable}

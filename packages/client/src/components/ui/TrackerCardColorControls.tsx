@@ -19,6 +19,7 @@ import {
 } from "../../lib/tracker-card-colors";
 import { ColorPicker } from "./ColorPicker";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 
 export type TrackerCardColorEntityLabel = "Character" | "Persona";
 
@@ -104,7 +105,7 @@ const PAINT_OPACITY_OPTIONS: Array<{
     key: "boxColorOpacity",
     enabledKey: "surfaceEnabled",
     colorKey: "boxColor",
-    emptyText: "No surface color — neutral card",
+    emptyText: "No surface color, neutral card",
     label: "Surface",
     title: "Card body, panels, shelves, and field material",
   },
@@ -213,6 +214,7 @@ export function TrackerCardColorControls({
   disabled = false,
 }: TrackerCardColorControlsProps) {
   const { t: localizeUi } = useUiTranslation();
+  const localize = useLocalizedUiText();
   const config = value;
   const mode = normalizeTrackerCardColorMode(config.mode);
   const finish = getTrackerCardFinish(config, mode);
@@ -529,14 +531,14 @@ export function TrackerCardColorControls({
                         onChange={(color) => updateCustomColor(option.colorKey, color)}
                         gradient
                         compact
-                        label={option.label}
-                        emptyText={option.emptyText}
-                        helpText={option.title}
+                        label={localize(option.label)}
+                        emptyText={localize(option.emptyText)}
+                        helpText={localize(option.title)}
                         headerAction={
                           <ChannelToggle
                             checked={channelEnabled}
                             disabled={disabled}
-                            label={option.label}
+                            label={localize(option.label)}
                             onChange={(checked) => updatePaintEnabled(option.enabledKey, checked)}
                           />
                         }

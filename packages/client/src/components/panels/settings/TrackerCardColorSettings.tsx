@@ -375,13 +375,13 @@ export function TrackerCardColorSettings() {
 
   const saveMessage =
     saveState === "saving"
-      ? "Saving..."
+      ? localizeUi("ui.panels.trackercardcolorsettings.saving")
       : saveState === "error"
-        ? "Save failed"
+        ? localizeUi("ui.panels.trackercardcolorsettings.saveFailed")
         : hasUnsavedChanges
-          ? "Unsaved preview"
+          ? localizeUi("ui.panels.trackercardcolorsettings.unsavedPreview")
           : saveState === "saved"
-            ? "Saved"
+            ? localizeUi("ui.panels.trackercardcolorsettings.saved")
             : "";
 
   return (

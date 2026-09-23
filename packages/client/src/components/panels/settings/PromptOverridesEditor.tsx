@@ -20,6 +20,7 @@ import { cn } from "../../../lib/utils";
 import { HelpTooltip } from "../../ui/HelpTooltip";
 import { SettingsSwitch } from "./SettingControls";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { translate } from "../../../localization/i18n";
 
 const PREFERRED_PROMPT_KEY = "conversation.selfie";
 const ROLEPLAY_GALLERY_VIDEO_DIRECTOR_PROMPT_KEY = "roleplay.galleryVideoDirector";
@@ -41,27 +42,42 @@ function humanizePromptKey(key: string) {
 }
 
 function promptOverrideLabel(entry: Pick<PromptOverrideSummary, "key" | "label"> | null | undefined) {
-  return entry?.label?.trim() || (entry?.key ? humanizePromptKey(entry.key) : "Prompt override");
+  return (
+    entry?.label?.trim() ||
+    (entry?.key ? humanizePromptKey(entry.key) : translate("ui.panels.promptoverrideseditor.promptOverride"))
+  );
 }
 
 function promptOverrideStatus(entry: PromptOverrideSummary | undefined) {
   if (!entry?.hasOverride)
-    return { label: "Default", className: "bg-[var(--secondary)] text-[var(--muted-foreground)]" };
+    return {
+      label: translate("ui.panels.promptoverrideseditor.statusDefault"),
+      className: "bg-[var(--secondary)] text-[var(--muted-foreground)]",
+    };
   if (entry.enabled) {
-    return { label: "Custom active", className: "bg-[var(--primary)]/15 text-[var(--primary)]" };
+    return {
+      label: translate("ui.panels.promptoverrideseditor.statusCustomActive"),
+      className: "bg-[var(--primary)]/15 text-[var(--primary)]",
+    };
   }
-  return { label: "Custom paused", className: "bg-amber-500/15 text-amber-300" };
+  return {
+    label: translate("ui.panels.promptoverrideseditor.statusCustomPaused"),
+    className: "bg-amber-500/15 text-amber-300",
+  };
 }
 
 function getPromptOverrideErrorMessage(error: unknown) {
   if (error instanceof ApiError && error.payload && typeof error.payload === "object") {
     const payload = error.payload as { unknownVariables?: unknown; error?: unknown };
     if (Array.isArray(payload.unknownVariables) && payload.unknownVariables.length > 0) {
-      return `Unknown variable${payload.unknownVariables.length === 1 ? "" : "s"}: ${payload.unknownVariables.join(", ")}`;
+      return translate("ui.panels.promptoverrideseditor.unknownVariables", {
+        count: payload.unknownVariables.length,
+        names: payload.unknownVariables.join(", "),
+      });
     }
     if (typeof payload.error === "string" && payload.error.trim()) return payload.error;
   }
-  return error instanceof Error ? error.message : "Failed to save prompt override.";
+  return error instanceof Error ? error.message : translate("ui.panels.promptoverrideseditor.saveFailed");
 }
 
 function buildEditableDefaultTemplate(
@@ -112,9 +128,9 @@ function renderTemplatePreview(
 }
 
 export function PromptOverridesEditor({
-  title = "Prompt Overrides",
-  description = "Edit the templates used by image and sprite prompt builders.",
-  help = "Global templates for registered prompt builders, including the conversation selfie prompt writer.",
+  title = translate("ui.panels.promptoverrideseditor.defaultTitle"),
+  description = translate("ui.panels.promptoverrideseditor.defaultDescription"),
+  help = translate("ui.panels.promptoverrideseditor.defaultHelp"),
   keys,
   preferredKey = PREFERRED_PROMPT_KEY,
   defaultOpen = false,
@@ -257,7 +273,7 @@ function PromptOverridesEditorBody({ keys, preferredKey }: { keys?: readonly str
   const handleSave = async () => {
     if (!selectedKey) return;
     if (!draft.trim()) {
-      setLastError("Template must not be empty.");
+      setLastError(localizeUi("ui.panels.promptoverrideseditor.templateEmpty"));
       return;
     }
     try {
@@ -286,7 +302,7 @@ function PromptOverridesEditorBody({ keys, preferredKey }: { keys?: readonly str
         value1: localizedEntryLabel(selectedEntry),
       }),
       confirmLabel: localizeUi("ui.panels.promptoverrideseditorbody.resetToDefault"),
-      cancelLabel: "Cancel",
+      cancelLabel: localizeUi("chat.delete.dialog.cancel"),
       tone: "destructive",
     });
     if (!confirmed) return;
@@ -298,7 +314,8 @@ function PromptOverridesEditorBody({ keys, preferredKey }: { keys?: readonly str
       setEnabled(true);
       toast.success(localizeUi("ui.panels.promptoverrideseditorbody.promptOverrideResetToDefault"));
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to reset prompt override.";
+      const message =
+        error instanceof Error ? error.message : localizeUi("ui.panels.promptoverrideseditor.resetFailed");
       setLastError(message);
       toast.error(message);
     }

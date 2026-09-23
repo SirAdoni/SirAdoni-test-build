@@ -28,6 +28,7 @@ import {
 } from "../../stores/ui.store";
 import { UILanguageSetting } from "./settings/UILanguageSetting";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
+import { findEnglishMessageKey, i18n, translate } from "../../localization/i18n";
 import { cn, copyToClipboard } from "../../lib/utils";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -1659,18 +1660,32 @@ function isStandaloneIosInstall(): boolean {
   return isIos && isStandalone;
 }
 
+/** Translate English copy built outside a component (helpers, stream readers). */
+function localizeEnglish(text: string): string {
+  const key = findEnglishMessageKey(text, i18n.resolvedLanguage ?? i18n.language);
+  return key ? translate(key) : text;
+}
+
 function getNativeConsoleShortcutHelp(): string {
   const bridge = getMarinaraAndroidBridge();
   if (typeof bridge?.openConsole === "function") {
-    return "Opens Termux from the Android APK so you can view Marinara server logs while Debug mode is enabled.";
+    return localizeEnglish(
+      "Opens Termux from the Android APK so you can view Marinara server logs while Debug mode is enabled.",
+    );
   }
   if (isMarinaraAndroidShell()) {
-    return "This Android APK build cannot expose the Termux console shortcut yet. Update Marinara, or open Termux manually.";
+    return localizeEnglish(
+      "This Android APK build cannot expose the Termux console shortcut yet. Update Marinara, or open Termux manually.",
+    );
   }
   if (isStandaloneIosInstall()) {
-    return "iPhone installations do not expose a native console shortcut yet. Use the host server logs or Safari Web Inspector.";
+    return localizeEnglish(
+      "iPhone installations do not expose a native console shortcut yet. Use the host server logs or Safari Web Inspector.",
+    );
   }
-  return "Available in packaged Android/iPhone installations only. Browser and desktop users should use the server terminal or browser developer tools.";
+  return localizeEnglish(
+    "Available in packaged Android/iPhone installations only. Browser and desktop users should use the server terminal or browser developer tools.",
+  );
 }
 
 const SETTINGS_COMPONENTS: Record<(typeof TABS)[number]["id"], React.FC> = {
@@ -1950,28 +1965,28 @@ const TRACKER_PANEL_SIZE_PROFILE_OPTIONS: Array<{
 
 const TRACKER_PANEL_CARD_OPTIONS: Record<TrackerDataPanelSection, { label: string; desc: string }> = {
   world: {
-    label: "World State",
-    desc: "Date, time, location, weather, and temperature.",
+    label: "ui.panels.trackerOrder.world",
+    desc: "ui.panels.trackerOrder.worldDescription",
   },
   persona: {
-    label: "Persona",
-    desc: "Persona status, stats, portrait, and inventory.",
+    label: "ui.panels.trackerOrder.persona",
+    desc: "ui.panels.trackerOrder.personaDescription",
   },
   characters: {
-    label: "Characters",
-    desc: "Present character cards, stats, portraits, and thoughts.",
+    label: "ui.panels.trackerOrder.characters",
+    desc: "ui.panels.trackerOrder.charactersDescription",
   },
   inventory: {
     label: "ui.panels.trackerOrder.inventoryTracker",
     desc: "ui.panels.trackerOrder.inventoryTrackerDescription",
   },
   quests: {
-    label: "Quests",
-    desc: "Active quest progress and objectives.",
+    label: "ui.panels.trackerOrder.quests",
+    desc: "ui.panels.trackerOrder.questsDescription",
   },
   custom: {
-    label: "Custom",
-    desc: "Extra tracker fields from custom tracker agents.",
+    label: "ui.panels.trackerOrder.custom",
+    desc: "ui.panels.trackerOrder.customDescription",
   },
 };
 
@@ -2118,6 +2133,7 @@ function ImageStyleProfilesEditor({
   onChange: (settings: ImageStyleProfileSettings) => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
+  const localize = useLocalizedUiText();
   const settings = normalizeImageStyleProfileSettings(value);
   const [selectedId, setSelectedId] = useState(settings.defaultProfileId);
   const [previewKind, setPreviewKind] = useState<ImagePromptKind>("portrait");
@@ -2299,7 +2315,7 @@ function ImageStyleProfilesEditor({
           >
             {IMAGE_PROMPT_MODE_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
-                {option.label}
+                {localize(option.label)}
               </option>
             ))}
           </select>
@@ -2548,6 +2564,7 @@ function TrackerPanelCardOrderSetting() {
 
 function TrackerPanelAppearanceDrawer() {
   const { t: localizeUi } = useUiTranslation();
+  const localize = useLocalizedUiText();
   const trackerPanelEnabled = useUIStore((state) => state.trackerPanelEnabled);
   const setTrackerPanelEnabled = useUIStore((state) => state.setTrackerPanelEnabled);
   const trackerPanelHideHudWidgets = useUIStore((state) => state.trackerPanelHideHudWidgets);
@@ -2595,7 +2612,7 @@ function TrackerPanelAppearanceDrawer() {
           anchorId={getSettingsControlAnchorId("tracker-panel")}
           checked={trackerPanelEnabled}
           onChange={setTrackerPanelEnabled}
-          ariaLabel={trackerPanelEnabled ? "Disable Tracker Panel" : "Enable Tracker Panel"}
+          ariaLabel={localize(trackerPanelEnabled ? "Disable Tracker Panel" : "Enable Tracker Panel")}
           className="p-0 hover:bg-transparent"
         />
       </div>
@@ -2628,11 +2645,13 @@ function TrackerPanelAppearanceDrawer() {
             gradient
             compact
             label={localizeUi("settings.controls.panelBackground.label")}
-            helpText="Pick the Tracker panel and tracker section background. CSS colors and gradients are accepted."
+            helpText={localize(
+              "Pick the Tracker panel and tracker section background. CSS colors and gradients are accepted.",
+            )}
             emptyText={localizeUi("ui.panels.trackerpanelappearancedrawer.defaultValue1", {
               value1: TRACKER_PANEL_DEFAULT_BACKGROUND_COLOR,
             })}
-            clearLabel="Reset"
+            clearLabel={localize("Reset")}
           />
         </div>
         <div id={getSettingsControlAnchorId("tracker-desktop-size")} className="mt-2 grid scroll-mt-3 gap-1.5">
@@ -2669,7 +2688,7 @@ function TrackerPanelAppearanceDrawer() {
                     <span className={cn("inline-flex", selected && "text-[var(--primary)]")}>
                       <TrackerSizeTierIcon sizeProfile={opt.id} />
                     </span>
-                    {opt.label}
+                    {localize(opt.label)}
                   </span>
                 </button>
               );
@@ -2695,7 +2714,7 @@ function TrackerPanelAppearanceDrawer() {
                   type="button"
                   onClick={() => setTrackerPanelThoughtBubbleDisplay(opt.id)}
                   aria-pressed={selected}
-                  title={opt.desc}
+                  title={localize(opt.desc)}
                   className={cn(
                     "flex min-h-8 min-w-0 items-center justify-center gap-1.5 rounded-md px-2 text-[0.6875rem] transition-all disabled:cursor-not-allowed",
                     selected
@@ -2705,7 +2724,7 @@ function TrackerPanelAppearanceDrawer() {
                 >
                   <span className="inline-flex items-center gap-1.5 font-semibold">
                     <Icon size="0.75rem" className={selected ? "text-[var(--primary)]" : ""} />
-                    {opt.label}
+                    {localize(opt.label)}
                   </span>
                 </button>
               );
@@ -4250,6 +4269,7 @@ function serializeVideoGenerationSettings(settings: VideoGenerationUserSettings)
 
 function VideoGenerationSettings() {
   const { t: localizeUi } = useUiTranslation();
+  const localize = useLocalizedUiText();
   const qc = useQueryClient();
   const videoSettingsQuery = useQuery<AppSettingsResponse>({
     queryKey: VIDEO_GENERATION_SETTINGS_QUERY_KEY,
@@ -4353,7 +4373,7 @@ function VideoGenerationSettings() {
                 max={VIDEO_SCENE_DURATION_MAX}
                 onCommit={handleSceneDurationChange}
                 className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--secondary)] px-2 py-1 text-xs"
-                ariaLabel="Scene video fallback length in seconds"
+                ariaLabel={localize("Scene video fallback length in seconds")}
               />
               <span className="text-[0.625rem] text-[var(--muted-foreground)]">
                 {localizeUi("ui.noodle.stageprofileview.s")}
@@ -4377,7 +4397,7 @@ function VideoGenerationSettings() {
                   className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md bg-[var(--secondary)]/60 px-2.5 py-2 ring-1 ring-[var(--border)]/80"
                 >
                   <span className="truncate text-xs text-[var(--foreground)]">
-                    {CONVERSATION_CALL_VIDEO_CLIP_LABELS[kind]}
+                    {localize(CONVERSATION_CALL_VIDEO_CLIP_LABELS[kind])}
                   </span>
                   <span className="grid w-[3.75rem] grid-cols-[minmax(0,1fr)_auto] items-center gap-1">
                     <DraftNumberInput
@@ -4386,7 +4406,9 @@ function VideoGenerationSettings() {
                       max={VIDEO_CALL_CLIP_DURATION_MAX}
                       onCommit={(duration) => handleCallClipDurationChange(kind, duration)}
                       className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--background)] px-1.5 py-1 text-xs"
-                      ariaLabel={`${CONVERSATION_CALL_VIDEO_CLIP_LABELS[kind]} length in seconds`}
+                      ariaLabel={localizeUi("ui.panels.videogenerationsettings.clipLengthInSeconds", {
+                        clip: localize(CONVERSATION_CALL_VIDEO_CLIP_LABELS[kind]),
+                      })}
                     />
                     <span className="text-[0.625rem] text-[var(--muted-foreground)]">
                       {localizeUi("ui.noodle.stageprofileview.s")}
@@ -4411,7 +4433,7 @@ function VideoGenerationSettings() {
                   max={VIDEO_CALL_CLIP_DURATION_MAX}
                   onCommit={handleCustomClipDurationChange}
                   className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--background)] px-1.5 py-1 text-xs"
-                  ariaLabel="Custom call clip length in seconds"
+                  ariaLabel={localize("Custom call clip length in seconds")}
                 />
                 <span className="text-[0.625rem] text-[var(--muted-foreground)]">
                   {localizeUi("ui.noodle.stageprofileview.s")}
@@ -4452,7 +4474,7 @@ function VideoGenerationSettings() {
                 max={VIDEO_ANIMATED_EXPRESSION_CLIP_DURATION_MAX}
                 onCommit={handleAnimatedExpressionDurationChange}
                 className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--secondary)] px-2 py-1 text-xs"
-                ariaLabel="Animated expression clip length in seconds"
+                ariaLabel={localize("Animated expression clip length in seconds")}
               />
               <span className="text-[0.625rem] text-[var(--muted-foreground)]">
                 {localizeUi("ui.noodle.stageprofileview.s")}
@@ -4467,6 +4489,7 @@ function VideoGenerationSettings() {
 
 function GameAssetsSettings() {
   const { t: localizeUi } = useUiTranslation();
+  const localize = useLocalizedUiText();
   const rescanGameAssets = useRescanGameAssets();
   const openGameAssetsFolder = useOpenGameAssetsFolder();
   const openGameAssetsBrowser = useUIStore((s) => s.openGameAssetsBrowser);
@@ -4618,7 +4641,7 @@ function GameAssetsSettings() {
             >
               {GAME_ASSET_CATEGORIES.map((category) => (
                 <option key={category.id} value={category.id}>
-                  {category.label}
+                  {localize(category.label)}
                 </option>
               ))}
             </select>
@@ -4680,6 +4703,7 @@ function GameAssetsSettings() {
 
 function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
   const { t: localizeUi } = useUiTranslation();
+  const localize = useLocalizedUiText();
   const theme = useUIStore((s) => s.theme);
   const setTheme = useUIStore((s) => s.setTheme);
   const sidebarWidth = useUIStore((state) => state.sidebarWidth);
@@ -5166,12 +5190,14 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                   gradient
                   compact
                   label={localizeUi("settings.controls.backgroundColor.label")}
-                  helpText="Colors the main app shell background. Leave it on the scheme default to follow Dark and Light mode automatically. Gradients are supported for the shell paint."
+                  helpText={localize(
+                    "Colors the main app shell background. Leave it on the scheme default to follow Dark and Light mode automatically. Gradients are supported for the shell paint.",
+                  )}
                   emptyText={localizeUi("ui.panels.trackerpanelappearancedrawer.defaultValue1", {
                     value1: defaultAppBackgroundColor,
                   })}
                   emptyPreviewValue={defaultAppBackgroundColor}
-                  clearLabel="Reset to default"
+                  clearLabel={localize("Reset to default")}
                 />
               </SearchableSettingTarget>
 
@@ -5187,7 +5213,7 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                     value1: localizeUi("ui.ui.colorpicker.marinaraGradient"),
                   })}
                   emptyPreviewValue={defaultAppAccentColor}
-                  clearLabel="Reset to default"
+                  clearLabel={localize("Reset to default")}
                 />
               </SearchableSettingTarget>
 
@@ -5353,12 +5379,14 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                   gradient
                   compact
                   label={localizeUi("settings.colors.chatText")}
-                  helpText="Controls the main chat message text color. Leave it on the scheme default to keep dark and light mode readable. Gradients are accepted for layouts that support them."
+                  helpText={localize(
+                    "Controls the main chat message text color. Leave it on the scheme default to keep dark and light mode readable. Gradients are accepted for layouts that support them.",
+                  )}
                   emptyText={localizeUi("ui.panels.appearancesettings.schemeDefaultValue1", {
                     value1: getDefaultChatTextColor(theme),
                   })}
                   emptyPreviewValue={getDefaultChatTextColor(theme)}
-                  clearLabel="Reset to default"
+                  clearLabel={localize("Reset to default")}
                 />
               </SearchableSettingTarget>
 
@@ -5368,12 +5396,14 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                   onChange={setDefaultDialogueColor}
                   compact
                   label={localizeUi("settings.colors.defaultDialogue")}
-                  helpText="Colors dialogue for character and persona cards that do not have their own Dialogue Highlight Color. A card's own dialogue color always overrides it."
+                  helpText={localize(
+                    "Colors dialogue for character and persona cards that do not have their own Dialogue Highlight Color. A card's own dialogue color always overrides it.",
+                  )}
                   emptyText={localizeUi("ui.panels.appearancesettings.schemeDefaultValue1", {
                     value1: getDefaultChatTextColor(theme),
                   })}
                   emptyPreviewValue={getDefaultChatTextColor(theme)}
-                  clearLabel="Reset to scheme default"
+                  clearLabel={localize("Reset to scheme default")}
                 />
               </SearchableSettingTarget>
 
@@ -5384,12 +5414,14 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                   gradient
                   compact
                   label={localizeUi("settings.colors.chatChrome")}
-                  helpText="Controls ordinary chrome copy in tracker widgets, folder labels, settings descriptors, and windows opened from chat buttons. Accent-colored button text and active icons follow Accent Color instead. Gradients use a compatible fallback where plain CSS color is required."
+                  helpText={localize(
+                    "Controls ordinary chrome copy in tracker widgets, folder labels, settings descriptors, and windows opened from chat buttons. Accent-colored button text and active icons follow Accent Color instead. Gradients use a compatible fallback where plain CSS color is required.",
+                  )}
                   emptyText={localizeUi("ui.panels.appearancesettings.schemeDefaultValue1", {
                     value1: getDefaultChatChromeTextColor(theme),
                   })}
                   emptyPreviewValue={getDefaultChatChromeTextColor(theme)}
-                  clearLabel="Reset to default"
+                  clearLabel={localize("Reset to default")}
                 />
               </SearchableSettingTarget>
 
@@ -5405,8 +5437,8 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                   onChange={(value) => setTextStrokeColor(value || "#000000")}
                   compact
                   label={localizeUi("settings.colors.textOutline")}
-                  helpText="Controls the outline color used when text stroke width is above 0."
-                  clearLabel="Reset to default"
+                  helpText={localize("Controls the outline color used when text stroke width is above 0.")}
+                  clearLabel={localize("Reset to default")}
                   clearValue="#000000"
                 />
                 <label className="flex flex-col gap-1">
@@ -5592,8 +5624,10 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                       )}
                       aria-pressed={conversationMessageStyle === opt.id}
                     >
-                      <span className="font-semibold">{opt.label}</span>
-                      <span className="text-[0.625rem] leading-tight text-[var(--muted-foreground)]">{opt.desc}</span>
+                      <span className="font-semibold">{localize(opt.label)}</span>
+                      <span className="text-[0.625rem] leading-tight text-[var(--muted-foreground)]">
+                        {localize(opt.desc)}
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -6097,8 +6131,10 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                           </div>
                         )}
                       </div>
-                      <span className="font-semibold">{opt.label}</span>
-                      <span className="text-[0.625rem] leading-tight text-[var(--muted-foreground)]">{opt.desc}</span>
+                      <span className="font-semibold">{localize(opt.label)}</span>
+                      <span className="text-[0.625rem] leading-tight text-[var(--muted-foreground)]">
+                        {localize(opt.desc)}
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -6312,8 +6348,10 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                           : "border-[var(--border)] hover:border-[var(--primary)]/40",
                       )}
                     >
-                      <span className="font-semibold">{opt.label}</span>
-                      <span className="text-[0.625rem] leading-tight text-[var(--muted-foreground)]">{opt.desc}</span>
+                      <span className="font-semibold">{localize(opt.label)}</span>
+                      <span className="text-[0.625rem] leading-tight text-[var(--muted-foreground)]">
+                        {localize(opt.desc)}
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -6423,6 +6461,7 @@ const THEME_PREVIEW_DEBOUNCE_MS = 300;
 
 function ThemesSettings({ showIntro = true }: { showIntro?: boolean } = {}) {
   const { t: localizeUi } = useUiTranslation();
+  const localize = useLocalizedUiText();
   const { data: syncedThemes = [], isLoading } = useThemes();
   const createTheme = useCreateTheme();
   const updateTheme = useUpdateTheme();
@@ -6488,7 +6527,7 @@ function ThemesSettings({ showIntro = true }: { showIntro?: boolean } = {}) {
 
   const handleSave = useCallback(async () => {
     try {
-      const name = themeName.trim() || "Untitled Theme";
+      const name = themeName.trim() || localize("Untitled Theme");
       const css = normalizeThemeCss(themeCss);
       if (editingId) {
         await updateTheme.mutateAsync({ id: editingId, name, css });
@@ -6507,7 +6546,7 @@ function ThemesSettings({ showIntro = true }: { showIntro?: boolean } = {}) {
       console.error("[ThemesSettings] Failed to save theme:", err);
       toast.error(localizeUi("ui.panels.themessettings.failedToSaveThemeCheckTheBrowserConsoleFor"));
     }
-  }, [createTheme, editingId, setActiveTheme, themeCss, themeName, updateTheme, localizeUi]);
+  }, [createTheme, editingId, setActiveTheme, themeCss, themeName, updateTheme, localizeUi, localize]);
 
   const handleImportThemeFile = async (file: File) => {
     try {
@@ -7194,7 +7233,7 @@ function formatProfileImportConfirmationMessage(preview: ProfileImportPreviewRes
   return [
     `Found: ${found}.`,
     warningDetail,
-    "Importing writes profile data from this file and cannot be undone. Continue?",
+    localizeEnglish("Importing writes profile data from this file and cannot be undone. Continue?"),
   ]
     .filter(Boolean)
     .join("\n");
@@ -7245,7 +7284,7 @@ async function isZipFile(file: File) {
 }
 
 async function* readProfileImportStream(res: Response): AsyncGenerator<ProfileImportStreamEvent> {
-  if (!res.body) throw new Error("Import started but no progress stream was returned.");
+  if (!res.body) throw new Error(localizeEnglish("Import started but no progress stream was returned."));
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -7270,6 +7309,7 @@ async function* readProfileImportStream(res: Response): AsyncGenerator<ProfileIm
 
 function ImportSettings() {
   const { t: localizeUi } = useUiTranslation();
+  const localize = useLocalizedUiText();
   const profileImportWarningCopy = getProfileImportWarningCopy(localizeUi);
   const openModal = useUIStore((s) => s.openModal);
   const qc = useQueryClient();
@@ -7297,6 +7337,7 @@ function ImportSettings() {
     return () => window.clearInterval(timer);
   }, [profileImportBusy]);
 
+  const profileImportInputRef = useRef<HTMLInputElement>(null);
   const handleProfileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -7517,14 +7558,14 @@ function ImportSettings() {
         }
       }
       if (!importCompleted) {
-        throw new Error("Profile import stream closed before completion.");
+        throw new Error(localizeEnglish("Profile import stream closed before completion."));
       }
       previewToken = undefined;
     } catch (err) {
       await releaseProfilePreview();
       const message =
         err instanceof SyntaxError
-          ? "Import failed. Make sure this is a valid profile JSON or ZIP file."
+          ? localize("Import failed. Make sure this is a valid profile JSON or ZIP file.")
           : `Import failed: ${err instanceof Error ? err.message : "network/server error"}`;
       setProfileImportProgress({
         status: "error",
@@ -7553,7 +7594,10 @@ function ImportSettings() {
         {...getSettingsSectionAnchorProps("profile-marinara")}
       >
         <div className="flex flex-col gap-2.5">
-          <label
+          <button
+            type="button"
+            onClick={() => profileImportInputRef.current?.click()}
+            disabled={profileImportBusy}
             className={cn(
               SETTINGS_PRIMARY_BUTTON_CLASS,
               "w-full cursor-pointer gap-2",
@@ -7566,14 +7610,17 @@ function ImportSettings() {
                 ? localizeUi("ui.panels.importsettings.scanningProfile")
                 : localizeUi("ui.panels.importsettings.importingProfile")
               : localizeUi("ui.panels.importsettings.importProfileJsonZip")}
-            <input
-              type="file"
-              accept=".json,.zip,application/json,application/zip"
-              onChange={handleProfileImport}
-              disabled={profileImportBusy}
-              className="hidden"
-            />
-          </label>
+          </button>
+          <input
+            ref={profileImportInputRef}
+            type="file"
+            accept=".json,.zip,application/json,application/zip"
+            onChange={handleProfileImport}
+            disabled={profileImportBusy}
+            className="hidden"
+            tabIndex={-1}
+            aria-hidden="true"
+          />
 
           {profileImportProgress && (
             <div
@@ -7601,7 +7648,7 @@ function ImportSettings() {
                   ) : (
                     <Loader2 size="0.875rem" className="shrink-0 animate-spin text-emerald-500" />
                   )}
-                  <span className="truncate font-medium">{profileImportProgress.label}</span>
+                  <span className="truncate font-medium">{localize(profileImportProgress.label)}</span>
                 </div>
                 <span className="shrink-0 text-[0.6875rem] text-[var(--muted-foreground)]">
                   {formatProfileImportDuration(profileImportProgress.elapsedSeconds)}
@@ -7733,6 +7780,7 @@ function ImportButton({
   onImported?: (data: any) => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -7801,11 +7849,26 @@ function ImportButton({
     e.target.value = "";
   };
 
+  // A focusable button: a <label> around a display:none input can't be reached by keyboard.
   return (
-    <label className={cn(SETTINGS_BUTTON_CLASS, "cursor-pointer py-2.5")}>
-      {label}
-      <input type="file" accept={accept} onChange={handleImport} className="hidden" />
-    </label>
+    <>
+      <button
+        type="button"
+        onClick={() => fileInputRef.current?.click()}
+        className={cn(SETTINGS_BUTTON_CLASS, "cursor-pointer py-2.5")}
+      >
+        {label}
+      </button>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={accept}
+        onChange={handleImport}
+        className="hidden"
+        tabIndex={-1}
+        aria-hidden="true"
+      />
+    </>
   );
 }
 
@@ -7847,6 +7910,7 @@ function ManualUpdateCommand({ command }: { command: string }) {
 
 function AdvancedSettings() {
   const { t: localizeUi } = useUiTranslation();
+  const localize = useLocalizedUiText();
   const { t } = useTranslation();
   const activeChatId = useChatStore((state) => state.activeChatId);
   const { data: activeChat, isLoading: isActiveChatLoading } = useChat(activeChatId);
@@ -8000,9 +8064,9 @@ function AdvancedSettings() {
     zip: "marinara-profile.zip",
   };
   const profileExportSuccessMessages: Record<ProfileExportFormat, string> = {
-    native: "Profile exported!",
-    compatible: "Compatible export created!",
-    zip: "Profile ZIP exported!",
+    native: localize("Profile exported!"),
+    compatible: localize("Compatible export created!"),
+    zip: localize("Profile ZIP exported!"),
   };
 
   const handleExportProfile = async (format: ProfileExportFormat) => {
@@ -8372,7 +8436,7 @@ function AdvancedSettings() {
           ? err.payload.message
           : err instanceof Error
             ? err.message
-            : "Update failed";
+            : localize("Update failed");
       toast.error(message);
     },
   });
@@ -8390,14 +8454,16 @@ function AdvancedSettings() {
   const selectedUpdateChannel = updateChannelOptions.find((channel) => channel.id === selectedUpdateChannelId);
   const currentReleaseLabel = `v${health.data?.version ?? updateCheck.data?.currentVersion ?? APP_VERSION}`;
   const currentCommit = health.data?.commit ?? updateCheck.data?.currentCommit ?? null;
-  const currentBuildLabel = currentCommit ? `Build: ${currentCommit.slice(0, 7)}` : "Build: unavailable";
+  const currentBuildLabel = currentCommit
+    ? localizeUi("ui.panels.advancedsettings.buildLabel", { commit: currentCommit.slice(0, 7) })
+    : localizeUi("ui.panels.advancedsettings.buildUnavailable");
   const commitsBehind = updateCheck.data?.commitsBehind ?? 0;
   const installType = updateCheck.data?.installType ?? "standalone";
   const isIosClient = updateCheck.data?.clientPlatform === "ios";
   const applyUnavailableReason = updateCheck.data?.applyUnavailableReason ?? null;
   const manualUpdateCommand = updateCheck.data?.manualUpdateCommand ?? null;
   const manualUpdateHint = updateCheck.data?.manualUpdateHint ?? null;
-  const applyUnavailableCopy =
+  const applyUnavailableCopy = localize(
     applyUnavailableReason === "container-install"
       ? "Container installs cannot replace themselves from inside the browser. Pull the release image tag or latest image on the host, then restart the container."
       : applyUnavailableReason === "hard-disabled"
@@ -8406,7 +8472,8 @@ function AdvancedSettings() {
           ? "This checkout is on a development branch, so applying updates from the browser is blocked to protect work in progress. Update the checkout manually if you really intend to."
           : applyUnavailableReason === "disabled"
             ? "This install can check for updates, but applying them from the browser is disabled. Update manually with the command below. Advanced git installs can enable server-side apply with UPDATES_APPLY_ENABLED=true."
-            : "This install can check for updates, but it cannot apply them from the browser. Relaunch the app if you use the launcher, or update manually for your install type.";
+            : "This install can check for updates, but it cannot apply them from the browser. Relaunch the app if you use the launcher, or update manually for your install type.",
+  );
   const isClearing = clearAllData.isPending || expungeData.isPending;
   const isAllScopesSelected = selectedScopes.length === EXPUNGE_SCOPE_OPTIONS.length;
 
@@ -8441,8 +8508,12 @@ function AdvancedSettings() {
         open={exportProfileDialogOpen}
         title={localizeUi("settings.transfer.exportProfile.title")}
         description={localizeUi("settings.transfer.exportProfile.description")}
-        nativeDescription="Keeps Marinara fields, lorebook folders, character/persona metadata, presets, agents, themes, and inline assets for re-import."
-        compatibleDescription="Exports direct character JSON, simple persona JSON, and folderless lorebooks for other roleplay tools."
+        nativeDescription={localize(
+          "Keeps Marinara fields, lorebook folders, character/persona metadata, presets, agents, themes, and inline assets for re-import.",
+        )}
+        compatibleDescription={localize(
+          "Exports direct character JSON, simple persona JSON, and folderless lorebooks for other roleplay tools.",
+        )}
         onClose={() => setExportProfileDialogOpen(false)}
         onSelect={handleExportProfileChoice}
       />
@@ -8523,7 +8594,7 @@ function AdvancedSettings() {
                 )}
                 {updateChannelOptions.map((channel) => (
                   <option key={channel.id} value={channel.id}>
-                    {channel.label}
+                    {localize(channel.label)}
                   </option>
                 ))}
               </select>
@@ -8561,7 +8632,7 @@ function AdvancedSettings() {
           {selectedUpdateChannel?.warning && (
             <div className="flex items-start gap-1.5 rounded-lg bg-[var(--primary)]/10 px-2.5 py-2 text-[0.6875rem] text-[var(--primary)] ring-1 ring-[var(--primary)]/30">
               <AlertTriangle size="0.8125rem" className="mt-0.5 shrink-0" />
-              <span>{selectedUpdateChannel.warning}</span>
+              <span>{localize(selectedUpdateChannel.warning)}</span>
             </div>
           )}
 
@@ -9113,9 +9184,11 @@ function AdvancedSettings() {
                   />
                   <span className="min-w-0">
                     <span className="block text-xs font-medium text-[var(--marinara-chat-chrome-panel-text)]">
-                      {scope.label}
+                      {localize(scope.label)}
                     </span>
-                    <span className="block text-[0.625rem] text-[var(--muted-foreground)]">{scope.description}</span>
+                    <span className="block text-[0.625rem] text-[var(--muted-foreground)]">
+                      {localize(scope.description)}
+                    </span>
                   </span>
                 </label>
               );

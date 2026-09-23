@@ -360,10 +360,14 @@ export function STBulkImportModal({ open, onClose }: Props) {
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? `Import failed: ${err.message}` : "Import failed — server error");
+      setError(
+        err instanceof Error
+          ? localizeUi("ui.modals.stbulkimportmodal.importFailedWithReason", { reason: err.message })
+          : localizeUi("ui.modals.stbulkimportmodal.importFailedServerError"),
+      );
       setPhase("preview");
     }
-  }, [characterTagImportMode, regexScriptScope, folderPath, folderToken, qc, selection]);
+  }, [characterTagImportMode, regexScriptScope, folderPath, folderToken, qc, selection, localizeUi]);
 
   const hasAnySelected = Object.values(selection).some((ids) => ids.length > 0);
   const builtinPresetCount = scanResult?.presets.filter((item) => item.isBuiltin).length ?? 0;
