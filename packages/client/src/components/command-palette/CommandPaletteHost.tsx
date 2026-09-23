@@ -26,6 +26,7 @@ import { openCharacterDuplicates } from "../../lib/open-character-duplicates";
 import { openNameGenerator } from "../../lib/open-name-generator";
 import { countModalOverlays } from "../../lib/modal-overlay-registry";
 import { downloadCampaignCodex } from "../../hooks/use-game-tools";
+import { openGameLog } from "../../lib/open-game-log";
 import {
   openSettingsTarget,
   TEXT_SNIPPETS_SETTINGS_CONTROL_ID,
@@ -190,6 +191,17 @@ export function CommandPaletteHost() {
         run: () => {
           const mode = activeChatMode();
           if (mode) requestChatHelp(mode);
+        },
+      }),
+      registerCommand({
+        id: "action:open-campaign-log",
+        section: "actions",
+        title: t("palette.actions.openCampaignLog"),
+        keywords: ["game log", "history", "reread", "session", "transcript"],
+        when: () => activeChatMode() === "game",
+        run: () => {
+          const chatId = useChatStore.getState().activeChatId;
+          if (chatId) openGameLog({ chatId });
         },
       }),
       registerCommand({

@@ -1,9 +1,10 @@
 // ──────────────────────────────────────────────
-// Game tools: dice roll history and the campaign codex export
+// Game tools: dice roll history, the campaign codex export and the campaign log
 // ──────────────────────────────────────────────
 import { useQuery, type QueryClient } from "@tanstack/react-query";
 import type { DiceRollResult, SkillCheckResult } from "@marinara-engine/shared";
 import { api } from "../lib/api-client";
+import type { CampaignLogResponse } from "../lib/game-log";
 
 export type DiceLogScope = "session" | "game";
 export type DiceLogSource = "player" | "gm" | "skill_check";
@@ -97,4 +98,22 @@ export function downloadCampaignCodex(chatId: string, format: "md" | "json") {
     `/game-tools/codex/${encodeURIComponent(chatId)}?format=${format}`,
     format === "md" ? "campaign-codex.md" : "campaign-codex.json",
   );
+}
+
+export const campaignLogKeys = {
+  all: ["game-campaign-log"] as const,
+  detail: (chatId: string) => [...campaignLogKeys.all, chatId] as const,
+};
+
+/** Every readable turn of the campaign the chat belongs to, session by session. */
+export function useCampaignLog(chatId: string | null | undefined, enabled = true) {
+  return useQuery({
+    queryKey: campaignLogKeys.detail(chatId ?? ""),
+    queryFn: ({ signal }) =>
+      api.get<CampaignLogResponse>(`/game-tools/log/${encodeURIComponent(chatId ?? "")}`, { signal }),
+    enabled: !!chatId && enabled,
+    staleTime: 30_000,
+    // A long campaign is a large payload; don't hold it for minutes after the reader closes.
+    gcTime: 30_000,
+  });
 }

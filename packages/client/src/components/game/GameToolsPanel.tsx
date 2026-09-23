@@ -1,15 +1,16 @@
 // ──────────────────────────────────────────────
 // Game: Tools tab of the Session panel
-// Dice log, the name generator and the campaign codex export, in one place.
+// Dice log, the name generator, the campaign log and the campaign codex export, in one place.
 // ──────────────────────────────────────────────
 import { useState, type ReactNode } from "react";
-import { BookDown, FileJson, FileText, Loader2, Maximize2, Sparkles } from "lucide-react";
+import { BookDown, BookOpenText, FileJson, FileText, Loader2, Maximize2, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { GameDiceLog } from "./GameDiceLog";
 import { NameGenerator } from "../tools/NameGenerator";
 import { downloadCampaignCodex } from "../../hooks/use-game-tools";
 import { openNameGenerator } from "../../lib/open-name-generator";
+import { openGameLog } from "../../lib/open-game-log";
 
 function SectionTitle({ icon, title, action }: { icon: ReactNode; title: string; action?: ReactNode }) {
   return (
@@ -77,6 +78,22 @@ export function GameToolsPanel({ chatId }: { chatId: string }) {
           }
         />
         <NameGenerator />
+      </section>
+
+      <section className="border-t border-border pt-4" aria-label={t("ui.game.tools.logTitle")}>
+        <SectionTitle
+          icon={<BookOpenText size={14} className="text-muted-foreground" />}
+          title={t("ui.game.tools.logTitle")}
+        />
+        <p className="mb-2 text-xs text-muted-foreground">{t("ui.game.tools.logDescription")}</p>
+        <button
+          type="button"
+          onClick={() => openGameLog({ chatId })}
+          className="flex h-8 w-full items-center justify-center gap-1.5 rounded-md border border-border px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary"
+        >
+          <BookOpenText size={13} />
+          {t("ui.game.tools.logOpen")}
+        </button>
       </section>
 
       <section className="border-t border-border pt-4" aria-label={t("ui.game.tools.codexTitle")}>

@@ -1,11 +1,14 @@
 // ──────────────────────────────────────────────
-// Routes: Game tools (dice log, campaign codex)
+// Routes: Game tools (dice log, campaign codex, campaign log)
 //
 // Small read-mostly helpers for Game Mode that sit beside the main game routes:
-// the dice roll history and the campaign codex export. Writes here are limited to
-// appending dice log rows; campaign memory is only ever read.
+// the dice roll history, the campaign codex export and the campaign log reader.
+// Writes here are limited to appending dice log rows; campaign memory and
+// messages are only ever read.
 // ──────────────────────────────────────────────
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { promisify } from "node:util";
+import { gzip } from "node:zlib";
 import { z } from "zod";
 import { createGameDiceRollsStorage, recordGameDiceRollsSafely } from "../services/storage/game-dice-rolls.storage.js";
 import { diceResultLogEntry, skillCheckLogEntry, summarizeDiceRolls } from "../services/game/dice-roll-log.js";
@@ -14,7 +17,21 @@ import {
   loadCampaignCodex,
   renderCampaignCodexMarkdown,
 } from "../services/game/campaign-codex.js";
+import { loadCampaignLog } from "../services/game/campaign-log.js";
 import type { DiceRollResult, SkillCheckResult } from "@marinara-engine/shared";
+
+const gzipAsync = promisify(gzip);
+/** Log and codex responses past this size are gzipped when the client accepts it; prose shrinks several times over. */
+const GZIP_MIN_BYTES = 64 * 1024;
+
+/** Send a text body, gzipped when it is large and the client accepts gzip. */
+async function sendText(req: FastifyRequest, reply: FastifyReply, body: string) {
+  reply.header("Vary", "Accept-Encoding");
+  if (body.length < GZIP_MIN_BYTES || !/\bgzip\b/i.test(String(req.headers["accept-encoding"] ?? ""))) {
+    return reply.send(body);
+  }
+  return reply.header("Content-Encoding", "gzip").send(await gzipAsync(body));
+}
 
 const DEFAULT_RECENT = 60;
 const MAX_RECENT = 500;
@@ -103,6 +120,14 @@ export async function gameToolsRoutes(app: FastifyInstance) {
     return { recorded };
   });
 
+  // ── GET /log/:chatId ── every readable turn of the campaign, session by session
+  app.get<{ Params: { chatId: string } }>("/log/:chatId", async (req, reply) => {
+    const log = await loadCampaignLog(app.db, req.params.chatId);
+    if (!log) return reply.status(404).send({ error: "Game chat not found" });
+    reply.header("Content-Type", "application/json; charset=utf-8");
+    return sendText(req, reply, JSON.stringify(log));
+  });
+
   // ── GET /codex/:chatId ── the game's campaign memory as a Markdown or JSON download
   app.get<{ Params: { chatId: string } }>("/codex/:chatId", async (req, reply) => {
     const query = codexQuerySchema.safeParse(req.query ?? {});
@@ -111,14 +136,14 @@ export async function gameToolsRoutes(app: FastifyInstance) {
     if (!codex) return reply.status(404).send({ error: "Chat not found" });
     const base = campaignCodexFileBase(codex.gameName);
     if (query.data.format === "json") {
-      return reply
+      reply
         .header("Content-Type", "application/json; charset=utf-8")
-        .header("Content-Disposition", attachmentHeader(`${base}.json`))
-        .send(JSON.stringify(codex, null, 2));
+        .header("Content-Disposition", attachmentHeader(`${base}.json`));
+      return sendText(req, reply, JSON.stringify(codex, null, 2));
     }
-    return reply
+    reply
       .header("Content-Type", "text/markdown; charset=utf-8")
-      .header("Content-Disposition", attachmentHeader(`${base}.md`))
-      .send(renderCampaignCodexMarkdown(codex));
+      .header("Content-Disposition", attachmentHeader(`${base}.md`));
+    return sendText(req, reply, renderCampaignCodexMarkdown(codex));
   });
 }

@@ -87,6 +87,7 @@ const NameGeneratorModal = lazy(() =>
 const CharacterDuplicatesModal = lazy(() =>
   import("../characters/CharacterDuplicatesModal").then((module) => ({ default: module.CharacterDuplicatesModal })),
 );
+const GameLogModal = lazy(() => import("../modals/GameLogModal").then((module) => ({ default: module.GameLogModal })));
 
 export function ModalRenderer() {
   const modal = useUIStore((s) => s.modal);
@@ -235,6 +236,17 @@ export function ModalRenderer() {
             // Opened from the palette over any screen, so an unsaved editor gets the usual prompt.
             void openEditorFromPalette(() => useUIStore.getState().openCharacterDetail(id));
           }}
+        />
+      );
+      break;
+    case "game-log":
+      content = (
+        <GameLogModal
+          open
+          onClose={closeModal}
+          chatId={(modal?.props?.chatId as string) ?? ""}
+          messageId={(modal?.props?.messageId as string | null | undefined) ?? null}
+          messageNumber={(modal?.props?.messageNumber as number | null | undefined) ?? null}
         />
       );
       break;

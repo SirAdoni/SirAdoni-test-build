@@ -59,6 +59,7 @@ import { resolveSpriteExpression } from "../../lib/sprite-expression-match";
 import { parseCharacterDisplayData } from "../../lib/character-display";
 import { normalizeGameCharacterLibraryProfile } from "../../lib/game-character-profile";
 import { showConfirmDialog } from "../../lib/app-dialogs";
+import { openGameLog } from "../../lib/open-game-log";
 import { parseMessageExtraRecord } from "../../lib/chat-message-extra";
 import { trimInactiveMessagePageCaches } from "../../lib/message-page-cache";
 import { normalizeSpriteExpressionMap, resolveSpriteExpressionState } from "../../lib/sprite-expression-state";
@@ -2944,9 +2945,8 @@ const ChatAreaContent = memo(function ChatAreaContent() {
     if (!gotoRequest || gotoRequest.chatId !== activeChatId) return;
     if (isGameChat) {
       // The Game surface shows one narration beat at a time and has no
-      // per-message anchors, so paging the whole history in would only end in
-      // a silent no-op. Open the game and say where earlier turns live.
-      toast.info(localizeUi("chatInsights.gotoUnavailableInGame"));
+      // per-message anchors, so the jump opens the campaign log at that turn.
+      openGameLog({ chatId: gotoRequest.chatId, messageNumber: gotoRequest.messageNumber });
       useChatStore.getState().clearGotoRequest();
       return;
     }

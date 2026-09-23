@@ -249,9 +249,12 @@ try {
     ],
     "verified facts only, deduplicated, tagged with their first session",
   );
-  assert.deepEqual(mira.knowledge, [
-    { label: "Believes", value: "Ash Guild: hidden vault under the chapel", session: 2 },
-  ]);
+  assert.equal("knowledge" in mira, false, "knowledge is not repeated under every holder");
+  assert.deepEqual(
+    codex.entities[2]!.claims,
+    [{ label: "Hidden vault", value: "under the chapel", session: 2, heldBy: [{ state: "Believed by", names: ["Mira"] }] }],
+    "an unverified statement someone holds is listed once under its subject, with who holds it",
+  );
   assert.deepEqual(mira.relationships, [{ type: "member of", target: "Ash Guild", status: "ended", session: 2 }]);
   assert.equal(codex.events.length, 2, "an event with nothing to say is dropped");
   assert.deepEqual(codex.events[0], {
@@ -279,6 +282,10 @@ try {
     /\*\*Verified facts\*\*\n\n- Occupation: courier \*\(S1\)\*\n- Wanted by: Faction: Ash Guild; Bounty: 50 \*\(S2\)\*/,
   );
   assert.match(markdown, /- Member of: Ash Guild \(ended\) \*\(S2\)\*/);
+  assert.match(
+    markdown,
+    /\*\*Unverified, as held in the story\*\*\n\n- Hidden vault: under the chapel \*\(S2\)\* Believed by: Mira\./,
+  );
   assert.match(markdown, /## Factions and organizations/);
   assert.match(
     markdown,

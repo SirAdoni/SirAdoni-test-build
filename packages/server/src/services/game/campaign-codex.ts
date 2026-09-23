@@ -8,6 +8,18 @@
 // the session it came from. Ids never reach the reader: every reference is
 // resolved to a name.
 //
+// A long campaign holds tens of thousands of records, many of them the same
+// statement known by many characters. Each statement is written once, with the
+// characters who know, believe or have heard it listed under it, and long values
+// are cut: to CODEX_MARKDOWN_VALUE_MAX in the Markdown, CODEX_JSON_VALUE_MAX in
+// the JSON.
+//
+// On the canonical line the loader reads the campaign memory projection (the
+// same merge the game itself plays from: identity folding, presence only from
+// the newest session, re-read facts deduped). A branch export, or a game whose
+// sessions the projection does not cover exactly, falls back to reading each
+// session chat.
+//
 // buildCampaignCodex and renderCampaignCodexMarkdown are pure; the loader at
 // the bottom only reads.
 // ──────────────────────────────────────────────
@@ -26,9 +38,17 @@ import type { DB } from "../../db/connection.js";
 import { eq } from "../../db/file-query.js";
 import { chats } from "../../db/schema/index.js";
 import { createCampaignMemoryStorage } from "../storage/campaign-memory.storage.js";
+import { readCampaignMemoryProjection, type CampaignMemoryProjection } from "./campaign-memory-campaign-scope.js";
 
 export const CAMPAIGN_CODEX_FORMAT = "marinara-campaign-codex";
-export const CAMPAIGN_CODEX_VERSION = 1;
+export const CAMPAIGN_CODEX_VERSION = 2;
+
+/** Longest value the Markdown prints; a long campaign's records run to thousands of characters each. */
+export const CODEX_MARKDOWN_VALUE_MAX = 280;
+/** Longest value the JSON keeps. */
+export const CODEX_JSON_VALUE_MAX = 4_000;
+/** Holder names the Markdown lists per statement before "and N more". */
+const CODEX_MARKDOWN_HOLDERS_MAX = 12;
 
 export interface CampaignCodexSessionInput {
   chatId: string;
@@ -49,12 +69,28 @@ export interface CampaignCodexInput {
   generatedAt: string;
   /** Oldest session first. */
   sessions: readonly CampaignCodexSessionInput[];
+  /**
+   * The entities were already folded across sessions (the campaign memory projection): every
+   * entity id is one real-world thing, so the build keys on it instead of guessing from names.
+   */
+  entitiesMerged?: boolean;
+}
+
+/** Characters in the story who hold a statement, by how they hold it. */
+export interface CampaignCodexHolders {
+  /** "Known by", "Believed by" or "Heard by". */
+  state: string;
+  names: string[];
 }
 
 export interface CampaignCodexStatement {
   label: string;
   value: string;
   session: number;
+  /** The same statement is recorded in full under this entry; this one is an excerpt. */
+  sameAs?: string;
+  /** Who knows, believes or has heard it. Listed once here instead of under every holder. */
+  heldBy?: CampaignCodexHolders[];
 }
 
 export interface CampaignCodexRelationship {
@@ -75,7 +111,8 @@ export interface CampaignCodexEntity {
   sessions: number[];
   currentState: CampaignCodexStatement[];
   facts: CampaignCodexStatement[];
-  knowledge: CampaignCodexStatement[];
+  /** Unverified statements about this entity that someone in the story holds. */
+  claims: CampaignCodexStatement[];
   relationships: CampaignCodexRelationship[];
 }
 
@@ -121,11 +158,19 @@ const KIND_HEADINGS: Record<CampaignMemoryEntityKind, string> = {
   note: "Notes",
 };
 
-const EPISTEMIC_LABELS: Record<string, string> = {
-  knows: "Knows",
-  believes: "Believes",
-  rumor: "Has heard",
+const HOLDER_LABELS: Record<string, string> = {
+  knows: "Known by",
+  believes: "Believed by",
+  rumor: "Heard by",
 };
+
+/** A value cut to `max` characters at a word break, marked with an ellipsis. */
+export function codexExcerpt(value: string, max: number): string {
+  if (value.length <= max) return value;
+  const cut = value.slice(0, max);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd()}\u2026`;
+}
 
 function normalizeName(value: string): string {
   return value.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
@@ -183,6 +228,7 @@ export function buildCampaignCodex(input: CampaignCodexInput): CampaignCodex {
   const keyByRecordId = new Map<string, string>();
   const byKey = new Map<string, EntityAccumulator>();
   const keyForEntity = (entity: CampaignMemoryEntity): string => {
+    if (input.entitiesMerged) return `record:${entity.entityId}`;
     const origin = originId(entity);
     if (origin && keyByRecordId.has(origin)) return keyByRecordId.get(origin)!;
     if (entity.owner?.type === "existing") return `owner:${entity.owner.store}:${entity.owner.recordId}`;
@@ -211,7 +257,7 @@ export function buildCampaignCodex(input: CampaignCodexInput): CampaignCodex {
             sessions: [session.number],
             currentState: [],
             facts: [],
-            knowledge: [],
+            claims: [],
             relationships: [],
           },
         });
@@ -238,28 +284,54 @@ export function buildCampaignCodex(input: CampaignCodexInput): CampaignCodex {
   const nameFor = (recordId: string | undefined | null) => entityFor(recordId)?.name ?? null;
 
   // ── Facts, knowledge, state and relationships ──
-  const seenFacts = new Set<string>();
   const factById = new Map<string, CampaignMemoryFact>();
   const stateByProperty = new Map<string, { statement: CampaignCodexStatement; order: string }>();
   const relationshipByKey = new Map<string, { owner: CampaignCodexEntity; relationship: CampaignCodexRelationship }>();
-  const seenKnowledge = new Set<string>();
+  // Statements by subject, predicate and value: a fact re-read in a later session, or known by
+  // many characters, is one entry. The same statement under another subject is an excerpt that
+  // points at the first, so a long campaign's text is carried once.
+  const factStatements = new Map<string, CampaignCodexStatement>();
+  const claimStatements = new Map<string, CampaignCodexStatement>();
+  const firstOwnerByStatement = new Map<string, string>();
+  const statementFor = (
+    ownerName: string,
+    predicate: string,
+    value: CampaignMemoryJson,
+    session: number,
+  ): CampaignCodexStatement => {
+    const label = humanize(predicate);
+    const text = codexValueText(value);
+    const globalKey = `${normalizeName(predicate)}\u0000${stableJson(value)}`;
+    const first = firstOwnerByStatement.get(globalKey);
+    if (first === undefined) {
+      firstOwnerByStatement.set(globalKey, ownerName);
+      return { label, value: codexExcerpt(text, CODEX_JSON_VALUE_MAX), session };
+    }
+    if (text.length <= CODEX_MARKDOWN_VALUE_MAX) return { label, value: text, session };
+    return { label, value: codexExcerpt(text, CODEX_MARKDOWN_VALUE_MAX), session, sameAs: first };
+  };
+  const statementKey = (subject: { key: string }, predicate: string, value: CampaignMemoryJson) =>
+    `${subject.key}\u0000${normalizeName(predicate)}\u0000${stableJson(value)}`;
 
   for (const session of sessions) {
     for (const fact of session.facts) factById.set(fact.factId, fact);
   }
 
+  // Every verified fact first, so knowledge of a fact verified in a later session still joins it.
   for (const session of sessions) {
     for (const fact of session.facts) {
       if (fact.status !== "verified") continue;
       const subject = entityFor(fact.subjectEntityId);
       if (!subject) continue;
-      const value = codexValueText(fact.value);
-      const dedupe = `${subject.key}\u0000${normalizeName(fact.predicate)}\u0000${stableJson(fact.value)}`;
-      if (seenFacts.has(dedupe)) continue;
-      seenFacts.add(dedupe);
-      subject.facts.push({ label: humanize(fact.predicate), value, session: session.number });
+      const key = statementKey(subject, fact.predicate, fact.value);
+      if (factStatements.has(key)) continue;
+      const statement = statementFor(subject.name, fact.predicate, fact.value, session.number);
+      factStatements.set(key, statement);
+      subject.facts.push(statement);
     }
+  }
 
+  for (const session of sessions) {
     for (const item of session.knowledge) {
       if (item.epistemicState === "unknown") continue;
       const holder = entityFor(item.holderEntityId);
@@ -269,14 +341,23 @@ export function buildCampaignCodex(input: CampaignCodexInput): CampaignCodex {
         ? { subjectEntityId: fact.subjectEntityId, predicate: fact.predicate, value: fact.value }
         : item.attributedClaim;
       if (!claim) continue;
-      const subjectName = nameFor(claim.subjectEntityId);
-      if (!subjectName) continue;
-      const value = `${subjectName}: ${humanize(claim.predicate).toLowerCase()} ${codexValueText(claim.value)}`;
-      const label = EPISTEMIC_LABELS[item.epistemicState] ?? humanize(item.epistemicState);
-      const dedupe = `${holder.key}\u0000${label}\u0000${value}`;
-      if (seenKnowledge.has(dedupe)) continue;
-      seenKnowledge.add(dedupe);
-      holder.knowledge.push({ label, value, session: session.number });
+      const subject = entityFor(claim.subjectEntityId);
+      if (!subject) continue;
+      const key = statementKey(subject, claim.predicate, claim.value);
+      let statement = factStatements.get(key) ?? claimStatements.get(key);
+      if (!statement) {
+        statement = statementFor(subject.name, claim.predicate, claim.value, session.number);
+        claimStatements.set(key, statement);
+        subject.claims.push(statement);
+      }
+      const state = HOLDER_LABELS[item.epistemicState] ?? `Held by (${humanize(item.epistemicState).toLowerCase()})`;
+      const heldBy = (statement.heldBy ??= []);
+      let holders = heldBy.find((entry) => entry.state === state);
+      if (!holders) {
+        holders = { state, names: [] };
+        heldBy.push(holders);
+      }
+      if (!holders.names.includes(holder.name)) holders.names.push(holder.name);
     }
 
     for (const state of session.currentState) {
@@ -371,7 +452,7 @@ export function buildCampaignCodex(input: CampaignCodexInput): CampaignCodex {
       sessions: [...entity.sessions].sort((left, right) => left - right),
       currentState: [...entity.currentState].sort((left, right) => left.label.localeCompare(right.label)),
       facts: [...entity.facts].sort(bySession),
-      knowledge: [...entity.knowledge].sort(bySession),
+      claims: [...entity.claims].sort(bySession),
       relationships: [...entity.relationships].sort(
         (left, right) => left.target.localeCompare(right.target) || left.type.localeCompare(right.type),
       ),
@@ -432,6 +513,19 @@ function sessionTag(session: number): string {
   return `*(S${session})*`;
 }
 
+/** One statement as a list item: the value cut to a readable length, then who holds it. */
+function statementLine(item: CampaignCodexStatement): string {
+  const parts = [`- ${inline(item.label)}: ${inline(codexExcerpt(item.value, CODEX_MARKDOWN_VALUE_MAX))}`];
+  if (item.sameAs) parts.push(`(as under ${inline(item.sameAs)})`);
+  parts.push(sessionTag(item.session));
+  for (const holders of item.heldBy ?? []) {
+    const more = holders.names.length - CODEX_MARKDOWN_HOLDERS_MAX;
+    const names = holders.names.slice(0, CODEX_MARKDOWN_HOLDERS_MAX).map(inline).join(", ");
+    parts.push(`${holders.state}: ${names}${more > 0 ? ` and ${more} more` : ""}.`);
+  }
+  return parts.join(" ");
+}
+
 /** Render the codex as a Markdown document meant to be read, printed or pasted into notes. */
 export function renderCampaignCodexMarkdown(codex: CampaignCodex): string {
   const lines: string[] = [];
@@ -473,20 +567,17 @@ export function renderCampaignCodexMarkdown(codex: CampaignCodex): string {
       if (entity.notes && entity.notes !== entity.summary) lines.push(block(entity.notes), "");
       if (entity.currentState.length) {
         lines.push("**Current state**", "");
-        for (const item of entity.currentState)
-          lines.push(`- ${inline(item.label)}: ${inline(item.value)} ${sessionTag(item.session)}`);
+        for (const item of entity.currentState) lines.push(statementLine(item));
         lines.push("");
       }
       if (entity.facts.length) {
         lines.push("**Verified facts**", "");
-        for (const item of entity.facts)
-          lines.push(`- ${inline(item.label)}: ${inline(item.value)} ${sessionTag(item.session)}`);
+        for (const item of entity.facts) lines.push(statementLine(item));
         lines.push("");
       }
-      if (entity.knowledge.length) {
-        lines.push("**What they know**", "");
-        for (const item of entity.knowledge)
-          lines.push(`- ${inline(item.label)}: ${inline(item.value)} ${sessionTag(item.session)}`);
+      if (entity.claims.length) {
+        lines.push("**Unverified, as held in the story**", "");
+        for (const item of entity.claims) lines.push(statementLine(item));
         lines.push("");
       }
       if (entity.relationships.length) {
@@ -511,8 +602,9 @@ export function renderCampaignCodexMarkdown(codex: CampaignCodex): string {
       const when = event.campaignTime ? `**${inline(event.campaignTime)}.** ` : "";
       const where = event.location ? ` *At ${inline(event.location)}.*` : "";
       const who = event.participants.length ? ` *With ${event.participants.map(inline).join(", ")}.*` : "";
-      lines.push(`- ${when}${inline(event.summary)}${where}${who}`);
-      for (const change of event.changes) lines.push(`  - ${inline(change.label)}: ${inline(change.value)}`);
+      lines.push(`- ${when}${inline(codexExcerpt(event.summary, CODEX_MARKDOWN_VALUE_MAX * 2))}${where}${who}`);
+      for (const change of event.changes)
+        lines.push(`  - ${inline(change.label)}: ${inline(codexExcerpt(change.value, CODEX_MARKDOWN_VALUE_MAX))}`);
     }
     lines.push("");
   }
@@ -547,17 +639,38 @@ function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+type ChatRow = typeof chats.$inferSelect;
+
+export interface CampaignSessionChats {
+  /** The chat the request came from. */
+  chat: ChatRow;
+  gameId: string;
+  gameName: string;
+  /** Whether the request came from inside a branch. */
+  fromBranch: boolean;
+  /** The sessions of the line being read, oldest first. */
+  sessions: ChatRow[];
+  sessionNumber: (row: ChatRow) => number | null;
+}
+
 /**
- * Read every session of the chat's game and build its codex. Read-only: it lists memory
- * through the storage readers and never writes. Returns null for an unknown chat.
+ * The session chats of the game a chat belongs to, oldest first, following the canonical
+ * line; asked from inside a branch, the branch stands in for the chain it forked from.
+ * Shared by the codex and the campaign log so both read the same sessions. Null for an
+ * unknown chat.
  */
-export async function loadCampaignCodex(db: DB, chatId: string): Promise<CampaignCodex | null> {
+export async function resolveCampaignSessionChats(db: DB, chatId: string): Promise<CampaignSessionChats | null> {
   const chat = (await db.select().from(chats).where(eq(chats.id, chatId)))[0];
   if (!chat) return null;
   const meta = parseMetadata(chat.metadata);
   const gameId = readString(meta.gameId) || chat.groupId || chat.id;
   const grouped = chat.groupId ? await db.select().from(chats).where(eq(chats.groupId, chat.groupId)) : [];
-  const candidates = grouped.filter((session) => session.mode === "game");
+  // Only sessions of this game (the campaign memory projection's rule): a row in the group
+  // that carries another game's id is not part of it.
+  const candidates = grouped.filter(
+    (session) =>
+      session.mode === "game" && (readString(parseMetadata(session.metadata).gameId) || session.groupId) === gameId,
+  );
   // Branches are what-ifs over a session; the codex follows the canonical line unless
   // the export was asked for from inside a branch, which then joins it.
   const isBranch = (row: typeof chat) => readString(parseMetadata(row.metadata).branchName) !== "";
@@ -579,11 +692,60 @@ export async function loadCampaignCodex(db: DB, chatId: string): Promise<Campaig
     const value = parseMetadata(row.metadata).gameSessionNumber;
     return typeof value === "number" && Number.isFinite(value) ? value : null;
   };
+  // Canonical sessions after the fork continue the line the branch left, not the branch. A
+  // session started from a branch inherits its branchParentChatId, so one that carries the
+  // branch's own parent may be its continuation and stays.
+  const branchNumber = isBranch(chat) ? sessionNumber(chat) : null;
+  if (branchNumber !== null) {
+    const branchParent = readString(parseMetadata(chat.metadata).branchParentChatId);
+    chosen = chosen.filter((session) => {
+      if (session.id === chat.id || isBranch(session)) return true;
+      const number = sessionNumber(session);
+      if (number === null || number <= branchNumber) return true;
+      return branchParent !== "" && readString(parseMetadata(session.metadata).branchParentChatId) === branchParent;
+    });
+  }
   chosen.sort((left, right) => {
     const diff = (sessionNumber(left) ?? 0) - (sessionNumber(right) ?? 0);
     if (diff !== 0) return diff;
     return String(left.createdAt ?? "").localeCompare(String(right.createdAt ?? ""));
   });
+
+  // Later sessions are named "<game> — Session N"; the game's own name is the part before it.
+  const gameName = (readString(chosen[0]?.name) || readString(chat.name)).replace(/ — Session \d+$/, "") || "Campaign";
+  return { chat, gameId, gameName, fromBranch: isBranch(chat), sessions: chosen, sessionNumber };
+}
+
+/**
+ * Read every session of the chat's game and build its codex. Read-only: it lists memory
+ * through the storage readers and never writes. Returns null for an unknown chat.
+ */
+export async function loadCampaignCodex(db: DB, chatId: string): Promise<CampaignCodex | null> {
+  const resolved = await resolveCampaignSessionChats(db, chatId);
+  if (!resolved) return null;
+  const { gameId, gameName, sessions: chosen, sessionNumber } = resolved;
+  const generatedAt = new Date().toISOString();
+
+  if (!resolved.fromBranch && chosen.length > 0) {
+    const newest = chosen[chosen.length - 1]!;
+    const projection = await readCampaignMemoryProjection(db, newest.id);
+    const expected = chosen.map((session) => session.id);
+    if (
+      projection.sessionChatIds.length === expected.length &&
+      projection.sessionChatIds.every((id, index) => id === expected[index])
+    ) {
+      return buildCampaignCodex({
+        gameId,
+        gameName,
+        generatedAt,
+        sessions: codexSessionsFromProjection(
+          projection,
+          chosen.map((session) => ({ chatId: session.id, sessionNumber: sessionNumber(session), name: readString(session.name) })),
+        ),
+        entitiesMerged: true,
+      });
+    }
+  }
 
   const storage = createCampaignMemoryStorage(db);
   const sessions: CampaignCodexSessionInput[] = [];
@@ -610,11 +772,58 @@ export async function loadCampaignCodex(db: DB, chatId: string): Promise<Campaig
     });
   }
 
-  return buildCampaignCodex({
-    gameId,
-    // Later sessions are named "<game> — Session N"; the game's own name is the part before it.
-    gameName: (readString(chosen[0]?.name) || readString(chat.name)).replace(/ — Session \d+$/, "") || "Campaign",
-    generatedAt: new Date().toISOString(),
-    sessions,
-  });
+  return buildCampaignCodex({ gameId, gameName, generatedAt, sessions });
+}
+
+/**
+ * Split a campaign projection back into per-session inputs so every record keeps the tag
+ * of the session it came from. A merged entity is listed in each session it was seen in.
+ */
+export function codexSessionsFromProjection(
+  projection: Pick<
+    CampaignMemoryProjection,
+    "entities" | "facts" | "knowledge" | "events" | "currentState" | "relationships"
+  >,
+  sessions: ReadonlyArray<{ chatId: string; sessionNumber: number | null; name: string }>,
+): CampaignCodexSessionInput[] {
+  const inputs: CampaignCodexSessionInput[] = sessions.map((session) => ({
+    ...session,
+    entities: [],
+    facts: [],
+    knowledge: [],
+    events: [],
+    currentState: [],
+    relationships: [],
+  }));
+  const byChat = new Map(inputs.map((input) => [input.chatId, input]));
+  const byNumber = new Map<number, CampaignCodexSessionInput>();
+  for (const input of inputs) if (input.sessionNumber != null) byNumber.set(input.sessionNumber, input);
+  const home = (record: { originChatId: string }) => byChat.get(record.originChatId) ?? inputs[inputs.length - 1];
+  const push = <K extends Exclude<keyof CampaignCodexSessionInput, "chatId" | "sessionNumber" | "name">>(
+    target: CampaignCodexSessionInput | undefined,
+    key: K,
+    item: CampaignCodexSessionInput[K][number],
+  ) => {
+    if (target) (target[key] as Array<CampaignCodexSessionInput[K][number]>).push(item);
+  };
+
+  for (const entity of projection.entities) {
+    const seen = new Set<CampaignCodexSessionInput>();
+    for (const number of entity.sessionNumbers ?? []) {
+      const target = byNumber.get(number);
+      if (target) seen.add(target);
+    }
+    if (seen.size === 0) {
+      const target = home(entity);
+      if (target) seen.add(target);
+    }
+    // Oldest session first, so the entry records where the thing was first met.
+    for (const target of inputs) if (seen.has(target)) push(target, "entities", entity);
+  }
+  for (const item of projection.facts) push(home(item), "facts", item);
+  for (const item of projection.knowledge) push(home(item), "knowledge", item);
+  for (const item of projection.events) push(home(item), "events", item);
+  for (const item of projection.currentState) push(home(item), "currentState", item);
+  for (const item of projection.relationships) push(home(item), "relationships", item);
+  return inputs;
 }

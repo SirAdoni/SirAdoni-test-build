@@ -8,6 +8,7 @@ import { useChats } from "../../hooks/use-chats";
 import { useCharacterSummaries } from "../../hooks/use-characters";
 import { useGlobalChatSearch, type GlobalChatSearchFilters } from "../../hooks/use-chat-insights";
 import { openChatAtMessage } from "../../lib/chat-insights";
+import { openGameLog } from "../../lib/open-game-log";
 import { localDateInputToIso, splitSnippet } from "../../lib/chat-insights-display";
 
 const FIELD_CLASS =
@@ -141,7 +142,9 @@ export function GlobalSearchModal({
 
   const openResult = (result: GlobalChatSearchResult) => {
     onClose();
-    openChatAtMessage(result.chatId, result.messageNumber);
+    // The Game screen has no per-message anchors; its turns open in the campaign log.
+    if (result.chatMode === "game") openGameLog({ chatId: result.chatId, messageId: result.messageId, messageNumber: result.messageNumber });
+    else openChatAtMessage(result.chatId, result.messageNumber);
   };
 
   let status: string;
