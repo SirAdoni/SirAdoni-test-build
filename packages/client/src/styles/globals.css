@@ -7789,3 +7789,26 @@ strong {
     background: #151a22;
   }
 }
+
+/* Touch targets in the shell's own panels (Settings, Connections, the chat list):
+   phones and coarse pointers get at least a 36px hit area. Native buttons center
+   their content, so growing min-height keeps labels and icons aligned. Compact
+   inline controls (help icons) opt out with data-touch-compact and extend their
+   hit area another way. */
+@media (max-width: 767px), (pointer: coarse) {
+  :is([data-panel-key="settings"], [data-panel-key="connections"], [data-component="ChatSidebar"])
+    :is(button, select, input:is([type="text"], [type="search"], [type="number"], :not([type]))):not(
+      [data-touch-compact]
+    ) {
+    min-height: 2.25rem;
+  }
+
+  :is([data-panel-key="settings"], [data-panel-key="connections"], [data-component="ChatSidebar"])
+    button:not([data-touch-compact]) {
+    min-width: 2.25rem;
+  }
+
+  :is([data-panel-key="settings"], [data-panel-key="connections"]) input[type="range"] {
+    min-height: 2.25rem;
+  }
+}

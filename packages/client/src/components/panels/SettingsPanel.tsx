@@ -5318,7 +5318,7 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                   href="https://fonts.google.com"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-[0.625rem] text-[var(--muted-foreground)] hover:text-[var(--primary)] transition-colors inline-flex items-center gap-1"
+                  className="text-[0.625rem] text-[var(--muted-foreground)] hover:text-[var(--primary)] transition-colors inline-flex items-center gap-1 max-md:min-h-9 [@media(pointer:coarse)]:min-h-9"
                 >
                   {localizeUi("ui.panels.appearancesettings.browseFontsAtFontsGoogleCom")}
                 </a>

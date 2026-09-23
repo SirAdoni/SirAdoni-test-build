@@ -5,6 +5,7 @@ import {
   Activity,
   lazy,
   Suspense,
+  useRef,
   useState,
   type ComponentType,
   type LazyExoticComponent,
@@ -17,6 +18,7 @@ import { usePersonalExtensionContributions } from "../../lib/personal-extension-
 import { PersonalExtensionContributionIcon } from "../extensions/PersonalExtensionContributionIcon";
 import { PersonalExtensionContributionSlot } from "../extensions/PersonalExtensionContributionSlot";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { usePanelKeyboardFocus } from "./use-panel-keyboard-focus";
 import type { PersonalExtensionContributionSurface } from "@marinara-engine/shared";
 
 const CharactersPanel = lazy(() =>
@@ -109,6 +111,14 @@ export function RightPanel() {
   const panelOpen = useUIStore((s) => s.rightPanelOpen);
   const [mountedPanels] = useState(() => new Set<string>());
   const close = useUIStore((s) => s.closeRightPanel);
+  const sectionRef = useRef<HTMLElement>(null);
+  const { onKeyDown } = usePanelKeyboardFocus({
+    open: panelOpen,
+    panelKey: panel,
+    containerRef: sectionRef,
+    toggleSelector: `[data-component="TopBar"] [data-tour="panel-${panel}"]`,
+    onClose: close,
+  });
   const { contributions, activePanelKey } = usePersonalExtensionContributions();
 
   // Remember visits only for this mounted panel, not every mobile reopen.
@@ -128,9 +138,12 @@ export function RightPanel() {
 
   return (
     <section
+      ref={sectionRef}
       data-component="RightPanel"
       aria-label={config.title}
-      className="mari-right-panel-content mari-chrome-token-scope flex h-full min-h-0 flex-col"
+      tabIndex={-1}
+      onKeyDown={onKeyDown}
+      className="mari-right-panel-content mari-chrome-token-scope flex h-full min-h-0 flex-col outline-none"
     >
       {/* Header - OS window style */}
       <div className="mari-right-panel-header relative flex h-12 flex-shrink-0 items-center justify-between bg-[var(--card)]/80 px-4 backdrop-blur-sm">

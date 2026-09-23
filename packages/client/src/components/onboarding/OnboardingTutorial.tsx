@@ -2,6 +2,7 @@
 // Onboarding Tutorial — first-time guided tour
 // ──────────────────────────────────────────────
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { useUIStore, type ChatModeShortcut } from "../../stores/ui.store";
 import { useChatStore } from "../../stores/chat.store";
@@ -216,7 +217,9 @@ const TOPBAR_FALLBACK_HEIGHT = 48;
 const TUTORIAL_TOP_GAP = 12;
 const TUTORIAL_DESKTOP_WIDTH = 340;
 const TUTORIAL_CARD_CLASS =
-  "mari-chrome-token-scope pointer-events-auto overflow-x-hidden overflow-y-auto rounded-2xl border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-panel-bg)] p-5 shadow-2xl ring-1 ring-[var(--marinara-chat-chrome-focus-ring)]";
+  // The panel token is translucent; stack it three times and blur what is behind so
+  // list text under a centered mobile card cannot bleed through the tour copy.
+  "mari-chrome-token-scope pointer-events-auto overflow-x-hidden overflow-y-auto rounded-2xl border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-panel-bg)] bg-[linear-gradient(var(--marinara-chat-chrome-panel-bg),var(--marinara-chat-chrome-panel-bg)),linear-gradient(var(--marinara-chat-chrome-panel-bg),var(--marinara-chat-chrome-panel-bg))] p-5 shadow-2xl ring-1 ring-[var(--marinara-chat-chrome-focus-ring)] backdrop-blur-xl";
 const TUTORIAL_SECONDARY_BUTTON_CLASS =
   "rounded-lg px-3 py-1.5 text-xs text-[var(--marinara-chat-chrome-panel-muted)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--marinara-chat-chrome-panel-text)]";
 const TUTORIAL_PRIMARY_BUTTON_CLASS =
@@ -727,8 +730,15 @@ function OnboardingTutorialInner() {
     </div>
   ) : undefined;
 
-  return (
-    <div className="mari-chrome-token-scope pointer-events-none fixed inset-0 z-[9999]">
+  // Portaled to <body>: inside the shell, z-[9999] only ranks within the shell's own
+  // stacking context, and Home widgets such as Professor Mari's helper bubble painted
+  // over the card (covering Skip and Get Started on phones). At body level the tour
+  // still sits under dialogs (z-[10000]) such as the docs viewer it can open.
+  return createPortal(
+    <div
+      data-component="OnboardingTutorial"
+      className="mari-chrome-token-scope pointer-events-none fixed inset-0 z-[9999]"
+    >
       {/* Pulsing highlight rings around the current target elements */}
       {!isMobileViewport &&
         spotlightRects.map((rect) => (
@@ -799,6 +809,7 @@ function OnboardingTutorialInner() {
           </motion.div>
         </AnimatePresence>
       )}
-    </div>
+    </div>,
+    document.body,
   );
 }

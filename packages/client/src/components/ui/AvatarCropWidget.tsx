@@ -320,24 +320,32 @@ export function AvatarCropWidget({ src, alt, crop, onChange, onRemove, removing 
             >
               <CornerHandle
                 pos="tl"
+                cropSize={cropPx.size}
+                space={cropSpace(cropPx, imgRect)}
                 onPointerDown={(e) => onPointerDown(e, "tl")}
                 onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp}
               />
               <CornerHandle
                 pos="tr"
+                cropSize={cropPx.size}
+                space={cropSpace(cropPx, imgRect)}
                 onPointerDown={(e) => onPointerDown(e, "tr")}
                 onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp}
               />
               <CornerHandle
                 pos="bl"
+                cropSize={cropPx.size}
+                space={cropSpace(cropPx, imgRect)}
                 onPointerDown={(e) => onPointerDown(e, "bl")}
                 onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp}
               />
               <CornerHandle
                 pos="br"
+                cropSize={cropPx.size}
+                space={cropSpace(cropPx, imgRect)}
                 onPointerDown={(e) => onPointerDown(e, "br")}
                 onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp}
@@ -386,59 +394,87 @@ export function AvatarCropWidget({ src, alt, crop, onChange, onRemove, removing 
   );
 }
 
+/** Room between the crop box and the canvas edge on each side (the canvas clips overflow). */
+function cropSpace(crop: CropPx, rect: { w: number; h: number }) {
+  return {
+    left: crop.x,
+    top: crop.y,
+    right: rect.w - (crop.x + crop.size),
+    bottom: rect.h - (crop.y + crop.size),
+  };
+}
+
+/**
+ * Offset of a touch target (or visual square) from its crop-box side. It prefers
+ * to sit mostly outside the crop box, but the canvas clips everything outside the
+ * image, so with a full-size crop three quarters of the target used to vanish,
+ * leaving about 7px to grab. Pull it back inside by the missing room, while never
+ * reaching past the middle of the crop box so the corners keep the pan area free.
+ */
+function handleOffset(outward: number, room: number, extent: number, cropSize: number): number {
+  // Negative values sit outside the crop box; only `room` of that is visible.
+  const visible = -Math.min(outward, Math.max(0, room));
+  const maxIntrusion = Math.max(extent - outward, cropSize / 2);
+  return Math.min(visible, maxIntrusion - extent);
+}
+
 function CornerHandle({
   pos,
+  cropSize,
+  space,
   onPointerDown,
   onPointerMove,
   onPointerUp,
 }: {
   pos: "tl" | "tr" | "bl" | "br";
+  cropSize: number;
+  space: { left: number; top: number; right: number; bottom: number };
   onPointerDown: (e: React.PointerEvent) => void;
   onPointerMove: (e: React.PointerEvent) => void;
   onPointerUp: () => void;
 }) {
   // The visible square stays small, but a 14px target is roughly 3.5mm on a phone
   // and misses far more often than it hits. Wrap it in a 44px transparent target
-  // (the standard mobile minimum) that reaches mostly *outward* from the crop
-  // corner: it intrudes only `HANDLE_VISUAL_PX / 2` into the crop box, so the
-  // four corners cannot swallow the pan area even at `MIN_CROP_PX`.
-  const inset = HANDLE_TOUCH_PX - HANDLE_VISUAL_PX / 2;
+  // (the standard mobile minimum) that reaches mostly outward from the crop
+  // corner, and slides inward when the canvas edge would clip it.
+  const outward = HANDLE_TOUCH_PX - HANDLE_VISUAL_PX / 2;
+  const horizontal = pos === "tl" || pos === "bl" ? "left" : "right";
+  const vertical = pos === "tl" || pos === "tr" ? "top" : "bottom";
+  const targetStyle: React.CSSProperties = {
+    [horizontal]: handleOffset(outward, space[horizontal], HANDLE_TOUCH_PX, cropSize),
+    [vertical]: handleOffset(outward, space[vertical], HANDLE_TOUCH_PX, cropSize),
+  };
+  const squareOutward = HANDLE_VISUAL_PX / 2;
+  const squareStyle: React.CSSProperties = {
+    [horizontal]: -Math.min(squareOutward, Math.max(0, space[horizontal])),
+    [vertical]: -Math.min(squareOutward, Math.max(0, space[vertical])),
+  };
   const cursorByPos = { tl: "nwse-resize", tr: "nesw-resize", bl: "nesw-resize", br: "nwse-resize" } as const;
-  const targetByPos: Record<typeof pos, React.CSSProperties> = {
-    tl: { top: -inset, left: -inset },
-    tr: { top: -inset, right: -inset },
-    bl: { bottom: -inset, left: -inset },
-    br: { bottom: -inset, right: -inset },
-  };
-  // Pin the visible square to the target's crop-facing corner, so it lands where
-  // it has always been drawn.
-  const squareByPos: Record<typeof pos, React.CSSProperties> = {
-    tl: { bottom: 0, right: 0 },
-    tr: { bottom: 0, left: 0 },
-    bl: { top: 0, right: 0 },
-    br: { top: 0, left: 0 },
-  };
   return (
-    <div
-      style={{
-        position: "absolute",
-        width: HANDLE_TOUCH_PX,
-        height: HANDLE_TOUCH_PX,
-        // Without this the WebView can claim the gesture as a scroll before the
-        // pointer capture in `onPointerDown` takes effect.
-        touchAction: "none",
-        ...targetByPos[pos],
-        cursor: cursorByPos[pos],
-      }}
-      onPointerDown={(e) => {
-        e.stopPropagation();
-        onPointerDown(e);
-      }}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
-    >
+    <>
       <div
+        data-crop-handle={pos}
+        style={{
+          position: "absolute",
+          width: HANDLE_TOUCH_PX,
+          height: HANDLE_TOUCH_PX,
+          // Without this the WebView can claim the gesture as a scroll before the
+          // pointer capture in `onPointerDown` takes effect.
+          touchAction: "none",
+          ...targetStyle,
+          cursor: cursorByPos[pos],
+          zIndex: 1,
+        }}
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          onPointerDown(e);
+        }}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+      />
+      <div
+        aria-hidden="true"
         style={{
           position: "absolute",
           width: HANDLE_VISUAL_PX,
@@ -446,10 +482,11 @@ function CornerHandle({
           background: "white",
           border: "1px solid black",
           borderRadius: 2,
-          ...squareByPos[pos],
+          pointerEvents: "none",
+          ...squareStyle,
         }}
       />
-    </div>
+    </>
   );
 }
 

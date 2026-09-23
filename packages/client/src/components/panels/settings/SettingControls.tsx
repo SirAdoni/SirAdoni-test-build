@@ -502,6 +502,10 @@ function CustomNotificationSoundSetting() {
         accept="audio/*,video/mp4,.mp3,.wav,.ogg,.oga,.m4a,.mp4,.webm"
         onChange={handleUpload}
         className="sr-only"
+        // Opened by the Choose sound button; keep it out of the Tab order so it
+        // is not a second, invisible stop for the same action.
+        tabIndex={-1}
+        aria-hidden="true"
         aria-label={t("settings.notifications.customSound.actions.choose")}
       />
       <div>
@@ -678,7 +682,7 @@ export function SettingsCheckbox({
     <label
       id={anchorId}
       className={cn(
-        "flex scroll-mt-3 cursor-pointer rounded-lg transition-colors hover:bg-[var(--secondary)]/50",
+        "flex scroll-mt-3 cursor-pointer rounded-lg transition-colors hover:bg-[var(--secondary)]/50 max-md:min-h-9 [@media(pointer:coarse)]:min-h-9",
         align === "between" ? "items-center justify-between gap-3 p-1.5" : "items-start gap-2.5 p-1.5",
         disabled && "cursor-not-allowed opacity-60 hover:bg-transparent",
         className,

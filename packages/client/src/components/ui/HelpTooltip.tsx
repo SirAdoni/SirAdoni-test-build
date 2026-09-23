@@ -176,7 +176,11 @@ export function HelpTooltip({
             : localize("Show help")
         }
         aria-expanded={show}
+        data-touch-compact=""
         className={cn(
+          // The icon is ~13px; an invisible ::after extends the hit area to ~37px
+          // without growing the label row it sits in.
+          "relative after:absolute after:-inset-3 after:content-['']",
           "mari-chrome-accent-text-muted mari-accent-animated inline-flex cursor-help items-center gap-1 rounded-full opacity-70 transition-opacity hover:text-[var(--marinara-chat-chrome-button-text-hover)] hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)]",
           buttonClassName,
         )}

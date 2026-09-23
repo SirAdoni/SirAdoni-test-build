@@ -1127,6 +1127,14 @@ export function App() {
           position={notificationPosition === "bottom" ? "bottom-center" : "top-center"}
           swipeDirections={["left", "right", notificationPosition === "bottom" ? "bottom" : "top"]}
           offset="4rem"
+          // Phones: sonner's 16px default put top toasts over the top bar and the chat
+          // header's More options button, and bottom toasts over the composer.
+          mobileOffset={{
+            top: "calc(env(safe-area-inset-top) + 6.75rem)",
+            bottom: "calc(var(--mari-safe-area-inset-bottom, env(safe-area-inset-bottom)) + 5.5rem)",
+            left: "0.75rem",
+            right: "0.75rem",
+          }}
           theme={theme}
           closeButton
           duration={TOAST_DURATION_MS}

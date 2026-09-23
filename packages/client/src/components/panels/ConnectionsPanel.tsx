@@ -101,6 +101,7 @@ import { SmoothFolderContent } from "../ui/SmoothFolderContent";
 import { TouchDragHandle } from "../ui/TouchDragHandle";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { PanelErrorState } from "../ui/PanelStates";
 import { clearActiveChatResourceDrag, writeChatResourceDragPayload } from "../../lib/chat-resource-drag";
 import { createLocalSidecarConnectionOption, isLanguageGenerationConnection } from "../../lib/connection-filters";
 import { ChatResourceActionButton } from "../chat/ChatResourceActionButton";
@@ -2170,18 +2171,11 @@ export function ConnectionsPanel() {
       )}
 
       {!isLoading && !connections && connectionsLoadFailed && (
-        <div role="alert" className="flex flex-col items-center gap-2 py-8 text-center">
-          <p className="mari-chrome-text-muted text-xs">{localizeUi("ui.panels.connectionspanel.loadFailed")}</p>
-          <button
-            type="button"
-            onClick={() => void refetchConnections()}
-            disabled={connectionsRefetching}
-            className="mari-chrome-control mari-chrome-control--small min-h-9 px-3 text-xs disabled:opacity-50"
-          >
-            {connectionsRefetching ? <Loader2 size="0.75rem" className="animate-spin" /> : null}
-            {localizeUi("ui.panels.connectionspanel.retry")}
-          </button>
-        </div>
+        <PanelErrorState
+          message={localizeUi("ui.panels.connectionspanel.loadFailed")}
+          onRetry={() => void refetchConnections()}
+          retrying={connectionsRefetching}
+        />
       )}
 
       {!isLoading &&
