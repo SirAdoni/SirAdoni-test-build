@@ -24,6 +24,20 @@ const bundle = await build({
           contents: `import{useState}from'react';export function useGenerationJobs(open){const[,refresh]=useState(0);return{isLoading:false,isError:false,data:open?(window.__generationJobs||[]):[]};}export function useGenerationJobResult(id,enabled){return{isLoading:false,isError:false,data:enabled&&id==='done'?{avatar:'data:image/png;base64,fixture'}:undefined};}export function useCancelGenerationJob(){return{isPending:false,mutate(id){window.__cancelled=id;window.__generationJobs=(window.__generationJobs||[]).map(job=>job.id===id?{...job,status:'cancelled'}:job);}}}`,
           resolveDir: process.cwd(),
         }));
+        // Opt-in job tracking stays off here: the modal must look exactly as it did without it.
+        buildApi.onResolve({ filter: /use-generation-job-tracking$/ }, () => ({
+          path: "tracking",
+          namespace: "fixture",
+        }));
+        buildApi.onLoad({ filter: /^tracking$/, namespace: "fixture" }, () => ({
+          contents: `export function useGenerationJobTrackingEnabled(){return false}export function useTrackedGenerationJobs(){return{data:undefined}}`,
+          resolveDir: process.cwd(),
+        }));
+        buildApi.onResolve({ filter: /TrackedJobDetails$/ }, () => ({ path: "tracked-details", namespace: "fixture" }));
+        buildApi.onLoad({ filter: /^tracked-details$/, namespace: "fixture" }, () => ({
+          contents: "export function TrackedJobDetails(){throw new Error('tracking is off')}",
+          resolveDir: process.cwd(),
+        }));
         buildApi.onResolve({ filter: /\.\.\/ui\/Modal$/ }, () => ({ path: "modal", namespace: "fixture" }));
         buildApi.onLoad({ filter: /^modal$/, namespace: "fixture" }, () => ({
           contents:

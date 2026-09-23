@@ -38,6 +38,15 @@ export interface GenerationJobs {
   result(id: string): Promise<unknown>;
   cancel(id: string): Promise<boolean>;
 }
+/**
+ * Lifecycle seam for opt-in job tracking (generation-job-tracker.ts). "accepted" and "running" fire once the
+ * job is persisted and its work starts; "settled" fires once per job with its final status. Observers run
+ * synchronously inside run() and must never throw or block; the store guards the call anyway.
+ */
+export type GenerationJobLifecycleEvent =
+  | { type: "accepted" | "running"; metadata: Readonly<GenerationJobMetadata> }
+  | { type: "settled"; metadata: Readonly<GenerationJobMetadata>; elapsedMs: number; result?: unknown };
+export type GenerationJobObserver = (event: GenerationJobLifecycleEvent) => void;
 export interface GenerationJobsOptions {
   dataDir?: string;
   /** Maximum time close waits for provider work to settle after aborting it. */
@@ -100,6 +109,8 @@ export class GenerationJobsStore implements GenerationJobs {
       workSettledPromise: Promise<void>;
       resolveWorkSettled: () => void;
       workSettled: boolean;
+      /** The cancel or shutdown status write, so the "settled" observer event fires after it is saved. */
+      statusWrite?: Promise<void>;
     }
   >();
   private closing = false;
@@ -107,6 +118,7 @@ export class GenerationJobsStore implements GenerationJobs {
   private pruning: Promise<void> | null = null;
   private pruneAgain = false;
   private lastPruneAt = 0;
+  private observer: GenerationJobObserver | null = null;
 
   constructor(app?: FastifyInstance, options: GenerationJobsOptions = {}) {
     // Tests may provide a complete isolated job directory.
@@ -265,6 +277,22 @@ export class GenerationJobsStore implements GenerationJobs {
     }
   }
 
+  /** Installs (or with null removes) the single lifecycle observer. */
+  setObserver(observer: GenerationJobObserver | null): void {
+    this.observer = observer;
+  }
+  /** Whether a job is still owned by this process (running, or settling after cancel/shutdown). */
+  isLive(id: string): boolean {
+    return this.jobs.has(id);
+  }
+  private notify(event: GenerationJobLifecycleEvent): void {
+    try {
+      this.observer?.(event);
+    } catch (error) {
+      logger.warn({ err: error, jobId: event.metadata.id }, "Generation job observer failed");
+    }
+  }
+
   private async persistMetadata(metadata: GenerationJobMetadata): Promise<void> {
     await this.atomicWrite(join(this.root, `${metadata.id}.json`), JSON.stringify(metadata, null, 2));
   }
@@ -378,6 +406,7 @@ export class GenerationJobsStore implements GenerationJobs {
       workSettledPromise: Promise<void>;
       resolveWorkSettled: () => void;
       workSettled: boolean;
+      statusWrite?: Promise<void>;
     };
     workSettledRecord = record;
     this.jobs.set(id, record);
@@ -410,6 +439,7 @@ export class GenerationJobsStore implements GenerationJobs {
       this.jobs.delete(id);
       throw abortError(record.metadata.error ?? "Generation job cancelled");
     }
+    this.notify({ type: "accepted", metadata });
     const timeout = Math.max(1, options.timeoutMs);
     let timeoutTriggered = false;
     const abortPromise = new Promise<never>((_, reject) => {
@@ -444,6 +474,8 @@ export class GenerationJobsStore implements GenerationJobs {
     );
     workPromise.catch(() => undefined);
     workPromise.then(record.resolveWorkSettled, record.resolveWorkSettled);
+    this.notify({ type: "running", metadata });
+    let completedValue: unknown;
     const promise = (async () => {
       try {
         const value = await Promise.race([workPromise, abortPromise]);
@@ -455,6 +487,7 @@ export class GenerationJobsStore implements GenerationJobs {
         if (record.metadata.status !== "running" || record.controller.signal.aborted)
           throw abortError(record.metadata.error ?? "Generation job cancelled");
         await this.update(record, "completed", null, true);
+        completedValue = value;
         logger.info(
           {
             operation: "generation.job",
@@ -502,6 +535,12 @@ export class GenerationJobsStore implements GenerationJobs {
         if (record.timer) clearTimeout(record.timer);
         if (record.workSettled) this.jobs.delete(id);
         record.resolveSettled();
+        const elapsedMs = Date.now() - startedAt;
+        const notifySettled = () =>
+          this.notify({ type: "settled", metadata: record.metadata, elapsedMs, result: completedValue });
+        // A cancel or shutdown aborts first and saves its status after; announce the outcome once it is saved.
+        if (record.statusWrite) void record.statusWrite.then(notifySettled, notifySettled);
+        else notifySettled();
         this.schedulePrune();
       }
     })();
@@ -547,8 +586,10 @@ export class GenerationJobsStore implements GenerationJobs {
     record.metadata.status = "cancelled";
     record.metadata.error = "Generation job cancelled";
     this.recordFailure(record.metadata, abortError(record.metadata.error), "cancelled", "ME_CANCELLED");
+    const statusWrite = this.update(record, "cancelled", "Generation job cancelled", false);
+    record.statusWrite = statusWrite;
     record.controller.abort();
-    await this.update(record, "cancelled", "Generation job cancelled", false);
+    await statusWrite;
     return true;
   }
   async close(): Promise<void> {
@@ -567,7 +608,13 @@ export class GenerationJobsStore implements GenerationJobs {
             "interrupted",
             "ME_CANCELLED",
           );
-          await this.update(record, "interrupted", "Generation was interrupted by server shutdown", false);
+          record.statusWrite = this.update(
+            record,
+            "interrupted",
+            "Generation was interrupted by server shutdown",
+            false,
+          );
+          await record.statusWrite;
         } catch (error) {
           logger.error({ err: error, id: record.metadata.id }, "Unable to persist interrupted generation job");
         }

@@ -10,6 +10,8 @@ import {
   type GenerationJobStatus,
 } from "../../hooks/use-generation-jobs";
 import { useTranslation } from "react-i18next";
+import { useGenerationJobTrackingEnabled, useTrackedGenerationJobs } from "../../hooks/use-generation-job-tracking";
+import { TrackedJobDetails } from "../generation-jobs/TrackedJobDetails";
 
 function formatDate(value: string): string {
   const date = new Date(value);
@@ -190,6 +192,10 @@ export function GenerationJobsModal({ open, onClose }: { open: boolean; onClose:
   const cancel = useCancelGenerationJob();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  // Opt-in tracking adds per-job detail and the log trail; with it off nothing below changes.
+  const trackingEnabled = useGenerationJobTrackingEnabled();
+  const tracked = useTrackedGenerationJobs(trackingEnabled && open);
+  const trackedById = useMemo(() => new Map((tracked.data ?? []).map((record) => [record.id, record])), [tracked.data]);
 
   return (
     <Modal open={open} onClose={onClose} title={t("generationJobs.title")} width="max-w-2xl" mobileFullscreen>
@@ -269,6 +275,11 @@ export function GenerationJobsModal({ open, onClose }: { open: boolean; onClose:
                       </button>
                     ) : null}
                   </div>
+                  {trackedById.has(job.id) ? (
+                    <div className="ps-7">
+                      <TrackedJobDetails record={trackedById.get(job.id)!} expanded={selected} />
+                    </div>
+                  ) : null}
                   {selected && job.status === "completed" && job.resultAvailable ? <JobResult job={job} /> : null}
                 </div>
               );

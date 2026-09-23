@@ -177,6 +177,7 @@ export async function adminRoutes(app: FastifyInstance) {
         db.delete(schema.randomTables).where(ne(schema.randomTables.gameId, "")).run(),
       );
       await runDelete("library_campaign_links", () => db.delete(schema.libraryCampaignLinks).run());
+      await runDelete("generation_job_records", () => db.delete(schema.generationJobRecords).run());
       filesDeleted.gallery = clearDirectory(join(DATA_DIR, "gallery"));
       filesDeleted.gameSceneVideos = clearDirectory(join(DATA_DIR, "game-scene-videos"));
     }

@@ -427,6 +427,7 @@ const BUILT_IN_FILE_BACKED_TABLES = [
   "mari_instructions",
   "mari_workspace_context",
   "generation_usage",
+  "generation_job_records",
 ] as const;
 
 /**
@@ -848,6 +849,8 @@ export const CASCADES: Array<{ parent: FileBackedTable; child: FileBackedTable; 
     { parent: "chats", child: "game_turn_storyboards", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "game_dice_pools", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "game_dice_rolls", parentKey: "id", childKey: "chatId" },
+    // Opt-in generation job records name their chat; rows without a chat are pruned by retention.
+    { parent: "chats", child: "generation_job_records", parentKey: "id", childKey: "chatId" },
     {
       parent: "game_turn_storyboards",
       child: "game_turn_storyboard_keyframes",
