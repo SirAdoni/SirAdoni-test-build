@@ -53,11 +53,10 @@ import {
 } from "lucide-react";
 import { getCharacterTitle } from "../../lib/character-display";
 import {
-  formatCardLibraryMeta,
-  getCardLibrarySummary,
-  matchesCardLibrarySearch,
+  matchesCardLibrarySearchIndex,
   parseCardLibrarySearchQuery,
 } from "../../lib/card-library-search";
+import { buildCharacterSearchIndex } from "./library/character-search-index";
 import { useUIStore, type CharacterLibrarySort } from "../../stores/ui.store";
 import { useTouchFolderDrag } from "../../hooks/use-touch-folder-drag";
 import { normalizeAvatarCrop } from "@marinara-engine/shared";
@@ -67,6 +66,7 @@ import { formatEstimatedTokens } from "../../lib/character-token-count";
 import { SelectionActionBar } from "../ui/SelectionActionBar";
 import { TouchDragHandle } from "../ui/TouchDragHandle";
 import { buildLibraryFolderView, type LibraryFolderNode } from "../../lib/library-folder-view";
+import { LibrarySearchInput } from "./library/LibrarySearchInput";
 import { CAMPAIGN_FILTER_ALL, LibraryCampaignBar } from "./library/LibraryCampaignBar";
 import { LibraryCampaignBadges } from "./library/LibraryCampaignBadges";
 import { LibraryCampaignRoster } from "./library/LibraryCampaignRoster";
@@ -316,6 +316,12 @@ export function CharactersPanel() {
     [bulkTagsOpen, parsedCharacterMap, selectedCharacterIds],
   );
 
+  // Search fields are normalized once per loaded list, not once per keystroke.
+  const searchIndexById = useMemo(
+    () => new Map(parsedCharacters.map((c) => [c.id, buildCharacterSearchIndex(c, getCharacterTags(c))])),
+    [parsedCharacters],
+  );
+
   const filteredCharacters = useMemo(() => {
     let list = parsedCharacters;
     const query = parseCardLibrarySearchQuery(deferredSearch);
@@ -344,31 +350,11 @@ export function CharactersPanel() {
       });
     }
     list = list.filter((c) => {
-      const tags = getCharacterTags(c);
-      return matchesCardLibrarySearch(
-        {
-          name: c.parsed.name,
-          title: getCharacterTitle({ name: c.parsed.name ?? "", comment: c.comment }),
-          meta: formatCardLibraryMeta(c.parsed.creator, c.parsed.character_version),
-          summary: getCardLibrarySummary([
-            c.parsed.summary,
-            c.parsed.creator_notes,
-            c.parsed.description,
-            c.parsed.personality,
-          ]),
-          tags,
-          sections: [
-            { content: c.parsed.description },
-            { content: c.parsed.personality },
-            { content: c.parsed.scenario },
-            { content: c.parsed.first_mes },
-          ],
-        },
-        query,
-      );
+      const index = searchIndexById.get(c.id);
+      return index ? matchesCardLibrarySearchIndex(index, query) : true;
     });
     return list;
-  }, [parsedCharacters, deferredSearch, includedTags, excludedTags, favFilter]);
+  }, [parsedCharacters, searchIndexById, deferredSearch, includedTags, excludedTags, favFilter]);
 
   // Collect all unique tags across characters for the filter bar
   const allTags = useMemo(() => {
@@ -1576,9 +1562,9 @@ export function CharactersPanel() {
       <div className="flex gap-1.5">
         <div className="relative flex-1">
           <Search size="0.8125rem" className="mari-chrome-field-icon absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
+          <LibrarySearchInput
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onValueChange={setSearch}
             placeholder={t("search.panels.characters")}
             className="mari-chrome-field h-10 w-full py-0 pl-8 pr-3 text-xs md:h-9"
           />
