@@ -1380,11 +1380,12 @@ export function PresetsPanel() {
                       onClick={(event) => {
                         event.stopPropagation();
                         void confirmNonEmptyFolderDelete(folder.itemIds.length, {
-                          title: "Delete Folder",
-                          message: `Delete "${folder.name}"? Its ${folder.itemIds.length} preset${
-                            folder.itemIds.length === 1 ? "" : "s"
-                          } will move out of the folder.`,
-                          confirmLabel: "Delete",
+                          title: localizeUi("ui.panels.backgroundpicker.deleteFolder"),
+                          message: localizeUi("ui.panels.presetspanel.deleteFolderMessage", {
+                            name: folder.name,
+                            count: folder.itemIds.length,
+                          }),
+                          confirmLabel: localizeUi("lorebook.editor.batch.delete"),
                           tone: "destructive",
                         }).then((ok) => {
                           if (!ok) return;

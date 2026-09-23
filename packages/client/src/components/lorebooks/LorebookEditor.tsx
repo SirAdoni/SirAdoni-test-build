@@ -318,25 +318,25 @@ const TABS = [
 type TabId = (typeof TABS)[number]["id"];
 
 const CATEGORY_OPTIONS: Array<{ value: LorebookCategory; label: string; icon: typeof Globe }> = [
-  { value: "world", label: "World", icon: Globe },
-  { value: "character", label: "Character", icon: Users },
-  { value: "npc", label: "NPC", icon: Drama },
-  { value: "spellbook", label: "Spellbook", icon: Wand2 },
-  { value: "uncategorized", label: "Uncategorized", icon: BookOpen },
+  { value: "world", label: "ui.lorebooks.lorebookeditor.categoryWorld", icon: Globe },
+  { value: "character", label: "ui.lorebooks.lorebookeditor.categoryCharacter", icon: Users },
+  { value: "npc", label: "ui.lorebooks.lorebookeditor.categoryNpc", icon: Drama },
+  { value: "spellbook", label: "ui.lorebooks.lorebookeditor.categorySpellbook", icon: Wand2 },
+  { value: "uncategorized", label: "ui.lorebooks.lorebookeditor.categoryUncategorized", icon: BookOpen },
 ];
 
 type EntrySortKey = "order" | "entries" | "name-asc" | "name-desc" | "tokens" | "keys" | "fired" | "newest" | "oldest";
 
 const SORT_OPTIONS: Array<{ value: EntrySortKey; label: string }> = [
-  { value: "order", label: "Order" },
-  { value: "entries", label: "Entries" },
-  { value: "name-asc", label: "Name A→Z" },
-  { value: "name-desc", label: "Name Z→A" },
-  { value: "tokens", label: "Tokens ↓" },
-  { value: "keys", label: "Keys ↓" },
-  { value: "fired", label: "Fired ↓" },
-  { value: "newest", label: "Newest" },
-  { value: "oldest", label: "Oldest" },
+  { value: "order", label: "ui.lorebooks.lorebookeditor.sortOrder" },
+  { value: "entries", label: "ui.lorebooks.lorebookeditor.sortEntries" },
+  { value: "name-asc", label: "ui.lorebooks.lorebookeditor.sortNameAsc" },
+  { value: "name-desc", label: "ui.lorebooks.lorebookeditor.sortNameDesc" },
+  { value: "tokens", label: "ui.lorebooks.lorebookeditor.sortTokens" },
+  { value: "keys", label: "ui.lorebooks.lorebookeditor.sortKeys" },
+  { value: "fired", label: "ui.lorebooks.lorebookeditor.sortFired" },
+  { value: "newest", label: "ui.lorebooks.lorebookeditor.sortNewest" },
+  { value: "oldest", label: "ui.lorebooks.lorebookeditor.sortOldest" },
 ];
 
 type BatchEntryChanges = BulkUpdateLorebookEntriesInput["changes"];
@@ -790,8 +790,9 @@ export function LorebookEditor() {
   );
 
   useEffect(() => {
-    if (entryTransferTargetId && transferTargetLorebooks.some((book) => book.id === entryTransferTargetId)) return;
-    setEntryTransferTargetId(transferTargetLorebooks[0]?.id ?? "");
+    // Never pick a destination on the user's behalf: a stale or missing target resets to "no choice".
+    if (!entryTransferTargetId || transferTargetLorebooks.some((book) => book.id === entryTransferTargetId)) return;
+    setEntryTransferTargetId("");
   }, [entryTransferTargetId, transferTargetLorebooks]);
 
   useEffect(() => {
@@ -899,13 +900,16 @@ export function LorebookEditor() {
         toast.error(t("lorebook.editor.batch.transfer.noDestination"));
         return;
       }
-      setEntryTransferTargetId((current) =>
-        transferTargetLorebooks.some((book) => book.id === current) ? current : transferTargetLorebooks[0]!.id,
-      );
+      // Every copy/move starts without a destination so a quick confirm can't send entries somewhere unintended.
+      setEntryTransferTargetId("");
       setEntryTransferOperation(operation);
     },
     [selectedEntryIds.size, t, transferTargetLorebooks],
   );
+
+  const entryTransferTargetName = entryTransferTargetId
+    ? (transferTargetLorebooks.find((book) => book.id === entryTransferTargetId)?.name ?? "")
+    : "";
 
   const handleTransferEntries = useCallback(async () => {
     const operation = entryTransferOperation;
@@ -1966,6 +1970,9 @@ export function LorebookEditor() {
               aria-label={t("lorebook.editor.batch.transfer.destination")}
               className="mari-editor-field w-full px-3 py-2 text-sm"
             >
+              <option value="" disabled>
+                {t("lorebook.editor.batch.transfer.choosePlaceholder")}
+              </option>
               {transferTargetLorebooks.map((book) => (
                 <option key={book.id} value={book.id}>
                   {book.name}
@@ -1989,11 +1996,18 @@ export function LorebookEditor() {
               className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--primary)] px-3 py-2 text-sm font-medium text-[var(--primary-foreground)] transition-colors hover:bg-[var(--primary)]/85 disabled:opacity-40"
             >
               {transferEntries.isPending ? <Loader2 size="0.8125rem" className="animate-spin" /> : null}
-              {t(
-                entryTransferOperation === "copy"
-                  ? "lorebook.editor.batch.transfer.copyConfirm"
-                  : "lorebook.editor.batch.transfer.moveConfirm",
-              )}
+              {entryTransferTargetName
+                ? t(
+                    entryTransferOperation === "copy"
+                      ? "lorebook.editor.batch.transfer.copyConfirmNamed"
+                      : "lorebook.editor.batch.transfer.moveConfirmNamed",
+                    { name: entryTransferTargetName },
+                  )
+                : t(
+                    entryTransferOperation === "copy"
+                      ? "lorebook.editor.batch.transfer.copyConfirm"
+                      : "lorebook.editor.batch.transfer.moveConfirm",
+                  )}
             </button>
           </div>
         </div>
@@ -2018,7 +2032,11 @@ export function LorebookEditor() {
           <div className="min-w-0 flex-1">
             <h2 className="mari-editor-title truncate">{lorebook.name}</h2>
             <p className="mari-editor-meta">
-              {entries.length} {localizeUi("ui.lorebooks.lorebookeditor.entries")} {lorebook.category}
+              {entries.length} {localizeUi("ui.lorebooks.lorebookeditor.entries")}{" "}
+              {localizeUi(
+                CATEGORY_OPTIONS.find((option) => option.value === lorebook.category)?.label ??
+                  "ui.lorebooks.lorebookeditor.categoryUncategorized",
+              )}
             </p>
           </div>
         </div>
@@ -2199,7 +2217,7 @@ export function LorebookEditor() {
                     >
                       {CATEGORY_OPTIONS.map((opt) => (
                         <option key={opt.value} value={opt.value}>
-                          {opt.label}
+                          {localizeUi(opt.label)}
                         </option>
                       ))}
                     </select>
@@ -2228,7 +2246,7 @@ export function LorebookEditor() {
                           )}
                         >
                           <Icon size="0.8125rem" />
-                          {opt.label}
+                          {localizeUi(opt.label)}
                         </button>
                       );
                     })}
@@ -2624,7 +2642,7 @@ export function LorebookEditor() {
                     (~192px) flex-basis so it stays usable; the buttons tile
                     onto the next row instead of being clipped at ~400px. */}
                 <div className="mari-editor-toolbar flex flex-wrap items-stretch gap-2 p-2">
-                  <div className="relative min-w-0 flex-[1_1_12rem]">
+                  <div className="relative min-w-0 flex-[1_1_12rem] max-sm:basis-full">
                     <Search
                       size="0.8125rem"
                       className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted-foreground)]"
@@ -2637,7 +2655,7 @@ export function LorebookEditor() {
                       className="mari-editor-field w-full py-2.5 pl-8 pr-3 text-xs"
                     />
                   </div>
-                  <div className="relative shrink-0 max-sm:flex-1">
+                  <div className="relative shrink-0 max-sm:flex-[1_1_calc(50%-0.25rem)]">
                     <ArrowUpDown
                       size="0.8125rem"
                       className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted-foreground)]"
@@ -2649,7 +2667,7 @@ export function LorebookEditor() {
                     >
                       {SORT_OPTIONS.map((opt) => (
                         <option key={opt.value} value={opt.value}>
-                          {opt.label}
+                          {localizeUi(opt.label)}
                         </option>
                       ))}
                     </select>
@@ -2660,7 +2678,7 @@ export function LorebookEditor() {
                       else setEntrySelectionMode(true);
                     }}
                     className={cn(
-                      "mari-editor-action flex shrink-0 items-center justify-center gap-1.5 px-3 py-2.5 text-xs max-sm:flex-1",
+                      "mari-editor-action flex shrink-0 items-center justify-center gap-1.5 px-3 py-2.5 text-xs max-sm:flex-[1_1_calc(50%-0.25rem)]",
                       entrySelectionMode &&
                         "border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-button-text-active)]",
                     )}
@@ -2671,7 +2689,7 @@ export function LorebookEditor() {
                   </button>
                   <button
                     onClick={handleAddFolder}
-                    className="mari-editor-action flex shrink-0 items-center justify-center gap-1.5 px-3 py-2.5 text-xs max-sm:flex-1"
+                    className="mari-editor-action flex shrink-0 items-center justify-center gap-1.5 px-3 py-2.5 text-xs max-sm:flex-[1_1_calc(50%-0.25rem)]"
                     title={localizeUi("ui.lorebooks.lorebookeditor.createANewFolderToGroupEntries")}
                   >
                     <FolderPlus size="0.8125rem" />
@@ -2679,7 +2697,7 @@ export function LorebookEditor() {
                   </button>
                   <button
                     onClick={handleAddEntry}
-                    className="mari-editor-action mari-editor-action--primary inline-flex shrink-0 justify-center max-sm:flex-1"
+                    className="mari-editor-action mari-editor-action--primary inline-flex shrink-0 justify-center max-sm:flex-[1_1_calc(50%-0.25rem)]"
                   >
                     <Plus size="0.8125rem" />
                     {localizeUi("ui.lorebooks.lorebookeditor.addEntry")}

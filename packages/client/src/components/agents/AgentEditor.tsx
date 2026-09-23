@@ -1969,8 +1969,11 @@ export function AgentEditor() {
             </span>
           )}
           <button
+            type="button"
             onClick={handleSave}
             disabled={isPending}
+            aria-label={localizeUi("ui.noodle.noodlehome.save")}
+            title={localizeUi("ui.noodle.noodlehome.save")}
             className="mari-editor-action mari-editor-action--primary inline-flex disabled:opacity-50"
           >
             <Save size="0.8125rem" /> <span className="max-md:hidden">{localizeUi("ui.noodle.noodlehome.save")}</span>

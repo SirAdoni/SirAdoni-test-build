@@ -161,10 +161,10 @@ function isHeaderInlineControlTarget(target: EventTarget | null) {
 }
 
 const SELECTIVE_LOGIC_OPTIONS: Array<{ value: SelectiveLogic; label: string }> = [
-  { value: "and", label: "AND Any" },
-  { value: "and_all", label: "AND All" },
-  { value: "not", label: "NOT Any" },
-  { value: "not_all", label: "NOT All" },
+  { value: "and", label: "ui.lorebooks.lorebookentryrow.logicAndAny" },
+  { value: "and_all", label: "ui.lorebooks.lorebookentryrow.logicAndAll" },
+  { value: "not", label: "ui.lorebooks.lorebookentryrow.logicNotAny" },
+  { value: "not_all", label: "ui.lorebooks.lorebookentryrow.logicNotAll" },
 ];
 
 const STATUS_DESCRIPTION_KEY: Record<EntryStatus, string> = {
@@ -183,35 +183,35 @@ const ENTRY_STATUS_MENU_MARGIN = 10;
 const ENTRY_STATUS_MENU_GAP = 6;
 
 const FILTER_MODE_LABEL: Record<LorebookFilterMode, string> = {
-  any: "Any",
-  include: "Only",
-  exclude: "Exclude",
+  any: "ui.lorebooks.lorebookentryrow.filterModeAny",
+  include: "ui.lorebooks.lorebookentryrow.filterModeInclude",
+  exclude: "ui.lorebooks.lorebookentryrow.filterModeExclude",
 };
 
 const MATCHING_SOURCE_OPTIONS: Array<{ value: LorebookMatchingSource; label: string }> = [
-  { value: "character_name", label: "Character name" },
-  { value: "character_description", label: "Character description" },
-  { value: "character_personality", label: "Personality" },
-  { value: "character_scenario", label: "Scenario" },
-  { value: "character_tags", label: "Character tags" },
-  { value: "persona_description", label: "Persona description" },
-  { value: "persona_tags", label: "Persona tags" },
+  { value: "character_name", label: "ui.lorebooks.lorebookentryrow.matchCharacterName" },
+  { value: "character_description", label: "ui.lorebooks.lorebookentryrow.matchCharacterDescription" },
+  { value: "character_personality", label: "ui.lorebooks.lorebookentryrow.matchPersonality" },
+  { value: "character_scenario", label: "ui.lorebooks.lorebookentryrow.matchScenario" },
+  { value: "character_tags", label: "ui.lorebooks.lorebookentryrow.matchCharacterTags" },
+  { value: "persona_description", label: "ui.lorebooks.lorebookentryrow.matchPersonaDescription" },
+  { value: "persona_tags", label: "ui.lorebooks.lorebookentryrow.matchPersonaTags" },
 ];
 
 const GENERATION_TRIGGER_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: "conversation", label: "Conversation" },
-  { value: "roleplay", label: "Roleplay" },
-  { value: "game", label: "Game" },
-  { value: "chat", label: "Chat reply" },
-  { value: "continue", label: "Continue" },
-  { value: "autonomous", label: "Autonomous" },
-  { value: "swipe", label: "Swipe" },
-  { value: "impersonate", label: "Impersonate" },
-  { value: "prompt_preview", label: "Prompt preview" },
-  { value: "test_scan", label: "Test scan" },
-  { value: "game_setup", label: "Game setup" },
-  { value: "lorebook_assistant", label: "Lorebook Assistant" },
-  { value: "noodle", label: "Noodle" },
+  { value: "conversation", label: "ui.lorebooks.lorebookentryrow.triggerConversation" },
+  { value: "roleplay", label: "ui.lorebooks.lorebookentryrow.triggerRoleplay" },
+  { value: "game", label: "ui.lorebooks.lorebookentryrow.triggerGame" },
+  { value: "chat", label: "ui.lorebooks.lorebookentryrow.triggerChatReply" },
+  { value: "continue", label: "ui.lorebooks.lorebookentryrow.triggerContinue" },
+  { value: "autonomous", label: "ui.lorebooks.lorebookentryrow.triggerAutonomous" },
+  { value: "swipe", label: "ui.lorebooks.lorebookentryrow.triggerSwipe" },
+  { value: "impersonate", label: "ui.lorebooks.lorebookentryrow.triggerImpersonate" },
+  { value: "prompt_preview", label: "ui.lorebooks.lorebookentryrow.triggerPromptPreview" },
+  { value: "test_scan", label: "ui.lorebooks.lorebookentryrow.triggerTestScan" },
+  { value: "game_setup", label: "ui.lorebooks.lorebookentryrow.triggerGameSetup" },
+  { value: "lorebook_assistant", label: "ui.lorebooks.lorebookentryrow.triggerLorebookAssistant" },
+  { value: "noodle", label: "ui.lorebooks.lorebookentryrow.triggerNoodle" },
 ];
 
 /** A compact lorebook-entry list row with inline-editable status / position / depth / order /
@@ -516,12 +516,20 @@ export function LorebookEntryRow({
   const showDepthInput = localPosition === 2;
   const isVectorExcluded = entry.excludeFromVectorization === true;
   const isVectorized = Array.isArray(entry.embedding) && entry.embedding.length > 0;
-  const vectorStatusLabel = isVectorExcluded ? "Vector excluded" : isVectorized ? "Vectorized" : "Not vectorized";
-  const vectorStatusTitle = isVectorExcluded
-    ? "This entry is excluded from vectorization"
-    : isVectorized
-      ? "This entry has been vectorized"
-      : "This entry has not been vectorized yet";
+  const vectorStatusLabel = localizeUi(
+    isVectorExcluded
+      ? "ui.lorebooks.lorebookentryrow.vectorExcluded"
+      : isVectorized
+        ? "ui.lorebooks.lorebookentryrow.vectorized"
+        : "ui.lorebooks.lorebookentryrow.notVectorized",
+  );
+  const vectorStatusTitle = localizeUi(
+    isVectorExcluded
+      ? "ui.lorebooks.lorebookentryrow.vectorExcludedTitle"
+      : isVectorized
+        ? "ui.lorebooks.lorebookentryrow.vectorizedTitle"
+        : "ui.lorebooks.lorebookentryrow.notVectorizedTitle",
+  );
 
   return (
     <div
@@ -880,7 +888,7 @@ export function LorebookEntryRow({
             title={localizeUi("ui.lorebooks.lorebookentryrow.entryQuickControls")}
             onClick={() => setShowMobileControls((current) => !current)}
             className={cn(
-              "flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)] sm:h-7 sm:w-7",
+              "flex h-8 w-8 items-center justify-center rounded-md text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)] sm:h-7 sm:w-7",
               showMobileControls && "bg-[var(--accent)] text-[var(--foreground)]",
             )}
           >
@@ -954,9 +962,37 @@ export function LorebookEntryRow({
                   label={localizeUi("ui.lorebooks.lorebookentryrow.folder")}
                   value={entry.folderId ?? ""}
                   onChange={(v) => patch({ folderId: v === "" ? null : v })}
-                  options={[{ value: "", label: "(none)" }, ...folders.map((f) => ({ value: f.id, label: f.name }))]}
+                  options={[
+                    { value: "", label: localizeUi("ui.lorebooks.lorebookentryrow.noFolder") },
+                    ...folders.map((f) => ({ value: f.id, label: f.name })),
+                  ]}
                 />
               )}
+              <div className="grid grid-cols-2 gap-2 border-t border-[var(--border)] pt-2 md:hidden">
+                <button
+                  type="button"
+                  disabled={duplicateDisabled}
+                  onClick={(e) => {
+                    setShowMobileControls(false);
+                    handleDuplicate(e);
+                  }}
+                  className="mari-editor-action flex h-9 items-center justify-center gap-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Copy size="0.8125rem" />
+                  {localizeUi("ui.lorebooks.lorebookentryrow.duplicate")}
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    setShowMobileControls(false);
+                    void handleDelete(e);
+                  }}
+                  className="mari-editor-action flex h-9 items-center justify-center gap-1.5 text-xs text-[var(--destructive)]"
+                >
+                  <Trash2 size="0.8125rem" />
+                  {localizeUi("ui.lorebooks.lorebookentryrow.delete")}
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -1003,7 +1039,7 @@ export function LorebookEntryRow({
                 patch({ depth: n });
               }}
               title={localizeUi("ui.lorebooks.lorebookentryrow.depthMessagesBackFromTheLatestWhereThisEntry")}
-              ariaLabel="Depth"
+              ariaLabel={localizeUi("ui.lorebooks.lorebookentryrow.depth")}
               prefix="d"
               min={0}
               max={9999}
@@ -1016,7 +1052,7 @@ export function LorebookEntryRow({
               patch({ order: n });
             }}
             title={localizeUi("ui.lorebooks.lorebookentryrow.insertionOrderWhenMultipleEntriesActivateLowerEarlierIn")}
-            ariaLabel="Order"
+            ariaLabel={localizeUi("ui.lorebooks.lorebookentryrow.order")}
             prefix="ord"
           />
           <CompactNumber
@@ -1029,7 +1065,7 @@ export function LorebookEntryRow({
               patch({ probability: clamped === 100 ? null : clamped });
             }}
             title={localizeUi("ui.lorebooks.lorebookentryrow.triggerProbability0100100AlwaysFiresWhenKeys")}
-            ariaLabel="Trigger probability"
+            ariaLabel={localizeUi("ui.lorebooks.lorebookentryrow.triggerProbability")}
             prefix="p"
             suffix="%"
             min={0}
@@ -1040,7 +1076,10 @@ export function LorebookEntryRow({
               value={entry.folderId ?? ""}
               onChange={(v) => patch({ folderId: v === "" ? null : v })}
               title={localizeUi("ui.lorebooks.lorebookentryrow.moveThisEntryToADifferentFolderNoneRoot")}
-              options={[{ value: "", label: "(none)" }, ...folders.map((f) => ({ value: f.id, label: f.name }))]}
+              options={[
+                { value: "", label: localizeUi("ui.lorebooks.lorebookentryrow.noFolder") },
+                ...folders.map((f) => ({ value: f.id, label: f.name })),
+              ]}
               className="w-[5.5rem] sm:w-[6.25rem]"
             />
           )}
@@ -1069,7 +1108,7 @@ export function LorebookEntryRow({
           title={localizeUi("ui.lorebooks.lorebookentryrow.duplicateEntry")}
           disabled={duplicateDisabled}
           onClick={handleDuplicate}
-          className="shrink-0 rounded p-0.5 text-[var(--muted-foreground)] opacity-0 transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] group-hover:opacity-100 focus-visible:opacity-100 disabled:cursor-not-allowed max-md:opacity-100 sm:p-1"
+          className="shrink-0 rounded p-0.5 text-[var(--muted-foreground)] opacity-0 transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] group-hover:opacity-100 focus-visible:opacity-100 disabled:cursor-not-allowed max-md:hidden sm:p-1"
         >
           <Copy size="0.75rem" />
         </button>
@@ -1079,7 +1118,7 @@ export function LorebookEntryRow({
           type="button"
           aria-label={localizeUi("ui.lorebooks.lorebookentryrow.deleteEntry")}
           onClick={handleDelete}
-          className="shrink-0 rounded p-0.5 text-[var(--muted-foreground)] opacity-0 transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] group-hover:opacity-100 focus-visible:opacity-100 max-md:opacity-100 sm:p-1"
+          className="shrink-0 rounded p-0.5 text-[var(--muted-foreground)] opacity-0 transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] group-hover:opacity-100 focus-visible:opacity-100 max-md:hidden sm:p-1"
         >
           <Trash2 size="0.75rem" />
         </button>
@@ -1333,6 +1372,7 @@ function FilterModeSelect({
   value: LorebookFilterMode;
   onChange: (value: LorebookFilterMode) => void;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   return (
     <select
       value={value}
@@ -1341,7 +1381,7 @@ function FilterModeSelect({
     >
       {(["any", "include", "exclude"] as LorebookFilterMode[]).map((mode) => (
         <option key={mode} value={mode}>
-          {FILTER_MODE_LABEL[mode]}
+          {localizeUi(FILTER_MODE_LABEL[mode])}
         </option>
       ))}
     </select>
@@ -1656,7 +1696,7 @@ function ExpandedDrawer({
                     : "text-[var(--muted-foreground)] hover:bg-[var(--marinara-editor-control-bg-hover)]",
                 )}
               >
-                {option.label}
+                {localizeUi(option.label)}
               </button>
             ))}
           </div>
@@ -1681,7 +1721,7 @@ function ExpandedDrawer({
                 values={characters.map((character) => ({ value: character.id, label: character.name }))}
                 selected={form.characterFilterIds ?? []}
                 onChange={(next) => update({ characterFilterIds: next })}
-                emptyLabel="No characters available."
+                emptyLabel={localizeUi("ui.lorebooks.lorebookentryrow.noCharactersAvailable")}
               />
             </div>
 
@@ -1699,7 +1739,7 @@ function ExpandedDrawer({
                 values={characterTags.map((tag) => ({ value: tag, label: tag }))}
                 selected={form.characterTagFilters ?? []}
                 onChange={(next) => update({ characterTagFilters: next })}
-                emptyLabel="No character tags available."
+                emptyLabel={localizeUi("ui.lorebooks.lorebookentryrow.noCharacterTagsAvailable")}
               />
             </div>
 
@@ -1714,10 +1754,13 @@ function ExpandedDrawer({
                 />
               </div>
               <FilterPills
-                values={GENERATION_TRIGGER_OPTIONS}
+                values={GENERATION_TRIGGER_OPTIONS.map((option) => ({
+                  value: option.value,
+                  label: localizeUi(option.label),
+                }))}
                 selected={form.generationTriggerFilters ?? []}
                 onChange={(next) => update({ generationTriggerFilters: next })}
-                emptyLabel="No trigger filters available."
+                emptyLabel={localizeUi("ui.lorebooks.lorebookentryrow.noTriggerFiltersAvailable")}
               />
             </div>
           </div>
@@ -1732,10 +1775,13 @@ function ExpandedDrawer({
               </p>
             </div>
             <FilterPills
-              values={MATCHING_SOURCE_OPTIONS}
+              values={MATCHING_SOURCE_OPTIONS.map((option) => ({
+                value: option.value,
+                label: localizeUi(option.label),
+              }))}
               selected={form.additionalMatchingSources ?? []}
               onChange={(next) => update({ additionalMatchingSources: next as LorebookMatchingSource[] })}
-              emptyLabel="No sources available."
+              emptyLabel={localizeUi("ui.lorebooks.lorebookentryrow.noSourcesAvailable")}
             />
           </div>
         </div>

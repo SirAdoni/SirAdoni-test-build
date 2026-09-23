@@ -1596,11 +1596,12 @@ export function AgentsPanel() {
                       onClick={(event) => {
                         event.stopPropagation();
                         void confirmNonEmptyFolderDelete(folder.itemIds.length, {
-                          title: "Delete Folder",
-                          message: `Delete "${folder.name}"? Its ${folder.itemIds.length} agent${
-                            folder.itemIds.length === 1 ? "" : "s"
-                          } will move out of the folder.`,
-                          confirmLabel: "Delete",
+                          title: localizeUi("ui.panels.backgroundpicker.deleteFolder"),
+                          message: localizeUi("ui.panels.agentspanel.deleteFolderMessage", {
+                            name: folder.name,
+                            count: folder.itemIds.length,
+                          }),
+                          confirmLabel: localizeUi("lorebook.editor.batch.delete"),
                           tone: "destructive",
                         }).then((ok) => {
                           if (!ok) return;
@@ -1608,8 +1609,10 @@ export function AgentsPanel() {
                           if (expandedFolderId === folder.id) setExpandedFolderId(null);
                         });
                       }}
+                      type="button"
                       className="mari-chrome-control mari-chrome-control--small p-1"
                       title={localizeUi("ui.panels.backgroundpicker.deleteFolder")}
+                      aria-label={localizeUi("ui.panels.backgroundpicker.deleteFolder")}
                     >
                       <Trash2 size="0.6875rem" />
                     </button>
