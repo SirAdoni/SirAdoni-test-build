@@ -516,7 +516,8 @@ export async function combatDirectorRoutes(
                 if (!item || item.quantity < d.count) throw new Error("Inventory changed. Reload the battle.");
                 item.quantity -= d.count;
               }
-              return { gameInventory: inventory };
+              // A spent-out item leaves the inventory, as it does when used outside a fight.
+              return { gameInventory: inventory.filter((item) => item.quantity > 0) };
             },
             { metadataQueueHeld: true },
           );

@@ -3520,6 +3520,20 @@ function GameSurfaceComponent({
     inventoryItemsRef.current = inventoryItems;
   }, [inventoryItems]);
 
+  // Adopt inventory changes made on the server (a directed fight spends items inside its own save; the chat
+  // refetch brings the new list). Without this the local list kept the spent items, and the next local write
+  // saved them back. Only a change in the server copy is adopted, never the same list seen again.
+  const lastServerInventoryRef = useRef<string | null>(null);
+  useEffect(() => {
+    const serverInventory = (chatMeta.gameInventory as Array<{ name: string; quantity: number }> | undefined) ?? [];
+    const serialized = JSON.stringify(serverInventory);
+    if (lastServerInventoryRef.current === serialized) return;
+    const firstSeen = lastServerInventoryRef.current === null;
+    lastServerInventoryRef.current = serialized;
+    if (firstSeen) return;
+    if (JSON.stringify(inventoryItemsRef.current) !== serialized) setInventoryItems(serverInventory);
+  }, [chatMeta.gameInventory]);
+
   useEffect(() => {
     if (prevSceneRuntimeScopeRef.current === sceneRuntimeScopeKey) return; // skip initial mount
     prevSceneRuntimeScopeRef.current = sceneRuntimeScopeKey;
@@ -4736,7 +4750,7 @@ function GameSurfaceComponent({
       // Returning to an existing game — mark scene as ready and skip weather/intro
       isRestoredRef.current = true;
       sceneReadyMsgIdRef.current = latestAssistantMsg.id;
-      weatherMsgRef.current = latestAssistantMsg.id;
+      weatherMsgRef.current = latestAssistantTurnKey;
     } else {
       sceneReadyMsgIdRef.current = "__none__";
       weatherMsgRef.current = null;
@@ -5230,14 +5244,14 @@ function GameSurfaceComponent({
   useEffect(() => {
     if (!latestAssistantMsg?.content || isStreaming) return;
     if (latestAssistantDirectAddressMode) return;
-    if (weatherMsgRef.current === latestAssistantMsg.id) return;
+    if (weatherMsgRef.current === latestAssistantTurnKey) return;
     const action = resolveMessageWeatherAction(gameState, latestAssistantMsg.content);
     if (!action) return;
-    weatherMsgRef.current = latestAssistantMsg.id;
+    weatherMsgRef.current = latestAssistantTurnKey;
     updateWeather.mutate({ chatId: activeChatId, action, location: gameSnapshot?.location ?? "" });
   }, [
     latestAssistantMsg?.content,
-    latestAssistantMsg?.id,
+    latestAssistantTurnKey,
     latestAssistantDirectAddressMode,
     isStreaming,
     activeChatId,
@@ -8729,7 +8743,7 @@ function GameSurfaceComponent({
 
       setRemovingPartyMemberId(member.id);
       try {
-        await removePartyMember.mutateAsync({ chatId: activeChatId, characterName: member.name });
+        await removePartyMember.mutateAsync({ chatId: activeChatId, characterName: member.name, characterId: member.id });
       } finally {
         setRemovingPartyMemberId(null);
       }

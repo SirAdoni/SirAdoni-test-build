@@ -649,7 +649,7 @@ export function useRemovePartyMember() {
   const qc = useQueryClient();
 
   return useMutation({
-    mutationFn: (data: { chatId: string; characterName: string }) =>
+    mutationFn: (data: { chatId: string; characterName: string; characterId?: string }) =>
       api.post<RemovePartyMemberResponse>("/game/party/remove", data),
     onMutate: (variables) => ({ metadataVersion: captureChatMetadataVersion(variables.chatId) }),
     onSuccess: (res, variables, context) => {
@@ -732,7 +732,7 @@ export function useTransitionGameState() {
     mutationFn: (data: { chatId: string; newState: GameActiveState }) =>
       api.post<StateTransitionResponse>("/game/state/transition", data),
     onSuccess: (res, variables) => {
-      store.getState().setGameState(res.newState);
+      if (store.getState().activeSessionChatId === variables.chatId) store.getState().setGameState(res.newState);
       qc.invalidateQueries({ queryKey: chatKeys.detail(variables.chatId) });
     },
   });
@@ -746,7 +746,9 @@ export function useGenerateMap() {
     mutationFn: (data: { chatId: string; locationType: string; context: string; connectionId?: string }) =>
       api.post<MapGenerateResponse>("/game/map/generate", data),
     onSuccess: (res, variables) => {
-      if (res.maps?.length) {
+      if (store.getState().activeSessionChatId !== variables.chatId) {
+        // Another chat is open now; its own map comes from its metadata.
+      } else if (res.maps?.length) {
         store.getState().setMaps(res.maps, res.activeGameMapId);
       } else {
         store.getState().setCurrentMap(res.map);
@@ -764,7 +766,9 @@ export function useMoveOnMap() {
     mutationFn: (data: { chatId: string; position: { x: number; y: number } | string; mapId?: string | null }) =>
       api.post<MapMoveResponse>("/game/map/move", data),
     onSuccess: (res, variables) => {
-      if (res.maps?.length) {
+      if (store.getState().activeSessionChatId !== variables.chatId) {
+        // Another chat is open now; its own map comes from its metadata.
+      } else if (res.maps?.length) {
         store.getState().setMaps(res.maps, res.activeGameMapId);
       } else {
         store.getState().setCurrentMap(res.map);
@@ -1044,7 +1048,7 @@ export function useUpdateReputation() {
     mutationFn: (data: { chatId: string; actions: Array<{ npcId: string; action: string; modifier?: number }> }) =>
       api.post<{ npcs: unknown[]; changes: unknown[] }>("/game/reputation/update", data),
     onSuccess: (res, variables) => {
-      store.getState().setNpcs(res.npcs as any[]);
+      if (store.getState().activeSessionChatId === variables.chatId) store.getState().setNpcs(res.npcs as any[]);
       qc.invalidateQueries({ queryKey: chatKeys.detail(variables.chatId) });
       qc.invalidateQueries({ queryKey: [...gameKeys.all, "journal", variables.chatId] });
     },
