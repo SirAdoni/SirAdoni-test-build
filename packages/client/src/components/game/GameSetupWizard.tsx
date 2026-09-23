@@ -512,6 +512,12 @@ export function GameSetupWizard({
   const { t: localizeUi } = useUiTranslation();
   const prefersReducedMotion = useReducedMotion();
   const [step, setStep] = useState(0);
+  // Start sits exactly where Next was: ignore clicks right after a step change, so a double-click on Next cannot
+  // start the game before the summary is seen.
+  const stepEnteredAtRef = useRef(0);
+  useEffect(() => {
+    stepEnteredAtRef.current = Date.now();
+  }, [step]);
   const panelRef = useRef<HTMLDivElement>(null);
   const { data: installedPackages, isLoading: experiencesLoading } = useInstalledCapabilityPackages(true);
   const experiences = useMemo(() => selectGameExperiencePackages(installedPackages), [installedPackages]);
@@ -1340,9 +1346,9 @@ export function GameSetupWizard({
 
     return {
       ...buildExperienceSetup(activeExperience, experienceSeed, isNewGame),
-      genre: genres.join(", ") || "Fantasy",
+      genre: genres.join(", ").slice(0, 200) || "Fantasy",
       setting: setting || `A ${(genres[0] ?? "fantasy").toLowerCase()} world`,
-      tone: tones.join(", ") || "Heroic",
+      tone: tones.join(", ").slice(0, 200) || "Heroic",
       difficulty: normalizeGameDifficulty(difficulty),
       combatStyle,
       ...(activeRuleset
@@ -1672,6 +1678,7 @@ export function GameSetupWizard({
                       <input
                         type="text"
                         value={gameName}
+                        maxLength={200}
                         onChange={(e) => setGameName(e.target.value)}
                         placeholder={localizeUi("ui.game.gamesetupwizard.nameYourAdventure")}
                         className={GAME_SETUP_INPUT_CLASS}
@@ -3139,6 +3146,7 @@ export function GameSetupWizard({
                       </label>
                       <textarea
                         value={playerGoals}
+                        maxLength={2000}
                         onChange={(e) => setPlayerGoals(e.target.value)}
                         placeholder={localizeUi("ui.game.gamesetupwizard.whatDoYouWantToAchieve")}
                         rows={3}
@@ -3172,6 +3180,7 @@ export function GameSetupWizard({
                       </label>
                       <textarea
                         value={preferences}
+                        maxLength={5000}
                         onChange={(e) => setPreferences(e.target.value)}
                         placeholder={localizeUi("ui.game.gamesetupwizard.anyExtraDetailsForTheGm")}
                         rows={3}
@@ -3964,7 +3973,10 @@ export function GameSetupWizard({
                     </button>
                     <button
                       type="button"
-                      onClick={handleComplete}
+                      onClick={() => {
+                        if (Date.now() - stepEnteredAtRef.current < 400) return;
+                        void handleComplete();
+                      }}
                       disabled={isLoading || !canStart}
                       className={GAME_SETUP_PRIMARY_BUTTON_CLASS}
                       title={canStartMessage ?? undefined}

@@ -973,6 +973,16 @@ export function combatSkillsFromSheet(value: unknown): Combatant["skills"] {
   return skills.length > 0 ? skills : undefined;
 }
 
+/** Index of the stored game card for a sheet title: exact (case-insensitive) first, else the lenient
+ * name match the sheet display uses. */
+function findStoredCardIndex(cards: Array<Record<string, unknown>>, title: string): number {
+  const wanted = title.toLowerCase();
+  const exact = cards.findIndex((entry) => typeof entry.name === "string" && entry.name.toLowerCase() === wanted);
+  if (exact >= 0) return exact;
+  const lenient = findNamedEntry(cards, title, (card) => (typeof card.name === "string" ? card.name : null));
+  return lenient ? cards.indexOf(lenient) : -1;
+}
+
 export function findGameCombatCard(
   cards: StoredGameCombatCard[],
   targetName: string,
@@ -10168,9 +10178,7 @@ function GameSurfaceComponent({
       const currentCards = Array.isArray(chatMeta.gameCharacterCards)
         ? (chatMeta.gameCharacterCards as Array<Record<string, unknown>>)
         : [];
-      const currentIndex = currentCards.findIndex(
-        (entry) => typeof entry.name === "string" && entry.name.toLowerCase() === normalizedTitle.toLowerCase(),
-      );
+      const currentIndex = findStoredCardIndex(currentCards, normalizedTitle);
 
       const sanitizedGameCard = gameCard
         ? {
@@ -10211,7 +10219,9 @@ function GameSurfaceComponent({
           // This editor only knows the fields above. The game's copy of the ruleset sheet lives on
           // the same card and is edited elsewhere, so it rides along instead of being dropped.
           const rulesetSheet = currentCards[currentIndex]?.rulesetSheet;
-          updatedCards[currentIndex] = rulesetSheet ? { ...sanitizedGameCard, rulesetSheet } : sanitizedGameCard;
+          const storedName = currentCards[currentIndex]?.name;
+          const saved = typeof storedName === "string" ? { ...sanitizedGameCard, name: storedName } : sanitizedGameCard;
+          updatedCards[currentIndex] = rulesetSheet ? { ...saved, rulesetSheet } : saved;
         } else {
           updatedCards.push(sanitizedGameCard);
         }
@@ -10248,11 +10258,7 @@ function GameSurfaceComponent({
       const cards = Array.isArray(chatMeta.gameCharacterCards)
         ? (chatMeta.gameCharacterCards as Array<Record<string, unknown>>)
         : [];
-      const wanted = cardTitle.trim().toLowerCase();
-      return {
-        cards,
-        index: cards.findIndex((entry) => typeof entry.name === "string" && entry.name.toLowerCase() === wanted),
-      };
+      return { cards, index: findStoredCardIndex(cards, cardTitle.trim()) };
     },
     [chatMeta.gameCharacterCards],
   );
@@ -12810,7 +12816,8 @@ function GameSurfaceComponent({
                             layoutEditing ? "ui.game.floatingPanel.doneEditing" : "ui.game.floatingPanel.editLayout",
                           )}
                           onClick={() => setLayoutEditing((value) => !value)}
-                          className={getChatToolbarButtonClass({ open: layoutEditing })}
+                          // Panels are inline below the desktop width, so there is no layout to edit.
+                          className={cn(getChatToolbarButtonClass({ open: layoutEditing }), "max-lg:hidden")}
                         >
                           <Pencil size={14} aria-hidden="true" />
                         </button>
