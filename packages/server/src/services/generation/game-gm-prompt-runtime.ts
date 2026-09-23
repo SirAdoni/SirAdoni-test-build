@@ -2,6 +2,7 @@ import { layoutNamedCards, type NamedCard } from "../game/named-card-cache.js";
 import { selectNamedCharacterIds } from "../game/named-characters.js";
 import {
   GAME_GM_BUILT_IN_PROMPT_TEMPLATES,
+  composeGameTimeLine,
   findGameNpcByNameDerivedId,
   normalizeAgentPromptTemplateOptions,
   normalizeTextForMatch,
@@ -670,8 +671,9 @@ export async function injectGameGmPromptRuntime(args: {
     if (snap) {
       if (snap.weather)
         weatherContext = `Current weather: ${snap.weather}${snap.temperature ? `, ${snap.temperature}` : ""}`;
-      if (snap.time || snap.date) gameTime = [snap.date, snap.time].filter(Boolean).join(", ");
     }
+    // Byte-identical "date, time" without a calendar; with one, its date line replaces the free-text date.
+    gameTime = composeGameTimeLine(snap, args.chatMetadata);
   } catch {
     /* ignore */
   }

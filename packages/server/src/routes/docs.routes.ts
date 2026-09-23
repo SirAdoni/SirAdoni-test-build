@@ -118,6 +118,7 @@ const DOC_ORDER: Record<string, string[]> = {
     "party-and-npcs.md",
     "sessions-and-saves.md",
     "map-time-weather.md",
+    "calendar.md",
     "dice-and-skill-checks.md",
     "hud-widgets.md",
     "game-assets.md",

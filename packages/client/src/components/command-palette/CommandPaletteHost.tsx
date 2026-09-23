@@ -37,6 +37,7 @@ import { requestSnippetPicker } from "../../hooks/use-snippet-expansion";
 import { openRandomTables } from "../../lib/open-random-tables";
 import { openPrepBoard } from "../../lib/open-prep-board";
 import { openInitiativeTracker } from "../../lib/open-initiative-tracker";
+import { openGameCalendar } from "../../lib/open-game-calendar";
 import { chatKeys, useChat, useChatChapters, useExportChat } from "../../hooks/use-chats";
 import { textSnippetKeys } from "../../hooks/use-text-snippets";
 import { useLaunchNewChat } from "../chat/HomeNewChatLauncher";
@@ -259,6 +260,14 @@ export function CommandPaletteHost() {
         keywords: ["initiative", "encounter", "combat", "turn order", "round", "fight", "gm"],
         when: () => activeChatMode() === "game",
         run: () => openInitiativeTracker(),
+      }),
+      registerCommand({
+        id: "action:game-calendar",
+        section: "actions",
+        title: t("palette.actions.gameCalendar"),
+        keywords: ["calendar", "date", "day", "festival", "deadline", "moon", "advance time", "gm"],
+        when: () => activeChatMode() === "game",
+        run: () => openGameCalendar(),
       }),
       registerCommand({
         id: "action:manage-snippets",

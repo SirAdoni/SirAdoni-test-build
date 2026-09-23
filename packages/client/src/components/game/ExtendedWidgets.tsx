@@ -17,6 +17,7 @@ import {
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
 import { CharacterLinkedContent } from "../characters/CharacterReferences";
+import { useGameCalendarWidgetEntries } from "../../hooks/use-game-calendar";
 
 const MUTED = "text-[var(--marinara-chat-chrome-panel-muted)]";
 const TEXT = "text-[var(--marinara-chat-chrome-panel-text)]";
@@ -137,6 +138,8 @@ function ClockFace({ value, max, accent }: { value: number; max: number; accent:
 
 function ExtendedWidgetView({ widget }: { widget: HudWidget }) {
   const { t: localizeUi } = useUiTranslation();
+  // A calendar widget also lists the game's own calendar events (Tools tab), on the same clock-day numbers.
+  const calendarEntries = useGameCalendarWidgetEntries(widget.type === "calendar");
   if (!isExtendedHudWidgetType(widget.type)) return null;
   const type = widget.type;
   const c = normalizeExtendedWidgetConfig(type, widget.config ?? {});
@@ -482,11 +485,26 @@ function ExtendedWidgetView({ widget }: { widget: HudWidget }) {
     }
 
     case "calendar": {
+      const own = c.entries ?? [];
+      const extra = calendarEntries.filter(
+        (entry) =>
+          !own.some(
+            (item) =>
+              scheduleDayOf(item.when) === scheduleDayOf(entry.when) &&
+              item.text.trim().toLowerCase() === entry.text.trim().toLowerCase(),
+          ),
+      );
+      const cal = extra.length > 0 ? { ...c, entries: [...own, ...extra] } : c;
       const week = max || 7;
       const today = value || 1;
       const start = Math.floor((today - 1) / week) * week + 1;
-      const eventDays = new Set((c.entries ?? []).map((entry) => scheduleDayOf(entry.when)));
-      const upcoming = calendarUpcoming(c).slice(0, 3);
+      const eventDays = new Set((cal.entries ?? []).map((entry) => scheduleDayOf(entry.when)));
+      // Merged calendar events arrive after the widget's own entries: order by day so the soonest show.
+      const upcoming = (
+        extra.length > 0
+          ? calendarUpcoming(cal).sort((a, b) => (a.inDays ?? Infinity) - (b.inDays ?? Infinity))
+          : calendarUpcoming(cal)
+      ).slice(0, 3);
       return (
         <div className="space-y-1.5">
           <div className="text-[0.625rem] font-semibold [overflow-wrap:anywhere]" style={{ color: ink(accent) }}>

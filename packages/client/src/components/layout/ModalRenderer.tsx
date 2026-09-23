@@ -87,6 +87,9 @@ const RandomTablesModal = lazy(() =>
 const PrepBoardModal = lazy(() =>
   import("../modals/PrepBoardModal").then((module) => ({ default: module.PrepBoardModal })),
 );
+const GameCalendarModal = lazy(() =>
+  import("../modals/GameCalendarModal").then((module) => ({ default: module.GameCalendarModal })),
+);
 const InitiativeTrackerModal = lazy(() =>
   import("../modals/InitiativeTrackerModal").then((module) => ({ default: module.InitiativeTrackerModal })),
 );
@@ -273,6 +276,9 @@ export function ModalRenderer() {
       break;
     case "prep-board":
       content = <PrepBoardModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
+      break;
+    case "game-calendar":
+      content = <GameCalendarModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
       break;
     case "initiative-tracker":
       content = <InitiativeTrackerModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
