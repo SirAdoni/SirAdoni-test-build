@@ -1,6 +1,8 @@
 import { useCallback, useEffect } from "react";
 import type { GameState, PlayerStats } from "@marinara-engine/shared";
 import { ApiError, api } from "../lib/api-client";
+import { toast } from "sonner";
+import { translate } from "../localization/i18n";
 import { useGameStateStore } from "../stores/game-state.store";
 
 export type GameStatePatchField =
@@ -428,11 +430,22 @@ function retainBeforeUnloadFlush() {
 
 export function patchGameStateField(chatId: string, field: GameStatePatchField, value: unknown) {
   const store = useGameStateStore.getState();
-  if (store.isRefreshing) return;
+  if (store.isRefreshing) {
+    // Edits are whole-field snapshots (playerStats, rulesetLive), so replaying one after the tracker
+    // refresh would overwrite the refreshed values. Refuse it, but say so instead of dropping it silently.
+    toast.error(
+      translate("ui.game.gamestatepatcher.editBlockedWhileRefreshing", {
+        defaultValue: "Trackers are refreshing. Try that change again when they finish.",
+      }),
+      { id: "game-state-patch-refreshing" },
+    );
+    return false;
+  }
   const prev = getCurrentGameStateForChat(chatId);
   const nextState = { ...(prev ?? createEmptyGameState(chatId)), [field]: value } as GameState;
   store.setGameState(nextState);
   queuePatch(chatId, field, value);
+  return true;
 }
 
 export function patchPlayerStatsField(chatId: string, field: keyof PlayerStats, value: unknown) {

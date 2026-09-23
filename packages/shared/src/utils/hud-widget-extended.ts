@@ -107,7 +107,7 @@ function findExact<T>(entries: readonly T[], target: string, textOf: (entry: T) 
 
 /**
  * Target lookup for remove / check / uncheck / stat / cursor moves: an exact match, else the single entry that
- * starts with `target` ("rusk" finds "Rusk sold the keys"). Never used to decide whether something is a duplicate,
+ * starts with `target` ("oriel" finds "Oriel sold the keys"). Never used to decide whether something is a duplicate,
  * and a longer target never resolves to a shorter entry.
  */
 function findEntry<T>(entries: readonly T[], target: string, textOf: (entry: T) => string): number {
@@ -730,7 +730,7 @@ export const EXTENDED_WIDGET_TEXT_FORMAT: Record<ExtendedHudWidgetType, string> 
   ledger: "120 gold (first line), then +50 | Reason",
   log: "Event (one per line, newest first)",
   rumor_board: "[?] Unverified / [x] Confirmed / [-] False",
-  obligations: "[ ] Party owes Rusk | 200 gold / [x] Settled",
+  obligations: "[ ] Party owes Oriel | 200 gold / [x] Settled",
   turn_order: "Name (one per line; > marks the current one)",
   scoreboard: "Side | 3",
   bars: "Name | 3 / 10",

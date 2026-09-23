@@ -6886,7 +6886,7 @@ function inlineDialogueSplitEnds(text: string): number[] {
 /**
  * Fallback: split narration segments that contain inline quoted speech into
  * separate narration + dialogue segments. Handles patterns like:
- *   "Hello there," Mira said warmly.
+ *   "Hello there," Brannoc said warmly.
  *   «Watch out!» Alaric warned.
  *   「小心！」 Alaric warned.
  */

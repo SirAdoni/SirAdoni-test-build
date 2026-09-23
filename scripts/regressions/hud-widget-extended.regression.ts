@@ -44,10 +44,10 @@ let schedule = run(
   base("schedule"),
   { add: "Day 23 | Ball" },
   { add: "Soon | Letter" },
-  { add: "Day 21, dusk | Rusk strike" },
-  { add: "Day 24, dawn | Rusk strike" },
+  { add: "Day 21, dusk | Oriel strike" },
+  { add: "Day 24, dawn | Oriel strike" },
 );
-assert.equal(say(schedule), "Day 23 | Ball; Day 24, dawn | Rusk strike; Soon | Letter");
+assert.equal(say(schedule), "Day 23 | Ball; Day 24, dawn | Oriel strike; Soon | Letter");
 schedule = run(schedule, { remove: "ball" });
 assert.equal(schedule.config.entries?.length, 2);
 
@@ -108,31 +108,31 @@ assert.deepEqual(log.config.items, ["Event 4", "Event 7", "Event 6", "Event 5", 
 const rumors = run(
   base("rumor_board"),
   { add: "The duke is ill" },
-  { add: "Rusk sold the keys" },
-  { check: "rusk sold" },
+  { add: "Oriel sold the keys" },
+  { check: "oriel sold" },
   { uncheck: "The duke is ill" },
   { add: "The duke is ill" },
 );
-assert.equal(say(rumors), "[false] The duke is ill; [confirmed] Rusk sold the keys");
+assert.equal(say(rumors), "[false] The duke is ill; [confirmed] Oriel sold the keys");
 
 // Obligations reuse the checklist rules.
 assert.equal(
-  say(run(base("obligations"), { add: "Party owes Rusk | 200 gold" }, { check: "party owes rusk" })),
-  "[x] Party owes Rusk | 200 gold",
+  say(run(base("obligations"), { add: "Party owes Oriel | 200 gold" }, { check: "party owes oriel" })),
+  "[x] Party owes Oriel | 200 gold",
 );
 
 // Turn order: next wraps; removing an earlier name keeps the same person current.
 let turns = run(
   base("turn_order"),
-  { add: "Mira" },
-  { add: "Rusk" },
+  { add: "Brannoc" },
+  { add: "Oriel" },
   { add: "Tom" },
   { value: "Tom" },
   { value: "next" },
 );
-assert.equal(say(turns), "[Mira]; Rusk; Tom");
-turns = run(turns, { value: "Tom" }, { remove: "Mira" });
-assert.equal(say(turns), "Rusk; [Tom]");
+assert.equal(say(turns), "[Brannoc]; Oriel; Tom");
+turns = run(turns, { value: "Tom" }, { remove: "Brannoc" });
+assert.equal(say(turns), "Oriel; [Tom]");
 
 // Scoreboard: stat/value rows, fuzzy names.
 assert.equal(
@@ -162,14 +162,14 @@ assert.equal(say(run(base("bars"), { add: "Hunger | 10" }, { statName: "Hunger",
 const calendar = run(
   base("calendar"),
   { value: 18, text: "12 Frostfall 412" },
-  { add: "Day 21 | Rusk strike" },
+  { add: "Day 21 | Oriel strike" },
   { add: "Day 10 | Old fair" },
   { value: "next" },
 );
 assert.equal(calendar.config.value, 19);
 assert.equal(
   say(calendar),
-  "today Day 19 (12 Frostfall 412), 7-day weeks; events: Day 10 | Old fair; Day 21 | Rusk strike",
+  "today Day 19 (12 Frostfall 412), 7-day weeks; events: Day 10 | Old fair; Day 21 | Oriel strike",
 );
 assert.deepEqual(
   calendarUpcoming(calendar.config).map((entry) => entry.inDays),
@@ -215,7 +215,7 @@ const restored = restoreBranchHudLists(
   },
   [
     { content: '[widget: tasks, add: "Find the key"] [widget: tasks, add: "Open the vault"]' },
-    { content: '[widget: tasks, check: "Find the key"] [widget: plan, add: "Day 3, noon | Meet Rusk"]' },
+    { content: '[widget: tasks, check: "Find the key"] [widget: plan, add: "Day 3, noon | Meet Oriel"]' },
     {
       content:
         '[widget: status, text: "Hiding in the cellar"] [widget: alert, add: "Calm"] [widget: alert, add: "Alert"]',
@@ -230,7 +230,7 @@ const restored = restoreBranchHudLists(
 );
 const byId = Object.fromEntries(restored.map((widget) => [widget.id, widget]));
 assert.equal(say(byId.tasks!), "[x] Find the key; [ ] Open the vault");
-assert.equal(say(byId.plan!), "Day 3, noon | Meet Rusk");
+assert.equal(say(byId.plan!), "Day 3, noon | Meet Oriel");
 assert.equal(byId.status!.config.text, "Hiding in the cellar");
 assert.equal(say(byId.alert!), "Calm; [Alert]");
 assert.equal(say(byId.slots!), "Fireball 2/3");
@@ -290,8 +290,8 @@ assert.equal(run(full, { value: "Unknown level" }).config.current, 0, "no append
 // 5: the schedule cap never drops the entry just added.
 let busy = base("schedule");
 for (let d = 5; d <= 14; d += 1) busy = run(busy, { add: `Day ${d} | Event ${d}` });
-busy = run(busy, { add: "Day 3 | Rusk strike" });
-assert.ok(busy.config.entries?.some((entry) => entry.text === "Rusk strike"));
+busy = run(busy, { add: "Day 3 | Oriel strike" });
+assert.ok(busy.config.entries?.some((entry) => entry.text === "Oriel strike"));
 assert.equal(busy.config.entries?.length, 10);
 
 // 10: thousands separators.

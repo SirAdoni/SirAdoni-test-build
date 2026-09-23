@@ -8355,6 +8355,7 @@
   "ui.game.gamesetupwizard.whatDoYouWantToAchieve": "What do you want to achieve?",
   "ui.game.gamesetupwizard.whatShouldThisWorldInclude": "What should this world include?",
   "ui.game.gamesetupwizard.writeInTheStyleOfTerryPratchett": "Write in the style of Terry Pratchett.",
+  "ui.game.gamestatepatcher.editBlockedWhileRefreshing": "Trackers are refreshing. Try that change again when they finish.",
   "ui.game.gamesurfacecomponent.added1Value1": "Added 1 {{value1}}.",
   "ui.game.gamesurfacecomponent.addedValue1ToInventory": "Added {{value1}} to inventory.",
   "ui.game.gamesurfacecomponent.areYouSureYouWantToEndThisSession": "Are you sure you want to end this session? You can start a new session afterwards, but this one will be marked as concluded.",

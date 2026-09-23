@@ -2246,8 +2246,8 @@ const regenerateCharacterSheetSchema = z.object({
 const removePartyMemberSchema = z.object({
   chatId: z.string().min(1),
   characterName: z.string().min(1).max(200),
-  /** The party member's id when the caller knows it: two members can share a name (a library "Mira" and an
-   * NPC "Mira"), and the name alone is then ambiguous. */
+  /** The party member's id when the caller knows it: two members can share a name (a library "Brannoc" and an
+   * NPC "Brannoc"), and the name alone is then ambiguous. */
   characterId: z.string().min(1).max(200).optional(),
 });
 
