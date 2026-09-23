@@ -94,7 +94,7 @@ try {
   assert.ok(html.includes("<p><em>smiles</em></p><p>Second paragraph<br>with a break.</p>"));
   assert.ok(html.includes(`<img class="avatar" src="${pixel}" alt="">`), "small data URI avatars embed");
   assert.ok(!html.includes("javascript:"), "non data-URI avatars fall back to an initial");
-  assert.ok(html.includes(">L</div>"));
+  assert.ok(html.includes(">T</div>"));
   assert.ok(html.includes("prefers-color-scheme:dark") && html.includes("@media print"));
   assert.ok(!/<script/iu.test(html), "the story page has no scripts");
   assert.ok(!html.includes("—"), "no em dashes in the template");
