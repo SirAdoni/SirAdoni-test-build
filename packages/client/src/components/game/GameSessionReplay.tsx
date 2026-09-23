@@ -439,6 +439,8 @@ export function GameSessionReplay({
   const messages = replayMessagesQuery.data ?? EMPTY_REPLAY_MESSAGES;
   const turns = useMemo(() => buildGameSessionReplayTurns(messages), [messages]);
   const [turnIndex, setTurnIndex] = useState(0);
+  // Bumped by Watch again, so a replay that restarts on the same turn still remounts and narrates it.
+  const [replayRun, setReplayRun] = useState(0);
   const [turnComplete, setTurnComplete] = useState(false);
   const [replayComplete, setReplayComplete] = useState(false);
   const [activeStoryboardSegmentIndex, setActiveStoryboardSegmentIndex] = useState<number | null>(null);
@@ -520,6 +522,7 @@ export function GameSessionReplay({
 
   const restart = useCallback(() => {
     presentedTurnIdRef.current = null;
+    setReplayRun((run) => run + 1);
     setTurnIndex(0);
     setTurnComplete(false);
     setReplayComplete(false);
@@ -577,7 +580,7 @@ export function GameSessionReplay({
     turnComplete && hasChoices && !replayComplete ? (
       <div className="pointer-events-auto mb-2 flex max-h-[clamp(8rem,30svh,14rem)] min-h-0 w-full shrink justify-center overflow-hidden sm:max-h-[clamp(9rem,36svh,20rem)] md:max-h-[min(52dvh,32rem)]">
         <GameChoiceCards
-          key={turn.message.id}
+          key={turn.message.id + ":" + replayRun}
           choices={choiceLabels}
           replayChoice={recordedChoiceLabel}
           disabled={!recordedChoiceLabel}
@@ -668,7 +671,7 @@ export function GameSessionReplay({
       </div>
 
       <GameNarration
-        key={turn.message.id}
+        key={turn.message.id + ":" + replayRun}
         messages={turnMessages}
         isStreaming={false}
         showTokenUsage={showTokenUsage}

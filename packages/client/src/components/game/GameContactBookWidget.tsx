@@ -114,7 +114,7 @@ function CategoryTree({
           >
             {category.name}
           </button>
-          <span className="invisible flex gap-0.5 pr-1 group-hover:visible">
+          <span className="invisible flex gap-0.5 pr-1 group-focus-within:visible group-hover:visible [@media(hover:none)]:visible">
             <button
               type="button"
               onClick={() => onRename(category)}
@@ -235,7 +235,10 @@ export function GameContactBookWidget({ chatId, campaignKey, refreshKey, open, o
     const name = newCategoryName.trim();
     if (!name) return;
     const id = contactCategoryId(name, new Set(categories.map((category) => category.id)));
-    persist([...categories, { id, name, parentId: newCategoryParent || undefined }], groups);
+    // The parent select falls back to "Top level" visually when its category is gone; match that here, or
+    // the new category gets a dangling parent and never shows in the tree.
+    const parentId = categories.some((item) => item.id === newCategoryParent) ? newCategoryParent : undefined;
+    persist([...categories, { id, name, parentId }], groups);
     setNewCategoryName("");
   };
   const renameCategory = (category: ContactCategory) => {
@@ -252,6 +255,7 @@ export function GameContactBookWidget({ chatId, campaignKey, refreshKey, open, o
     persist(result.categories, result.groups);
     const removed = result.removed;
     if (removed.has(selectedCategory)) setSelectedCategory("all");
+    if (removed.has(newCategoryParent)) setNewCategoryParent("");
   };
   if (contactsQuery.isPending)
     return (

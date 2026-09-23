@@ -413,6 +413,7 @@ function DayTimeIndicator({
       type="button"
       onClick={(event) => {
         event.stopPropagation();
+        skipCommitRef.current = false;
         setEditing(true);
       }}
       onPointerDown={(event) => event.stopPropagation()}
@@ -690,7 +691,7 @@ export function GameMapPanel({
             <button
               type="button"
               onClick={onGenerateMap}
-              disabled={disabled}
+              disabled={disabled || generateMapDisabled}
               className="flex items-center gap-1 rounded-md border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] px-2 py-1 text-[0.625rem] font-medium text-[var(--marinara-chat-chrome-button-text-hover)] transition-colors hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Wand2 size={10} />
@@ -725,6 +726,7 @@ export function GameMapPanel({
           tabIndex={0}
           onClick={() => setCollapsed(!collapsed)}
           onKeyDown={(e) => {
+            if (e.target !== e.currentTarget) return;
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
               setCollapsed(!collapsed);
@@ -1226,7 +1228,7 @@ export function MobileMapButton({
                         onGenerateMap();
                         setOpen(false);
                       }}
-                      disabled={disabled}
+                      disabled={disabled || generateMapDisabled}
                       className="flex items-center gap-1 rounded-md border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] px-3 py-1.5 text-xs font-medium text-[var(--marinara-chat-chrome-button-text-hover)] transition-colors hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <Wand2 size={12} />

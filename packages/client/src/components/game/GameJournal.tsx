@@ -186,6 +186,9 @@ export function GameJournal({
   const [activeTab, setActiveTab] = useState<TabId>("all");
   const [playerNotes, setPlayerNotes] = useState("");
   const [notesSaved, setNotesSaved] = useState(true);
+  const [notesSaveFailed, setNotesSaveFailed] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [removingNpcName, setRemovingNpcName] = useState<string | null>(null);
   const [editingEntry, setEditingEntry] = useState<{
     index: number;
@@ -200,21 +203,33 @@ export function GameJournal({
   const npcRemovalPendingRef = useRef(false);
 
   useEffect(() => {
+    let current = true;
+    setLoadFailed(false);
     api
       .get<{ journal: Journal; playerNotes?: string }>(`/game/${chatId}/journal`)
       .then((res) => {
+        if (!current) return;
         setJournal(res.journal);
-        if (res.playerNotes) setPlayerNotes(res.playerNotes);
+        setPlayerNotes(res.playerNotes ?? "");
       })
-      .catch(() => {});
-  }, [chatId]);
+      .catch(() => {
+        if (current) setLoadFailed(true);
+      });
+    return () => {
+      current = false;
+    };
+  }, [chatId, loadAttempt]);
 
   const saveNotes = useCallback(
     (text: string) => {
       api
         .put(`/game/${chatId}/notes`, { notes: text })
-        .then(() => setNotesSaved(true))
-        .catch(() => {});
+        .then(() => {
+          setNotesSaved(true);
+          setNotesSaveFailed(false);
+        })
+        // Shown in the notes header; the next change saves the whole text again.
+        .catch(() => setNotesSaveFailed(true));
     },
     [chatId],
   );
@@ -249,6 +264,8 @@ export function GameJournal({
       try {
         const updatedJournal = await onNpcRemove(npcId, npcName);
         if (updatedJournal) setJournal(updatedJournal);
+      } catch {
+        // The parent already showed the error toast.
       } finally {
         npcRemovalPendingRef.current = false;
         setRemovingNpcName(null);
@@ -349,7 +366,20 @@ export function GameJournal({
             : "absolute inset-0 z-40 flex items-center justify-center bg-black/70 backdrop-blur-sm"
         }
       >
-        <div className="text-sm text-[var(--muted-foreground)]">{localizeUi("ui.game.gamejournal.loadingJournal")}</div>
+        {loadFailed ? (
+          <div className="flex flex-col items-center gap-2 text-sm text-[var(--muted-foreground)]">
+            <p>{localizeUi("ui.game.gamejournal.loadFailed")}</p>
+            <button
+              type="button"
+              onClick={() => setLoadAttempt((attempt) => attempt + 1)}
+              className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--foreground)] hover:bg-[var(--accent)]"
+            >
+              {localizeUi("ui.game.contactBook.retry")}
+            </button>
+          </div>
+        ) : (
+          <div className="text-sm text-[var(--muted-foreground)]">{localizeUi("ui.game.gamejournal.loadingJournal")}</div>
+        )}
       </div>
     );
   }
@@ -450,7 +480,7 @@ export function GameJournal({
             allEntries={journal.entries}
           />
         )}
-        {activeTab === "notes" && <NotesView notes={playerNotes} onChange={handleNotesChange} saved={notesSaved} />}
+        {activeTab === "notes" && <NotesView notes={playerNotes} onChange={handleNotesChange} saved={notesSaved} failed={notesSaveFailed} />}
       </div>
 
       {editingEntry && (
@@ -477,6 +507,7 @@ export function GameJournal({
                 onChange={(event) =>
                   setEditingEntry((current) => (current ? { ...current, title: event.target.value } : current))
                 }
+                readOnly={journal?.entries[editingEntry.index]?.type === "npc"}
                 maxLength={500}
                 className="rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
               />
@@ -937,22 +968,40 @@ function LibraryView({
   );
 }
 
-function NotesView({ notes, onChange, saved }: { notes: string; onChange: (text: string) => void; saved: boolean }) {
+function NotesView({
+  notes,
+  onChange,
+  saved,
+  failed,
+}: {
+  notes: string;
+  onChange: (text: string) => void;
+  saved: boolean;
+  failed: boolean;
+}) {
   const { t: localizeUi } = useUiTranslation();
   return (
     <div className="flex h-full flex-col gap-2">
       <div className="flex items-center justify-between">
         <p className="text-[0.625rem] text-white/40">{localizeUi("ui.game.notesview.sentToGameMasterDisclosure")}</p>
         <span
-          className={cn("text-[0.5625rem] transition-opacity", saved ? "text-emerald-400/60" : "text-amber-400/60")}
+          className={cn(
+            "text-[0.5625rem] transition-opacity",
+            failed ? "text-red-400/80" : saved ? "text-emerald-400/60" : "text-amber-400/60",
+          )}
         >
-          {saved ? localizeUi("chat.settings.inlineEditor.saved") : localizeUi("ui.noodle.stageprofileform.saving")}
+          {failed
+            ? localizeUi("ui.game.gamejournal.notesSaveFailed")
+            : saved
+              ? localizeUi("chat.settings.inlineEditor.saved")
+              : localizeUi("ui.noodle.stageprofileform.saving")}
         </span>
       </div>
       <div className="grid min-h-0 flex-1 gap-2 md:grid-cols-2">
         <textarea
           value={notes}
           onChange={(e) => onChange(e.target.value)}
+          maxLength={10_000}
           placeholder={localizeUi("ui.game.notesview.writeYourNotesHereTrackCluesPlansNpcNames")}
           className="min-h-44 resize-none rounded-lg border border-white/10 bg-black/40 px-3 py-2.5 text-xs leading-relaxed text-white/80 outline-none placeholder:text-white/25 focus:border-white/20 md:min-h-0"
           spellCheck={false}

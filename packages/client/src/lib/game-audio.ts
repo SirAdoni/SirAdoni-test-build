@@ -350,6 +350,7 @@ class GameAudioManager {
         if (!(await this.resumeAudioContext(ctx))) {
           throw new Error("Audio context is not running");
         }
+        if (stopped) return;
 
         const nextSource = ctx.createBufferSource();
         const nextGain = ctx.createGain();
@@ -484,6 +485,7 @@ class GameAudioManager {
         if (!(await this.resumeAudioContext(ctx))) {
           throw new Error("Audio context is not running");
         }
+        if (stopped) return;
 
         const nextSource = ctx.createBufferSource();
         const nextGain = ctx.createGain();
@@ -693,7 +695,6 @@ class GameAudioManager {
         // Playback started — clear any pending retry
         this.pendingMusic = null;
         const steps = CROSSFADE_MS / 50;
-        const fadeStep = this.musicVolume / steps;
         let step = 0;
 
         const interval = setInterval(() => {
@@ -707,11 +708,11 @@ class GameAudioManager {
           step++;
           // Fade in new
           newAudio.setMuted(this.isMuted);
-          newAudio.setVolume(Math.min(this.musicVolume, fadeStep * step));
+          newAudio.setVolume(Math.min(this.musicVolume, (this.musicVolume / steps) * step));
           // Fade out old
           if (oldAudio) {
             oldAudio.setMuted(this.isMuted);
-            oldAudio.setVolume(Math.max(0, this.musicVolume - fadeStep * step));
+            oldAudio.setVolume(Math.max(0, this.musicVolume * (1 - step / steps)));
           }
 
           if (step >= steps) {

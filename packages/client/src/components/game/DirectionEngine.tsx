@@ -49,7 +49,7 @@ function CrossfadeBackground({ url, blurPx = 0 }: { url?: string; blurPx?: numbe
         <div
           className="absolute inset-0 bg-cover bg-center bg-no-repeat"
           style={{
-            backgroundImage: `url(${layers.back})`,
+            backgroundImage: `url(${JSON.stringify(layers.back)})`,
             opacity: layers.fading ? 0 : 1,
             transition: "opacity 700ms ease-in-out, filter 180ms ease-out, transform 180ms ease-out",
             ...backgroundBlurStyle,
@@ -61,7 +61,7 @@ function CrossfadeBackground({ url, blurPx = 0 }: { url?: string; blurPx?: numbe
         <div
           className="absolute inset-0 bg-cover bg-center bg-no-repeat"
           style={{
-            backgroundImage: `url(${layers.front})`,
+            backgroundImage: `url(${JSON.stringify(layers.front)})`,
             opacity: layers.fading ? 1 : 1,
             transition: "opacity 700ms ease-in-out, filter 180ms ease-out, transform 180ms ease-out",
             ...backgroundBlurStyle,

@@ -10353,7 +10353,7 @@ function GameSurfaceComponent({
       if (!cleanInstruction) return;
       if (!sessionInteractive || isStreaming) {
         toast.error(localizeUi("ui.game.gamesurfacecomponent.waitForTheCurrentGmResponseBeforeAttemptingA"));
-        return;
+        return false;
       }
 
       const formatCombatant = (combatant: Combatant) => {
@@ -10367,7 +10367,7 @@ function GameSurfaceComponent({
       const partySnapshot = combatParty?.map(formatCombatant).join("; ") || "unknown";
       const enemySnapshot = combatEnemies?.map(formatCombatant).join("; ") || "unknown";
 
-      sendMessage(
+      return sendMessage(
         [
           `I attempt a special combat maneuver: ${cleanInstruction}`,
           ``,
@@ -10588,7 +10588,8 @@ function GameSurfaceComponent({
   }, []);
 
   const handleGenerateMap = useCallback(() => {
-    if (isStreaming || !sessionInteractive) return;
+    // One map generation at a time: each is a model call, and a second one would replace the first map.
+    if (isStreaming || !sessionInteractive || generateMap.isPending) return;
     const locationType = gameSnapshot?.location?.trim() || "current location";
     const context = [
       `Location: ${gameSnapshot?.location ?? "Unknown"}`,
@@ -10599,11 +10600,21 @@ function GameSurfaceComponent({
       .filter(Boolean)
       .join("\n");
 
-    generateMap.mutate({
-      chatId: activeChatId,
-      locationType,
-      context: context || locationType,
-    });
+    generateMap.mutate(
+      {
+        chatId: activeChatId,
+        locationType,
+        context: context || locationType,
+      },
+      {
+        onError: (error) =>
+          toast.error(
+            localizeUi("ui.game.gamesurfacecomponent.mapGenerationFailed", {
+              message: error instanceof Error ? error.message : String(error),
+            }),
+          ),
+      },
+    );
     setViewedMapId(null);
   }, [
     activeChatId,
@@ -10613,6 +10624,7 @@ function GameSurfaceComponent({
     generateMap,
     isStreaming,
     latestNarrationText,
+    localizeUi,
     metaTime,
     sessionInteractive,
   ]);
@@ -12251,6 +12263,8 @@ function GameSurfaceComponent({
           <div className="flex min-h-0 flex-1 overflow-hidden">
             <Suspense fallback={null}>
               <GameJournal
+                // Remount per chat: the journal, notes and edit state belong to one chat.
+                key={activeChatId}
                 chatId={activeChatId}
                 npcs={npcs}
                 onClose={() => setSessionPanelOpen(false)}
@@ -13320,7 +13334,7 @@ function GameSurfaceComponent({
                           onMove={handleMapMove}
                           selectedPosition={viewedMapIsActive ? (pendingMapMove?.position ?? null) : null}
                           onGenerateMap={handleGenerateMap}
-                          generateMapDisabled={isStreaming || !sessionInteractive}
+                          generateMapDisabled={isStreaming || !sessionInteractive || generateMap.isPending}
                           disabled={isStreaming || !narrationDone || !sessionInteractive}
                           gameState={gameState}
                           timeOfDay={gameSnapshot?.time ?? metaTime ?? null}
@@ -13342,7 +13356,7 @@ function GameSurfaceComponent({
                           onMove={handleMapMove}
                           selectedPosition={viewedMapIsActive ? (pendingMapMove?.position ?? null) : null}
                           onGenerateMap={handleGenerateMap}
-                          generateMapDisabled={isStreaming || !sessionInteractive}
+                          generateMapDisabled={isStreaming || !sessionInteractive || generateMap.isPending}
                           disabled={isStreaming || !narrationDone || !sessionInteractive}
                           gameState={gameState}
                           timeOfDay={gameSnapshot?.time ?? metaTime ?? null}

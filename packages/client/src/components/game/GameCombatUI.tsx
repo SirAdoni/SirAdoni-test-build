@@ -474,7 +474,8 @@ interface GameCombatUIProps {
   /** Opens the full inventory panel for inspection/management. */
   onOpenInventory?: () => void;
   /** Lets the GM adjudicate a freeform combat maneuver. */
-  onCustomInstruction?: (instruction: string) => void;
+  /** Resolves false when the move was not sent (refused or failed), so the menu comes back. */
+  onCustomInstruction?: (instruction: string) => boolean | void | Promise<boolean | void>;
   /** GM narration to display alongside combat. */
   narration?: string;
   /** GM-produced battle dialogue lines shown in the combat UI. */
@@ -1324,9 +1325,7 @@ export function GameCombatUI({
   const selectedItemEffect = selectedItemName ? getCombatItemEffect(selectedItemName, combatItemEffects) : undefined;
   const selectingAllyTarget =
     (selectedAction === "skill" && combatSkillTargetsAllies(selectedSkill?.type)) ||
-    (selectedAction === "item" &&
-      combatItemTargetsAllies(selectedItemEffect) &&
-      !combatItemTargetsEnemies(selectedItemEffect));
+    (selectedAction === "item" && combatItemTargetsAllies(selectedItemEffect));
   const selectingEnemyTarget =
     selectedAction === "attack" ||
     (selectedAction === "skill" && combatSkillTargetsEnemies(selectedSkill?.type)) ||
@@ -1415,6 +1414,24 @@ export function GameCombatUI({
   }, [phase, playSfx, directed]);
 
   // ── Spawn damage popup ──
+  // Round animation and damage-popup timers, cleared on unmount so leaving combat mid-round does not keep
+  // playing sounds or push combatants back into the game after it closed.
+  const animationTimersRef = useRef(new Set<ReturnType<typeof setTimeout>>());
+  const scheduleAnimation = useCallback((fn: () => void, ms: number) => {
+    const id = setTimeout(() => {
+      animationTimersRef.current.delete(id);
+      fn();
+    }, ms);
+    animationTimersRef.current.add(id);
+  }, []);
+  useEffect(() => {
+    const timers = animationTimersRef.current;
+    return () => {
+      for (const id of timers) clearTimeout(id);
+      timers.clear();
+    };
+  }, []);
+
   const spawnDamage = useCallback(
     (
       targetId: string,
@@ -1427,11 +1444,11 @@ export function GameCombatUI({
       const id = `dmg-${++popupCounter.current}`;
       const popup: DamagePopup = { id, targetId, amount, isCritical, isMiss, reactionLabel, isHeal };
       setDamagePopups((prev) => [...prev, popup]);
-      setTimeout(() => {
+      scheduleAnimation(() => {
         setDamagePopups((prev) => prev.filter((p) => p.id !== id));
       }, DAMAGE_DISPLAY_MS);
     },
-    [],
+    [scheduleAnimation],
   );
 
   // ── Update a combatant's HP during animation ──
@@ -1573,12 +1590,12 @@ export function GameCombatUI({
         if (!action.isMiss) updateCombatantHp(action.defenderId, action.remainingHp);
 
         actionIdx++;
-        setTimeout(playNextAction, action.reaction ? COMBAT_REACTION_DELAY_MS : COMBAT_ACTION_DELAY_MS);
+        scheduleAnimation(playNextAction, action.reaction ? COMBAT_REACTION_DELAY_MS : COMBAT_ACTION_DELAY_MS);
       };
 
-      setTimeout(playNextAction, COMBAT_ACTION_START_DELAY_MS);
+      scheduleAnimation(playNextAction, COMBAT_ACTION_START_DELAY_MS);
     },
-    [allCombatants, appendCombatLog, playSfx, spawnDamage, applyRoundEnd, updateCombatantHp],
+    [allCombatants, appendCombatLog, playSfx, spawnDamage, applyRoundEnd, updateCombatantHp, scheduleAnimation],
   );
 
   // ── Resolve a combat round on the server ──
@@ -1589,7 +1606,14 @@ export function GameCombatUI({
         return;
       }
       if (!activePlayer) return;
-      const orders = { ...queuedOrders, [activePlayer.id]: playerAction };
+      const sanitizeOrder = (order: CombatPlayerAction): CombatPlayerAction =>
+        order.type === "item" ? { ...order, itemEffect: sanitizeCombatItemEffect(order.itemEffect) } : order;
+      const orders = Object.fromEntries(
+        Object.entries({ ...queuedOrders, [activePlayer.id]: playerAction }).map(([id, order]) => [
+          id,
+          sanitizeOrder(order),
+        ]),
+      );
       const nextManual = party.findIndex(
         (member, index) =>
           member.hp > 0 &&
@@ -1614,10 +1638,7 @@ export function GameCombatUI({
           round,
           partyActions: orders,
           controlledId: activePlayer.id,
-          playerAction:
-            playerAction.type === "item"
-              ? { ...playerAction, itemEffect: sanitizeCombatItemEffect(playerAction.itemEffect) }
-              : playerAction,
+          playerAction: sanitizeOrder(playerAction),
           mechanics: sanitizeCombatMechanics(combatMechanics),
         },
         {
@@ -1687,6 +1708,10 @@ export function GameCombatUI({
       : ACTION_MENU.filter((a) => a.id === "attack" || a.id === "skill" || a.id === "defend")
   ).filter((a) => !directed || a.id !== "custom");
 
+  useEffect(() => {
+    setActionMenuIndex(0);
+  }, [activePlayerIndex]);
+
   // ── Handle action selection ──
   const handleActionSelect = useCallback(
     (actionId: string) => {
@@ -1749,7 +1774,18 @@ export function GameCombatUI({
     setCustomInstructionPending(true);
     setCustomInstructionSawStreaming(false);
     setPhase("resolving");
-    onCustomInstruction(instruction);
+    const backToMenu = () => {
+      setCustomInstructionPending(false);
+      setCustomInstructionSawStreaming(false);
+      setSelectedAction(null);
+      setPhase("player-turn");
+    };
+    void Promise.resolve(onCustomInstruction(instruction)).then(
+      (sent) => {
+        if (sent === false) backToMenu();
+      },
+      backToMenu,
+    );
   }, [customInstruction, onCustomInstruction, playSfx]);
 
   useEffect(() => {
@@ -1835,6 +1871,13 @@ export function GameCombatUI({
 
     const handleKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLElement && e.target.closest("input, select, textarea, summary")) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (
+        (e.key === "Enter" || e.key === " ") &&
+        e.target instanceof HTMLElement &&
+        e.target.closest("button, a, [role=button], [role=dialog]")
+      )
+        return;
       if (e.key === "ArrowUp" || e.key === "w") {
         e.preventDefault();
         setActionMenuIndex((i) => (i - 1 + actionMenu.length) % actionMenu.length);

@@ -346,11 +346,15 @@ export function GameCharacterSheet({
   }, [onClose]);
   const [draft, setDraft] = useState<GameCardDraft>(() => createDraft(card.gameCard));
 
+  // Reset only when the sheet shows a different character. The card object is rebuilt on every game-state
+  // update (a turn, an agent, a pool +/- on the ruleset half), and resetting on those closed the editor and
+  // threw away what the player was typing. Entering edit mode reseeds the draft from the live card anyway.
   useEffect(() => {
     setIsEditing(false);
     setIsSaving(false);
     setDraft(createDraft(card.gameCard));
-  }, [card]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [card.title]);
 
   const previewGameCard = isEditing ? normalizeDraft(draft) : normalizeDraft(createDraft(card.gameCard));
   const libraryRpgStats = !card.gameCard && !isEditing ? card.libraryProfile?.rpgStats : undefined;
