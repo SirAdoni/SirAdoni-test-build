@@ -27,7 +27,7 @@ const projection = {
     { id: "dining", path: "Estate > Dining Room" },
   ],
 } as ResolvedOwnerSpatialProjection;
-const narration = "After coffee, you reach the training yard behind the gatehouse. Brynna is beside the shield rack.";
+const narration = "After coffee, you reach the training yard behind the gatehouse. Hilde is beside the shield rack.";
 const description =
   "The training yard lies behind the gatehouse. An open chalked circle is marked between four copper ward-posts. A practice-weapon rack stands beside the spectators' rail.";
 const discovery = { action: "discover", name: "Training Yard", parentId: "estate", description, evidence: narration };
@@ -300,7 +300,7 @@ const anotherVault = identifyGeneratedGameMap(
 assert.notEqual(anotherVault.id, "other", "Same-name maps bound to different places must not be overwritten");
 process.stdout.write("Narrated location reconciliation and map identity regressions passed.\n");
 
-const history = [{ role: "assistant", content: "The Coldstream home lies in Greymarch, with a green door." }];
+const history = [{ role: "assistant", content: "The Birchfield home lies in Kelderwick, with a green door." }];
 const arrival = "You enter the broad room with a long table and stone hearth.";
 const pathDecision = {
   action: "discover_path",
@@ -308,16 +308,16 @@ const pathDecision = {
   evidence: arrival,
   locations: [
     {
-      name: "Greymarch",
+      name: "Kelderwick",
       kind: "region",
-      description: "The nation containing the Coldstream home.",
-      evidence: "Greymarch",
+      description: "The nation containing the Birchfield home.",
+      evidence: "Kelderwick",
     },
     {
-      name: "Coldstream Home",
+      name: "Birchfield Home",
       kind: "building",
       description: "A home with a green door.",
-      evidence: "Coldstream home",
+      evidence: "Birchfield home",
     },
     {
       name: "Main Room",
@@ -332,7 +332,7 @@ const parsePath = (decision: unknown, supported = true) =>
 assert.equal(parsePath(pathDecision)?.type, "discover_path");
 assert.throws(() => parsePath(pathDecision, false), /must be updated/);
 assert.throws(() => parsePath({ ...pathDecision, parentId: "invented" }), /unknown parent/);
-assert.throws(() => parsePath({ ...pathDecision, evidence: "Greymarch" }), /absent from this turn/);
+assert.throws(() => parsePath({ ...pathDecision, evidence: "Kelderwick" }), /absent from this turn/);
 assert.throws(
   () =>
     parsePath({ ...pathDecision, locations: [{ ...pathDecision.locations[0], evidence: "A castle never mentioned" }] }),
@@ -344,18 +344,18 @@ const teleportProjection = {
   currentLocationId: "mentor-root",
   knownLocations: [
     ...projection.knownLocations!,
-    { id: "mentor-root", path: "Elowen" },
-    { id: "marovska-apartment", path: "Marovska > Guest Apartment" },
+    { id: "mentor-root", path: "Maelis" },
+    { id: "ostrevna-apartment", path: "Ostrevna > Guest Apartment" },
   ],
 } as ResolvedOwnerSpatialProjection;
 const teleportDecision = {
   action: "teleport",
-  destinationId: "marovska-apartment",
-  evidence: "You arrive in the Marovska guest apartment.",
-  authorizationEvidence: "I teleport from Elowen to the Marovska guest apartment now.",
+  destinationId: "ostrevna-apartment",
+  evidence: "You arrive in the Ostrevna guest apartment.",
+  authorizationEvidence: "I teleport from Maelis to the Ostrevna guest apartment now.",
 };
-const teleportNarration = "A flash of blue light fades. You arrive in the Marovska guest apartment.";
-const teleportUser = "I teleport from Elowen to the Marovska guest apartment now.";
+const teleportNarration = "A flash of blue light fades. You arrive in the Ostrevna guest apartment.";
+const teleportUser = "I teleport from Maelis to the Ostrevna guest apartment now.";
 assert.deepEqual(
   parseNarratedLocationDecision(
     JSON.stringify(teleportDecision),
@@ -368,7 +368,7 @@ assert.deepEqual(
   ),
   {
     type: "teleport",
-    destinationId: "marovska-apartment",
+    destinationId: "ostrevna-apartment",
     evidence: teleportDecision.evidence,
     authorizationEvidence: teleportDecision.authorizationEvidence,
   },
@@ -386,7 +386,7 @@ assert.throws(
 assert.throws(
   () =>
     parseNarratedLocationDecision(
-      JSON.stringify({ ...teleportDecision, evidence: "You will arrive in the Marovska guest apartment." }),
+      JSON.stringify({ ...teleportDecision, evidence: "You will arrive in the Ostrevna guest apartment." }),
       teleportProjection,
       teleportUser,
       teleportNarration,
@@ -415,7 +415,7 @@ assert.throws(
       JSON.stringify(teleportDecision),
       teleportProjection,
       "The portal is ready.",
-      "You stand at the Elowen root and discuss the Marovska guest apartment.",
+      "You stand at the Maelis root and discuss the Ostrevna guest apartment.",
       [{ role: "user", content: teleportUser }],
       false,
       true,

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-// Bug hunt: the one-word fold ("Liveth" -> "Liveth Corren") also runs when both entities were tracked side by side
+// Bug hunt: the one-word fold ("Quilla" -> "Quilla Tallis") also runs when both entities were tracked side by side
 // in the SAME session chat, where they are demonstrably two people (the tracker kept them apart). Because every
 // wiki read goes through the projection, even a single-session game merges them: one page, the other's facts
 // attributed to it, and the relationship between them dropped as a self-loop.

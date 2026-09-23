@@ -30,8 +30,8 @@ process.env.FILE_STORAGE_DIR = join(root, "storage");
 const startedAt = performance.now();
 
 type Row = Record<string, unknown>;
-const FIRST = ["Kasimira", "Mirah", "Ilyrien", "Audrey", "Selenos", "Thessaly", "Brannoch", "Vesna", "Orsolya", "Dagny"];
-const LAST = ["Morvant", "hai-Tal", "Vasseth", "Draval", "Quillon", "Ashgrove", "Ferrand", "Kestrel", "Nyx", "Olander"];
+const FIRST = ["Jadwiga", "Zerah", "Faelan", "Beatrix", "Doravel", "Thessaly", "Brannoch", "Milena", "Orsolya", "Signe"];
+const LAST = ["Rookwood", "al-Oren", "Drummond", "Draval", "Quillon", "Ashgrove", "Ferrand", "Kestrel", "Nyx", "Olander"];
 const KINDS = ["character", "character", "character", "persona", "location", "lore", "organization", "item"] as const;
 const PREDICATES = ["holds", "owes", "seeks", "fears", "guards", "wields", "serves", "knows-of"];
 

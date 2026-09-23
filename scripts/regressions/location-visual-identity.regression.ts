@@ -26,12 +26,12 @@ try {
     await import("../../packages/server/src/routes/game.routes.js");
   assert.deepEqual(
     reconcileStoryboardCharactersForFrame({
-      value: ["Mirah"],
-      allowedCharacterNames: ["Mirah", "Vigil"],
-      sourceNarration: "Mirah reads Vigil's letter.",
-      frameText: "Mirah discusses Vigil's expected arrival.",
+      value: ["Zerah"],
+      allowedCharacterNames: ["Zerah", "Quenby"],
+      sourceNarration: "Zerah reads Quenby's letter.",
+      frameText: "Zerah discusses Quenby's expected arrival.",
     }).characters,
-    ["Mirah"],
+    ["Zerah"],
     "mentioning an absent character must not attach their portrait",
   );
   const ensemble = Array.from({ length: 16 }, (_, i) => `Scene person ${i + 1}`);
@@ -61,11 +61,11 @@ try {
     2,
   );
   const castPrompt = appendStoryboardCharacterScopeToPrompt(
-    "Mirah speaks to two unnamed market managers.",
-    ["Mirah"],
-    ["Vigil"],
+    "Zerah speaks to two unnamed market managers.",
+    ["Zerah"],
+    ["Quenby"],
   );
-  assert.match(castPrompt, /Only depict these named visible characters: Mirah/);
+  assert.match(castPrompt, /Only depict these named visible characters: Zerah/);
   assert.match(castPrompt, /does not exclude unnamed participants explicitly described/);
   assert.doesNotMatch(castPrompt, /off-screen for this keyframe/);
   assert.match(castPrompt, /does not establish their absence/);
@@ -152,9 +152,9 @@ try {
   const compiled = await buildSceneIllustrationProviderPrompt({
     chatId: chat.id,
     slug: "proof",
-    prompt: "Mirah writes a letter.",
-    characters: ["Mirah"],
-    characterDescriptions: ["Mirah: dark braided hair"],
+    prompt: "Zerah writes a letter.",
+    characters: ["Zerah"],
+    characterDescriptions: ["Zerah: dark braided hair"],
     imgModel: "fixture",
     imgBaseUrl: "",
     imgApiKey: "",

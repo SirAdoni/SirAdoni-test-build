@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { performance } from "node:perf_hooks";
 
-// Bug hunt: the one-word NPC fold (campaign-memory-campaign-scope.ts, "Liveth" -> "Liveth Corren") scans every
+// Bug hunt: the one-word NPC fold (campaign-memory-campaign-scope.ts, "Quilla" -> "Quilla Tallis") scans every
 // group for every single-word group and recomputes namesOf(other) (flatMap + NFKD nameKey + Set) inside the scan,
 // so it is O(groups^2 * sessions * aliases). The projection is rebuilt whenever any chat row or memory table is
 // written (every GM turn), so a long campaign pays this on every turn and on the next wiki read.

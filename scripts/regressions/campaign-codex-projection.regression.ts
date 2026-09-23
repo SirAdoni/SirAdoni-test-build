@@ -55,8 +55,8 @@ try {
     updatedAt: at(1),
   });
   await db.insert(schema.campaignMemoryEntities).values([
-    entity("p1-vigil", "p1", "characters", "card-vigil", "Vigil"),
-    entity("p2-vigil-npc", "p2", "game-npcs", "npc:vigil", "Vigil"),
+    entity("p1-quenby", "p1", "characters", "card-quenby", "Quenby"),
+    entity("p2-quenby-npc", "p2", "game-npcs", "npc:quenby", "Quenby"),
     entity("p1-mira", "p1", "characters", "card-mira", "Mira"),
     entity("p2-mira", "p2", "characters", "card-mira", "Mira"),
   ]);
@@ -79,7 +79,7 @@ try {
     updatedAt: at(day),
   });
   await db.insert(schema.campaignMemoryFacts).values([
-    fact("f-vigil", "p2", "p2-vigil-npc", "Vigil repaired the bridge.", 2),
+    fact("f-quenby", "p2", "p2-quenby-npc", "Quenby repaired the bridge.", 2),
     fact("f-dagger-1", "p1", "p1-mira", "Mira keeps a dagger in her boot.", 1),
     fact("f-dagger-2", "p2", "p2-mira", "Mira keeps a dagger in her boot.", 2),
   ]);
@@ -125,12 +125,12 @@ try {
       codex.sessions.map((session) => session.number),
       [1, 2],
     );
-    const vigil = codex.entities.filter((item) => item.name === "Vigil");
-    assert.equal(vigil.length, 1, `the tracked NPC folds into the library card (export from ${from})`);
-    assert.deepEqual(vigil[0]!.sessions, [1, 2]);
+    const quenby = codex.entities.filter((item) => item.name === "Quenby");
+    assert.equal(quenby.length, 1, `the tracked NPC folds into the library card (export from ${from})`);
+    assert.deepEqual(quenby[0]!.sessions, [1, 2]);
     assert.deepEqual(
-      vigil[0]!.facts.map((item) => item.value),
-      ["Text: Vigil repaired the bridge."],
+      quenby[0]!.facts.map((item) => item.value),
+      ["Text: Quenby repaired the bridge."],
     );
     const mira = codex.entities.find((item) => item.name === "Mira")!;
     assert.equal(mira.facts.length, 1, "a fact re-read in a later session appears once");

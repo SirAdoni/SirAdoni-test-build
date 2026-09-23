@@ -14,21 +14,21 @@ try {
   const { createCharactersStorage } = await import("../../packages/server/dist/services/storage/characters.storage.js");
   app = await buildApp();
   const storage = createCharactersStorage(await getDB());
-  const original = await storage.create({ name: "Brynna Coldstream", description: "Original", personality: "" });
+  const original = await storage.create({ name: "Hilde Birchfield", description: "Original", personality: "" });
   assert.ok(original);
-  await storage.update(original.id, { name: "Brynna Snow" });
+  await storage.update(original.id, { name: "Hilde Snow" });
   let row = await storage.getById(original.id);
   assert.equal(row.id, original.id);
   let card = JSON.parse(row.data);
-  assert.equal(card.name, "Brynna Snow");
-  assert.deepEqual(card.extensions.referenceNames, ["Brynna Coldstream"]);
+  assert.equal(card.name, "Hilde Snow");
+  assert.deepEqual(card.extensions.referenceNames, ["Hilde Birchfield"]);
   await storage.update(original.id, { description: "Edited", extensions: {} });
   row = await storage.getById(original.id);
   card = JSON.parse(row.data);
-  assert.deepEqual(card.extensions.referenceNames, ["Brynna Coldstream"], "Full-card save preserves rename aliases");
-  await storage.update(original.id, { name: "Brynna Winter" });
+  assert.deepEqual(card.extensions.referenceNames, ["Hilde Birchfield"], "Full-card save preserves rename aliases");
+  await storage.update(original.id, { name: "Hilde Winter" });
   row = await storage.getById(original.id);
-  assert.deepEqual(JSON.parse(row.data).extensions.referenceNames, ["Brynna Coldstream", "Brynna Snow"]);
+  assert.deepEqual(JSON.parse(row.data).extensions.referenceNames, ["Hilde Birchfield", "Hilde Snow"]);
   process.stdout.write("Isolated real storage: stable ID, repeated renames and full-card alias preservation passed.\n");
 } finally {
   await app?.close();

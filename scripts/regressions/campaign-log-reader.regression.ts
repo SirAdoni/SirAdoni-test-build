@@ -44,7 +44,7 @@ try {
             id: "m2",
             number: 3,
             role: "assistant" as const,
-            content: "The gate creaks.\nIt is late.\nVigil: Who goes there?\nSecret line.\n[Note: Keep out]",
+            content: "The gate creaks.\nIt is late.\nQuenby: Who goes there?\nSecret line.\n[Note: Keep out]",
             createdAt: "b",
           },
         ],
@@ -57,7 +57,7 @@ try {
         segmentEdits: {},
         segmentDeletes: [],
         messages: [
-          { id: "m3", number: 1, role: "assistant" as const, content: "Vigil: The gate again. [dice: 1d20+2 = 15]", createdAt: "c" },
+          { id: "m3", number: 1, role: "assistant" as const, content: "Quenby: The gate again. [dice: 1d20+2 = 15]", createdAt: "c" },
           { id: "m4", number: 4, role: "user" as const, content: "**Run** to the gate", createdAt: "d" },
         ],
       },

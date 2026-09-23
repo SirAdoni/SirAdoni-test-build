@@ -189,17 +189,17 @@ assert.deepEqual(limitGameGmSessionSummaries(summaries, undefined), summaries);
 
 const focusedIds = selectFocusedGamePartyIds({
   party: [
-    { id: "char-ari", name: "Maybelle Meadowsweet" },
+    { id: "char-ari", name: "Corvina Fernhollow" },
     { id: "char-bex", name: "Bex" },
     { id: "npc-lyra", name: "Lyra" },
-    { id: "char-princess", name: "Princess Ysolde" },
+    { id: "char-princess", name: "Princess Isaura" },
     { id: "char-countess", name: "Countess Vey" },
   ],
   presentCharacters: [{ characterId: "npc-lyra", name: "Lyra" }],
   mappedMessages: [
-    { role: "assistant", content: "An older turn mentioning Maybelle." },
+    { role: "assistant", content: "An older turn mentioning Corvina." },
     ...Array.from({ length: 8 }, () => ({ role: "assistant", content: "A quiet beat." })),
-    { role: "user", content: "Maybelle checks the map while Bex watches. The banner is torn; a princess passes." },
+    { role: "user", content: "Corvina checks the map while Bex watches. The banner is torn; a princess passes." },
   ],
 });
 assert.deepEqual(
@@ -221,7 +221,7 @@ assert.deepEqual(
 
 const runtimeMetadata: Record<string, unknown> = {
   gamePromptFocusedCharacterReferences: true,
-  gamePartyCharacterIds: ["char-maybelle", "char-anna"],
+  gamePartyCharacterIds: ["char-corvina", "char-anna"],
   gameSetupConfig: { genre: "fantasy", setting: "original", tone: "balanced" },
 };
 const runtimeMessages: any[] = [];
@@ -233,8 +233,8 @@ const runtimeResult = await injectGameGmPromptRuntime({
   characterIds: [],
   chars: {
     getById: async (id: string) =>
-      id === "char-maybelle"
-        ? { data: { name: "Maybelle Meadowsweet", description: "The relevant party member" } }
+      id === "char-corvina"
+        ? { data: { name: "Corvina Fernhollow", description: "The relevant party member" } }
         : id === "char-anna"
           ? { data: { name: "Anna", description: "The quiet party member" } }
           : null,
@@ -244,14 +244,14 @@ const runtimeResult = await injectGameGmPromptRuntime({
   selectedGameStateSnapshotPromise: Promise.resolve({ presentCharacters: JSON.stringify([]) }),
   mappedMessages: [
     { role: "system", contextKind: "injection", content: "Anna appears in an unrelated runtime block." },
-    { role: "user", content: "Maybelle steps forward; the banner falls." },
+    { role: "user", content: "Corvina steps forward; the banner falls." },
   ],
   personaName: "Rowan",
   resolvePromptMacros: (value: string) => value,
   resolveCharacterPromptMacros: (value: string) => value,
 });
-assert.deepEqual(runtimeResult.gmCtx.partyNames, ["Maybelle Meadowsweet", "Anna"]);
+assert.deepEqual(runtimeResult.gmCtx.partyNames, ["Corvina Fernhollow", "Anna"]);
 assert.deepEqual(
   runtimeResult.gmCtx.partyCards?.map((card) => card.name),
-  ["Maybelle Meadowsweet"],
+  ["Corvina Fernhollow"],
 );

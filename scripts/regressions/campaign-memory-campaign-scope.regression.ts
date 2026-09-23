@@ -58,13 +58,13 @@ try {
     entity("s1-mira", "s1", "characters", "card-mira", "Mira"),
     entity("s2-mira", "s2", "characters", "card-mira", "Mira"),
     entity("s3-mira", "s3", "characters", "card-mira", "Mira"),
-    entity("s1-vigil", "s1", "characters", "card-vigil", "Vigil"),
-    entity("s2-vigil-npc", "s2", "game-npcs", "npc:vigil", "Vigil"),
-    // The NPC tracker registered a card character a second time in the same session (Countess Lisaveta, S7 to S9).
-    entity("s1-lisa-card", "s1", "characters", "card-lisa", "Countess Lisaveta"),
-    entity("s1-lisa-npc", "s1", "game-npcs", "npc:lisa", "Countess Lisaveta"),
-    entity("s1-liveth", "s1", "game-npcs", "npc:liveth", "Liveth"),
-    entity("s2-liveth-corren", "s2", "game-npcs", "npc:liveth-corren", "Liveth Corren"),
+    entity("s1-quenby", "s1", "characters", "card-quenby", "Quenby"),
+    entity("s2-quenby-npc", "s2", "game-npcs", "npc:quenby", "Quenby"),
+    // The NPC tracker registered a card character a second time in the same session (Countess Maritza, S7 to S9).
+    entity("s1-maritza-card", "s1", "characters", "card-maritza", "Countess Maritza"),
+    entity("s1-maritza-npc", "s1", "game-npcs", "npc:maritza", "Countess Maritza"),
+    entity("s1-quilla", "s1", "game-npcs", "npc:quilla", "Quilla"),
+    entity("s2-quilla-tallis", "s2", "game-npcs", "npc:quilla-tallis", "Quilla Tallis"),
     { ...entity("s1-tavern", "s1", "campaign-memory", "s1-tavern", "The Tavern"), kind: "location",
       owner: JSON.stringify({ type: "registry", store: "campaign-memory", recordId: "s1-tavern" }) },
   ]);
@@ -90,16 +90,16 @@ try {
     fact("f-s1", "s1", "s1-mira", "Mira swore to guard the vault.", 1),
     fact("f-dup-s1", "s1", "s1-mira", "Mira keeps a dagger in her boot.", 1),
     fact("f-dup-s2", "s2", "s2-mira", "Mira keeps a dagger in her boot.", 2),
-    fact("f-vigil-s2", "s2", "s2-vigil-npc", "Vigil repaired the bridge.", 2),
+    fact("f-quenby-s2", "s2", "s2-quenby-npc", "Quenby repaired the bridge.", 2),
     fact("f-s3", "s3", "s3-mira", "Mira left the city.", 3),
     // The player retracted and locked an invented past in S1; S2 read the same line again.
     { ...fact("f-child-s1", "s1", "s1-mira", "Mira has a daughter.", 1), status: "retracted", manualLock: 1 },
     fact("f-child-s2", "s2", "s2-mira", "Mira has a daughter.", 2),
     // Pinned canon: a locked fact whose value carries pinned: true.
     {
-      ...fact("f-pin", "s1", "s1-vigil", "Vigil is sworn to the Crown.", 1),
+      ...fact("f-pin", "s1", "s1-quenby", "Quenby is sworn to the Crown.", 1),
       manualLock: 1,
-      value: JSON.stringify({ text: "Vigil is sworn to the Crown.", pinned: true }),
+      value: JSON.stringify({ text: "Quenby is sworn to the Crown.", pinned: true }),
     },
   ]);
   const event = (eventId: string, chatId: string, participant: string, day: number) => ({
@@ -124,21 +124,21 @@ try {
   assert.equal(mira.length, 1, "the same person across sessions is one entity");
   assert.equal(mira[0].entityId, "s2-mira", "the current session's entity id represents the person");
   assert.deepEqual(mira[0].sessionNumbers, [1, 2]);
-  const vigil = projection.entities.filter((item: any) => item.aliases[0] === "Vigil");
-  assert.equal(vigil.length, 1, "a tracked NPC folds into the library card of the same name");
-  assert.equal(vigil[0].owner.store, "characters", "the library card is the canonical owner");
-  const lisa = projection.entities.filter((item: any) => item.aliases.includes("Countess Lisaveta"));
-  assert.equal(lisa.length, 1, "a tracked NPC with a card's exact name in the same session is the same person");
-  assert.equal(lisa[0].owner.store, "characters");
-  const liveth = projection.entities.filter((item: any) => item.aliases.some((alias: string) => alias.startsWith("Liveth")));
-  assert.equal(liveth.length, 1, "a one-word NPC name folds into the unique full name that starts with it");
-  assert.deepEqual(liveth[0].sessionNumbers, [1, 2]);
+  const quenby = projection.entities.filter((item: any) => item.aliases[0] === "Quenby");
+  assert.equal(quenby.length, 1, "a tracked NPC folds into the library card of the same name");
+  assert.equal(quenby[0].owner.store, "characters", "the library card is the canonical owner");
+  const maritza = projection.entities.filter((item: any) => item.aliases.includes("Countess Maritza"));
+  assert.equal(maritza.length, 1, "a tracked NPC with a card's exact name in the same session is the same person");
+  assert.equal(maritza[0].owner.store, "characters");
+  const quilla = projection.entities.filter((item: any) => item.aliases.some((alias: string) => alias.startsWith("Quilla")));
+  assert.equal(quilla.length, 1, "a one-word NPC name folds into the unique full name that starts with it");
+  assert.deepEqual(quilla[0].sessionNumbers, [1, 2]);
   const s1Fact = projection.facts.find((item: any) => item.factId === "f-s1");
   assert.equal(s1Fact.subjectEntityId, "s2-mira", "earlier facts attach to the merged entity");
   assert.equal(s1Fact.chatId, "s2", "projected records read as the current chat");
   assert.equal(s1Fact.originChatId, "s1", "edits go to the chat that owns the record");
   assert.equal(s1Fact.originSessionNumber, 1);
-  assert.equal(projection.facts.find((item: any) => item.factId === "f-vigil-s2").subjectEntityId, vigil[0].entityId);
+  assert.equal(projection.facts.find((item: any) => item.factId === "f-quenby-s2").subjectEntityId, quenby[0].entityId);
   assert.equal(
     projection.facts.filter((item: any) => JSON.stringify(item.value).includes("dagger")).length,
     1,
@@ -159,7 +159,7 @@ try {
   assert.doesNotMatch(context.text, /s1-mira|s2-mira|s1-tavern/u, "the GM reads names, never raw entity ids");
   assert.doesNotMatch(context.text, /daughter/u, "a statement the user retracted and locked is hidden in every session");
   const factLines = context.text.split("\n").filter((line: string) => line.startsWith("[fact "));
-  assert.match(factLines[0] ?? "", /^\[fact f-pin S1 canon\] Vigil, decision: Vigil is sworn to the Crown\./u, "pinned canon comes first");
+  assert.match(factLines[0] ?? "", /^\[fact f-pin S1 canon\] Quenby, decision: Quenby is sworn to the Crown\./u, "pinned canon comes first");
 
   // Opt-out: a chat can read only its own memory.
   await db.update(schema.chats).set({ metadata: JSON.stringify({ gameId: game, gameSessionNumber: 2, gameCampaignMemoryScope: "session" }) })

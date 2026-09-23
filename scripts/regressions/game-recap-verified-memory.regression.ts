@@ -7,16 +7,16 @@ const { buildRecapPrompt } = await import("../../packages/server/src/services/ga
 
 const summary = {
   sessionNumber: 4,
-  summary: "Mira handed the silver key to Vigil at the bridge.",
+  summary: "Mira handed the silver key to Quenby at the bridge.",
   resumePoint: "At the bridge at dusk.",
   partyDynamics: "Wary",
   partyState: "Tired",
   keyDiscoveries: ["The vault is flooded"],
 } as any;
 
-const withMemory = buildRecapPrompt([summary], null, "sfw", "[fact f1 S3] Vigil, holds: the silver key");
+const withMemory = buildRecapPrompt([summary], null, "sfw", "[fact f1 S3] Quenby, holds: the silver key");
 assert.match(withMemory, /Verified campaign memory/u);
-assert.match(withMemory, /\[fact f1 S3\] Vigil, holds: the silver key/u);
+assert.match(withMemory, /\[fact f1 S3\] Quenby, holds: the silver key/u);
 assert.ok(
   withMemory.indexOf("Verified campaign memory") < withMemory.indexOf("Use enough compact paragraphs"),
   "the memory sits before the closing instructions",

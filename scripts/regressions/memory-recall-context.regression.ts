@@ -28,7 +28,7 @@ const finalMessages = [
   },
   {
     role: "user" as const,
-    content: "Please ask Maybelle to bring you to Honoria.",
+    content: "Please ask Corvina to bring you to Wynne.",
     id: "latest",
     contextKind: "history" as const,
   },
@@ -55,13 +55,13 @@ assert.equal(
 
 const gameQuery = buildMemoryRecallQuery(
   [
-    { role: "assistant", content: "Maybelle waits beside the old grove gate." },
-    { role: "user", content: "Please ask Maybelle to bring you to Honoria." },
+    { role: "assistant", content: "Corvina waits beside the old grove gate." },
+    { role: "user", content: "Please ask Corvina to bring you to Wynne." },
   ],
   true,
 );
 assert.match(gameQuery ?? "", /Recent assistant scene context:/u);
-assert.match(gameQuery ?? "", /Current user input:\nPlease ask Maybelle to bring you to Honoria\./u);
+assert.match(gameQuery ?? "", /Current user input:\nPlease ask Corvina to bring you to Wynne\./u);
 assert.ok(
   (gameQuery ?? "").indexOf("Current user input:") < (gameQuery ?? "").indexOf("Recent assistant scene context:"),
 );
@@ -86,7 +86,7 @@ const nonGameQuery = buildMemoryRecallQuery(
 );
 assert.equal(nonGameQuery, "Current request.", "non-game recall keeps the legacy user-only query");
 
-const gameBlock = buildMemoryRecallBlock(["Honoria was met in an earlier scene."], "xml", undefined, true);
+const gameBlock = buildMemoryRecallBlock(["Wynne was met in an earlier scene."], "xml", undefined, true);
 assert.match(gameBlock, /historical game transcript/u);
 assert.match(gameBlock, /do not establish the current location/u);
 assert.match(gameBlock, /Preserve the user's current agency/u);
@@ -155,7 +155,7 @@ try {
   };
   const currentInputMessages = [
     { role: "assistant" as const, content: "A".repeat(2_000) },
-    { role: "user" as const, content: "Please ask Maybelle to bring you to Honoria." },
+    { role: "user" as const, content: "Please ask Corvina to bring you to Wynne." },
   ];
   const injected: Array<{ role: "system"; content: string }> = [];
   const agentLines = await injectMemoryRecallContext({

@@ -6,7 +6,7 @@ import type { GameContinuityReceipt } from "@marinara-engine/shared";
 
 // Campaign memory could only attach facts to party members: a library character named in play (a candidate, an
 // NPC with a card) had no registered entity, so everything about her fell back to an anonymous lore record. In the
-// real campaign only 587 of 2,015 record subjects resolved; Countess Lisaveta alone was named 201 times with no
+// real campaign only 587 of 2,015 record subjects resolved; Countess Maritza alone was named 201 times with no
 // entity. Named library characters are now visible owners in the chat, registered with the names prose uses, and a
 // relink attaches already-published records to them without re-reading anything.
 const root = mkdtempSync(join(tmpdir(), "marinara-named-characters-"));
@@ -34,22 +34,22 @@ try {
   const { eq } = await import("../../packages/server/src/db/file-query.js");
 
   // Aliases: full name, name without titles, and a first name only when no other card shares it.
-  const counts = countNamedCharacterFirstNames(["Lady Elsevere Aldareth", "Seliel of the Orchard Host", "Seliel Brightwater", "Ivy Undertree"]);
-  assert.deepEqual(namedCharacterAliases("Lady Elsevere Aldareth", counts), [
-    "Lady Elsevere Aldareth",
-    "Elsevere Aldareth",
-    "Elsevere",
+  const counts = countNamedCharacterFirstNames(["Lady Ismene Varrow", "Nimue of the Linden Host", "Nimue Brightwater", "Ivy Tansley"]);
+  assert.deepEqual(namedCharacterAliases("Lady Ismene Varrow", counts), [
+    "Lady Ismene Varrow",
+    "Ismene Varrow",
+    "Ismene",
   ]);
-  assert.deepEqual(namedCharacterAliases("Seliel Brightwater", counts), ["Seliel Brightwater"], "shared first names are not aliases");
-  assert.deepEqual(namedCharacterAliases("Ivy Undertree", counts), ["Ivy Undertree"], "short first names need the full name");
+  assert.deepEqual(namedCharacterAliases("Nimue Brightwater", counts), ["Nimue Brightwater"], "shared first names are not aliases");
+  assert.deepEqual(namedCharacterAliases("Ivy Tansley", counts), ["Ivy Tansley"], "short first names need the full name");
 
   const db = await createFileNativeDB();
   const now = new Date().toISOString();
   const metadata = JSON.stringify({ gameContinuity: { mode: "active", extractionInstructions: "fixed" } });
   await db.insert(apiConnections).values({ id: "conn", name: "Named test", provider: "custom", model: "m" });
   await db.insert(characters).values([
-    { id: "elsevere", data: JSON.stringify({ name: "Lady Elsevere Aldareth" }), createdAt: now, updatedAt: now },
-    { id: "hesper", data: JSON.stringify({ name: "Hesper Coyle" }), createdAt: now, updatedAt: now },
+    { id: "ismene", data: JSON.stringify({ name: "Lady Ismene Varrow" }), createdAt: now, updatedAt: now },
+    { id: "liesel", data: JSON.stringify({ name: "Liesel Pike" }), createdAt: now, updatedAt: now },
   ]);
   await db.insert(chats).values({
     id: "chat",
@@ -61,19 +61,19 @@ try {
     updatedAt: now,
   });
   await db.insert(messages).values([
-    { id: "m1", chatId: "chat", role: "user", content: "Send for Elsevere.", createdAt: "2026-09-16T00:00:01.000Z" },
+    { id: "m1", chatId: "chat", role: "user", content: "Send for Ismene.", createdAt: "2026-09-16T00:00:01.000Z" },
     {
       id: "m2",
       chatId: "chat",
       role: "assistant",
-      content: "Elsevere signs the contract in perpetuity.",
+      content: "Ismene signs the contract in perpetuity.",
       createdAt: "2026-09-16T00:00:02.000Z",
     },
   ]);
   forgetNamedCharacterIds();
 
   const scope = await createCampaignMemoryOwnerReader(db).readChatScope("chat");
-  assert.deepEqual(scope?.namedCharacterIds, ["elsevere"], "a character named in the chat is in its owner scope; one never named is not");
+  assert.deepEqual(scope?.namedCharacterIds, ["ismene"], "a character named in the chat is in its owner scope; one never named is not");
 
   // A receipt is published before she is registered: the record falls back to the anonymous lore entity.
   const current = await db.select().from(messages).where(eq(messages.chatId, "chat"));
@@ -81,11 +81,11 @@ try {
   const config = await readContinuityConfig(db, "chat");
   const record = {
     kind: "decision" as const,
-    text: "Elsevere signed a contract in perpetuity.",
-    subjects: ["Elsevere"],
+    text: "Ismene signed a contract in perpetuity.",
+    subjects: ["Ismene"],
     conditions: [],
     status: "completed" as const,
-    evidence: [{ messageId: "m2", quote: "Elsevere signs the contract in perpetuity." }],
+    evidence: [{ messageId: "m2", quote: "Ismene signs the contract in perpetuity." }],
     keys: ["contract"],
   };
   const id = "gcb-named";
@@ -128,15 +128,15 @@ try {
 
   // Registration gives her an entity with the names prose uses.
   await ensureContinuityHolderReferences(db, "chat");
-  const elsevere = (await memory.listEntities({ chatId: "chat" })).find(
-    (entity) => entity.owner.type === "existing" && entity.owner.recordId === "elsevere",
+  const ismene = (await memory.listEntities({ chatId: "chat" })).find(
+    (entity) => entity.owner.type === "existing" && entity.owner.recordId === "ismene",
   );
-  assert.ok(elsevere, "the named library character is registered as a person");
-  assert.equal(elsevere.kind, "character");
-  assert.ok(elsevere.aliases.includes("Elsevere"));
+  assert.ok(ismene, "the named library character is registered as a person");
+  assert.equal(ismene.kind, "character");
+  assert.ok(ismene.aliases.includes("Ismene"));
   assert.ok(
     !(await memory.listEntities({ chatId: "chat" })).some(
-      (entity) => entity.owner.type === "existing" && entity.owner.recordId === "hesper",
+      (entity) => entity.owner.type === "existing" && entity.owner.recordId === "liesel",
     ),
     "a library character never named in this chat is not registered",
   );
@@ -147,7 +147,7 @@ try {
   const factsAfter = await memory.listFacts({ chatId: "chat" });
   const live = factsAfter.filter((fact) => fact.status === "verified");
   assert.equal(live.length, 1, "exactly one live fact carries the record");
-  assert.equal(live[0]!.subjectEntityId, elsevere.entityId, "the live fact is about Elsevere herself");
+  assert.equal(live[0]!.subjectEntityId, ismene.entityId, "the live fact is about Ismene herself");
   assert.equal(
     factsAfter.find((fact) => fact.factId === factsBefore[0]!.factId)?.status,
     "superseded",
@@ -160,25 +160,25 @@ try {
   assert.equal((await memory.listFacts({ chatId: "chat" })).filter((fact) => fact.status === "verified").length, 1);
 
   // A card whose person is already tracked as an NPC of the same name is not registered a second time.
-  await db.insert(characters).values({ id: "audrey-card", data: JSON.stringify({ name: "Audrey Justinia" }), createdAt: now, updatedAt: now });
+  await db.insert(characters).values({ id: "beatrix-card", data: JSON.stringify({ name: "Beatrix Hallam" }), createdAt: now, updatedAt: now });
   await db
     .update(chats)
-    .set({ metadata: JSON.stringify({ ...JSON.parse(metadata), gameNpcs: [{ id: "npc-audrey", name: "Audrey Justinia" }] }) })
+    .set({ metadata: JSON.stringify({ ...JSON.parse(metadata), gameNpcs: [{ id: "npc-beatrix", name: "Beatrix Hallam" }] }) })
     .where(eq(chats.id, "chat"));
   await db.insert(messages).values({
     id: "m3",
     chatId: "chat",
     role: "user",
-    content: "Audrey Justinia reads the register.",
+    content: "Beatrix Hallam reads the register.",
     createdAt: "2026-09-16T00:00:03.000Z",
   });
   forgetNamedCharacterIds();
   await ensureContinuityHolderReferences(db, "chat");
-  const audreys = (await memory.listEntities({ chatId: "chat" })).filter((entity) =>
-    entity.aliases.includes("Audrey Justinia"),
+  const beatrixes = (await memory.listEntities({ chatId: "chat" })).filter((entity) =>
+    entity.aliases.includes("Beatrix Hallam"),
   );
-  assert.equal(audreys.length, 1, "one person, one entity");
-  assert.equal(audreys[0]!.owner.type === "existing" && audreys[0]!.owner.store, "game-npcs");
+  assert.equal(beatrixes.length, 1, "one person, one entity");
+  assert.equal(beatrixes[0]!.owner.type === "existing" && beatrixes[0]!.owner.store, "game-npcs");
 
   await db._fileStore.close();
   console.log("campaign-memory-named-characters regression passed");

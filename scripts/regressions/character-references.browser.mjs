@@ -9,13 +9,13 @@ const bundle = await build({
     contents: `import React,{useState} from 'react'; import {createRoot} from 'react-dom/client';
     import {CharacterReferencesProvider,GameCharacterReferences,CharacterLinkedContent} from '${component}';
     function Layout({children}){return <section>{children}</section>}
-    window.rows=[{id:'brynna',data:{name:'Brynna Coldstream',extensions:{}}},{id:'ann1',data:{name:'Anna Rose'}},{id:'ann2',data:{name:'Anna Gray'}}];
-    function App(){const [tick,setTick]=useState(0);return <><button id="rename" onClick={()=>{window.rows[0]={id:'brynna',data:{name:'Brynna Snow',extensions:{referenceNames:['Brynna Coldstream']}}};window.rows=[...window.rows];setTick(tick+1)}}>Rename fixture</button>
-      <CharacterReferencesProvider><GameCharacterReferences cards={{brynna:{title:tick?'Brynna Snow':'Brynna Coldstream'},'npc:guard':{title:'Gatekeeper Orin'}}} onOpen={id=>window.opened=id}>
-      <div id="message"><CharacterLinkedContent><p>Brynna Coldstream spoke to Anna. Gatekeeper Orin nodded.</p><code>Brynna Coldstream</code><a href="#existing">Brynna Coldstream</a><p>Annabelle</p></CharacterLinkedContent></div>
-      <div id="widget"><CharacterLinkedContent currentNames>Brynna Coldstream</CharacterLinkedContent></div>
-      <div id="short"><CharacterLinkedContent currentNames>Brynna</CharacterLinkedContent></div>
-      <div id="html"><CharacterLinkedContent><Layout><div dangerouslySetInnerHTML={{__html:'<p title="Brynna Coldstream">Brynna Coldstream</p><pre>Brynna Coldstream</pre><a href="#existing">Brynna Coldstream</a>'}} /></Layout></CharacterLinkedContent></div>
+    window.rows=[{id:'hilde',data:{name:'Hilde Birchfield',extensions:{}}},{id:'ann1',data:{name:'Anna Rose'}},{id:'ann2',data:{name:'Anna Gray'}}];
+    function App(){const [tick,setTick]=useState(0);return <><button id="rename" onClick={()=>{window.rows[0]={id:'hilde',data:{name:'Hilde Snow',extensions:{referenceNames:['Hilde Birchfield']}}};window.rows=[...window.rows];setTick(tick+1)}}>Rename fixture</button>
+      <CharacterReferencesProvider><GameCharacterReferences cards={{hilde:{title:tick?'Hilde Snow':'Hilde Birchfield'},'npc:guard':{title:'Gatekeeper Orin'}}} onOpen={id=>window.opened=id}>
+      <div id="message"><CharacterLinkedContent><p>Hilde Birchfield spoke to Anna. Gatekeeper Orin nodded.</p><code>Hilde Birchfield</code><a href="#existing">Hilde Birchfield</a><p>Annabelle</p></CharacterLinkedContent></div>
+      <div id="widget"><CharacterLinkedContent currentNames>Hilde Birchfield</CharacterLinkedContent></div>
+      <div id="short"><CharacterLinkedContent currentNames>Hilde</CharacterLinkedContent></div>
+      <div id="html"><CharacterLinkedContent><Layout><div dangerouslySetInnerHTML={{__html:'<p title="Hilde Birchfield">Hilde Birchfield</p><pre>Hilde Birchfield</pre><a href="#existing">Hilde Birchfield</a>'}} /></Layout></CharacterLinkedContent></div>
       </GameCharacterReferences></CharacterReferencesProvider></>};createRoot(document.getElementById('root')).render(<App/>);`,
     loader: "tsx",
     resolveDir: process.cwd(),
@@ -57,24 +57,24 @@ try {
       "Only unambiguous prose names are linked",
     );
     assert.equal(await message.locator("code button,a button").count(), 0);
-    await message.getByRole("button", { name: "Open Brynna Coldstream", exact: true }).click();
-    assert.equal(await page.evaluate(() => window.opened), "brynna");
+    await message.getByRole("button", { name: "Open Hilde Birchfield", exact: true }).click();
+    assert.equal(await page.evaluate(() => window.opened), "hilde");
     await message.getByRole("button", { name: "Open Gatekeeper Orin", exact: true }).focus();
     await page.keyboard.press("Enter");
     assert.equal(await page.evaluate(() => window.opened), "npc:guard");
     assert.equal(await page.locator("#html [data-character-reference]").count(), 1);
-    assert.equal(await page.locator("#html p").getAttribute("title"), "Brynna Coldstream");
+    assert.equal(await page.locator("#html p").getAttribute("title"), "Hilde Birchfield");
     await page.locator("#rename").click();
-    await page.locator("#widget").getByRole("button", { name: "Open Brynna Snow", exact: true }).waitFor();
-    assert.equal(await page.locator("#widget button").textContent(), "Brynna Snow");
-    assert.equal(await page.locator("#short button").textContent(), "Brynna", "Short widget names stay compact");
+    await page.locator("#widget").getByRole("button", { name: "Open Hilde Snow", exact: true }).waitFor();
+    assert.equal(await page.locator("#widget button").textContent(), "Hilde Snow");
+    assert.equal(await page.locator("#short button").textContent(), "Hilde", "Short widget names stay compact");
     assert.equal(
-      await message.getByRole("button", { name: "Open Brynna Snow", exact: true }).textContent(),
-      "Brynna Coldstream",
+      await message.getByRole("button", { name: "Open Hilde Snow", exact: true }).textContent(),
+      "Hilde Birchfield",
       "Historical wording is preserved",
     );
-    await message.getByRole("button", { name: "Open Brynna Snow", exact: true }).click();
-    assert.equal(await page.evaluate(() => window.opened), "brynna", "Rename retains target ID");
+    await message.getByRole("button", { name: "Open Hilde Snow", exact: true }).click();
+    assert.equal(await page.evaluate(() => window.opened), "hilde", "Rename retains target ID");
     await page.close();
   }
   process.stdout.write(
