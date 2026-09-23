@@ -14,6 +14,8 @@ import {
   useCallback,
   useMemo,
   useRef,
+  useDeferredValue,
+  useLayoutEffect,
   type DragEvent as ReactDragEvent,
   type ReactNode,
   type TouchEvent as ReactTouchEvent,
@@ -102,7 +104,7 @@ import {
   type LorebookCategory,
   type BulkUpdateLorebookEntriesInput,
 } from "@marinara-engine/shared";
-import { LorebookEntryRow } from "./LorebookEntryRow";
+import { LorebookEntryListItem, type LorebookEntryListHandlers } from "./LorebookEntryListItem";
 import { LorebookFolderRow } from "./LorebookFolderRow";
 import { LorebookLintPanel } from "./LorebookLintPanel";
 import { LorebookBulkEditPanel } from "./LorebookBulkEditPanel";
@@ -753,16 +755,19 @@ export function LorebookEditor() {
 
   // Filtered + sorted entries (flat list — used when search is active or
   // a non-Order sort is selected, both of which suppress folder grouping).
+  // Filtering hundreds of entries (content included) on every keystroke made
+  // the search box lag; filter against a deferred copy so typing stays fluid.
+  const deferredEntrySearch = useDeferredValue(entrySearch);
   const filteredEntries = useMemo(() => {
     let result = entries;
     if (neverFiredOnly) result = result.filter((entry) => !activationStatsById.has(entry.id));
     if (staleOnly) result = result.filter((entry) => staleEntryIds.has(entry.id));
-    if (entrySearch) {
+    if (deferredEntrySearch) {
       result = result.filter(
         (e) =>
-          includesTextForMatch(e.name, entrySearch) ||
-          e.keys.some((key) => includesTextForMatch(key, entrySearch)) ||
-          includesTextForMatch(e.content, entrySearch),
+          includesTextForMatch(e.name, deferredEntrySearch) ||
+          e.keys.some((key) => includesTextForMatch(key, deferredEntrySearch)) ||
+          includesTextForMatch(e.content, deferredEntrySearch),
       );
     }
     switch (entrySort) {
@@ -793,12 +798,15 @@ export function LorebookEditor() {
       default:
         return [...result].sort((a, b) => a.order - b.order);
     }
-  }, [activationStatsById, entries, entrySearch, entrySort, neverFiredOnly, staleEntryIds, staleOnly]);
+  }, [activationStatsById, deferredEntrySearch, entries, entrySort, neverFiredOnly, staleEntryIds, staleOnly]);
 
   // Folder grouping is only meaningful when the user is sorting by Order with
   // no search — any other state would put entries out of their containers
   // (e.g. "Name A→Z" interleaves entries from different folders).
-  const showFolderGrouping = entrySort === "order" && entrySearch.trim().length === 0 && !neverFiredOnly && !staleOnly;
+  // Reads the deferred search too, so the grouped/flat switch lands together
+  // with the filtered list instead of in the urgent keystroke render.
+  const showFolderGrouping =
+    entrySort === "order" && deferredEntrySearch.trim().length === 0 && !neverFiredOnly && !staleOnly;
   const transferTargetLorebooks = useMemo(
     () => lorebooks.filter((book) => book.id !== lorebookId).sort((a, b) => a.name.localeCompare(b.name)),
     [lorebooks, lorebookId],
@@ -1774,6 +1782,83 @@ export function LorebookEditor() {
     leaveWithoutSaving(closeDetail);
   }, [closeDetail, deleteLorebook, lorebook?.name, lorebookId, localizeUi]);
 
+  // Stable per-row handlers. Rows are memoized, so they must not receive fresh
+  // closures every render; these read the latest editor state through a ref
+  // that is refreshed after each commit (events always fire after a commit).
+  const entryRowLatestRef = useRef({
+    canReorderEntries,
+    draggingFolderIdx,
+    toggleEntryExpanded,
+    toggleEntrySelection,
+    handleEntryDragHandleTouchStart,
+    handleEntryDragStart,
+    handleEntryDragOver,
+    handleFolderBodyFolderDragOver,
+    commitEntryDrop,
+    commitFolderDrop,
+    resetEntryDragState,
+    handleEntryUpdate,
+  });
+  useLayoutEffect(() => {
+    entryRowLatestRef.current = {
+      canReorderEntries,
+      draggingFolderIdx,
+      toggleEntryExpanded,
+      toggleEntrySelection,
+      handleEntryDragHandleTouchStart,
+      handleEntryDragStart,
+      handleEntryDragOver,
+      handleFolderBodyFolderDragOver,
+      commitEntryDrop,
+      commitFolderDrop,
+      resetEntryDragState,
+      handleEntryUpdate,
+    };
+  });
+  const entryRowHandlers = useMemo<LorebookEntryListHandlers>(
+    () => ({
+      toggleExpand: (entryId) => entryRowLatestRef.current.toggleEntryExpanded(entryId),
+      toggleSelected: (entryId, event) => entryRowLatestRef.current.toggleEntrySelection(entryId, event),
+      dragHandleMouseDown: (containerId, index) => {
+        if (!entryRowLatestRef.current.canReorderEntries) return;
+        setEntryDragReadyIdx(index);
+        setDragSourceContainer(containerId);
+      },
+      dragHandleMouseUp: () => setEntryDragReadyIdx(null),
+      dragHandleTouchStart: (entryId, e, sourceElement) =>
+        entryRowLatestRef.current.handleEntryDragHandleTouchStart(entryId, e, sourceElement),
+      dragStart: (containerId, index, entryId, e) =>
+        entryRowLatestRef.current.handleEntryDragStart(containerId, index, entryId, e),
+      dragOver: (containerId, index, e) => {
+        const latest = entryRowLatestRef.current;
+        if (latest.draggingFolderIdx !== null) {
+          // A folder dragged over a folder's entry is really over that folder's
+          // body (nest / un-nest); over a root entry it falls through to the root list.
+          if (containerId !== null) latest.handleFolderBodyFolderDragOver(containerId, e);
+          return;
+        }
+        e.stopPropagation();
+        latest.handleEntryDragOver(containerId, index, e);
+      },
+      drop: (containerId, e) => {
+        const latest = entryRowLatestRef.current;
+        if (latest.draggingFolderIdx !== null) {
+          // Root entries let folder drops fall through to the root list.
+          if (containerId === null) return;
+          e.stopPropagation();
+          latest.commitFolderDrop(e);
+          return;
+        }
+        e.stopPropagation();
+        latest.commitEntryDrop(e);
+      },
+      dragEnd: () => entryRowLatestRef.current.resetEntryDragState(),
+      updateEntry: (entryId, changes, changedFields) =>
+        entryRowLatestRef.current.handleEntryUpdate(entryId, changes, changedFields),
+    }),
+    [],
+  );
+
   // ── Loading ──
   if (isLoading || !lorebook) {
     return (
@@ -1908,51 +1993,25 @@ export function LorebookEditor() {
                   {showDropBefore && (
                     <div className="mari-chrome-accent-progress mari-accent-animated mx-2 mb-1 h-0.5 rounded-full" />
                   )}
-                  <LorebookEntryRow
+                  <LorebookEntryListItem
                     entry={entry}
                     lorebookId={lorebookId}
+                    containerId={folder.id}
+                    index={eIdx}
+                    sortable
+                    handlers={entryRowHandlers}
                     isExpanded={expandedEntryId === entry.id}
-                    onToggleExpand={() => toggleEntryExpanded(entry.id)}
                     characters={characters}
                     characterTags={characterTags}
                     folders={folders}
                     draggable={canReorderEntries}
                     isDragging={sameContainer && draggingEntryIdx === eIdx}
                     isDragReady={sameContainer && entryDragReadyIdx === eIdx}
-                    onDragHandleMouseDown={() => {
-                      if (canReorderEntries) {
-                        setEntryDragReadyIdx(eIdx);
-                        setDragSourceContainer(folder.id);
-                      }
-                    }}
-                    onDragHandleMouseUp={() => setEntryDragReadyIdx(null)}
-                    onDragHandleTouchStart={(e, sourceElement) =>
-                      handleEntryDragHandleTouchStart(entry.id, e, sourceElement)
-                    }
-                    onDragStart={(e) => handleEntryDragStart(folder.id, eIdx, entry.id, e)}
-                    onDragOver={(e) => {
-                      // A folder dragged over an entry is really being dragged over the
-                      // enclosing folder's body — route it there (nest / un-nest).
-                      if (draggingFolderIdx !== null) {
-                        handleFolderBodyFolderDragOver(folder.id, e);
-                        return;
-                      }
-                      e.stopPropagation();
-                      handleEntryDragOver(folder.id, eIdx, e);
-                    }}
-                    onDrop={(e) => {
-                      e.stopPropagation();
-                      if (draggingFolderIdx !== null) commitFolderDrop(e);
-                      else commitEntryDrop(e);
-                    }}
-                    onDragEnd={resetEntryDragState}
                     selectionMode={entrySelectionMode}
                     isSelected={selectedEntryIds.has(entry.id)}
-                    onToggleSelected={(event) => toggleEntrySelection(entry.id, event)}
                     previewMatch={effectivePreviewMatches.get(entry.id)}
                     activationStat={activationStatsById.get(entry.id)}
                     mapBacklinks={mapBacklinksByEntryId.get(entry.id)}
-                    onUpdateEntry={handleEntryUpdate}
                   />
                   {showDropAfter && (
                     <div className="mari-chrome-accent-progress mari-accent-animated mx-2 mt-1 h-0.5 rounded-full" />
@@ -3103,47 +3162,25 @@ export function LorebookEditor() {
                             {showDropBefore && (
                               <div className="mari-chrome-accent-progress mari-accent-animated mx-2 mb-1 h-0.5 rounded-full" />
                             )}
-                            <LorebookEntryRow
+                            <LorebookEntryListItem
                               entry={entry}
                               lorebookId={lorebookId}
+                              containerId={null}
+                              index={idx}
+                              sortable
+                              handlers={entryRowHandlers}
                               isExpanded={expandedEntryId === entry.id}
-                              onToggleExpand={() => toggleEntryExpanded(entry.id)}
                               characters={characters}
                               characterTags={characterTags}
                               folders={folders}
                               draggable={canReorderEntries}
                               isDragging={sameContainer && draggingEntryIdx === idx}
                               isDragReady={sameContainer && entryDragReadyIdx === idx}
-                              onDragHandleMouseDown={() => {
-                                if (canReorderEntries) {
-                                  setEntryDragReadyIdx(idx);
-                                  setDragSourceContainer(null);
-                                }
-                              }}
-                              onDragHandleMouseUp={() => setEntryDragReadyIdx(null)}
-                              onDragHandleTouchStart={(e, sourceElement) =>
-                                handleEntryDragHandleTouchStart(entry.id, e, sourceElement)
-                              }
-                              onDragStart={(e) => handleEntryDragStart(null, idx, entry.id, e)}
-                              onDragOver={(e) => {
-                                // Let folder drags fall through to the root list (un-nest).
-                                if (draggingFolderIdx !== null) return;
-                                e.stopPropagation();
-                                handleEntryDragOver(null, idx, e);
-                              }}
-                              onDrop={(e) => {
-                                if (draggingFolderIdx !== null) return;
-                                e.stopPropagation();
-                                commitEntryDrop(e);
-                              }}
-                              onDragEnd={resetEntryDragState}
                               selectionMode={entrySelectionMode}
                               isSelected={selectedEntryIds.has(entry.id)}
-                              onToggleSelected={(event) => toggleEntrySelection(entry.id, event)}
                               previewMatch={effectivePreviewMatches.get(entry.id)}
                               activationStat={activationStatsById.get(entry.id)}
                               mapBacklinks={mapBacklinksByEntryId.get(entry.id)}
-                              onUpdateEntry={handleEntryUpdate}
                             />
                             {showDropAfter && (
                               <div className="mari-chrome-accent-progress mari-accent-animated mx-2 mt-1 h-0.5 rounded-full" />
@@ -3158,32 +3195,27 @@ export function LorebookEditor() {
                 {/* Entries — flat view (search active or non-Order sort) */}
                 {lorebookId && !showFolderGrouping && filteredEntries.length > 0 && (
                   <div ref={entryListRef} className="space-y-1.5">
-                    {filteredEntries.map((entry) => (
-                      <LorebookEntryRow
+                    {filteredEntries.map((entry, idx) => (
+                      <LorebookEntryListItem
                         key={entry.id}
                         entry={entry}
                         lorebookId={lorebookId}
+                        containerId={null}
+                        index={idx}
+                        sortable={false}
+                        handlers={entryRowHandlers}
                         isExpanded={expandedEntryId === entry.id}
-                        onToggleExpand={() => toggleEntryExpanded(entry.id)}
                         characters={characters}
                         characterTags={characterTags}
                         folders={folders}
                         draggable={false}
                         isDragging={false}
                         isDragReady={false}
-                        onDragHandleMouseDown={() => undefined}
-                        onDragHandleMouseUp={() => undefined}
-                        onDragStart={() => undefined}
-                        onDragOver={() => undefined}
-                        onDrop={() => undefined}
-                        onDragEnd={() => undefined}
                         selectionMode={entrySelectionMode}
                         isSelected={selectedEntryIds.has(entry.id)}
-                        onToggleSelected={(event) => toggleEntrySelection(entry.id, event)}
                         previewMatch={effectivePreviewMatches.get(entry.id)}
                         activationStat={activationStatsById.get(entry.id)}
                         mapBacklinks={mapBacklinksByEntryId.get(entry.id)}
-                        onUpdateEntry={handleEntryUpdate}
                       />
                     ))}
                   </div>
