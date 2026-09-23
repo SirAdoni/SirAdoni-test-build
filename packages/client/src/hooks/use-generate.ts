@@ -3595,7 +3595,11 @@ export function useGenerate() {
         if (useUIStore.getState().debugMode) {
           console.warn("[use-generate] dispatching generation-complete for chat:", params.chatId);
         }
-        window.dispatchEvent(new CustomEvent("marinara:generation-complete", { detail: { chatId: params.chatId } }));
+        window.dispatchEvent(
+          new CustomEvent("marinara:generation-complete", {
+            detail: { chatId: params.chatId, receivedContent: Boolean(receivedContent) },
+          }),
+        );
 
         // Translation includes saving the result; notify only once that work settles.
         const translations: Promise<void>[] = [];

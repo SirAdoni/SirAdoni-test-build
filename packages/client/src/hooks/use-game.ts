@@ -1045,8 +1045,12 @@ export function useUpdateReputation() {
   const qc = useQueryClient();
   const store = useGameModeStore;
   return useMutation({
-    mutationFn: (data: { chatId: string; actions: Array<{ npcId: string; action: string; modifier?: number }> }) =>
-      api.post<{ npcs: unknown[]; changes: unknown[] }>("/game/reputation/update", data),
+    mutationFn: (data: {
+      chatId: string;
+      actions: Array<{ npcId: string; action: string; modifier?: number }>;
+      /** The message the actions come from; the server applies each message's reputation once. */
+      messageId?: string;
+    }) => api.post<{ npcs: unknown[]; changes: unknown[] }>("/game/reputation/update", data),
     onSuccess: (res, variables) => {
       if (store.getState().activeSessionChatId === variables.chatId) store.getState().setNpcs(res.npcs as any[]);
       qc.invalidateQueries({ queryKey: chatKeys.detail(variables.chatId) });

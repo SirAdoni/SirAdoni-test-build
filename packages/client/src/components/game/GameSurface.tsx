@@ -2340,6 +2340,20 @@ function clampDesktopSessionPanel(element: HTMLDivElement | null) {
   return () => window.removeEventListener("resize", clamp);
 }
 
+/**
+ * Game chats whose GM turn finished while that chat was not on screen (another chat was open, or no game at
+ * all). Their turn's tags (widgets, state, inventory, reputation, weather) were never applied, so returning to
+ * the chat must process that turn instead of treating it as an already-seen restore. Registered at module
+ * level so it also hears completions while GameSurface is unmounted. In memory only: a reload loses it.
+ */
+const gameTurnsCompletedOffscreen = new Set<string>();
+if (typeof window !== "undefined") {
+  window.addEventListener("marinara:generation-complete", (event) => {
+    const detail = (event as CustomEvent<{ chatId?: string; receivedContent?: boolean }>).detail;
+    if (detail?.chatId && detail.receivedContent !== false) gameTurnsCompletedOffscreen.add(detail.chatId);
+  });
+}
+
 function GameSurfaceComponent({
   activeChatId,
   chat,
@@ -4046,6 +4060,19 @@ function GameSurfaceComponent({
   }, [messages]);
   const latestAssistantSwipeIndex = latestAssistantMsg?.activeSwipeIndex ?? 0;
   const latestAssistantTurnKey = narrationTurnKey(latestAssistantMsg);
+
+  // [inventory:] updates are applied as their narration segment is shown, but the parser's segment numbers can
+  // point at a segment the narration never shows (a side line, a paragraph that was only a tag). Once the turn's
+  // narration has finished, whatever is still pending is applied, so an item is never silently not given.
+  useEffect(() => {
+    if (!narrationDoneTurnKey || narrationDoneTurnKey !== latestAssistantTurnKey) return;
+    const leftover = pendingInventorySegmentUpdates.filter(
+      (entry) => !appliedInventorySegmentsRef.current.has(entry.segment),
+    );
+    if (leftover.length === 0) return;
+    for (const entry of leftover) appliedInventorySegmentsRef.current.add(entry.segment);
+    applyInventoryUpdates(leftover.map((entry) => entry.update));
+  }, [narrationDoneTurnKey, latestAssistantTurnKey, pendingInventorySegmentUpdates, applyInventoryUpdates]);
   const turnStoryboardsQuery = useGameTurnStoryboards(
     activeChatId,
     latestAssistantMsg?.id,
@@ -4746,7 +4773,11 @@ function GameSurfaceComponent({
   }, [sceneRuntimeScopeKey]);
 
   if (sceneReadyMsgIdRef.current === undefined && !isMessagesLoading) {
-    if (latestAssistantMsg && !isStreaming) {
+    if (latestAssistantMsg && !isStreaming && gameTurnsCompletedOffscreen.has(activeChatId)) {
+      // Unprocessed turn: leave isRestoredRef false so the processing effect applies its tags.
+      sceneReadyMsgIdRef.current = "__none__";
+      weatherMsgRef.current = null;
+    } else if (latestAssistantMsg && !isStreaming) {
       // Returning to an existing game — mark scene as ready and skip weather/intro
       isRestoredRef.current = true;
       sceneReadyMsgIdRef.current = latestAssistantMsg.id;
@@ -5288,6 +5319,7 @@ function GameSurfaceComponent({
 
     console.warn("[scene-process] FIRING for message:", msg.id, "| assets:", !!assets);
     lastProcessedMsgRef.current = turnKey;
+    gameTurnsCompletedOffscreen.delete(activeChatId);
     setNarrationDoneTurnKey(null);
     setActiveChoices(null);
     setSceneAnalysisFailed(false);
@@ -5497,7 +5529,7 @@ function GameSurfaceComponent({
         npcId: ra.npcName,
         action: ra.action,
       }));
-      _updateReputation.mutate({ chatId: activeChatId, actions: repActions });
+      _updateReputation.mutate({ chatId: activeChatId, actions: repActions, messageId: msg.id });
     }
 
     // Inventory updates — apply when the relevant segment is reached, not at turn start.
@@ -6033,7 +6065,7 @@ function GameSurfaceComponent({
         npcId: rc.npcName,
         action: rc.action,
       }));
-      _updateReputation.mutate({ chatId: activeChatId, actions: repActions });
+      _updateReputation.mutate({ chatId: activeChatId, actions: repActions, messageId: msg.id });
     }
     const assetMap = getScopedAssetMap();
     if (result.background) {
@@ -6926,6 +6958,7 @@ function GameSurfaceComponent({
     const handler = (e: Event) => {
       const chatId = (e as CustomEvent).detail?.chatId;
       if (chatId !== activeChatId) return;
+      gameTurnsCompletedOffscreen.delete(chatId);
       console.warn("[scene-process] generation-complete event received for chat:", chatId);
       // Wait one animation frame so React commits the new messages → ref is fresh
       requestAnimationFrame(() => {
