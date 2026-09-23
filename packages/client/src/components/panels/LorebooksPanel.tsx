@@ -70,6 +70,7 @@ import { LibraryFolderTree } from "./library/LibraryFolderTree";
 import { LibrarySelectionExtraActions } from "./library/LibrarySelectionExtraActions";
 import { useAutoLoadAllPages } from "./library/use-auto-load-all-pages";
 import { useLibraryOrganizer } from "./library/use-library-organizer";
+import { useLorebookFolderToggle } from "./library/use-lorebook-folder-toggle";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { PanelLoadMoreBar } from "./PanelLoadMoreBar";
@@ -345,6 +346,7 @@ export function LorebooksPanel() {
       })),
     [lorebookFolders],
   );
+  const folderToggle = useLorebookFolderToggle(folderNodes, lorebooks);
   const folderView = useMemo(
     () => buildLibraryFolderView(folderNodes, (id) => lorebookById.has(id), folderFilterActive),
     [folderNodes, lorebookById, folderFilterActive],
@@ -1118,6 +1120,8 @@ export function LorebooksPanel() {
           onMoveFolder={handleMoveFolder}
           onRequestMoveFolder={requestMoveFolder}
           emptyFolderText={localizeUi("ui.panels.lorebookspanel.dropLorebooksHere")}
+          renderFolderActions={folderToggle.renderFolderActions}
+          isFolderDimmed={folderToggle.isFolderDimmed}
         />
       )}
 

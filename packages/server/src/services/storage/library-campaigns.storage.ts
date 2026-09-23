@@ -64,6 +64,9 @@ type ChatUsage = {
   characterIds: string[];
   personaIds: string[];
   lorebookIds: string[];
+  gmCharacterIds: string[];
+  partyCharacterIds: string[];
+  npcCharacterIds: string[];
 };
 
 type ChatUsageRevision = Pick<
@@ -130,23 +133,34 @@ function readChatUsage(chat: CampaignChatRow): ChatUsage {
     metadata.gameSetupConfig && typeof metadata.gameSetupConfig === "object" ? metadata.gameSetupConfig : {}
   ) as Record<string, unknown>;
   const npcs = Array.isArray(metadata.gameNpcs) ? metadata.gameNpcs : [];
-  const characterIds = [
-    ...strings(chat.characterIds),
+  const cardIds = (ids: Array<string | null>) =>
+    Array.from(new Set(ids.filter((id): id is string => !!id && !id.startsWith("npc:"))));
+  const gmCharacterIds = cardIds([optionalString(metadata.gameGmCharacterId), optionalString(setup.gmCharacterId)]);
+  const partyCharacterIds = cardIds([
     ...strings(metadata.gamePartyCharacterIds),
     ...strings(setup.partyCharacterIds),
-    optionalString(metadata.gameGmCharacterId),
-    optionalString(setup.gmCharacterId),
-    ...npcs.map((npc) =>
+  ]);
+  const npcCharacterIds = cardIds(
+    npcs.map((npc) =>
       npc && typeof npc === "object" ? optionalString((npc as Record<string, unknown>).characterId) : null,
     ),
-  ].filter((id): id is string => !!id && !id.startsWith("npc:"));
+  );
+  const characterIds = cardIds([
+    ...strings(chat.characterIds),
+    ...partyCharacterIds,
+    ...gmCharacterIds,
+    ...npcCharacterIds,
+  ]);
   const usage: ChatUsage = {
     campaignId: optionalString(metadata.gameId) ?? optionalString(chat.groupId) ?? chat.id,
     sessionNumber:
       typeof metadata.gameSessionNumber === "number" && Number.isFinite(metadata.gameSessionNumber)
         ? metadata.gameSessionNumber
         : 0,
-    characterIds: Array.from(new Set(characterIds)),
+    characterIds,
+    gmCharacterIds,
+    partyCharacterIds,
+    npcCharacterIds,
     personaIds: [optionalString(chat.personaId), optionalString(setup.personaId)].filter((id): id is string => !!id),
     lorebookIds: Array.from(new Set([...strings(metadata.activeLorebookIds), ...strings(setup.activeLorebookIds)])),
   };
@@ -179,6 +193,9 @@ export function deriveLibraryCampaigns(input: CampaignDerivationInput): LibraryC
     characters: Set<string>;
     personas: Set<string>;
     lorebooks: Set<string>;
+    gm: Set<string>;
+    party: Set<string>;
+    npcs: Set<string>;
     latestSession: { chat: CampaignChatRow; sessionNumber: number } | null;
     lastPlayedAt: string | null;
   };
@@ -198,6 +215,9 @@ export function deriveLibraryCampaigns(input: CampaignDerivationInput): LibraryC
         characters: new Set(),
         personas: new Set(),
         lorebooks: new Set(),
+        gm: new Set(),
+        party: new Set(),
+        npcs: new Set(),
         latestSession: null,
         lastPlayedAt: null,
       };
@@ -208,6 +228,9 @@ export function deriveLibraryCampaigns(input: CampaignDerivationInput): LibraryC
     for (const id of usage.characterIds) draft.characters.add(id);
     for (const id of usage.personaIds) draft.personas.add(id);
     for (const id of usage.lorebookIds) draft.lorebooks.add(id);
+    for (const id of usage.gmCharacterIds) draft.gm.add(id);
+    for (const id of usage.partyCharacterIds) draft.party.add(id);
+    for (const id of usage.npcCharacterIds) draft.npcs.add(id);
     draft.lastPlayedAt = laterOf(draft.lastPlayedAt, laterOf(chat.lastMessageAt, chat.updatedAt));
     const latest = draft.latestSession;
     if (
@@ -281,15 +304,23 @@ export function deriveLibraryCampaigns(input: CampaignDerivationInput): LibraryC
 
     const sortedChats = [...draft.chats].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     const baseName = (draft.latestSession?.chat.name ?? sortedChats[0]?.name ?? "").replace(SESSION_SUFFIX, "").trim();
+    const characterIds = [...draft.characters].filter((id) => input.characterIds.has(id));
+    const members = new Set(characterIds);
+    const inRoster = (ids: Set<string>) => [...ids].filter((id) => members.has(id));
     campaigns.push({
       id: draft.id,
       name: baseName || sortedChats[0]?.name || "Untitled campaign",
       sessionCount: draft.chats.length,
       lastPlayedAt: draft.lastPlayedAt,
-      characterIds: [...draft.characters].filter((id) => input.characterIds.has(id)),
+      characterIds,
       personaIds: [...draft.personas].filter((id) => input.personaIds.has(id)),
       lorebookIds: [...draft.lorebooks].filter((id) => visibleLorebookIds.has(id)),
       manualKeys,
+      roster: {
+        gmCharacterIds: inRoster(draft.gm),
+        partyCharacterIds: inRoster(draft.party),
+        npcCharacterIds: inRoster(draft.npcs),
+      },
     });
   }
 

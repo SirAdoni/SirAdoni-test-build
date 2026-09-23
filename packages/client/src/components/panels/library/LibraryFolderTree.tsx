@@ -34,6 +34,10 @@ interface LibraryFolderTreeProps {
   onMoveFolder: (folderId: string, parentId: string | null) => void;
   onRequestMoveFolder: (folder: LibraryFolderNode) => void;
   emptyFolderText: string;
+  /** Extra small buttons in a folder's action pill (before "New subfolder"). */
+  renderFolderActions?: (folder: LibraryFolderNode) => ReactNode;
+  /** Dim a folder's name (e.g. every lorebook inside is disabled). */
+  isFolderDimmed?: (folder: LibraryFolderNode) => boolean;
 }
 
 export function LibraryFolderTree(props: LibraryFolderTreeProps) {
@@ -131,6 +135,8 @@ function FolderNode(props: FolderNodeProps) {
     onMoveFolder,
     onRequestMoveFolder,
     emptyFolderText,
+    renderFolderActions,
+    isFolderDimmed,
     draggedFolderId,
     dropTargetId,
     setDropTargetId,
@@ -263,7 +269,14 @@ function FolderNode(props: FolderNodeProps) {
               className="w-full rounded bg-transparent px-1 py-0.5 text-xs font-medium outline-none ring-1 ring-[var(--marinara-chat-chrome-input-border-focus)]"
             />
           ) : (
-            <div className="mari-chrome-text-muted truncate text-xs font-medium">{folder.name}</div>
+            <div
+              className={cn(
+                "mari-chrome-text-muted truncate text-xs font-medium",
+                isFolderDimmed?.(folder) && "opacity-50",
+              )}
+            >
+              {folder.name}
+            </div>
           )}
         </div>
         {count > 0 && (
@@ -286,6 +299,7 @@ function FolderNode(props: FolderNodeProps) {
               {count}
             </span>
           )}
+          {renderFolderActions?.(folder)}
           {canAddSubfolder && (
             <button
               type="button"

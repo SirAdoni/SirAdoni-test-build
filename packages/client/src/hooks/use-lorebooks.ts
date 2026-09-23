@@ -3,7 +3,13 @@
 // ──────────────────────────────────────────────
 import { useInfiniteQuery, useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api-client";
-import type { BulkUpdateLorebookEntriesInput, Lorebook, LorebookEntry, LorebookFolder } from "@marinara-engine/shared";
+import type {
+  BulkUpdateLorebookEntriesInput,
+  Lorebook,
+  LorebookEntry,
+  LorebookFolder,
+  SetLorebooksEnabledResult,
+} from "@marinara-engine/shared";
 import { characterKeys } from "./use-characters";
 import { achievementKeys, trackAchievementEvent } from "./use-achievements";
 import {
@@ -200,6 +206,22 @@ export function useUpdateLorebook() {
       // cache before the editor marks its form clean so it never reloads the
       // pre-save snapshot for one frame and remounts conditional sections.
       qc.setQueryData(lorebookKeys.detail(variables.id), data);
+      qc.invalidateQueries({ queryKey: lorebookKeys.list() });
+      qc.invalidateQueries({ queryKey: [...lorebookKeys.all, "category"] });
+      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
+    },
+  });
+}
+
+/** Enable or disable many lorebooks at once; the result names the ones that flipped (for undo). */
+export function useSetLorebooksEnabled() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { ids: string[]; enabled: boolean }) =>
+      api.post<SetLorebooksEnabledResult>("/lorebooks/bulk-enabled", input),
+    onSuccess: (result) => {
+      if (result.changedIds.length === 0) return;
+      for (const id of result.changedIds) qc.invalidateQueries({ queryKey: lorebookKeys.detail(id) });
       qc.invalidateQueries({ queryKey: lorebookKeys.list() });
       qc.invalidateQueries({ queryKey: [...lorebookKeys.all, "category"] });
       qc.invalidateQueries({ queryKey: lorebookKeys.active() });

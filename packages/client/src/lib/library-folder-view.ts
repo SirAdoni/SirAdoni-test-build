@@ -3,7 +3,12 @@
 // for the current filters (visible folders, counts,
 // auto-expanded ancestors, item breadcrumbs).
 // ──────────────────────────────────────────────
-import { buildLibraryFolderTree, countLibraryFolderItems, type LibraryFolderTree } from "@marinara-engine/shared";
+import {
+  buildLibraryFolderTree,
+  collectLibraryFolderSubtreeIds,
+  countLibraryFolderItems,
+  type LibraryFolderTree,
+} from "@marinara-engine/shared";
 
 export type LibraryFolderNode = {
   id: string;
@@ -71,4 +76,43 @@ export function listLibraryFolderChoices(tree: LibraryFolderTree<LibraryFolderNo
   };
   for (const root of tree.roots) walk(root, 0);
   return choices;
+}
+
+/** Every item id in a folder and all of its subfolders, each once. */
+export function collectLibraryFolderItemIds(folders: LibraryFolderNode[], folderId: string): string[] {
+  const byId = new Map(folders.map((folder) => [folder.id, folder]));
+  const ids = new Set<string>();
+  for (const id of collectLibraryFolderSubtreeIds(folders, folderId)) {
+    for (const itemId of byId.get(id)?.itemIds ?? []) ids.add(itemId);
+  }
+  return [...ids];
+}
+
+/**
+ * What a folder's lorebook switch does: disable every enabled lorebook while any is on,
+ * otherwise enable them all. Unknown ids (deleted or not loaded) are left alone; null
+ * when the folder holds no known lorebook.
+ */
+export function planLibraryFolderLorebookToggle(
+  itemIds: readonly string[],
+  enabledById: ReadonlyMap<string, boolean>,
+): { enable: boolean; ids: string[] } | null {
+  const known = itemIds.filter((id) => enabledById.has(id));
+  if (known.length === 0) return null;
+  const enable = !known.some((id) => enabledById.get(id));
+  return { enable, ids: known.filter((id) => enabledById.get(id) !== enable) };
+}
+
+/** Subtree item ids for every folder at once (one tree walk), for per-folder actions in big trees. */
+export function collectLibraryFolderItemIdsByFolder(folders: LibraryFolderNode[]): Map<string, string[]> {
+  const { roots, childrenByParent } = buildLibraryFolderTree(folders);
+  const result = new Map<string, string[]>();
+  const walk = (folder: LibraryFolderNode): Set<string> => {
+    const ids = new Set(folder.itemIds);
+    for (const child of childrenByParent.get(folder.id) ?? []) for (const id of walk(child)) ids.add(id);
+    result.set(folder.id, [...ids]);
+    return ids;
+  };
+  for (const root of roots) walk(root);
+  return result;
 }

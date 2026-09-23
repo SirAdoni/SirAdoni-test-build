@@ -23,7 +23,8 @@ import {
   type LorebookEntry,
   type LorebookFolder,
 } from "@marinara-engine/shared";
-import type { ExportEnvelope } from "@marinara-engine/shared";
+import type { ExportEnvelope, SetLorebooksEnabledResult } from "@marinara-engine/shared";
+import { setLorebooksEnabledSchema } from "@marinara-engine/shared";
 import { createLorebooksStorage } from "../services/storage/lorebooks.storage.js";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
@@ -483,6 +484,33 @@ export async function lorebooksRoutes(app: FastifyInstance) {
     if (!updated) return reply.status(404).send({ error: "Lorebook not found" });
     await syncCharacterBookFromLorebook(app.db, req.params.id);
     return updated;
+  });
+
+  /** Enable or disable many lorebooks (a library folder's subtree). Returns which ones flipped, for undo. */
+  app.post("/bulk-enabled", async (req, reply) => {
+    const parsed = setLorebooksEnabledSchema.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.issues[0]?.message ?? "Invalid request" });
+    const { ids, enabled } = parsed.data;
+    const result: SetLorebooksEnabledResult = { changedIds: [], unchangedIds: [], missingIds: [] };
+    for (const id of ids) {
+      const lorebook = await storage.getById(id);
+      if (!lorebook) {
+        result.missingIds.push(id);
+        continue;
+      }
+      if (lorebook.enabled === enabled) {
+        result.unchangedIds.push(id);
+        continue;
+      }
+      const updated = await storage.update(id, { enabled });
+      if (!updated) {
+        result.missingIds.push(id);
+        continue;
+      }
+      await syncCharacterBookFromLorebook(app.db, id);
+      result.changedIds.push(id);
+    }
+    return result;
   });
 
   app.post<{ Params: { id: string } }>("/:id/image", async (req, reply) => {

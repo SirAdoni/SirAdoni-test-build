@@ -75,9 +75,23 @@ export const migrateLibraryFoldersSchema = z
     });
   });
 
+/** Enable or disable many lorebooks at once (a library folder's subtree); ids that do not exist are skipped. */
+export const setLorebooksEnabledSchema = z.object({
+  ids: libraryFolderItemIdsSchema.refine((ids) => ids.length > 0, "Pick at least one lorebook"),
+  enabled: z.boolean(),
+});
+
 export type LibraryFolderScope = z.infer<typeof libraryFolderScopeSchema>;
 export type CreateLibraryFolderInput = z.infer<typeof createLibraryFolderSchema>;
 export type UpdateLibraryFolderInput = z.infer<typeof updateLibraryFolderSchema>;
 export type MoveLibraryItemsInput = z.infer<typeof moveLibraryItemsSchema>;
 export type MigrateLibraryFolderInput = z.infer<typeof migrateLibraryFolderSchema>;
 export type MigrateLibraryFoldersInput = z.infer<typeof migrateLibraryFoldersSchema>;
+export type SetLorebooksEnabledInput = z.infer<typeof setLorebooksEnabledSchema>;
+
+/** Result of a bulk enable/disable: only `changedIds` flipped, so undo flips exactly those back. */
+export interface SetLorebooksEnabledResult {
+  changedIds: string[];
+  unchangedIds: string[];
+  missingIds: string[];
+}

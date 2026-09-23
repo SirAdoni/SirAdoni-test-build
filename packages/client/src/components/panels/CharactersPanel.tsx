@@ -69,6 +69,7 @@ import { TouchDragHandle } from "../ui/TouchDragHandle";
 import { buildLibraryFolderView, type LibraryFolderNode } from "../../lib/library-folder-view";
 import { CAMPAIGN_FILTER_ALL, LibraryCampaignBar } from "./library/LibraryCampaignBar";
 import { LibraryCampaignBadges } from "./library/LibraryCampaignBadges";
+import { LibraryCampaignRoster } from "./library/LibraryCampaignRoster";
 import { LibraryCampaignSections } from "./library/LibraryCampaignSections";
 import { LibraryFolderTree } from "./library/LibraryFolderTree";
 import { LibrarySelectionExtraActions } from "./library/LibrarySelectionExtraActions";
@@ -625,6 +626,9 @@ export function CharactersPanel() {
     [],
   );
 
+  const filteredCampaign = organizer.filteredCampaignId
+    ? organizer.campaigns.find((campaign) => campaign.id === organizer.filteredCampaignId)
+    : undefined;
   const { setFolderExpanded, openMovePicker } = organizer;
   const showFolderError = useCallback(
     (error: unknown) =>
@@ -1604,6 +1608,14 @@ export function CharactersPanel() {
         groupByCampaign={organizer.groupByCampaign}
         onGroupByCampaignChange={organizer.setGroupByCampaign}
       />
+      {filteredCampaign && (
+        <LibraryCampaignRoster
+          campaign={filteredCampaign}
+          open={!organizer.collapsedCampaignIds.has(`roster:${filteredCampaign.id}`)}
+          onOpenChange={(open) => organizer.setCampaignSectionCollapsed(`roster:${filteredCampaign.id}`, !open)}
+          onOpenCharacter={openCharacterDetailFromPanel}
+        />
+      )}
 
       <div className="flex flex-col gap-0.5">
         <div className="flex items-center gap-1">

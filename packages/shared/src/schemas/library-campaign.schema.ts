@@ -19,6 +19,16 @@ export const LIBRARY_CAMPAIGN_NONE = "__none__";
 export type LibraryCampaignItemType = z.infer<typeof libraryCampaignItemTypeSchema>;
 export type LibraryCampaignItemsInput = z.infer<typeof libraryCampaignItemsSchema>;
 
+/** Who plays which part, from the campaign's chats. Ids are also listed in `characterIds`. */
+export interface LibraryCampaignRoster {
+  /** Game master cards (game setup or chat metadata). */
+  gmCharacterIds: string[];
+  /** Party members across the sessions. */
+  partyCharacterIds: string[];
+  /** NPCs linked to a character card. */
+  npcCharacterIds: string[];
+}
+
 /**
  * A Game Mode campaign (all session chats sharing one gameId) and the library
  * items it uses. Lists are the effective membership: what the campaign's chats
@@ -36,6 +46,8 @@ export interface LibraryCampaign {
   lorebookIds: string[];
   /** Items the user added by hand ("character:<id>", "persona:<id>", "lorebook:<id>"). */
   manualKeys: string[];
+  /** Character roles; older servers omit it. */
+  roster?: LibraryCampaignRoster;
 }
 
 export interface LibraryCampaignList {
