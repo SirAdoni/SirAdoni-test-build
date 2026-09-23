@@ -296,6 +296,9 @@ function PaletteContent({ onClose, inputRef }: { onClose: () => void; inputRef: 
         />
         <input
           ref={inputRef}
+          // The Modal's initialFocusRef runs when the dialog opens, before this lazily mounted
+          // content exists, so focus stayed on the page and the first keystrokes were lost.
+          autoFocus
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={onKeyDown}
