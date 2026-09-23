@@ -63,8 +63,10 @@ import {
   requestLayoutRecord,
   setLayoutDragOverlay,
   setPanelHidden,
+  togglePanelSelection,
   useIsFrontPanel,
   usePanelHidden,
+  usePanelSelected,
 } from "../../lib/game-layout-editor-store";
 
 export const GamePanelContext = createContext<{
@@ -313,6 +315,7 @@ function FloatingFrame({
   const tuckEdgeKey = `${tuckKey}:edge`;
   const frontKey = `${chatId}:${id}`;
   const isFront = useIsFrontPanel(frontKey);
+  const selected = usePanelSelected(chatId, id) && layoutEditing;
   const record = useCallback((delay?: number) => requestLayoutRecord(chatId, delay), [chatId]);
   const [stackGroups, setStackGroups] = useState<Record<string, string>>(() => readGamePanelStacks(chatId));
   const stackEnabled = id.startsWith("widget:");
@@ -1277,6 +1280,7 @@ function FloatingFrame({
       data-layout-editing={editChrome ? "true" : undefined}
       data-layout-locked={editChrome && panelLocked ? "true" : undefined}
       data-layout-overlapping={overlapping ? "true" : undefined}
+      data-layout-selected={editChrome && selected ? "true" : undefined}
       className="group/floating pointer-events-auto absolute left-0 top-0 z-30 max-w-full rounded-lg"
       style={{
         x,
@@ -1297,7 +1301,16 @@ function FloatingFrame({
         paddingLeft: tuckEdge === "left" ? tuckRevealGutter : 0,
         paddingRight: tuckEdge === "right" ? tuckRevealGutter : 0,
       }}
-      onPointerDownCapture={() => bringPanelToFront(frontKey)}
+      onPointerDownCapture={(event) => {
+        // Shift+click while editing toggles multi-select for the toolbar's align tools; no drag starts.
+        if (editChrome && event.shiftKey) {
+          event.stopPropagation();
+          event.preventDefault();
+          togglePanelSelection(chatId, id);
+          return;
+        }
+        bringPanelToFront(frontKey);
+      }}
       onMouseEnter={() => allowTuck && tucked && !layoutEditing && revealTuck()}
       onMouseLeave={(event) => {
         if (!allowTuck || focused) return;
@@ -1495,9 +1508,9 @@ function FloatingFrame({
               zIndex: 21,
               pointerEvents: "none",
               borderRadius: 11,
-              border: `1.5px ${interaction === "drag" || interaction === "resize" ? "solid" : "dashed"} ${outlineColor}`,
+              border: `${selected ? 2 : 1.5}px ${interaction === "drag" || interaction === "resize" || selected ? "solid" : "dashed"} ${outlineColor}`,
               boxShadow:
-                interaction === "drag" || interaction === "resize"
+                interaction === "drag" || interaction === "resize" || selected
                   ? `0 0 0 3px color-mix(in srgb, ${outlineColor} 18%, transparent), 0 14px 32px rgba(0,0,0,0.3)`
                   : undefined,
               transition: "border-color 120ms ease, box-shadow 120ms ease",

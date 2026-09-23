@@ -137,6 +137,50 @@ export function useIsFrontPanel(key: string): boolean {
   );
 }
 
+// ── Multi-select (Shift+click while editing), per layout scope, in selection order ──
+
+const selections = new Map<string, string[]>();
+const selectionEmitter = createEmitter();
+const EMPTY_SELECTION: string[] = [];
+
+export function readPanelSelection(scopeId: string): string[] {
+  return selections.get(scopeId) ?? EMPTY_SELECTION;
+}
+
+export function togglePanelSelection(scopeId: string, panelId: string): void {
+  const current = readPanelSelection(scopeId);
+  const next = current.includes(panelId) ? current.filter((id) => id !== panelId) : [...current, panelId];
+  if (next.length) selections.set(scopeId, next);
+  else selections.delete(scopeId);
+  selectionEmitter.emit();
+}
+
+export function clearPanelSelection(scopeId: string): void {
+  if (!selections.has(scopeId)) return;
+  selections.delete(scopeId);
+  selectionEmitter.emit();
+}
+
+export function subscribePanelSelection(listener: () => void): () => void {
+  return selectionEmitter.subscribe(listener);
+}
+
+export function usePanelSelection(scopeId: string): string[] {
+  return useSyncExternalStore(
+    selectionEmitter.subscribe,
+    () => readPanelSelection(scopeId),
+    () => EMPTY_SELECTION,
+  );
+}
+
+export function usePanelSelected(scopeId: string, panelId: string): boolean {
+  return useSyncExternalStore(
+    selectionEmitter.subscribe,
+    () => readPanelSelection(scopeId).includes(panelId),
+    () => false,
+  );
+}
+
 // ── Live drag overlay (one interaction at a time) ──
 
 export interface LayoutDragOverlay {

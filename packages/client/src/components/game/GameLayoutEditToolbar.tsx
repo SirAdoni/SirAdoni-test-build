@@ -4,6 +4,9 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from "react";
 import { createPortal } from "react-dom";
 import {
+  AlignEndVertical,
+  AlignStartHorizontal,
+  AlignStartVertical,
   ArrowDownToLine,
   ArrowUpToLine,
   Check,
@@ -11,10 +14,12 @@ import {
   Eye,
   EyeOff,
   Layers2,
+  LayoutDashboard,
   LayoutTemplate,
   Lock,
   LockOpen,
   Magnet,
+  MoveHorizontal,
   PanelsTopLeft,
   Pencil,
   Redo2,
@@ -34,6 +39,7 @@ import {
   LayoutPopoverSection,
 } from "./GameLayoutPopover";
 import {
+  readGamePanelStacks,
   registeredGamePanelStates,
   scheduleGamePanelLayout,
   subscribeGamePanelRegistry,
@@ -46,12 +52,15 @@ import {
   renameSavedLayout,
   type SavedLayout,
 } from "../../lib/game-layout-snapshots";
+import { arrangePanels, measureFloatingPanels, writeArrangedSnapshot, type ArrangeMode } from "../../lib/game-layout-arrange";
 import {
   applyLayoutAsStep,
   beginLayoutEditSession,
   captureCurrentLayout,
+  clearPanelSelection,
   dispatchLayoutLockAll,
   endLayoutEditSession,
+  isLayoutCollisionsEnabled,
   isLayoutPopoverOpen,
   isPanelHidden,
   readSavedLayouts,
@@ -68,6 +77,8 @@ import {
   useLayoutHistoryState,
   useLayoutSnapEnabled,
   useLayoutToolbarDock,
+  usePanelSelection,
+  readPanelSelection,
   useSavedLayouts,
   writeSavedLayouts,
 } from "../../lib/game-layout-editor-store";
@@ -381,6 +392,31 @@ function LayoutToolbar({
   const redo = useCallback(() => {
     if (redoLayout(scopeId)) onLayoutApplied();
   }, [onLayoutApplied, scopeId]);
+  const selection = usePanelSelection(scopeId);
+  const arrange = (mode: ArrangeMode) => {
+    const bounds = { width: surface.clientWidth, height: surface.clientHeight };
+    const panels = measureFloatingPanels(surface);
+    const changes = arrangePanels(mode, panels, {
+      bounds,
+      stacks: readGamePanelStacks(scopeId),
+      selection: readPanelSelection(scopeId),
+      collisions: isLayoutCollisionsEnabled(),
+    });
+    if (!changes.size) return;
+    applyLayoutAsStep(scopeId, writeArrangedSnapshot(captureCurrentLayout(scopeId), panels, changes, bounds));
+    onLayoutApplied();
+  };
+  useEffect(() => {
+    // Clicking empty surface clears the multi-select; leaving edit mode does too.
+    const onPointerDown = (event: PointerEvent) => {
+      if (!(event.target as HTMLElement | null)?.closest?.("[data-game-floating-panel]")) clearPanelSelection(scopeId);
+    };
+    surface.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      surface.removeEventListener("pointerdown", onPointerDown);
+      clearPanelSelection(scopeId);
+    };
+  }, [scopeId, surface]);
 
   // All-locked hint: shown on entry when nothing can move yet.
   const [hint, setHint] = useState<"pending" | "shown" | "dismissed">("pending");
@@ -418,6 +454,10 @@ function LayoutToolbar({
         // Leave other dialogs (for example a settings modal) their own Esc.
         if ((event.target as HTMLElement | null)?.closest?.('[role="dialog"]:not([data-layout-popover])')) return;
         event.preventDefault();
+        if (readPanelSelection(scopeId).length) {
+          clearPanelSelection(scopeId);
+          return;
+        }
         doneRef.current();
         return;
       }
@@ -433,7 +473,7 @@ function LayoutToolbar({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [menu, redo, undo]);
+  }, [menu, redo, scopeId, undo]);
 
   const lockAll = (locked: boolean) => {
     dispatchLayoutLockAll(scopeId, locked);
@@ -496,6 +536,30 @@ function LayoutToolbar({
         >
           <Layers2 size={14} aria-hidden="true" />
         </ToolbarButton>
+        <Divider />
+        <ToolbarButton label={t("ui.game.layoutEditor.tidy")} onClick={() => arrange("tidy")} name="tidy">
+          <LayoutDashboard size={14} aria-hidden="true" />
+        </ToolbarButton>
+        {selection.length >= 2 && (
+          <>
+            <ToolbarButton label={t("ui.game.layoutEditor.alignLeft")} onClick={() => arrange("left")} name="align-left">
+              <AlignStartVertical size={14} aria-hidden="true" />
+            </ToolbarButton>
+            <ToolbarButton label={t("ui.game.layoutEditor.alignRight")} onClick={() => arrange("right")} name="align-right">
+              <AlignEndVertical size={14} aria-hidden="true" />
+            </ToolbarButton>
+            <ToolbarButton label={t("ui.game.layoutEditor.alignTop")} onClick={() => arrange("top")} name="align-top">
+              <AlignStartHorizontal size={14} aria-hidden="true" />
+            </ToolbarButton>
+            <ToolbarButton
+              label={t("ui.game.layoutEditor.matchWidth")}
+              onClick={() => arrange("matchWidth")}
+              name="match-width"
+            >
+              <MoveHorizontal size={14} aria-hidden="true" />
+            </ToolbarButton>
+          </>
+        )}
         <Divider />
         <ToolbarButton label={t("ui.game.layoutEditor.lockAll")} onClick={() => lockAll(true)} name="lock-all">
           <Lock size={14} aria-hidden="true" />
