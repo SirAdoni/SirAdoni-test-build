@@ -159,22 +159,25 @@ export function parseNarratedLocationDecision(
   }
   const parent = known.find(({ id }) => id === decision.parentId);
   if (!parent) throw new Error("Location check selected an unknown parent");
-  const matches = known.filter(
-    ({ path }) => normalizeName(path.split(/\s*>\s*/u).at(-1) ?? path) === normalizeName(decision.name),
-  );
-  const underParent = matches.filter(
-    ({ path }) =>
-      normalizeName(
-        path
-          .split(/\s*>\s*/u)
-          .slice(0, -1)
-          .join(" > "),
-      ) === normalizeName(parent.path),
-  );
-  const existing = underParent.length === 1 ? underParent[0] : matches.length === 1 ? matches[0] : null;
+  const pathSegments = (path: string) => path.split(/\s*>\s*/u).map(normalizeName);
+  const parentSegments = pathSegments(parent.path);
+  const nameKey = normalizeName(decision.name);
+  const matches = known.filter(({ path }) => pathSegments(path).at(-1) === nameKey);
+  // Only places inside the chosen parent can be the same place; a same-named room in another building is not.
+  const withinParent = matches.filter(({ path }) => {
+    const segments = pathSegments(path);
+    return segments.length > parentSegments.length && parentSegments.every((segment, i) => segments[i] === segment);
+  });
+  const underParent = withinParent.filter(({ path }) => pathSegments(path).length === parentSegments.length + 1);
+  const existing =
+    underParent.length === 1
+      ? underParent[0]
+      : underParent.length === 0 && withinParent.length === 1
+        ? withinParent[0]
+        : null;
   if (existing)
     return existing.id === projection.currentLocationId ? null : { type: "move", destinationId: existing.id };
-  if (matches.length) throw new Error("Location name is ambiguous; refusing to create another copy");
+  if (withinParent.length) throw new Error("Location name is ambiguous; refusing to create another copy");
   // Place under the actual parent without inventing a direct doorway from the old scene.
   return {
     type: "discover",

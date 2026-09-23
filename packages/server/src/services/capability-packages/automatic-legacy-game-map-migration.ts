@@ -95,11 +95,16 @@ export async function migrateLegacyGameMapsAtBoot(
           const setup = record(metadata.gameSetupConfig);
           const nextMetadata = {
             ...metadata,
-            enableAgents: true,
+            // Preserve the user's umbrella agent switch; flipping it would also start
+            // every other agent in activeAgentIds.
             activeAgentIds: activeAgentIds.includes(HIERARCHICAL_MAPS_ID)
               ? activeAgentIds
               : [...activeAgentIds, HIERARCHICAL_MAPS_ID],
-            gameSetupConfig: { ...setup, gameWorldMapMode: "hierarchical" },
+            // Only switch the start mode when Maps is live. With agents off, /game/start
+            // would treat the World Map as unusable and wipe the legacy gameMap.
+            ...(metadata.enableAgents === true
+              ? { gameSetupConfig: { ...setup, gameWorldMapMode: "hierarchical" } }
+              : {}),
             spatialContext: parsed.data,
           };
           const createdAt = new Date().toISOString();

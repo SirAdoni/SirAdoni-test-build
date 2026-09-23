@@ -41,6 +41,17 @@ try {
     { name: "Sword", qty: 3 },
   ]);
 
+  const { reconcileInventoryItemIdentities } = await import(
+    "../../packages/server/src/services/storage/inventory-item-identity.js"
+  );
+  const renamedAndAdded = reconcileInventoryItemIdentities(
+    { inventory: [{ name: "Sword", itemId: "A" }] },
+    { inventory: [{ name: "Sword" }, { name: "Blade", itemId: "A" }] },
+  ) as { inventory: Array<{ name: string; itemId?: string }> };
+  assert.equal(renamedAndAdded.inventory[1]?.itemId, "A", "renamed item keeps its explicit ID regardless of row order");
+  assert.ok(renamedAndAdded.inventory[0]?.itemId, "new same-named item receives an ID");
+  assert.notEqual(renamedAndAdded.inventory[0]?.itemId, "A", "new same-named item does not take the renamed item's ID");
+
   const firstId = await storage.create({
     chatId: "identity-chat",
     messageId: "message-0",

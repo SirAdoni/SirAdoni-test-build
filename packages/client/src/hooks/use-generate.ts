@@ -3084,13 +3084,16 @@ export function useGenerate() {
               const warning = event.data;
               if (!isCacheGuardWarning(warning)) break;
               const chatId = params.chatId;
-              const resend = {
-                chatId,
-                connectionId: params.connectionId,
-                ...(params.presetId ? { presetId: params.presetId } : {}),
-                ...(params.lorebookIds ? { lorebookIds: params.lorebookIds } : {}),
-                cacheGuardAcknowledged: true,
-              };
+              // Keep regenerate/continue/target/turn-kind params so the resend repeats the same kind of turn.
+              // Drop only the one-shot user-turn fields: the server already saved the held user message.
+              const {
+                userMessage: _userMessage,
+                attachments: _attachments,
+                replyTo: _replyTo,
+                pendingSpatialTransition: _pendingSpatialTransition,
+                ...resendParams
+              } = params;
+              const resend = { ...resendParams, cacheGuardAcknowledged: true };
               void (async () => {
                 for (let wait = 0; wait < 100 && useChatStore.getState().abortControllers.has(chatId); wait += 1) {
                   await new Promise((resolve) => setTimeout(resolve, 100));

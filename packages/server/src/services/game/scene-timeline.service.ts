@@ -185,6 +185,7 @@ export async function readSceneTimeline(
 async function synchronize(db: DB, chatId: string, isGenerating: () => boolean) {
   const chats = createChatsStorage(db);
   const connections = createConnectionsStorage(db);
+  let lastWrittenKey: string | undefined;
   // Re-read between turns: a new swipe/edit must invalidate its descendants before they are analyzed.
   while (true) {
     if (isGenerating()) return;
@@ -202,6 +203,12 @@ async function synchronize(db: DB, chatId: string, isGenerating: () => boolean) 
       ? turns.find((entry) => entry.message.id === closingMessageId)
       : turns[turns.length - timeline.remaining];
     if (!turn) return;
+    // A successful write must move the timeline forward; picking the same work again means it was not visible.
+    const workKey = `${turn.message.id}:${turn.hash}:${reviewScene?.id ?? ""}`;
+    if (workKey === lastWrittenKey)
+      throw new Error(
+        `Scene tracking made no progress at message ${turn.message.id}; the saved result was not visible`,
+      );
     const meta = record(chat.metadata);
     const connId =
       chat.connectionId ?? (await connections.getDefaultForAgents())?.id ?? (await connections.getDefault())?.id;
@@ -299,12 +306,17 @@ async function synchronize(db: DB, chatId: string, isGenerating: () => boolean) 
       }
       const current = (await readSource(db, chatId)).turns.find((entry) => entry.message.id === turn.message.id);
       if (!current || current.hash !== turn.hash) continue;
-      await chats.updateMessageExtraForSwipe(turn.message.id, turn.message.activeSwipeIndex, {
+      const written = await chats.updateMessageExtraForSwipe(turn.message.id, turn.message.activeSwipeIndex, {
         gameSceneReviews: {
           ...record(record(current.message.extra).gameSceneReviews),
           [reviewScene.id]: { hash, summary, corrections, reviewedAt: new Date().toISOString() },
         },
       });
+      if (!written)
+        throw new Error(
+          `Scene review could not be saved for message ${turn.message.id} (swipe ${turn.message.activeSwipeIndex} not found)`,
+        );
+      lastWrittenKey = workKey;
       continue;
     }
     const spatial = await createSpatialContextStorage().getByAnchor(
@@ -424,9 +436,14 @@ async function synchronize(db: DB, chatId: string, isGenerating: () => boolean) 
     // A stale result remains attached only to its exact source version; reads reject changed history.
     const current = (await readSource(db, chatId)).turns.find((entry) => entry.message.id === turn.message.id);
     if (!current || current.hash !== turn.hash) continue;
-    await chats.updateMessageExtraForSwipe(turn.message.id, turn.message.activeSwipeIndex, {
+    const written = await chats.updateMessageExtraForSwipe(turn.message.id, turn.message.activeSwipeIndex, {
       gameSceneTimeline: { ...saved, hash: turn.hash, createdAt: new Date().toISOString() },
     });
+    if (!written)
+      throw new Error(
+        `Scene timeline could not be saved for message ${turn.message.id} (swipe ${turn.message.activeSwipeIndex} not found)`,
+      );
+    lastWrittenKey = workKey;
   }
 }
 

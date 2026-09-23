@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { DATA_DIR } from "../../utils/data-dir.js";
@@ -44,6 +44,16 @@ export interface GenerationJobsOptions {
   shutdownWaitMs?: number;
 }
 
+/** Newest terminal jobs whose metadata is kept on disk; well above list()'s 50 so per-chat lists stay intact. */
+const MAX_RETAINED_JOBS = 200;
+/** Newest terminal jobs whose (possibly multi-MB) result file is kept; matches list()'s visible window. */
+const MAX_RETAINED_RESULTS = 50;
+/** Results and metadata touched more recently than this are never pruned, so fresh results stay recoverable. */
+const PRUNE_MIN_AGE_MS = 24 * 60 * 60 * 1000;
+/** Stray temp or orphaned result files older than this are treated as leftovers. */
+const STRAY_FILE_MIN_AGE_MS = 10 * 60 * 1000;
+/** Minimum gap between retention passes triggered by finished jobs. */
+const PRUNE_INTERVAL_MS = 10 * 60 * 1000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const stores = new WeakMap<object, GenerationJobsStore>();
 
@@ -94,6 +104,9 @@ export class GenerationJobsStore implements GenerationJobs {
   >();
   private closing = false;
   private ready: Promise<void>;
+  private pruning: Promise<void> | null = null;
+  private pruneAgain = false;
+  private lastPruneAt = 0;
 
   constructor(app?: FastifyInstance, options: GenerationJobsOptions = {}) {
     // Tests may provide a complete isolated job directory.
@@ -136,6 +149,118 @@ export class GenerationJobsStore implements GenerationJobs {
         }
       } catch (error) {
         logger.warn({ err: error, file: entry.name }, "Unable to recover generation job metadata");
+      }
+    }
+    try {
+      await this.prune();
+    } catch (error) {
+      logger.warn({ err: error }, "Unable to prune generation jobs");
+    }
+  }
+
+  /** Throttled fire-and-forget retention pass; overlapping requests collapse into one follow-up run. */
+  private schedulePrune(): void {
+    if (this.closing) return;
+    if (Date.now() - this.lastPruneAt < PRUNE_INTERVAL_MS) return;
+    if (this.pruning) {
+      this.pruneAgain = true;
+      return;
+    }
+    this.pruning = (async () => {
+      do {
+        this.pruneAgain = false;
+        try {
+          await this.prune();
+        } catch (error) {
+          logger.warn({ err: error }, "Unable to prune generation jobs");
+        }
+      } while (this.pruneAgain && !this.closing);
+    })().finally(() => {
+      this.pruning = null;
+    });
+  }
+
+  /**
+   * Bounds disk use: drops metadata and results of old terminal jobs beyond MAX_RETAINED_JOBS, strips result
+   * files beyond MAX_RETAINED_RESULTS, and removes stray temp files and orphaned results. Running jobs, jobs
+   * still tracked in memory and anything updated within PRUNE_MIN_AGE_MS are never touched.
+   */
+  private async prune(): Promise<void> {
+    this.lastPruneAt = Date.now();
+    let entries;
+    try {
+      entries = await readdir(this.root, { withFileTypes: true });
+    } catch (error: any) {
+      if (error?.code === "ENOENT") return;
+      throw error;
+    }
+    const now = Date.now();
+    const metadataIds = new Set<string>();
+    const resultIds = new Set<string>();
+    const all: GenerationJobMetadata[] = [];
+    const strays: string[] = [];
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      if (entry.name.endsWith(".tmp")) {
+        strays.push(entry.name);
+        continue;
+      }
+      if (entry.name.endsWith(".result.json")) {
+        resultIds.add(entry.name.slice(0, -".result.json".length));
+        continue;
+      }
+      if (!entry.name.endsWith(".json")) continue;
+      const id = entry.name.slice(0, -5);
+      if (!validId(id)) continue;
+      metadataIds.add(id);
+      // Live jobs are never pruned; skipping their files also avoids holding a read handle while
+      // atomicWrite renames over them, which fails with EPERM on Windows.
+      if (this.jobs.has(id)) continue;
+      try {
+        const item = JSON.parse(await readFile(join(this.root, entry.name), "utf8"));
+        if (validMetadata(item, id)) all.push(item);
+      } catch {
+        /* unreadable metadata is left alone */
+      }
+    }
+    const removeFile = async (name: string) => {
+      try {
+        await unlink(join(this.root, name));
+      } catch (error: any) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    };
+    const isOld = async (name: string) => {
+      try {
+        return now - (await stat(join(this.root, name))).mtimeMs > STRAY_FILE_MIN_AGE_MS;
+      } catch {
+        return false;
+      }
+    };
+    for (const name of strays) {
+      if (await isOld(name)) await removeFile(name);
+    }
+    for (const id of resultIds) {
+      if (validId(id) && !metadataIds.has(id) && !this.jobs.has(id) && (await isOld(`${id}.result.json`))) {
+        await removeFile(`${id}.result.json`);
+      }
+    }
+    all.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    for (let index = 0; index < all.length; index++) {
+      const metadata = all[index]!;
+      if (index < MAX_RETAINED_RESULTS) continue;
+      if (metadata.status === "running" || this.jobs.has(metadata.id)) continue;
+      const updatedAt = Date.parse(metadata.updatedAt);
+      if (Number.isFinite(updatedAt) && now - updatedAt < PRUNE_MIN_AGE_MS) continue;
+      if (index >= MAX_RETAINED_JOBS) {
+        await removeFile(`${metadata.id}.result.json`);
+        await removeFile(`${metadata.id}.json`);
+      } else if (resultIds.has(metadata.id) || metadata.resultAvailable) {
+        await removeFile(`${metadata.id}.result.json`);
+        if (metadata.resultAvailable) {
+          metadata.resultAvailable = false;
+          await this.persistMetadata(metadata);
+        }
       }
     }
   }
@@ -377,6 +502,7 @@ export class GenerationJobsStore implements GenerationJobs {
         if (record.timer) clearTimeout(record.timer);
         if (record.workSettled) this.jobs.delete(id);
         record.resolveSettled();
+        this.schedulePrune();
       }
     })();
     return promise;
@@ -429,6 +555,7 @@ export class GenerationJobsStore implements GenerationJobs {
     if (this.closing) return;
     this.closing = true;
     await this.ready;
+    if (this.pruning) await this.pruning;
     const records = [...this.jobs.values()];
     for (const record of records) {
       if (record.metadata.status === "running") {

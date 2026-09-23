@@ -6656,7 +6656,7 @@ assert.match(
 );
 assert.match(
   characterEditorSource,
-  /"mari-editor-avatar-tile group relative"/u,
+  /"mari-editor-avatar-tile group relative[^"]*"/u,
   "The Metadata avatar preview must contain absolutely positioned saved crops",
 );
 assert.match(

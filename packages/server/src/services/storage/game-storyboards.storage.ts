@@ -224,6 +224,11 @@ export function createGameStoryboardsStorage(db: DB) {
       return rows[0] ?? null;
     },
 
+    async remove(id: string) {
+      await db.delete(gameTurnStoryboardKeyframes).where(eq(gameTurnStoryboardKeyframes.storyboardId, id));
+      await db.delete(gameTurnStoryboards).where(eq(gameTurnStoryboards.id, id));
+    },
+
     async removeByChatId(chatId: string) {
       const boards = await this.listByChatId(chatId);
       for (const board of boards) {

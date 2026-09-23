@@ -189,7 +189,14 @@ export async function workspacePolicyPaths(workspaceRoot: string) {
   const canonicalWorkspaceRoot = realpathSync(resolve(workspaceRoot));
   const visit = async (path: string) => {
     const requestedPolicy = workspacePathAccessPolicy(workspaceRoot, path);
-    const canonicalPolicy = workspacePathAccessPolicy(canonicalWorkspaceRoot, realpathSync(path));
+    let canonicalPath = path;
+    try {
+      canonicalPath = realpathSync(path);
+    } catch {
+      /* dangling or looping link: judge it by its lexical path; lstat below
+         still sees it as a link and the walk never follows it */
+    }
+    const canonicalPolicy = workspacePathAccessPolicy(canonicalWorkspaceRoot, canonicalPath);
     const policy =
       requestedPolicy === "forbidden" || canonicalPolicy === "forbidden"
         ? "forbidden"

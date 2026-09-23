@@ -249,6 +249,13 @@ class SpriteGenerationTimeoutError extends Error {
   }
 }
 
+// generationJobs.run rejects a timed-out job with a plain AbortError, so match that as well as the legacy deadline error.
+function isSpriteGenerationTimeoutError(err: unknown): boolean {
+  if (err instanceof SpriteGenerationTimeoutError) return true;
+  const e = err as { name?: unknown; message?: unknown; code?: unknown } | null | undefined;
+  return e?.code === "ME_TIMEOUT" || (e?.name === "AbortError" && e?.message === "Generation job timed out");
+}
+
 function spriteGenerationAbortError(signal: AbortSignal): Error {
   return signal.reason instanceof Error ? signal.reason : new Error("Sprite generation cancelled");
 }
@@ -2238,7 +2245,7 @@ export async function spritesRoutes(app: FastifyInstance) {
       const failedExpressions = Array.isArray(err?.failedExpressions)
         ? { failedExpressions: err.failedExpressions }
         : {};
-      return reply.status(err instanceof SpriteGenerationTimeoutError ? 504 : 500).send({
+      return reply.status(isSpriteGenerationTimeoutError(err) ? 504 : 500).send({
         error: err?.message || "Animated expression generation failed",
         ...failedExpressions,
       });
@@ -2626,7 +2633,7 @@ export async function spritesRoutes(app: FastifyInstance) {
       const failedExpressions = Array.isArray(err?.failedExpressions)
         ? { failedExpressions: err.failedExpressions }
         : {};
-      return reply.status(err instanceof SpriteGenerationTimeoutError ? 504 : 500).send({
+      return reply.status(isSpriteGenerationTimeoutError(err) ? 504 : 500).send({
         error: err?.message || "Sprite sheet generation failed",
         ...failedExpressions,
       });

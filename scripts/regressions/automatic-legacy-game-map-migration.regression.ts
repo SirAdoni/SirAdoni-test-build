@@ -10,6 +10,7 @@ import {
   resetCapabilityServices,
 } from "../../packages/server/src/services/capability-packages/capability-service-registry.service.js";
 import { migrateLegacyGameMapsAtBoot } from "../../packages/server/src/services/capability-packages/automatic-legacy-game-map-migration.js";
+import { resolveGameStartWorldMapPatch } from "../../packages/server/src/services/game/world-map-mode.js";
 
 const root = mkdtempSync(join(tmpdir(), "marinara-legacy-map-migration-"));
 const rollbackRoot = mkdtempSync(join(tmpdir(), "marinara-legacy-map-rollback-"));
@@ -36,7 +37,15 @@ try {
       id: "legacy",
       name: "Legacy",
       mode: "game",
-      metadata: JSON.stringify({ gameMap: nodeMap, activeAgentIds: ["combat"], unrelated: "keep" }),
+      metadata: JSON.stringify({ gameMap: nodeMap, enableAgents: false, activeAgentIds: ["combat"], unrelated: "keep" }),
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: "legacy-agents-on",
+      name: "Legacy agents on",
+      mode: "game",
+      metadata: JSON.stringify({ gameMap: nodeMap, enableAgents: true, gameSetupConfig: { keep: true } }),
       createdAt: now,
       updatedAt: now,
     },
@@ -72,14 +81,23 @@ try {
   });
 
   const first = await migrateLegacyGameMapsAtBoot(db);
-  assert.equal(first.migrated, 1);
+  assert.equal(first.migrated, 2);
   assert.equal(first.failed, 1, "malformed chat is isolated");
   const migrated = (await db.select().from(chats).where(eq(chats.id, "legacy")))[0]!;
   const metadata = JSON.parse(migrated.metadata) as Record<string, any>;
   assert.deepEqual(metadata.gameMap, nodeMap, "legacy source map is retained");
   assert.equal(metadata.unrelated, "keep");
-  assert.equal(metadata.gameSetupConfig.gameWorldMapMode, "hierarchical");
+  assert.equal(metadata.gameSetupConfig, undefined, "agents-off chat keeps its standard start mode");
   assert.deepEqual(metadata.activeAgentIds, ["combat", "hierarchical-maps"]);
+  assert.equal(metadata.enableAgents, false, "umbrella agent switch is preserved");
+  const agentsOffStart = resolveGameStartWorldMapPatch(metadata);
+  assert.equal(agentsOffStart.resolution, "unchanged", "starting an agents-off migrated chat keeps the legacy map");
+  assert.deepEqual(agentsOffStart.patch, {});
+  const agentsOn = JSON.parse((await db.select().from(chats).where(eq(chats.id, "legacy-agents-on")))[0]!.metadata);
+  assert.equal(agentsOn.gameSetupConfig.gameWorldMapMode, "hierarchical");
+  assert.equal(agentsOn.gameSetupConfig.keep, true);
+  assert.equal(agentsOn.enableAgents, true);
+  assert.equal(resolveGameStartWorldMapPatch(agentsOn).resolution, "hierarchical");
   const snapshot = (await db.select().from(spatialContextSnapshots).where(eq(spatialContextSnapshots.chatId, "legacy")))[0]!;
   assert.equal(snapshot.currentLocationId, "current");
   assert.equal(snapshot.source, "bootstrap");

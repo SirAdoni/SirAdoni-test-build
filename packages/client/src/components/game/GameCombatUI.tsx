@@ -3340,7 +3340,7 @@ function CombatantCard({
           impactTone === "miss" && "game-combatant-impact--miss",
         )}
       >
-        {spriteKind.kind === "url" ? (
+        {spriteKind.kind === "url" && !canSelect ? (
           <div className="relative inline-flex h-full w-full items-center" onClick={(event) => event.stopPropagation()}>
             <CharacterPhoto
               src={spriteKind.value}

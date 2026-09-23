@@ -28,4 +28,42 @@ assert.deepEqual(addInventoryQuantity(items, "Potion", 1), [
 assert.deepEqual(addInventoryQuantity([items[0]!], "Potion", 1), [
   { itemId: "a", name: "Potion", quantity: 3 },
 ]);
+
+const legacy = [
+  { name: "Sword", quantity: 1 },
+  { name: "Potion", quantity: 2 },
+];
+assert.deepEqual(
+  renameInventoryIdentity(legacy, { name: "Sword" }, "Potion"),
+  { items: [{ name: "Potion", quantity: 3 }], resolvedName: "Potion" },
+  "renaming an id-less row onto an existing name merges like before",
+);
+assert.deepEqual(
+  renameInventoryIdentity(
+    [
+      { name: "Sword", quantity: 1, description: "Rusty blade", location: "backpack" },
+      { name: "Potion", quantity: 2, description: "", location: "belt" },
+    ],
+    { name: "Sword" },
+    "Potion",
+  ),
+  {
+    items: [{ name: "Potion", quantity: 3, description: "Rusty blade", location: "belt" }],
+    resolvedName: "Potion",
+  },
+  "a merge keeps the source description and location when the target has none",
+);
+const legacyDuplicates = [
+  { name: "Potion", quantity: 2 },
+  { name: "Potion", quantity: 1 },
+];
+assert.equal(findInventoryIndex(legacyDuplicates, { name: "Potion" }), 0, "id-less duplicates use the first row");
+assert.deepEqual(updateInventoryQuantity(legacyDuplicates, { name: "Potion" }, -1), [
+  { name: "Potion", quantity: 1 },
+  legacyDuplicates[1],
+]);
+assert.deepEqual(addInventoryQuantity(legacyDuplicates, "Potion", 1), [
+  { name: "Potion", quantity: 3 },
+  legacyDuplicates[1],
+]);
 console.log("game inventory identity regression: ok");

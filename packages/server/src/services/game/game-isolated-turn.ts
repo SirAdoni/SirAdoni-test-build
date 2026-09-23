@@ -202,7 +202,11 @@ function normalizeActorOutput(
 }
 
 function quoteDialogue(value: string): string {
-  return `"${value.replace(/\\/gu, "\\\\").replace(/"/gu, '\\"')}"`;
+  // No backslash escaping: the client parser only strips the outer pair of quotes.
+  const trimmed = value.trim();
+  const inner =
+    trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"') ? trimmed.slice(1, -1) : trimmed;
+  return `"${inner}"`;
 }
 
 function composeContent(

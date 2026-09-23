@@ -847,6 +847,7 @@ export async function generateNpcPortrait(req: NpcPortraitRequest): Promise<stri
     }
     return null;
   } catch (err) {
+    if (req.signal?.aborted) throw err;
     logger.warn(err, '[game-asset-gen] Failed to generate portrait for "%s"', req.npcName);
     return null;
   }

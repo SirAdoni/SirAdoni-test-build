@@ -6,7 +6,6 @@ import { X } from "lucide-react";
 import { useGameModeStore } from "../../stores/game-mode.store";
 import type { AvatarCrop } from "@marinara-engine/shared";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
-import { CharacterPhoto } from "../ui/CharacterPhoto";
 import { NEUTRAL_SURFACE_VARIABLES } from "../ui/neutral-surface-styles";
 import { useReducedAmbientEffects } from "../../hooks/use-reduced-ambient-effects";
 import { useTranslation as useUiTranslation } from "react-i18next";
@@ -84,11 +83,13 @@ function PartyAvatar({
         </span>
       );
     }
+    // The party bar promises "click to open character sheet", so the portrait opens the sheet directly
+    // instead of going through the photo lightbox first.
     return (
-      <CharacterPhoto
-        src={avatarSrc}
-        name={member.name}
-        onUpdate={onOpen}
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={member.name}
         className={cn(
           "relative block h-8 w-8 overflow-hidden rounded-lg border border-[var(--marinara-chat-chrome-button-border)] shadow-lg shadow-black/25 transition-colors group-hover:border-[var(--marinara-chat-chrome-button-border-hover)]",
           className,
@@ -100,18 +101,26 @@ function PartyAvatar({
           className="h-full w-full object-cover object-top"
           style={getAvatarCropStyle(avatarCrop)}
         />
-      </CharacterPhoto>
+      </button>
+    );
+  }
+
+  const fallbackClass = cn(
+    "flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-xs font-bold text-[var(--marinara-chat-chrome-button-text-hover)] shadow-lg shadow-black/25 transition-colors group-hover:border-[var(--marinara-chat-chrome-button-border-hover)]",
+    className,
+  );
+  const fallbackStyle = member.nameColor ? { color: member.nameColor } : undefined;
+
+  if (onOpen) {
+    return (
+      <button type="button" onClick={onOpen} className={fallbackClass} style={fallbackStyle} aria-label={member.name}>
+        {member.name[0]}
+      </button>
     );
   }
 
   return (
-    <span
-      className={cn(
-        "flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-xs font-bold text-[var(--marinara-chat-chrome-button-text-hover)] shadow-lg shadow-black/25 transition-colors group-hover:border-[var(--marinara-chat-chrome-button-border-hover)]",
-        className,
-      )}
-      style={member.nameColor ? { color: member.nameColor } : undefined}
-    >
+    <span className={fallbackClass} style={fallbackStyle}>
       {member.name[0]}
     </span>
   );

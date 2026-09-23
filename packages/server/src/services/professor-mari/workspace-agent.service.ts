@@ -3643,23 +3643,23 @@ ${sections.join("\n\n")}
     if (!stats.isDirectory()) throw new Error("ls path must be a directory");
     const limit = numberArg(args, "limit", 500, 1, 1000);
     const entries = await readdir(dirPath, { withFileTypes: true });
-    const names = entries
-      .filter((entry) => {
-        try {
-          this.resolveWorkspacePath(join(dirPath, entry.name));
-          return true;
-        } catch {
-          return false;
-        }
-      })
+    const allowed = entries.filter((entry) => {
+      try {
+        this.resolveWorkspacePath(join(dirPath, entry.name));
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    const names = allowed
       .map((entry) => `${entry.name}${entry.isDirectory() ? "/" : ""}`)
       .sort((a, b) => a.localeCompare(b))
       .slice(0, limit);
-    const truncated = entries.length > names.length;
+    const truncated = allowed.length > names.length;
     return [
       `Directory: ${this.displayPath(dirPath)}`,
       ...names,
-      truncated ? `… ${entries.length - names.length} more` : "",
+      truncated ? `… ${allowed.length - names.length} more` : "",
     ]
       .filter(Boolean)
       .join("\n");

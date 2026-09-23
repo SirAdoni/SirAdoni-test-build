@@ -436,8 +436,9 @@ export function sanitizeGameNpcAvatarUrls(npcs: GameNpc[], options: GameNpcSanit
   const locationNames = options.locationNames ?? [];
   const ignoredNpcIds = new Set(options.ignoredNpcIds ?? []);
   const autoCreatedCharacterIds = new Set(options.autoCreatedCharacterIds ?? []);
+  const knownNpcNames = avatarSanitized.map((npc) => npc.name);
   const filtered = avatarSanitized.filter((npc) => {
-    if (isIgnoredGameNpcIdentity(ignoredNpcIds, npc.id, npc.name)) {
+    if (isIgnoredGameNpcIdentity(ignoredNpcIds, npc.id, npc.name, knownNpcNames)) {
       changed = true;
       return false;
     }

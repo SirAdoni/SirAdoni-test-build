@@ -22,8 +22,8 @@ assert.match(
 );
 assert.match(
   generateRouteSource,
-  /if \(!toolPlannerAttempted && !input\.impersonate && cacheGuardApplies\(conn\.provider, narratorMessages\)\)/u,
-  "narrator cache guard is skipped after tool planner side effects",
+  /if \(!input\.impersonate && cacheGuardApplies\(conn\.provider, narratorMessages\)\)[\s\S]{0,700}if \(!toolPlannerAttempted && guard\.enabled && !input\.cacheGuardAcknowledged\)/u,
+  "narrator cache guard hold is skipped after tool planner side effects, but its fingerprint is still recorded",
 );
 
 let app: {

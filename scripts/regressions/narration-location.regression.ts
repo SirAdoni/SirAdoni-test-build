@@ -56,7 +56,44 @@ const ambiguous = {
   knownLocations: [...projection.knownLocations!, { id: "other-dining", path: "Other > Dining Room" }],
 };
 assert.deepEqual(parse({ ...discovery, name: "Dining Room" }, ambiguous), { type: "move", destinationId: "dining" });
-assert.throws(() => parse({ ...discovery, name: "Dining Room", parentId: "bedroom" }, ambiguous), /ambiguous/);
+assert.deepEqual(parse({ ...discovery, name: "Dining Room", parentId: "bedroom" }, ambiguous), {
+  type: "discover",
+  name: "Dining Room",
+  parentId: "bedroom",
+  relation: "place",
+  description,
+});
+const otherBuilding = {
+  ...projection,
+  knownLocations: [
+    ...projection.knownLocations!,
+    { id: "old", path: "Old" },
+    { id: "old-kitchen", path: "Old > Kitchen" },
+    { id: "inn", path: "Inn" },
+  ],
+};
+assert.deepEqual(parse({ ...discovery, name: "Kitchen", parentId: "inn" }, otherBuilding), {
+  type: "discover",
+  name: "Kitchen",
+  parentId: "inn",
+  relation: "place",
+  description,
+});
+assert.deepEqual(parse({ ...discovery, name: "Kitchen", parentId: "old" }, otherBuilding), {
+  type: "move",
+  destinationId: "old-kitchen",
+});
+const twoInside = {
+  ...otherBuilding,
+  knownLocations: [
+    ...otherBuilding.knownLocations,
+    { id: "old-wing", path: "Old > Wing" },
+    { id: "old-wing-kitchen", path: "Old > Wing > Kitchen" },
+    { id: "old-east", path: "Old > East" },
+    { id: "old-east-kitchen", path: "Old > East > Kitchen" },
+  ].filter(({ id }) => id !== "old-kitchen"),
+};
+assert.throws(() => parse({ ...discovery, name: "Kitchen", parentId: "old" }, twoInside), /ambiguous/);
 
 const definition = {
   locations: Array.from({ length: 65 }, (_, i) => ({

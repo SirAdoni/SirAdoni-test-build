@@ -226,6 +226,7 @@ async function generateElevenLabsGameAudio(
   kind: "sfx" | "music",
   prompt: string,
   context?: GameAudioContext,
+  signal?: AbortSignal,
 ): Promise<{ tag: string; path: string; cached: boolean }> {
   const normalizedPrompt = normalizeGameAudioPrompt(prompt);
   const hash = createHash("sha256").update(`${kind}\0${normalizedPrompt.toLowerCase()}`).digest("hex");
@@ -274,6 +275,8 @@ async function generateElevenLabsGameAudio(
   // Longer compositions take the provider longer to render; give context
   // tracks the headroom a 2-minute piece needs.
   const timeoutMs = context ? 300_000 : 180_000;
+  // A cancelled generation job must also abort the paid provider request.
+  signal?.throwIfAborted();
   const response = await safeFetch(`${elevenLabsApiRoot(configuredBaseUrl(cfg))}${endpoint}`, {
     method: "POST",
     headers: elevenLabsHeaders(cfg.apiKey),
@@ -286,7 +289,7 @@ async function generateElevenLabsGameAudio(
             force_instrumental: true,
           },
     ),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
     policy: {
       allowLocal: false,
       allowedProtocols: ["https:"],
@@ -304,6 +307,7 @@ async function generateElevenLabsGameAudio(
     throw new Error("ElevenLabs returned a non-audio response");
   }
 
+  signal?.throwIfAborted();
   await mkdir(targetDirectory, { recursive: true });
   const temporaryPath = join(targetDirectory, `.${hash}.${randomUUID()}.tmp`);
   try {
@@ -1456,7 +1460,7 @@ export async function ttsRoutes(app: FastifyInstance) {
             label: `Game ${kind}`,
             timeoutMs: context ? 300_000 : 180_000,
           },
-          () => generateElevenLabsGameAudio(cfg, kind, normalizedPrompt, context),
+          (signal) => generateElevenLabsGameAudio(cfg, kind, normalizedPrompt, context, signal),
         )
         .finally(() => {
           gameAudioGenerationLocks.delete(lockKey);

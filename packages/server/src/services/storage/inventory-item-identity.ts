@@ -71,23 +71,31 @@ function reconcileRows(
     const name = normalizedName(row.name);
     if (name) nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
   }
-  const result: IdentityRow[] = [];
-  for (const original of source) {
-    const row = { ...original };
+  // Pass 1: reserve explicit known/trusted ids first (first occurrence wins), so a
+  // name match on an earlier row cannot take the id of a renamed, identified item.
+  const assigned: (string | null)[] = source.map(() => null);
+  source.forEach((row, index) => {
     const incomingId = rowId(row);
-    let id: string | null = null;
     if (incomingId && (known.has(incomingId) || trustedIncomingIds.has(incomingId)) && !claimed.has(incomingId)) {
-      id = incomingId;
-    } else {
+      assigned[index] = incomingId;
+      claimed.add(incomingId);
+    }
+  });
+  // Pass 2: name-based matching only for rows still without an id.
+  const result: IdentityRow[] = [];
+  for (const [index, original] of source.entries()) {
+    const row = { ...original };
+    let id: string | null = assigned[index] ?? null;
+    if (!id) {
       const candidates = [...(previousNameIds.get(normalizedName(row.name)) ?? [])].filter(
         (candidate) => !claimed.has(candidate),
       );
       if (nameCounts.get(normalizedName(row.name)) === 1 && candidates.length === 1) id = candidates[0]!;
       else if (nameCounts.get(normalizedName(row.name)) === 1 && candidates.length === 0) id = newId();
+      if (id) claimed.add(id);
     }
     if (id) {
       row.itemId = id;
-      claimed.add(id);
     } else {
       delete row.itemId;
     }

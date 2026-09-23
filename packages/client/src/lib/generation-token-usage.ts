@@ -20,6 +20,10 @@ function isClaudeSubscription(provider: string | null | undefined): boolean {
   return typeof provider === "string" && provider.toLowerCase() === "claude_subscription";
 }
 
+function isAnthropicApi(provider: string | null | undefined): boolean {
+  return typeof provider === "string" && provider.toLowerCase() === "anthropic";
+}
+
 function reportedCount(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
@@ -32,11 +36,14 @@ export function normalizeGenerationTokenUsage(
   const cacheRead = reportedCount(generationInfo.tokensCachedPrompt);
   const cacheWrite = reportedCount(generationInfo.tokensCacheWritePrompt);
   const claudeSubscription = isClaudeSubscription(generationInfo.provider);
-  const freshInput = claudeSubscription ? reportedPrompt : null;
+  // Claude-native APIs report uncached input separately from cache reads and writes.
+  const claudeNative = claudeSubscription || isAnthropicApi(generationInfo.provider);
+  const freshInput = claudeNative ? reportedPrompt : null;
+  // The Anthropic API provider omits zero cache fields, so a missing field counts as 0 there.
   const inputTotalExact = claudeSubscription
     ? freshInput != null && cacheRead != null && cacheWrite != null
     : reportedPrompt != null;
-  const inputTotal = claudeSubscription
+  const inputTotal = claudeNative
     ? inputTotalExact
       ? (freshInput ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0)
       : null

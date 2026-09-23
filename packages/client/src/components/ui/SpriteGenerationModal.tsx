@@ -766,11 +766,8 @@ export function SpriteGenerationModal({
     0,
     referenceImageLimit - (useCurrentAvatarReference && hasCurrentAvatarReference ? 1 : 0),
   );
-  useEffect(() => {
-    setReferenceImages((current) =>
-      current.length > maxUploadedReferenceImages ? current.slice(0, maxUploadedReferenceImages) : current,
-    );
-  }, [maxUploadedReferenceImages]);
+  // Uploads past the current connection's limit stay in state (dimmed in the UI) so switching
+  // connections does not discard them; effectiveReferenceImages caps what is actually sent.
   const effectiveReferenceImages = useMemo(
     () =>
       [useCurrentAvatarReference && defaultAvatarUrl ? defaultAvatarUrl : null, ...referenceImages]
@@ -2066,7 +2063,10 @@ export function SpriteGenerationModal({
                       <img
                         src={img}
                         alt={localizeUi("ui.ui.spritegenerationmodal.referenceValue1", { value1: idx + 1 })}
-                        className="h-20 w-20 rounded-lg object-cover ring-1 ring-[var(--border)]"
+                        className={cn(
+                          "h-20 w-20 rounded-lg object-cover ring-1 ring-[var(--border)]",
+                          idx >= maxUploadedReferenceImages && "opacity-40",
+                        )}
                       />
                       <button
                         onClick={() => removeReferenceImage(idx)}

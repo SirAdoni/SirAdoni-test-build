@@ -79,7 +79,13 @@ export interface GameNpcCharacterCandidate {
   /** Generated profile stays separate from observed facts used by the tracker. */
   profile?: NpcProfile;
   npcId: string;
+  /** Durable card link from the roster NPC (npc.characterId). */
   characterId?: string | null;
+  /**
+   * Free-form tracker id ("ID or name"). Only a lookup hint: it may be a roster
+   * id or a name, so a miss must not be treated as a deleted card link.
+   */
+  presentCharacterId?: string | null;
   name: string;
   description: string;
   descriptionSource?: GameNpc["descriptionSource"];
@@ -399,7 +405,8 @@ export function collectGameNpcCharacterCandidates(input: {
     const npcId = cleanText(npc.id, 200) || buildStableGameNpcId(name);
     candidates.set(npcId, {
       npcId,
-      characterId: linkedCharacterId ?? optionalString(present?.characterId),
+      characterId: linkedCharacterId,
+      presentCharacterId: linkedCharacterId ? null : optionalString(present?.characterId),
       name,
       description,
       descriptionSource: npc.descriptionSource,
@@ -540,9 +547,7 @@ function getAutoNpcProvenance(data: Record<string, unknown>): AutoNpcProvenance 
     ...(typeof value.profileSourceMessageId === "string"
       ? { profileSourceMessageId: value.profileSourceMessageId }
       : {}),
-    ...(typeof value.creativeAdditions === "string"
-      ? { creativeAdditions: cleanText(value.creativeAdditions, 4000) }
-      : {}),
+    ...(typeof value.creativeAdditions === "string" ? { creativeAdditions: value.creativeAdditions } : {}),
     managed: {
       ...(typeof parseRecord(value.managed).personality === "string"
         ? { personality: String(parseRecord(value.managed).personality) }
@@ -960,7 +965,8 @@ async function updateLinkedAutoNpcCard(input: {
     versionedContentChanged = true;
   }
 
-  const currentAppearance = cleanText(currentData.extensions?.appearance, 4_000);
+  const currentAppearance =
+    typeof currentData.extensions?.appearance === "string" ? currentData.extensions.appearance : "";
   const nextAppearance =
     input.candidate.profile?.appearance ||
     (currentProvenance.profileSourceKey ? currentAppearance : input.candidate.appearance) ||
@@ -1201,7 +1207,8 @@ export async function syncGameNpcCharacters(input: {
   for (const candidate of input.candidates) {
     if (retractedNpcIds.has(candidate.npcId)) continue;
     if (!(await targetIsCurrent(candidate.npcId))) break;
-    let row = candidate.characterId ? await store.getById(candidate.characterId) : null;
+    const directCharacterId = candidate.characterId || candidate.presentCharacterId;
+    let row = directCharacterId ? await store.getById(directCharacterId) : null;
     if (row) {
       const directData = characterDataFromRow(row);
       const directProvenance = getAutoNpcProvenance(directData as unknown as Record<string, unknown>);

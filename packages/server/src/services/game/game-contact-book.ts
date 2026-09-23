@@ -36,6 +36,17 @@ function identity(row: any) {
 function norm(value: string) {
   return value.trim().toLocaleLowerCase();
 }
+function readIds(value: unknown): string[] {
+  let parsed = value;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string" && id.length > 0) : [];
+}
 
 export async function buildGameContactBook(db: DB, chatId: string): Promise<GameContactBookResult> {
   const current = (await db.select().from(chats).where(eq(chats.id, chatId)).limit(1))[0];
@@ -119,23 +130,26 @@ export async function buildGameContactBook(db: DB, chatId: string): Promise<Game
     ids.add(String(entity.entityId));
     relationshipEntityIdsByOwner.set(ownerId, ids);
   }
+  // The ordering depends only on fixed inputs, so sort once and memoize the
+  // per-contact result instead of re-sorting the whole table for every name.
+  const scopedRelationships = (relationshipRows as any[])
+    .filter((relationship) => eligibleChatIds.has(String(relationship.chatId)))
+    .sort(
+      (left, right) =>
+        (sessionForChat.get(String(left.chatId)) ?? Number.MAX_SAFE_INTEGER) -
+          (sessionForChat.get(String(right.chatId)) ?? Number.MAX_SAFE_INTEGER) ||
+        String(left.updatedAt ?? left.createdAt ?? "").localeCompare(
+          String(right.updatedAt ?? right.createdAt ?? ""),
+        ) ||
+        Number(left.revision ?? 0) - Number(right.revision ?? 0),
+    );
+  const relationshipCache = new Map<string, string | null | undefined>();
   const relationshipFor = (contactId: string): string | null | undefined => {
+    if (relationshipCache.has(contactId)) return relationshipCache.get(contactId);
     const contactIds = new Set([contactId, ...(relationshipEntityIdsByOwner.get(contactId) ?? [])]);
     let selected: string | undefined;
     let matched = false;
-    const scopedRelationships = (relationshipRows as any[])
-      .filter((relationship) => eligibleChatIds.has(String(relationship.chatId)))
-      .sort(
-        (left, right) =>
-          (sessionForChat.get(String(left.chatId)) ?? Number.MAX_SAFE_INTEGER) -
-            (sessionForChat.get(String(right.chatId)) ?? Number.MAX_SAFE_INTEGER) ||
-          String(left.updatedAt ?? left.createdAt ?? "").localeCompare(
-            String(right.updatedAt ?? right.createdAt ?? ""),
-          ) ||
-          Number(left.revision ?? 0) - Number(right.revision ?? 0),
-      );
     for (const relationship of scopedRelationships) {
-      if (!eligibleChatIds.has(String(relationship.chatId))) continue;
       const sourceContact = contactIds.has(String(relationship.sourceEntityId));
       const targetContact = contactIds.has(String(relationship.targetEntityId));
       const sourcePersona = personaEntityIds.has(String(relationship.sourceEntityId));
@@ -151,26 +165,39 @@ export async function buildGameContactBook(db: DB, chatId: string): Promise<Game
         selected = undefined;
       }
     }
-    return matched ? (selected ?? null) : undefined;
+    const result = matched ? (selected ?? null) : undefined;
+    relationshipCache.set(contactId, result);
+    return result;
   };
   let pendingSessions = 0;
   pendingSessions += skippedSessions;
   let ambiguousContacts = 0;
   for (const row of rows) {
     const rowMetadata = object(row.metadata);
-    const known = [
-      ...(Array.isArray(rowMetadata.gameNpcs) ? rowMetadata.gameNpcs : []),
-      ...library
-        .filter((entry: any) => typeof entry.name === "string")
-        .map((entry: any) => ({ ...entry, characterId: entry.id })),
-    ];
+    const npcs = Array.isArray(rowMetadata.gameNpcs) ? rowMetadata.gameNpcs : [];
+    // Library cards that belong to this campaign (chat cast, party, or linked
+    // NPCs) are matched alongside the NPCs. The rest of the library is only a
+    // fallback, so an unrelated card that shares a name cannot make a campaign
+    // NPC ambiguous.
+    const scopedLibraryIds = new Set<string>([
+      ...readIds(row.characterIds),
+      ...readIds(rowMetadata.gamePartyCharacterIds),
+      ...npcs.map((npc: any) => (typeof npc?.characterId === "string" ? npc.characterId : "")).filter(Boolean),
+    ]);
+    const namedLibrary = library
+      .filter((entry: any) => typeof entry.name === "string")
+      .map((entry: any) => ({ ...entry, characterId: entry.id }));
+    const known = [...npcs, ...namedLibrary.filter((entry: any) => scopedLibraryIds.has(entry.id))];
+    const fallback = namedLibrary.filter((entry: any) => !scopedLibraryIds.has(entry.id));
     const timeline = await readSceneTimeline(db, row.id);
     if (timeline.remaining > 0) pendingSessions += 1;
     for (const scene of timeline.scenes) {
       const names = [...new Set([...scene.present, ...scene.participants])];
       for (const name of names) {
         if (!name || (personaName && norm(name) === norm(personaName))) continue;
-        const candidates = known.filter((entry: any) => norm(String(entry.name ?? "")) === norm(name));
+        const matchesName = (entry: any) => norm(String(entry.name ?? "")) === norm(name);
+        let candidates = known.filter(matchesName);
+        if (candidates.length === 0) candidates = fallback.filter(matchesName);
         const ids = [
           ...new Set(candidates.map((entry: any) => String(entry.characterId || entry.id || "")).filter(Boolean)),
         ];

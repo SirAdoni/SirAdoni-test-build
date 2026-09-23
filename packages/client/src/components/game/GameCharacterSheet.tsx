@@ -184,12 +184,12 @@ function normalizeDraftExtraEntries(value: unknown) {
 }
 
 function normalizeDraftAttributes(value: unknown) {
-  const normalizedValue = normalizeRpgStatAttributes(value);
-  if (normalizedValue.length === 0) {
+  // Only fall back to defaults when there is no attribute container at all; an empty list is kept empty.
+  if (!Array.isArray(value) && (!value || typeof value !== "object")) {
     return DEFAULT_ATTRIBUTES.map((attr) => ({ ...attr }));
   }
 
-  const entries = normalizedValue
+  const entries = normalizeRpgStatAttributes(value)
     .map((entry) => ({ name: normalizeTextValue(entry.name).trim(), value: normalizeNumberValue(entry.value, 0) }))
     .filter((entry) => !!entry.name);
 

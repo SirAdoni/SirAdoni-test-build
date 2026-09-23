@@ -400,16 +400,15 @@ export async function resolveGameKeeperLorebook(tx: DB, chatId: string, metadata
         campaignChatIds.includes(book.chatId),
     )
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
-  const canonical = candidates[0];
-  if (canonical) {
+  const attachKeeperBook = async (bookId: string) => {
     const currentMetadata = jsonObject(chat.metadata);
     const active = Array.isArray(currentMetadata.activeLorebookIds)
       ? currentMetadata.activeLorebookIds.filter((id): id is string => typeof id === "string")
       : [];
-    const nextActive = [...new Set([...active, canonical.id])];
+    const nextActive = [...new Set([...active, bookId])];
     if (
       JSON.stringify(nextActive) !== JSON.stringify(active) ||
-      currentMetadata.gameLorebookKeeperLorebookId !== canonical.id
+      currentMetadata.gameLorebookKeeperLorebookId !== bookId
     ) {
       await tx
         .update(chats)
@@ -417,18 +416,34 @@ export async function resolveGameKeeperLorebook(tx: DB, chatId: string, metadata
           metadata: JSON.stringify({
             ...currentMetadata,
             activeLorebookIds: nextActive,
-            gameLorebookKeeperLorebookId: canonical.id,
+            gameLorebookKeeperLorebookId: bookId,
           }),
           updatedAt: new Date().toISOString(),
         })
         .where(eq(chats.id, chatId));
     }
+  };
+  const canonical = candidates[0];
+  if (canonical) {
+    await attachKeeperBook(canonical.id);
     return canonical;
   }
   const id = `glk_campaign_${createHash("sha256")
     .update(isolatedScope ? JSON.stringify([identity, chatId]) : identity)
     .digest("hex")
     .slice(0, 32)}`;
+  // A book with this deterministic id can survive its owning chat (chat deletion does not remove
+  // lorebooks) or outlive a metadata change on that chat. Adopt it instead of inserting a duplicate
+  // primary key, which would make every later Keeper write for the campaign fail.
+  const existing = (await tx.select().from(lorebooks).where(eq(lorebooks.id, id)).limit(1))[0];
+  if (existing) {
+    if (existing.sourceAgentId !== GAME_LOREBOOK_KEEPER_SOURCE_ID) return null;
+    if (existing.chatId === null || !campaignChatIds.includes(existing.chatId)) {
+      await tx.update(lorebooks).set({ chatId, updatedAt: new Date().toISOString() }).where(eq(lorebooks.id, id));
+    }
+    await attachKeeperBook(id);
+    return (await tx.select().from(lorebooks).where(eq(lorebooks.id, id)).limit(1))[0] ?? null;
+  }
   const timestamp = new Date().toISOString();
   await tx.insert(lorebooks).values({
     id,

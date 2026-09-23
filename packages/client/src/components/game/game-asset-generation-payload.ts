@@ -55,8 +55,8 @@ function sceneAssetNpcAvatarForceValue(candidate: SceneAssetNpcAvatarCandidate):
 function findNpcAvatar(lookup: Map<string, string>, candidate: SceneAssetNpcAvatarCandidate): string | undefined {
   const keyed = lookup.get(sceneAssetNpcAvatarKey(candidate));
   if (keyed) return keyed;
-  // Compatibility for older callers/tests that supplied normalized-name keys.
-  return candidate.npcId || candidate.id ? undefined : lookup.get(normalizeSceneAssetNameForGeneration(candidate.name));
+  // GameSurface builds name-keyed lookups, so fall back to the normalized name when the id key misses.
+  return lookup.get(normalizeSceneAssetNameForGeneration(candidate.name));
 }
 
 function isChatOwnedNpcAvatar(avatarUrl: string | undefined, chatId: string): boolean {
@@ -125,8 +125,12 @@ export function buildMissingSceneAssetGenerationPayload({
   );
   for (const npc of npcAssetCandidates) {
     const identityKey = sceneAssetNpcAvatarKey(npc);
+    const nameKey = `name:${normalizeSceneAssetNameForGeneration(npc.name)}`;
     const avatarUrl = findNpcAvatar(npcAvatarLookup, npc);
-    if (failedNpcAvatarNameSet.has(identityKey) && isChatOwnedNpcAvatar(avatarUrl, activeChatId)) {
+    if (
+      (failedNpcAvatarNameSet.has(identityKey) || failedNpcAvatarNameSet.has(nameKey)) &&
+      isChatOwnedNpcAvatar(avatarUrl, activeChatId)
+    ) {
       forceNpcAvatarValueSet.add(sceneAssetNpcAvatarForceValue(npc));
     }
   }

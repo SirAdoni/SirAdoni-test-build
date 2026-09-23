@@ -64,7 +64,8 @@ function errorStatus(error: unknown): number | null {
 export function isRetryableGameNpcCharacterSyncError(error: unknown): boolean {
   if (error instanceof Error && error.name === "AbortError") return false;
   const status = errorStatus(error);
-  if (status === null) return true;
+  // apiFetch reports an unreachable server as ApiError status 0 (ME_NETWORK).
+  if (status === null || status === 0) return true;
   return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
 }
 

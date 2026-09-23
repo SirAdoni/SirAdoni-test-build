@@ -211,9 +211,12 @@ export function CharacterLinkedContent({
         if (reference) event.stopPropagation();
       }}
       onClickCapture={(event) => {
-        if ((event.target as Element).closest("button")) return;
-        const id = (event.target as Element).closest<HTMLElement>("[data-character-reference]")?.dataset
-          .characterReference;
+        const target = event.target as Element;
+        const reference = target.closest<HTMLElement>("[data-character-reference]");
+        const button = target.closest("button");
+        // Skip other buttons (e.g. inside an avatar), but not a reference that is itself a <button>.
+        if (!reference || (button && button !== reference)) return;
+        const id = reference.dataset.characterReference;
         if (!id || !ids.has(id)) return;
         event.preventDefault();
         event.stopPropagation();

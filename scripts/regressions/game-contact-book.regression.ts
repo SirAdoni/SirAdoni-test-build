@@ -244,6 +244,24 @@ try {
     ["hostile"],
     "old reputation groups do not survive a changed opinion",
   );
+  await db.insert(schema.characters).values({
+    id: "char-other-mira",
+    data: json({ name: "Mira" }),
+    createdAt: now,
+    updatedAt: now,
+  });
+  await db.insert(schema.chats).values({
+    ...chat("mira-session", 1, { gameNpcs: [{ id: "npc-mira", name: "Mira" }] }),
+    groupId: "mira-campaign",
+  });
+  await db.insert(schema.messages).values([scene("mira-session", "mira-message", ["Mira"])]);
+  const miraResult = await buildGameContactBook(db, "mira-session");
+  assert.deepEqual(
+    miraResult.contacts.map((contact) => contact.id),
+    ["npc-mira"],
+    "an unrelated library card with the same name does not make a campaign NPC ambiguous",
+  );
+  assert.equal(miraResult.coverage.complete, true, "unrelated library cards do not block coverage");
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

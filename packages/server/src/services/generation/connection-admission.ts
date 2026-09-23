@@ -144,17 +144,14 @@ export function tryBackgroundConnection(
   const normalizedGroupId = groupId?.trim() || null;
   const joinsActiveGroup =
     state.backgroundActive > 0 && normalizedGroupId !== null && state.backgroundGroupId === normalizedGroupId;
-  if (
-    !joinsActiveGroup &&
-    (state.backgroundActive > 0 ||
-      state.foregroundActive > 0 ||
-      at.getTime() < state.backgroundQuarantinedUntil ||
-      at.getTime() - state.lastForegroundFinishedAt < BACKGROUND_CONNECTION_IDLE_MS)
-  ) {
-    if (at.getTime() < state.backgroundQuarantinedUntil)
-      return { acquired: false, reason: "quarantined", retryAfterMs: state.backgroundQuarantinedUntil - at.getTime() };
-    if (state.foregroundActive > 0) return { acquired: false, reason: "foreground", retryAfterMs: 1000 };
-    if (state.backgroundActive > 0) return { acquired: false, reason: "background", retryAfterMs: 1000 };
+  // Group membership only lets batch members share the connection with each other.
+  // Quarantine, foreground priority and the post-foreground cooldown apply to every caller.
+  if (at.getTime() < state.backgroundQuarantinedUntil)
+    return { acquired: false, reason: "quarantined", retryAfterMs: state.backgroundQuarantinedUntil - at.getTime() };
+  if (state.foregroundActive > 0) return { acquired: false, reason: "foreground", retryAfterMs: 1000 };
+  if (state.backgroundActive > 0 && !joinsActiveGroup)
+    return { acquired: false, reason: "background", retryAfterMs: 1000 };
+  if (at.getTime() - state.lastForegroundFinishedAt < BACKGROUND_CONNECTION_IDLE_MS) {
     return {
       acquired: false,
       reason: "cooldown",

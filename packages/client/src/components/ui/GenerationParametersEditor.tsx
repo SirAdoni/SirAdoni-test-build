@@ -238,6 +238,7 @@ export function GenerationParametersFields({
   value,
   onChange,
   showServiceTier = false,
+  showCustomHeaders = false,
   effectiveParameters,
   provider,
   model,
@@ -442,6 +443,38 @@ export function GenerationParametersFields({
         </div>
       )}
       <div className="space-y-2">
+        <div className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+          <span className="inline-flex items-center gap-1">
+            {localizeUi("settings.generation.postProcessing.label")}
+            <HelpTooltip text={localizeUi("settings.generation.postProcessing.help")} size="0.625rem" />
+          </span>
+          <select
+            aria-label={localizeUi("settings.generation.postProcessing.label")}
+            className="mari-chrome-field mt-1 w-full rounded-md px-3 py-2 text-xs"
+            value={value.singleUserMessage ? "single" : value.strictRoleFormatting ? "apply" : "none"}
+            onChange={(event) =>
+              onChange({
+                ...value,
+                strictRoleFormatting: event.target.value === "apply",
+                singleUserMessage: event.target.value === "single",
+              })
+            }
+          >
+            <option value="apply">{localizeUi("settings.generation.postProcessing.apply")}</option>
+            <option value="none">{localizeUi("settings.generation.postProcessing.none")}</option>
+            <option value="single">{localizeUi("settings.generation.postProcessing.single")}</option>
+          </select>
+          {effectiveLine(
+            effectiveParameters?.singleUserMessage?.value ? "singleUserMessage" : "strictRoleFormatting",
+            localizeUi(
+              effectiveParameters?.singleUserMessage?.value
+                ? "settings.generation.postProcessing.single"
+                : effectiveParameters?.strictRoleFormatting?.value
+                  ? "settings.generation.postProcessing.apply"
+                  : "settings.generation.postProcessing.none",
+            ),
+          )}
+        </div>
         {show("assistantPrefill") && (
           <div>
             <span className="inline-flex items-center gap-1 text-[0.625rem] font-medium text-[var(--muted-foreground)]">
@@ -492,6 +525,13 @@ export function GenerationParametersFields({
           <CustomParametersInput
             value={value.customParameters}
             onChange={(nextValue) => set("customParameters", nextValue)}
+          />
+        )}
+        {showCustomHeaders && (
+          <CustomParametersInput
+            headers
+            value={value.customHeaders ?? {}}
+            onChange={(nextValue) => set("customHeaders", nextValue as Record<string, string>)}
           />
         )}
         {show("serviceTier") && (
