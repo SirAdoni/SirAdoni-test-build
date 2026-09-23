@@ -1063,8 +1063,28 @@ function formatSkillCheckLogContent(
       content: formatResult(result),
     };
   });
+  // When roll_dice already produced a skill check's roll, the GM writes a full
+  // [skill_check: rolls=... total=...] record that adopts it, so the same roll
+  // would be logged twice (as a dice line and as the check). Drop a dice line
+  // whose rolls, modifier and total match an adopted check; each check claims
+  // at most one dice result so genuinely separate rolls still show.
+  const unclaimedChecks = skillChecks
+    .map((skillCheck) => skillCheck.resolvedResult)
+    .filter((result): result is SkillCheckResult => !!result && Array.isArray(result.rolls));
+  const visibleDiceRolls = diceRolls.filter((roll) => {
+    const claimIndex = unclaimedChecks.findIndex(
+      (result) =>
+        result.total === roll.total &&
+        result.modifier === roll.modifier &&
+        result.rolls.length === roll.rolls.length &&
+        result.rolls.every((value, index) => value === roll.rolls[index]),
+    );
+    if (claimIndex < 0) return true;
+    unclaimedChecks.splice(claimIndex, 1);
+    return false;
+  });
   return [
-    ...diceRolls.map(
+    ...visibleDiceRolls.map(
       (roll, index): NarrationSegment => ({
         id: `${message.id}-dice-roll-log-${index}`,
         type: "system",
@@ -6488,6 +6508,7 @@ function buildTruncationLines(rawContent: string): TruncationLine[] {
 export function parseNarrationSegments(
   message: NarrationMessage,
   speakerColors: Map<string, string>,
+  options?: { skipInlineDialogueSplit?: boolean },
 ): NarrationSegment[] {
   // Use stripGmTagsKeepReadables so [Note:] and [Book:] stay inline for position-aware display.
   // Extract them first as placeholders so multi-line readables don't break line-based parsing.
@@ -6685,7 +6706,7 @@ export function parseNarrationSegments(
 
   // If all segments are plain fallback narration (GM didn't use structured format),
   // try to extract inline dialogue like: "Hello," she said. / «Hmm,» he muttered.
-  if (parsed.length > 0 && parsed.every((s) => s.type === "narration")) {
+  if (!options?.skipInlineDialogueSplit && parsed.length > 0 && parsed.every((s) => s.type === "narration")) {
     const expanded = splitInlineDialogue(parsed, message.id, speakerColors);
     if (expanded.some((s) => s.type === "dialogue")) {
       return expanded;
@@ -6705,6 +6726,62 @@ export function parseNarrationSegments(
  * string is always a byte-for-byte prefix of the original raw content.
  */
 function truncateMessageContentAtSegment(rawContent: string, segmentIndexInclusive: number): string {
+  if (segmentIndexInclusive < 0) return "";
+  // `segmentIndexInclusive` is a display index. When parseNarrationSegments
+  // expanded plain paragraphs with splitInlineDialogue, one source paragraph
+  // became several display segments, so counting source paragraphs here kept
+  // text the player never read. Map the display index back to the source.
+  const inlineCut = truncateAtInlineDialogueSegment(rawContent || "", segmentIndexInclusive);
+  if (inlineCut !== null) return inlineCut;
+  return truncateMessageContentAtSourceSegment(rawContent, segmentIndexInclusive);
+}
+
+/**
+ * Display-index truncation for messages whose segments came from the inline
+ * dialogue fallback. Returns null when that fallback did not apply.
+ */
+function truncateAtInlineDialogueSegment(rawContent: string, displayIndexInclusive: number): string | null {
+  const base = parseNarrationSegments({ id: "truncate", content: rawContent } as NarrationMessage, new Map(), {
+    skipInlineDialogueSplit: true,
+  });
+  if (base.length === 0 || !base.every((seg) => seg.type === "narration")) return null;
+  const endsPerBase = base.map((seg) => inlineDialogueSplitEnds(seg.content));
+  const displayCount = endsPerBase.reduce((sum, ends) => sum + ends.length, 0);
+  // parseNarrationSegments only keeps the expansion when it produced dialogue,
+  // which always adds segments; equal counts mean the source indexing applies.
+  if (displayCount === base.length) return null;
+
+  let remaining = displayIndexInclusive;
+  for (let baseIdx = 0; baseIdx < base.length; baseIdx++) {
+    const ends = endsPerBase[baseIdx]!;
+    if (remaining >= ends.length) {
+      remaining -= ends.length;
+      continue;
+    }
+    // Cut lands on the last piece of this paragraph: the whole source segment is read.
+    if (remaining === ends.length - 1) return truncateMessageContentAtSourceSegment(rawContent, baseIdx);
+
+    const segStart = baseIdx > 0 ? truncateMessageContentAtSourceSegment(rawContent, baseIdx - 1).length : 0;
+    const segEnd = truncateMessageContentAtSourceSegment(rawContent, baseIdx).length;
+    const kept = base[baseIdx]!.content.slice(0, ends[remaining]!);
+    // The display text is the source with GM tags stripped and lines trimmed,
+    // so align it to the raw text as a subsequence of its non-space characters.
+    // Stripped tags only add raw characters, so the greedy match never ends
+    // past the true cut point (it can only end slightly early).
+    let rawPos = segStart;
+    for (const ch of kept) {
+      if (/\s/.test(ch)) continue;
+      const found = rawContent.indexOf(ch, rawPos);
+      // Alignment lost: keep only what matched so far rather than risk leaking unread text.
+      if (found < 0 || found >= segEnd) return rawContent.slice(0, rawPos);
+      rawPos = found + 1;
+    }
+    return rawContent.slice(0, rawPos);
+  }
+  return null;
+}
+
+function truncateMessageContentAtSourceSegment(rawContent: string, segmentIndexInclusive: number): string {
   if (segmentIndexInclusive < 0) return "";
 
   const lines = buildTruncationLines(rawContent || "");
@@ -6757,10 +6834,59 @@ function truncateMessageContentAtSegment(rawContent: string, segmentIndexInclusi
   return rawContent.slice(0, lines[lastIncludedLineIdx]!.originalEnd);
 }
 
+const INLINE_DIALOGUE_VERBS = [
+  "said", "says", "whispered", "whispers", "muttered", "mutters", "replied", "replies", "called", "calls",
+  "shouted", "shouts", "asked", "asks", "warned", "warns", "growled", "growls", "hissed", "hisses",
+  "exclaimed", "exclaims", "murmured", "murmurs", "sighed", "sighs", "snapped", "snaps", "barked", "barks",
+  "declared", "declares", "continued", "continues", "added", "adds", "spoke", "speaks", "began", "begins",
+  "remarked", "remarks", "chuckled", "chuckles", "laughed", "laughs", "cried", "cries",
+];
+
+// Capitalized words that look like a speaker but are pronouns or articles ("He said", "The guard said").
+const INLINE_DIALOGUE_NON_SPEAKERS =
+  "(?:I|He|She|They|It|We|You|His|Her|Their|Its|The|A|An|This|That|These|Those|Someone|Something|Everyone)";
+
+/**
+ * Regex for unstructured quoted speech followed by a speaker and a speech verb.
+ * It has no `i` flag: with it, `[A-Z][a-z]+` also matched lowercase words, so
+ * "she said" or "the guard said" produced speakers named "she" / "the guard".
+ * Only the verb list is case-insensitive (each letter expanded to [xX]), and
+ * capitalized pronouns / articles are rejected as speakers.
+ */
+function buildInlineDialogueRegex(): RegExp {
+  const verbs = INLINE_DIALOGUE_VERBS.map((verb) =>
+    verb.replace(/[a-z]/g, (ch) => "[" + ch + ch.toUpperCase() + "]"),
+  ).join("|");
+  return new RegExp(
+    `(?:^|(?<=\\s))(?:${DIALOGUE_QUOTE_CAPTURE_GROUP_PATTERN_SOURCE}|'([^']+)')[,.]?\\s+(?!${INLINE_DIALOGUE_NON_SPEAKERS}\\b)([A-Z][a-z]+(?:\\s[A-Z][a-z]+)?)\\s+(?:${verbs})\\b`,
+    "g",
+  );
+}
+
+/**
+ * End offsets (within `text`) of each display segment that
+ * `splitInlineDialogue` emits for one narration segment. Mirrors its loop.
+ */
+function inlineDialogueSplitEnds(text: string): number[] {
+  const re = buildInlineDialogueRegex();
+  const ends: number[] = [];
+  let lastIndex = 0;
+  let didSplit = false;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    didSplit = true;
+    if (text.slice(lastIndex, match.index).trim()) ends.push(match.index);
+    lastIndex = match.index + match[0].length;
+    ends.push(lastIndex);
+  }
+  if (!didSplit || text.slice(lastIndex).trim()) ends.push(text.length);
+  return ends;
+}
+
 /**
  * Fallback: split narration segments that contain inline quoted speech into
  * separate narration + dialogue segments. Handles patterns like:
- *   "Hello there," she said warmly.
+ *   "Hello there," Mira said warmly.
  *   «Watch out!» Alaric warned.
  *   「小心！」 Alaric warned.
  */
@@ -6770,11 +6896,7 @@ function splitInlineDialogue(
   speakerColors: Map<string, string>,
 ): NarrationSegment[] {
   const result: NarrationSegment[] = [];
-  // Match common dialogue quote pairs followed by optional comma/period and a speaker name.
-  const inlineDialogueRe = new RegExp(
-    `(?:^|(?<=\\s))(?:${DIALOGUE_QUOTE_CAPTURE_GROUP_PATTERN_SOURCE}|'([^']+)')[,.]?\\s+([A-Z][a-z]+(?:\\s[A-Z][a-z]+)?)\\s+(?:said|says|whispered|whispers|muttered|mutters|replied|replies|called|calls|shouted|shouts|asked|asks|warned|warns|growled|growls|hissed|hisses|exclaimed|exclaims|murmured|murmurs|sighed|sighs|snapped|snaps|barked|barks|declared|declares|continued|continues|added|adds|spoke|speaks|began|begins|remarked|remarks|chuckled|chuckles|laughed|laughs|cried|cries)\\b`,
-    "gi",
-  );
+  const inlineDialogueRe = buildInlineDialogueRegex();
 
   for (const seg of segments) {
     if (seg.type !== "narration") {
