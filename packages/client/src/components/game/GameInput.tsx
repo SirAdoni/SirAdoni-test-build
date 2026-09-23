@@ -1,0 +1,981 @@
+// ──────────────────────────────────────────────
+// Game: Input Bar (send message, roll dice, attach files, emoji)
+// ──────────────────────────────────────────────
+import { useState, useRef, useEffect, useCallback, useMemo, type KeyboardEvent } from "react";
+import {
+  Send,
+  Dices,
+  Paperclip,
+  Smile,
+  Users,
+  MessageCircle,
+  MessageSquare,
+  Languages,
+  Loader2,
+  Play,
+} from "lucide-react";
+import { toast } from "sonner";
+import { cn } from "../../lib/utils";
+import { EmojiPicker } from "../ui/EmojiPicker";
+import { SpeechToTextButton } from "../ui/SpeechToTextButton";
+import { useUIStore } from "../../stores/ui.store";
+import { useChatStore } from "../../stores/chat.store";
+import { translateDraftText } from "../../lib/draft-translation";
+import { formatTextQuotes, type DiceRollResult, type PendingSpatialTransition } from "@marinara-engine/shared";
+import { getChatInputShellClass } from "../chat/chat-input-styles";
+import { CapabilityElement } from "../capabilities/CapabilityElement";
+import type { PendingSpatialTransitionDraft } from "../../stores/chat.store";
+import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
+import { applyTextareaQuoteFormat } from "../../lib/textarea-quotes";
+import { SnippetPicker } from "../chat/SnippetPicker";
+import { useSnippetExpansion } from "../../hooks/use-snippet-expansion";
+import { CARD_ASSET_INSERT_EVENT, type CardAssetInsertDetail } from "../../lib/card-asset-links";
+
+interface Attachment {
+  type: string;
+  data: string;
+  name: string;
+}
+
+type AddressMode = "scene" | "party" | "gm";
+
+interface GameInputProps {
+  onSend: (
+    message: string,
+    attachments?: Array<{ type: string; data: string }>,
+    options?: { commitPendingMove?: boolean; pendingSpatialTransition?: PendingSpatialTransition },
+  ) => Promise<boolean | void> | boolean | void;
+  onRollDice: (notation: string) => Promise<DiceRollResult | null>;
+  /** When true, allow "Talk to Party" in the address selector. */
+  hasPartyMembers?: boolean;
+  /** Pending staged destination from the map UI. */
+  pendingMoveLabel?: string | null;
+  /** Clear the staged destination without sending it. */
+  onClearPendingMove?: () => void;
+  /** Blocks turn submission and turn-mutating controls while generation is active. */
+  disabled: boolean;
+  /** Blocks drafting only when the current game view itself is not interactive. */
+  draftDisabled: boolean;
+  isStreaming: boolean;
+  /** When true, renders without the bottom-bar chrome (for embedding inside narration box) */
+  inline?: boolean;
+  /** Key for persisting the input draft to localStorage (e.g. chatId) */
+  draftKey?: string;
+  /** Increment to request focus on the textarea (used by the Interrupt button to jump the player into typing). */
+  focusToken?: number;
+  /** Trigger the same scene illustration action exposed in the Game Gallery. */
+  onIllustrate?: () => void | Promise<void>;
+  spatialCapabilityEnabled?: boolean;
+  /**
+   * When set, the input renders in interrupt-commit mode. `risky` paints the bar red,
+   * highlights the dice button with a glow, and shows a "using dice recommended" hint.
+   * `force` keeps the normal styling — the GM won't be told this is an interrupt.
+   */
+  interruptMode?: "risky" | "force" | null;
+  /**
+   * The chat's session has been concluded, so drafting is locked until a new session
+   * starts. Swaps the placeholder for an explanation and, with `onStartNewSession`,
+   * renders the New Session action right in the composer (#6045).
+   */
+  sessionConcluded?: boolean;
+  onStartNewSession?: () => void;
+  startNewSessionPending?: boolean;
+}
+
+const QUICK_DICE = ["d20", "d6", "2d6", "d10", "d100", "d4", "d8", "d12"];
+
+function readGameInputDraft(storageKey: string | null): string {
+  if (!storageKey) return "";
+  try {
+    const stored = localStorage.getItem(storageKey);
+    if (stored !== null) return stored;
+    const legacy = sessionStorage.getItem(storageKey);
+    if (legacy !== null) {
+      localStorage.setItem(storageKey, legacy);
+      sessionStorage.removeItem(storageKey);
+      return legacy;
+    }
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
+function writeGameInputDraft(storageKey: string | null, value: string): void {
+  if (!storageKey) return;
+  try {
+    localStorage.setItem(storageKey, value);
+    sessionStorage.removeItem(storageKey);
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearGameInputDraft(storageKey: string | null): void {
+  if (!storageKey) return;
+  try {
+    localStorage.removeItem(storageKey);
+    sessionStorage.removeItem(storageKey);
+  } catch {
+    /* ignore */
+  }
+}
+
+function formatDiceResultTag(result: DiceRollResult): string {
+  const rollDetail =
+    result.rolls.length > 1 || result.modifier !== 0
+      ? ` (${result.rolls.join(", ")}${result.modifier ? ` ${result.modifier > 0 ? "+" : ""}${result.modifier}` : ""})`
+      : "";
+  return `[dice: ${result.notation} = ${result.total}${rollDetail}]`;
+}
+
+function isIllustrateSlashCommand(value: string): boolean {
+  return /^\/(?:illustrate|ill)\s*$/i.test(value);
+}
+
+export function GameInput({
+  onSend,
+  onRollDice,
+  hasPartyMembers,
+  pendingMoveLabel,
+  onClearPendingMove,
+  disabled,
+  draftDisabled,
+  isStreaming,
+  inline,
+  draftKey,
+  focusToken,
+  onIllustrate,
+  spatialCapabilityEnabled = false,
+  interruptMode,
+  sessionConcluded = false,
+  onStartNewSession,
+  startNewSessionPending = false,
+}: GameInputProps) {
+  const { t: localizeUi } = useUiTranslation();
+  const { t } = useTranslation();
+  const enterToSend = useUIStore((s) => s.enterToSendGame);
+  const speechToTextEnabled = useUIStore((s) => s.speechToTextEnabled);
+  const quoteFormat = useUIStore((s) => s.quoteFormat);
+  const storageKey = draftKey ? `game-input-draft:${draftKey}` : null;
+  // The live chat key, so async work (file reads, a failed send, a translation) can tell the chat changed.
+  const storageKeyRef = useRef(storageKey);
+  storageKeyRef.current = storageKey;
+  // The last turn text sent from this chat, recalled by Up in an empty composer (one level, like a shell).
+  const lastSentTextRef = useRef<string | null>(null);
+  const [text, setText] = useState(() => readGameInputDraft(storageKey));
+  const [showDice, setShowDice] = useState(false);
+  const [customDice, setCustomDice] = useState("");
+  const [queuedDice, setQueuedDice] = useState<string | null>(null);
+  // A queued roll already made on the server (and in the Dice Log) for a turn whose send failed. Reused on
+  // retry so a failed send is not a free reroll and the log does not get a second row.
+  const preRolledDiceRef = useRef<{ notation: string; tag: string } | null>(null);
+  const [rollingQueuedDice, setRollingQueuedDice] = useState(false);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [isTranslatingDraft, setIsTranslatingDraft] = useState(false);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const [addressMode, setAddressMode] = useState<AddressMode>("scene");
+  const [addressMenuOpen, setAddressMenuOpen] = useState(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const emojiButtonRef = useRef<HTMLButtonElement>(null);
+  const inputBarRef = useRef<HTMLDivElement>(null);
+  const addressButtonRef = useRef<HTMLButtonElement>(null);
+  const addressMenuRef = useRef<HTMLDivElement>(null);
+  // Game mode has no quick menu, so the snippet picker opens from the command palette.
+  const [snippetPickerOpen, setSnippetPickerOpen] = useState(false);
+  const openSnippetPicker = useCallback(() => setSnippetPickerOpen(true), []);
+  const { snippets, expandOnInput, expandOnKeyDown, insertSnippet } = useSnippetExpansion(inputRef, openSnippetPicker);
+  const activeChat = useChatStore((s) => s.activeChat);
+  const pendingSpatialTransition = useChatStore((s) =>
+    draftKey ? (s.pendingSpatialTransitions.get(draftKey) ?? null) : null,
+  );
+  const canSubmitSpatialMove = pendingSpatialTransition?.status === "ready" && addressMode === "scene";
+  const chatMetadata = useMemo(() => {
+    if (!activeChat?.metadata) return {};
+    if (typeof activeChat.metadata !== "string") return activeChat.metadata as Record<string, unknown>;
+    try {
+      return JSON.parse(activeChat.metadata) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  }, [activeChat?.metadata]);
+  const showDraftTranslateButton = chatMetadata.showInputTranslateButton === true;
+
+  useEffect(() => {
+    const draft = readGameInputDraft(storageKey);
+    setText(draft);
+    // The composer is shared across chats: only the text is per chat (its draft), so everything else starts
+    // clean, or a die queued or an image attached in one chat would be sent with the next chat's turn.
+    setAttachments([]);
+    setQueuedDice(null);
+    preRolledDiceRef.current = null;
+    setShowDice(false);
+    setAddressMode("scene");
+    setAddressMenuOpen(false);
+    setEmojiOpen(false);
+    lastSentTextRef.current = null;
+    requestAnimationFrame(() => {
+      if (!inputRef.current) return;
+      inputRef.current.style.height = "auto";
+      inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 120)}px`;
+    });
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (addressMode !== "party" || hasPartyMembers) return;
+    setAddressMode("scene");
+  }, [addressMode, hasPartyMembers]);
+
+  // A reviewed/history game state can still disable drafting entirely.
+  const lastFocusedTokenRef = useRef(0);
+  useEffect(() => {
+    if (!focusToken) return;
+    if (lastFocusedTokenRef.current === focusToken) return;
+    if (draftDisabled) return;
+    inputRef.current?.focus();
+    lastFocusedTokenRef.current = focusToken;
+  }, [focusToken, draftDisabled]);
+
+  useEffect(() => {
+    if (!addressMenuOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (addressButtonRef.current?.contains(target) || addressMenuRef.current?.contains(target)) return;
+      setAddressMenuOpen(false);
+    };
+    const handleKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setAddressMenuOpen(false);
+      addressButtonRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [addressMenuOpen]);
+
+  /** Update text state and persist draft */
+  const updateText = useCallback(
+    (value: string) => {
+      const formatted = formatTextQuotes(value, quoteFormat);
+      setText(formatted);
+      writeGameInputDraft(storageKey, formatted);
+    },
+    [quoteFormat, storageKey],
+  );
+
+  // Tools (a random table roll, a card asset) can drop text into the draft; it is never sent for the player.
+  useEffect(() => {
+    const handleInsert = (event: Event) => {
+      const detail = (event as CustomEvent<CardAssetInsertDetail>).detail;
+      if (!detail?.markdown || draftDisabled) return;
+      if (detail.chatId && draftKey && detail.chatId !== draftKey) return;
+      const current = inputRef.current?.value ?? "";
+      updateText(current.trim() ? `${current.replace(/\s+$/, "")}\n${detail.markdown}` : detail.markdown);
+      requestAnimationFrame(() => {
+        const el = inputRef.current;
+        if (!el) return;
+        el.style.height = "auto";
+        el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+      });
+    };
+    window.addEventListener(CARD_ASSET_INSERT_EVENT, handleInsert);
+    return () => window.removeEventListener(CARD_ASSET_INSERT_EVENT, handleInsert);
+  }, [draftDisabled, draftKey, updateText]);
+
+  /** Clear the persisted draft */
+  const clearDraft = useCallback(() => {
+    clearGameInputDraft(storageKey);
+  }, [storageKey]);
+
+  const handleAddressModeSelect = useCallback((nextMode: Exclude<AddressMode, "scene">) => {
+    setAddressMode((current) => (current === nextMode ? "scene" : nextMode));
+    setAddressMenuOpen(false);
+    inputRef.current?.focus();
+  }, []);
+
+  const handleSend = async () => {
+    const trimmed = formatTextQuotes(text.trim(), quoteFormat);
+    const commitPendingMove = !!pendingMoveLabel && addressMode === "scene";
+    const hasTurnContent =
+      trimmed.length > 0 || attachments.length > 0 || commitPendingMove || canSubmitSpatialMove || !!queuedDice;
+    if (!hasTurnContent || disabled || rollingQueuedDice) return;
+
+    if (isIllustrateSlashCommand(trimmed) && onIllustrate) {
+      setText("");
+      clearDraft();
+      setAttachments([]);
+      if (inputRef.current) inputRef.current.style.height = "auto";
+      inputRef.current?.focus();
+      await onIllustrate();
+      return;
+    }
+
+    let body = trimmed;
+    if (commitPendingMove && pendingMoveLabel) {
+      body = body ? `*moves to ${pendingMoveLabel}*\n${body}` : `*moves to ${pendingMoveLabel}*`;
+    }
+
+    const pendingAttachments =
+      attachments.length > 0 ? attachments.map((a) => ({ type: a.type, data: a.data })) : undefined;
+
+    const rolledNotation = queuedDice;
+    if (queuedDice) {
+      let diceTag = preRolledDiceRef.current?.notation === queuedDice ? preRolledDiceRef.current.tag : null;
+      if (!diceTag) {
+        setRollingQueuedDice(true);
+        let diceResult: DiceRollResult | null = null;
+        try {
+          diceResult = await onRollDice(queuedDice);
+        } finally {
+          setRollingQueuedDice(false);
+        }
+        if (!diceResult) return;
+        diceTag = formatDiceResultTag(diceResult);
+        preRolledDiceRef.current = { notation: queuedDice, tag: diceTag };
+      }
+      body = body ? `${body}\n${diceTag}` : diceTag;
+      setQueuedDice(null);
+    }
+
+    if (addressMode === "party") {
+      body = body ? `[To the party] ${body}` : "[To the party]";
+    } else if (addressMode === "gm") {
+      body = body ? `[To the GM] ${body}` : "[To the GM]";
+    }
+
+    const submittedText = text;
+    const submittedAttachments = attachments;
+    const submittedKey = storageKey;
+    setText("");
+    clearDraft();
+    setAttachments([]);
+    if (inputRef.current) inputRef.current.style.height = "auto";
+    inputRef.current?.focus();
+    const succeeded = await onSend(body, pendingAttachments, {
+      commitPendingMove,
+      ...(canSubmitSpatialMove && pendingSpatialTransition
+        ? { pendingSpatialTransition: pendingSpatialTransition.transition }
+        : {}),
+    });
+    if (succeeded === false) {
+      // Keep the failed turn in its own chat's draft; only refill the composer if it is still that chat
+      // and the player has not started typing something new meanwhile.
+      if (storageKeyRef.current !== submittedKey) {
+        writeGameInputDraft(submittedKey, submittedText);
+        return;
+      }
+      if (!(inputRef.current?.value ?? "").trim()) {
+        setText(submittedText);
+        writeGameInputDraft(submittedKey, submittedText);
+      }
+      setAttachments((current) => [...submittedAttachments, ...current]);
+      if (rolledNotation) setQueuedDice(rolledNotation);
+      requestAnimationFrame(() => {
+        if (!inputRef.current) return;
+        inputRef.current.style.height = "auto";
+        inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 120)}px`;
+      });
+    } else {
+      if (rolledNotation) preRolledDiceRef.current = null;
+      if (submittedText.trim() && storageKeyRef.current === submittedKey) lastSentTextRef.current = submittedText;
+    }
+  };
+
+  const resizeInput = () => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+  };
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Enter that confirms an IME candidate (Japanese, Chinese, Korean input) must not send the turn.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    if (expandOnKeyDown(e)) return;
+    // Up in an empty composer brings back the last sent turn for editing.
+    if (
+      e.key === "ArrowUp" &&
+      !e.shiftKey &&
+      !e.altKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.currentTarget.value &&
+      lastSentTextRef.current
+    ) {
+      e.preventDefault();
+      const recalled = lastSentTextRef.current;
+      updateText(recalled);
+      requestAnimationFrame(() => {
+        const el = inputRef.current;
+        if (!el) return;
+        resizeInput();
+        el.selectionStart = el.selectionEnd = el.value.length;
+      });
+      return;
+    }
+    const shouldSend = enterToSend ? e.key === "Enter" && !e.shiftKey : e.key === "Enter" && (e.metaKey || e.ctrlKey);
+    if (shouldSend) {
+      e.preventDefault();
+      void handleSend();
+    }
+  };
+
+  const handleDiceRoll = (notation: string) => {
+    setQueuedDice(notation);
+    setShowDice(false);
+  };
+
+  const addFiles = useCallback(
+    (files: File[]) => {
+      const originKey = storageKeyRef.current;
+      for (const file of files) {
+        const displayName = file.name || "pasted-file";
+        if (file.size > 20 * 1024 * 1024) {
+          toast.error(localizeUi("ui.chat.chatinput.value1IsTooLargeMax20Mb", { value1: displayName }));
+          continue;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+          // A slow read must not land in another chat's composer.
+          if (storageKeyRef.current !== originKey || typeof reader.result !== "string") return;
+          const data = reader.result;
+          setAttachments((prev) => [...prev, { type: file.type, data, name: displayName }]);
+        };
+        reader.onerror = () => {
+          toast.error(localizeUi("ui.chat.chatinput.failedToReadValue1", { value1: displayName }));
+        };
+        reader.readAsDataURL(file);
+      }
+    },
+    [localizeUi],
+  );
+
+  const handleFileUpload = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files;
+      if (!files?.length) return;
+      addFiles(Array.from(files));
+      e.target.value = "";
+    },
+    [addFiles],
+  );
+
+  // Pasting a screenshot attaches it. Pastes that carry text (a spreadsheet selection also offers an
+  // image of itself) stay plain text paste.
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const data = e.clipboardData;
+      if (!data || data.types.includes("text/plain")) return;
+      const images: File[] = [];
+      for (const item of Array.from(data.items)) {
+        if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+        const file = item.getAsFile();
+        if (file) images.push(file);
+      }
+      if (images.length === 0) return;
+      e.preventDefault();
+      addFiles(images);
+    },
+    [addFiles],
+  );
+
+  const handleEmojiSelect = useCallback(
+    (emoji: string) => {
+      if (!inputRef.current) return;
+      const el = inputRef.current;
+      const start = el.selectionStart;
+      const end = el.selectionEnd;
+      const value = el.value;
+      const newValue = value.slice(0, start) + emoji + value.slice(end);
+      updateText(newValue);
+      requestAnimationFrame(() => {
+        el.selectionStart = el.selectionEnd = start + emoji.length;
+        el.focus();
+      });
+    },
+    [updateText],
+  );
+
+  const handleTranslateDraft = useCallback(async () => {
+    if (disabled || isTranslatingDraft || !text.trim()) return;
+    setIsTranslatingDraft(true);
+    const originKey = storageKey;
+    const originText = text;
+    try {
+      const translated = await translateDraftText(originText);
+      if (!translated) return;
+      // Drop a late result if the chat changed or the player edited the draft while it was translating.
+      if (storageKeyRef.current !== originKey || inputRef.current?.value !== originText) return;
+      updateText(translated);
+      requestAnimationFrame(() => {
+        if (!inputRef.current) return;
+        inputRef.current.style.height = "auto";
+        inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 120)}px`;
+        inputRef.current.focus();
+      });
+    } finally {
+      setIsTranslatingDraft(false);
+    }
+  }, [disabled, isTranslatingDraft, storageKey, text, updateText]);
+
+  const handleSpeechTranscript = useCallback(
+    (transcript: string) => {
+      const el = inputRef.current;
+      if (!el) return;
+      const currentText = el.value;
+      const start = el.selectionStart ?? currentText.length;
+      const end = el.selectionEnd ?? start;
+      const before = currentText.slice(0, start);
+      const after = currentText.slice(end);
+      const prefix = before && !/\s$/.test(before) ? " " : "";
+      const suffix = after && !/^\s/.test(after) ? " " : "";
+      const nextValue = `${before}${prefix}${transcript}${suffix}${after}`;
+      const nextCursor = before.length + prefix.length + transcript.length;
+
+      updateText(nextValue);
+      requestAnimationFrame(() => {
+        if (!inputRef.current) return;
+        inputRef.current.selectionStart = inputRef.current.selectionEnd = nextCursor;
+        inputRef.current.style.height = "auto";
+        inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 120)}px`;
+        inputRef.current.focus();
+      });
+    },
+    [updateText],
+  );
+
+  const riskyInterrupt = interruptMode === "risky";
+  const forceInterrupt = interruptMode === "force";
+  const forceInterruptStyle = forceInterrupt
+    ? {
+        boxShadow: "0 0 18px -6px rgba(32, 194, 14, 0.6)",
+        backgroundColor: "rgba(32, 194, 14, 0.04)",
+        ["--tw-ring-color" as never]: "rgba(32, 194, 14, 0.45)",
+      }
+    : undefined;
+
+  return (
+    <div
+      data-chat-resource-drop-exclude
+      className={cn(inline ? "" : "px-3 pt-2 pb-3")}
+      style={inline ? undefined : { minHeight: 61 }}
+    >
+      {spatialCapabilityEnabled && draftKey ? (
+        <CapabilityElement
+          packageId="hierarchical-maps"
+          view="runtime"
+          capabilityProps={{
+            chatId: draftKey,
+            chatMode: "game",
+            disabled,
+            pendingTransition: pendingSpatialTransition,
+            onPendingTransitionChange: (pending: unknown) => {
+              if (pending && typeof pending === "object") {
+                useChatStore.getState().setPendingSpatialTransition(draftKey, pending as PendingSpatialTransitionDraft);
+                onClearPendingMove?.();
+              } else {
+                useChatStore.getState().clearPendingSpatialTransition(draftKey);
+              }
+            },
+          }}
+        />
+      ) : null}
+
+      {/* Dice picker */}
+      {showDice && (
+        <div
+          className={cn(
+            "flex flex-wrap items-center gap-1.5 border-b border-foreground/10 py-2",
+            inline ? "px-0" : "px-4",
+          )}
+        >
+          {QUICK_DICE.map((d) => (
+            <button
+              type="button"
+              key={d}
+              onClick={() => handleDiceRoll(d)}
+              className="rounded bg-foreground/10 px-2 py-1 text-xs font-mono text-foreground/70 transition-colors hover:bg-foreground/15"
+            >
+              🎲 {d}
+            </button>
+          ))}
+          <div className="flex items-center gap-1">
+            <input
+              type="text"
+              value={customDice}
+              onChange={(e) => setCustomDice(e.target.value)}
+              placeholder={localizeUi("ui.game.gameinput.text3d82")}
+              className="h-[26px] w-16 rounded bg-foreground/10 px-1.5 text-xs font-mono text-foreground/70 outline-none ring-1 ring-foreground/10 placeholder:text-foreground/35 focus:ring-foreground/20"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && customDice.trim()) {
+                  handleDiceRoll(customDice.trim());
+                  setCustomDice("");
+                }
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => {
+                if (customDice.trim()) {
+                  handleDiceRoll(customDice.trim());
+                  setCustomDice("");
+                }
+              }}
+              className="flex h-[26px] items-center rounded bg-foreground/10 px-1.5 text-foreground/70 hover:bg-foreground/15"
+            >
+              <Send size={14} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Attachment previews */}
+      {attachments.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 border-b border-foreground/10 px-4 py-2">
+          {attachments.map((att, i) => (
+            <div
+              key={i}
+              className="flex items-center gap-1 rounded-lg bg-foreground/10 px-2 py-1 text-[0.625rem] ring-1 ring-foreground/10"
+            >
+              {att.type.startsWith("image/") && (
+                <img src={att.data} alt={att.name} className="h-5 w-5 rounded object-cover" />
+              )}
+              <span className="max-w-[80px] truncate">{att.name}</span>
+              <button
+                type="button"
+                onClick={() => setAttachments((prev) => prev.filter((_, idx) => idx !== i))}
+                aria-label={t("chat.input.removeAttachment", { name: att.name })}
+                title={t("chat.input.removeAttachment", { name: att.name })}
+                className="-my-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-foreground/45 hover:text-[var(--destructive)]"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {pendingMoveLabel && (
+        <div className={cn("flex items-center", inline ? "px-0 pb-1" : "border-b border-foreground/10 px-4 py-2")}>
+          <div className="flex min-w-0 items-center gap-1.5 rounded-lg border border-foreground/10 bg-foreground/10 px-2.5 py-1 text-[0.6875rem] text-foreground/80">
+            <span className="shrink-0">📍</span>
+            <span className="min-w-0 truncate">
+              {localizeUi("ui.game.gameinput.mapPosition")} {pendingMoveLabel}
+            </span>
+            {onClearPendingMove && (
+              <button
+                onClick={onClearPendingMove}
+                className="shrink-0 text-foreground/45 transition-colors hover:text-foreground/80"
+                title={localizeUi("ui.game.gameinput.clearDestination")}
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Main input */}
+      <div
+        ref={inputBarRef}
+        className={getChatInputShellClass({
+          className: cn(
+            riskyInterrupt && "ring-1 ring-red-500/40 bg-red-500/5 shadow-[0_0_18px_-6px_rgba(248,113,113,0.55)]",
+            forceInterrupt && "ring-1",
+          ),
+          hasContent:
+            text.trim().length > 0 ||
+            attachments.length > 0 ||
+            !!queuedDice ||
+            !!pendingMoveLabel ||
+            canSubmitSpatialMove,
+          inline,
+          layout: "game",
+        })}
+        style={forceInterruptStyle}
+      >
+        {/* Left: Attach files + address selector */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*,video/*,audio/*,.pdf,.txt,.md,.json,.csv"
+          multiple
+          className="hidden"
+          onChange={handleFileUpload}
+        />
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          aria-label={localizeUi("chat.input.attachFiles")}
+          className={cn(
+            "shrink-0 rounded-lg p-1 transition-all active:scale-90 sm:p-1.5",
+            attachments.length
+              ? "bg-foreground/10 text-foreground/75 ring-1 ring-foreground/20 hover:bg-foreground/15"
+              : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
+          )}
+          title={localizeUi("chat.input.attachFiles")}
+        >
+          <Paperclip size={18} />
+        </button>
+
+        <div className="relative shrink-0">
+          {addressMenuOpen && (
+            <div
+              ref={addressMenuRef}
+              className="absolute bottom-full left-0 z-20 mb-2 flex min-w-[11rem] flex-col gap-1 rounded-xl border border-foreground/10 bg-[var(--card)]/95 p-1.5 shadow-lg backdrop-blur"
+            >
+              {hasPartyMembers && (
+                <button
+                  onClick={() => handleAddressModeSelect("party")}
+                  className={cn(
+                    "flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-colors",
+                    addressMode === "party"
+                      ? "bg-foreground/10 text-foreground/85 ring-1 ring-foreground/15"
+                      : "text-foreground/65 hover:bg-foreground/10 hover:text-foreground/85",
+                  )}
+                >
+                  <Users size={14} className="shrink-0" />
+                  <span className="flex-1">{localizeUi("ui.game.gameinput.talkToParty")}</span>
+                  {addressMode === "party" && (
+                    <span className="text-[0.625rem] uppercase tracking-wide">
+                      {localizeUi("ui.game.gameinput.on")}
+                    </span>
+                  )}
+                </button>
+              )}
+              <button
+                onClick={() => handleAddressModeSelect("gm")}
+                className={cn(
+                  "flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-colors",
+                  addressMode === "gm"
+                    ? "bg-foreground/10 text-foreground/85 ring-1 ring-foreground/15"
+                    : "text-foreground/65 hover:bg-foreground/10 hover:text-foreground/85",
+                )}
+              >
+                <MessageCircle size={14} className="shrink-0" />
+                <span className="flex-1">{localizeUi("ui.game.gameinput.talkToGm")}</span>
+                {addressMode === "gm" && (
+                  <span className="text-[0.625rem] uppercase tracking-wide">{localizeUi("ui.game.gameinput.on")}</span>
+                )}
+              </button>
+            </div>
+          )}
+          <button
+            ref={addressButtonRef}
+            onClick={() => setAddressMenuOpen((open) => !open)}
+            className={cn(
+              "shrink-0 rounded-lg p-1 transition-all active:scale-90 sm:p-1.5",
+              addressMode === "party"
+                ? "bg-foreground/10 text-foreground/75 ring-1 ring-foreground/20 hover:bg-foreground/15"
+                : addressMode === "gm"
+                  ? "bg-foreground/10 text-foreground/75 ring-1 ring-foreground/20 hover:bg-foreground/15"
+                  : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
+            )}
+            title={
+              addressMode === "party"
+                ? localizeUi("ui.game.gameinput.chooseWhoToAddressCurrentlyParty")
+                : addressMode === "gm"
+                  ? localizeUi("ui.game.gameinput.chooseWhoToAddressCurrentlyGm")
+                  : localizeUi("ui.game.gameinput.chooseWhoToAddress")
+            }
+            aria-haspopup="menu"
+            aria-expanded={addressMenuOpen}
+          >
+            <MessageSquare size={18} />
+          </button>
+        </div>
+
+        <textarea
+          ref={inputRef}
+          value={text}
+          onChange={(e) => {
+            // A trigger + space expands in place; the expansion's own change
+            // event has already stored the expanded text.
+            if (expandOnInput(e)) return;
+            const formatted = applyTextareaQuoteFormat(e.target, quoteFormat, e.nativeEvent as InputEvent);
+            updateText(formatted);
+            // Auto-grow: reset height then set to scrollHeight
+            const el = e.target;
+            el.style.height = "auto";
+            el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+          }}
+          onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
+          placeholder={
+            sessionConcluded
+              ? t("game.input.sessionConcluded")
+              : isStreaming
+                ? t("game.input.prepareNextMove")
+                : addressMode === "party"
+                  ? t("game.input.sayToParty")
+                  : addressMode === "gm"
+                    ? t("game.input.sayToGm")
+                    : pendingMoveLabel
+                      ? t("game.input.onArrival")
+                      : t("game.input.default")
+          }
+          disabled={draftDisabled}
+          rows={1}
+          className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm leading-normal text-foreground outline-none placeholder:text-foreground/30 disabled:opacity-50"
+          style={{ minHeight: 36, maxHeight: 120 }}
+        />
+
+        {sessionConcluded && onStartNewSession && (
+          <button
+            type="button"
+            onClick={onStartNewSession}
+            disabled={startNewSessionPending}
+            className="flex h-8 shrink-0 items-center gap-1.5 rounded-xl bg-foreground/10 px-2 text-xs font-medium text-foreground/75 ring-1 ring-foreground/20 transition-colors hover:bg-foreground/15 disabled:cursor-not-allowed disabled:opacity-50 sm:px-3"
+            title={t("game.input.startNewSession")}
+            aria-label={t("game.input.startNewSession")}
+          >
+            {startNewSessionPending ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+            <span className="hidden sm:inline">{t("game.input.startNewSession")}</span>
+          </button>
+        )}
+
+        {queuedDice && (
+          <div className="flex max-w-[6.5rem] shrink-0 items-center self-stretch whitespace-nowrap rounded-lg border border-foreground/10 bg-foreground/10 px-2 text-xs text-foreground/70">
+            <span className="min-w-0 truncate" title={queuedDice}>
+              🎲 {queuedDice}
+            </span>
+            <button
+              type="button"
+              onClick={() => setQueuedDice(null)}
+              aria-label={t("game.input.clearQueuedRoll")}
+              className="ml-1 shrink-0 text-foreground/45 transition-colors hover:text-foreground/80"
+              title={t("game.input.clearQueuedRoll")}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
+        {/* Right: Dice, Emoji (desktop), Send */}
+        {riskyInterrupt && !queuedDice && (
+          <span className="hidden text-[0.625rem] font-medium uppercase tracking-wide text-red-300/80 sm:inline">
+            {localizeUi("ui.game.gameinput.usingDiceRecommended")}
+          </span>
+        )}
+        {forceInterrupt && (
+          <span
+            className="hidden text-[0.625rem] font-medium uppercase tracking-wide sm:inline"
+            style={{ color: "#20C20E", opacity: 0.9 }}
+          >
+            {localizeUi("ui.game.gameinput.forceInterrupting")}
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={() => setShowDice(!showDice)}
+          className={cn(
+            "shrink-0 rounded-lg p-1 transition-all active:scale-90 sm:p-1.5",
+            showDice
+              ? "bg-foreground/10 text-foreground/75 ring-1 ring-foreground/20 hover:bg-foreground/15"
+              : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
+            riskyInterrupt &&
+              !queuedDice &&
+              "animate-pulse text-red-300 ring-1 ring-red-400/60 shadow-[0_0_12px_-2px_rgba(248,113,113,0.85)] hover:text-red-200",
+          )}
+          title={
+            riskyInterrupt && !queuedDice
+              ? localizeUi("ui.game.gameinput.rollDiceRecommendedForAnInterruptAttempt")
+              : localizeUi("ui.game.gameinput.rollDice")
+          }
+        >
+          <Dices size={18} />
+        </button>
+
+        <div className="relative hidden sm:block">
+          <button
+            type="button"
+            ref={emojiButtonRef}
+            onClick={() => setEmojiOpen((v) => !v)}
+            className={cn(
+              "flex h-8 w-8 items-center justify-center rounded-full transition-colors",
+              emojiOpen
+                ? "bg-foreground/10 text-foreground/75 ring-1 ring-foreground/20"
+                : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
+            )}
+            title={t("chat.input.emoji")}
+          >
+            <Smile size={18} />
+          </button>
+          <EmojiPicker
+            open={emojiOpen}
+            onClose={() => setEmojiOpen(false)}
+            onSelect={handleEmojiSelect}
+            anchorRef={emojiButtonRef}
+            containerRef={inputBarRef}
+          />
+          <SnippetPicker
+            open={snippetPickerOpen}
+            onClose={() => setSnippetPickerOpen(false)}
+            anchorRef={inputBarRef}
+            snippets={snippets}
+            onPick={insertSnippet}
+          />
+        </div>
+
+        {showDraftTranslateButton && (
+          <button
+            type="button"
+            onClick={() => void handleTranslateDraft()}
+            disabled={disabled || !text.trim() || isTranslatingDraft}
+            className={cn(
+              "flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition-all duration-200 active:scale-90",
+              !disabled && text.trim() && !isTranslatingDraft
+                ? "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70"
+                : "text-foreground/25",
+            )}
+            title={t("chat.input.translateDraft")}
+          >
+            {isTranslatingDraft ? <Loader2 size={18} className="animate-spin" /> : <Languages size={18} />}
+          </button>
+        )}
+
+        {speechToTextEnabled && (
+          <SpeechToTextButton
+            disabled={disabled}
+            onTranscript={handleSpeechTranscript}
+            className="!h-8 !w-8"
+            iconSize={18}
+          />
+        )}
+
+        <button
+          type="button"
+          onClick={() => void handleSend()}
+          disabled={
+            disabled ||
+            rollingQueuedDice ||
+            (!text.trim() &&
+              attachments.length === 0 &&
+              !(pendingMoveLabel && addressMode === "scene") &&
+              !canSubmitSpatialMove &&
+              !queuedDice)
+          }
+          className={cn(
+            "flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition-all duration-200 active:scale-90",
+            (text.trim() ||
+              attachments.length > 0 ||
+              (pendingMoveLabel && addressMode === "scene") ||
+              canSubmitSpatialMove ||
+              queuedDice) &&
+              !disabled &&
+              !rollingQueuedDice
+              ? "text-foreground/70 hover:bg-foreground/10 hover:text-foreground/90"
+              : "text-foreground/25",
+          )}
+          aria-label={t("game.input.sendTurn")}
+        >
+          <Send size={18} />
+        </button>
+      </div>
+    </div>
+  );
+}

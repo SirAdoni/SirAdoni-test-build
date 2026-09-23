@@ -1,0 +1,411 @@
+import type {
+  Automatic1111Defaults,
+  ComfyUiDefaults,
+  ImageDefaultsService,
+  ImageGenerationDefaultsProfile,
+  NovelAiDefaults,
+} from "../types/image-generation-defaults.js";
+
+export const IMAGE_DEFAULTS_STORAGE_KEY = "imageGeneration";
+export const IMAGE_GENERATION_DEFAULTS_VERSION = 1 as const;
+export const COMFYUI_LORA_STRENGTH_MIN = -100;
+export const COMFYUI_LORA_STRENGTH_MAX = 100;
+
+export const IMAGE_DEFAULTS_SERVICES: ImageDefaultsService[] = ["automatic1111", "comfyui", "novelai"];
+
+/** Transparent placeholder accepted by ComfyUI image-processing nodes that reject 1×1 inputs. */
+export const COMFYUI_PLACEHOLDER_REFERENCE_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAZdEVYdFNvZnR3YXJlAFBhaW50Lk5FVCA1LjEuMTITAUd0AAAAuGVYSWZJSSoACAAAAAUAGgEFAAEAAABKAAAAGwEFAAEAAABSAAAAKAEDAAEAAAACAAAAMQECABEAAABaAAAAaYcEAAEAAABsAAAAAAAAAGAAAAABAAAAYAAAAAEAAABQYWludC5ORVQgNS4xLjEyAAADAACQBwAEAAAAMDIzMAGhAwABAAAAAQAAAAWgBAABAAAAlgAAAAAAAAACAAEAAgAEAAAAUjk4AAIABwAEAAAAMDEwMAAAAADZp5qVybcLXwAAABJJREFUOE9jYBgFo2AUjAIIAAAEEAABTLtGVQAAAABJRU5ErkJggg==";
+
+export const DEFAULT_AUTOMATIC1111_DEFAULTS: Automatic1111Defaults = {
+  promptPrefix: "",
+  negativePromptPrefix: "",
+  sampler: "Euler a",
+  scheduler: "",
+  steps: 20,
+  cfgScale: 7,
+  clipSkip: null,
+  restoreFaces: false,
+  denoisingStrength: 0.6,
+};
+
+export const DEFAULT_COMFYUI_DEFAULTS: ComfyUiDefaults = {
+  promptPrefix: "",
+  negativePromptPrefix: "",
+  sampler: "euler_ancestral",
+  scheduler: "normal",
+  steps: 20,
+  cfgScale: 7,
+  denoisingStrength: 1,
+  clipSkip: null,
+  uploadPlaceholderOnMissingReference: false,
+  saveToBackend: false,
+  loras: [],
+};
+
+export const DEFAULT_NOVELAI_DEFAULTS: NovelAiDefaults = {
+  promptPrefix: "",
+  negativePromptPrefix: "",
+  sampler: "k_euler_ancestral",
+  noiseSchedule: "karras",
+  steps: 28,
+  promptGuidance: 6,
+  promptGuidanceRescale: 0,
+  undesiredContentPreset: 0,
+  dynamicResolutionBySubjectCount: true,
+  styleReferenceImage: null,
+  styleReferenceStrength: 0.6,
+  styleReferenceFidelity: 0.5,
+};
+
+export const SD_WEBUI_SAMPLER_OPTIONS = [
+  { value: "", label: "Automatic / backend default" },
+  // Common to A1111/Forge and Draw Things
+  { value: "Euler a", label: "Euler a" },
+  { value: "DPM++ 2M Karras", label: "DPM++ 2M Karras" },
+  { value: "DPM++ SDE Karras", label: "DPM++ SDE Karras" },
+  { value: "UniPC", label: "UniPC" },
+  { value: "DDIM", label: "DDIM" },
+  // A1111/Forge only
+  { value: "Euler", label: "Euler" },
+  { value: "DPM++ 2M", label: "DPM++ 2M" },
+  { value: "DPM++ SDE", label: "DPM++ SDE" },
+  { value: "DPM++ 2M SDE", label: "DPM++ 2M SDE" },
+  { value: "LMS", label: "LMS" },
+  { value: "Heun", label: "Heun" },
+  { value: "DPM2", label: "DPM2" },
+  { value: "DPM2 a", label: "DPM2 a" },
+  // Draw Things-specific samplers (AYS / Substep / Trailing / LCM / TCD / PLMS)
+  { value: "PLMS", label: "PLMS (Draw Things)" },
+  { value: "LCM", label: "LCM (Draw Things)" },
+  { value: "TCD", label: "TCD (Draw Things)" },
+  { value: "TCD Trailing", label: "TCD Trailing (Draw Things)" },
+  { value: "Euler A Substep", label: "Euler A Substep (Draw Things)" },
+  { value: "DPM++ SDE Substep", label: "DPM++ SDE Substep (Draw Things)" },
+  { value: "Euler A Trailing", label: "Euler A Trailing (Draw Things)" },
+  { value: "DPM++ SDE Trailing", label: "DPM++ SDE Trailing (Draw Things)" },
+  { value: "DPM++ 2M Trailing", label: "DPM++ 2M Trailing (Draw Things)" },
+  { value: "DDIM Trailing", label: "DDIM Trailing (Draw Things)" },
+  { value: "UniPC Trailing", label: "UniPC Trailing (Draw Things)" },
+  { value: "Euler A AYS", label: "Euler A AYS (Draw Things)" },
+  { value: "DPM++ 2M AYS", label: "DPM++ 2M AYS (Draw Things)" },
+  { value: "DPM++ SDE AYS", label: "DPM++ SDE AYS (Draw Things)" },
+  { value: "UniPC AYS", label: "UniPC AYS (Draw Things)" },
+] as const;
+
+export const SD_WEBUI_SCHEDULER_OPTIONS = [
+  { value: "", label: "Automatic / backend default" },
+  { value: "Automatic", label: "Automatic" },
+  { value: "Uniform", label: "Uniform" },
+  { value: "Karras", label: "Karras" },
+  { value: "Exponential", label: "Exponential" },
+  { value: "Polyexponential", label: "Polyexponential" },
+  { value: "SGM Uniform", label: "SGM Uniform" },
+  { value: "KL Optimal", label: "KL Optimal" },
+] as const;
+
+export const COMFYUI_SAMPLER_OPTIONS = [
+  { value: "", label: "Automatic / backend default" },
+  { value: "euler_ancestral", label: "Euler ancestral" },
+  { value: "euler", label: "Euler" },
+  { value: "dpmpp_2m", label: "DPM++ 2M" },
+  { value: "dpmpp_sde", label: "DPM++ SDE" },
+  { value: "dpmpp_2m_sde", label: "DPM++ 2M SDE" },
+  { value: "ddim", label: "DDIM" },
+  { value: "uni_pc", label: "UniPC" },
+  { value: "lms", label: "LMS" },
+  { value: "heun", label: "Heun" },
+] as const;
+
+export const COMFYUI_SCHEDULER_OPTIONS = [
+  { value: "", label: "Automatic / backend default" },
+  { value: "normal", label: "Normal" },
+  { value: "karras", label: "Karras" },
+  { value: "exponential", label: "Exponential" },
+  { value: "sgm_uniform", label: "SGM Uniform" },
+  { value: "simple", label: "Simple" },
+  { value: "ddim_uniform", label: "DDIM uniform" },
+] as const;
+
+export const NOVELAI_SAMPLER_OPTIONS = [
+  { value: "k_euler_ancestral", label: "Euler ancestral" },
+  { value: "k_euler", label: "Euler" },
+  { value: "k_dpmpp_2m", label: "DPM++ 2M" },
+  { value: "k_dpmpp_sde", label: "DPM++ SDE" },
+  { value: "ddim", label: "DDIM" },
+] as const;
+
+export const NOVELAI_NOISE_SCHEDULE_OPTIONS = [
+  { value: "karras", label: "Karras" },
+  { value: "native", label: "Native" },
+  { value: "exponential", label: "Exponential" },
+  { value: "polyexponential", label: "Polyexponential" },
+] as const;
+
+export interface NormalizeImageGenerationProfileResult {
+  profile: ImageGenerationDefaultsProfile;
+  changed: boolean;
+}
+
+export function imageSourceToDefaultsService(value: unknown): ImageDefaultsService | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "drawthings" || normalized === "arli") return "automatic1111";
+  if (normalized === "swarmui") return "comfyui";
+  return isImageDefaultsService(normalized) ? normalized : null;
+}
+
+export function isImageDefaultsService(value: unknown): value is ImageDefaultsService {
+  return typeof value === "string" && (IMAGE_DEFAULTS_SERVICES as string[]).includes(value);
+}
+
+export function createDefaultImageGenerationProfile(service: ImageDefaultsService): ImageGenerationDefaultsProfile {
+  const profile: ImageGenerationDefaultsProfile = {
+    version: IMAGE_GENERATION_DEFAULTS_VERSION,
+    service,
+    seed: -1,
+    styleProfileId: null,
+  };
+  if (service === "automatic1111") profile.automatic1111 = { ...DEFAULT_AUTOMATIC1111_DEFAULTS };
+  if (service === "comfyui") profile.comfyui = { ...DEFAULT_COMFYUI_DEFAULTS, loras: [] };
+  if (service === "novelai") profile.novelai = { ...DEFAULT_NOVELAI_DEFAULTS };
+  return profile;
+}
+
+export function normalizeImageGenerationProfile(
+  rawProfile: unknown,
+  service: ImageDefaultsService,
+): NormalizeImageGenerationProfileResult {
+  const profile = normalizeImageGenerationProfileValue(rawProfile, service);
+  return { profile, changed: JSON.stringify(profile) !== JSON.stringify(rawProfile) };
+}
+
+function normalizeImageGenerationProfileValue(
+  rawProfile: unknown,
+  service: ImageDefaultsService,
+): ImageGenerationDefaultsProfile {
+  if (!isRecord(rawProfile)) {
+    return createDefaultImageGenerationProfile(service);
+  }
+
+  const profile = createDefaultImageGenerationProfile(service);
+  profile.seed = readInteger(rawProfile.seed, -1, -1, 4_294_967_295);
+  profile.styleProfileId = readNullableString(rawProfile.styleProfileId, null);
+
+  if (service === "automatic1111") {
+    profile.automatic1111 = normalizeAutomatic1111Defaults(rawProfile.automatic1111);
+  } else if (service === "comfyui") {
+    profile.comfyui = normalizeComfyUiDefaults(rawProfile.comfyui);
+  } else {
+    profile.novelai = normalizeNovelAiDefaults(rawProfile.novelai);
+  }
+
+  return profile;
+}
+
+export function sanitizeImageGenerationProfile(
+  profile: ImageGenerationDefaultsProfile,
+  service: ImageDefaultsService,
+): ImageGenerationDefaultsProfile {
+  return normalizeImageGenerationProfileValue(profile, service);
+}
+
+export function mergePromptPrefix(prefix: string, prompt: string): string {
+  const trimmedPrefix = normalizePromptPrefixForMerge(prefix);
+  const trimmedPrompt = prompt.trim();
+  if (!trimmedPrefix) return trimmedPrompt;
+  if (!trimmedPrompt) return trimmedPrefix;
+  if (promptAlreadyStartsWithPrefix(trimmedPrompt, trimmedPrefix)) return trimmedPrompt;
+  return `${trimmedPrefix}, ${trimmedPrompt}`;
+}
+
+export function mergeNegativePrompt(prefix: string, prompt?: string): string {
+  const trimmedPrefix = normalizePromptPrefixForMerge(prefix);
+  const trimmedPrompt = (prompt ?? "").trim();
+  if (!trimmedPrefix) return trimmedPrompt;
+  if (!trimmedPrompt) return trimmedPrefix;
+  if (promptAlreadyStartsWithPrefix(trimmedPrompt, trimmedPrefix)) return trimmedPrompt;
+  return `${trimmedPrefix}, ${trimmedPrompt}`;
+}
+
+function normalizePromptPrefixForMerge(prefix: string): string {
+  const trimmed = prefix.trim();
+  let end = trimmed.length;
+  while (end > 0) {
+    const character = trimmed[end - 1]!;
+    if (character !== "," && character !== ";" && character !== "." && character.trim() !== "") break;
+    end -= 1;
+  }
+  return trimmed.slice(0, end).trim();
+}
+
+function promptAlreadyStartsWithPrefix(prompt: string, prefix: string): boolean {
+  if (prompt === prefix) return true;
+  if (prompt.startsWith(`${prefix},`) || prompt.startsWith(`${prefix}.`) || prompt.startsWith(`${prefix};`)) {
+    return true;
+  }
+  if (prompt.startsWith(`${prefix}\n`)) return true;
+
+  const prefixFragments = promptPrefixFragments(prefix);
+  if (prefixFragments.length === 0) return false;
+  const promptFragments = promptPrefixFragments(prompt);
+  if (promptFragments.length < prefixFragments.length) return false;
+  return prefixFragments.every((fragment, index) => promptFragments[index] === fragment);
+}
+
+function promptPrefixFragments(value: string): string[] {
+  return value
+    .split(/[,;\n]+/g)
+    .map((fragment) =>
+      unwrapSingleLineBracketedFragment(fragment.trim())
+        .replace(/: ?[+-]?\d+(?:\.\d+)?$/g, "")
+        .replace(/[^\p{L}\p{N}\s_-]/gu, "")
+        .replace(/[_-]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase(),
+    )
+    .filter(Boolean);
+}
+
+function unwrapSingleLineBracketedFragment(fragment: string): string {
+  const first = fragment[0];
+  const last = fragment[fragment.length - 1];
+  if (!first || !last || !"([{".includes(first) || !")]}".includes(last)) return fragment;
+
+  const body = fragment.slice(1, -1).trim();
+  for (const character of body) {
+    if (character === "\n" || character === "\r" || character === "\u2028" || character === "\u2029") {
+      return fragment;
+    }
+  }
+  return body || fragment;
+}
+
+function normalizeAutomatic1111Defaults(rawDefaults: unknown): Automatic1111Defaults {
+  const raw = isRecord(rawDefaults) ? rawDefaults : {};
+  return {
+    promptPrefix: readString(raw.promptPrefix, DEFAULT_AUTOMATIC1111_DEFAULTS.promptPrefix),
+    negativePromptPrefix: readString(raw.negativePromptPrefix, DEFAULT_AUTOMATIC1111_DEFAULTS.negativePromptPrefix),
+    sampler: readString(raw.sampler, DEFAULT_AUTOMATIC1111_DEFAULTS.sampler),
+    scheduler: readString(raw.scheduler, DEFAULT_AUTOMATIC1111_DEFAULTS.scheduler),
+    steps: readInteger(raw.steps, DEFAULT_AUTOMATIC1111_DEFAULTS.steps, 1, 150),
+    cfgScale: readNumber(raw.cfgScale, DEFAULT_AUTOMATIC1111_DEFAULTS.cfgScale, 0, 30),
+    clipSkip: readNullableInteger(raw.clipSkip, DEFAULT_AUTOMATIC1111_DEFAULTS.clipSkip, 1, 12),
+    restoreFaces: readBoolean(raw.restoreFaces, DEFAULT_AUTOMATIC1111_DEFAULTS.restoreFaces),
+    denoisingStrength: readNumber(raw.denoisingStrength, DEFAULT_AUTOMATIC1111_DEFAULTS.denoisingStrength, 0, 1),
+  };
+}
+
+function normalizeComfyUiDefaults(rawDefaults: unknown): ComfyUiDefaults {
+  const raw = isRecord(rawDefaults) ? rawDefaults : {};
+  return {
+    promptPrefix: readString(raw.promptPrefix, DEFAULT_COMFYUI_DEFAULTS.promptPrefix),
+    negativePromptPrefix: readString(raw.negativePromptPrefix, DEFAULT_COMFYUI_DEFAULTS.negativePromptPrefix),
+    sampler: readString(raw.sampler, DEFAULT_COMFYUI_DEFAULTS.sampler),
+    scheduler: readString(raw.scheduler, DEFAULT_COMFYUI_DEFAULTS.scheduler),
+    steps: readInteger(raw.steps, DEFAULT_COMFYUI_DEFAULTS.steps, 1, 150),
+    cfgScale: readNumber(raw.cfgScale, DEFAULT_COMFYUI_DEFAULTS.cfgScale, 0, 30),
+    denoisingStrength: readNumber(raw.denoisingStrength, DEFAULT_COMFYUI_DEFAULTS.denoisingStrength, 0, 1),
+    clipSkip: readNullableInteger(raw.clipSkip, DEFAULT_COMFYUI_DEFAULTS.clipSkip, 1, 12),
+    uploadPlaceholderOnMissingReference: readBoolean(
+      raw.uploadPlaceholderOnMissingReference,
+      DEFAULT_COMFYUI_DEFAULTS.uploadPlaceholderOnMissingReference,
+    ),
+    loras: normalizeComfyUiLoraSettings(raw.loras),
+    saveToBackend: readBoolean(raw.saveToBackend, false),
+  };
+}
+
+export function normalizeComfyUiLoraSettings(rawLoras: unknown): ComfyUiDefaults["loras"] {
+  if (!Array.isArray(rawLoras)) return [];
+  return rawLoras.slice(0, 5).map((entry) => {
+    const raw = isRecord(entry) ? entry : {};
+    return {
+      model: readString(raw.model, "").trim(),
+      strength: readNumber(raw.strength, 1, COMFYUI_LORA_STRENGTH_MIN, COMFYUI_LORA_STRENGTH_MAX),
+    };
+  });
+}
+
+export function buildComfyUiLoraWorkflowReplacements(
+  loras: ComfyUiDefaults["loras"] | null | undefined,
+): Record<string, string | number> {
+  const replacements: Record<string, string | number> = {};
+  for (let index = 0; index < 5; index++) {
+    const number = index + 1;
+    const lora = loras?.[index];
+    replacements[`%LORA_${number}%`] = lora?.model ?? "";
+    replacements[`%LORA_${number}_strength%`] = lora?.strength ?? 1;
+  }
+  return replacements;
+}
+
+function normalizeNovelAiDefaults(rawDefaults: unknown): NovelAiDefaults {
+  const raw = isRecord(rawDefaults) ? rawDefaults : {};
+  return {
+    promptPrefix: readString(raw.promptPrefix, DEFAULT_NOVELAI_DEFAULTS.promptPrefix),
+    negativePromptPrefix: readString(raw.negativePromptPrefix, DEFAULT_NOVELAI_DEFAULTS.negativePromptPrefix),
+    sampler: readString(raw.sampler, DEFAULT_NOVELAI_DEFAULTS.sampler),
+    noiseSchedule: readString(raw.noiseSchedule, DEFAULT_NOVELAI_DEFAULTS.noiseSchedule),
+    steps: readInteger(raw.steps, DEFAULT_NOVELAI_DEFAULTS.steps, 1, 150),
+    promptGuidance: readNumber(raw.promptGuidance, DEFAULT_NOVELAI_DEFAULTS.promptGuidance, 0, 30),
+    promptGuidanceRescale: readNumber(raw.promptGuidanceRescale, DEFAULT_NOVELAI_DEFAULTS.promptGuidanceRescale, 0, 1),
+    undesiredContentPreset: readInteger(
+      raw.undesiredContentPreset,
+      DEFAULT_NOVELAI_DEFAULTS.undesiredContentPreset,
+      0,
+      4,
+    ),
+    dynamicResolutionBySubjectCount: readBoolean(
+      raw.dynamicResolutionBySubjectCount,
+      DEFAULT_NOVELAI_DEFAULTS.dynamicResolutionBySubjectCount,
+    ),
+    styleReferenceImage: readNullableString(raw.styleReferenceImage, DEFAULT_NOVELAI_DEFAULTS.styleReferenceImage),
+    styleReferenceStrength: readNumber(
+      raw.styleReferenceStrength,
+      DEFAULT_NOVELAI_DEFAULTS.styleReferenceStrength,
+      0,
+      1,
+    ),
+    styleReferenceFidelity: readNumber(
+      raw.styleReferenceFidelity,
+      DEFAULT_NOVELAI_DEFAULTS.styleReferenceFidelity,
+      0,
+      1,
+    ),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function readString(value: unknown, fallback: string): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function readNullableString(value: unknown, fallback: string | null): string | null {
+  if (value === null || value === undefined) return fallback;
+  return typeof value === "string" ? value : fallback;
+}
+
+function readBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function readNumber(value: unknown, fallback: number, min: number, max: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
+
+function readInteger(value: unknown, fallback: number, min: number, max: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.trunc(Math.min(max, Math.max(min, value)));
+}
+
+function readNullableInteger(value: unknown, fallback: number | null, min: number, max: number): number | null {
+  if (value === null || value === "" || value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.trunc(Math.min(max, Math.max(min, value)));
+}

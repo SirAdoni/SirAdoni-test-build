@@ -1,0 +1,291 @@
+// ──────────────────────────────────────────────
+// ModalRenderer: Maps store modal types → components
+// ──────────────────────────────────────────────
+import { lazy, Suspense } from "react";
+import { useUIStore } from "../../stores/ui.store";
+import { openEditorFromPalette } from "../command-palette/palette-navigation";
+import {
+  normalizeAvatarCrop,
+  type LorebookCategory,
+  type LorebookScope,
+  type ScenePromptPreferences,
+} from "@marinara-engine/shared";
+
+const CreateCharacterModal = lazy(() =>
+  import("../modals/CreateCharacterModal").then((module) => ({ default: module.CreateCharacterModal })),
+);
+const ImportCharacterModal = lazy(() =>
+  import("../modals/ImportCharacterModal").then((module) => ({ default: module.ImportCharacterModal })),
+);
+const CreateLorebookModal = lazy(() =>
+  import("../modals/CreateLorebookModal").then((module) => ({ default: module.CreateLorebookModal })),
+);
+const ImportLorebookModal = lazy(() =>
+  import("../modals/ImportLorebookModal").then((module) => ({ default: module.ImportLorebookModal })),
+);
+const CreatePresetModal = lazy(() =>
+  import("../modals/CreatePresetModal").then((module) => ({ default: module.CreatePresetModal })),
+);
+const ImportPresetModal = lazy(() =>
+  import("../modals/ImportPresetModal").then((module) => ({ default: module.ImportPresetModal })),
+);
+const STBulkImportModal = lazy(() =>
+  import("../modals/STBulkImportModal").then((module) => ({ default: module.STBulkImportModal })),
+);
+const ImportPersonaModal = lazy(() =>
+  import("../modals/ImportPersonaModal").then((module) => ({ default: module.ImportPersonaModal })),
+);
+const CreateConnectionModal = lazy(() =>
+  import("../modals/CreateConnectionModal").then((module) => ({ default: module.CreateConnectionModal })),
+);
+const ImportConnectionModal = lazy(() =>
+  import("../modals/ImportConnectionModal").then((module) => ({ default: module.ImportConnectionModal })),
+);
+const CreatePersonaModal = lazy(() =>
+  import("../modals/CreatePersonaModal").then((module) => ({ default: module.CreatePersonaModal })),
+);
+const CharacterCardUpdateModal = lazy(() =>
+  import("../modals/CharacterCardUpdateModal").then((module) => ({ default: module.CharacterCardUpdateModal })),
+);
+const AgentWriteApprovalModal = lazy(() =>
+  import("../modals/AgentWriteApprovalModal").then((module) => ({ default: module.AgentWriteApprovalModal })),
+);
+const DocsViewerModal = lazy(() =>
+  import("../modals/DocsViewerModal").then((module) => ({ default: module.DocsViewerModal })),
+);
+const AboutMeViewerModal = lazy(() =>
+  import("../modals/AboutMeViewerModal").then((module) => ({ default: module.AboutMeViewerModal })),
+);
+const ScenePromptPreferencesModal = lazy(() =>
+  import("../modals/ScenePromptPreferencesModal").then((module) => ({
+    default: module.ScenePromptPreferencesModal,
+  })),
+);
+const ChoiceSelectionModal = lazy(() =>
+  import("../presets/ChoiceSelectionModal").then((module) => ({ default: module.ChoiceSelectionModal })),
+);
+const StartCharacterChatModal = lazy(() =>
+  import("../modals/StartCharacterChatModal").then((module) => ({
+    default: module.StartCharacterChatModal,
+  })),
+);
+const GenerationJobsModal = lazy(() =>
+  import("../modals/GenerationJobsModal").then((module) => ({ default: module.GenerationJobsModal })),
+);
+const GlobalSearchModal = lazy(() =>
+  import("../modals/GlobalSearchModal").then((module) => ({ default: module.GlobalSearchModal })),
+);
+const ChatStatsModal = lazy(() =>
+  import("../modals/ChatStatsModal").then((module) => ({ default: module.ChatStatsModal })),
+);
+const ActivityOverviewModal = lazy(() =>
+  import("../modals/ActivityOverviewModal").then((module) => ({ default: module.ActivityOverviewModal })),
+);
+const RandomTablesModal = lazy(() =>
+  import("../modals/RandomTablesModal").then((module) => ({ default: module.RandomTablesModal })),
+);
+const PrepBoardModal = lazy(() =>
+  import("../modals/PrepBoardModal").then((module) => ({ default: module.PrepBoardModal })),
+);
+const GameCalendarModal = lazy(() =>
+  import("../modals/GameCalendarModal").then((module) => ({ default: module.GameCalendarModal })),
+);
+const InitiativeTrackerModal = lazy(() =>
+  import("../modals/InitiativeTrackerModal").then((module) => ({ default: module.InitiativeTrackerModal })),
+);
+const NameGeneratorModal = lazy(() =>
+  import("../modals/NameGeneratorModal").then((module) => ({ default: module.NameGeneratorModal })),
+);
+const CharacterDuplicatesModal = lazy(() =>
+  import("../characters/CharacterDuplicatesModal").then((module) => ({ default: module.CharacterDuplicatesModal })),
+);
+const ReadingModeModal = lazy(() =>
+  import("../modals/ReadingModeModal").then((module) => ({ default: module.ReadingModeModal })),
+);
+const GameLogModal = lazy(() => import("../modals/GameLogModal").then((module) => ({ default: module.GameLogModal })));
+
+export function ModalRenderer() {
+  const modal = useUIStore((s) => s.modal);
+  const closeModal = useUIStore((s) => s.closeModal);
+
+  const type = modal?.type ?? null;
+  if (!type) return null;
+
+  let content = null;
+  switch (type) {
+    case "create-character":
+      content = <CreateCharacterModal open onClose={closeModal} />;
+      break;
+    case "import-character":
+      content = <ImportCharacterModal open onClose={closeModal} />;
+      break;
+    case "create-lorebook":
+      content = (
+        <CreateLorebookModal
+          open
+          onClose={closeModal}
+          defaultCategory={(modal?.props?.defaultCategory as LorebookCategory | undefined) ?? undefined}
+          characterId={(modal?.props?.characterId as string | null | undefined) ?? null}
+          personaId={(modal?.props?.personaId as string | null | undefined) ?? null}
+          defaultScope={(modal?.props?.defaultScope as LorebookScope | null | undefined) ?? null}
+        />
+      );
+      break;
+    case "import-lorebook":
+      content = <ImportLorebookModal open onClose={closeModal} />;
+      break;
+    case "create-preset":
+      content = <CreatePresetModal open onClose={closeModal} />;
+      break;
+    case "import-preset":
+      content = <ImportPresetModal open onClose={closeModal} />;
+      break;
+    case "import-persona":
+      content = <ImportPersonaModal open onClose={closeModal} />;
+      break;
+    case "create-connection":
+      content = <CreateConnectionModal open onClose={closeModal} />;
+      break;
+    case "import-connection":
+      content = <ImportConnectionModal open onClose={closeModal} />;
+      break;
+    case "create-persona":
+      content = <CreatePersonaModal open onClose={closeModal} />;
+      break;
+    case "st-bulk-import":
+      content = <STBulkImportModal open onClose={closeModal} />;
+      break;
+    case "character-card-update":
+      content = <CharacterCardUpdateModal open onClose={closeModal} />;
+      break;
+    case "agent-write-approval":
+      content = <AgentWriteApprovalModal open onClose={closeModal} />;
+      break;
+    case "docs-viewer":
+      content = (
+        <DocsViewerModal open onClose={closeModal} initialDoc={(modal?.props?.initialDoc as string | null) ?? null} />
+      );
+      break;
+    case "about-me-viewer":
+      content = (
+        <AboutMeViewerModal
+          open
+          onClose={closeModal}
+          kind={(modal?.props?.kind as "character" | "persona") ?? "character"}
+          id={(modal?.props?.id as string) ?? ""}
+          anchorRect={
+            (modal?.props?.anchorRect as {
+              top: number;
+              left: number;
+              right: number;
+              bottom: number;
+              width: number;
+              height: number;
+            } | null) ?? null
+          }
+          avatarUrl={(modal?.props?.avatarUrl as string | null) ?? null}
+          avatarCrop={normalizeAvatarCrop(modal?.props?.avatarCrop)}
+          displayName={(modal?.props?.displayName as string | null) ?? null}
+          nameColor={(modal?.props?.nameColor as string | null) ?? null}
+          status={(modal?.props?.status as "online" | "idle" | "dnd" | "offline" | null) ?? null}
+          activity={(modal?.props?.activity as string | null) ?? null}
+        />
+      );
+      break;
+    case "scene-prompt-preferences":
+      content = (
+        <ScenePromptPreferencesModal
+          key={modal?.props?.chatId as string | undefined}
+          open
+          onClose={closeModal}
+          initialPreferences={modal?.props?.initialPreferences as ScenePromptPreferences}
+          chatId={modal?.props?.chatId as string | undefined}
+          sourceLabel={(modal?.props?.sourceLabel as string | null) ?? null}
+          onSubmit={modal?.props?.onSubmit as (preferences: ScenePromptPreferences) => void}
+          onCancel={modal?.props?.onCancel as (() => void) | undefined}
+        />
+      );
+      break;
+    case "preset-choices":
+      content = (
+        <ChoiceSelectionModal
+          open
+          onClose={modal?.props?.onClose as () => void}
+          chatId={modal?.props?.chatId as string}
+          presetId={modal?.props?.presetId as string}
+        />
+      );
+      break;
+    case "start-character-chat":
+      content = (
+        <StartCharacterChatModal
+          open
+          onClose={closeModal}
+          characterId={(modal?.props?.characterId as string) ?? ""}
+          characterName={(modal?.props?.characterName as string) ?? ""}
+        />
+      );
+      break;
+    case "generation-jobs":
+      content = <GenerationJobsModal open onClose={closeModal} />;
+      break;
+    case "global-chat-search":
+      content = (
+        <GlobalSearchModal open onClose={closeModal} initialQuery={(modal?.props?.initialQuery as string) ?? ""} />
+      );
+      break;
+    case "chat-stats":
+      content = <ChatStatsModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
+      break;
+    case "activity-overview":
+      content = <ActivityOverviewModal open onClose={closeModal} />;
+      break;
+    case "name-generator":
+      content = <NameGeneratorModal open onClose={closeModal} />;
+      break;
+    case "character-duplicates":
+      content = (
+        <CharacterDuplicatesModal
+          open
+          onClose={closeModal}
+          onOpenCharacter={(id) => {
+            closeModal();
+            // Opened from the palette over any screen, so an unsaved editor gets the usual prompt.
+            void openEditorFromPalette(() => useUIStore.getState().openCharacterDetail(id));
+          }}
+        />
+      );
+      break;
+    case "game-log":
+      content = (
+        <GameLogModal
+          open
+          onClose={closeModal}
+          chatId={(modal?.props?.chatId as string) ?? ""}
+          messageId={(modal?.props?.messageId as string | null | undefined) ?? null}
+          messageNumber={(modal?.props?.messageNumber as number | null | undefined) ?? null}
+          focusChapters={modal?.props?.focusChapters === true}
+        />
+      );
+      break;
+    case "reading-mode":
+      content = <ReadingModeModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
+      break;
+    case "random-tables":
+      content = <RandomTablesModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
+      break;
+    case "prep-board":
+      content = <PrepBoardModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
+      break;
+    case "game-calendar":
+      content = <GameCalendarModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
+      break;
+    case "initiative-tracker":
+      content = <InitiativeTrackerModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
+      break;
+    default:
+      content = null;
+  }
+
+  return <Suspense fallback={null}>{content}</Suspense>;
+}

@@ -1,0 +1,523 @@
+@echo off
+setlocal enabledelayedexpansion
+cd /d "%~dp0\.."
+title Marinara Engine - Installer
+color 0A
+
+:: -- Safety net: if anything goes catastrophically wrong, the window stays open --
+:: -- This label is jumped to on fatal errors --
+set "INSTALL_ERROR="
+set "NODE_DOWNLOAD_URL=https://nodejs.org/dist/v24.21.0/node-v24.21.0-x64.msi"
+set "NODE_SHA256=bb0eaee134f9357f22aea915ee793343e627aefc1e66488164bac6915bce2cac"
+set "GIT_DOWNLOAD_URL=https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/Git-2.54.0-64-bit.exe"
+set "GIT_SHA256=2b96e7854f0520f0f6b709c21041d9801b1be44d5e1a0d9fa621b2fbc40f1983"
+set "RELEASE_TAG=v2.4.6"
+if not defined MARINARA_RELEASE_COMMIT (
+    set "INSTALL_ERROR=This installer is missing its required release commit pin. Download the official Windows installer from the Marinara Engine GitHub release."
+    goto :fatal
+)
+set "RELEASE_COMMIT=%MARINARA_RELEASE_COMMIT%"
+
+echo.
+echo  +==========================================+
+echo  ^|   Marinara Engine - Windows Installer     ^|
+echo  ^|   v2.4.6                                  ^|
+
+echo  +==========================================+
+echo.
+
+:: -- Verify script is running --
+echo  [OK] Installer started successfully
+echo.
+
+:: -- Choose install location --
+set "DEFAULT_INSTALL_DIR=%LOCALAPPDATA%\Marinara-Engine"
+set "LEGACY_LOCALAPPDATA_INSTALL_DIR=%LOCALAPPDATA%\MarinaraEngine"
+set "LEGACY_PROFILE_INSTALL_DIR=%USERPROFILE%\Marinara-Engine"
+set "INSTALL_DIR=%DEFAULT_INSTALL_DIR%"
+call :has_marinara_user_data "%DEFAULT_INSTALL_DIR%"
+if errorlevel 1 (
+    call :has_marinara_user_data "%LEGACY_LOCALAPPDATA_INSTALL_DIR%"
+    if not errorlevel 1 (
+        set "INSTALL_DIR=%LEGACY_LOCALAPPDATA_INSTALL_DIR%"
+    ) else (
+        call :has_marinara_user_data "%LEGACY_PROFILE_INSTALL_DIR%"
+        if not errorlevel 1 set "INSTALL_DIR=%LEGACY_PROFILE_INSTALL_DIR%"
+    )
+)
+set "USER_INPUT="
+set /p "USER_INPUT=  Install location [%INSTALL_DIR%]: "
+if not "%USER_INPUT%"=="" set "INSTALL_DIR=%USER_INPUT%"
+call :is_existing_marinara_install "%INSTALL_DIR%"
+if not errorlevel 1 goto :warn_same_install_dir
+goto :after_same_install_dir_warning
+
+:warn_same_install_dir
+echo.
+echo  [WARN] You are reinstalling Marinara Engine into:
+echo         %INSTALL_DIR%
+echo.
+echo         Before continuing, copy the Marinara data folder(s) below to
+echo         a backup location outside this install folder if you want to
+echo         keep chats, characters, images, and settings:
+if exist "%INSTALL_DIR%\packages\server\data\" echo           %INSTALL_DIR%\packages\server\data
+if exist "%INSTALL_DIR%\data\" echo           %INSTALL_DIR%\data
+if not exist "%INSTALL_DIR%\packages\server\data\" if not exist "%INSTALL_DIR%\data\" echo           %INSTALL_DIR%\packages\server\data ^(if you have existing data^)
+echo.
+echo         If a data folder contains marinara-engine.db, copy it together
+echo         with marinara-engine.db-wal and marinara-engine.db-shm if present.
+echo.
+choice /C YN /N /M "  Continue anyway? [Y/N]: "
+if errorlevel 2 (
+    echo.
+    echo  Installation cancelled.
+    goto :eof
+)
+
+:after_same_install_dir_warning
+
+:: -- Check prerequisites --
+echo.
+echo  [..] Checking prerequisites...
+
+:: -- Node.js --
+node --version >nul 2>&1
+if errorlevel 1 goto :install_node
+for /f "tokens=1 delims=." %%a in ('node -v') do set "NODE_RAW=%%a"
+set "NODE_MAJOR=!NODE_RAW:v=!"
+if not defined NODE_MAJOR goto :install_node
+if !NODE_MAJOR! LSS 24 goto :install_node
+if !NODE_MAJOR! GEQ 27 goto :install_node
+goto :node_ok
+
+:install_node
+echo  [..] Supported Node.js 24-26 not found - downloading Node.js 24 LTS...
+set "NODE_MSI=%TEMP%\node-lts-install.msi"
+powershell -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri ""%NODE_DOWNLOAD_URL%"" -OutFile ""%NODE_MSI%"" -UseBasicParsing } catch { exit 1 }"
+if errorlevel 1 (
+    set "INSTALL_ERROR=Failed to download Node.js. Please install manually from https://nodejs.org"
+    goto :fatal
+)
+call :verify_file_hash "%NODE_MSI%" "%NODE_SHA256%" "Node.js installer"
+if errorlevel 1 (
+    del "%NODE_MSI%" 2>nul
+    set "INSTALL_ERROR=Downloaded Node.js installer failed integrity verification."
+    goto :fatal
+)
+call :verify_authenticode "%NODE_MSI%" "Node.js installer"
+if errorlevel 1 (
+    del "%NODE_MSI%" 2>nul
+    set "INSTALL_ERROR=Downloaded Node.js installer has an invalid Authenticode signature."
+    goto :fatal
+)
+echo  [..] Installing Node.js (this may request admin permissions)...
+msiexec /i "%NODE_MSI%" /qb
+if errorlevel 1 (
+    set "INSTALL_ERROR=Node.js installation failed. Please install manually from https://nodejs.org"
+    goto :fatal
+)
+del "%NODE_MSI%" 2>nul
+call :refresh_path
+node --version >nul 2>&1
+if errorlevel 1 (
+    set "INSTALL_ERROR=Node.js installed but not found in PATH. Please restart your computer and re-run the installer."
+    goto :fatal
+)
+set "NODE_RAW="
+for /f "tokens=1 delims=." %%a in ('node -v') do set "NODE_RAW=%%a"
+set "NODE_MAJOR=!NODE_RAW:v=!"
+if not defined NODE_MAJOR (
+    set "INSTALL_ERROR=Node.js installed but its version could not be determined. Please restart your computer and re-run the installer."
+    goto :fatal
+)
+if !NODE_MAJOR! LSS 24 (
+    set "INSTALL_ERROR=Node.js installation completed, but PATH still resolves to an unsupported version. Node.js 24 through 26 is required."
+    goto :fatal
+)
+if !NODE_MAJOR! GEQ 27 (
+    set "INSTALL_ERROR=Node.js installation completed, but PATH still resolves to an unsupported version. Node.js 24 through 26 is required."
+    goto :fatal
+)
+echo  [OK] Node.js installed successfully
+
+:node_ok
+echo  [OK] Node.js found:
+node -v
+
+:: -- Git --
+where git >nul 2>&1
+if errorlevel 1 goto :install_git
+goto :git_ok
+
+:install_git
+echo  [..] Git not found - downloading installer...
+set "GIT_EXE=%TEMP%\git-install.exe"
+powershell -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri ""%GIT_DOWNLOAD_URL%"" -OutFile ""%GIT_EXE%"" -UseBasicParsing } catch { exit 1 }"
+if errorlevel 1 (
+    set "INSTALL_ERROR=Failed to download Git. Please install manually from https://git-scm.com"
+    goto :fatal
+)
+call :verify_file_hash "%GIT_EXE%" "%GIT_SHA256%" "Git installer"
+if errorlevel 1 (
+    del "%GIT_EXE%" 2>nul
+    set "INSTALL_ERROR=Downloaded Git installer failed integrity verification."
+    goto :fatal
+)
+call :verify_authenticode "%GIT_EXE%" "Git installer"
+if errorlevel 1 (
+    del "%GIT_EXE%" 2>nul
+    set "INSTALL_ERROR=Downloaded Git installer has an invalid Authenticode signature."
+    goto :fatal
+)
+echo  [..] Installing Git (this may request admin permissions)...
+"%GIT_EXE%" /VERYSILENT /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS /COMPONENTS="icons,ext\reg\shellhere,assoc,assoc_sh"
+if errorlevel 1 (
+    set "INSTALL_ERROR=Git installation failed. Please install manually from https://git-scm.com"
+    goto :fatal
+)
+del "%GIT_EXE%" 2>nul
+call :refresh_path
+where git >nul 2>&1
+if errorlevel 1 (
+    set "INSTALL_ERROR=Git installed but not found in PATH. Please restart your computer and re-run the installer."
+    goto :fatal
+)
+echo  [OK] Git installed successfully
+
+:git_ok
+echo  [OK] Git found
+
+:: -- Clone repository --
+echo.
+set "FRESH_CLONE_CREATED=0"
+if exist "%INSTALL_DIR%\.git" goto :update_repo
+if not exist "%INSTALL_DIR%\" set "FRESH_CLONE_CREATED=1"
+echo  [..] Cloning Marinara Engine to %INSTALL_DIR%...
+git clone --branch "%RELEASE_TAG%" --depth 1 https://github.com/Pasta-Devs/Marinara-Engine.git "%INSTALL_DIR%"
+if errorlevel 1 (
+    call :discard_unverified_fresh_clone
+    if exist "%INSTALL_DIR%\" (
+        set "INSTALL_ERROR=Failed to clone release %RELEASE_TAG%. The target folder was left in place; preserve any existing files before removing the incomplete checkout, then retry."
+    ) else (
+        set "INSTALL_ERROR=Failed to clone release %RELEASE_TAG%. The incomplete checkout was removed; check your internet connection and try again."
+    )
+    goto :fatal
+)
+cd /d "%INSTALL_DIR%"
+set "NEW_HEAD="
+for /f "tokens=*" %%i in ('git rev-parse HEAD 2^>nul') do set "NEW_HEAD=%%i"
+if not defined NEW_HEAD (
+    call :discard_unverified_fresh_clone
+    if exist "%INSTALL_DIR%\" (
+        set "INSTALL_ERROR=Downloaded release %RELEASE_TAG% could not be verified. The target folder was left untouched; choose an empty folder or preserve its files before removing the incomplete checkout, then retry."
+    ) else (
+        set "INSTALL_ERROR=Downloaded release %RELEASE_TAG% could not be verified. The incomplete checkout was removed; run the installer again."
+    )
+    goto :fatal
+)
+if /I not "!NEW_HEAD!"=="%RELEASE_COMMIT%" (
+    set "RECEIVED_HEAD=!NEW_HEAD!"
+    call :discard_unverified_fresh_clone
+    if exist "%INSTALL_DIR%\" (
+        set "INSTALL_ERROR=Downloaded release %RELEASE_TAG% resolved to !RECEIVED_HEAD!, not the installer-expected %RELEASE_COMMIT%. The target folder was left untouched; choose an empty folder or preserve its files before removing the incomplete checkout, then retry."
+    ) else (
+        set "INSTALL_ERROR=Downloaded release %RELEASE_TAG% resolved to !RECEIVED_HEAD!, not the installer-expected %RELEASE_COMMIT%. The incomplete checkout was removed; run the installer again."
+    )
+    goto :fatal
+)
+set "FRESH_CLONE_CREATED=0"
+goto :deps
+
+:update_repo
+echo  [..] Existing installation found, updating to %RELEASE_TAG%...
+cd /d "%INSTALL_DIR%"
+set "OLD_HEAD="
+set "TARGET_HEAD="
+set "NEW_HEAD="
+for /f "tokens=*" %%i in ('git rev-parse HEAD 2^>nul') do set "OLD_HEAD=%%i"
+git fetch --quiet --force origin "refs/tags/%RELEASE_TAG%:refs/tags/%RELEASE_TAG%"
+if errorlevel 1 (
+    set "INSTALL_ERROR=Failed to fetch release %RELEASE_TAG%."
+    goto :fatal
+)
+for /f "tokens=*" %%i in ('git rev-parse "%RELEASE_TAG%^{commit}" 2^>nul') do set "TARGET_HEAD=%%i"
+if not defined TARGET_HEAD (
+    set "INSTALL_ERROR=Could not resolve release %RELEASE_TAG% after fetch."
+    goto :fatal
+)
+if /I not "!TARGET_HEAD!"=="%RELEASE_COMMIT%" (
+    set "INSTALL_ERROR=Release %RELEASE_TAG% resolved to !TARGET_HEAD!, not the installer-expected %RELEASE_COMMIT%."
+    goto :fatal
+)
+git cat-file -e "!TARGET_HEAD!" >nul 2>&1
+if errorlevel 1 (
+    echo  [..] Release commit is missing locally, fetching main history...
+    git fetch --quiet --force origin "+refs/heads/main:refs/remotes/origin/main"
+    git cat-file -e "!TARGET_HEAD!" >nul 2>&1
+    if errorlevel 1 (
+        echo  [..] Fetching the release commit directly...
+        git fetch --quiet --force origin "!TARGET_HEAD!"
+    )
+    git cat-file -e "!TARGET_HEAD!" >nul 2>&1
+    if errorlevel 1 (
+        set "INSTALL_ERROR=Fetched release %RELEASE_TAG%, but the target commit was not available locally."
+        goto :fatal
+    )
+)
+if /I "!OLD_HEAD!"=="!TARGET_HEAD!" (
+    echo  [OK] Repository already up to date
+    goto :deps
+)
+
+:: Never check out a release whose storage format predates the data on disk -
+:: it would silently show empty chat history (#4708). Exit code 2 means
+:: "blocked"; exit code 1 can also come from an older checkout whose script
+:: predates the check-target subcommand, and must not break a legitimate
+:: upgrade, so only errorlevel 2 stops the install.
+node scripts\protect-launcher-data.mjs check-target "!TARGET_HEAD!"
+if errorlevel 2 (
+    set "INSTALL_ERROR=Release %RELEASE_TAG% is older than your data's storage format. Install a newer release, or see docs/TROUBLESHOOTING.md (Chats show no messages after switching to an older version)."
+    goto :fatal
+)
+if errorlevel 1 (
+    echo  [WARN] Could not verify the release's storage format; continuing with the install.
+)
+
+set "STASHED=0"
+set "STASH_REF="
+set "DIRTY=0"
+git diff --quiet >nul 2>&1
+if errorlevel 1 set "DIRTY=1"
+git diff --cached --quiet >nul 2>&1
+if errorlevel 1 set "DIRTY=1"
+if "!DIRTY!"=="1" (
+    git stash push -q -m "installer auto-stash before update" >nul 2>&1 && set "STASHED=1"
+    if "!STASHED!"=="1" for /f "tokens=*" %%i in ('git stash list -1 --format^=%%gd 2^>nul') do set "STASH_REF=%%i"
+)
+
+git checkout "!TARGET_HEAD!"
+if errorlevel 1 (
+    if "!STASHED!"=="1" call :restore_stashed_changes
+    set "INSTALL_ERROR=Failed to check out release %RELEASE_TAG%."
+    goto :fatal
+)
+for /f "tokens=*" %%i in ('git rev-parse HEAD 2^>nul') do set "NEW_HEAD=%%i"
+if /I not "!NEW_HEAD!"=="!TARGET_HEAD!" (
+    if "!STASHED!"=="1" call :restore_stashed_changes
+    set "INSTALL_ERROR=Repository update did not land on the expected %RELEASE_TAG% commit."
+    goto :fatal
+)
+if "!STASHED!"=="1" call :restore_stashed_changes
+echo  [OK] Repository updated
+
+:deps
+
+:: -- Resolve the exact pnpm descriptor from the checked-out release --
+set "PNPM_DESCRIPTOR="
+for /f "usebackq delims=" %%i in (`node -p "JSON.parse(require('fs').readFileSync('package.json','utf8')).packageManager?.replace(/^^pnpm@/, '') || ''"`) do set "PNPM_DESCRIPTOR=%%i"
+if not defined PNPM_DESCRIPTOR (
+    set "INSTALL_ERROR=Could not read the pinned pnpm descriptor from the checked-out package.json."
+    goto :fatal
+)
+set "PNPM_VERSION="
+for /f "tokens=1 delims=+" %%i in ("!PNPM_DESCRIPTOR!") do set "PNPM_VERSION=%%i"
+if not defined PNPM_VERSION (
+    set "INSTALL_ERROR=The pinned pnpm descriptor in the checked-out package.json has no version."
+    goto :fatal
+)
+set "PNPM_RUNNER=pnpm"
+set "CURRENT_PNPM_VERSION="
+
+where corepack >nul 2>&1
+if not errorlevel 1 (
+    echo  [..] Aligning pnpm to !PNPM_VERSION! via Corepack...
+    for /f "usebackq delims=" %%i in (`corepack pnpm@!PNPM_DESCRIPTOR! --version 2^>nul`) do set "CURRENT_PNPM_VERSION=%%i"
+    if /I "!CURRENT_PNPM_VERSION!"=="!PNPM_VERSION!" (
+        set "PNPM_RUNNER=corepack"
+    ) else (
+        set "CURRENT_PNPM_VERSION="
+    )
+)
+
+if not defined CURRENT_PNPM_VERSION (
+    where pnpm >nul 2>&1
+    if not errorlevel 1 (
+        for /f "usebackq delims=" %%i in (`pnpm --version 2^>nul`) do set "CURRENT_PNPM_VERSION=%%i"
+        if /I "!CURRENT_PNPM_VERSION!"=="!PNPM_VERSION!" (
+            set "PNPM_RUNNER=pnpm"
+        ) else (
+            if defined CURRENT_PNPM_VERSION echo  [..] Installed pnpm !CURRENT_PNPM_VERSION! does not match required !PNPM_VERSION!; trying a pinned temporary runner...
+            set "CURRENT_PNPM_VERSION="
+        )
+    )
+)
+
+if not defined CURRENT_PNPM_VERSION (
+    echo  [..] Using temporary pnpm !PNPM_VERSION! via npx...
+    for /f "usebackq delims=" %%i in (`npx --yes pnpm@!PNPM_VERSION! --version 2^>nul`) do set "CURRENT_PNPM_VERSION=%%i"
+    if /I "!CURRENT_PNPM_VERSION!"=="!PNPM_VERSION!" (
+        set "PNPM_RUNNER=npx"
+    ) else (
+        set "CURRENT_PNPM_VERSION="
+    )
+)
+
+if not defined CURRENT_PNPM_VERSION (
+    set "INSTALL_ERROR=Failed to start pnpm !PNPM_VERSION!. Enable Corepack or install pnpm manually before running the installer."
+    goto :fatal
+)
+echo  [OK] pnpm !CURRENT_PNPM_VERSION! ready
+
+:: -- Install dependencies --
+echo.
+echo  [..] Installing dependencies (this may take a few minutes)...
+call :run_pnpm install --force --frozen-lockfile
+if %errorlevel% neq 0 (
+    set "INSTALL_ERROR=Failed to install dependencies."
+    goto :fatal
+)
+echo  [OK] Dependencies installed
+
+:: -- Build --
+echo.
+echo  [..] Building Marinara Engine...
+call :run_pnpm --filter @marinara-engine/shared build
+if %errorlevel% neq 0 (
+    set "INSTALL_ERROR=Shared package build failed."
+    goto :fatal
+)
+call :run_pnpm --filter @marinara-engine/server --filter @marinara-engine/client --parallel run build
+if %errorlevel% neq 0 (
+    set "INSTALL_ERROR=Server or client build failed."
+    goto :fatal
+)
+echo  [OK] Build complete
+
+:: -- Create desktop shortcut --
+echo  [..] Creating desktop shortcut...
+set "SHORTCUT=%USERPROFILE%\Desktop\Marinara Engine.lnk"
+set "VBS=%TEMP%\create_shortcut.vbs"
+
+(
+    echo Set oWS = WScript.CreateObject^("WScript.Shell"^)
+    echo sLinkFile = "%SHORTCUT%"
+    echo Set oLink = oWS.CreateShortcut^(sLinkFile^)
+    echo oLink.TargetPath = "%INSTALL_DIR%\start.bat"
+    echo oLink.WorkingDirectory = "%INSTALL_DIR%"
+    echo oLink.IconLocation = "%INSTALL_DIR%\win\installer\app-icon.ico,0"
+    echo oLink.Description = "Marinara Engine - AI Chat ^& Roleplay"
+    echo oLink.Save
+) > "%VBS%"
+cscript //nologo "%VBS%"
+del "%VBS%"
+echo  [OK] Desktop shortcut created
+
+:: -- Done --
+echo.
+echo  ==========================================
+echo    Installation complete!
+echo.
+echo    To start: double-click "Marinara Engine"
+echo    on your Desktop, or run start.bat in:
+echo    %INSTALL_DIR%
+echo.
+echo    The app opens in your browser at the configured local URL.
+echo    Default:
+echo    http://127.0.0.1:7860
+echo  ==========================================
+echo.
+pause
+goto :eof
+
+:run_pnpm
+if /I "%PNPM_RUNNER%"=="corepack" (
+    call corepack pnpm@%PNPM_DESCRIPTOR% --config.trustPolicy=off --config.confirmModulesPurge=false %*
+) else if /I "%PNPM_RUNNER%"=="npx" (
+    call npx --yes pnpm@%PNPM_VERSION% --config.trustPolicy=off --config.confirmModulesPurge=false %*
+) else (
+    call pnpm --config.trustPolicy=off --config.confirmModulesPurge=false %*
+)
+exit /b %errorlevel%
+
+:has_marinara_user_data
+set "CHECK_DIR=%~1"
+if exist "%CHECK_DIR%\packages\server\data\" exit /b 0
+if exist "%CHECK_DIR%\data\" exit /b 0
+exit /b 1
+
+:is_existing_marinara_install
+set "CHECK_DIR=%~1"
+call :has_marinara_user_data "%CHECK_DIR%"
+if not errorlevel 1 exit /b 0
+if exist "%CHECK_DIR%\package.json" if exist "%CHECK_DIR%\packages\server\package.json" if exist "%CHECK_DIR%\start.bat" exit /b 0
+exit /b 1
+
+:verify_file_hash
+set "HASH_PATH=%~1"
+set "EXPECTED_HASH=%~2"
+set "HASH_LABEL=%~3"
+set "ACTUAL_HASH="
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "try { ((Get-FileHash -Algorithm SHA256 -LiteralPath ""%HASH_PATH%"").Hash).ToLowerInvariant() } catch { exit 1 }"`) do set "ACTUAL_HASH=%%i"
+if not defined ACTUAL_HASH (
+    echo  [ERROR] Could not calculate SHA-256 for %HASH_LABEL%.
+    exit /b 1
+)
+if /I not "%ACTUAL_HASH%"=="%EXPECTED_HASH%" (
+    echo  [ERROR] %HASH_LABEL% SHA-256 mismatch.
+    exit /b 1
+)
+exit /b 0
+
+:verify_authenticode
+set "SIGN_PATH=%~1"
+set "SIGN_LABEL=%~2"
+powershell -NoProfile -Command "try { $sig = Get-AuthenticodeSignature -LiteralPath ""%SIGN_PATH%""; if ($sig.Status -ne 'Valid') { Write-Error ('Invalid signature: ' + $sig.Status); exit 1 } } catch { exit 1 }"
+if errorlevel 1 (
+    echo  [ERROR] %SIGN_LABEL% Authenticode signature is invalid.
+    exit /b 1
+)
+exit /b 0
+
+:restore_stashed_changes
+if not "!STASHED!"=="1" goto :eof
+if "!STASH_REF!"=="" goto :eof
+git stash apply -q "!STASH_REF!" >nul 2>&1
+if errorlevel 1 (
+    echo  [WARN] Could not reapply local changes cleanly.
+    echo         Your changes are preserved in !STASH_REF!.
+    echo         Reapply them manually after installation if needed.
+    git reset --hard HEAD >nul 2>&1
+    goto :eof
+)
+git stash drop -q "!STASH_REF!" >nul 2>&1
+goto :eof
+
+:discard_unverified_fresh_clone
+if not "!FRESH_CLONE_CREATED!"=="1" goto :eof
+cd /d "%TEMP%"
+rmdir /s /q "%INSTALL_DIR%" 2>nul
+if exist "%INSTALL_DIR%\" goto :eof
+set "FRESH_CLONE_CREATED=0"
+goto :eof
+
+:: -- Fatal error handler: always visible, never silent --
+:fatal
+echo.
+echo  ==========================================
+echo    [ERROR] !INSTALL_ERROR!
+echo  ==========================================
+echo.
+echo  The installer could not complete.
+echo  Please screenshot this window and report
+echo  the issue if you need help.
+echo.
+pause
+exit /b 1
+
+:: -- Subroutine: refresh PATH from registry --
+:refresh_path
+for /f "tokens=2*" %%A in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v Path 2^>nul') do set "SYS_PATH=%%B"
+for /f "tokens=2*" %%A in ('reg query "HKCU\Environment" /v Path 2^>nul') do set "USR_PATH=%%B"
+set "PATH=!SYS_PATH!;!USR_PATH!"
+goto :eof
+goto :eof

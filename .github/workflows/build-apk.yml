@@ -1,0 +1,159 @@
+name: Build Android APK
+
+on:
+  push:
+    tags: ["v*"]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing vX.Y.Z release tag to attach APK to (leave blank for artifact-only build)"
+        required: false
+        type: string
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref }}
+          persist-credentials: false
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          packages: "platform-tools platforms;android-34 build-tools;36.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: "9.7.1"
+          cache-read-only: true
+
+      - name: Bootstrap Gradle wrapper
+        working-directory: android
+        run: |
+          if [ ! -f ./gradlew ]; then
+            gradle wrapper --gradle-version 9.7.1 --gradle-distribution-sha256-sum acd53f1edaf02f1a8ff99879f8a34b302661a057d9b063ae9e35b552f804d20a
+          fi
+          chmod +x ./gradlew
+
+      - name: Resolve release tag
+        id: release_tag
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag || '' }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || '' }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -z "$INPUT_TAG" ]; then
+            tag=""
+          else
+            tag="${RELEASE_TAG:-${INPUT_TAG:-$REF_NAME}}"
+          fi
+          if [ -n "$tag" ]; then node scripts/check-release-tag.mjs "$tag"; fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Decode signing key
+        working-directory: android
+        env:
+          ANDROID_SIGNING_KEYSTORE_BASE64: ${{ secrets.ANDROID_SIGNING_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$ANDROID_SIGNING_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_SIGNING_KEYSTORE_BASE64" | base64 --decode > app/marinara-release.jks
+          fi
+
+      - name: Build release APK
+        working-directory: android
+        env:
+          ANDROID_SIGNING_KEYSTORE: marinara-release.jks
+          ANDROID_SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+          ANDROID_SIGNING_STORE_TYPE: ${{ secrets.ANDROID_SIGNING_STORE_TYPE }}
+          ANDROID_SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
+          ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Locate APK
+        id: locate
+        working-directory: android
+        run: |
+          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -n1)
+          if [ -z "$APK_PATH" ]; then
+            echo "No APK produced" >&2
+            exit 1
+          fi
+          VERSION=$(node -p "require('../package.json').version")
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?(\+[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "package.json version must use X.Y.Z semantic-version format: $VERSION" >&2
+            exit 1
+          fi
+          OUT_NAME="marinara-engine-${VERSION}-android-termux-bootstrap.apk"
+          DOWNLOAD_NAME="marinara-engine-android.apk"
+          cp "$APK_PATH" "$OUT_NAME"
+          cp "$APK_PATH" "$DOWNLOAD_NAME"
+          echo "apk=android/${OUT_NAME}" >> "$GITHUB_OUTPUT"
+          echo "download_apk=android/${DOWNLOAD_NAME}" >> "$GITHUB_OUTPUT"
+          echo "name=${OUT_NAME}" >> "$GITHUB_OUTPUT"
+          ls -la "$OUT_NAME" "$DOWNLOAD_NAME"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.locate.outputs.name }}
+          path: |
+            ${{ steps.locate.outputs.apk }}
+            ${{ steps.locate.outputs.download_apk }}
+
+      - name: Ensure release APK notice
+        if: steps.release_tag.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release_tag.outputs.tag }}
+        run: |
+          for i in {1..60}; do
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 10
+          done
+          gh release view "$TAG" --json body -q .body > release-body.md
+          if ! grep -Eiq '^> \*\*Android APK notice:\*\*' release-body.md; then
+            printf '%s\n' \
+              '> [!IMPORTANT]' \
+              '> **Android APK notice:** The APK is a Termux bootstrap + WebView shell, not a native Android server build. It opens an already-running local Marinara server, and on first launch it can download Termux from F-Droid, hand it to Android'\''s installer, and start Marinara through Termux after Android permission prompts. Follow the [Android wrapper guide](https://github.com/Pasta-Devs/Marinara-Engine/blob/main/android/README.md) if Android blocks the bootstrap handoff.' \
+              '' > release-body-with-apk-notice.md
+            cat release-body.md >> release-body-with-apk-notice.md
+            gh release edit "$TAG" --notes-file release-body-with-apk-notice.md
+          fi
+
+      - name: Attach APK to release
+        if: steps.release_tag.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release_tag.outputs.tag }}
+          VERSIONED_APK: ${{ steps.locate.outputs.apk }}
+          STABLE_APK: ${{ steps.locate.outputs.download_apk }}
+        run: |
+          for i in {1..60}; do
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 10
+          done
+          gh release upload "$TAG" \
+            "$VERSIONED_APK" \
+            "$STABLE_APK" \
+            --clobber

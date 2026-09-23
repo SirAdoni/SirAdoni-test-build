@@ -1,0 +1,1973 @@
+// ──────────────────────────────────────────────
+// Lorebook Entry Row
+// Compact one-line row with inline controls + expandable drawer.
+// Replaces the previous "click to navigate to entry sub-view" pattern.
+// Inspired by SillyTavern's World Info card layout.
+// ──────────────────────────────────────────────
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+  type MouseEvent as ReactMouseEvent,
+  type TouchEvent as ReactTouchEvent,
+} from "react";
+import { createPortal } from "react-dom";
+import { toast } from "sonner";
+import {
+  Ban,
+  ChevronDown,
+  CheckCircle2,
+  CheckSquare2,
+  CircleDashed,
+  Copy,
+  FileText,
+  GripVertical,
+  Hash,
+  Key,
+  Lock,
+  MapPin,
+  MoreHorizontal,
+  Regex,
+  Settings2,
+  Sparkles,
+  Square,
+  Trash2,
+} from "lucide-react";
+import { cn, copyToClipboard } from "../../lib/utils";
+import { showConfirmDialog } from "../../lib/app-dialogs";
+import { useUpdateLorebookEntry, useDeleteLorebookEntry, useDuplicateLorebookEntry } from "../../hooks/use-lorebooks";
+import { useUIStore } from "../../stores/ui.store";
+import { MacroTextarea } from "../ui/MacroTextarea";
+import { SettingsSwitch } from "../panels/settings/SettingControls";
+import type {
+  LorebookEntry,
+  LorebookFilterMode,
+  LorebookFolder,
+  LorebookMatchingSource,
+  SelectiveLogic,
+} from "@marinara-engine/shared";
+import {
+  ExpandableTextarea,
+  FieldGroup,
+  KeysEditor,
+  NumberField,
+  ToggleButton,
+  estimateTokens,
+} from "./LorebookFormFields";
+import { useTranslation as useUiTranslation } from "react-i18next";
+import { LorebookEntryFiredIn } from "./LorebookEntryFiredIn";
+import type { LorebookEntryRecentChat } from "../../hooks/use-lorebooks";
+
+interface Props {
+  entry: LorebookEntry;
+  lorebookId: string;
+  isExpanded: boolean;
+  onToggleExpand: () => void;
+  /** Drawer-friendly layout: hides wide inline controls and stacks expanded fields. */
+  compact?: boolean;
+  characters: Array<{ id: string; name: string; tags: string[] }>;
+  characterTags: string[];
+  /**
+   * All folders in the parent lorebook. Used to populate the folder selector
+   * on the row. May be empty — when empty, the selector is hidden because
+   * "(none)" → "(none)" is meaningless.
+   */
+  folders: LorebookFolder[];
+  // Drag-and-drop wiring (lifted in the parent because cross-row state).
+  draggable: boolean;
+  isDragging: boolean;
+  isDragReady: boolean;
+  onDragHandleMouseDown: () => void;
+  onDragHandleMouseUp: () => void;
+  onDragStart: (e: ReactDragEvent<HTMLDivElement>) => void;
+  onDragOver: (e: ReactDragEvent<HTMLDivElement>) => void;
+  onDrop: (e: ReactDragEvent<HTMLDivElement>) => void;
+  onDragEnd: () => void;
+  onDragHandleTouchStart?: (e: ReactTouchEvent<HTMLButtonElement>, sourceElement: HTMLDivElement | null) => void;
+  selectionMode?: boolean;
+  isSelected?: boolean;
+  /** Receives the click so the editor can extend the selection with Shift. */
+  onToggleSelected?: (event?: { shiftKey: boolean }) => void;
+  /**
+   * When the editor's "Keyword test" panel has text in it, the editor
+   * computes which entries that text would activate and passes the verdict
+   * down per-row. `"matched"` = the entry's keys would trigger; `"constant"`
+   * bypasses keys; `"always_loaded"` bypasses every activation gate. `undefined` = no
+   * preview active. Adds a side accent + chip; does not change behavior.
+   */
+  previewMatch?: "matched" | "constant" | "always_loaded";
+  mapBacklinks?: Array<{ chatId: string; locationId: string; locationName: string }>;
+  /** How often this entry fired in real generations (absent = never). */
+  activationStat?: { count: number; lastActivatedAt: string | null; recentChats?: LorebookEntryRecentChat[] };
+  onUpdateEntry?: LorebookEntryUpdateHandler;
+  /** Override only this row's enabled control; content edits keep their existing scope. */
+  chatEnabled?: { enabled: boolean; onChange: (enabled: boolean) => Promise<unknown> };
+}
+
+type LorebookEntryUpdateHandler = (
+  entryId: string,
+  changes: Partial<LorebookEntry>,
+  changedFields: Partial<LorebookEntry>,
+) => Promise<unknown>;
+
+/** Maps the activation flags into a single status enum for the inline selector. */
+export type EntryStatus = "always_loaded" | "constant" | "selective" | "normal";
+
+export function deriveEntryStatus(entry: Pick<LorebookEntry, "alwaysLoaded" | "constant" | "selective">): EntryStatus {
+  if (entry.alwaysLoaded) return "always_loaded";
+  if (entry.constant) return "constant";
+  if (entry.selective) return "selective";
+  return "normal";
+}
+
+export function entryStatusToFlags(status: EntryStatus): {
+  alwaysLoaded: boolean;
+  constant: boolean;
+  selective: boolean;
+} {
+  switch (status) {
+    case "always_loaded":
+      return { alwaysLoaded: true, constant: false, selective: false };
+    case "constant":
+      return { alwaysLoaded: false, constant: true, selective: false };
+    case "selective":
+      return { alwaysLoaded: false, constant: false, selective: true };
+    case "normal":
+    default:
+      return { alwaysLoaded: false, constant: false, selective: false };
+  }
+}
+
+const STATUS_LABEL_KEY: Record<EntryStatus, string> = {
+  always_loaded: "ui.lorebooks.lorebookentryrow.alwaysLoaded",
+  constant: "ui.lorebooks.lorebookentryrow.constant",
+  selective: "ui.lorebooks.lorebookentryrow.selective",
+  normal: "ui.lorebooks.lorebookentryrow.normal",
+};
+
+const STATUS_DOT_COLOR: Record<EntryStatus, string> = {
+  always_loaded: "bg-[var(--primary)]",
+  constant: "bg-yellow-300",
+  selective: "bg-red-400",
+  normal: "bg-emerald-400",
+};
+
+function isHeaderInlineControlTarget(target: EventTarget | null) {
+  if (!(target instanceof Element)) return false;
+  return Boolean(
+    target.closest('button, input, select, textarea, a, [role="button"], [role="menuitem"], [role="menuitemradio"]'),
+  );
+}
+
+const SELECTIVE_LOGIC_OPTIONS: Array<{ value: SelectiveLogic; label: string }> = [
+  { value: "and", label: "ui.lorebooks.lorebookentryrow.logicAndAny" },
+  { value: "and_all", label: "ui.lorebooks.lorebookentryrow.logicAndAll" },
+  { value: "not", label: "ui.lorebooks.lorebookentryrow.logicNotAny" },
+  { value: "not_all", label: "ui.lorebooks.lorebookentryrow.logicNotAll" },
+];
+
+const STATUS_DESCRIPTION_KEY: Record<EntryStatus, string> = {
+  always_loaded: "ui.lorebooks.lorebookentryrow.thisEntryIsAlwaysLoaded",
+  constant: "ui.lorebooks.lorebookentryrow.thisEntryIsConstantAndBypassesKeywords",
+  selective: "ui.lorebooks.lorebookentryrow.selectiveDescription",
+  normal: "ui.lorebooks.lorebookentryrow.normalDescription",
+};
+
+const STATUS_GUIDE: EntryStatus[] = ["normal", "always_loaded", "constant", "selective"];
+
+const ENTRY_AUTOSAVE_DELAY_MS = 850;
+const ENTRY_STATUS_MENU_WIDTH = 224;
+const ENTRY_STATUS_MENU_ESTIMATED_HEIGHT = 126;
+const ENTRY_STATUS_MENU_MARGIN = 10;
+const ENTRY_STATUS_MENU_GAP = 6;
+
+const FILTER_MODE_LABEL: Record<LorebookFilterMode, string> = {
+  any: "ui.lorebooks.lorebookentryrow.filterModeAny",
+  include: "ui.lorebooks.lorebookentryrow.filterModeInclude",
+  exclude: "ui.lorebooks.lorebookentryrow.filterModeExclude",
+};
+
+const MATCHING_SOURCE_OPTIONS: Array<{ value: LorebookMatchingSource; label: string }> = [
+  { value: "character_name", label: "ui.lorebooks.lorebookentryrow.matchCharacterName" },
+  { value: "character_description", label: "ui.lorebooks.lorebookentryrow.matchCharacterDescription" },
+  { value: "character_personality", label: "ui.lorebooks.lorebookentryrow.matchPersonality" },
+  { value: "character_scenario", label: "ui.lorebooks.lorebookentryrow.matchScenario" },
+  { value: "character_tags", label: "ui.lorebooks.lorebookentryrow.matchCharacterTags" },
+  { value: "persona_description", label: "ui.lorebooks.lorebookentryrow.matchPersonaDescription" },
+  { value: "persona_tags", label: "ui.lorebooks.lorebookentryrow.matchPersonaTags" },
+];
+
+const GENERATION_TRIGGER_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "conversation", label: "ui.lorebooks.lorebookentryrow.triggerConversation" },
+  { value: "roleplay", label: "ui.lorebooks.lorebookentryrow.triggerRoleplay" },
+  { value: "game", label: "ui.lorebooks.lorebookentryrow.triggerGame" },
+  { value: "chat", label: "ui.lorebooks.lorebookentryrow.triggerChatReply" },
+  { value: "continue", label: "ui.lorebooks.lorebookentryrow.triggerContinue" },
+  { value: "autonomous", label: "ui.lorebooks.lorebookentryrow.triggerAutonomous" },
+  { value: "swipe", label: "ui.lorebooks.lorebookentryrow.triggerSwipe" },
+  { value: "impersonate", label: "ui.lorebooks.lorebookentryrow.triggerImpersonate" },
+  { value: "prompt_preview", label: "ui.lorebooks.lorebookentryrow.triggerPromptPreview" },
+  { value: "test_scan", label: "ui.lorebooks.lorebookentryrow.triggerTestScan" },
+  { value: "game_setup", label: "ui.lorebooks.lorebookentryrow.triggerGameSetup" },
+  { value: "lorebook_assistant", label: "ui.lorebooks.lorebookentryrow.triggerLorebookAssistant" },
+  { value: "noodle", label: "ui.lorebooks.lorebookentryrow.triggerNoodle" },
+];
+
+/** A compact lorebook-entry list row with inline-editable status / position / depth / order /
+ *  probability / enable, plus an expandable drawer with the rest of the entry editor.
+ */
+export function LorebookEntryRow({
+  entry,
+  lorebookId,
+  isExpanded,
+  onToggleExpand,
+  compact = false,
+  characters,
+  characterTags,
+  folders,
+  draggable,
+  isDragging,
+  isDragReady,
+  onDragHandleMouseDown,
+  onDragHandleMouseUp,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+  onDragHandleTouchStart,
+  selectionMode = false,
+  isSelected = false,
+  onToggleSelected,
+  previewMatch,
+  activationStat,
+  mapBacklinks = [],
+  onUpdateEntry,
+  chatEnabled,
+}: Props) {
+  const { t: localizeUi } = useUiTranslation();
+  const updateEntry = useUpdateLorebookEntry();
+  const deleteEntry = useDeleteLorebookEntry();
+  const duplicateEntry = useDuplicateLorebookEntry();
+
+  // ── Inline-control optimistic state ──
+  // We keep a local mirror of the entry's fields so the inputs feel snappy
+  // while the mutation flushes. React Query invalidation will reconcile.
+  const [localEnabled, setLocalEnabled] = useState(entry.enabled && (chatEnabled?.enabled ?? true));
+  const [localStatus, setLocalStatus] = useState<EntryStatus>(deriveEntryStatus(entry));
+  const [localPosition, setLocalPosition] = useState(entry.position);
+  const [localDepth, setLocalDepth] = useState(entry.depth);
+  const [localOrder, setLocalOrder] = useState(entry.order);
+  const [localProbability, setLocalProbability] = useState<number>(entry.probability ?? 100);
+  const [localName, setLocalName] = useState(entry.name);
+  const [localUseRegex, setLocalUseRegex] = useState(entry.useRegex ?? false);
+  const [showVectorStatus, setShowVectorStatus] = useState(false);
+  const [showMobileControls, setShowMobileControls] = useState(false);
+  const [showStatusMenu, setShowStatusMenu] = useState(false);
+  const [statusMenuPosition, setStatusMenuPosition] = useState({ top: 0, left: 0, width: ENTRY_STATUS_MENU_WIDTH });
+  const mobileControlsRef = useRef<HTMLDivElement>(null);
+  const rowRef = useRef<HTMLDivElement>(null);
+  const statusButtonRef = useRef<HTMLButtonElement>(null);
+  const statusMenuRef = useRef<HTMLDivElement>(null);
+  const upstreamOutletNameRef = useRef(entry.outletName);
+  const pendingOutletNameRef = useRef(entry.outletName);
+
+  // Re-sync local state when the upstream entry changes (e.g. after refetch)
+  // so we don't show stale values, but avoid clobbering an in-flight edit.
+  const lastSyncedRef = useRef(entry);
+  useEffect(() => {
+    if (lastSyncedRef.current === entry) return;
+    lastSyncedRef.current = entry;
+    const previousOutletName = upstreamOutletNameRef.current;
+    upstreamOutletNameRef.current = entry.outletName;
+    if (pendingOutletNameRef.current === previousOutletName) {
+      pendingOutletNameRef.current = entry.outletName;
+    }
+    setLocalStatus(deriveEntryStatus(entry));
+    setLocalPosition(entry.position);
+    setLocalDepth(entry.depth);
+    setLocalOrder(entry.order);
+    setLocalProbability(entry.probability ?? 100);
+    setLocalName(entry.name);
+    setLocalUseRegex(entry.useRegex ?? false);
+  }, [entry]);
+
+  useEffect(() => {
+    setLocalEnabled(entry.enabled && (chatEnabled?.enabled ?? true));
+  }, [entry.enabled, chatEnabled?.enabled]);
+
+  useEffect(() => {
+    if (!showMobileControls) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!mobileControlsRef.current?.contains(event.target as Node)) {
+        setShowMobileControls(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setShowMobileControls(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [showMobileControls]);
+
+  useLayoutEffect(() => {
+    if (!showStatusMenu) return;
+
+    const updateMenuPosition = () => {
+      const button = statusButtonRef.current;
+      if (!button) return;
+
+      const rect = button.getBoundingClientRect();
+      const width = Math.min(ENTRY_STATUS_MENU_WIDTH, window.innerWidth - ENTRY_STATUS_MENU_MARGIN * 2);
+      const menuHeight = statusMenuRef.current?.getBoundingClientRect().height ?? ENTRY_STATUS_MENU_ESTIMATED_HEIGHT;
+      const left = Math.min(
+        Math.max(rect.left, ENTRY_STATUS_MENU_MARGIN),
+        Math.max(ENTRY_STATUS_MENU_MARGIN, window.innerWidth - width - ENTRY_STATUS_MENU_MARGIN),
+      );
+      const top = Math.max(ENTRY_STATUS_MENU_MARGIN, rect.top - ENTRY_STATUS_MENU_GAP - menuHeight);
+
+      setStatusMenuPosition({ top, left, width });
+    };
+
+    updateMenuPosition();
+    window.addEventListener("resize", updateMenuPosition);
+    window.addEventListener("scroll", updateMenuPosition, true);
+    return () => {
+      window.removeEventListener("resize", updateMenuPosition);
+      window.removeEventListener("scroll", updateMenuPosition, true);
+    };
+  }, [showStatusMenu]);
+
+  useEffect(() => {
+    if (!showStatusMenu) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        !statusButtonRef.current?.contains(target) &&
+        !statusMenuRef.current?.contains(target)
+      ) {
+        setShowStatusMenu(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setShowStatusMenu(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [showStatusMenu]);
+
+  const patch = useCallback(
+    (changes: Partial<LorebookEntry>, options?: { onError?: () => void }) => {
+      if (onUpdateEntry) {
+        void onUpdateEntry(entry.id, changes, changes).catch(() => options?.onError?.());
+        return;
+      }
+      updateEntry.mutate({ lorebookId, entryId: entry.id, ...changes }, options);
+    },
+    [lorebookId, entry.id, onUpdateEntry, updateEntry],
+  );
+
+  const handleStatusChange = useCallback(
+    (next: EntryStatus) => {
+      const previous = localStatus;
+      setLocalStatus(next);
+      setShowStatusMenu(false);
+      patch(entryStatusToFlags(next), { onError: () => setLocalStatus(previous) });
+    },
+    [localStatus, patch],
+  );
+
+  const handleStatusMenuToggle = useCallback((e: ReactMouseEvent) => {
+    e.stopPropagation();
+    setShowStatusMenu((current) => !current);
+  }, []);
+
+  const handleEnabledChange = useCallback(
+    (next: boolean) => {
+      const previous = localEnabled;
+      setLocalEnabled(next);
+      if (chatEnabled) void chatEnabled.onChange(next).catch(() => setLocalEnabled(previous));
+      else patch({ enabled: next }, { onError: () => setLocalEnabled(previous) });
+    },
+    [localEnabled, patch, chatEnabled],
+  );
+
+  const handleUseRegexToggle = useCallback(
+    (e: ReactMouseEvent) => {
+      e.stopPropagation();
+      const previous = localUseRegex;
+      const next = !localUseRegex;
+      setLocalUseRegex(next);
+      patch({ useRegex: next }, { onError: () => setLocalUseRegex(previous) });
+    },
+    [localUseRegex, patch],
+  );
+
+  const handleHeaderClick = useCallback(
+    (e: ReactMouseEvent<HTMLDivElement>) => {
+      if (isHeaderInlineControlTarget(e.target)) return;
+      if (selectionMode) {
+        onToggleSelected?.(e);
+        return;
+      }
+      onToggleExpand();
+    },
+    [onToggleExpand, onToggleSelected, selectionMode],
+  );
+
+  const handleNameCommit = useCallback(() => {
+    if (localName.trim() && localName !== entry.name) {
+      const previous = entry.name;
+      const next = localName.trim();
+      setLocalName(next);
+      patch({ name: next }, { onError: () => setLocalName(previous) });
+    } else if (!localName.trim()) {
+      // Don't allow empty names — revert.
+      setLocalName(entry.name);
+    }
+  }, [localName, entry.name, patch]);
+
+  const handleDelete = useCallback(
+    async (e: ReactMouseEvent) => {
+      e.stopPropagation();
+      if (
+        !(await showConfirmDialog({
+          title: localizeUi("ui.lorebooks.lorebookentryrow.deleteEntry_46ca45b"),
+          message: localizeUi("dialog.delete.namedPermanent", {
+            name: entry.name,
+          }),
+          confirmLabel: localizeUi("lorebook.editor.batch.delete"),
+          tone: "destructive",
+        }))
+      ) {
+        return;
+      }
+      deleteEntry.mutate({ lorebookId, entryId: entry.id });
+    },
+    [deleteEntry, entry.id, entry.name, localizeUi, lorebookId],
+  );
+
+  const duplicateDisabled = duplicateEntry.isPending || updateEntry.isPending;
+  const handleOutletNameDraftChange = useCallback((outletName: string) => {
+    pendingOutletNameRef.current = outletName;
+  }, []);
+
+  const handleDuplicate = useCallback(
+    (e: ReactMouseEvent) => {
+      e.stopPropagation();
+      if (duplicateDisabled) return;
+      // Clone from the row's current inline state (not the prop snapshot) so an edit made
+      // just before duplicating isn't dropped while its update/refetch is still in flight.
+      const statusFlags = entryStatusToFlags(localStatus);
+      duplicateEntry.mutate({
+        lorebookId,
+        entry: {
+          ...entry,
+          name: localName.trim() || entry.name,
+          // Keep pending shared edits, but do not copy this chat's override into the shared book.
+          enabled: chatEnabled ? entry.enabled : localEnabled,
+          ...statusFlags,
+          position: localPosition,
+          depth: localDepth,
+          order: localOrder,
+          probability: localProbability === 100 ? null : localProbability,
+          useRegex: localUseRegex,
+          outletName: pendingOutletNameRef.current,
+        },
+      });
+    },
+    [
+      lorebookId,
+      entry,
+      chatEnabled,
+      localEnabled,
+      localName,
+      localStatus,
+      localPosition,
+      localDepth,
+      localOrder,
+      localProbability,
+      localUseRegex,
+      duplicateEntry,
+      duplicateDisabled,
+    ],
+  );
+
+  const tokenEstimate = useMemo(() => estimateTokens(entry.content), [entry.content]);
+  const showDepthInput = localPosition === 2;
+  const isVectorExcluded = entry.excludeFromVectorization === true;
+  const isVectorized = Array.isArray(entry.embedding) && entry.embedding.length > 0;
+  const vectorStatusLabel = localizeUi(
+    isVectorExcluded
+      ? "ui.lorebooks.lorebookentryrow.vectorExcluded"
+      : isVectorized
+        ? "ui.lorebooks.lorebookentryrow.vectorized"
+        : "ui.lorebooks.lorebookentryrow.notVectorized",
+  );
+  const vectorStatusTitle = localizeUi(
+    isVectorExcluded
+      ? "ui.lorebooks.lorebookentryrow.vectorExcludedTitle"
+      : isVectorized
+        ? "ui.lorebooks.lorebookentryrow.vectorizedTitle"
+        : "ui.lorebooks.lorebookentryrow.notVectorizedTitle",
+  );
+
+  return (
+    <div
+      className={cn(
+        "mari-editor-panel mari-editor-panel--soft relative transition-all",
+        isExpanded
+          ? "border-[var(--marinara-editor-border-strong)]"
+          : "hover:border-[var(--marinara-editor-border-strong)]",
+        selectionMode && isSelected && "mari-chrome-accent-surface mari-accent-animated",
+        isDragging && "opacity-40",
+      )}
+      ref={rowRef}
+      data-lorebook-entry-row-id={entry.id}
+      draggable={draggable && isDragReady}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
+    >
+      {/* Keyword-test side accent. Absolute-positioned so it overlays the
+          left edge without competing with the row's ring or border-radius. */}
+      {previewMatch && (
+        <span
+          aria-hidden
+          className={cn(
+            "pointer-events-none absolute inset-y-0 left-0 w-[3px] rounded-l-xl",
+            previewMatch === "matched" ? "bg-emerald-400" : "mari-chrome-accent-progress mari-accent-animated",
+          )}
+        />
+      )}
+
+      {/* ── Compact row ── */}
+      <div
+        className="group flex min-w-0 cursor-pointer items-center gap-0.5 px-1.5 py-1.5 sm:gap-2 sm:px-2"
+        onClick={handleHeaderClick}
+        onMouseDown={(e) => {
+          // Shift+click range selection: stop the browser from also highlighting text across rows.
+          if (selectionMode && e.shiftKey && !isHeaderInlineControlTarget(e.target)) e.preventDefault();
+        }}
+      >
+        {/* Drag handle */}
+        <button
+          type="button"
+          className={cn(
+            "flex h-6 w-4 shrink-0 items-center justify-center rounded p-0 text-[var(--muted-foreground)] transition-colors sm:h-auto sm:w-auto sm:p-0.5",
+            compact && "hidden",
+            draggable
+              ? "cursor-grab hover:bg-[var(--accent)] hover:text-[var(--foreground)] active:cursor-grabbing"
+              : "cursor-not-allowed opacity-40",
+          )}
+          title={
+            draggable
+              ? localizeUi("ui.lorebooks.lorebookentryrow.dragToReorder")
+              : localizeUi("ui.lorebooks.lorebookentryrow.useOrderSortAndClearSearchToReorder")
+          }
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => {
+            e.stopPropagation();
+            if (draggable) onDragHandleMouseDown();
+          }}
+          onMouseUp={(e) => {
+            e.stopPropagation();
+            onDragHandleMouseUp();
+          }}
+          onTouchStart={(e) => {
+            e.stopPropagation();
+            if (draggable) onDragHandleTouchStart?.(e, rowRef.current);
+          }}
+        >
+          <GripVertical size="0.875rem" />
+        </button>
+
+        {selectionMode && (
+          <button
+            type="button"
+            aria-label={
+              isSelected
+                ? localizeUi("ui.lorebooks.lorebookentryrow.deselectEntry")
+                : localizeUi("ui.lorebooks.lorebookentryrow.selectEntry")
+            }
+            title={
+              isSelected
+                ? localizeUi("ui.lorebooks.lorebookentryrow.deselectEntry")
+                : localizeUi("ui.lorebooks.lorebookentryrow.selectEntry")
+            }
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleSelected?.(e);
+            }}
+            className={cn(
+              "flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--ring)] sm:h-7 sm:w-7",
+              isSelected
+                ? "mari-chrome-accent-surface mari-accent-animated ring-1"
+                : "text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
+            )}
+          >
+            {isSelected ? <CheckSquare2 size="0.875rem" /> : <Square size="0.875rem" />}
+          </button>
+        )}
+
+        {/* Expand chevron */}
+        <button
+          type="button"
+          aria-label={
+            isExpanded
+              ? localizeUi("ui.lorebooks.lorebookentryrow.collapseEntry")
+              : localizeUi("ui.lorebooks.lorebookentryrow.expandEntry")
+          }
+          className="flex h-6 w-4 shrink-0 items-center justify-center rounded p-0 text-[var(--muted-foreground)] transition-transform hover:bg-[var(--accent)] hover:text-[var(--foreground)] sm:h-auto sm:w-auto sm:p-0.5"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleExpand();
+          }}
+        >
+          <ChevronDown size="0.875rem" className={cn("transition-transform", isExpanded ? "rotate-0" : "-rotate-90")} />
+        </button>
+
+        <div
+          className="-mx-1 shrink-0 sm:mx-0"
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <SettingsSwitch
+            ariaLabel={
+              chatEnabled
+                ? localizeUi(
+                    localEnabled
+                      ? "chat.settings.inlineLorebook.disableForChat"
+                      : "chat.settings.inlineLorebook.enableForChat",
+                  )
+                : localizeUi(
+                    localEnabled
+                      ? "ui.lorebooks.lorebookentryrow.disableEntry"
+                      : "ui.lorebooks.lorebookentryrow.enableEntry",
+                  )
+            }
+            title={
+              chatEnabled && !entry.enabled
+                ? localizeUi("chat.settings.inlineLorebook.globallyDisabled")
+                : chatEnabled
+                  ? localizeUi("chat.settings.inlineLorebook.chatScope")
+                  : localEnabled
+                    ? localizeUi("ui.lorebooks.lorebookentryrow.entryEnabled")
+                    : localizeUi("ui.lorebooks.lorebookentryrow.entryDisabled")
+            }
+            checked={localEnabled}
+            disabled={!!chatEnabled && !entry.enabled}
+            onChange={handleEnabledChange}
+            className="p-0 hover:bg-transparent"
+          />
+        </div>
+
+        {/* Regex key matching toggle */}
+        <button
+          type="button"
+          aria-label={
+            localUseRegex
+              ? localizeUi("ui.lorebooks.lorebookentryrow.disableRegexKeyMatching")
+              : localizeUi("ui.lorebooks.lorebookentryrow.enableRegexKeyMatching")
+          }
+          title={
+            localUseRegex
+              ? localizeUi("ui.lorebooks.lorebookentryrow.regexKeyMatchingEnabled")
+              : localizeUi("ui.lorebooks.lorebookentryrow.plainTextKeyMatching")
+          }
+          onClick={handleUseRegexToggle}
+          className={cn(
+            "ml-1 shrink-0 rounded p-0 transition-colors sm:ml-0 sm:p-0.5",
+            localUseRegex
+              ? "bg-orange-400/15 text-orange-300 ring-1 ring-orange-400/25"
+              : "text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
+          )}
+        >
+          <Regex size="0.875rem" />
+        </button>
+
+        {/* Status dot + name */}
+        <button
+          ref={statusButtonRef}
+          type="button"
+          onClick={handleStatusMenuToggle}
+          className={cn(
+            "flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)] sm:h-7 sm:w-7",
+            showStatusMenu && "bg-[var(--accent)]",
+          )}
+          aria-label={localizeUi("ui.lorebooks.lorebookentryrow.entryTypeValue1ChooseEntryType", {
+            value1: localizeUi(STATUS_LABEL_KEY[localStatus]),
+          })}
+          aria-haspopup="menu"
+          aria-expanded={showStatusMenu}
+        >
+          <span className={cn("h-2.5 w-2.5 rounded-full", STATUS_DOT_COLOR[localStatus])} />
+        </button>
+        {showStatusMenu &&
+          createPortal(
+            <div
+              ref={statusMenuRef}
+              role="menu"
+              aria-label={localizeUi("ui.lorebooks.lorebookentryrow.chooseEntryType")}
+              className="fixed z-[120] rounded-lg border border-[var(--border)] bg-[var(--popover)] p-1 text-[var(--popover-foreground)] shadow-xl ring-1 ring-[var(--border)]"
+              style={{
+                left: statusMenuPosition.left,
+                top: statusMenuPosition.top,
+                width: statusMenuPosition.width,
+              }}
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              {STATUS_GUIDE.map((status) => {
+                const selected = localStatus === status;
+                return (
+                  <button
+                    key={status}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={selected}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleStatusChange(status);
+                    }}
+                    className={cn(
+                      "flex w-full items-start gap-1.5 rounded-md px-1.5 py-1.5 text-left transition-colors focus:outline-none focus:ring-1 focus:ring-[var(--ring)]",
+                      selected
+                        ? "bg-[var(--accent)] text-[var(--foreground)]"
+                        : "text-[var(--popover-foreground)] hover:bg-[var(--accent)]",
+                    )}
+                  >
+                    <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", STATUS_DOT_COLOR[status])} />
+                    <span className="min-w-0">
+                      <span className="block text-[0.6875rem] font-semibold leading-tight">
+                        {localizeUi(STATUS_LABEL_KEY[status])}
+                      </span>
+                      <span className="mt-0.5 block text-[0.625rem] leading-snug text-[var(--marinara-editor-muted)]">
+                        {localizeUi(STATUS_DESCRIPTION_KEY[status])}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>,
+            document.body,
+          )}
+        {previewMatch && (
+          <span
+            className={cn(
+              "inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[0.625rem] font-medium ring-1",
+              previewMatch === "matched"
+                ? "bg-emerald-400/12 text-emerald-300 ring-emerald-400/30"
+                : "mari-editor-chip mari-editor-chip--accent",
+            )}
+            title={
+              previewMatch === "matched"
+                ? localizeUi("ui.lorebooks.lorebookentryrow.thisEntrySKeysMatchTheKeywordTestText")
+                : previewMatch === "always_loaded"
+                  ? localizeUi("ui.lorebooks.lorebookentryrow.thisEntryIsAlwaysLoaded")
+                  : localizeUi("ui.lorebooks.lorebookentryrow.thisEntryIsConstantAndBypassesKeywords")
+            }
+          >
+            <Sparkles size="0.625rem" />
+            {previewMatch === "matched"
+              ? localizeUi("ui.lorebooks.lorebookentryrow.wouldActivate")
+              : previewMatch === "always_loaded"
+                ? localizeUi("ui.lorebooks.lorebookentryrow.alwaysLoaded")
+                : localizeUi("ui.lorebooks.lorebookentryrow.constant")}
+          </span>
+        )}
+        <input
+          value={localName}
+          onChange={(e) => setLocalName(e.target.value)}
+          onBlur={handleNameCommit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              (e.currentTarget as HTMLInputElement).blur();
+            }
+          }}
+          onClick={(e) => e.stopPropagation()}
+          placeholder={localizeUi("ui.lorebooks.lorebookentryrow.untitledEntry")}
+          className="min-w-0 flex-1 truncate rounded bg-transparent px-1 text-sm font-medium outline-none transition-colors hover:bg-[var(--accent)]/40 focus:bg-[var(--accent)]/40 focus:ring-1 focus:ring-[var(--ring)] sm:min-w-[7rem]"
+        />
+
+        {activationStat && activationStat.count > 0 && <LorebookEntryFiredIn stat={activationStat} />}
+        {mapBacklinks.length > 0 && (
+          <button
+            type="button"
+            className="inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md bg-sky-400/10 px-1.5 text-[0.625rem] font-medium text-sky-300 ring-1 ring-sky-400/20 hover:bg-sky-400/15"
+            title={localizeUi("ui.lorebooks.lorebookentryrow.usedByValue1", {
+              value1: mapBacklinks.map((backlink) => backlink.locationName).join(", "),
+            })}
+            aria-label={localizeUi("ui.lorebooks.lorebookentryrow.openHierarchicalMapUsedByValue1", {
+              value1: mapBacklinks.map((backlink) => backlink.locationName).join(", "),
+            })}
+            onClick={(event) => {
+              event.stopPropagation();
+              useUIStore.getState().openSpatialMapDetail(mapBacklinks[0]!.chatId);
+            }}
+          >
+            <MapPin size="0.6875rem" /> {localizeUi("ui.lorebooks.lorebookentryrow.usedBy")} {mapBacklinks.length}
+          </button>
+        )}
+
+        <button
+          type="button"
+          className={cn(
+            "relative inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[0.625rem] ring-1 transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--ring)] sm:h-6 sm:w-6",
+            isVectorExcluded
+              ? "bg-[var(--destructive)]/10 text-[var(--destructive)] ring-[var(--destructive)]/20"
+              : isVectorized
+                ? "bg-emerald-400/10 text-emerald-400 ring-emerald-400/20"
+                : "bg-[var(--background)]/55 text-[var(--muted-foreground)] ring-[var(--border)] hover:text-[var(--foreground)]",
+          )}
+          title={vectorStatusTitle}
+          aria-label={vectorStatusTitle}
+          onMouseEnter={() => setShowVectorStatus(true)}
+          onMouseLeave={() => setShowVectorStatus(false)}
+          onFocus={() => setShowVectorStatus(true)}
+          onBlur={() => setShowVectorStatus(false)}
+          onClick={(e) => {
+            e.stopPropagation();
+            setShowVectorStatus(true);
+          }}
+        >
+          {isVectorExcluded ? (
+            <Ban size="0.75rem" />
+          ) : isVectorized ? (
+            <CheckCircle2 size="0.75rem" />
+          ) : (
+            <CircleDashed size="0.75rem" />
+          )}
+          {showVectorStatus && (
+            <span className="pointer-events-none absolute left-1/2 top-full z-20 mt-1 -translate-x-1/2 whitespace-nowrap rounded-md bg-[var(--popover)] px-2 py-1 text-[0.625rem] font-medium text-[var(--popover-foreground)] shadow-lg ring-1 ring-[var(--border)]">
+              {vectorStatusLabel}
+            </span>
+          )}
+        </button>
+
+        <div
+          ref={mobileControlsRef}
+          className={cn("relative shrink-0", !compact && "md:hidden")}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            aria-label={localizeUi("ui.lorebooks.lorebookentryrow.entryQuickControls")}
+            aria-expanded={showMobileControls}
+            title={localizeUi("ui.lorebooks.lorebookentryrow.entryQuickControls")}
+            onClick={() => setShowMobileControls((current) => !current)}
+            className={cn(
+              "flex h-8 w-8 items-center justify-center rounded-md text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)] sm:h-7 sm:w-7",
+              showMobileControls && "bg-[var(--accent)] text-[var(--foreground)]",
+            )}
+          >
+            <MoreHorizontal size="0.875rem" />
+          </button>
+
+          {showMobileControls && (
+            <div className="absolute right-0 top-full z-30 mt-1 w-64 max-w-[calc(100vw-2rem)] space-y-2 rounded-xl border border-[var(--border)] bg-[var(--popover)] p-3 text-[var(--popover-foreground)] shadow-xl">
+              <div className="flex items-center justify-between gap-2 border-b border-[var(--border)] pb-2">
+                <p className="text-[0.6875rem] font-semibold">
+                  {localizeUi("ui.lorebooks.lorebookentryrow.entryControls")}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowMobileControls(false)}
+                  className="rounded px-1.5 py-0.5 text-[0.625rem] text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+                >
+                  {localizeUi("lorebook.editor.batch.done")}
+                </button>
+              </div>
+
+              <MobileSelect
+                label={localizeUi("ui.lorebooks.lorebookentryrow.position")}
+                value={String(localPosition)}
+                onChange={(v) => {
+                  const n = Number(v) as LorebookEntry["position"];
+                  setLocalPosition(n);
+                  patch({ position: n });
+                }}
+                options={[
+                  { value: "0", label: localizeUi("ui.lorebooks.lorebookentryrow.beforeCharacter") },
+                  { value: "1", label: localizeUi("ui.lorebooks.lorebookentryrow.afterCharacter") },
+                  { value: "2", label: localizeUi("ui.lorebooks.lorebookentryrow.atDepth") },
+                  { value: "7", label: localizeUi("ui.lorebooks.lorebookentryrow.outlet") },
+                ]}
+              />
+              {showDepthInput && (
+                <MobileNumber
+                  label={localizeUi("ui.lorebooks.lorebookentryrow.depth")}
+                  value={localDepth}
+                  onCommit={(n) => {
+                    setLocalDepth(n);
+                    patch({ depth: n });
+                  }}
+                  min={0}
+                  max={9999}
+                />
+              )}
+              <MobileNumber
+                label={localizeUi("ui.lorebooks.lorebookentryrow.order")}
+                value={localOrder}
+                onCommit={(n) => {
+                  setLocalOrder(n);
+                  patch({ order: n });
+                }}
+              />
+              <MobileNumber
+                label={localizeUi("ui.lorebooks.lorebookentryrow.probability")}
+                value={localProbability}
+                onCommit={(n) => {
+                  const clamped = Math.max(0, Math.min(100, n));
+                  setLocalProbability(clamped);
+                  patch({ probability: clamped === 100 ? null : clamped });
+                }}
+                min={0}
+                max={100}
+                suffix="%"
+              />
+              {folders.length > 0 && (
+                <MobileSelect
+                  label={localizeUi("ui.lorebooks.lorebookentryrow.folder")}
+                  value={entry.folderId ?? ""}
+                  onChange={(v) => patch({ folderId: v === "" ? null : v })}
+                  options={[
+                    { value: "", label: localizeUi("ui.lorebooks.lorebookentryrow.noFolder") },
+                    ...folders.map((f) => ({ value: f.id, label: f.name })),
+                  ]}
+                />
+              )}
+              <div className="grid grid-cols-2 gap-2 border-t border-[var(--border)] pt-2 md:hidden">
+                <button
+                  type="button"
+                  disabled={duplicateDisabled}
+                  onClick={(e) => {
+                    setShowMobileControls(false);
+                    handleDuplicate(e);
+                  }}
+                  className="mari-editor-action flex h-9 items-center justify-center gap-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Copy size="0.8125rem" />
+                  {localizeUi("ui.lorebooks.lorebookentryrow.duplicate")}
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    setShowMobileControls(false);
+                    void handleDelete(e);
+                  }}
+                  className="mari-editor-action flex h-9 items-center justify-center gap-1.5 text-xs text-[var(--destructive)]"
+                >
+                  <Trash2 size="0.8125rem" />
+                  {localizeUi("ui.lorebooks.lorebookentryrow.delete")}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Lock badge (display-only on the row; toggled inside the drawer) */}
+        {entry.locked && (
+          <span
+            className="mari-editor-chip mari-editor-chip--accent h-6 w-6 shrink-0 justify-center rounded-md p-0"
+            title={localizeUi("ui.lorebooks.lorebookentryrow.lockedEntry")}
+            aria-label={localizeUi("ui.lorebooks.lorebookentryrow.lockedEntry")}
+          >
+            <Lock size="0.75rem" />
+          </span>
+        )}
+
+        {/* ── Inline editable controls cluster ── */}
+        {/* Hidden on very narrow viewports to keep the row from overflowing.
+            Users on mobile can expand the drawer to access them. */}
+        <div
+          className={cn("hidden shrink-0 items-center gap-0.5", !compact && "md:flex")}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <CompactSelect
+            value={String(localPosition)}
+            onChange={(v) => {
+              const n = Number(v) as LorebookEntry["position"];
+              setLocalPosition(n);
+              patch({ position: n });
+            }}
+            title={localizeUi("ui.lorebooks.lorebookentryrow.positionInThePromptBeforeCharacterAfterCharacterOr")}
+            options={[
+              { value: "0", label: localizeUi("ui.lorebooks.lorebookentryrow.beforeCompact") },
+              { value: "1", label: localizeUi("ui.lorebooks.lorebookentryrow.afterCompact") },
+              { value: "2", label: localizeUi("ui.lorebooks.lorebookentryrow.depthCompact") },
+              { value: "7", label: localizeUi("ui.lorebooks.lorebookentryrow.outlet") },
+            ]}
+            className="w-[4.75rem]"
+          />
+          {showDepthInput && (
+            <CompactNumber
+              value={localDepth}
+              onCommit={(n) => {
+                setLocalDepth(n);
+                patch({ depth: n });
+              }}
+              title={localizeUi("ui.lorebooks.lorebookentryrow.depthMessagesBackFromTheLatestWhereThisEntry")}
+              ariaLabel={localizeUi("ui.lorebooks.lorebookentryrow.depth")}
+              prefix="d"
+              min={0}
+              max={9999}
+            />
+          )}
+          <CompactNumber
+            value={localOrder}
+            onCommit={(n) => {
+              setLocalOrder(n);
+              patch({ order: n });
+            }}
+            title={localizeUi("ui.lorebooks.lorebookentryrow.insertionOrderWhenMultipleEntriesActivateLowerEarlierIn")}
+            ariaLabel={localizeUi("ui.lorebooks.lorebookentryrow.order")}
+            prefix="ord"
+          />
+          <CompactNumber
+            value={localProbability}
+            onCommit={(n) => {
+              const clamped = Math.max(0, Math.min(100, n));
+              setLocalProbability(clamped);
+              // null = always-fire is the schema default. Save 100 as null
+              // for parity with how new entries are created.
+              patch({ probability: clamped === 100 ? null : clamped });
+            }}
+            title={localizeUi("ui.lorebooks.lorebookentryrow.triggerProbability0100100AlwaysFiresWhenKeys")}
+            ariaLabel={localizeUi("ui.lorebooks.lorebookentryrow.triggerProbability")}
+            prefix="p"
+            suffix="%"
+            min={0}
+            max={100}
+          />
+          {folders.length > 0 && (
+            <CompactSelect
+              value={entry.folderId ?? ""}
+              onChange={(v) => patch({ folderId: v === "" ? null : v })}
+              title={localizeUi("ui.lorebooks.lorebookentryrow.moveThisEntryToADifferentFolderNoneRoot")}
+              options={[
+                { value: "", label: localizeUi("ui.lorebooks.lorebookentryrow.noFolder") },
+                ...folders.map((f) => ({ value: f.id, label: f.name })),
+              ]}
+              className="w-[5.5rem] sm:w-[6.25rem]"
+            />
+          )}
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1" onClick={(e) => e.stopPropagation()}>
+          {/* Token estimate (compact) */}
+          <span
+            className={cn(
+              "hidden min-w-[3.25rem] items-center justify-end gap-0.5 rounded px-1 py-0.5 text-[0.625rem] tabular-nums text-[var(--muted-foreground)]",
+              !compact && "lg:inline-flex",
+            )}
+            title={localizeUi("ui.lorebooks.lorebookentryrow.value1TokensEstimated", {
+              value1: tokenEstimate.toLocaleString(),
+            })}
+          >
+            <Hash size="0.5625rem" />
+            {tokenEstimate.toLocaleString()}
+          </span>
+        </div>
+
+        {/* Duplicate button (visible on hover, always on mobile) */}
+        <button
+          type="button"
+          aria-label={localizeUi("ui.lorebooks.lorebookentryrow.duplicateEntry")}
+          title={localizeUi("ui.lorebooks.lorebookentryrow.duplicateEntry")}
+          disabled={duplicateDisabled}
+          onClick={handleDuplicate}
+          className="shrink-0 rounded p-0.5 text-[var(--muted-foreground)] opacity-0 transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] group-hover:opacity-100 focus-visible:opacity-100 disabled:cursor-not-allowed max-md:hidden sm:p-1"
+        >
+          <Copy size="0.75rem" />
+        </button>
+
+        {/* Delete button (visible on hover, always on mobile) */}
+        <button
+          type="button"
+          aria-label={localizeUi("ui.lorebooks.lorebookentryrow.deleteEntry")}
+          onClick={handleDelete}
+          className="shrink-0 rounded p-0.5 text-[var(--muted-foreground)] opacity-0 transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] group-hover:opacity-100 focus-visible:opacity-100 max-md:hidden sm:p-1"
+        >
+          <Trash2 size="0.75rem" />
+        </button>
+      </div>
+
+      {/* ── Expanded drawer ── */}
+      {isExpanded && (
+        <ExpandedDrawer
+          entry={entry}
+          position={localPosition}
+          lorebookId={lorebookId}
+          characters={characters}
+          characterTags={characterTags}
+          compact={compact}
+          onUpdateEntry={onUpdateEntry}
+          onOutletNameDraftChange={handleOutletNameDraftChange}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────
+// Sub-components
+// ─────────────────────────────────────────────────────
+
+function CompactSelect({
+  value,
+  onChange,
+  options,
+  title,
+  className,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: Array<{ value: string; label: string }>;
+  title?: string;
+  className?: string;
+}) {
+  return (
+    <select
+      value={value}
+      title={title}
+      onChange={(e) => onChange(e.target.value)}
+      className={cn("mari-editor-field h-6 min-w-0 truncate px-1 text-[0.625rem]", className)}
+    >
+      {options.map((opt) => (
+        <option key={opt.value} value={opt.value}>
+          {opt.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function CompactNumber({
+  value,
+  onCommit,
+  title,
+  ariaLabel,
+  prefix,
+  suffix,
+  min,
+  max,
+}: {
+  value: number;
+  onCommit: (v: number) => void;
+  title?: string;
+  ariaLabel: string;
+  prefix?: string;
+  suffix?: string;
+  min?: number;
+  max?: number;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  // Keep draft synced when external value changes
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  const commit = () => {
+    const parsed = parseInt(draft, 10);
+    if (Number.isNaN(parsed)) {
+      setDraft(String(value));
+      return;
+    }
+    let clamped = parsed;
+    if (min !== undefined && clamped < min) clamped = min;
+    if (max !== undefined && clamped > max) clamped = max;
+    setDraft(String(clamped));
+    if (clamped !== value) onCommit(clamped);
+  };
+
+  return (
+    <label className="mari-editor-field flex h-6 items-center gap-px px-1 text-[0.625rem]" title={title}>
+      {prefix && <span className="text-[var(--muted-foreground)]">{prefix}:</span>}
+      <input
+        type="number"
+        aria-label={ariaLabel}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            (e.currentTarget as HTMLInputElement).blur();
+          }
+        }}
+        min={min}
+        max={max}
+        style={{ width: `${Math.min(Math.max(draft.length, 4), 9) + 1}ch` }}
+        className="bg-transparent text-right tabular-nums outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+      />
+      {suffix && <span className="text-[var(--muted-foreground)]">{suffix}</span>}
+    </label>
+  );
+}
+
+function MobileSelect({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: Array<{ value: string; label: string }>;
+}) {
+  return (
+    <label className="grid grid-cols-[5.75rem_minmax(0,1fr)] items-center gap-2 text-[0.6875rem]">
+      <span className="text-[var(--muted-foreground)]">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="mari-editor-field h-9 w-full min-w-0 px-2 text-xs"
+      >
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function MobileNumber({
+  label,
+  value,
+  onCommit,
+  min,
+  max,
+  suffix,
+}: {
+  label: string;
+  value: number;
+  onCommit: (v: number) => void;
+  min?: number;
+  max?: number;
+  suffix?: string;
+}) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  const commit = () => {
+    const parsed = parseInt(draft, 10);
+    if (Number.isNaN(parsed)) {
+      setDraft(String(value));
+      return;
+    }
+
+    let clamped = parsed;
+    if (min !== undefined && clamped < min) clamped = min;
+    if (max !== undefined && clamped > max) clamped = max;
+    setDraft(String(clamped));
+    if (clamped !== value) {
+      onCommit(clamped);
+    }
+  };
+
+  return (
+    <label className="grid grid-cols-[5.75rem_minmax(0,1fr)] items-center gap-2 text-[0.6875rem]">
+      <span className="text-[var(--muted-foreground)]">{label}</span>
+      <span className="mari-editor-field flex h-9 min-w-0 items-center px-2">
+        <input
+          type="number"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              (e.currentTarget as HTMLInputElement).blur();
+            }
+          }}
+          min={min}
+          max={max}
+          className="w-full min-w-0 bg-transparent text-right text-xs tabular-nums outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        />
+        {suffix && <span className="pl-1 text-xs text-[var(--muted-foreground)]">{suffix}</span>}
+      </span>
+    </label>
+  );
+}
+
+function toggleStringValue(values: string[] | undefined, value: string) {
+  const current = values ?? [];
+  return current.includes(value) ? current.filter((item) => item !== value) : [...current, value];
+}
+
+function buildEntrySavePayload(form: Partial<LorebookEntry>) {
+  return {
+    content: form.content,
+    description: form.description,
+    keys: form.keys,
+    secondaryKeys: form.secondaryKeys,
+    selectiveLogic: form.selectiveLogic,
+    matchWholeWords: form.matchWholeWords,
+    caseSensitive: form.caseSensitive,
+    characterFilterMode: form.characterFilterMode,
+    characterFilterIds: form.characterFilterIds,
+    characterTagFilterMode: form.characterTagFilterMode,
+    characterTagFilters: form.characterTagFilters,
+    generationTriggerFilterMode: form.generationTriggerFilterMode,
+    generationTriggerFilters: form.generationTriggerFilters,
+    additionalMatchingSources: form.additionalMatchingSources,
+    outletName: form.outletName,
+    role: form.role,
+    sticky: form.sticky,
+    cooldown: form.cooldown,
+    delay: form.delay,
+    ephemeral: form.ephemeral,
+    group: form.group,
+    tag: form.tag,
+    locked: form.locked,
+    preventRecursion: form.preventRecursion,
+    excludeRecursion: form.excludeRecursion,
+    delayUntilRecursion: form.delayUntilRecursion,
+    excludeFromVectorization: form.excludeFromVectorization,
+  };
+}
+
+function FilterModeSelect({
+  value,
+  onChange,
+}: {
+  value: LorebookFilterMode;
+  onChange: (value: LorebookFilterMode) => void;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value as LorebookFilterMode)}
+      className="mari-editor-field h-7 px-2 text-[0.6875rem]"
+    >
+      {(["any", "include", "exclude"] as LorebookFilterMode[]).map((mode) => (
+        <option key={mode} value={mode}>
+          {localizeUi(FILTER_MODE_LABEL[mode])}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function FilterPills({
+  values,
+  selected,
+  onChange,
+  emptyLabel,
+}: {
+  values: Array<{ value: string; label: string }>;
+  selected: string[];
+  onChange: (next: string[]) => void;
+  emptyLabel: string;
+}) {
+  if (values.length === 0) {
+    return <p className="text-[0.625rem] text-[var(--muted-foreground)]">{emptyLabel}</p>;
+  }
+
+  return (
+    <div className="flex max-h-20 flex-wrap items-start gap-1 overflow-y-auto p-px pr-1.5">
+      {values.map((item) => {
+        const active = selected.includes(item.value);
+        return (
+          <button
+            key={item.value}
+            type="button"
+            onClick={() => onChange(toggleStringValue(selected, item.value))}
+            className={cn(
+              "mari-editor-chip min-h-6 max-w-full px-2 py-1 text-[0.625rem] leading-none transition-colors",
+              active
+                ? "mari-editor-chip--accent mari-chrome-accent-surface mari-accent-animated"
+                : "text-[var(--marinara-editor-muted)] hover:text-[var(--marinara-editor-text)]",
+            )}
+          >
+            {item.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────
+// Expanded drawer — keys, content, advanced toggles, timing, group/tag.
+// Autosaves heavier fields after edits, with immediate flushes when focus
+// leaves the drawer or fullscreen editor closes.
+// ─────────────────────────────────────────────────────
+
+function ExpandedDrawer({
+  entry,
+  position,
+  lorebookId,
+  characters,
+  characterTags,
+  compact,
+  onUpdateEntry,
+  onOutletNameDraftChange,
+}: {
+  entry: LorebookEntry;
+  position: number;
+  lorebookId: string;
+  characters: Array<{ id: string; name: string; tags: string[] }>;
+  characterTags: string[];
+  compact: boolean;
+  onUpdateEntry?: LorebookEntryUpdateHandler;
+  onOutletNameDraftChange: (outletName: string) => void;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  const { mutate: mutateEntry, mutateAsync: mutateEntryAsync } = useUpdateLorebookEntry();
+  const [form, setForm] = useState<Partial<LorebookEntry>>(() => ({ ...entry }));
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(false);
+  const loadedEntryIdRef = useRef(entry.id);
+  const formRef = useRef<Partial<LorebookEntry>>({ ...entry });
+  const dirtyRef = useRef(false);
+  const changedFieldsRef = useRef<Partial<LorebookEntry>>({});
+  const savingRef = useRef(false);
+  const changeVersionRef = useRef(0);
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
+  const saveNowRef = useRef<() => Promise<void>>(async () => {});
+
+  const clearAutosaveTimer = useCallback(() => {
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+  }, []);
+
+  const queueAutosave = useCallback(
+    (delay = ENTRY_AUTOSAVE_DELAY_MS) => {
+      clearAutosaveTimer();
+      autosaveTimerRef.current = setTimeout(() => {
+        void saveNowRef.current();
+      }, delay);
+    },
+    [clearAutosaveTimer],
+  );
+
+  const saveNow = useCallback(async () => {
+    clearAutosaveTimer();
+    if (!dirtyRef.current || savingRef.current) return;
+
+    const versionAtStart = changeVersionRef.current;
+    const entryIdAtStart = loadedEntryIdRef.current;
+    const snapshot = formRef.current;
+    const changedFieldsAtStart = { ...changedFieldsRef.current };
+    savingRef.current = true;
+    if (mountedRef.current) {
+      setSaving(true);
+      setSaveError(false);
+    }
+
+    try {
+      const sourceChanges = buildEntrySavePayload(snapshot);
+      if (onUpdateEntry) {
+        await onUpdateEntry(entryIdAtStart, sourceChanges, changedFieldsAtStart);
+      } else {
+        await mutateEntryAsync({
+          lorebookId,
+          entryId: entryIdAtStart,
+          ...sourceChanges,
+        });
+      }
+
+      if (!mountedRef.current) return;
+      for (const [field, value] of Object.entries(changedFieldsAtStart)) {
+        const key = field as keyof LorebookEntry;
+        if (Object.is(changedFieldsRef.current[key], value)) {
+          delete changedFieldsRef.current[key];
+        }
+      }
+      if (changeVersionRef.current === versionAtStart) {
+        dirtyRef.current = false;
+        setDirty(false);
+      } else {
+        queueAutosave();
+      }
+    } catch {
+      if (!mountedRef.current) return;
+      dirtyRef.current = true;
+      setDirty(true);
+      setSaveError(true);
+    } finally {
+      savingRef.current = false;
+      if (mountedRef.current) setSaving(false);
+    }
+  }, [clearAutosaveTimer, lorebookId, mutateEntryAsync, onUpdateEntry, queueAutosave]);
+
+  useEffect(() => {
+    saveNowRef.current = saveNow;
+  }, [saveNow]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      clearAutosaveTimer();
+      if (dirtyRef.current) {
+        const sourceChanges = buildEntrySavePayload(formRef.current);
+        if (onUpdateEntry) {
+          void onUpdateEntry(loadedEntryIdRef.current, sourceChanges, changedFieldsRef.current).catch(() => undefined);
+        } else {
+          mutateEntry({
+            lorebookId,
+            entryId: loadedEntryIdRef.current,
+            ...sourceChanges,
+          });
+        }
+      }
+    };
+  }, [clearAutosaveTimer, lorebookId, mutateEntry, onUpdateEntry]);
+
+  // If the underlying entry changes (e.g. due to an inline-control patch), refresh
+  // the drawer form unless the user is in the middle of editing.
+  useEffect(() => {
+    const switched = loadedEntryIdRef.current !== entry.id;
+    if (switched && dirtyRef.current) {
+      const sourceChanges = buildEntrySavePayload(formRef.current);
+      if (onUpdateEntry) {
+        void onUpdateEntry(loadedEntryIdRef.current, sourceChanges, changedFieldsRef.current).catch(() => undefined);
+      } else {
+        mutateEntry({
+          lorebookId,
+          entryId: loadedEntryIdRef.current,
+          ...sourceChanges,
+        });
+      }
+      dirtyRef.current = false;
+      changedFieldsRef.current = {};
+      setDirty(false);
+    }
+
+    if (switched || (!dirtyRef.current && !savingRef.current)) {
+      const next = { ...entry };
+      formRef.current = next;
+      changedFieldsRef.current = {};
+      setForm(next);
+      setDirty(false);
+      setSaveError(false);
+      loadedEntryIdRef.current = entry.id;
+    }
+  }, [entry, lorebookId, mutateEntry, onUpdateEntry]);
+
+  const update = useCallback(
+    (patch: Partial<LorebookEntry>) => {
+      changeVersionRef.current += 1;
+      dirtyRef.current = true;
+      setDirty(true);
+      setSaveError(false);
+      const next = { ...formRef.current, ...patch };
+      formRef.current = next;
+      changedFieldsRef.current = { ...changedFieldsRef.current, ...patch };
+      setForm(next);
+      queueAutosave();
+    },
+    [queueAutosave],
+  );
+
+  const flushAutosave = useCallback(() => {
+    void saveNowRef.current();
+  }, []);
+
+  return (
+    <div
+      className="space-y-3 border-t border-[var(--marinara-editor-divider)] px-3 py-3 sm:px-4"
+      onBlurCapture={(event) => {
+        const nextTarget = event.relatedTarget;
+        if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+        flushAutosave();
+      }}
+    >
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--secondary)]/70 px-3 py-2">
+        <span className="text-[0.625rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
+          {localizeUi("ui.lorebooks.lorebookentryrow.entryId")}
+        </span>
+        <code className="min-w-0 flex-1 break-all rounded-lg bg-[var(--background)] px-2 py-1 text-[0.6875rem] text-[var(--foreground)]">
+          {entry.id}
+        </code>
+        <button
+          type="button"
+          onClick={async () => {
+            const copied = await copyToClipboard(entry.id);
+            if (copied) toast.success(localizeUi("ui.lorebooks.lorebookentryrow.entryIdCopied"));
+            else toast.error(localizeUi("ui.lorebooks.lorebookentryrow.couldNotCopyEntryId"));
+          }}
+          className="mari-editor-action inline-flex h-8 px-2 text-[0.6875rem]"
+          aria-label={localizeUi("ui.lorebooks.lorebookentryrow.copyEntryId")}
+          title={localizeUi("ui.lorebooks.lorebookentryrow.copyEntryId")}
+        >
+          <Copy size="0.75rem" />
+          {localizeUi("lorebook.editor.batch.copy")}
+        </button>
+      </div>
+
+      <div
+        className={cn(
+          "grid items-start gap-3",
+          !compact && "lg:grid-cols-[minmax(12rem,0.9fr)_minmax(13rem,1fr)_minmax(14rem,1.1fr)]",
+        )}
+      >
+        {/* Description */}
+        <FieldGroup
+          label={localizeUi("chat.settings.inlineEditor.fields.description")}
+          icon={FileText}
+          help={localizeUi("ui.lorebooks.expandeddrawer.briefSummaryOfWhatThisEntryIsAboutUsed")}
+        >
+          <MacroTextarea
+            value={form.description ?? ""}
+            onChange={(value) => update({ description: value })}
+            onBlur={flushAutosave}
+            rows={3}
+            className="mari-editor-field w-full resize-y px-2.5 py-2 text-xs leading-5"
+            placeholder={localizeUi("ui.lorebooks.expandeddrawer.briefSummaryForRouting")}
+            title={localizeUi("ui.lorebooks.expandeddrawer.editDescription")}
+            showMarkdownPreview
+          />
+        </FieldGroup>
+
+        {/* Keys */}
+        <FieldGroup
+          label={localizeUi("ui.lorebooks.expandeddrawer.primaryKeys")}
+          icon={Key}
+          help={localizeUi("ui.lorebooks.expandeddrawer.keywordsThatTriggerThisEntryWhenAnyOfThese")}
+        >
+          <KeysEditor keys={form.keys ?? []} onChange={(keys) => update({ keys })} />
+        </FieldGroup>
+
+        {/* Secondary Keys + Logic */}
+        <FieldGroup
+          label={localizeUi("ui.lorebooks.expandeddrawer.secondaryKeys")}
+          icon={Key}
+          help={localizeUi("ui.lorebooks.expandeddrawer.additionalKeywordsUsedWithSillytavernStyleSelectiveLogicAny")}
+        >
+          <KeysEditor keys={form.secondaryKeys ?? []} onChange={(keys) => update({ secondaryKeys: keys })} />
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <label className="text-[0.6875rem] text-[var(--muted-foreground)]">
+              {localizeUi("ui.lorebooks.expandeddrawer.logic")}
+            </label>
+            {SELECTIVE_LOGIC_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                onClick={() => update({ selectiveLogic: option.value })}
+                className={cn(
+                  "rounded-md px-2 py-0.5 text-[0.6875rem] font-medium transition-colors",
+                  (form.selectiveLogic === "or" ? "and" : form.selectiveLogic) === option.value
+                    ? "mari-chrome-accent-surface mari-accent-animated"
+                    : "text-[var(--muted-foreground)] hover:bg-[var(--marinara-editor-control-bg-hover)]",
+                )}
+              >
+                {localizeUi(option.label)}
+              </button>
+            ))}
+          </div>
+        </FieldGroup>
+      </div>
+
+      <details className="mari-editor-panel mari-editor-panel--soft px-3 py-2">
+        <summary className="cursor-pointer text-xs font-medium text-[var(--foreground)]">
+          {localizeUi("ui.lorebooks.expandeddrawer.contextFiltersMatchingSources")}
+        </summary>
+        <div className="mt-3 space-y-3">
+          <div className={cn("grid gap-3", !compact && "lg:grid-cols-3")}>
+            <div className="mari-editor-panel mari-editor-panel--soft space-y-2 p-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[0.6875rem] font-medium">{localizeUi("navigation.topbar.characters")}</span>
+                <FilterModeSelect
+                  value={form.characterFilterMode ?? "any"}
+                  onChange={(value) => update({ characterFilterMode: value })}
+                />
+              </div>
+              <FilterPills
+                values={characters.map((character) => ({ value: character.id, label: character.name }))}
+                selected={form.characterFilterIds ?? []}
+                onChange={(next) => update({ characterFilterIds: next })}
+                emptyLabel={localizeUi("ui.lorebooks.lorebookentryrow.noCharactersAvailable")}
+              />
+            </div>
+
+            <div className="mari-editor-panel mari-editor-panel--soft space-y-2 p-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[0.6875rem] font-medium">
+                  {localizeUi("ui.lorebooks.expandeddrawer.characterTags")}
+                </span>
+                <FilterModeSelect
+                  value={form.characterTagFilterMode ?? "any"}
+                  onChange={(value) => update({ characterTagFilterMode: value })}
+                />
+              </div>
+              <FilterPills
+                values={characterTags.map((tag) => ({ value: tag, label: tag }))}
+                selected={form.characterTagFilters ?? []}
+                onChange={(next) => update({ characterTagFilters: next })}
+                emptyLabel={localizeUi("ui.lorebooks.lorebookentryrow.noCharacterTagsAvailable")}
+              />
+            </div>
+
+            <div className="mari-editor-panel mari-editor-panel--soft space-y-2 p-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[0.6875rem] font-medium">
+                  {localizeUi("ui.lorebooks.expandeddrawer.generation")}
+                </span>
+                <FilterModeSelect
+                  value={form.generationTriggerFilterMode ?? "any"}
+                  onChange={(value) => update({ generationTriggerFilterMode: value })}
+                />
+              </div>
+              <FilterPills
+                values={GENERATION_TRIGGER_OPTIONS.map((option) => ({
+                  value: option.value,
+                  label: localizeUi(option.label),
+                }))}
+                selected={form.generationTriggerFilters ?? []}
+                onChange={(next) => update({ generationTriggerFilters: next })}
+                emptyLabel={localizeUi("ui.lorebooks.lorebookentryrow.noTriggerFiltersAvailable")}
+              />
+            </div>
+          </div>
+
+          <div className="mari-editor-panel mari-editor-panel--soft space-y-2 p-2">
+            <div>
+              <p className="text-[0.6875rem] font-medium">
+                {localizeUi("ui.lorebooks.expandeddrawer.additionalMatchingSources")}
+              </p>
+              <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+                {localizeUi("ui.lorebooks.expandeddrawer.optionalCardFieldsToScanForThisEntryS")}
+              </p>
+            </div>
+            <FilterPills
+              values={MATCHING_SOURCE_OPTIONS.map((option) => ({
+                value: option.value,
+                label: localizeUi(option.label),
+              }))}
+              selected={form.additionalMatchingSources ?? []}
+              onChange={(next) => update({ additionalMatchingSources: next as LorebookMatchingSource[] })}
+              emptyLabel={localizeUi("ui.lorebooks.lorebookentryrow.noSourcesAvailable")}
+            />
+          </div>
+        </div>
+      </details>
+
+      {position === 7 && (
+        <FieldGroup
+          label={localizeUi("ui.lorebooks.expandeddrawer.outletName")}
+          icon={MapPin}
+          help={localizeUi("ui.lorebooks.expandeddrawer.outletNameHelp", { macro: "{{outlet::name}}" })}
+        >
+          <input
+            type="text"
+            value={form.outletName ?? ""}
+            onChange={(event) => {
+              onOutletNameDraftChange(event.target.value);
+              update({ outletName: event.target.value });
+            }}
+            onBlur={flushAutosave}
+            maxLength={200}
+            className="mari-editor-field w-full px-2.5 py-2 text-xs"
+            placeholder={localizeUi("ui.lorebooks.expandeddrawer.outletNamePlaceholder")}
+            aria-label={localizeUi("ui.lorebooks.expandeddrawer.outletName")}
+          />
+        </FieldGroup>
+      )}
+
+      {/* Content */}
+      <FieldGroup
+        label={localizeUi("ui.lorebooks.expandeddrawer.content")}
+        icon={FileText}
+        help={localizeUi("ui.lorebooks.expandeddrawer.theTextThatGetsInjectedIntoTheAiS")}
+      >
+        <ExpandableTextarea
+          value={form.content ?? ""}
+          onChange={(v) => update({ content: v })}
+          onBlur={flushAutosave}
+          onCommit={flushAutosave}
+          rows={5}
+          placeholder={localizeUi("ui.lorebooks.expandeddrawer.theContentThatWillBeInjectedIntoThePrompt")}
+          title={localizeUi("ui.lorebooks.expandeddrawer.editContent")}
+          showMacroReference
+        />
+        <p className="mt-1 flex items-center gap-1 text-[0.625rem] text-[var(--muted-foreground)]">
+          <Hash size="0.5625rem" />~{estimateTokens(form.content ?? "").toLocaleString()}{" "}
+          {localizeUi("ui.lorebooks.expandeddrawer.tokens")}
+        </p>
+      </FieldGroup>
+
+      {/* Toggles row — note: enable / regex / trigger mode are now on the row header,
+          so they are intentionally omitted from this block to avoid duplication. */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+        <ToggleButton
+          label={localizeUi("ui.lorebooks.expandeddrawer.alwaysLoaded")}
+          value={form.alwaysLoaded ?? false}
+          onChange={(v) => update({ alwaysLoaded: v })}
+          tooltip={localizeUi("ui.lorebooks.expandeddrawer.alwaysLoadedHelp")}
+        />
+        <ToggleButton
+          label={localizeUi("ui.lorebooks.expandeddrawer.wholeWords")}
+          value={form.matchWholeWords ?? false}
+          onChange={(v) => update({ matchWholeWords: v })}
+        />
+        <ToggleButton
+          label={localizeUi("ui.lorebooks.expandeddrawer.caseSensitive")}
+          value={form.caseSensitive ?? false}
+          onChange={(v) => update({ caseSensitive: v })}
+        />
+        <ToggleButton
+          label={localizeUi("ui.lorebooks.expandeddrawer.locked")}
+          value={form.locked ?? false}
+          onChange={(v) => update({ locked: v })}
+          tooltip="Prevents the Lorebook Keeper agent from modifying this entry."
+        />
+        <ToggleButton
+          label={localizeUi("ui.lorebooks.expandeddrawer.recursion")}
+          value={!(form.preventRecursion ?? true)}
+          onChange={(v) => update({ preventRecursion: !v })}
+          tooltip="When enabled, this entry's content can trigger additional entries during recursive scanning. Keep this off unless this entry should chain lore."
+        />
+        <ToggleButton
+          label={localizeUi("ui.lorebooks.expandeddrawer.noVector")}
+          value={form.excludeFromVectorization ?? false}
+          onChange={(v) => update({ excludeFromVectorization: v })}
+          tooltip="When enabled, bulk vectorization skips this entry and removes any stored embedding."
+        />
+      </div>
+
+      <div
+        className={cn(
+          "grid items-start gap-3",
+          !compact && "lg:grid-cols-[minmax(8rem,0.65fr)_minmax(18rem,1.5fr)_minmax(16rem,1.15fr)]",
+        )}
+      >
+        {/* Role (position/depth/order/probability live on the row header). */}
+        <FieldGroup
+          label={localizeUi("ui.lorebooks.expandeddrawer.role")}
+          icon={Settings2}
+          help={localizeUi("ui.lorebooks.expandeddrawer.whichRoleThisEntrySContentIsAttributedTo")}
+        >
+          <select
+            value={form.role ?? "system"}
+            onChange={(e) => update({ role: e.target.value as "system" | "user" | "assistant" })}
+            className="mari-editor-field w-full px-2 py-1.5 text-xs"
+          >
+            <option value="system">{localizeUi("ui.lorebooks.expandeddrawer.system")}</option>
+            <option value="user">{localizeUi("ui.lorebooks.expandeddrawer.user")}</option>
+            <option value="assistant">{localizeUi("ui.lorebooks.expandeddrawer.assistant")}</option>
+          </select>
+        </FieldGroup>
+
+        {/* Timing */}
+        <FieldGroup
+          label={localizeUi("ui.lorebooks.expandeddrawer.timing")}
+          icon={Settings2}
+          help={localizeUi("ui.lorebooks.expandeddrawer.stickyStaysActiveForNMessagesAfterTriggeringCooldown")}
+        >
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:gap-1.5">
+            <NumberField
+              label={localizeUi("ui.lorebooks.expandeddrawer.sticky")}
+              value={form.sticky ?? 0}
+              onChange={(v) => update({ sticky: v || null })}
+              min={0}
+            />
+            <NumberField
+              label={localizeUi("ui.lorebooks.expandeddrawer.cooldown")}
+              value={form.cooldown ?? 0}
+              onChange={(v) => update({ cooldown: v || null })}
+              min={0}
+            />
+            <NumberField
+              label={localizeUi("ui.lorebooks.expandeddrawer.delay")}
+              value={form.delay ?? 0}
+              onChange={(v) => update({ delay: v || null })}
+              min={0}
+            />
+            <NumberField
+              label={localizeUi("ui.lorebooks.expandeddrawer.ephemeral")}
+              value={form.ephemeral ?? 0}
+              onChange={(v) => update({ ephemeral: v || null })}
+              min={0}
+            />
+          </div>
+        </FieldGroup>
+
+        {/* Group & Tag */}
+        <FieldGroup
+          label={localizeUi("ui.lorebooks.expandeddrawer.groupTag")}
+          icon={Settings2}
+          help={localizeUi("ui.lorebooks.expandeddrawer.groupEntriesTogetherSoOnlyOneFromTheGroup")}
+        >
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:gap-1.5">
+            <div>
+              <label className="mb-1 block text-[0.6875rem] text-[var(--muted-foreground)]">
+                {localizeUi("ui.lorebooks.expandeddrawer.group")}
+              </label>
+              <input
+                value={form.group ?? ""}
+                onChange={(e) => update({ group: e.target.value })}
+                onBlur={flushAutosave}
+                className="mari-editor-field w-full px-2 py-1.5 text-xs"
+                placeholder={localizeUi("ui.lorebooks.expandeddrawer.groupName")}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-[0.6875rem] text-[var(--muted-foreground)]">
+                {localizeUi("ui.lorebooks.expandeddrawer.tag")}
+              </label>
+              <input
+                value={form.tag ?? ""}
+                onChange={(e) => update({ tag: e.target.value })}
+                onBlur={flushAutosave}
+                className="mari-editor-field w-full px-2 py-1.5 text-xs"
+                placeholder={localizeUi("ui.lorebooks.expandeddrawer.eGLocationItemLore")}
+              />
+            </div>
+          </div>
+        </FieldGroup>
+      </div>
+
+      <div className="flex items-center justify-end border-t border-[var(--marinara-editor-divider)] pt-3">
+        <span
+          className={cn("text-[0.6875rem]", saveError ? "text-[var(--destructive)]" : "text-[var(--muted-foreground)]")}
+        >
+          {saveError
+            ? localizeUi("ui.lorebooks.expandeddrawer.autosaveFailedYourEditsAreStillHereAndWill")
+            : saving
+              ? localizeUi("chat.settings.inlineEditor.saving")
+              : dirty
+                ? localizeUi("ui.lorebooks.expandeddrawer.autosaving")
+                : localizeUi("ui.lorebooks.expandeddrawer.savedAutomatically")}
+        </span>
+      </div>
+    </div>
+  );
+}

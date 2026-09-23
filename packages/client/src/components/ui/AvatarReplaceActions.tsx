@@ -1,0 +1,55 @@
+import { Download, Loader2, Wand2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
+
+interface AvatarReplaceActionsProps {
+  hasAvatar: boolean;
+  uploading: boolean;
+  generationAvailable: boolean;
+  onUpload: () => void;
+  onGenerate: () => void;
+}
+
+export function AvatarReplaceActions({
+  hasAvatar,
+  uploading,
+  generationAvailable,
+  onUpload,
+  onGenerate,
+}: AvatarReplaceActionsProps) {
+  const { t } = useTranslation();
+
+  return (
+    <section className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--secondary)]/70 p-3">
+      <div>
+        <h3 className="text-xs font-semibold text-[var(--foreground)]">
+          {hasAvatar ? t("editor.avatar.replace.title") : t("editor.avatar.add.title")}
+        </h3>
+        <p className="mt-0.5 text-[0.6875rem] leading-5 text-[var(--muted-foreground)]">
+          {t("editor.avatar.actions.help")}
+        </p>
+      </div>
+      <div className="grid grid-cols-2 gap-2 max-[360px]:grid-cols-1">
+        <button
+          type="button"
+          onClick={onUpload}
+          disabled={uploading}
+          aria-busy={uploading}
+          className="mari-chrome-control mari-chrome-control--small flex min-h-10 items-center justify-center gap-1.5 text-xs disabled:cursor-wait disabled:opacity-60"
+        >
+          {uploading ? <Loader2 size="0.875rem" className="animate-spin" /> : <Download size="0.875rem" />}
+          <span>{uploading ? t("editor.avatar.uploading") : t("editor.avatar.upload")}</span>
+        </button>
+        <button
+          type="button"
+          onClick={onGenerate}
+          disabled={!generationAvailable || uploading}
+          title={!generationAvailable ? t("editor.avatar.generate.unavailable") : undefined}
+          className="mari-chrome-control mari-chrome-control--small flex min-h-10 items-center justify-center gap-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          <Wand2 size="0.875rem" />
+          <span>{t("editor.avatar.generate")}</span>
+        </button>
+      </div>
+    </section>
+  );
+}

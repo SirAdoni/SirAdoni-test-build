@@ -1,0 +1,176 @@
+// ──────────────────────────────────────────────
+// Game State Types (RPG Companion replacement)
+// ──────────────────────────────────────────────
+
+/** Complete game state snapshot, linked to a message. */
+export type TrackerFieldLocks = Record<string, boolean>;
+export type TrackerHiddenFields = Record<string, boolean>;
+
+export interface GameState {
+  id: string;
+  chatId: string;
+  messageId: string;
+  /** Swipe index this state corresponds to */
+  swipeIndex: number;
+
+  // ── Scene ──
+  date: string | null;
+  time: string | null;
+  location: string | null;
+  weather: string | null;
+  temperature: string | null;
+  /** User-defined world tracker fields displayed alongside the built-in scene fields. */
+  worldCustomFields?: WorldCustomField[];
+
+  // ── Characters ──
+  presentCharacters: PresentCharacter[];
+
+  // ── Events ──
+  recentEvents: string[];
+
+  // ── Player ──
+  playerStats: PlayerStats | null;
+
+  // ── Persona ──
+  /** Persona status bars (Satiety, Energy, etc.) — tracked by persona-stats agent */
+  personaStats: CharacterStat[] | null;
+
+  /** Whether this snapshot has been committed (user sent a follow-up message). */
+  committed?: boolean;
+
+  /** JSON object of manually-edited field names → values. Carried forward across agent snapshots. */
+  manualOverrides?: Record<string, string> | null;
+
+  /** JSON object of tracker field lock keys → enabled. Carried forward across agent snapshots. */
+  fieldLocks?: TrackerFieldLocks | null;
+
+  /** JSON object of tracker field keys hidden from the UI. */
+  hiddenTrackerFields?: TrackerHiddenFields | null;
+
+  /** Live ruleset sheet state per party card, keyed by normalized card name. Only games that
+   *  pinned a ruleset carry it. It is part of the snapshot so a swipe or a regenerated turn
+   *  rewinds it: sheet commands are relative, and a regenerated turn must not spend twice. */
+  rulesetLive?: import("../features/rulesets/live-state.js").RulesetLiveStates | null;
+
+  createdAt: string;
+}
+
+/** A character present in the current scene. */
+export interface PresentCharacter {
+  characterId: string;
+  name: string;
+  emoji: string;
+  mood: string;
+  /** @deprecated No longer tracked — kept for backward compat */
+  action?: string;
+  /** Brief physical appearance description */
+  appearance: string | null;
+  /** Current clothing / outfit description */
+  outfit: string | null;
+  /** Avatar image path (e.g., /api/avatars/file/<filename>) */
+  avatarPath?: string | null;
+  /** Optional avatar crop JSON carried from the character card. */
+  avatarCrop?: unknown;
+  /** Featured tracker portrait focus, 0 = left, 100 = right. */
+  portraitFocusX?: number;
+  /** Featured tracker portrait focus, 0 = top, 100 = bottom; expression sprites may exceed 100 to dip below the frame. */
+  portraitFocusY?: number;
+  /** Featured tracker portrait zoom multiplier. */
+  portraitZoom?: number;
+  /** Per-character custom fields */
+  customFields: Record<string, string>;
+  /** Per-character stats (HP, etc.) */
+  stats: CharacterStat[];
+  /** What the character is thinking */
+  thoughts: string | null;
+}
+
+/** A numeric stat for a character. */
+export interface CharacterStat {
+  name: string;
+  value: number;
+  max: number;
+  color: string;
+}
+
+/** A user-defined world tracker field. */
+export interface WorldCustomField {
+  name: string;
+  value: string;
+  /** Supported lucide icon name for display. */
+  icon?: string | null;
+}
+
+/** A user-defined custom tracker field. */
+export interface CustomTrackerField {
+  name: string;
+  value: string;
+  /** @deprecated Use GameState.fieldLocks for persisted per-cell tracker locks. */
+  locked?: boolean;
+}
+
+/** A concise row maintained by the dedicated roleplay Inventory Tracker. */
+export interface InventoryTrackerRow {
+  /** Host-assigned identity. Legacy rows may omit this until an unambiguous write reconciles them. */
+  itemId?: string;
+  name: string;
+  /** Omitted when the quantity is one. */
+  qty?: number;
+  description?: string;
+  /** Where this item is kept, such as a backpack pocket or a storage chest. */
+  location?: string;
+}
+
+/** Player-specific stats and inventory. */
+export interface PlayerStats {
+  /** Custom stat bars */
+  stats: CharacterStat[];
+  /** Classic RPG attributes */
+  attributes: RPGAttributes | null;
+  /** Skills list */
+  skills: Record<string, number>;
+  /** Inventory items */
+  inventory: InventoryItem[];
+  /** Active quests */
+  activeQuests: QuestProgress[];
+  /** Status text */
+  status: string;
+  /** User-defined custom tracker fields */
+  customTrackerFields?: CustomTrackerField[];
+  /** Money and other currencies maintained by the Inventory Tracker agent. */
+  inventoryTrackerCurrencies?: InventoryTrackerRow[];
+  /** Items currently equipped, maintained by the Inventory Tracker agent. */
+  inventoryTrackerEquipped?: InventoryTrackerRow[];
+  /** Carried non-equipped items maintained by the Inventory Tracker agent. */
+  inventoryTrackerInventory?: InventoryTrackerRow[];
+}
+
+/** Classic D&D-style attributes. */
+export interface RPGAttributes {
+  str: number;
+  dex: number;
+  con: number;
+  int: number;
+  wis: number;
+  cha: number;
+}
+
+/** An item in the player's inventory. */
+export interface InventoryItem {
+  /** Host-assigned identity. Legacy rows may omit this until an unambiguous write reconciles them. */
+  itemId?: string;
+  name: string;
+  description: string;
+  quantity: number;
+  /** Location: "on_person" | "stored" | custom */
+  location: string;
+}
+
+/** Quest progress data tracked in game state. */
+export interface QuestProgress {
+  questEntryId: string;
+  name: string;
+  currentStage: number;
+  objectives: Array<{ text: string; completed: boolean }>;
+  completed: boolean;
+}

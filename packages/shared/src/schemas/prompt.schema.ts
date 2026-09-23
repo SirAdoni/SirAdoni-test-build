@@ -1,0 +1,256 @@
+// ──────────────────────────────────────────────
+// Prompt Zod Schemas
+// ──────────────────────────────────────────────
+import { z } from "zod";
+
+export const managedGenerationParameterValueSchema = z.object({
+  enabled: z.boolean(),
+  value: z.number().finite(),
+});
+
+export const promptRoleSchema = z.enum(["system", "user", "assistant"]);
+
+const RESERVED_REQUEST_HEADERS = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  "host",
+  "content-length",
+  "transfer-encoding",
+  "connection",
+  "upgrade",
+  "expect",
+  "content-encoding",
+  "content-type",
+  "te",
+  "trailer",
+  "x-api-key",
+  "api-key",
+  "x-goog-api-key",
+  "__proto__",
+  "constructor",
+  "prototype",
+  "anthropic-version",
+  "accept-encoding",
+]);
+
+/** Connection-only, non-secret API options; authentication and transport stay host-managed. */
+export const customRequestHeadersSchema = z
+  .record(
+    z
+      .string()
+      .max(2048)
+      .regex(/^[\t\x20-\x7e\x80-\xff]*$/),
+  )
+  .superRefine((headers, ctx) => {
+    if (Object.keys(headers).length > 32)
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "At most 32 custom headers are allowed." });
+    const seen = new Set<string>();
+    for (const name of Object.keys(headers)) {
+      const lower = name.toLowerCase();
+      if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/.test(name) || RESERVED_REQUEST_HEADERS.has(lower) || seen.has(lower)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [name],
+          message: "Invalid, duplicate, or host-managed header name.",
+        });
+      }
+      seen.add(lower);
+    }
+  });
+
+export const injectionPositionSchema = z.enum(["ordered", "depth"]);
+
+export const wrapFormatSchema = z.enum(["xml", "markdown", "none"]);
+export const scopedRegexModeSchema = z.enum(["disabled", "exclusive", "chat"]);
+
+export const markerTypeSchema = z.enum([
+  "character",
+  "lorebook",
+  "persona",
+  "chat_history",
+  "chat_summary",
+  "current_scene_summary",
+  "recalled_scenes",
+  "recalled_messages",
+  "id_macro_cards",
+  "world_info_before",
+  "world_info_after",
+  "dialogue_examples",
+  "agent_data",
+]);
+
+export const markerConfigSchema = z.object({
+  type: markerTypeSchema,
+  characterFields: z.array(z.string()).optional(),
+  lorebookFormat: z.enum(["full", "worldbook_only", "character_only"]).optional(),
+  chatHistoryOptions: z
+    .object({
+      maxMessages: z.number().int().min(1).optional(),
+      includeSystemMessages: z.boolean().optional(),
+    })
+    .optional(),
+  agentType: z.string().optional(),
+});
+
+export const generationParametersSchema = z.object({
+  temperature: z.number().min(0).max(2).default(1),
+  topP: z.number().min(0).max(1).default(1),
+  topK: z.number().int().min(0).default(0),
+  minP: z.number().min(0).max(1).default(0),
+  maxTokens: z.number().int().min(1).default(4096),
+  maxContext: z.number().int().min(1).default(128000),
+  frequencyPenalty: z.number().min(-2).max(2).default(0),
+  presencePenalty: z.number().min(-2).max(2).default(0),
+  reasoningEffort: z.enum(["low", "medium", "high", "xhigh", "maximum"]).nullable().default(null),
+  verbosity: z.enum(["low", "medium", "high"]).nullable().default(null),
+  serviceTier: z.enum(["flex", "priority"]).nullable().default(null),
+  assistantPrefill: z.string().default(""),
+  assistantReasoningPrefill: z.string().default(""),
+  customThinkingTags: z
+    .array(
+      z.object({
+        open: z.string().trim().min(1).max(120),
+        close: z.string().trim().min(1).max(120),
+      }),
+    )
+    .max(20)
+    .default([]),
+  customParameters: z.record(z.unknown()).default({}),
+  customHeaders: customRequestHeadersSchema.optional(),
+  managedCustomParameters: z.record(managedGenerationParameterValueSchema).default({}),
+  enabledParameters: z
+    .object({
+      temperature: z.boolean().optional(),
+      maxTokens: z.boolean().optional(),
+      topP: z.boolean().optional(),
+      topK: z.boolean().optional(),
+      frequencyPenalty: z.boolean().optional(),
+      presencePenalty: z.boolean().optional(),
+      reasoningEffort: z.boolean().optional(),
+      verbosity: z.boolean().optional(),
+    })
+    .optional(),
+  squashSystemMessages: z.boolean().default(true),
+  showThoughts: z.boolean().default(true),
+  useMaxContext: z.boolean().default(false),
+  stopSequences: z.array(z.string()).default([]),
+  strictRoleFormatting: z.boolean().default(true),
+  singleUserMessage: z.boolean().default(false),
+});
+
+export const promptVariableOptionSchema = z.object({
+  label: z.string(),
+  value: z.string(),
+});
+
+export const promptVariableGroupSchema = z.object({
+  name: z.string(),
+  label: z.string(),
+  options: z.array(promptVariableOptionSchema),
+});
+
+// ── Choice blocks (preset variables) ──
+
+export const choiceOptionSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  value: z.string(),
+});
+
+export const choiceDisplayModeSchema = z.enum(["auto", "buttons", "listbox"]);
+export const choiceOptionSortSchema = z.enum(["manual", "alphabetical"]);
+
+export const createChoiceBlockSchema = z.object({
+  presetId: z.string(),
+  variableName: z.string().min(1).max(100).regex(/^\w+$/, "Variable name must be alphanumeric/underscores only"),
+  question: z.string().min(1).max(500),
+  options: z.array(choiceOptionSchema).min(1),
+  multiSelect: z.boolean().default(false),
+  separator: z.string().max(20).default(", "),
+  randomPick: z.boolean().default(false),
+  displayMode: choiceDisplayModeSchema.default("auto"),
+  optionSort: choiceOptionSortSchema.default("manual"),
+});
+
+export const updateChoiceBlockSchema = createChoiceBlockSchema.omit({ presetId: true }).partial();
+
+// ── Groups ──
+
+export const createPromptGroupSchema = z.object({
+  presetId: z.string(),
+  name: z.string().min(1).max(200),
+  parentGroupId: z.string().nullable().default(null),
+  order: z.number().int().default(100),
+  enabled: z.boolean().default(true),
+});
+
+export const updatePromptGroupSchema = createPromptGroupSchema.omit({ presetId: true }).partial();
+
+// ── Presets ──
+
+export const createPromptPresetSchema = z.object({
+  name: z.string().min(1).max(200),
+  description: z.string().default(""),
+  imagePath: z.string().nullable().default(null),
+  conversationPrompt: z.string().default(""),
+  gamePrompt: z.string().default(""),
+  variableGroups: z.array(promptVariableGroupSchema).default([]),
+  variableValues: z.record(z.string()).default({}),
+  parameters: generationParametersSchema.default({}),
+  wrapFormat: wrapFormatSchema.default("xml"),
+  scopedRegexMode: scopedRegexModeSchema.default("disabled"),
+  isDefault: z.boolean().default(false),
+  author: z.string().default(""),
+});
+
+export const updatePromptPresetSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  description: z.string().optional(),
+  imagePath: z.string().nullable().optional(),
+  conversationPrompt: z.string().optional(),
+  gamePrompt: z.string().optional(),
+  sectionOrder: z.array(z.string()).optional(),
+  groupOrder: z.array(z.string()).optional(),
+  variableGroups: z.array(promptVariableGroupSchema).optional(),
+  variableValues: z.record(z.string()).optional(),
+  parameters: generationParametersSchema.partial().optional(),
+  wrapFormat: wrapFormatSchema.optional(),
+  scopedRegexMode: scopedRegexModeSchema.optional(),
+  author: z.string().optional(),
+  defaultChoices: z.record(z.union([z.string(), z.array(z.string())])).optional(),
+});
+
+// ── Sections ──
+
+export const createPromptSectionSchema = z.object({
+  presetId: z.string(),
+  identifier: z.string(),
+  name: z.string().min(1).max(200),
+  content: z.string().default(""),
+  role: promptRoleSchema.default("system"),
+  enabled: z.boolean().default(true),
+  isMarker: z.boolean().default(false),
+  groupId: z.string().nullable().default(null),
+  markerConfig: markerConfigSchema.nullable().default(null),
+  injectionPosition: injectionPositionSchema.default("ordered"),
+  injectionDepth: z.number().int().min(0).default(0),
+  injectionOrder: z.number().int().default(100),
+  forbidOverrides: z.boolean().default(false),
+});
+
+export const updatePromptSectionSchema = createPromptSectionSchema
+  .omit({ presetId: true, identifier: true, isMarker: true })
+  .partial();
+
+// ── Exported input types ──
+
+export type CreatePromptPresetInput = z.input<typeof createPromptPresetSchema>;
+export type UpdatePromptPresetInput = z.infer<typeof updatePromptPresetSchema>;
+export type CreatePromptSectionInput = z.input<typeof createPromptSectionSchema>;
+export type UpdatePromptSectionInput = z.infer<typeof updatePromptSectionSchema>;
+export type CreatePromptGroupInput = z.input<typeof createPromptGroupSchema>;
+export type UpdatePromptGroupInput = z.infer<typeof updatePromptGroupSchema>;
+export type CreateChoiceBlockInput = z.infer<typeof createChoiceBlockSchema>;
+export type UpdateChoiceBlockInput = z.infer<typeof updateChoiceBlockSchema>;
+export type GenerationParametersInput = z.infer<typeof generationParametersSchema>;

@@ -1,0 +1,92 @@
+plugins {
+    id 'com.android.application'
+}
+
+def marinaraPort = (project.findProperty("marinaraPort") ?: "7860").toString()
+def releaseKeystorePath = System.getenv("ANDROID_SIGNING_KEYSTORE")
+def releaseKeystorePassword = System.getenv("ANDROID_SIGNING_STORE_PASSWORD")
+def releaseKeystoreType = System.getenv("ANDROID_SIGNING_STORE_TYPE") ?: "pkcs12"
+def releaseKeyAlias = System.getenv("ANDROID_SIGNING_KEY_ALIAS")
+def releaseKeyPassword = System.getenv("ANDROID_SIGNING_KEY_PASSWORD")
+def hasReleaseSigning = releaseKeystorePath && file(releaseKeystorePath).isFile() && releaseKeystorePassword && releaseKeyAlias && releaseKeyPassword
+def releaseCommit = (project.findProperty("marinaraReleaseCommit") ?: System.getenv("MARINARA_RELEASE_COMMIT") ?: "").toString().trim().toLowerCase()
+if (!releaseCommit) {
+    try {
+        releaseCommit = providers.exec {
+            commandLine "git", "rev-parse", "HEAD"
+        }.standardOutput.asText.get().trim().toLowerCase()
+    } catch (Exception ignored) {
+        releaseCommit = ""
+    }
+}
+android {
+    namespace = 'com.marinara.engine'
+    compileSdk 34
+
+    buildFeatures {
+        buildConfig = true
+    }
+
+    defaultConfig {
+        applicationId "com.marinara.engine"
+        minSdk 24
+        targetSdk 34
+        versionCode 47
+        versionName "2.4.6"
+        buildConfigField "String", "MARINARA_SERVER_URL", "\"http://127.0.0.1:${marinaraPort}\""
+        buildConfigField "String", "MARINARA_RELEASE_TAG", "\"v2.4.6\""
+        buildConfigField "String", "MARINARA_RELEASE_COMMIT", "\"${releaseCommit}\""
+    }
+
+    signingConfigs {
+        release {
+            if (hasReleaseSigning) {
+                storeFile file(releaseKeystorePath)
+                storePassword releaseKeystorePassword
+                storeType releaseKeystoreType
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
+        }
+        debug {
+            debuggable true
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+gradle.taskGraph.whenReady { taskGraph ->
+    def releaseArtifactTaskNames = [
+        "assembleRelease",
+        "bundleRelease",
+        "packageRelease",
+        "packageReleaseBundle",
+        "packageReleaseUniversalApk",
+        "signReleaseBundle",
+    ]
+    def buildsReleaseArtifact = taskGraph.allTasks.any { task ->
+        task.project == project && task.name in releaseArtifactTaskNames
+    }
+    if (buildsReleaseArtifact) {
+        if (!(releaseCommit ==~ /^[a-f0-9]{40}$/)) {
+            throw new GradleException("Android release builds require a full source commit. Build from Git or pass -PmarinaraReleaseCommit=<40-hex-commit>.")
+        }
+        if (!hasReleaseSigning) {
+            throw new GradleException("Release APK/AAB builds require all ANDROID_SIGNING_* credentials; debug signing is not allowed for release artifacts.")
+        }
+    }
+}

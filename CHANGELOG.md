@@ -1,0 +1,3509 @@
+# Changelog
+
+This file is the release-notes source of truth for Marinara Engine. Reuse these entries when publishing GitHub Releases for tags in the `vX.Y.Z` format.
+
+## [Unreleased]
+
+- Added an in-world calendar for Game mode (Tools tab > Calendar, or **In-world calendar** in the command palette): your own months, weekdays, era, leap years and moons, a month view, and dated events and deadlines with an upcoming list. It reads and moves the same game clock as the Day editor instead of keeping a second date, the GM sees the calendar date and upcoming events, and a GM calendar widget also lists them. Games without a calendar are unchanged.
+- Server logs are easier to follow and much quieter. Each failure now produces one error line with one reference instead of two or three, wrapped errors keep the reference of their cause, and cause chains, AggregateError members and system error details (errno, syscall, exit code) are kept. Cancellations log at info and client mistakes at warn, never at error. Every line carries a `bootId`; request ids are UUIDs, are returned in the `x-request-id` response header, and stay on every line of a request, including routes with a request body. Each request ends with one `request.end` line, slow requests log `request.slow`, and client disconnects log `request.aborted`. Startup is timed phase by phase, names the phase that failed, warns when Fastify boots before registration finishes, checks that the running build matches its sources, and ends with one `startup.ready` summary that `/api/health` also reports. Shutdown times each service. Memory pressure, event-loop stalls and host freezes log once per episode with worker gauges and a recovery line. Repeating warnings are rate-limited with a count of what was suppressed. Prompt debug output now goes only to `logs/prompt-debug/` and never into the main log files, and debug level no longer unredacts prompts. The build now fails if compiled output is missing for a source module. Contributors: see [docs/development/logging.md](docs/development/logging.md).
+- Lorebooks panel: selection mode has Enable and Disable for the selected lorebooks, with Undo on the notice, and while a chat is open a small dot marks each lorebook that feeds that chat.
+- Typing in the Characters and Lorebooks search no longer stalls in big libraries: the panel filters once you pause, and character search reads fields normalized once instead of on every keystroke.
+- Campaign memory now spans the whole campaign. A new Game session reads the facts, knowledge and last known state from every earlier session of the same game instead of starting empty, and the same person across sessions is one wiki page. A chat can opt out with the campaign memory scope setting.
+- The GM's memory block reads as names and plain sentences instead of internal ids, puts the characters in the scene and the ones named in the latest message first, shows each earlier fact with its session number, and no longer repeats the same reviewed record twice. Its default size is now 10,000 characters.
+- A Game session without a usable continuity connection is set aside on its own instead of pausing continuity for every chat; it is retried every ten minutes.
+- The continuity status now reports when memory was last verified and whether its connection is available.
+- The wiki no longer lists continuity lorebook copies as empty "Untitled Lore" pages, lists archived pages last, and merges a character first met by one name ("Liveth") with the full name ("Liveth Corren").
+- Timeline events in the wiki now read as what was recorded instead of internal transition ids.
+- The "Previously on" recap now checks the latest summary against the verified campaign memory, so names, possessions and relationships stay exact.
+- Party members in a new Game session now receive their own memory from earlier sessions instead of none.
+- The session recap may take up to 20 minutes before it falls back to a generic opening, so slow models no longer lose the recap on long campaigns.
+- Added an optional **Track generation jobs** setting (Settings > Advanced, off by default). While it is on, image, sprite and video jobs keep a saved status, a result link and a short log on the server. If you refresh, close the tab or lose your connection, the job keeps running as long as the server does, and the results that finished while you were away are announced when you come back. The Generation jobs viewer shows each job's kind, chat, age, run time, error code and log trail, the top bar shows a small dot while jobs run, and "Open generation jobs" is in the command palette. A server restart marks running jobs as interrupted; they are not retried. Finished jobs are kept for 7 days (up to 300), and deleting a chat deletes its jobs. See docs/development/generation-jobs.md.
+- Added starter packs to the random tables tool: five original fantasy packs (taverns and inns, roads and weather, town life, treasure and trinkets, story complications) with tables that roll into each other. Add one from the pack button in the Tables header, for all games or just the current game; tables whose names you already have are skipped, so adding a pack twice changes nothing.
+- Added lorebook import and export as Markdown (a "## Name" heading per entry, an optional "Keys:" line, then the text) and CSV (name, keys, content and optional folder, enabled, constant and probability columns). The import button in the lorebook editor previews the entries with line-numbered errors and warnings, imports into the open lorebook or a new one, and skips, renames or overwrites entries whose names already exist. Markdown and CSV join the choices in the lorebook export dialog.
+- Nineteen new Game Mode HUD widgets: checklist, obligations (debts and favors), schedule, calendar (in-game date, day grid and upcoming events), note, clock (segmented progress clock), pips, countdown, tug of war, tier track (escalating alert levels), stages (quest or journey steps), tags (conditions), ledger (balance with recent transactions), log (newest-first events), rumor board (unverified, confirmed, false), turn order, scoreboard, bars and charges (named uses such as spell slots). They use the existing `[widget:]` keys (add, remove, check, uncheck, text, value, max, stat), so the GM can create and update them during play; you can also add them in the widget setup and edit them by hand. They restore correctly on branches.
+- Game Mode's Edit layout is rebuilt. Edit mode now shows a grid, an outline and a name tag on every panel, and a Layout toolbar with Done, undo and redo (Ctrl+Z, Ctrl+Shift+Z), snapping, a collisions switch, lock all and unlock all, a Panels menu to hide and bring back panels, and saved Layouts you can name, apply, rename, delete, share as JSON and reuse in any game, plus Reset all to defaults. Esc leaves edit mode.
+- Panels can be dragged from anywhere on them and resized from every edge and corner, with a live size readout. Moves and resizes snap to the screen edges and centre and to other panels, with guide lines; hold Alt to place freely. A panel dropped on another shows the overlap and settles into the nearest free space without moving anything else. With collisions switched off, panels can overlap on purpose and stay where you put them, and clicking a panel brings it to the front.
+- Each panel's options (lock, reset, growth, collapse to an edge, widget stacks, the narration bottom pin and the toolbar top-centre pin) moved from the crowded hover strip into a tidy menu on the panel's name tag.
+- Resizing a panel's height now keeps that height: growing content and a crowded screen no longer undo it. The storyboard viewer fills the box you give it instead of growing past it.
+- Lorebook inclusion groups no longer re-roll their winner on every turn. The same chat with the same activated candidates now keeps the same entry, so lore near the top of the prompt stays put and prompt caching holds; different chats, or a change in which entries activate, can still pick differently.
+- Campaign indexing that was started for only some sessions now keeps advancing, shows in its status, and blocks a second run for the same game.
+- Cancelling campaign indexing while it is queuing the next session now stays cancelled, and the batches it had just queued are retired.
+- Deleting a session while campaign indexing runs no longer stalls the job; the missing session is skipped.
+- Campaign indexing now pauses when any part of a session fails to queue, so the failed range is queued again on resume instead of being left unindexed.
+- Retrying a stale historical backfill batch now reads it again as part of that backfill, so the backfill tracks and publishes the new batch. It also works while live continuity is off.
+- A turn whose continuity batch went stale is read again when the same text comes back (a swipe back, an undone edit, a setting changed back), and retrying such a batch now does something.
+- One game with damaged campaign memory no longer stops the Engine from starting or keeps later games from being checked.
+- Checking continuity after a restart or a message edit no longer repeats holder bookkeeping for turns that are already published, which made both slow on long campaigns.
+- A small message edit that breaks a quote kept from an earlier draft of a continuity batch now retires that batch instead of leaving its memory tied to the old text. One such batch no longer stops the others from being updated.
+- Continuity memory is no longer dropped from the GM prompt when the turn being generated or regenerated follows a hidden or system message.
+- Undoing a campaign memory edit now also clears fields the edit added, such as a summary or an end point.
+- Campaign memory facts, knowledge and relationships can still change status, be locked or be undone after the message they cite was edited or deleted.
+- Retrying a commitment change after its response was lost now returns the change that was already saved instead of a conflict.
+- Duplicate review refuses to keep a fact that another tab has already retired, so a duplicate group can no longer lose every fact.
+- Branching a game with a large campaign memory is faster.
+- Relinking continuity memory no longer fails a batch when one of its subjects stops resolving; the earlier catch-all fact carries the record again.
+- Completed events such as "reached an agreement" or "entered an alliance" are recorded as events with their participants instead of as an unclear arrival.
+- Item transfers read from continuity take the count written next to the item, so a year in the text is no longer taken as the quantity.
+- Very large continuity stage timeouts are capped at the longest timer Node supports instead of expiring almost immediately.
+- Continuity repair can now add the record for a message the extractor left unresolved, instead of failing the batch.
+- Added Search All Chats: find messages across every chat with quoted phrases and filters for mode, character, sender and date range. Results show highlighted snippets and open the chat at that message. Open it from the search button beside the chat list.
+- Added Markdown and HTML story exports next to JSONL and Text in the branch menu. Exports follow the active swipe, leave out hidden and system messages, and the HTML story is a standalone page with light, dark and print styling and small embedded avatars.
+- Added chat stats (Stats in the branch menu): messages, words per speaker, average reply length, messages per day, the longest message, reported generation tokens and play time. Play time adds up sittings, and a pause of more than 30 minutes starts a new sitting.
+- Added an Activity overview (pulse button beside your status) with a yearly heatmap of messages across all chats, streaks, totals, total play time and your most played chats.
+- Added Reading mode for roleplay chats (Read in the branch menu, or the command palette): a full-screen, paged reader that follows the active swipe, leaves out hidden messages, lists bookmarks as chapters, and remembers your page per chat. Text size, line width, line spacing and serif or sans are adjustable, and arrow keys, J and K, Home and End turn pages.
+- Added a Dice Log to Game Mode (Session panel, Tools tab). Every roll from the dice tray, GM narration and skill checks is kept with its dice, total and crit or fumble flags; the log shows recent rolls, average against expected, natural 20s and 1s and a per-face distribution, for the current session or the whole game. Logging never blocks or fails a roll.
+- Added an offline fantasy name generator with harsh northern, flowing elvish, desert and imperial styles, plus names learned from a chosen lorebook or the character library. Names are seeded, can be locked, copied and regenerated, and the tool opens from the Game Mode Tools tab or anywhere through its own window.
+- Added a campaign codex export (Session panel, Tools tab) that downloads a game's campaign memory as readable Markdown or JSON: entities grouped by kind with aliases, current state, verified facts, knowledge and relationships tagged by session, and a timeline across all sessions. The export only reads memory.
+- The campaign codex now reads the same merged campaign memory the game plays from, so a tracked NPC and the library character of the same name are one entry, facts re-read in later sessions appear once, and presence comes only from the newest session. Branch exports keep their branch-aware session list. Long campaigns export at a readable size: each statement is written once with the characters who know, believe or have heard it listed under it, instead of being repeated under every holder, and long values are cut in the Markdown (JSON format version 2: per-holder `knowledge` became `claims` and `heldBy`).
+- Added a campaign log for Game Mode: a full-screen reader that lays out every session of a campaign in order as a story, with your segment edits and deletions applied, a campaign-wide search with highlighted matches and next/previous, and filters by session and speaker. Open it from the Tools tab of the Session panel or with "Open campaign log" in the command palette. Jumping to a game message from Search All Chats or /goto now opens the log at that turn instead of showing a notice.
+- Added bulk editing to the lorebook editor. In Select mode, Shift+click selects a range of entries and Select all takes every entry matching the current search and filters. The new Bulk edit panel enables or disables entries, turns Constant on or off, moves entries to a folder, adds or removes primary or secondary keys, and sets probability, order or depth for the whole selection in one step; each change is all or nothing, and deleting a selection is now a single request, so books with hundreds of entries update quickly.
+
+- Added **Check lorebook** to the lorebook editor. It lists empty entries, entries without keys, duplicate keys and content, invalid or unsafe regex keys, overlong entries, disabled entries, and very short or common-word keys, with severity filters and a jump to each entry.
+
+- The lorebook keyword test can now run the real generation scanner on pasted text or the current chat. It shows which entries would fire and why (matched key, constant, or recursion from another entry), and which entries matched but were held back by secondary keys, filters, groups, or conditions.
+
+- Lorebook entries now count how often they fire in real generations. The editor shows each entry's count and last activation, adds a **Fired** sort, and a **Never fired** filter for finding unused entries. Each saved reply counts once (swipes and regenerations count, Continue does not). Counting is batched, can never interrupt a generation, and is written out on shutdown.
+
+- Lorebook entries now remember the last 20 chats they fired in. Click an entry's fired count to see those chats and open one. Entries counted before this update start with the last chat they fired in.
+
+- Added a **Stale** filter to the lorebook editor: entries that have not fired in the last 7 to 180 days while the rest of the lorebook did. Disabled entries, entries in disabled folders and entries newer than the window are left out.
+
+- Added **Duplicates** to the character library. It groups likely duplicate cards by matching names or very similar description and personality, with side-by-side basics, a field-by-field compare, and an open button. Nothing is deleted automatically.
+
+- Selected characters can now have tags added, removed, or renamed in bulk from the library selection bar, with a review summary before applying. Each changed card is saved through its normal save path, so version history records the edit.
+- Added a command palette. Press Ctrl+K (Cmd+K on Mac) or tap the search button in the top bar to jump to chats, characters, personas, lorebooks, presets and Settings tabs, or run actions such as starting a new chat, switching light or dark mode and opening the chat guide. Recent picks come first.
+
+- The command palette now reaches the newer tools: Search all chats (typing anything also offers a search inside messages), Activity overview, Name generator, Find duplicate characters, and, where they apply, stats and Markdown or story export for the open chat, the dice log and campaign codex for the open game, and Check or Test for the open lorebook. Ctrl+Shift+F (Cmd+Shift+F on Mac) opens Search all chats.
+
+- Added a keyboard shortcuts list. Press ? while not typing, or pick Keyboard shortcuts in the command palette, to see every shortcut the app supports, grouped by where it works.
+
+- Added text snippets. Define triggers such as ;ooc in Settings > General > Text Snippets, then type the trigger followed by Space or Tab in the chat input to expand it. {{cursor}} sets where the caret lands, macros like {{char}} are filled in when you send, and Ctrl+Z undoes an expansion. Snippets can also be inserted from the Quick replies menu or the command palette, and sync with your other devices.
+
+- Added an optional character quick reference (Settings > Advanced > Character quick reference, off by default). Hovering or tapping a linked character name in a chat message or Game narration shows a small card with the avatar, a short description, tags, Open card and where the character is used. It works with the keyboard (Enter opens it, Escape closes it) and never changes the message text or what gets copied. Name linking in long messages is also faster with a large character library.
+
+- Added a Usage Dashboard in Settings > Advanced. It totals the tokens your providers report for each reply by connection, chat and day over a chosen range, and can estimate cost from prices you enter per 1M input and output tokens. Usage is recorded from this version on.
+- Added message bookmarks. Bookmark any message from its bookmark action, give it an optional short label, and find every bookmark (speaker, snippet and time) in the new Bookmarks tab of chat search; clicking one jumps to the message.
+
+- Added Pin to context. A pinned message (up to 10 per chat) stays in the prompt even when the chat's context message limit would drop it; it is sent in its original order and marked as an earlier pinned message. Peek Prompt shows the same result.
+
+- Deleted Roleplay and Conversation messages now go to a per-chat Trash (the Trash tab in chat search) instead of disappearing. Restore puts a message back in its original position with its swipes, bookmarks and notes; you can also delete forever or empty the trash, and trashed messages are purged automatically after 30 days. Game mode deletes stay permanent.
+
+- Added private message notes. Attach a note to any message from its bookmark action; a small note icon on the message shows it. Notes are never sent to the model and are left out of chat exports unless you turn on "Include private notes in exports".
+- Added chapters. Start a chapter at any Roleplay or Conversation message from its bookmark action, with a title and an optional short summary you write yourself. A subtle divider marks the start in the transcript, the new Chapters tab in chat search lists them as a table of contents, "Go to chapter" in the command palette jumps to one, and Markdown and HTML story exports use them as headings (the HTML story gets a contents list). Chapters follow the message through edits, swipes, trash and branches and are never sent to the model. In Game Mode, mark chapters from the campaign log, which also gains a chapter list for jumping.
+- Lorebook and character folders can now nest, up to six levels deep. Drag a folder onto another folder (or to the top level), use a folder's "New subfolder" and "Move folder to..." buttons, or select items and choose Move to pick a folder from the tree. Folder counts include subfolders, open folders are remembered, and searching opens the folders that hold a match and shows each result's folder path. Deleting a folder moves its subfolders up one level; lorebooks move up with them, while characters just leave the deleted folder so the parent folder's group preset keeps its own members. Existing folders keep working unchanged. Preset and agent folders gain the same nesting support on the server.
+- Lorebook folders have a power switch: one button enables or disables every lorebook in the folder and its subfolders after a confirmation, the notice that follows has an Undo that flips back exactly the lorebooks it changed, and a folder whose lorebooks are all off shows its name dimmed.
+- Filtering the Characters panel to one Game Mode campaign shows its roster above the list: game master, party, NPCs linked to character cards, and anyone else in the campaign, each a small chip that opens the character. Long groups show the first eight with a "+N more" button, and the roster folds away and remembers it.
+- Library folders now show every member even when it sits beyond the loaded pages, folder counts skip deleted or filtered-out items, character folders keep their order when renamed or filled, deleting a tag from the Characters panel is one quick bulk edit, and cropped avatars show again in the panel rows.
+
+- Lorebooks and Characters can now be sorted by Game Mode campaign. A campaign picker above each list shows one campaign's lorebooks or characters (or everything in no campaign), and the layers button groups the list into collapsible campaign sections. Campaigns come from your game sessions automatically: party, GM and linked NPC cards, active and chat-owned lorebooks, and lorebooks linked to those characters. Rows show a small campaign badge you can click to filter, and "Campaign" in selection mode (or the swords button on a lorebook row) adds or removes items by hand, including things prepared for a campaign but not used yet. Each panel remembers its last choice.
+
+- Characters now show where they are used: the character editor lists every chat and game a card is in (as a chat member, party member, NPC or GM), when each was last played and, on request, how many messages each has. **Unused** in the character library lists cards that are in no chat at all. The lookup reads only the chat list, never messages, and is cached until chats change.
+
+- Added random tables and a yes/no oracle to the Game Mode Tools tab and the command palette. Tables roll on dice (d6, d20, d100, 2d6 with row ranges such as 1-3) or by weight, can roll other tables with [[Table Name]] up to five levels deep, and are edited by pasting a plain list. Tables can be global or belong to one game, imported and exported as JSON, and built from a lorebook folder or tag. The oracle answers at five likelihoods with yes, no, yes but, no but, and exceptional results. Rolls can be logged to the Dice Log and dropped into the chat input as an OOC note; nothing is sent automatically.
+- Added a GM prep board to the Game Mode Tools tab (and full-screen from the command palette): a private planning board per game with sections for a strong start, scenes, secrets and clues, open threads, NPCs, locations, treasure and notes, which you can rename, reorder, add or remove. Items have a used checkbox, tags, and an optional link to a character card or lorebook entry that opens it. Drag items within and across sections, or move them with the arrow keys on their handle. Search the board or a #tag, archive used items, and carry unfinished items over to the next session; each item keeps the session it was added and used in. "To input" puts an item in the chat input as an OOC note without sending it. The board is never sent to the model, survives deleting the game's sessions, and exports and imports as JSON.
+- Added an initiative tracker to the Game Mode Tools tab and the command palette. Add combatants from character cards, lorebook entries or a typed name, roll initiative (each roll lands in the Dice Log as an Initiative roll), and run the fight with a round counter, the current turn, next and previous turn, HP and condition notes, move up or down, delay and remove. Encounters can be saved per game and reopened from any session of it. **To input** drops the current turn as an OOC note into the chat input; nothing is sent automatically.
+
+- Fixed the mobile Game Mode layout so Currently Present no longer pushes the narration and input below the screen. Widget bookmarks now use a single horizontally scrollable row; opening one shows a dismissible panel without shifting the chat. Short screens also retain room for narration when the storyboard viewer is open. Saved desktop widget placements are preserved.
+
+- Fixed the mobile Game Mode layout so Currently Present no longer pushes the narration and input below the screen. Widget bookmarks now use a single horizontally scrollable row; opening one shows a dismissible panel without shifting the chat. Short screens also retain room for narration when the storyboard viewer is open. Saved desktop widget placements are preserved.
+- Corrected the ChatGPT cache-session header to match OpenAI's current transport. This supplies the intended stable routing hint; cache reuse still depends on the provider.
+- Kept established ChatGPT history replay intact after a reported zero-cache turn, avoiding an unnecessary history rebuild on the following turn. Existing context and replay-size limits still apply.
+- Reduced repeated unchanged Game Mode state in eligible ChatGPT history replay. Later turns refer to identical state already in the retained context; changed state is still sent in full and removed state is not inherited.
+- Fixed ChatGPT history replay remaining disabled when configured tools are omitted by the ChatGPT transport. Added debug diagnostics explaining replay eligibility and persistence without including prompt text.
+- Fixed ChatGPT Game Mode history-cache reuse when GM, continuity and spatial snapshots change between turns. Eligible requests retain the previous request prefix and append the newest state instead of rewriting historical context.
+- Fixed cache replay being unnecessarily disabled when tools run through a separate Game Mode connection. Narrator requests that actually carry tools still use the existing conservative path.
+- Kept the newest turn state authoritative, including removed fields, while preserving Claude behavior and existing replay limits and invalidation checks.
+- Current-turn dialogue speakers can resolve a unique library portrait and saved crop even when the scene timeline has not recorded them yet; ambiguous names remain unresolved.
+
+- Widget layouts, edge bookmarks, collapsed state, stacks and pinning follow a campaign across sessions. Existing session layouts migrate once without overwriting saved campaign preferences or undoing layout resets.
+
+- Cache warnings now cover ChatGPT full-lore prompt prefixes and isolated planners, keep separate connection/model/request baselines, and avoid stopping after tool-planner work has already begun.
+
+- Game narration now honors the token-usage display setting for current and historical turns, including reported cache usage. Terminal storyboard preparation failures no longer remain labeled as rendering.
+
+- Storyboard continuity retains the original location source across scene transitions and tolerates an added terminal period only when the remaining quote exactly matches the cited source.
+
+- Storyboard continuity requests distinguish canonical location citations from narrated scene transitions, and preparation failures no longer display an image-generation failure label.
+
+- Side-tucked widget icons stay at their collapsed edge position while panels expand, including bottom-edge clamping and larger interface fonts.
+
+- Expanded side-tucked widgets reserve space for their bookmark so it no longer covers widget content, including at larger font sizes and narrow window widths.
+
+- Dialogue thumbnails retain saved avatar crops, and Contact Book portraits use matching library photos and their crops while fullscreen previews keep the original image.
+
+- Currently present includes recorded party members and resolves saved portraits and profiles for scene occupants outside the party. Opening a character sheet enriches sparse game cards with their matching library profile without changing the gameplay roster.
+
+- Character and persona portraits throughout Game Mode, chat, selectors, Contact Book, the library and trackers open a full-screen preview; camera controls inside the full-screen viewer open the existing photo editor or upload action. Read-only browser portraits can also be previewed. Previews retain keyboard focus above dialogs and menus, and support SVG portraits.
+
+- Continuity processing releases its shutdown timer once work has drained, avoiding an unnecessary delay when closing the engine.
+- Isolated Game Mode can let a library-backed NPC respond when the completed scene timeline places them in the scene, before background NPC synchronization finishes. Historical mentions and absent characters remain outside the trusted roster.
+- Known character names in narration and Contact Book entries open their profiles even when the character is outside the current scene.
+- Layout editing blocks widget collisions instead of pushing neighbors, supports vertical widget stacks, and makes edge-collapse controls easier to find.
+- Added a full-screen game Contact Book with a phone-book icon, recorded numeric opinions, separate relationship statuses, and locally persisted nested Staff/Friends/Enemies-style categories.
+- Reserved narration controls stay reachable above same-layer HUD widgets when panels reflow or saved positions collide.
+- Tucked Game Mode status and widget panels preserve their edge anchor while revealing, including during resize and value-change updates.
+- Custom HUD widget bookmarks show their widget icon and can be moved along the selected edge while layout editing is active.
+
+- Message voice controls share a compact audio menu. Clear cached voice removes only that message’s audio and regenerates it on the next playback, without discarding other chats’ saved voice lines (#6514).
+
+- Roleplay dice outcomes follow the selected accent. Message usage and Peek Prompt distinguish tool-turn totals from the last request's input size, so repeated tool requests are not mistaken for an oversized context (#6550).
+- Advanced Memory also checks actual provider-reported input after the main reply, resetting to the latest known scene and reusing its recap in Chat Summaries when the input limit is exceeded. Cached input counts; output tokens and cumulative tool-turn usage do not (#6550).
+- Advanced Memory summary prompts request character-name conditions for separate POV knowledge. Recall resolves those conditions for the responding character; raw excerpts are omitted when they could expose a hidden section, while the narrator retains the full recap (#6550).
+
+- GPT-6 Sol and Luna are selectable in OpenAI connections with their documented limits, reasoning controls, and compatible streaming and tool requests (#6546).
+
+- Claude Opus 5.5 is selectable in Claude connections with its 1M context and 128k output limits, supported reasoning settings, and compatible tool requests (#6544).
+
+- Scene setup lets you choose its persona and Conversation characters. Characters in an active Scene pause automatic messages in the source Conversation until the Scene ends (#6542, #6541).
+- Roleplay tracker widgets tolerate saved blank rows, and Custom Tracker updates discard nameless entries after applying field locks instead of making a chat unusable (#6549).
+
+- Activation questions can be answered by the local model you already run, on either the main or the utility slot, with no download and nothing leaving your machine. Pick it under **Decision model**, which now lists local models alongside Decision connections and shows why an unavailable entry cannot be used. A **Thinking** setting handles models that always reason first; those gate post-processing agents by default so replies do not wait.
+
+- Support diagnostics report the server's own GPU and each local model slot: what is configured, whether it is running, and the estimated memory it needs, with a combined verdict. The existing GPU line is the browser's, which said nothing about the machine running the local model.
+
+- Advanced Memory completes partially covered scene ranges when preparing a missing scene, preserves older manual character corrections through reindexing, and keeps original access data in exports. Scene participants can be returned by name as well as ID; only actual participants receive access (#6537).
+
+- Advanced Memory keeps one memory per scene, assigns access to actual participants, and treats unassigned scenes as narrator-only; an explicit all-participants result grants the current chat characters access. Existing automatic assignments stay narrator-only until reviewed; preparation checks participants while keeping saved summaries (#6533).
+- Custom agents can use optional activation questions with a Decision connection to skip irrelevant turns. Question and keyword controls share one activation card with consistent labels and styling. Keyword and cadence settings still apply; failed decisions leave agents eligible to run. Decision connections support TypeSafe, OpenRouter, and user-run System One endpoints, including linked OpenRouter credentials (#6530).
+
+- Game helpers preserve unconfigured task defaults and explain when saved output limits cut off structured responses (#6511).
+
+- Game Mode honors connection and chat generation parameters instead of replacing them with fixed sampling and output settings (#6511).
+- Grok 4.6 and 4.7 keep enabled tools, including web search, instead of losing them as unrecognized models, with their supported context and reasoning settings (#6521).
+- Sidebar sorting applies to folder rows as well as their contents, including names, dates, and content-based sorts; manual folder ordering remains available (#6497).
+
+- Character, persona, and lorebook folder contents follow the selected sidebar sort order (#6497).
+- The extra-actions menu sits to the left of Emoji, farther from Send, while keeping existing Post Only and Guided Generation actions (#6507).
+- Conversation scene invitations stay beside the proposing reply; open setup when ready, including after cancelling or reloading (#6496).
+- PWA manifest requests include credentials so Android Chrome can read the manifest behind Basic Auth (#6492).
+
+- Advanced Memory scene recaps request 2–3 paragraphs with room for reasoning, and constant-summary consolidation no longer fails on tiny proportional token targets (#6512).
+- Advanced Recall scene checks appear in agent call activity, including shared post-processing tracker calls. Reindexing preserves progress toward the next scene check (#6512).
+- Advanced Memory constants use message-range titles, reject unfinished helper output, and deactivate the originals when a completed compacted replacement is saved. Ranged constants that overlap live context stay out of that prompt and its archived-summary compaction budget (#6512).
+- Advanced Memory's context threshold applies to the outgoing prompt without subtracting reply tokens. Automatic scene resets apply to all characters and can be undone with the existing All flag; temporary open-scene trimming no longer creates persistent character-specific flags (#6512).
+- New Start flag changes save together with Advanced Memory cutoffs, keeping the previous state intact if a save fails (#6512).
+
+- Advanced Memory identifies corrections needing review and exposes unfinished scene summaries for targeted recovery without resetting the archive (#6526).
+- Advanced Memory keeps saved scene indexes across source-text edits, swipes, illustrations and live context flags. Recalled excerpts use current message text, while character-access checks remain enforced (#6526).
+
+- Advanced Memory reindexing rebuilds saved text vectors without rerunning scene detection or summarization. Saved scene corrections no longer depend on outdated generated-summary inputs, and stale scene corrections can be reviewed and saved without changing their text (#6509).
+
+- Removed the obsolete root suggestion-chips implementation brief, `MARI_SUGGESTION_CHIPS_TASK.md` (#6504).
+
+- Consolidated root coding-agent guidance in `AGENTS.md` and updated contributor and reviewer references after removing the duplicate `CLAUDE.md` (#6504).
+
+- Advanced Memory resets live context to the latest detected scene when its context limit is reached, then keeps that cutoff while new messages accumulate until the next reset. Existing ranged summaries are reused after generation (#6503).
+
+- Advanced Memory preserves earlier confirmed memories across personal POV start flags and lets you correct a saved scene's character access without reprocessing the chat (#6503).
+
+- Advanced Memory shows post-generation scene checks in the Agents menu and checks the configured number of recent messages at its standalone interval (#6499).
+- Mobile chat images allow native pinch zoom, including app shells that honor viewport scaling limits (#6501).
+- Empty Recalled Scenes markers add no extra blank lines to the prompt (#6502).
+
+- Tapping Author's Notes again closes its panel in the mobile Roleplay toolbar (#6495).
+- Message Peek Prompt stays tied to the selected reply and swipe after images, summaries or memory settings change, preserving the character and commands actually sent to the model (#6493).
+- Advanced Memory uses enabled Chat Summaries and their character conditions even when the original messages are hidden or before a character's start flag. New and compacted constants retain character conditions; recalled scenes and raw messages keep their knowledge restrictions (#6493).
+
+- Advanced Memory keeps applicable enabled constants in the prompt and combines them after the reply when they exceed 70% of the configured summary and recall budget. Constants have priority, followed by all selected scene summaries, then excerpts; total memory may use up to 2,000 extra tokens. Existing ranged and legacy summaries reuse Chat Summaries and its Maximum output size.
+- Presets offer one **Recalled Scenes** marker for paired summaries and excerpts. Existing Recalled Messages markers remain compatible aliases.
+- Recalled messages and new scene summaries omit illustration attachments and their unavailable-content notices while retaining readable text attachments.
+- Post-generation scene checks receive chat message numbers and identify exact scene endings. They share eligible tracker calls when available and archive completed ranges after the reply; scenes still in live context stay excluded from recall.
+
+- Advanced Memory uses one **Recalled Scenes** prompt section, with each scene summary immediately followed by its available excerpt. Existing preset markers and saved swipe memories remain usable without another search or archive reset.
+- Advanced Memory stops polling ready archives while idle, keeping unrelated character and preset requests responsive. Long-chat replies and Peek Prompt avoid repeated metadata parsing and repeated whole-scene budget scans; previews without a preset retain message IDs so history can fit the budget (#6484).
+- Advanced Memory scene recall toggles and deletion stay responsive in long chats: archive checks reuse parsed message metadata, the inspector loads summaries without resending hidden excerpts, and user edits interrupt background processing safely (#6484).
+- Conversation chats reuse character-owned schedules. Enabling schedules no longer starts generation, and weekly renewal requires an explicit per-character opt-in without repeated retries after failure (#6481, #6477).
+- Schedule generation stops when cancelled or when its editor, manager, or chat settings closes. Invalid model output remains editable and can be applied to the draft after validation; completed days survive a later day’s failure (#6480, #6476).
+- Disabled Regex and Functions keep their switches and action buttons fully visible while dimming only their descriptions (#6463).
+
+- OpenAI-compatible image connections can fetch models from custom provider URLs without a dedicated provider integration (#6464).
+
+- Advanced Memory no longer starts or waits for continuity generation before the main Roleplay reply. Constants reuse existing ranged Chat Summaries, add only uncovered history after the reply, and combine only summary text when the constant-only budget is exceeded. All summary calls honor Chat Summary’s Maximum output size; replaced constants become inactive in Chat Summaries (#6474).
+- Every saved scene, legacy continuity and ongoing summary has a confirmed Delete summary action at the bottom of its vault editor. Original messages remain intact (#6474).
+- Toggling a Chat Summary no longer locks every entry, and Activate All / Deactivate All save together in one request. Background constant updates refresh Chat Summaries automatically (#6474).
+- Connection test results survive a late save refresh and stay with the selected connection, fixing intermittent missing fal.ai feedback on iPhone Safari. The mobile drag regression now measures scrolling after cancellation has settled (#6474).
+
+- Advanced Memory reuses the original reply's saved summaries and recalled scenes across unchanged regenerated swipes, avoiding another search or continuity-model call. Changes to source history, character access, memories or the context budget are still checked before reuse (#6474).
+
+- Advanced Memory recalls up to three relevant past scenes by default, with a configurable maximum. Each scene summary is paired with one bounded excerpt and a grouped message range; recalled context identifies the live range and last user message. Routine recall reuses the archive, bounds optional embedding latency, and stays out of agent and auxiliary generation requests (#6471).
+- Advanced Memory checks scenes independently after main Roleplay replies at the configured interval, and prepares the archive only when a scene ends. Background progress appears as **Advanced Recall** in the top-left Agents menu, including when ordinary agents are disabled (#6471).
+
+- Advanced Memory skips scene recaps that overlap live messages and uses only fully archived manual-summary ranges for continuity, avoiding duplicate story context at cutoffs (#6468).
+
+- Advanced Memory uses its selected helper for scene recaps, separates archived scenes from the constant-summary size limit, and sends standalone summary instructions with only the eligible source material. Completed summaries and scene detection survive Resume after an update (#6461).
+- Individual scene memories can be deleted from their editor after confirmation. Original chat messages are kept, and routine preparation does not recreate the deleted summary.
+
+- The schedule editor can generate a week one day at a time using seven smaller requests, preserves the draft on failure, and stops generation when closed (#6449). It offers connection selection and persistent errors, rejects incomplete or overlapping generated days, displays full-day blocks, prevents competing edits during generation, and refreshes the week date after day regeneration (#6455).
+
+- A Game Mode fight can now be held open for somebody who is not the one acting. Walking out of an enemy's reach stops the walk on that step and asks them whether to strike instead of striking for them, and the walk then picks up where it left off, paying for every cell it really crossed. When a turn ends, an opponent holding its own points is asked whether to buy one of its signature actions before the next turn begins, which is the only moment those are bought in. Your own party member's window is yours to answer, with the option and a Pass on the menu; everybody else's is answered by whoever plays them, and a Game Master's boss is asked through the Game Master. Nothing else moves while a window is open, one chance each per walk, and a game closed mid-walk comes back with the same people still to ask. Ruleset packages need no change and no newer Capability API: a ruleset that declares an opportunity budget gets the first, a bestiary with signature points gets the second.
+
+- Advanced Memory resumes unfinished summaries without replaying failed compactions or reporting completed scene detection as new work (#6461).
+
+- Advanced Memory retains earlier scenes across shared “Mark as new start” cutoffs, shows automatic cutoffs in chat, and updates them when manual flags move or are removed. Hidden messages and character knowledge limits remain respected (#6450).
+
+- Advanced Memory can prepare the full eligible Roleplay history through **Prepare existing history**, resumes unfinished scene detection, and shares one scene summary between characters with the same history. The narrator uses the shared archive across character participation boundaries without separate scene copies. The archive avoids redundant owner copies and uses compact memory rows; new recaps omit current-situation and open-tension sections (#6450).
+
+- When a Game Mode fight ends, the recap the Game Master reads now names anybody still carrying a condition and says those stay until the Game Master takes them off, with the command that does it. A charm or a fright does not expire because the fighting stopped, and what would end one is the spell's own terms or the fiction rather than arithmetic, so it is a ruling to make rather than something the Engine should guess. The condition a ruleset's own dying rule puts on somebody at zero is left out of that list, because healing or stabilising them is what lifts it.
+
+- A Game Mode ruleset can now say that one weapon is a single strike a turn however many attacks its wielder has. A weapon list that buys several strikes may name a column that holds its own rows to one, which is what a crossbow needs: 5e's Loading property says you fire once when you take the Attack action whatever your count, and until now a character with Extra Attack was offered the same number of shots with a crossbow as swings with a sword. Ruleset packages that use it need Capability API 1.32, and a list that says nothing is unchanged.
+
+- The ruleset authoring guide now says WHY a health pool cannot carry kinds of harm, rather than only that it is refused: a pool records how much damage landed, a wound track records how much and what kind each piece of it was, so a system where a wound stays bashing, lethal or aggravated after the blow needs a track. The refusal an author sees says the same thing and names the remedy.
+
+- Downloadable packages can use the host Engine's LLM, image and video integrations, inheriting provider fixes, queues and request safeguards without bundling stale service copies. These integrations require Capability API 1.31.
+- Conversation mode now has a persisted background-image opacity control while keeping its readability gradient visible.
+
+- Combined damage types mark one wound per hit on rulesets configured for one mark per blow, using the most severe landed kind.
+
+- Game wound sheets describe zero-penalty wounds accurately, and saved dice cards retain the applied wound penalty after reloading.
+
+- Roleplay dice commands accept an optional situational bonus or penalty and DC, combine the adjustment with the automatic attribute bonus, and show the DC on the existing dice card (#6417).
+
+- Game Mode catalog abilities can modify dice-pool checks with rerolls, bonus dice, successes or thresholds. Their effects and costs appear in the picker and character prompt. Free and paid abilities use the same check command, with costs applied once. Packages using these effects require Capability API 1.30 (#6411).
+
+- Ruleset combat can use wound tracks for health, applying the ruleset's damage kinds, healing and falling rules instead of subtracting hit points (#6407).
+
+- Refresh from ruleset offers newly added columns, including numbers and switches, for existing picked rows while preserving values already on the sheet (#6400).
+
+- Dice-pool rulesets can let players spend resources for extra dice or successes on a check, with costs, limits and actual spending recorded by the Engine (#6405).
+
+- Character sheets support wound tracks, ordered damage kinds, healing and persistent overflow. A ruleset can apply the current wound penalty to its checks; these features require Capability API 1.30 (#6407).
+- Atlas Cloud browser checks verify persisted model options directly, avoiding a race with the temporary save confirmation.
+
+- Atlas Cloud video connections show a **Model options** section under **Video Defaults** with every input the selected model has beyond clip length, aspect ratio, and resolution, such as negative prompt, seed, audio, shot type, prompt expansion, and LoRA lists. Each option shows Atlas Cloud's description and default, stays unsent until changed, and is saved per model. Switching models hides the old controls until the selected schema loads; ordinary field names such as `prototype` are preserved and object inputs are validated. The section also lists the clip lengths and resolutions the model accepts and warns when a text-to-video model cannot use the gallery image (#6408).
+- **Fetch Models** on an Atlas Cloud image or video connection loads Atlas Cloud's current catalog instead of a fixed starter list. Video models list image-to-video first and show their starting price per second; the starter list remains the fallback when the catalog cannot be reached (#6408).
+- Atlas Cloud scene videos fit each request to the selected model's published input schema: the source illustration goes to the image field the model declares, resolution and aspect ratio become a `size` where the model requires one, clip length snaps to a length the model offers, and fields the model does not declare are left out. **Test Video** supplies a plain first frame to image-to-video models, and the server log reports when a text-to-video model cannot use the source illustration (#6408).
+- Roleplay World tracker temperature and weather controls sit beside the date/time controls, with space reserved for their values on mobile and desktop (#6424).
+- Roleplay dice instructions keep optional DCs and situational modifiers inside the command or tool arguments instead of announcing them in narration (#6425).
+
+- The Inventory Tracker browser regression waits for its editing modes and disables the toolbar opening animation, avoiding missed clicks on clipped controls in CI (#6421).
+
+- Downloaded packages using the bundled Claude Agent SDK can resolve the host's installed native CLI helper, including pnpm and container installs; managed links refresh after SDK updates (#6403).
+
+- Automatic output translation finishes and saves on the server even after the page closes, including rewritten replies, individual swipes, and replies saved before a later processing error; completion alerts wait for the saved result while the next send remains available. Returning to a chat refreshes older cached translations even when its cached settings are stale, and older Game narration can still translate after unrelated server work finishes. Malformed Game command tags no longer cause repeated scans while preparing narration for translation (#6412).
+
+- Desktop chat, character, and persona drags allow normal mouse-wheel scrolling while holding an item, retain chat assignment and folder drops, and cancel with Escape. The browser regression uses the same mouse flow without hanging in native drag mode (#6413, #6399).
+
+- Game Mode ruleset combat supports multi-strike turns, several damage types per hit, action-granting abilities, automatic damage riders and additional condition effects. Catalog previews explain these mechanics before selection. Packages using the new keys require Capability API 1.29; see the [ruleset authoring guide](docs/extending/writing-rulesets.md).
+- The Roleplay swipe media regression follows the continuation behavior shipped in #6396, so the node regression lane passes again on `staging`.
+
+- Roleplay `/continue` and `/cont` display their streamed text inside the original reply, preserving its existing content and newline preference; an empty send still creates a separate reply (#6394).
+- Narrator dice commands can target the active persona by name, including character cards used as personas, and apply that identity's assigned RPG attribute modifier (#6395).
+
+- Conversation and Roleplay chats keep the latest message in view while their opening layout finishes loading, on desktop and mobile; scrolling through older history still takes precedence (#6392).
+- A Game Mode fight on a ruleset that says what one square of a battlefield is worth is now played on that battlefield, on screen. The board is the same one Tactical battles use, with the same terrain, and everything on it is said in the ruleset's own distance rather than in squares: "Movement 8 paces", "Can be walked to for 15 ft", "Juno moves to 4, 6 for 6 paces and has 2 paces left". Choosing Move lights up every square your character can reach with what it costs, draws the way there as you hover or focus one, and marks in amber any square whose path someone would strike at, naming them under the board. Choosing an attack or an ability lights up who it may be pointed at and lets you click them on the board as well as in the list, and an attack that reaches nobody says "Nobody is in reach. Move closer." instead of offering a swing at nothing. Something that lands as a burst, a cone or a line is aimed at a square, and the square under your pointer says who it would catch, friends included. Movement can be spent before and after an action, so the menu comes back with what is left. The whole board is reachable from the keyboard: arrow keys move between squares, Enter takes the square, Escape leaves a half-made choice, and every square says what it is, who is on it and what it would cost. Your Combat Preference now decides how such a fight is shown: Classic plays it without positions and Tactical plays it on the board. A ruleset that says nothing about distance, a game set to Classic, and Marinara's own Tactical and Classic battles are all unchanged.
+
+- Touch dragging in chats and resource libraries lets a second finger scroll the list while the first keeps holding the item; lifting the scrolling finger no longer drops or assigns it (#6390).
+
+- Inventory Tracker preserves saved items when a model response is incomplete or contains malformed rows, including batched agent calls. Failed updates use the existing retry path instead of repairing missing inventory into deletions (#6387).
+
+- Inline code in documentation follows the reader's theme so paths and settings remain readable in light mode (#6371).
+- Scene summaries explicitly use a narrator's point of view and attribute thoughts and feelings to the participant they belong to (#6379).
+- Conversation Presence keeps the activity editor open when a mobile keyboard resizes or pans the viewport (#6380).
+- Roleplay Visual Novel paragraphs follow speech playback, with optional timed autoplay and a paragraph delay in Appearance settings (#6373).
+- Termux client builds get temporary heap headroom instead of inheriting the smaller server limit; explicit memory overrides are preserved (#6381).
+- A Game Mode ruleset that resolves its own fights can now say what one square of a battlefield is worth in its own distance, and a game on such a ruleset set to Tactical combat is fought on a board. How far a turn walks, how far a weapon reaches or is thrown, how far an ability carries and what a wall blocks are all the ruleset's own numbers.
+- On that board an ability lands as the shape its ruleset draws, a burst, a cone or a line, a creature's breath included; cover adds what the ruleset says to the number an attack is rolled against; a shot taken too far off or with a foe at your elbow is harder when the ruleset says so; walking out of somebody's reach lets them strike at you; and the conditions that talk about distance finally mean something.
+- Opponents nobody plays now move: they close the distance, get up when they are knocked down, weigh every square they could fight from, sprint when nobody is in reach, and do not walk through three people's reach for a slightly better target.
+- A ruleset that says nothing about distance, and any game set to Classic combat, fights exactly as it did. The 5e example gains distances on its weapons and its creatures and Ember Roads gains one line saying a square is two paces; ruleset packages that carry any of it need Capability API 1.28, and games with no ruleset are unchanged.
+- A Game Mode fight on a ruleset that resolves its own combat is now played on screen, in that ruleset's own words. The menu is your character's own attacks and abilities plus the standard actions the ruleset lists, each saying what it spends out of the ruleset's action economy and pools and what it is likely to do; choosing one that needs a target offers only the combatants the rules allow it to be pointed at, and a spell that can be paid for from a higher pool asks which one first. The panel below shows the turn order with whoever is on turn, the round, everybody's health and defence in the ruleset's own names, their conditions with the rounds left, temporary points, concentration, the two counts of the ruleset's dying rule, and an opponent's threat and traits behind a Details link. The log prints the real arithmetic, such as "Juno attacks Rust jackal with Road axe: 8 (5 + 3) + 3 = 11 against Guard 6, a hit", with advantage, criticals, saves, resistances, recharge rolls and uses left all said out loud. Turns nobody is playing run one at a time so the log can be read, the per-member manual and AI toggle still works, and a choice the rules refuse says why without changing anything. When the fight ends, the recap the Game Master is given uses the ruleset's real numbers and says the sheets are already up to date, because every accepted action was written to them as it happened. The setup wizard and the ruleset import review now say what battles will really do, read from what the ruleset file carries. Your Combat Preference is kept and not used for such a game, and games with no ruleset, or on a ruleset that does not resolve its own fights, are unchanged.
+- A Game Mode fight can now be resolved by the ruleset's own rules on the server. When a game is on a ruleset that describes how it resolves combat, the battle is fought with that ruleset's dice against its own numbers: each party member's health, resources, conditions and concentration are read off their own character sheet and written back to it after every action, so closing the tab in the middle of a fight loses nothing and there is no end-of-battle tally that could disagree with the sheet. Opponents come from the ruleset's bestiary by name, or, for something the Game Master invents, from a stat block pulled onto the ruleset's own threat scale, or last from the plain numbers of the threat rung it belongs to, and the battle records in plain words every change it had to make. Opponents nobody plays choose from the same list of legal actions a player would see, and a boss the Game Master controls is asked to pick one of them and nothing else. The encounter the Game Master writes now describes each enemy in the ruleset's own terms as well. The battle screen that plays it is the entry above, and games with no ruleset are unchanged.
+- Rulesets can ship a bestiary: a catalog that holds creatures instead of character-sheet rows, each written in the ruleset's own numbers, with health that can be dice rolled when a fight starts, resistances and immunities, the threat tier it belongs to, short traits the Game Master is shown, and actions that can hit, force a save, apply a condition, run out of uses, come back on a recharge roll, strike several times for one action, or be spent from the creature's own pool of points. An opponent the Game Master invents instead is pulled onto the ruleset's own threat scale before anything is rolled, and says in plain words what it changed. This part is the shared rules engine and the file format; the saved battle and the screen that use it are the two entries above. Both example rulesets in the authoring guide now ship a small bestiary of their own creatures. Ruleset packages with a bestiary need Capability API 1.27, and games with no ruleset are unchanged.
+- Groundwork for Game Mode battles that follow a ruleset's own rules: a ruleset can now describe how it resolves a fight, with an optional `combat` block naming what is rolled and against what, the actions a turn may hold, which sheet lists are weapons and which are abilities, what its conditions do, concentration, what happens to a character at zero, its damage types and the scale an opponent is picked from. Its ready-made catalog entries can say how many targets something takes, whether it always lands, what conditions it applies, what temporary points it grants, how it grows with the character and which action it spends. This part is the shared rules engine and the file format; the saved battle and the screen that play it are the entries above, and a game on a ruleset without the block fights exactly as it did. The 5e example and Ember Roads both ship a combat block in the authoring guide, which also lists in plain words what is not modelled yet. Ruleset packages that ship the block need Capability API 1.26, and games with no ruleset are unchanged.
+
+- AI translations use the selected connection's output-token budget and cap instead of always defaulting to 4,096; the existing Max Tokens setting also controls the translation fallback (#6366).
+- Advanced Settings now groups text, agent, image, video, ComfyUI and embedding timeout controls for slow backends. Saved limits persist across restarts; media and installed-package changes identify when a restart is needed (#6363).
+- Built-in agents can select which context sources they receive, and preserve those selections on save, export and reload. Grouped agents retain the union of their selected sources (#6356).
+- SwarmUI image connections can keep generated files in the backend, send selected LoRAs and their weights, and pass reference images through the native generation API (#6350).
+- Completion sounds and browser/native alerts wait until automatic output translation has finished saving, including a fallback notification if translation fails (#6352).
+- OpenAI-compatible agent calls finish at the stream's completion marker even when the provider keeps the HTTP connection open (#6349).
+- Saved chat defaults reuse setup choices without capturing or overwriting the new chat's name (#6355).
+- The mobile chat setup wizard keeps its footer inside the available screen when Commands are expanded (#6354).
+- Long Game narration can use more of the mobile screen while short messages stay compact (#6351).
+- Agent category buttons show their full labels, and the Personas empty state now reads “No personas yet” (#6357, #6358).
+- Home lifecycle checks scale their heap allowance with the warmed app while retaining structural leak checks. Storage shutdown regressions use production logging and verify that every autosave exit hook is released (#6353, #6360).
+- Claude cache-duration documentation distinguishes Agent SDK requests from Claude Code subagents; all ten translated guides now explain the setting (#6344).
+- A Game Mode ruleset can now offer layers: named variants of itself, such as Low magic or Hard winter, that you turn on for a game under the ruleset you picked. A layer can make the difficulty ladder harsher, take choices out of a character sheet field, leave some of the ruleset's ready-made catalog entries out of the sheet editor's picker, and give the Game Master extra instructions, including for the world it builds during setup. Rulesets may also say what kind of world suits them even without a layer, which world generation now reads. Layers can rule each other out, your choices are fixed for that game's lifetime exactly like the ruleset itself, and nothing on an existing sheet is rewritten: a value a layer takes away stays on a character who already had it. Ember Roads, Gravewatch and the 5e example each ship a layer in the authoring guide. Ruleset packages that offer layers or world guidance need Capability API 1.25, and games with no ruleset are unchanged.
+- Game Mode rulesets can now be built on dice pools. In a pool ruleset the number on a character sheet is how many dice you throw rather than a bonus you add, and the difficulty is how many successes the check needs. The ruleset says which faces count, whether a high face rolls another die or counts twice, whether low faces cancel successes, and what counts as a fumble or a standout success; the Engine throws the dice, counts them, and replaces any result the Game Master wrote for itself. Your sheet shows those numbers as dice instead of as a bonus, and the dice card picks out the dice that reached the target and reads how many successes came up against how many the check needed. Importing a ruleset and the Rules step of game setup now say in plain words how it rolls a check, including any optional pool rules it turns on. The Game Master can also make one check harder or easier by moving the per-die target or by adding and taking dice, where the ruleset allows it, and can roll a skill with a different ability by name, which works on every ruleset. A new example ruleset, Gravewatch, ships in the authoring guide beside Ember Roads. Ruleset packages built on dice pools need Capability API 1.24, and games with no ruleset are unchanged.
+- A ruleset sheet can now take the newer text of rows you added from a ruleset's catalog. When the wording of a spell, attack or feature has changed in the ruleset since you picked it, a line under that list says how many rows have newer text, with a Review button. The review shows each row with what your sheet holds beside what the ruleset says, and you tick the ones you want before anything is written. Only text is compared and only the ticked rows change, so your own numbers, switches and anything you typed in another column of the row are left alone. Cells that a ruleset keeps for you, such as uses that follow an ability score, now also show as read-only with a note saying the ruleset sets them.
+- Game Mode rulesets can keep some sheet numbers themselves, and the Game Master can use an ability by name. A ruleset's ready-made entries may say that a number column follows the character, such as uses equal to an ability score or a class resource that grows with a level, and the sheet editor keeps that cell right instead of leaving it to you. The Game Master can also say that a character uses something they picked from a catalog, and the Engine pays the whole price: whatever the ruleset says it costs, plus one use of each counter that came with it. A spell paid with a slot comes out of the slot level the ruleset names for it, and the Game Master can ask for a higher one instead. If any part cannot be paid, the whole thing is refused and nothing is spent, and something that costs nothing is simply narrated. Ruleset packages that ship these values need Capability API 1.23.
+
+- Game Mode rulesets can lend their character sheets to battles with a new optional `battle` block. A fight starts on the sheet's health, energy and spell slots, and the health lost or regained and the resources spent are written back when it ends. The block names which sheet lists supply skills: a row picked from a catalog becomes a usable skill when its catalog entry describes what it does, and rows in other lists, typed by hand, or without that description are left out. Health is carried as a share of the maximum both ways, because the numbers in battle are Marinara's: a character at half health on the sheet starts at half the battle's health bar. Battles still use Marinara's own combat math, attack rolls, saving throws and concentration are not applied, an abandoned fight writes nothing back, and a ruleset without the block leaves combat unchanged. Ruleset packages that ship the block need Capability API 1.22.
+
+### Fixed
+
+- Preserve native SwarmUI reference images when no custom workflow is selected, while keeping ComfyUI and RunPod references limited to declared workflow slots.
+- Keep storyboard failure labels and captions consistent while preserving progress for active sibling frames.
+- Keep generation status polling separate from the request allowance for sending messages.
+- Preserve inherited scene facts when their original transcript is unavailable for review in the current session.
+- Complete requested NPC introductions using bounded public scene facts and record rejected actor-output diagnostics.
+- Detect named role-list introductions and admit NPC profiles after saved game turns without relying on an open game view.
+
+- Contact Book now lists only encountered character cards or NPC records, excluding unlinked names and groups.
+
+- Isolated character dialogue uses the current, verified scene roster when an older game snapshot has stale presence, while respecting regeneration and active-swipe boundaries.
+- The optional Status panel uses existing Persona Stats and custom RPG fields; the Contact Book gathers recorded encounters with sourced opinions and relationships, search, and personal grouping.
+- Game help includes a chaptered guide to layouts, tucked widgets, maps, campaign memory, Status, and the Contact Book.
+- Game widgets and the map grow to fit their content by default; fixed height requires an explicit choice. Edit layout offers a saved toolbar pin that stays at the top center across resolution changes.
+- Widgets can tuck into edge tabs, reveal on hover or click, and briefly reveal changed values. Character links recognize unambiguous shortened honorific names without renaming cards.
+- The ongoing and end-session Lorebook Keepers reuse one campaign book. Existing session books can consolidate transactionally while preserving entries and their source sessions.
+
+- Campaign Wiki renders structured facts as readable text with original records behind a disclosure, and keeps long values within the reader. Edit layout uses a pencil icon with a tooltip and active state.
+- Session popovers stay above the game HUD after clicking their contents. Campaign Wiki has a dedicated toolbar shortcut, a browsable overview, wrapping category filters, and separate directory and article scrolling.
+- Update notifications dismiss when Refresh is clicked and recover from stalled updates. Local builds without Git metadata no longer repeatedly report a same-version update.
+- Game panels adapt their preferred positions to resolution changes and snap to a 16-pixel grid after dragging. Edit layout offers a saved option to lock chat to the bottom while other panels arrange around it.
+- Game Mode's action toolbar can be moved in Edit layout. Floating panels retain stable positions after refresh and avoid repeated rearrangement in crowded layouts; the desktop World Map opens in its focused nearby view.
+- NPC Biographer can recover missing characters from current and earlier session transcripts, with background batches, source checks, and review reporting for incomplete appearances.
+- Game HUD panels separate when they collide and keep the game viewport fixed. Crowded panels scroll internally instead of pushing panel headers and the toolbar off-screen. The Currently Present panel starts wide enough for its content and wraps its controls instead of clipping them.
+- Side dialogue, choices, and other narration companions now move and resize with the narration panel instead of being covered by it.
+
+- A missing continuity connection now pauses queued background work without crashing the server or consuming a retry attempt. Legacy node maps automatically convert to World Maps at startup when the package is available, preserving original maps, current locations, and two-way links without replacing existing World Maps. Undiscovered locations remain archived.
+
+- Migrated chats retain explicitly selected World Maps when hierarchical map data already exists, even if an older migration left agents disabled. Campaign Wiki browser fixtures now serve public assets consistently with the application.
+
+- Scene presence controls keep a readable width, remain available on phones, and open sheets for characters outside the active party. Automatic storyboards ignore unavailable source turns instead of failing when an old session is opened.
+
+- Windows launchers keep the pinned package manager available to nested build commands when pnpm is provided through Corepack or npx.
+
+- Compact Game layouts keep dialogue and historical prompt controls clear of the HUD, bound storyboard previews on short screens, and retain desktop narration spacing when panels float.
+
+- Game Mode adds a full-screen campaign wiki with source-linked facts, character knowledge, review history, and resumable historical indexing.
+- Scene timelines retain location changes and participants; the presence bar distinguishes character cards from background extras and opens the linked character sheet.
+- Storyboards support adaptive frame counts, concurrent image requests, per-stage timing, pending-frame navigation, full-screen images, and recoverable background work.
+- Image request inspection preserves the submitted scene and reference details with credential redaction; ordinary scene prompts exclude unrelated intimate profile material.
+- Prompt cache diagnostics and an optional pre-send warning expose reuse estimates while preserving provider-reported token usage, upstream Claude cache duration settings, and explicit lorebook placement.
+- Game widgets retain individual sizing and placement, and character sheets preserve library portraits and draft edits until saved.
+- Generation parameter panels now follow the selected provider and model capabilities, including reasoning effort and verbosity controls for Claude, ChatGPT and OpenRouter models.
+- ChatGPT Subscription image generation supports the local Codex sign-in, provider-selected quality, up to 20 references, canvas containment, and an isolated concurrency pool.
+- Completed image, sprite, character-art and audio jobs remain recoverable after the tab closes, with progress and cancellation controls in the generation-jobs view.
+- Empty streamed and non-streamed provider responses now retain bounded, privacy-safe diagnostics instead of failing without useful evidence.
+- Narrated location synchronization retries one timed-out provider call with a fresh deadline while preserving cancellation, map conflict checks and the original diagnostic reference.
+- Location extraction reports the rejected answer and validation failure so malformed teleport evidence can be corrected without weakening arrival or player-authorization checks.
+- NPC profile and portrait handling now preserves canonical character-card identity, avoids duplicate scene records, and keeps generated profile data aligned with visible character references.
+- Agent routing is available in a central view with package-aware capability context and clearer provider/model diagnostics.
+
+- Returning to a chat while a background translation is being saved now replaces the old translation correctly when Show Only Translation is enabled (#6337).
+- Game Features switches share consistent track sizing and thumb spacing, including custom HUD widgets and narrow mobile layouts (#6339).
+- Custom Tracker accepts top-level incremental updates as well as updates nested under `fields`, using the existing row merge and lock handling (#6340).
+- Claude Subscription connections can request a one-hour prompt cache, and connection exports keep unsaved cache-duration changes. Cache logs report the actual five-minute and one-hour write counts and avoid cost estimates when the write duration is unknown (#6341).
+
+- Character name resolution exposes each chat member's saved aliases alongside their canonical name, including disabled members, without changing existing name-only callers (#6328).
+- Peek Prompt includes capability package context and roleplay events through the same placement path as generation, including package Agent Sections (#6331).
+- Visual Novel portraits open the existing full-size image viewer with mouse, keyboard or touch (#6332).
+- The Conversation sidebar's Character Schedule Manager icon keeps its intended size instead of shrinking inside button padding (#6333).
+- Professor Mari's fenced code blocks have copy buttons that preserve code whitespace and report clipboard failures, sharing the Docs viewer's controls (#6334).
+- OpenAI-compatible connections to OpenCode Go/Zen automatically send a stable per-chat session header and identify Marinara Engine, including nested generation, retries and chat translations (#6325).
+
+- Mindless Tactical enemies follow the fewest legal steps instead of choosing a longer cheap detour, while still paying terrain and weather movement costs (#6324).
+- Regenerating a translated reply now translates its new content instead of retaining the previous version beside the original when Show Only Translation is enabled (#6317).
+- Launchers check the complete client build inventory and rebuild missing or empty assets before startup. Missing frontend files return 404 instead of HTML, with recovery guidance for blank pages after updates (#6320).
+- Selfie documentation lists the supported model command forms and the Conversation-mode setup requirements (#6318).
+- Reasoning-only replies without evidence of an exhausted output limit no longer suggest lowering Reasoning Effort as the cause; the error points to retrying and inspecting the response (#6321).
+
+- Image connections support fal.ai text-to-image generation, with FLUX starter models, custom model endpoints and parameters, and the existing image previews and gallery (#6312).
+- Connection tests retain fast results after automatically saving edited settings.
+
+- Browser regression fixtures resolve dependencies from Vite's transformed imports instead of expiring resource timings. Wizard persistence checks wait for the settings drawer before reloading and preserve the original error if timeout cleanup fails (#6303, #6304).
+
+- Built-in tracker Agent Sections use the selected turn's saved state at their preset positions, without repeating that data in the automatic context. Trackers without an active section retain their usual placement (#6308).
+
+- Settings search opens Game Assets in Imports, where the existing asset browser, uploads and rescan controls live (#6309).
+- Home and its browser header identify installed staging builds beside the version, independently of the selected update target (#6307).
+
+- Game difficulty now affects enemy AI decision consistency in Classic and Tactical, while companions retain their own competence. Older title-case settings work throughout combat, encounters and loot; the current Traditional damage modifiers affect enemies only and are explicitly reserved for that ruleset.
+- Combat accepts and saves campaign weather, applying rain's elemental modifiers, tagged projectile/sight penalties, and Tactical snow movement costs. Sheltered or uncertain exposure is neutral; conditions remain visible with weather animations off and stay fixed across reloads.
+- Game creation retains Battlefield Size while removing the unused campaign Battlefield Seed control and “current style” from Classic. New battles receive individual internal seeds, while saved battle maps and restarts retain theirs.
+- Combat started from a restored checkpoint uses the restored scene's weather, and Classic end-of-round elemental mechanics respect the encounter's weather modifiers.
+
+- Linux sandbox regressions probe the actual host process instead of Bubblewrap’s isolated supervisor and accept explicit denial when reading a masked secret file, avoiding false failures without weakening the isolation checks.
+
+- Combat AI review fixes keep Methodical units focused on real opponents, respect legacy skill ranges, and report invalid enemy MP and corrupt saves clearly. Combat events can be translated, item prompts match their targets, and mobile terrain inspection leaves battle controls accessible. Battlefield reload checks no longer depend on browser resource-timing history (#6303).
+
+- Codex has a dedicated `AGENTS.md` with OpenAI model and tool guidance; skills remain shared through `.agents/skills → .claude/skills`. Completed, locally validated and reviewed PRs now proceed to ready for review without a separate confirmation.
+
+- New Game Mode battles use saved combat temperaments in Classic and Tactical, including Patient, Methodical and Coordinated. Explicit Mindless hints also work for other creature types. Companion control can be chosen per member; generated enemies retain usable MP, and Classic support skills target the correct side with saved cooldowns.
+- New Game Mode battles can let the GM direct authored bosses in Classic and Tactical, with legendary actions, turn-start anticipation, and optional Counterspell/guard reactions. Saved decisions protect resources across reloads, duplicate commands and late GM replies; manual party reactions show their MP or spell-slot cost.
+- Restoring combat preserves the encounter anchor and mechanics instead of clearing them during screen initialization.
+- Classic combat consumes items only when their accepted action executes, keeping abandoned retries and skipped turns from spending inventory, and retains spent spell slots between rounds. Tactical AI uses the same skill-power floor as combat resolution when weighing area attacks.
+- Game creation describes Tactical combat without an external game comparison and no longer asks for permanent terrain guidance. Added combat AI, Summoning and versioned ruleset handoffs, with the implemented boss/reaction boundaries and remaining ruleset work.
+- Groundwork for selectable Game Mode rulesets: a capability package can now ship its rules as a validated `ruleset.json` data file (Capability API 1.20, package kind `ruleset`), and chats have a place to record which ruleset a game was created on. Nothing selects a ruleset yet, so every existing and new game plays exactly as before. See `docs/development/game-rulesets-and-sheets-implementation.md`.
+- Game Mode checks in a game that pinned a ruleset now use that ruleset: its dice, its difficulty ladder, the character's ruleset sheet, and its own rule for natural results (5e SRD 5.1 has no automatic success or failure on checks and saves). The Game Master can add `who="Name"` to check a party member, and a check that carries a modifier it invented itself is rolled again with the modifier from the sheet. Games without a ruleset are unchanged.
+- Characters and personas can hold a sheet for each installed Game Mode ruleset, edited under **Stats** in a layout that comes from the ruleset. A sheet is a starting build that a game copies. Sheets for rulesets that are not installed are kept, shown as one removable line, and travel with exports; each sheet is limited to 64 KB.
+- New games can be created on an installed Game Mode ruleset through a **Rules** choice in the setup wizard, separate from Combat Preference. The ruleset stays with the game, each party member's sheet is copied into the game (a blank one when they have none), and nothing in a game writes back to the character or persona. Shared setup files carry the ruleset and fall back to Marinara's own rules, with a notice, when it is not installed or the installed version is older than the one the file was made with. A card keeps its sheet through a session conclusion and an in-game sheet edit, and a recruited party member gets one too.
+- A game on a ruleset now keeps each party member's sheet up to date as you play. The Game Master records spent and regained resources, damage, healing, conditions and rests with a `[sheet: ...]` command, and the Engine checks every one against the sheet: a spell cast with no slot left is refused and you are told. The in-game character sheet shows the ruleset sheet with live pools, conditions, rest buttons and an **Edit sheet** mode. Live values belong to the message they happened in, so a swipe or a regenerated turn never spends twice.
+- The agent catalog shows the 5e (SRD 5.1) rules package under the **Game** filter, and the agents overview explains that a package marked **Rules** adds a Game Mode ruleset rather than an agent.
+- Community Game Mode rulesets: a ruleset anyone wrote can be imported from a single JSON file (**Import agents** in the Agents panel, then **Game Mode ruleset**), or received from a custom agent repository that carries a `rulesets` folder. A review shows what the ruleset covers and the full text it sends to the Game Master before anything is stored. Imported rulesets are named after where they came from (`local/my-5e`, `alice/v20`), so they can never replace an official one. Every imported version is kept, and a game always plays on the exact version it was created on; a changed file needs a higher version number. Turning **Allow custom Agent imports** off hides imported rulesets from new games without touching games that already use one.
+- Game Mode rulesets can now ship catalogs: ready-made spells, features or gear that fill a character sheet's lists, so nobody types every row by hand. One entry can fill more than one list, picked rows are copies you can edit, and catalog text is never sent to the model. See [Writing Game Mode Rulesets](docs/extending/writing-rulesets.md).
+- The character, persona and in-game sheet editors now have **Add from catalog** on every list a catalog fills. The picker searches and filters, marks what the sheet already holds, and says what each list would gain before you add anything.
+- Installed rulesets now appear in the Agents panel under **Rules**, where a rules package can be uninstalled and an imported ruleset removed. Removing one that games still play on asks again and says how many.
+- The setup wizard's note for a ruleset without combat rules now names the Combat Preference you picked (Classic or Tactical) instead of saying "default combat".
+- New guide for ruleset authors, [Writing Game Mode Rulesets](docs/extending/writing-rulesets.md), with a small non-d20 example ruleset and a JSON Schema for editor help (`docs/extending/ruleset.schema.json`, regenerated with `pnpm ruleset:schema`).
+- Storage flushes already waiting when shutdown starts now join the final write drain, avoiding a spurious closed-store error while preserving pending data and reporting failed admitted writes even when shutdown retries successfully (#6298).
+
+- Capability packages can now offer tools the model calls during a turn, so a package that owns live state receives structured, validated data instead of parsing it back out of the reply. Narration still streams while the call happens. See `docs/development/optional-agent-packages.md` for the package-author API.
+
+- Deleting a chat message (or bulk-deleting messages) now cleans up lore that agents extracted from the deleted turns. The Lorebook Keeper's entries remember which messages they came from: rewriting an entry in place is undone when the turn that rewrote it is deleted, entries whose whole source turn is gone are removed, and hand-written entries are never touched.
+- Regenerating a message no longer keeps lore written from the discarded swipe active in the prompt. Swiping back to the original response brings its lore back.
+- Lorebook entries expose the messages they were extracted from, and the entries list can be filtered by source message, so lore left behind by a deleted message can be found and purged explicitly.
+- Character schedules accept custom daily safety limits above eight, preserve them through schedule imports, and still respect the chat check-in cap (#6291).
+- Local embedding launches raise the logical batch when needed so physical batches above 2,048 tokens are not silently capped by llama.cpp (#6293).
+- Professor Mari validates edits and undo without scanning unrelated chat history, preserving lazy storage and avoiding repeated unrelated-error warnings. Plain-text agent memory no longer produces false JSON errors; explicit database validation still reports existing broken references without deleting data (#6294).
+
+- Repeated keeper writes preserve the original undo snapshot, and legacy profile imports clear foreign message references so restored lore remains usable. Storage format 7 protects the new provenance fields from older builds that cannot preserve them (#6288).
+- Refresh compatible dependency and CI-action versions while preserving the supported Node, schema and native-runtime compatibility pins. The sandbox regression fixture also resolves macOS temporary-directory aliases before comparing canonical store links, and restart-test failures retain startup-stage diagnostics.
+
+- Starting a Conversation or Roleplay chat from a character card keeps that character selected when saved wizard defaults are applied (#6284).
+- CI isolates language checks from live agent-catalog availability and gives cold native server startup its own deadline while preserving the restart deadline.
+- Roleplay documents choose one of three built-in styles for each document kind and keep that choice with the saved command. Real dice rolls appear inside the reply where they were requested, using the existing dice animation and preserving their results after reload (#6279).
+- Pinch zoom on mobile preserves the Roleplay layout and media size instead of treating the smaller visual viewport as an open keyboard (#6278).
+- Advanced Memory scene decisions have room for reasoning models to finish, respect the helper connection's output cap, and explain output-limit failures (#6280).
+- Model discovery errors expose the underlying network error code and clarify that the provider must be reachable from the Marinara server (#6268).
+- Roleplay interruption instructions explicitly cover dialogue and actions, with a concrete example of a plausible intervention (#6281).
+
+- Tactical Game Mode can combine a GM terrain brief with a reusable battlefield seed and size. Requested terrain is validated and preserved, with an explicit generated-terrain fallback when a layout cannot be used. Flying and teleporting units gain distinct movement rules while retaining terrain defense and evasion bonuses. Malformed saved grids are excluded from GM battlefield summaries (#6265).
+- Added a contributor roadmap separating combat participation from battlefield rules, with follow-up plans for summoning and versioned tabletop rules profiles (#6265).
+- Codex contributors review locally with CodeRabbit and resolve valid findings before requesting PR review, reducing use of the repository's shared review quota. Documented false positives or purely pedantic suggestions do not block review.
+
+- Custom agent outputs now show separate public-output and private-context editors under the same spoiler protection. Responses that omit private context retain the previous visible turn’s value (#6254).
+- Copied Support Diagnostics include only the latest five relevant client events, omitting routine visibility events and keeping reports shorter while preserving the full local recovery history (#6261).
+- Character Library and Characters panel token estimates include the full character card, including example messages, alternate greetings, instructions, and embedded lore (#6255).
+
+- Personal Extensions can use Marinara's built-in text token estimator through `marinara.estimateTextTokens(text)` (#6257).
+- Character Library previews preserve saved portrait crops without stretching them in compact or mobile layouts. Library and Recent Chats hover feedback keeps image sizes stable to avoid transient resampling artifacts (#6247, #6249).
+- Memory Recall reuses a continuity summary when its sources are unchanged and it still fits the adjusted context budget, avoiding duplicate entries and unnecessary summary requests (#6250).
+
+## [2.4.6]
+
+- Shutdown regression checks use persisted cleanup results after terminal exit, avoiding false failures when a closed terminal discards its final log output (#6245).
+
+- Added Professor Mari’s v2.4.6 What’s New story with release screenshots and demonstrations (#6240).
+- Professor Mari’s memory-processing animation alternates both legs, with a straightened rear-leg stride and rotating wheel spokes (#6240).
+
+- Characters keeps its pink gradient on the topbar underline, sidebar header icon, and New buttons when the Chroma accent changes (#6238).
+
+- Roleplay Visual Novel paragraph buttons and the paragraph counter follow the Chroma accent, including on hover (#6236).
+
+- CI actions use the supported Node.js 24 runtime, and container builds include Docker's fix for workflow-command injection in metadata logs.
+- Prepared v2.4.6 across the Engine, Home version, PWA manifest, Windows installer, and Android bootstrap metadata. Android uses version code 47 so the APK can update existing installations.
+- Windows installers download the security-patched Node.js 24.21.0 release with its verified checksum.
+- Container bases include the current Node.js security fixes, and Lite images build against the system libraries required by their Node package on both amd64 and arm64.
+- Sprite listings reject invalid character paths before reading or creating directories outside that character's sprite folder.
+- Platform checks now build and exercise full/Lite containers on both supported architectures, native desktop installs and update safeguards, the Windows installer, and Android APK compilation without publishing a release. Android build instructions state the required Gradle minimum, and macOS update tests use a socket path that fits the platform limit.
+- Noodle and Slurp chat controls appear only while their packages are active. Chats can optionally include Slurp activity, off by default, and package context follows the preset's formatting (#6235).
+
+- Scene preset variables are chosen before planning begins and apply to the opening message. Cancelling setup makes no generation request (#6214).
+- OpenRouter prompt caching honors the connection type when using a proxy, and Gemini reports cache-hit tokens in its usage figures (#6217, #6218).
+- Anthropic keeps depth-injected instructions at their position in chat history instead of moving them into the cached system prefix (#6219).
+- The context bar uses the latest request’s size instead of adding together every request in a turn. Tool and dice follow-ups consistently retain all reported token totals (#6220, #6221).
+- Tracker cards render reliably in WebKit with simpler neutral shading, including saved custom paints and brightness settings (#6223).
+- Conversation reactions stay next to their message when action controls appear or disappear (#6224).
+- Home, sidebar, editor, and Settings borders follow the selected accent, as does the mobile Home bookmark icon. Suggestion-chip borders use simpler color blends so Professor Mari opens reliably in WebKit (#6229).
+- The Illustrator guide describes agent-instruction token estimates accurately; translated agent guides explain summary attachment and tappable token help (#6222, #6227).
+- Chromium browser checks run in smaller parallel shards so the complete suite fits within CI time limits.
+
+- The agent-token estimate’s help opens on tap and stays within the mobile screen (#6228).
+
+- Roleplay agent requests omit chat summaries by default to reduce context size. Turn on **Attach chat summaries** in Chat Settings → Agents when an agent needs them; summaries remain available to the main reply (#6225).
+
+- Game chats can finish a rolled turn in one model request. **Finish rolled turns in one request** in Chat Settings → Function Calling lets the Game Master write both halves of a check, or a `[[roll: 2d6+3]]` placeholder for a number, and the engine rolls afterwards and fills the result in. The Game Master never sees a number before it decides what happens. The setting is off by default and applies per chat (#6215).
+- While one-request dice is on, the dice tool is no longer attached to a Game turn by default, **Narrate dice outcomes immediately** is shown disabled with its stored value untouched, and a chat with a separate Game tool connection is told that its planning request still applies (#6215).
+- A number the engine cannot roll is replaced with a short notice instead of an invented value, a branch it cannot read keeps the recorded roll and drops both halves, and either case adds a plain line to the session log (#6215).
+- One-request dice gains an optional **Let the Game Master see one die of each size**, off by default, for outcomes where the number itself has to pick between three or more endings. The engine keeps the queue, hands out values in order, never repeats one, recomputes every number in the record, bounds the difficulty, and rethrows a size that goes unspent. Its help text says plainly that the Game Master can steer outcomes it can see, which the blind forms do not allow (#6215).
+
+- Retire the global active-persona default so chat identity follows the persona selected for that chat; Conversation message macros use the user identity instead of the message author (#6206, #6207, #6208).
+
+- Slash-command suggestions and guides show argument formats, including optional inputs; `/hide` also accepts a message range followed by an optional character name (#6209).
+- Opening Roleplay trackers tolerates missing or invalid character IDs without losing named NPCs or saved tracker data (#6202).
+- Game lorebook entries keep their before/after placement around the Game Master context, while explicit depth and role settings remain respected (#6203).
+- Professor Mari requests JSON command responses from Google and Vertex Gemini and uses bounded protocol recovery for malformed function-call responses (#6204).
+
+- Push Story and Combat box borders follow the selected Chroma accent instead of retaining pink outlines (#6197).
+- Translator settings can be saved as defaults for new chats, including provider, language, connection, prompts, and automatic translation options (#6199).
+
+- Game setup keeps its normal steps when an Experience declares inline setup, with seed controls, individual lorebook entry selection, and setup-file import/export. Experiences can only be selected for new games; reopening an existing game preserves its saved Experience (#6181, #6182).
+- Unsupported installed package records no longer block supported packages on updated hosts, and remain preserved during registry writes and downgrade checks (#6181).
+- An Experience that requires custom HUD widgets on or off now applies that setting while it is on, locks the control with a line saying which Experience set it, and gives the earlier choice back when the Experience is turned off (#6200).
+- Dismissing the malformed-JSON repair dialog with Escape no longer also dismisses the Experience setup behind it (#6200).
+- Importing a game setup file now reports how many of its selected lorebook entries are missing on this machine instead of dropping them without a word (#6200).
+- The world seed an Experience asks for is a whole number from 0 to 4294967295; anything else blocks Start instead of quietly building a different world, and importing a setup file that carries no usable seed keeps the prefilled random one (#6200).
+- Automatic translation follows the originating chat while navigating elsewhere in the app (#6187).
+- Closing a Unix terminal flushes confirmed saves and records a clean server shutdown (#6183).
+- Inventory tracker items can retain editable descriptions and locations alongside their quantities (#6192).
+
+- Scenes now offer the selected preset’s variables before entering the new chat and wait for confirmed choices to save (#6184).
+- Trackers can update or remove individual rows while keeping untouched values and field locks; existing full-list responses remain supported (#6185).
+- Experiences can prepare their world before the opening Game narration and provide that world’s context to the first turn (#6180).
+- Scene controls use the selected Chroma colors and readable button surfaces over Roleplay text (#6186).
+
+- Routine Advanced Memory preparation no longer opens Chat Settings after every Roleplay or guided reply; settings still open when confirmation or a blocking error needs attention (#6177).
+
+- Stopping a Roleplay reply also stops its remaining text-reveal animation and releases the generation control promptly; an older reply cannot overwrite a newer generation's text (#6173).
+- Roleplay notes now explicitly carry decisions into future turns and clarify that updated notes replace their previous contents (#6175).
+
+- Markdown blockquotes now use the selected Chroma accent, and blockquotes plus `---`/`***` dividers keep balanced spacing above and below without removing extra paragraph breaks (#6170).
+- Mixed HTML messages preserve literal code, and empty Markdown quote lines no longer absorb the following text (#6170).
+
+- Image API connections now accept custom JSON parameters, including provider-supported LoRA fields. Parameters persist with saved, copied, and exported connections and apply to generation requests using that connection's own defaults (#6167).
+- Image-generation debug logs redact credentials and embedded image data while preserving prompts and request settings for troubleshooting (#6167).
+
+- Lorebook entries declined by the current-location reserve can still activate independently through keywords, sticky state, or recursion within the ordinary lore budget; declined constants cannot bypass the reserve (#6143).
+- Chat-local lorebook toggles made during reply preparation now survive generation. Runtime countdown and timing updates preserve newer edits, legacy switches, and deletion or detach cleanup (#6144).
+
+- Separate Game tool planning preserves narrator prefills and prompt formatting, keeps its instruction in the conversation on every provider, skips Continue, and no longer advertises duplicate local tool calls or reports the planner's finish reason as narration (#6148, #6149, #6150, #6155, #6156).
+- Game dice outcome rewrites include native rolls alongside text-command rolls. They can be disabled in Chat Settings to save the extra generation cost, and no rewrite runs when nothing was rolled (#6147, #6157).
+- Game replies consisting only of a refused package command explain the invalid argument instead of claiming the model returned nothing (#6151).
+
+- Numeric settings keep text selection intact when a saved value arrives just before editing, preventing old digits from being prepended to the new value.
+- Regression checks now drain development-watcher diagnostics before checking them and capture live dice screenshots without freezing animations.
+- Roleplay setup now waits for preset changes to save before advancing and closes obsolete preset-variable prompts instead of leaving an empty dialog.
+- Advanced Memory Recall now explains automatic context compression and summary limits, supports optional or disabled moving-context excerpts, and shares its setup with the Roleplay wizard. Existing chats get a preparation reminder; preparing/resuming responds immediately, with matching drawer controls and an improved Professor Mari running animation (#6159).
+- Advanced Memory gives reasoning models a separate, bounded response allowance for short summaries and rejects incomplete output instead of saving it as finished memory. Its archive shows numbered scene summaries with story timeframes carried into recalled context, full source-message inspection, search, and confirmed deletion to restart preparation while preserving the original chat and settings (#6159).
+- Ongoing scene detection now runs after generation, sharing an existing tracker request when available. Without trackers, its configurable interval defaults to five messages and sends only that recent message window with the scene instructions. Swipes invalidate outdated scene decisions, memory reset also protects pending prompt previews and preparation, and rapid numeric settings edits are saved in order (#6159).
+
+- Character Tracker now keeps the members of a multi-character card apart. A scenario card that describes several people used to collapse into one tracked entry named after the card; each person now keeps their own name, state, and portrait across turns. Cards that mark their cast with `[CHARACTER: Name]` headers or repeated `Name:` fields are recognized up front. A stale entry carrying the card's title is cleared when a member replaces it, while manually added characters keep their identities (#6104).
+
+- The native-dice browser regression has a longer total test budget for its multi-stage WebKit scenario, while individual action and assertion timeouts remain unchanged (#6141).
+
+- Chat Help now updates its layout when the window crosses the mobile breakpoint, onboarding tooltips respect the available height on short desktop windows, and Conversation schedule labels and ungrouped persona headings follow the selected interface language (#6140).
+
+- Added a remembered prompt preset choice when creating a Roleplay scene, configurable speech filters for tagged text, bracketed text, and code blocks, and an opt-in setting to run Game tasks one at a time within a chat (#6108, #6112, #6107).
+- Lorebook searches now include matching entries without usable embeddings, omit unrelated semantic results, and search entry names, content, and keys (#6124, #6125, #6134).
+- Re-enabling an exhausted chat-local lore entry restarts its authored activation limit. Detaching or deleting lore clears its saved entry state, chat toggles respect book scope, and duplicating an entry preserves its shared enabled state (#6120, #6131, #6132, #6133).
+- The Game tool picker now explains and follows the “Let the GM search lore” setting (#6121).
+- World generation accepts large lore-entry selections, respects entries disabled for the chat, and refuses context windows that leave too little answer space before making a paid call (#6122, #6126, #6129).
+- Fixed Roleplay dice commands on Claude and Grok subscription connections. Game dice corrections retain justified movement and package commands, report unsupported notation, discard invented roll results, and show a retry notice if outcome narration fails (#6117, #6118, #6123, #6127, #6128).
+- Peek Prompt now shows the Game tool planner’s model and token usage separately from narration (#6130).
+
+- Windows Ctrl+C now lets the server finish saving before the launcher exits; restart and shutdown regressions use portable loader URLs and include a native Windows console check (#6119, #6135).
+
+- Fixed Roleplay Visual Novel mode starting newly generated multi-paragraph replies on the final paragraph instead of the first, while preserving paragraph navigation after edits and selecting existing swipes.
+
+- Added an opt-in Roleplay interrupt command: characters can cut off the latest dialogue or action, with Restore and full original context on rerolls (#6109).
+- Kept Roleplay command details readable in light themes when the chat uses a custom message text color.
+
+- Added opt-in Advanced Memory Recall (Alpha) for Roleplay: automatic scene summaries, bounded continuity, relevant historical excerpts, and character-aware context management, with resumable setup and preset placement controls (#6102).
+
+- Professor Mari's Home navigation field is ready to type into without an extra button click, with a shorter “Looking for…?” placeholder on mobile (#6099).
+
+- Automatic backups now check that the disk holding `backups/` has room for the next archive, including metadata and restore notes, before writing it. A run that would not fit is skipped with a clear message in Settings instead of filling the disk and retrying the full write every hour (#6087).
+- Deleting a character card now removes it from every Roleplay and Conversation chat it belonged to, as it already did for Game parties, and the Characters count in Chat Settings counts only cards that still exist (#6084).
+
+- Download Backup and automatic backups no longer include the storage writer lease, so a data folder restored by hand from the archive starts without the "Another Marinara Engine process may be using" error (#6083).
+
+- Updated ZIP handling to adm-zip 0.6.1 to block extraction through destination symlinks and removed the temporary dependency-audit exception (#6075).
+
+- Conversation prompts no longer lose character or persona details when ordinary prose between macros mentions identity fields such as description or personality (#6066).
+
+- Roleplay notes and memory editors now follow Chroma colors. Personal notes are prompted to stay brief and track private state and plans for future turns instead of recapping scenes (#6069).
+
+- Visual Novel paragraph navigation now loads older messages across history pages, shows matching translations alongside the source, and preserves source text when translated paragraph counts differ (#6044).
+
+- Roleplay's Visual Novel display now supports paragraph-by-paragraph progression with previous and next navigation controls, allowing users to step through all paragraphs of a turn and preceding messages without opening the full history view (#6044).
+- Roleplay's Visual Novel display portrait now honors configured character and persona Avatar Crops (#6044).
+- Image attachments in Roleplay and Conversation no longer come out squashed when the photo carries an EXIF rotation (most phone photos): the attachment compressor now reads the orientation tag before choosing the decode size, so the browser's rotated bitmap is resized with matching width and height (#6053).
+- Game Mode satellite calls that run on their own connection (Scene Analysis, the illustrator prompt rewriter, and the storyboard planner) no longer inherit the chat-wide generation parameters of the main roleplay connection, so an OpenRouter provider-routing object or other provider-specific custom parameter set for the main connection no longer breaks Scene Analysis on a different provider (#6049).
+- After a Game Mode session is concluded, the composer now says so and offers a New Session button in place of the silently disabled input, so play can continue without hunting for the action in the Session panel (#6045).
+- Added the `/send <message>` slash command to post a message as your persona without triggering generation (#6050).
+- The Termux and Linux launcher auto-update no longer aborts with "Cannot copy a socket file" when the previous server left its storage writer lease behind: the update snapshot skips the per-process lease directory and any socket or FIFO under the data directory (#6046).
+- Clicking "Manage package" from a feature agent's detail view now opens the agent's installed package rather than falling back to the first catalog entry (#6047).
+- Malformed Echo Chamber reactions no longer crash the chat. Native text selections pause automatic chat scrolling and take priority over touch shortcuts and composer focus handling (#6039).
+- Roleplay's notes command explicitly explains how characters can edit existing notes by supplying their full updated contents (#6039).
+
+- Added an optional Visual Novel display for Roleplay: completed paragraphs appear above the existing composer with dialogue portraits and configured sprites. Open the attached history arrow for the full transcript and all message actions. Choose Classic or Visual Novel during setup or in Appearance → Roleplay, with separate portrait and sprite scales. Dice results and image attachments remain visible.
+
+- Roleplay Commands settings stay responsive while saving rapid changes. Documents now offers All/Narrator access, Soundtrack requires Music DJ to be added with agents enabled and follows the selected music source, and the Combat prerequisite names the Combat agent.
+
+- Added opt-in Roleplay Commands in the Agents drawer for illustrations, in-world documents, sound cues, soundtrack changes, private personal notes, reminders, real dice rolls, and direct messages. Commands start off; existing DM opt-ins are preserved. Notes remember motives, secrets, lies, deceptions, cover stories, and plans across turns, with access limited to their character and an optional narrator selected in individual group mode. Notes, reminders, and documents follow the selected message swipe. Rolls return an engine-generated result before narration continues. Cancelling a sound cue detaches that turn without interrupting other chats waiting for the same audio.
+
+- A game-surface Experience can now be handed specific lorebook entries to read before it writes your world, so a place you have already written history for comes out knowing it. You pick the entries, never whole books, and nothing else tags along — a lorebook you have switched on for every chat does not add itself to this one call. An entry you ticked arrives instead of being dropped by a chance roll — though a disabled entry stays disabled and every other filter on it still applies. Every eligible entry you select is included in full. If the complete instructions and selected lore exceed the model context, the call stops with a clear context-limit error so you can choose a larger context or reduce the selection. Whenever you pick anything at all, the reply answers your picks — including when none of them made it, which comes back as "none used" rather than as silence, so an Experience can tell that answer apart from an older engine that cannot read lorebook entries and does not mistake one for the other. Experiences that do not send a selection are unaffected.
+
+- Documented Capability API 1.14 tracker surfaces, prompt placement and agent lifecycle hooks, plus API 1.15 embedding-configuration refresh for package authors (#5900).
+
+- Dice notation is now read by one shared grammar in the four places that read it as a command — the `roll_dice` tool, the server and client sides of `/roll`, and the GM skill-check tag — instead of four private copies, so `roll_dice` accepts a bare `d20` like the other three already did. Notation whose roll could not be totalled exactly is now rejected as invalid instead of reporting a total that cannot be trusted — both a modifier too large for the engine to count exactly, and a countable modifier whose dice would push the total past that same limit. An oversized custom roll from the Game Mode dice menu is still trimmed and rolled rather than refused, but its card and its narrator line now name the dice actually thrown, so asking for `500d6` reads `100d6` instead of claiming five hundred dice over a hundred (a typed `/roll 500d6` refuses, as it always has). The `{{roll:XdY}}` macro and the dice-roll animation keep their own parsing and are unchanged.
+- Game Mode skill checks are rolled by the engine instead of written by the Game Master. The GM now asks for a check and the engine rolls every one in the turn — not just the first — applying the player's skill and attribute modifiers, keeping a die the player rolled themselves, and overwriting numbers the GM made up when its own arithmetic does not add up. Those modifiers now come from the player's own character sheet, found by name, rather than from whichever party card happened to be listed first — the old lookup leaned on the card order the model chose to emit, where the player leading the list is a convention the prompt asks for, not a guarantee anything enforces. Explicit success pools now use engine rolls too; unsupported or underspecified systems keep their requests unresolved, and a check asking for advantage and disadvantage at once is now left alone rather than rolled as one of the two. When a check cannot be rolled at all, the turn is saved carrying the plain request instead of the numbers the GM invented for it. The GM requests the roll before guessing an outcome; the engine supplies the result for a follow-up that finishes the same turn.
+- Added a storage API that lets a downloaded capability package register and persist its own file tables, with strict table-name validation. No caller is wired to it yet.
+- Removed the unfinished Slurp creator-feed material from the Noodle guides.
+- Updated the timeout reference in `.env.example` to use Slurp consistently.
+- Added a reusable Character Schedule Manager for Conversation schedules. It groups characters with and without schedules, supports bulk generation and removal, and provides per-character weekly renewal controls.
+- Improved the Character Schedule Manager with character folders, avatars, current presence indicators, current schedule activity, direct schedule editing, and schedule generation without an open Conversation chat.
+- Character Schedule Manager folders now use the existing read-only collapsible character-group view, matching the quick Persona switcher.
+- Character Schedule Manager now puts scheduled characters above folders and shows queued, active, completed, and failed states during bulk generation.
+- Moved the Conversation schedule manager to a compact icon button beside the activity field and tightened the status selector spacing.
+- Restored avatar placeholders and folder headers in the schedule manager, and increased the manager icon button size.
+- Fixed schedule manager status dots to preserve the character's stored status when no schedule block is active, and matched the manager button size to its neighboring controls.
+- Added a description below the Bulk Character Schedule Manager header that points to each character's individual schedule editor.
+- Bulk schedule generation now reports per-character failures correctly, preserves chat time zones during chatless generation, and keeps folder counts aligned with visible rows.
+- Schedule renewal indicators now use the configured Conversation time zone.
+- Character Schedule Manager folder parsing now ignores malformed group member data instead of failing to render the manager.
+- Character Schedule Manager now uses configured Conversation calendar dates for renewal and active-block status.
+- Renewal comparisons now use explicit date-only values without host-timezone shifts.
+- Increased the Conversation schedule manager calendar icon size while keeping its compact button dimensions.
+
+- Moved Noodle and Slurp image canvas settings out of Engine Settings and into their respective package settings.
+- Added a compact responsive batch-summary range list with a control to clear completed ranges while retaining retryable ones.
+- Added a clear-all-except-one batch range action, clearer range separators and numbering, and compact failure details behind a visible warning control.
+- Batch mode now identifies multiple ranges in the source summary and shows their combined message count.
+- Batch range rows now keep their number left-aligned and their separator centered between the message inputs.
+- Batch range rows now keep all controls inside their borders in the compact two-column layout.
+- Fixed batch summary cancellation responses, fallback range typing, summary-settings dismissal, and multiline footer regression coverage.
+
+- Fixed PNG metadata decompression, Nano Banana full-body image requests, GPT Image 2 OpenRouter routing, capability swipe timestamps, and bounded import uploads.
+- Allowed trusted backend scheduler calls to execute their own capability routes without a browser `X-Admin-Secret`, while keeping external package route requests protected.
+- Prevented profile preview tokens from being sent over non-local HTTP connections.
+- Moved the desktop right-panel resize hit area away from the main chat scrollbar.
+- Moved the agent connection bulk assignment control from the Agents panel to Connections -> Defaults -> Agents.
+
+### Added
+
+- Chat search accepts a message number such as `#67` and jumps to that message, including older history (#6090).
+
+- Added an inline "Apply persona to earlier messages…" action in Chat Settings that applies the currently selected persona to messages sent without a persona, messages sent as a specific persona, or all user messages in the chat (#6043).
+- Added effective generation values and their winning preset, connection, chat, mode, or output-cap source to parameter settings, plus an editor for preset parameters (#6052). Parameter edits wait for inherited values to load so a slow response cannot discard an override.
+- Added Z.AI text connections with GLM 5.3 model metadata, supported reasoning levels, and useful explanations when reasoning exhausts the output budget (#5963, #5968).
+- Added native NovelAI character captions to Illustrator, reusing Storyboard validation and supporting up to 22 characters on V5 (#5833, #5834); partial captions keep uncovered character appearances, and image fallbacks retain caption identities and current outfits.
+- Added random initial choices for single-select preset variables, with manual overrides preserved (#5868).
+
+- Marinara Gradient brings the logo's pink, orange, and cyan to the color picker and becomes the default UI accent. Accent Pulse starts on for desktop and off for mobile; saved preferences remain editable and appearance resets restore the device default. Fixed pink interface accents now follow the selected accent or chrome text color (#6028).
+
+- Character sheet images have their own resolution setting under Image Generation, independent of backgrounds (#6022).
+
+- Reply to a whole message or selected passage in Conversation. Quote previews stay in history while only the latest user turn repeats its quote to the model (#6002).
+- Larger display sizes (26, 30, and 34 px) and chat text up to 72 px improve readability on high-resolution displays (#6006).
+- Refresh the loaded context limit of local KoboldCpp, TabbyAPI, and llama.cpp-compatible connections when the page opens; offline or unsupported endpoints keep the saved limit (#6003).
+
+- Roleplay Commands now offer narrator-only dice rolls and combat, apply a named character’s RPG attribute modifiers, and pass named avatars and chat settings to Illustrator. Combat and illustration commands require their agents in the chat. Collapsed command notices reveal original requests on tap and let you edit or remove attached notes, reminders, and documents per swipe. Command settings and prompts are clearer (#5990).
+
+- Roleplay documents appear inside messages with built-in note, letter, journal, report, poster, and terminal styles. The model supplies plain text while the Engine handles formatting, including in Visual Novel mode; saved documents remain editable and removable (#6030).
+
+- Game chats can use a separate connection for one tool-planning request before narration and enable semantic lorebook search independently. Tool settings explain unsupported subscription connections, vectorization prerequisites, and the extra requests (#5955, #5957, #5958).
+
+- Added OpenAI GPT Image 2.5 Flare and Sunburst for image generation and reference edits, including transparent PNGs, custom image sizes, and the new Extra high and Max quality settings.
+- Conversation and Roleplay setup wizards can save mode-specific defaults independently of profiles, or reset the saved choices (#5948).
+- Custom agents can read their own prior output, retain private JSON continuation context, and hide saved outputs as spoilers. Context follows visible message history; activated lorebook references include entry names (#5945).
+
+- Advanced Parameters now offers Apply, Don't Apply, and Single User Message history formatting while keeping the leading system prompt separate (#5915).
+- NanoGPT connections can use the existing Default, Flex, and Priority service-tier controls. Language connections can configure validated, non-secret custom HTTP headers (#5909, #5910).
+- `/illustrate [prompt]` generates the requested subject without scene or character references; bare `/illustrate` keeps its current behavior (#5914).
+
+- UX feedback sweep: background selection during Roleplay setup and in Roleplay/Game chat settings, scrollable App/Conversation/Roleplay/Game Appearance categories, desktop sidebar widths, and an optional daily Character Library home widget (#5916).
+- Support Diagnostics includes local client build and recovery events to investigate mobile reloads and black screens without collecting chat content or changing appearance settings (#5870).
+- Game Mode rolls real dice instead of letting the GM make numbers up (#5798, #5901). Every game turn now carries the dice tool, whether or not the chat has tool use switched on, and the GM is told to throw it whenever it needs an actual number before it can keep writing. The roll appears as the same animated dice card a `/roll` shows, while the turn is still being written. It is saved with the message, but the game transcript does not draw the card again when you reload the chat. Only the dice tool rides along - the rest of the tool set still waits for you to turn Function Calling on, and the Function Calling panel now says plainly what that costs on each kind of connection. `update_game_state` no longer offers stat, inventory, or quest updates: it reported those as applied and then dropped them, so it now accepts only the location and time changes it actually saves, and refuses the rest with a message that says what it can do instead. Whether those two should be saved this way at all is still open on #5898.
+- An Agent package can now describe a short list of Game Master actions it wants the GM to be able to take, as a `gm-verbs.json` file shipped inside the package, and the Engine checks that description: an action cannot borrow the name of a built-in Game tag, and the chat setting an action writes has to belong to the package that asked for it (#5798).
+- Capability API 1.16: the Engine now reads those Game Master actions and runs them. Each one becomes a line the GM can use during a Game turn; when the GM uses it, the Engine checks the values, takes the action out of the visible story text, and either saves it into the chat setting the package owns or hands it to the package live while you play. A package needs the `chat-write` permission for any of this, and today no released Agent describes any actions, so nothing changes in an existing game until one does (#5798).
+- Advanced Parameters can keep a chosen number of eligible past assistant reasoning blocks when exclusion is off (default 1; 0 keeps all), preserving provider-native reasoning and local custom-tag thinking. The allowance follows the target-character context; prompt previews, strict role formatting, reasoning-only turns, and encrypted tool-round continuation retain the correct reasoning. Plain-text and structured replay payloads count toward the context estimate; a provider session avoids resending rejected encrypted items without deleting saved thoughts (#5785).
+- Added example text to Assistant Reasoning Prefill without changing saved values (#5864).
+- Illustrator accepts Run Interval 0 for manual-only generation, including typed and stepped cadence in record-based editors, preserving Gallery actions while stopping automatic runs (Marinara-Agents #629).
+- The Roleplay Agents & Actions menu shows per-agent phases, incoming output activity, reported input/output tokens, time to first output, and elapsed time without enabling debug prompt logs (#5860).
+- Added a Regex tab to prompt presets, with existing-script editing and preset-level scoped-regex defaults. Chats inherit the default unless they have an explicit override, and can return to the preset default at any time (#5774).
+
+- Added separate, saved "Always display swipe menu" appearance toggles for Conversation and Roleplay, enabled by default so the right arrow can regenerate the first response (#5854).
+- Made Conversation and Roleplay message action icons larger, with roomier click/tap targets and spacing across the message width on desktop and mobile (#5854).
+- Added GPT-6 Astra for OpenAI connections, with its 1.05M context window, 128k output limit, reasoning levels through Maximum, and Responses API support for chats and tool-using agents (#5845).
+
+- The server now notices when its previous session ended without a recorded shutdown (#5506): a tiny status file is refreshed silently every half minute while running (nothing is printed to the console), every deliberate ending stamps itself, and the next start reports which of those happened - a normal shutdown, a crash, an update or settings restart, or a session that simply stopped with no shutdown recorded, along with when it was last alive, how long it ran, its memory use at the time, and whether the device rebooted in between. The cause of a session that just stops is _not_ something the server can know - it is ended from outside with no chance to log anything - so the report says exactly that and leaves the diagnosis to the surrounding evidence. It never guesses elsewhere either: a first run, an unreadable record, or a second server sharing the same data folder all report "unknown" rather than claiming a shutdown nobody saw. The finding appears as one line at startup and as "Previous session" and "Sessions ended without shutdown" lines in Support Diagnostics, so reports from Android/Termux phones carry the evidence automatically.
+
+- Agent packages can now publish release notes. The update prompt lists each waiting Agent with its version change, whether it needs a restart, and a collapsible "What changed"; Download Agents gains a Version history section on the Agent detail page. A dot marks a version the publisher flagged as a change you will notice, so routine bugfix releases do not compete for attention with real ones. Notes come from a `notes.json` published beside the Agent catalog, are English only, and render as plain text; an Agent catalog that publishes none behaves exactly as before.
+
+- Added a Connections -> Defaults -> Agents toggle to hide the recurring warning for agents that use the configured default connection (#5767).
+
+- Professor Mari's suggestion chips are now reachable with a mouse (#5742): drag the row to scroll it (a plain click still picks a chip), and edge fades appear only while more chips actually sit off-screen - so a cut-off chip reads as "scrollable", not broken. Touch swiping is untouched, and the fade is a mask, so it works over chat background images and both themes.
+- The mobile Home browser's Bookmarks bar collapses to a compact bookmark button between Home and the tab strip (#5743): tap to open the same bookmarks in a dropdown; desktop keeps the full bar; the existing per-surface bookmark visibility settings govern it - no new toggle.
+- Professor Mari now shows what she acted on (#5740): when a reply stages or applies changes, an "Acting on" line under it quotes the exact words she treated as the request or permission - your message, or the memory/instruction that directed her - truncated to one row and expandable on click; expanding also lists the commands it covered, marked when they were held for your approval. The same record (latest round only, kept in memory, never validated) rides Support Diagnostics as a "Mari last acted on" line, so behavior reports carry the signal needed to tell user error from a real Mari issue - and Mari herself sees the record for the chat, so asking her why she treated something as permission gets an answer grounded in it.
+
+- Professor Mari has a Permissions Mode (#5725), modeled on the Claude app's mode picker: **Auto** (she judges from your words and saved memories - the default and previous behavior), **Manual** (always describes first and stages only after you accept), **Accept edits** (record edits apply without the Keep/Restore card), **Plan** (she never changes anything - mutating commands are refused server-side and she lays out the exact edits in chat), and **Bypass** (applies without asking or review cards). Plan refuses all mutations server-side before any review is needed; deletions retain their Keep/Restore card in every mode that applies changes; and in Bypass, sensitive file changes, extension drafts, and dependency installs still require approval. The mode is per-chat: the shield button in Mari's panel header sets the open chat's mode (or follows the default), and Settings -> Application sets the global default; a change applies to her next run without aborting one in flight.
+
+- Added Claude Fable 5.1 and Claude Mythos 5.1 support for Anthropic connections, including their 1M-token context windows, 128k output limits, adaptive-thinking behavior, and automatic fallback when a preset requests unsupported forced tool use (#5735, #5737).
+- Added Home Widgets settings to control the URL bar and desktop or mobile bookmarks on other tabs.
+- Home Widgets URL bar and bookmark toggles now save per installation and apply across browsers and devices connected to that installation.
+- Added character cards to Persona selection so you can play as any saved character in Conversation and Roleplay setup or an active chat.
+- Added an opt-in setting to show character identities in Persona pickers, with collapsed folder navigation and identity transition notices.
+
+### Changed
+
+- Token estimates better account for Korean, Chinese, and Japanese text, and related prompt and context editors consistently show estimated token counts instead of character counts or no counter.
+
+- Community UI translations download on demand from `docs-i18n`, with explicit refresh and offline English fallback. Existing non-English users reselect their language once after upgrading; English stays bundled and canonical (#5827).
+
+- Updated image processing (including the Termux WASM fallback), Tailwind class merging, Android build tooling, and pinned CI/release actions while retaining compatible runtime and compiler major versions (#5847).
+
+- Simplified the quick Persona switcher to one rounded character disclosure with folder artwork and viewport-safe scrolling.
+- Moved the character picker toggle to Advanced Message Tools.
+- Roleplay Chat Summary can now generate multiple explicit message ranges sequentially, keeping each result as its own chronological batch entry with per-range progress and retry status.
+
+### Fixed
+
+- SwarmUI video downloads reject foreign output URLs before sending the server's authentication cookie (#6158).
+
+- Storyboard planning retries explicitly local connections behind proxies once without reasoning, and reports empty final answers or exhausted output limits when planning still fails (#6165).
+
+- World generation reserves context for its reply schema, preserves selected lore after macro expansion or refuses it clearly, and no longer counts unnamed outlets as injected (#6145, #6146, #6152).
+
+- Clean server shutdowns no longer report a launcher failure, and Restart Server works from the Windows local-build launcher (#6153, #6154).
+
+- TTS reuses the audio element primed by a user's tap across delayed generation and later voice clips. Mobile Roleplay volume controls stay within the screen edges (#6166).
+
+- Recalled memories, summary preparation, and context trimming respect CJK token estimates without splitting Unicode characters or discarding a usable excerpt. Short lorebook previews stop scanning once their token budget is filled (#6161).
+- Preset editors tolerate malformed saved marker settings, and prompt token counters use the selected UI language and clear stale counts while loading (#6161).
+- Saved translations appear when returning to a chat before a delayed translation finishes saving, without unhiding dismissed translations.
+- Mobile character reordering keeps Chat Settings still during the drag; swiping outside the handle continues to scroll normally (#6098).
+- Roleplay message actions keep their tapped state when opening menus on iPhone, suppress native tap flashes, and use direct tray buttons for recipient controls (#6092, #6094).
+- Community and Field Notes shortcuts fit within their widget padding, including Firefox desktop layouts (#6093).
+- Illustrator activity shows skipped image decisions and their reasons, and distinguishes an image request from an unusable decision (#6096).
+
+- Full-backup ZIP imports again accept archives larger than 2 GiB through the existing streaming restore path (#6091).
+- Image generation now honors the configured timeout while waiting for provider response headers and image data, avoiding an early five-minute failure on slow local or hosted image backends (#6074).
+- The generation parameter guide distinguishes editor defaults from effective request values and explains where preset, connection, and chat settings apply (#6073).
+
+- OpenRouter image generation now requests image-only output by default, fixing unsupported-modality errors for MAI and Grok Imagine while retaining text output for compatible Gemini, GPT-5 image, and automatic-routing models (#6079).
+- Android can remember app or browser launch, sign the browser in automatically, and reuse an authenticated running server before starting Termux again (#6071).
+- Local connections with no model name now use the loaded model for agent reruns, manual Illustrator, captioning, and auxiliary text tools (#6038).
+- Character greetings resolve selected preset variables without replacing their stored macros or character/persona names (#5869).
+- Compatible V2 JSON and PNG card exports retain Backstory and Appearance in the standard Description (#6065).
+- NanoGPT model refresh now requests detailed context and output limits (#5856).
+- Tag-based avatar profiles no longer receive a natural-language portrait lead (#5836).
+- Corrected the agent overview to 36 catalog packages: 6 writers, 11 trackers, and 19 miscellaneous agents (#6063).
+
+- Local runtime and ONNX dependency installation now extract archives into private, randomly named temporary directories, preventing pre-seeded symlinks from redirecting extracted files. Runtime retries retain the private directory. Updated Hono and YAML dependencies to their security-patched versions.
+
+- Roleplay command notes and reminders join the existing tracker Context block, with concise narrator guidance. Each character keeps the newest three active reminders; Illustrator command guidance highlights surprises and important moments (#6027).
+
+- Preset `{{model}}` macros now use the model selected for the generation or preview, including connection overrides (#6018).
+- Restored the character DM switch under Roleplay Connected Chats, using the same permissions as Roleplay Commands (#6019).
+- Illustrator keeps its automatic Run Interval when Roleplay illustration commands are enabled. Character requests add extra images, including on turns with an automatic illustration (#6020).
+- Deleting a library character removes it from Game parties and saved setup choices, and party counts ignore already deleted cards (#6021).
+- Reply actions appear only in Conversation, with an explanation in its Help legend (#6023).
+- Visual Novel history opens at the latest message with compact controls attached to its box. Sprites retain configured sizes, inactive characters fade, and turn illustrations appear above the message behind sprites and open at full size on tap (#6024).
+- Visual Novel's expanded history border ends above its attached collapse arrow, and the empty-scene instruction follows the selected chat chroma text color (#6032).
+- New Game setup uses the character library for its Game Master and party pickers (#6025).
+
+- Conversation swipe controls align with the start of the message row. Hidden mobile actions and disabled swipe controls no longer leave unused space below messages (#6009).
+- New Termux storage leases can recover after a stopped server without rebooting, even when Android cannot establish PID ownership. Active writers remain protected (#6010).
+
+- Narrative Director push actions add only the selected natural/random nudge, without an extra planning-model direction or stale cached direction on regeneration. Secret Plot runs only while enabled (#6008).
+- Roleplay DMs now mark new, reused, and linked Conversation threads unread, including after reload (#6000).
+- Roleplay streaming now applies the same display regexes and scope settings as completed messages, preserving incomplete fragments until a regex matches (#5994).
+- Desktop message actions stay grouped, and Conversation actions become keyboard accessible; mobile controls retain their spacing (#6005).
+- The hidden-turn gate now accepts actionable output from any mode's parsed commands or tools, so command-only Game replies keep their anchor without a blank visible message (#5902).
+
+- Accent Pulse avoids a WebKit rendering crash and recurring color and shadow transition bursts on touchscreens. Appearance keeps covered Home effects paused while the accent preview continues (#5988).
+- Mobile message action icons remain available after closing action dialogs such as Peek Prompt (#5825).
+- Game-state tools now mark location/time changes as pending until the response is saved, then confirm storage on that message and swipe. Earlier turns stay unchanged, and refused or locked writes are reported. Failed and denied tool calls show a concise notification even when debug mode is off (#5898, #5901).
+- Package persistence now requires declared chat-read/chat-write permissions for chat and spatial snapshot access, including transactions. The package detail view distinguishes installed and catalog permissions and explains which permissions are API gates or trusted-code access declarations (#5899).
+- Game turns now keep every dice roll on its swipe, show dice and skill-check cards in sequence, and retain roll history in Logs and stacked history, including when displaying translated narration. Text-only connections can request ordinary dice and explicit success pools; the GM receives the real results in one follow-up request before finishing outcome narration (#5956, #5959, #5960, #5961).
+
+- Gemini reasoning replies now stream on Google's official API endpoint, including tool-using turns. Other endpoints retain the compatibility workaround that preserves proxy thought parts (#5904).
+- Professor Mari now executes a frame's edits before checking its completion claim, recovers common command formats, and repairs unrecognized commands instead of silently dropping them. Requested lorebook edits use the real save/review path; explicit previews remain read-only (#5966, #5967).
+
+- Command-only regenerations now save a swipe on the original turn instead of appending hidden rows. Game narration, storyboards, turn progress, and logs consistently skip hidden or empty turns; regenerating prose from a command anchor makes the new swipe visible (#5926, #5927).
+- Location lorebook budgets now keep rejected constant entries out of later keyword and recursive scans, so prompt contents agree with skipped-entry diagnostics (#5943).
+
+- Restart Server now uses the launcher's console and waits for the old process to exit before replacing it, with bounded shutdown instead of detached or overlapping servers (#5934).
+- World generation preserves all explicitly selected lorebook entries instead of applying automatic lore token/count budgets, and reports a clear context-limit error before sending an oversized prompt or repair to the model.
+- Malformed Game combat tags no longer trigger quadratic parsing delays in the browser (#5937).
+- Experience setup preserves explicit package configs without double nesting and accepts larger, bounded setup payloads (#5938).
+- Lorebook entry switches in chat settings now affect only that chat, preserve ephemeral counters, and clearly distinguish shared content edits from per-chat enablement (#5954).
+- Lorebook Keeper decodes XML-escaped punctuation in entry names before approval and saving, avoiding escaped-name duplicates while respecting entry locks (#5946).
+- The Home lifecycle regression waits for chat initialization during warm-up, so one-time loading is not mistaken for retained navigation memory.
+- Gemini tool replies preserve the provider's call identifiers, keeping parallel calls to the same function correctly paired (#5918).
+- Assistant dice cards stay visible beside split Conversation text and survive continuations. Auto-attached Game tools receive local-model guidance, and location/time updates no longer require unused target fields (#5950).
+- Gemini and Anthropic tool requests expose their final provider prompt when chat or agent debug logging is enabled (#5918).
+
+- Game dice-tool guidance distinguishes an already rolled check from the sparse fallback, and Function Calling no longer claims every function is disabled while Game dice remain available (#5950).
+
+- Stopping a Gemini or Anthropic tool-streaming turn reports it as interrupted, and failed turns release their upstream connection (#5918).
+- Stabilized the swipe-control theme regression by comparing settled colors instead of WebKit transition values.
+- Budgeted lore selection keeps skipped entries out of recursive scanning (#5942). Explicit world-generation selections now bypass automatic lore budgets and use the model context limit instead.
+- Scoped the character-action browser fixture to its test character so unrelated catalog entries do not delay the check.
+
+- Game narration has a Translate action and rejects stale translations after rerolls; automatic translation can start with the first response when enabled during setup. Delayed translations stay with their original chat when switching chats (#5888).
+- Push Story uses the current Director result with or without a preset marker, and Mari consolidates system context for local chat templates (#5931, #5932).
+- Storyboards accept more than six frames (up to the existing 200-section request safety ceiling) and retry unusable local planner output once without reasoning before falling back (#5886).
+- General Settings can place error messages and other notifications at the top or bottom, using the existing saved preferences (#5933).
+
+- Connection test messages honor saved generation parameter overrides and output limits (#5908).
+- Clearing Roleplay trackers asks for confirmation before removing their state (#5911).
+- Update checks read the installed release channel without waiting for GitHub, so staging does not appear as Stable before a check or when the check fails (#5912).
+- Browser regression fixtures disable random Chibi Mari surprise overlays so unrelated controls remain reachable during tests (#5928).
+- Grouped lorebook entries remain selected for their configured Sticky Messages duration (#5913).
+- Lorebook Keeper respects an explicitly selected target during automatic runs, retries, and approval, while retaining automatic destination routing when no target is selected (#5907).
+- Game NPC portraits no longer borrow unrelated same-name library cards or overwrite an existing portrait; legacy loopback avatar links resolve correctly for LAN clients (#5885, #5887).
+
+- Mari's database CLI can address generated IDs beginning with `--` without treating them as options; exact option-name IDs can use the standard `--` separator, and mutation approval/cascade safeguards remain enforced (#5895).
+- Browser regressions share the UI store's typed persistence contract instead of stale preference names/versions, and live Roleplay tests stop their stream before deleting fixtures (#5897, #5928).
+- Narrow desktop windows switch to the existing overlay navigation when the configured sidebar widths leave too little room for topbar buttons. Desktop Roleplay connection/persona pickers match the other input menus, Background drawers include help, and Achievements retain inner padding on desktop and mobile (#5916).
+- Editors now show their sections in one continuous form, track the section being read, and save unsaved character, persona, lorebook and preset fields before leaving; failed saves keep the editor open. Media/library sections load when approached, pending saves honor the latest navigation, and newly added lorebook entries scroll into view (#5916).
+- Background Library search and actions fit mobile screens, Default uses the accent color, and the selection marker no longer overlaps the drag handle. Settings mode options use the current rounded-square styling (#5916).
+- Background choices save without a cancellable debounce and stay ordered, so a delayed earlier pick cannot undo a newer choice or Clear selection (#5916).
+- Home Character Library previews use equal-sized cards without scrolling or extra action buttons. A card opens its full-library details; the widget body opens the library, and the Recent Chats widget body opens Chats without interfering with drag handles or individual chat cards (#5916).
+- Hidden sidebar and Settings panels suspend their effects without discarding local state, mobile panel reopening no longer remounts every previously visited panel, and iOS library/sidebar overlays avoid live backdrop blur while keeping covered text behind opaque themed surfaces. Modals release their entry transform after opening to reduce retained compositing work; physical iPhone crash confirmation remains necessary (#5916).
+- A Game turn that leaves no story text behind no longer blanks the narration panel (#5798). When the GM's reply was nothing but actions, or the game saved one of its hidden bookkeeping rows, the panel dropped the scene you were reading and fell back to its empty "send an action to begin the scene" state. The last turn you can actually read now stays on screen and the turn passes silently, the way a command-only turn already does in Conversation.
+
+- Restored Character Editor sections to the same desktop topbar row as the name, avatar, and actions. Editor section buttons adapt their size and spacing before falling back to the existing compact menu on narrow layouts (#5905).
+
+- Professor Mari's shell sandbox closes its two remaining supply-chain gaps (#5892). Installed-package folders (`node_modules` and the pnpm stores, nested ones included) are now read-only inside the sandbox - a command can no longer plant ready-made package code there - while build-tool cache folders inside them stay writable so builds keep working. And stopping a sandboxed command now takes its whole process tree with it, so a background process it left behind can no longer keep writing after the safety scan has run.
+
+- Gemini and Anthropic replies no longer go silent whenever a tool is attached. Both connections held the whole reply back on a tool-using turn - the bubble stayed empty for the entire generation and then filled all at once. Text now arrives as the model writes it, and tool calls are read out of the live stream, including a reply that is nothing but a tool call. Gemini connections with thinking enabled still send the reply in one piece, for the separate, older reason they always did.
+- Professor Mari's self-check now audits every step of a longer job, not just the last thing she says (#5819). In a batch - "I created the first character, now doing the second" - each claim is checked against the work done since her previous checked claim, so skipping a step gets caught immediately instead of riding an earlier success. When a step is missing she is told to look first and only redo work a check shows is truly absent, never blindly.
+- Mari can answer "did you finish?" truthfully again (#5830). A run that only reported on earlier work could never satisfy the old check - her honest recap was challenged twice and then replaced with an error. A recap backed by a fresh look at the actual state now passes, a wrap-up right after checked work needs nothing extra, and "I've verified..." (describing a check, not a change) no longer trips the detector at all. A claim with nothing behind it whatsoever is still challenged, and a change the store observed failing still blocks every later claim until a retry proves it saved.
+
+- Professor Mari's shell sandbox can no longer be used to slip a new dependency or launcher file past review (#5786). The sandbox's write protections only covered sensitive files that existed when a command started, so a command could create a brand-new `package.json` or installer file nobody reviewed. Every shell command is now followed by a scan: a dependency, launcher, installer, or workflow file it created or changed without review is put back the way it was and turned into a normal approval card for you to accept or reject. (Files inside `node_modules`-style package stores are outside this net by design - writing there was always allowed for builds - and the scan protects the manifests that control what gets installed.)
+
+- Text-to-speech no longer freezes Safari (#5889). When Safari blocked playback for lacking a recent tap - which it does for autoplay, and even for the play button once fetching the audio took longer than the click - the app retried playing in a tight loop until the tab ran out of memory and froze. Blocked playback now waits quietly, shows a "tap anywhere to play" notice, and resumes on your next tap or keypress; on iPhone/iPad the audio kept in memory is also capped so long sessions cannot balloon Safari's memory.
+- Mobile Roleplay Connections/Personas now uses the same themed surface as the character response picker. The Agents menu groups each agent's reports with its outputs, preserving dismissal, saved custom-output editing, and the separate Echo Chamber window (#5883).
+- Mobile image previews now bound both dimensions, including tall illustrations, and large PNG metadata no longer bypasses previews. This reduces image-arrival decoding pressure without changing appearance settings or saved originals (#5870).
+
+- Mobile chat illustrations and gallery tiles use smaller cached display copies to reduce image decoding pressure; opening and downloading still uses the original. Saved automatic Roleplay illustrations also appear as soon as they arrive, without waiting for remaining agent work (#5870).
+
+- Conversation swipe menus now reuse Roleplay's compact, unboxed controls on desktop and mobile, with arrows and counters following the configured chat-chrome text color instead of pink/orchid styling (#5875).
+- Released temporary rendering hints after message entrance animations, reducing unnecessary compositor layers around long, growing Roleplay replies without changing their animation or layout (#5870).
+- Agent connection warnings and other notifications now use the selected accent for their border in light and dark themes (#5870).
+- Illustrator-only manual and retried image requests now finish saving after a browser disconnect; explicit Stop still cancels them. Reopened chats refresh saved messages and gallery images when server-side generation finishes (#5870).
+- Mobile Conversation and Roleplay message actions use compact icons and share one row across the available width, while keeping the larger desktop controls and saved swipe-menu preferences (#5873).
+
+- Restored Professor Mari preset creation after adding preset-level regex defaults, and preserved those defaults during unrelated preset edits.
+
+- OpenAI-compatible image connections preserve non-GPT models' requested dimensions; FLUX.2 requests retry once after an explicit dimension-limit rejection using the reported bound (#5861).
+- OpenRouter routes Qwen Image 3 and Muse Image to the Images API and recovers when another image-only model explicitly rejects the chat endpoint (#5750).
+- SillyTavern `{{original}}` placeholders no longer leak into prompts; saved character cards and literal instruction text are preserved (#5813).
+- Import and other multipart uploads check CSRF access before sending file data (#5859).
+- Illustrator limits passive avatar matching to the current chat and requires an explicit, unique full name for global-library characters (#5862).
+
+- Fixed incorrectly encoded persona and character-identity avatar crops in chat, including existing message snapshots, without changing historical persona attribution (#5843).
+- Preserved zero-padded times such as "0600. Wake up" as text instead of numbered lists (#5858).
+- Refetched the open chat at the committed Messages per page size, including changes made while chat loading is paused, avoiding truncated history while editing the setting (#5796).
+- Kept paused weather visible across mobile viewport changes and positioned its particles for the current viewport when rendering resumes, using the community resize fix linked by luma-inibitor (#5814).
+
+- Stopping Marinara Engine can no longer hang for half a minute or more (#5838). Shutting down used to wait forever for open browser connections before saving and exiting - long enough that system watchdogs (SteamOS's low-memory guard, Docker) would give up and force-kill it, losing unsaved changes. The engine now cuts lingering connections after 4 seconds and, if the shutdown is still stuck, exits on its own after 8 - inside every watchdog's patience, with pending saves given their chance first.
+- Kept user-message actions in the same left-to-right order as assistant-message actions (#5854).
+- Mobile Roleplay keeps composer boundary drags inside the input, avoids animated press transforms on message actions, opens older-message editors at their beginning, and returns the reopened Echo Chamber to its latest message (#5851).
+- Mobile galleries keep generation labels and image actions within their available width, use neutral Delete controls, and give the Local Speech Model selector consistent spacing. Desktop layouts are unchanged (#5851).
+
+- Updated transitive Browserslist, query-string, and URI parsing dependencies to address their current security advisories (#5847).
+
+- Context Circle rings now use the configured accent color while keeping a muted background ring for separation across light and dark themes (#5840).
+
+- Marinara Engine no longer gets silently force-killed on Steam Deck during active use (#5838). Games claim most of the Deck's shared memory, and the server used to keep every opened chat in memory until the system killed it without a trace. On SteamOS the server now keeps at most 8 chats in memory by default - the same protection Termux already had. Set `MARINARA_MAX_RESIDENT_CHATS` to raise the cap, or to `0` to turn the cap off. Termux gets the same default built into the server as well, so a typo in the setting can no longer switch that protection off silently.
+
+- Mobile message-action icons no longer keep an iPhone-only hover color after being tapped, and Peek Prompt now shows a readable middle dot between its section and estimated-token totals (#5825).
+- Mobile chat overlays stay usable around the software keyboard: focused toolbar menus remain inside the visible viewport while editing, and chats with Echo Chamber leave enough top scroll clearance to keep Load More tappable below its collapsed window (#5817, #5822).
+- The button that applies changes Mari is holding for your approval is no longer labelled as a suggestion (#5820). It sat under the caption "Suggestions only. Pick one, or type your own.", which told you the one control that applies her pending edits was optional - so it looked like she had quietly done nothing. The row now says she is waiting for approval and that nothing has been changed yet, and a "Don't apply" button sits next to Accept so declining is a click rather than a typed sentence.
+
+- A file-storage writer lease left behind by a process that could not read a stable machine ID (`hostId: null` - every Docker and Podman container, plus Linux hosts without `/etc/machine-id`) no longer blocks startup forever after a host reboot or a force-killed process (#5744). When the data directory sits on storage only this machine can mount, Marinara now applies the same staleness proofs it already trusts for same-host leases (an earlier boot, the container liveness check, or an exited or reused process ID once the lease records the same process namespace) and reclaims the lease on its own; leases on network or otherwise shareable storage still require the manual removal the error message describes.
+- The "Messages per page" setting is honored by the chat transcript again (#5789): Roleplay and Conversation chats kept at most 80 messages on screen no matter what the setting said, so a value of 100 still showed 80 and 0 ("load all messages at once") still hid the older part of the loaded history behind "Show older" controls. A page size above 80 now widens the on-screen window to match, and 0 shows every loaded message; the default of 20 behaves exactly as before.
+- Character Editor desktop navigation now uses the full section rail again, while mobile keeps the compact section dropdown.
+- Three more ways Professor Mari could believe a change happened when it didn't are closed (#5776, #5777, #5778): a `mari` command she runs in the terminal without `--apply` is a preview and now clearly reports itself as one, so she can't treat it as a saved change; a terminal command that would write to a protected file (like `package.json` or workflow files) is now refused up front with directions to the approval flow, instead of failing silently inside the sandbox and looking successful; and editing a shortcut (symbolic link) that points at a protected file now asks for your approval just like editing the file directly - including links whose target doesn't exist yet, which also can no longer point writes outside the workspace.
+- Professor Mari's self-check no longer mistakes a change that is waiting for your approval for one that was applied (#5756): a sensitive file change she stages behind the approval card now counts as pending, so re-reading the unchanged file can't satisfy her verification step and she won't report the change as done while it still needs your OK - including when the same reply also made ordinary changes that did apply. If she does claim a staged change is finished, she is corrected to say it awaits your approval instead of being told to redo it, re-staging the identical change no longer stacks duplicate approval cards, and the Support Diagnostics record reports such a round as held rather than applied. The pending-change marker is also checked in a way her own text can't imitate. Thanks to @mikemikimike for the original fix in #5757.
+- Agent and chat requests for GLM 5.3 (not only GLM 5.3 Flash) no longer fail with "This model always engages in thinking and cannot be disabled": native Z.AI connections now send the documented `thinking.type: "enabled"` with the effort mapped to `low`/`high`/`max`, NanoGPT and OpenRouter keep the model's mandatory reasoning, and a reasoning-off request becomes the lightest level instead of a rejected disable (#5765).
+- Lorebook entries are no longer inserted twice when a preset has more than one lorebook marker (#5716): each world-info position (Before / After) is now placed by the first marker that covers it, so a second "Lorebook Marker (All)" placeholder - or an "All" marker following a "Before" marker - no longer repeats the same entries in the prompt.
+- Mobile connection drag previews now retain the configured Chat Chrome Text Color, and the Roleplay quick switcher context progress bar follows Accent Color (#5758).
+- Professor Mari's applied edits now verify themselves (#5754 follow-up, proposed by a community reviewer on the issue): after every applied app-data mutation the engine re-reads the affected rows from the store and compares them against what the change asserted, and the result carries that read-back. A store-verified write needs no separate verification read at all - and a mismatch is surfaced loudly as a possible persistence failure instead of being smoothed over: once the store observes a failed write, Mari cannot report success for that run until a retry actually lands, and she is coached to tell you plainly what failed. Only the store-observed check ever counts as verification; bash and file writes keep the confirmatory-read requirement unchanged.
+- Professor Mari's panel header no longer overflows into her avatar at phone widths (#5741): Skills and Memories now share one "Skills & Memories" button with a two-row menu (per-row badges preserved), and the combined label collapses to its icon below 430px.
+- Starting a fresh Professor Mari chat is now discoverable (#5752): the header button is called "New chat" (it always archived the current conversation to Chats - the old "Restart" label just said the opposite), and the Chats popover gained a "+ New chat" button right where people look for one.
+- Professor Mari's suggestion chips no longer vanish from unrelated activity (#5753): a regular chat starting a generation only clears chips/plans that belong to that chat, and the suggestions-disabled mount sweeps - which wiped even the held-proposal Accept chip the delivery path deliberately exempts - are gone (rendering already respects the setting).
+- Professor Mari verifies her edits without the "Oops, my bad!" round (#5754): she is now taught to stage the confirmatory read in the same response as the write (commands run in order, so that satisfies verification with no extra round), and the verification coaching tells her to check matter-of-factly - never as an apology for a mistake she didn't make.
+- Professor Mari can no longer answer her own permission question (#5748): once she asks whether to apply a change, that question is binding for the rest of the run - any edit she stages afterwards is held behind the Accept action instead of executing, and a hidden follow-up edit is refused with guidance. Previously an ask that rode alongside an `apply:false` preview left the engine nothing to hold, so she could pivot to applying unasked one round later ("to show you the review card"). Dry-run previews now tell her, truthfully, that the user cannot see them, and "propose your edits" maps to one described-and-held proposal instead of a preview plus a second full generation.
+- Professor Mari no longer dies when the window loses focus (#5719). Her server-side run always survived backgrounding - what failed was the client: unlike regular chats, it treated the browser tearing down a hidden tab's connection as a hard error ("Professor Mari could not answer right now"), and a cleanly closed socket produced a false "did not receive a reply", in both cases never reloading the reply the server went on to persist. Mari now uses the same passive-disconnect recovery as regular chats (shared classifier, hidden-page tracking, wait-for-settle then reload), a no-reply stream close is confirmed against the workspace status before any error is shown, and a run that finishes while the client is detached - stream killed, or Mini-Mari closed and reopened - is reloaded automatically by the status poll instead of staying invisible until a manual chat switch.
+- Professor Mari no longer does every requested edit twice (#5721): the server-side authorization gate added after #4838 - which rejected intent-phrased requests ("rework her personality to be more cynical") until the user typed an approval, then made Mari regenerate the identical change into the review window - is removed. An intent-authorized edit now lands directly in the existing Keep/Restore review card: one generation, one confirmation. #4838's intent-keyed read-only guidance and Mari's own ask-first deferral (with its Accept chip) are unchanged, and users who want Mari less forward can pin a saved memory saying so - Mari is now also instructed to notice a repeated mismatch herself (e.g. a user whose "propose changes" means "describe them in chat") and offer to save that preference as a disabled-until-enabled memory.
+- Professor Mari's plans and questions no longer vanish into hidden reasoning on local custom connections (#5721): the hidden-reasoning disable that protects her JSON command protocol now covers custom providers pointed at local inference servers (llama.cpp, vLLM, Ollama, LM Studio - e.g. Unsloth-served GGUF builds), so the model answers in the visible reply instead of burying its brainstorming in the reasoning channel. Remote custom endpoints are deliberately untouched - strict gateways reject unknown reasoning parameters - and a local endpoint that still chokes can opt out by disabling the reasoning-effort parameter on the connection.
+- Agent Home icons and client surfaces no longer disappear after an update while the new server runtime waits for restart; the Engine keeps serving the verified files from the version that remains active until restart applies the replacement (#5715).
+
+- Closed two residual transaction-isolation gaps in the file-backed store found by the #5631 verification pass: a transaction rollback can no longer erase rows that a concurrent request lazily loaded mid-transaction (the load's snapshot mirror and healing marks now reach the active transaction's context regardless of which request performed the load, so cold chats opened during a failing transaction stay visible instead of vanishing until restart, #5651); and the transaction opening's flush wait is now a loop instead of a check-once, so a double-flush ordering can no longer let the transaction callback run concurrently with a fresh flush's I/O and persist uncommitted rows to disk with no dirty mark left after rollback (#5652). Both are pinned by a staged concurrency regression proven to fail on the unfixed code. An adversarial review of the fix surfaced two adjacent defects in the same class, closed in the same change: `flush()`'s own wait on active transactions was also check-once (reachable during shutdown, where the post-transaction flush handoff is deliberately skipped, letting flush I/O run concurrently with the next transaction's callback), and the snapshot mirror refilled the rollback snapshot with a spread call that overflows the call stack past ~100k rows — throwing after the snapshot was truncated, so a later rollback could install an empty messages table. Both are likewise regression-pinned.
+
+- Dev and e2e server instances can no longer rewrite the developer's working repo through the browser (#5646): `pnpm dev` and the Playwright launchers now set `UPDATES_APPLY_DISABLED`, a new hard refusal that beats both `UPDATES_APPLY_ENABLED` and the loopback channel-switch bypass, and the apply route additionally refuses any checkout sitting on a development branch — previously one click of the channel selector against a dev instance stash-and-checked-out the working repo and force-rebuilt it underneath running sessions. The Settings panel explains both refusals instead of suggesting the enable flag.
+- The manual-update instruction is now a complete copy-paste recipe that Windows testers can actually run (#5645): it leads with `cd` into the detected install folder (`cd /d` on Windows, so it crosses drive letters), and the hint tells Windows users to run it in Command Prompt or Git Bash — the default Windows PowerShell rejects the `&&` chains, which previously produced a wall of parser errors and ran nothing.
+- The client no longer hangs indefinitely against a frozen server (the Android/Termux cached-app-freezer state where connections open but are never answered): the chat-open fetch now times out after 15s into an explicit "Server unreachable" state with a Termux-foregrounding hint instead of an endless "Opening chat..." spinner (#5657), the version check's health fetch gained a deadline and an in-flight guard so tab-switching against a frozen server can no longer leak pending requests until the browser's per-host connection pool saturates (#5658), and the Support Diagnostics health query times out — re-enabling the copy button — with server fields reading "Unreachable (request timed out)" instead of an indistinguishable "Unavailable" (#5657). `docs/TROUBLESHOOTING.md` now documents the freeze signature and no longer claims `termux-wake-lock` needs the Termux:API add-on — it ships in core `termux-tools` (#5659).
+- iPhone keyboard focus now keeps the entire app and shared dialogs aligned with the visible screen across repeated keyboard open and dismiss cycles instead of panning Roleplay, Create Character, or Create Persona into the dark document backing; iOS surfaces no longer inherit a fixed body and follow the visual viewport in document coordinates. Roleplay also releases its inactive full-resolution background after each crossfade and avoids unused full-viewport compositor hints, reducing persistent WebKit visual memory (#5710, #5711).
+- Character library and omnibar searches now share a generation-aware in-memory character catalog, so list views do not repeatedly scan and transfer complete character cards.
+- Fixed character identity prompt previews, imports, gallery participant handling, and quick-menu scrolling and bounds.
+- Fixed character identity profile routing, prompt macro resolution, sprite subjects, memory naming, and lorebook scan context.
+- Fixed NanoGPT lorebook vectorization by sending the authentication header required by its embedding endpoint (#5688).
+- Fixed NanoGPT agent requests so an explicit reasoning-off setting sends `reasoning_effort: "none"`, while preserving mandatory reasoning for GLM 5.3 Flash (#5582).
+- Preserved historical user names and portraits across identity switches.
+- Termux startup no longer prompts for GitHub credentials during public update checks; failed checks now continue with the installed version.
+- Mobile Roleplay now keeps its full composer controls visible while scrolling through chat history instead of replacing them with a simplified text field (#5685).
+- Available app updates now wait for an explicit refresh instead of silently reloading active sessions, and Roleplay avatars no longer request persistent compositor layers, reducing iPhone WebKit memory pressure (#5686).
+- Character-backed chat identities now resolve consistently in macros and show searchable character names and descriptions in the quick pickers.
+- Quick identity pickers now keep their empty messages accurate and non-duplicated when hidden characters match a search.
+- JSON agents now preserve mandatory reasoning for GLM 5.3 Flash on OpenRouter and NanoGPT instead of sending a reasoning-disable request that those providers reject (#5582).
+- Context usage now includes Anthropic prompt-cache input tokens, so the displayed active context matches cached long chats.
+
+- Illustrator image downloads in the installed iPhone app now open the dismissible iOS share sheet instead of stranding the user in WebKit's full-screen file preview; choosing Save Image writes to Photos and returns to the still-open Marinara lightbox (#5681).
+- Firefox on Android no longer shows the empty band above the system navigation bar on the surfaces the earlier shell fix did not cover — full-screen mobile modals, the chat settings and gallery drawers, the setup wizards, game overlays (character sheet, inventory, narration, readables), the selection action bar, the browser hub, and the floating call/launcher buttons: every remaining bottom safe-area consumer now honors the engine-specific override that zeroes Gecko's misreported inset (#5667).
+
+## [2.4.5]
+
+### Added
+
+- Guided package onboarding can open the active Roleplay chat's Summary popover and assigned prompt preset Sections editor directly.
+- The server now notices when it stopped running for a stretch — consistent with the host suspending it (the Android/Termux background freeze that shows as an endless "Opening chat…" until Termux is foregrounded, or a laptop sleeping) or with a severe internal stall — and logs the estimated length on thaw, so session logs carry positive evidence instead of nothing (#5655).
+- The Termux launcher reports its Android wake-lock outcome to the server, and both the health endpoint and Copy Support Diagnostics now include the wake-lock status and the most recent detected freeze; a failed or unavailable wake lock is announced with a prominent launcher warning that names the fix (`pkg install termux-tools`, battery set to Unrestricted) (#5656).
+- Capability API 1.15 adds `runtime.resolveEmbeddings()`, allowing packages to use the current package-specific or global embedding connection without reactivation while preserving the static embeddings host for older packages.
+- Stored guidance now provides copy actions for guided directions, impersonation directions, and impersonation prompt templates, with distinct replayable command and verbatim template payloads.
+- File-native storage format advances to version 6, pairing `STORAGE_VERSION` and `storage-format.json` so the launcher downgrade guard correctly rejects rollbacks to builds that do not understand the new sharded layout and writer-lease ownership model.
+- Chat connection switchers can now show the latest measured context usage in their popup and around the connection button, with Game usage available under Chat Settings > Connection. The display is enabled by default and can be controlled in Advanced settings (#5577).
+- Character card sprites can now be renamed after upload without replacing the image (#5575).
+- Character cards now support editable metadata summaries, AI-generated summary drafts, and Character Library previews that use the saved summary when available.
+- Character card Conversation profiles now provide controls to generate About Me and Conversation behavior text from the card's available information.
+- The Home Character of the Day widget now uses saved character summaries and offers direct chat-start and character-view actions.
+
+### Changed
+
+- Lorebook entry embeddings now live outside the JavaScript heap as packed vectors, the same treatment Memory Recall chunks received — vector-heavy lorebooks stop occupying heap strings while resident, with no change to the on-disk format (#5592).
+- Sending a message no longer clones the whole resident message table: storage writes now share unchanged row objects between array versions (rows are immutable once stored, all mutations replace), removing the largest remaining per-message allocation spike on big profiles and shrinking transaction snapshots from full row copies to reference arrays (#4730, #5592).
+- The server can now cap how many chats stay in memory at once: set `MARINARA_MAX_RESIDENT_CHATS` and, past the cap, the least-recently-used chat with no unsaved changes is dropped from memory (never from disk) after each save and reloads transparently when next opened. The Termux launcher defaults the cap to 8 to protect phone memory; everywhere else it is off unless set. Hot storage-layer writes are now also scoped by their owning chat so an eviction mid-request degrades to a reload instead of a whole-table load (#5592).
+- Chat-scoped storage tables (messages, swipes, Memory Recall chunks, game state, call logs, and the other per-chat tables) no longer load into memory at startup: each chat's data loads as one unit the first time that chat is touched and every query, write, and cascade is scoped to the units it can actually reach — the main memory reduction for long multi-chat profiles on Termux and other low-memory devices. Full-table operations such as backups still load everything they need automatically, and setting `MARINARA_EAGER_STORAGE=1` restores the previous load-everything startup (#5592).
+- Stale in-progress game storyboards are now recovered per chat when that chat's storyboards are next read (including everything left over from before the current server start), replacing the startup-wide sweep (#5592).
+
+### Fixed
+
+- Mobile Roleplay and Game message numbers now follow Chat Chrome Text Color, and Marinara preset import and save/export feedback follows the active accent instead of fixed theme-independent colors (#5679).
+- Mobile Roleplay now clears Trackers, Echo Chamber, and other agent windows while the composer is active; the app-owned composer chrome is shorter above the software keyboard; and Conversation and Roleplay message editors leave enough trailing scroll space to reach their final lines without first changing the text (#5672).
+- Roleplay context usage now follows the configured chat chroma text color; mobile message editing temporarily clears agent overlays while keeping message controls available; and the Characters and Personas libraries now use concise search copy, full-width sorting fields, and a consistent action layout (#5648).
+- Firefox on Android no longer shows a large empty band above the system navigation bar that obscured the bottom of the Agents, Connections, Presets, and chats panels and pushed the chat composer up: Gecko reports the navigation-bar height as a bottom safe-area inset even though its viewport already stops above the bar, so the app now zeroes its bottom safe-area padding on that engine instead of double-compensating (#5665).
+- The Roleplay composer's trigger-group-response and translate-draft buttons on mobile no longer render oversized next to the send button: they now match the attach and send buttons' size, bringing the trigger and send icons closer together and returning the freed width to the typing area (#5649).
+- Chat settings no longer silently revert when a slow background request finishes after a newer edit: responses that carry a chat snapshot (clearing the unread badge, saving summaries, applying a settings profile, game party changes, and similar) used to overwrite the whole cached chat, flipping a just-toggled setting back — and hiding the settings section it controls — until the app was reloaded. Snapshot responses now merge through the same per-field protection that guards ordinary settings edits, so the newest change always wins (#5641).
+- Numeric settings fields no longer silently lose an edit typed while a previous change in the same field was still saving: the echo of the earlier save could overwrite the value mid-typing, and a panel re-rendering at the wrong moment could discard the edit without saving anything. In-progress typing is now protected and a pending edit is committed even when its input is torn down — this covers every numeric field built on the shared draft input (agent run intervals, connection and preset editors, game sheets, and the rest) (#5636).
+- Profile preview uploads now remain available until they are imported, cancelled, or the server stops instead of expiring after 30 minutes and forcing another upload (#5624).
+- Opening a Game chat on a tablet or a narrow desktop window no longer leaves the HUD widget rails sitting over the dialogue: when the custom widget state finished hydrating while the transcript was still loading, the layout was measured before its surface existed and no resize observer was attached, so it never compacted on its own and only recovered if the window happened to be resized (#5654).
+- Profile imports now upload and scan the selected JSON or ZIP only once, reusing the reviewed server-side preview when import is confirmed; an unsupported or corrupt individual asset is skipped and reported as a warning while the rest of the valid profile continues restoring (#5624).
+- Profile ZIP import and export no longer impose archive, individual-asset, or restored-total byte ceilings, and native character, persona, PNG card, and CharX imports no longer reject otherwise valid image galleries by byte size; paths, media contents, and archive structure remain validated, while profile executable content stays quarantined (#5624).
+- Full profile backup restores no longer fail on the game-asset seeder's own empty `.native` directory markers: import now tolerates exactly that marker (empty and dot-prefixed) under `game-assets/` while still rejecting any non-empty file using the marker name, so a stock export restores cleanly on a fresh install (#5619).
+- The Termux launcher's default Node.js heap now budgets roughly twice the on-disk structured profile plus headroom, bounded by one quarter of known device RAM — never below the 1 GiB baseline on low-RAM devices — or 1536 MiB when device memory cannot be read, so large profiles that ran within the pre-2.4.4 2 GiB default regain comparable headroom instead of exhausting the JavaScript heap and aborting with status 134 at the former 1536 MiB ceiling, subject to those device caps; small installs and low-RAM devices keep their bounded 1 GiB baseline, and explicit `NODE_OPTIONS` limits remain authoritative (#5585).
+- Deleting a gallery image no longer makes the whole chat-image table permanently memory-resident: the shared-file reference check ("does any chat still use this picture?") now answers from resident memory plus direct reads of the on-disk chat files, loading a chat into memory only when its file needs repair — so the chat memory cap keeps holding after image deletions, and shared files are still only removed once the last chat lets go (#5613, #5592).
+- Startup no longer loads every chat that has gallery images into memory: the orphaned-image recovery scan reads each chat's image records straight from disk and only loads the chats that actually have a file to re-register or a record needing repair, removing a hidden startup memory spike on image-heavy profiles (#5612, #5592).
+- Game-mode tracker updates, swipe deletion, checkpoint captures, and gallery lookups no longer quietly convert their storage tables to permanently memory-resident: the remaining queries that could not name their owning chat now do, so the chat memory cap keeps holding through ordinary Game-mode play. Deletion-style endpoints that identify their target only by id now accept an optional owning-chat hint the client can start sending (#5611, #5615, #5592).
+- A storage file whose content is valid JSON but not the expected shape (for example `{}` where a list of rows belongs) is now treated as corruption: it recovers from its backup when one exists and is quarantined for manual recovery otherwise, instead of silently loading as an empty chat while a healthy backup sat unused (#5601).
+- A transaction rollback no longer strands a storage self-heal mid-flight: a chat whose shard file held another chat's misfiled rows could lose those rows' only on-disk copy when a rolled-back request had loaded it, because the healing rewrite ran without the paired shard writes. Rollback now re-merges load-created healing marks so the repair stays atomic (#5606).
+- Memory Recall embeddings now live outside the JavaScript heap as packed vectors — the largest single memory block for long roleplay profiles on phones — and recall scoring reads them directly instead of re-parsing JSON per chunk, without changing the on-disk storage format (#5592).
+- Message swipe reads are now scoped to the requested chat instead of scanning every chat's swipes on each message list, made possible by resolving list-membership filters once per query rather than per row — the cost that originally motivated the unscoped scans (#3402, #5592).
+- The file store's count queries, single-table selects, boot ordering, and emptied-shard cleanup now share hardened iteration and positive-evidence semantics, groundwork pinned by regressions for the planned partial-residency work (#5592).
+- Linux and Termux now reclaim a same-host file-storage writer lease from an earlier device boot even when the operating system has reused its recorded process ID (#5580).
+
+- Avatar generation now preserves the complete user Avatar Prompt, and OpenRouter caching remains enabled for eligible unknown models (#5552, #5574).
+- Permanent Delete now preserves Marinara's stock Universal Preset and its prompt structure while removing editable presets (#5568).
+
+## [2.4.4]
+
+### Added
+
+- The built-in Local Model can now be the default connection for agents - selectable in the Connections panel's defaults section without a stored connection row - and the Agents panel gains a bulk action that points every agent (or resets every agent to the agents default) at any connection in one step (#5539).
+- The in-app What's New notice now presents the complete v2.4.4 release story with inline Help, Memory Nag, and Roleplay thinking media (#5528).
+- Hosted release validation now runs the complete Node regression suite and covers desktop Chromium, Android-sized Chromium, and iPhone-sized WebKit independently on pull requests and staging pushes (#5518, #5520).
+- Download Agents can now filter the existing Writer, Tracker, and Misc sections by Conversation, Roleplay, or Game support, and a Discovery Desk recommendation opens its exact Agent instead of the catalog's first entry (#5494, #5500).
+- Game HUD widgets now expose their unique model-facing ID for editing after creation (#5477).
+- Professor Mari's structured `app_data` helper can now list, search, inspect, and read bounded message ranges from chats without falling back to raw database commands (#5476).
+- Staging-channel Engines now merge the Agents catalog preview overlay over the published catalog, so packages marked staging-only in the Agents repository reach testers while stable Engines never resolve the overlay URL at all and the unattended startup migrations never auto-install one (#5492).
+- Implemented {{lorebookSize::lorebookID}} macro, which resolves to the total number of entries inside a lorebook, when given its unique ID (#5464)
+- Game Setup now includes an on-by-default Quick Time Events switch; turning it off removes the timed-reaction command from GM prompts for that campaign (#5467).
+- Custom Agents can now opt into proposing complete character cards, which remain editable and require explicit approval before they are saved to the Characters library (#5456).
+- Active Memory Nag packages now get a standalone Roleplay Agents settings section; inactive Memory Nag remains in Tracker Agents for initial setup and tracker scheduling (#5440, Pasta-Devs/Marinara-Agents#518).
+- Pull requests and scheduled security audits now run the focused import, sandbox, host-authentication, and runtime-integrity regression lane, while the new security policy provides private vulnerability reporting without changing Marinara's local-first capabilities (#5436).
+- Game setup's Review Starting Widgets step can now add, rename, re-icon, retype, duplicate, and fully edit proposed widgets before the first turn (#5426).
+- Roleplay and Conversation message deletion can now keep the selected swipe and delete every alternate in one action (#5380).
+- The chat Help overlay and its App Behavior visibility setting are now localized in Arabic, German, Spanish, French, Hindi, Japanese, Korean, Polish, Brazilian Portuguese, Russian, and Simplified Chinese (#5420).
+- Game-surface Experience packages that keep a save in both the engine's per-message experience-state row and a chat-metadata boot cache can now tell which copy is newer: one server-assigned per-chat write ordinal is shared by both stores, returned as `writeOrdinal` on `PUT`/`GET /api/game/:chatId/experience-state` and mirrored per metadata key as `metadata.metadataWriteOrdinals`, so a session that degraded to metadata-only writes is recovered at the next boot instead of being discarded (#5406).
+- Game-surface Experiences can now offer players explicit save management: a package can delete the chat's stored experience saves, export the whole campaign, and import an export back, all scoped to that chat's own experience namespace and safe for existing checkpoints (#5405).
+- Downloadable Roleplay trackers can now contribute their own Chat Settings, HUD, and Tracker Panel views, prepare validated per-turn runtime context, finalize structured results, and place package-owned prompt blocks through preset Agent sections. This enables the new Memory Nag package and its per-chat vault (#5408, Pasta-Devs/Marinara-Agents#511).
+- Lorebook Folders now have a 'select/deselect all inside folder' button during Batch Editing (#5413).
+- Game-surface Experience packages now receive the raw stored text when a saved world state fails to parse, so a damaged save can be quarantined for recovery or a bug report before the repairing write replaces it (#5407).
+- Professor Mari can now create nested lorebook folders through her existing lorebook commands, and lorebook-capable custom agents can opt into sequential, configurable history-backfill chunks with explicit target selection (#5391).
+- The Roleplay Summariser can now select every entry and delete the current multi-selection in one confirmed action while safely restoring message visibility (#5394).
+- Roleplay Appearance settings can now place model thinking in a collapsible field above each response, stream it live, optionally keep it expanded, and style its stable disclosure header with Chat Chrome Text Color (#5381).
+- Conversation, Roleplay, and Game chats now provide a responsive Help overlay that labels available chat controls, opens automatically after the first chat setup in each mode, and can be reopened from the toolbar or hidden permanently from the overlay or App Behavior settings (#5390).
+- Fresh Professor Mari chats on Home now explain how to select a connection until the first message is sent (#5375).
+- Online character browsing now provides an exact page selector alongside the current page and total (#5361).
+- Character, Persona, Lorebook, and Preset editors now place section navigation in the header, using compact desktop tabs and a mobile dropdown, and Conversation Chat Settings now keeps Commands, Illustrator Settings, and Calls as matching remembered collapsible subsections inside Agents (#5355, #5356, Pasta-Devs/Marinara-Agents#480).
+- Settings → Generation now exposes the Character Reference Sheet prompt template, so character and Persona sheet generation can use a saved global override (#5348).
+- Reusable Game Mode setups now preserve World Maps AI draft size, exact place target, and lore grounding choices, with a clear fallback warning when imported lorebooks are unavailable (#5337).
+- Custom pre-generation agents can now opt in to choose the active characters for the current Conversation or Roleplay reply, keeping unused character cards out of that turn's prompt (#5310).
+- Lorebook Keeper can now route entries to exact writable lorebook names or configured aliases, auto-create missing category books, and preserve the selected destination through write approval while keeping one-book behavior unchanged when no target is returned (Pasta-Devs/Marinara-Agents#439).
+- File-native storage now shards every registered table by its stable owner or primary key, so routine saves no longer rewrite any global table monolith; upgrades preserve the previous files and retain the existing crash, corruption, and downgrade recovery safeguards (#5302).
+- Chat Settings now shows the current chat ID with a one-click copy action, making exact chats easy to reference in Professor Mari and other tools (#5235).
+- Conversation and Roleplay automatic summaries can now keep recent summaries in context while semantically retrieving relevant older summaries for long-running chats (#5240).
+- Text Rules now has an opt-in "Color Character Names in Text" toggle that colors character names inline in message text using each character's assigned name color, with support for gradient colors, name aliases, and a "Force Solid Colors for Inline Names" sub-toggle for users who prefer simpler inline readability. Names inside dialogue quotes are skipped, and only characters added to the chat are eligible (inspired by the AI Dungeon "Dungeon Extension v2" extension) (#5321).
+- Added `nai-diffusion-5-full` and `nai-diffusion-5-curated` to `IMAGE_GEN_MODELS` in `model-lists.ts` with display names "NAI Diffusion 5 Full" and "NAI Diffusion 5 Curated" (#5343).
+
+### Fixed
+
+- Release validation no longer crosses the Noodle background-admission idle boundary when the regression runner advances between two live clock reads (#5545).
+- Chat Help now keeps the message-area highlight below visible toolbar controls and measures controls from the active chat surface (#5545).
+- Opening Professor Mari from Home no longer crashes Safari/WebKit while resolving inherited chat chrome colors (#5545).
+- Release browser validation now reopens the mobile Characters panel after a reload instead of mistaking its off-screen mounted shell for an open panel (#5543).
+- Agents that must return JSON no longer fail with "invalid JSON" on the built-in Local Model: sidecar responses are grammar-constrained to a JSON object, leading thinking blocks are stripped before parsing, and Gemma 4 string delimiters are normalized the same way the tool-call path already tolerates (#5537).
+- The Connections panel's Local Model card now expands and collapses from a header click in every state, so the tracker assignment action is no longer reachable only through the chevron once the model is downloaded (#5538).
+- Manual and tracker Agent reruns now prepare and validate downloadable capability Agent runtime context, so Memory Nag receives real vault candidates before choosing a memory (#5531).
+- Capability-package agents now publish post-processing results only after package validation, and package-defined built-ins can request a compact context instead of inheriting every lore source, so rejected or distracted tracker output cannot reach the browser as successful data (#5525).
+- Professor Mari no longer rejects an explicitly requested character/persona/lorebook create or update as unauthorized when her own quoted authorization excerpt is a valid but incomplete substring of the user's message (e.g. just the character's name) or when a long pasted document (like a character card) happens to contain the word "authorized" among ordinary narrative verbs.
+- Professor Mari no longer blocks German-language create/update requests ("Erstelle...", "Ändere...", "Aktualisiere...", etc.) as unauthorized, and no longer mistakes quoted example dialogue in a pasted character card (e.g. "Don't tell me it's nothing.") for the user explicitly denying the requested change.
+- Professor Mari no longer mistakes an ordinary narrative sentence deep inside a long pasted character card (e.g. "Juli should never feel like a quest objective") for the user denying the requested change; the denial check now only scans the leading and trailing edges of long pasted messages, where a real user instruction actually appears.
+- Download Agents mode tags now keep identical dimensions when selected, and the installed Agents sidebar reuses the same filters below New Folder for Conversation, Roleplay, and Game Agents (#5523).
+- Help overlays now align compact desktop highlights exactly with their toolbar controls at responsive widths and keep mobile toolbar controls visible while people inspect highlighted sections (#5521).
+- Fixed the open-issues regression lane crashing at import time because a directly loaded client utility used the browser-only `@/lib` path alias (#5516).
+- Official release workflows now reject tags that do not match the canonical app version, avoid retaining checkout write credentials, and run CodeQL for both staging and main-targeted pull requests (#5510).
+- Matched character, persona, and agent tags plus chat branch counts to the shared compact search-tag shape instead of capsule badges.
+- Unified Quest Board, Memory Nag, and Beholder surfaces, separators, and responsive typography with the rest of the Roleplay Tracker Panel.
+- Unified inactive Roleplay tracker toolbar icons at the shared muted chroma strength and removed the stray count punctuation from the mobile Characters heading.
+- Download Agents now shows each package's supported chat modes directly in the mobile catalog list, while mobile shell panels cap malformed browser safe-area values so Android Firefox cannot hide the bottom of the list behind a large empty inset (#5507).
+- Roleplay group chats now retain their response controls and generation behavior when only one character is enabled, while Sequential generation skips every disabled character (#5501, #5502).
+- Game narration now restores choices after rewinding or switching swipes, scopes saved narration progress to the active swipe, and restarts safely when a saved cursor exceeds the available segments (#5474).
+- The Roleplay active-summary and branch counters now share one themed badge treatment with the configured accent color (#5499).
+- Matched full-body sprite generation now sends each expression as its own sequential request after neutral approval, giving every image an independent timeout and retry while preserving completed sprites if a later expression fails or the run is cancelled (#5497).
+- Tracker launchers and panel sections now share animated theme colors and one section shell; populated Inventory launchers show only their count, Inventory items and branch counts use the character-tag pill shape, and Memory Nag receives working regenerate and lock controls. Mobile Agents and Help overlays now stay centered and evenly framed, while shared agent selectors—including Music DJ in Roleplay and Game—center their contents (#5495, Pasta-Devs/Marinara-Agents#560).
+- Chat Settings now reuses shared action controls without dimming unrelated Connected Chats options during saves; Storyboard controls align evenly; mobile Home tabs collapse inactive labels; the centered mobile Agents menu and combined Trackers panel use consistent count-free sections; the mobile Help overlay keeps uniform toolbar highlights; Inventory and branch tags use compact rounded-square styling with usable delete controls; and Tracker Panel, empty Inventory, World State, and Beholder launchers follow cycling accent colors (#5490, Pasta-Devs/Marinara-Agents#555, Pasta-Devs/Marinara-Agents#557).
+- Roleplay tracker controls now keep World State compact until it has content; Persona Stats, Inventory, Quests, and Custom popovers share the established header order, styling, accent treatment, and count-free titles (#5488, Pasta-Devs/Marinara-Agents#549).
+- Adding Memory Nag to a Roleplay chat now explains how to create its initial memories, then opens and scrolls to its Agent Settings menu after confirmation (#5484).
+- Download Agents now styles its trusted-code permission notice with the configured accent instead of a hard-coded amber warning box.
+- Fixed the dev server and Playwright webServer failing to start on Windows with standalone pnpm installs: the pnpm runner now detects that `npm_execpath` points at a native `pnpm.exe` binary — which Node cannot execute — and falls back to invoking pnpm through `ComSpec` instead of crashing with `SyntaxError: Invalid or unexpected token` on the PE header.
+- Profile imports now keep only the local canonical Universal Preset protected; imported copies retain their content but remain editable and deletable (#5469).
+- Game creation now reports unreachable, refused, timed-out, and other GM provider failures with actionable messages instead of a bare internal-server error (#5466).
+- Termux now selects a bounded 1–1.5 GiB Node.js heap from the structured profile size and device RAM while preserving explicit operator overrides; health checks, copied support diagnostics, and logs expose heap pressure for Android background failures (#5470, #5506).
+- Automatic backup failures can no longer trigger a second unhandled rejection while recording their error state (#5512).
+- Prompt assembly only scans every lorebook entry count when a `lorebooksize` macro is actually present, reducing per-turn memory and GC pressure without changing macro behavior (#5513).
+- Personal server extensions receive a fresh heartbeat window after the host process resumes from a system-wide pause, preventing a delayed watchdog tick from killing a healthy sandbox (#5514).
+- Conversation autonomy and Game agent controls now use the shared toggle design; automatic-summary, Discord Mirror, Illustrator, Prompt Preset, and widget controls reuse canonical fields and actions; muted Game audio follows the configured accent; journal entries can be deleted after confirmation; and Stop Agents cancels every attached or detached agent run without flickering or aborting the main response (#5463).
+- Tracker Panel now keeps Inventory above Custom and uses the configured app accent for its frame and dice controls; Group Chat's Add Turn To Prompt setting now uses the shared toggle and muted off-state; branch counts use the compact rounded-corner tag shape instead of capsules; Conversation places Start Call beside the character or group name; and Markdown horizontal rules follow the surrounding message text color instead of the legacy border tint (#5462).
+- Character and Persona editors now switch to their compact section menu before constrained Windows layouts can crush toolbar buttons together, and the menu trigger matches neighboring action heights on desktop and mobile (#5460).
+- Roleplay now places Beholder directly beside Tracker Panel before Agents, groups Inventory and Memory Nag into the combined mobile tracker control, and preserves full mobile touch-target bounds in the chat Help overlay (#5457, Pasta-Devs/Marinara-Agents#533).
+- Downloadable Roleplay tracker buttons now keep the built-in mobile size; Memory Nag and Inventory headers inherit the neutral Tracker Panel icon treatment; Gallery and Translation language fields reuse the standard chat field; active agent drawers omit redundant installation instructions; Storyboards toggles and Lorebook Keeper actions align evenly; Long-Term Memory uses its archive icon in every mode; and Narrative Director and Expression Engine have distinct clapperboard and theatre-mask icons (#5452, Pasta-Devs/Marinara-Agents#528, Pasta-Devs/Marinara-Agents#530, Pasta-Devs/Marinara-Agents#531).
+- Roleplay tracker controls and Chat Settings now share canonical ordering, icons, labels, toggles, fields, badges, and compact actions; Memory Nag and Beholder integrate with the Tracker Panel, while Persona Stats no longer duplicates Inventory Tracker ownership and dedicated inventory changes continue filling the journal (#5450, Pasta-Devs/Marinara-Agents#525).
+- Image Connection model controls now stay inside narrow Android viewports, and long message editors expand to their content on desktop while retaining the mobile height cap (#5447, #5448).
+- Downloadable Roleplay trackers now receive the shared left-side toolbar control styling in full and compact layouts, while Present Characters consistently uses a silhouette icon instead of character emoji (#5445, Pasta-Devs/Marinara-Agents#523).
+- Chat Settings now reuses one compact action, toggle, and segmented-control design across agent menus; World Maps, Beholder, Storyboards, Long-Term Memory, and Memory Nag have standalone active-agent cards, while Impersonate prompts use the standard expandable macro field (#5443, Pasta-Devs/Marinara-Agents#521).
+- Memory Nag now shows its Roleplay badge in Download Agents, while capability-package regression coverage tracks the API version required by its runtime (#5438).
+- Professor Mari now shows a one-click Accept action for proposed writes, accepts exact confirmations in any language within the pending operation's scope, resumes authorized work after output limits without exact phrasing, goes directly to supplied character or Persona IDs, and prevents hidden reasoning from consuming local JSON responses (#5431, #5434).
+- Character and Persona card macros now resolve in request-scoped text and appearance context before generation and image agents consume them, without changing the saved card (#5432).
+- OpenAI-compatible custom connections now preserve Anthropic-style `tool_use` content blocks, restoring visible LinkAPI Opus tool calls (#5430).
+- Game narration now holds the last settled transcript throughout generation, Agent work, and scene preparation so the next line cannot appear early and then repeat (#5433).
+- TTS on iPhone and iPad now avoids persistent IndexedDB Blob writes that can stall WebKit, while retaining the bounded in-memory audio cache (#5429).
+- The floating Professor Mari chat now keeps action, reasoning, and status visuals within Chat Chrome colors and uses the compact sidebar-style desktop close control (#5422).
+- Professor Mari can now list and create both folders inside a lorebook and folders in the main Lorebooks panel through safe, reviewable app-data actions (#5421).
+- Agent requests now keep authored text inside conditional macros while omitting their control syntax and encoded quote entities from the provider prompt (#5423).
+- Local ComfyUI video generation can now read large bounded history responses instead of failing at the generic 2 MiB API-response limit (#5415).
+- Lorebook batch editing now includes Outlet Name among the fields that can be applied to selected entries (#5410).
+- Restoring a checkpoint that has no captured world state (pre-capture checkpoints, or a corrupt capture) now timestamps the restored save the same way every other save-writer does, so a recent bulk import can no longer shadow the freshly restored world in latest-save reads, save pruning, and the next checkpoint's capture (#5418).
+- Chat Summaries PopOver now doesn't close when clicking anywhere on the Summary Deletion Confirmation Pop Up, including Cancel, Delete, or just the popup itself (#5401).
+- Chat Help now keeps highlight boxes separate, limits Roleplay guidance to the centered message column, explains message and Game log action icons, and uses hover details on desktop with unobtrusive tap-driven details on mobile (#5403).
+- SillyTavern profile imports now restore each group chat's character roster and assign historical replies to their matching characters (#5399).
+- Settings and Chat Settings switches now share one track and thumb design, keeping every toggle the same size, shape, travel distance, and vertical alignment on desktop and mobile.
+- Game widget edit icons and Game log deletion actions now follow Chat Chrome Text Color instead of the app accent.
+- The Conversation Start Call button now matches the adjacent participant control height on desktop and mobile.
+- Conversation message actions now sit in a compact row below each message on desktop hover and mobile tap, starting beneath the avatar column and following Chat Chrome Text Color without covering the next message.
+- Generic active, focus, notification, avatar-glow, and editor-reticle styling now follows the configured app accent instead of falling back to legacy fixed pink, while chat setup connection gates follow Chat Chrome Text Color and close before opening Connections; semantic mode, category, status, artwork, and color-picker palettes keep their intentional colors.
+- Chat IDs in Roleplay Chat Settings are now copied by clicking the ID row, with visible click guidance, and compact option buttons across the UI use the unified square shape.
+- Memory Recall and individual Tracker schedules now use the established Chat Settings toggle colors, with consistently centered toggle thumbs.
+- Recreated Docker and Podman containers can now recover a storage lock left after an interrupted shutdown even when the replacement reuses the same internal PID (#5389).
+- The in-field Macro reference and `/macro` help now show the supported `!=`, `is not`, `not contains`, and `not includes` conditional operators (#5383).
+- Bot-browser character author notes now render their HTML and CSS through the same sanitizer and style containment as chat messages, with scripts, event handlers, links, and global page styling blocked (#5377).
+- Manual Roleplay background generation from Gallery now pauses for media prompt review when that setting is enabled and sends the reviewed prompt exactly once (#5379).
+- Chat branches now retain their locally configured sprite layout and display preferences (#5374).
+- Agent category headers in the setup wizard now scroll with their agent rows instead of pinning over and obscuring them (#5371, #5386).
+- Agent prompts now preserve user-authored lorebook entry tags and ampersands verbatim instead of sending HTML entities to the model (#5372).
+- Game Mode now keeps the current scene unchanged while The Game Master finishes a turn, then reveals each generated segment once in order (#5368).
+- Character and Persona editor headers now reserve visible space for the card name to the left of Creator and version information (#5369).
+- Android hardware and gesture back now dismisses the topmost menu, editor, dialog, or overlay before leaving the app, with the same behavior available to browser and installed-PWA back navigation (#5366; thanks @luma-inibitor).
+- Long formatted replies now batch their streaming paints on iPhone and iPad browsers, preventing WebKit from freezing while preserving the selected reveal speed (#5365).
+- Roleplay CYOA choices now stay consumed after selection, impersonated choices continue into a character reply, clearing trackers also clears the active prompt, sprites can be fully transparent without covering chat choices, and PNG card exports preserve their sprite sets on Marinara re-import (#5362).
+- Character editors now keep independently saved weekly schedules in sync while other card fields still have unsaved changes.
+- Conversation transcript dates, timestamps, and message numbers now follow Chat Chrome Text Color instead of a legacy fixed color (#5357).
+- Conversation schedules and manual status overrides now apply consistently across all chats for the same character, with per-chat schedule opt-outs still supported (#5358).
+- Long-running sessions now bound chat notification history and release persisted reasoning state from server memory, mobile history stays put after the keyboard opens, and Playwright shuts down its owned test servers cleanly (#5353).
+- Claude Subscription custom parameters can no longer override the provider's text-only Agent SDK isolation; model-generation overrides remain supported while tool, process, environment, filesystem, and session controls stay provider-owned (#5351).
+- Manual and range-backfilled Roleplay summaries now participate in semantic retrieval alongside automatic summaries, keeping relevant history without pinning every manual entry in context (#5346).
+- SwarmUI image generation now uses its progress-streaming WebSocket route, preventing long generations from losing an otherwise idle HTTP connection (#5347).
+- Game transcript exports now materialize narration edits and deletions in active messages and alternate swipes, omit fully deleted messages, and remove stale segment-overlay metadata from JSONL (#5349).
+- Game Storyboard planning now always receives character appearance context; the Attach Card Appearance setting remains scoped to the final render prompt and reference attachments (Pasta-Devs/Marinara-Agents#478).
+- ElevenLabs audio connections now test the documented `/v1/models` endpoint, so the default base URL no longer returns a misleading 404 (#5339).
+- Docker containers now repair mixed ownership inside file storage and imported top-level data folders even when the data root already belongs to the runtime user, preventing private storage hardening from blocking startup (#5323).
+- Roleplay now cancels post-processing work tied to an abandoned swipe before committing the next turn, Stop Agents safely cancels detached agent work without interrupting the primary reply, and an earlier swipe's illustration no longer reappears on the selected swipe while agents finish (#5328).
+- Chat Settings now presents its transient Stop Active Generation action like the neighboring neutral controls instead of making it look like an enabled destructive preference.
+- Android APK chats now keep their intended message text size instead of letting WebView enlarge Conversation, Roleplay, and Game prose, the New Chat parameter toggle stays inside its card at larger text sizes, and card versioning switches now match the alignment and inactive color of other settings toggles (#5315, #5316, #5318).
+- Development server watchers now exit after losing the file-storage writer lease, preventing abandoned sessions from retrying forever and repeatedly reporting `StorageWriterLeaseError` (#5312).
+- Forced Agent retries such as Echo Chamber now stop from Roleplay's Agents menu, whose Stop Agents action also matches the neutral styling of neighboring actions (#5299).
+- Desktop Mari now changes tabs after finding a requested destination when reduced ambient animations and effects are enabled (#5301).
+- Game branches now restore Journal entries and generated HUD lists, such as Clues, to the selected story point instead of carrying future branch information (#5287).
+- Advanced Settings now provides a guarded server restart control that gracefully closes storage and services before relaunching (#5285).
+- Starting a new Roleplay swipe now immediately hides the previous swipe's generated image, while returning to the original swipe restores its own image (#5286).
+- Merged Narrator replies in Roleplay now hide speaker tags and use the default dialogue color when no participating character has a custom dialogue color (#5282).
+- Professor Mari now asks compatible OpenRouter workspace models for JSON responses and treats an explicit request to split lorebook entries as authorization to create the split-off entries as well as update the originals (#5271).
+- Renamed Roleplay branches now keep their branch names in the branch selector and capability-package chat records, while the Chats sidebar, search, and alphabetical sorting use each chat's unambiguous name (#5268, #5364).
+- Jumping to older messages with `/goto` no longer revives stale CYOA choices at the chat tail (#5269).
+- Macro reference guidance now renders the literal `{{macro}}` example, and expanded macro editors and guides stay above Author's Notes, summary, and other floating panels at narrow viewports (#5266, #5267, #5270).
+- The compact music player now stays hidden until Music DJ is installed, and its General Settings switch remains unavailable with a clear explanation until the agent is ready; installing Music DJ unlocks both immediately (#5262).
+- Professor Mari's open chat now follows the user again when they move into another chat or editor, with the interactive floating window on desktop and the quick-return avatar on mobile navigation surfaces (#5263).
+- The mobile Chats topbar icon now stays in the configured accent color after taps and double taps while its active underline keeps the cyan-orange-pink gradient (#5264).
+- Safari backup downloads now stream the prepared ZIP directly through the browser instead of buffering the entire archive in page memory; a short-lived one-time download capability preserves remote and Docker admin protection without exposing the reusable admin secret (#5259).
+- Embedding connections now accept either an OpenAI-compatible API base URL or the provider's full `/embeddings` endpoint, so documented NanoGPT and OpenRouter URLs no longer become a nonexistent doubled path (#5252).
+- Windows, macOS, and Linux launchers now recognize an already-running healthy Marinara server before updating or rebuilding, then reopen that instance instead of attempting a second storage writer; genuinely conflicting or unresponsive processes remain blocked to protect user data (#5256).
+- Locally hosted OpenAI-compatible models now honor Reasoning Effort set to Off, and JSON-returning Agent calls—including tool-assisted and batched runs—avoid exhausting their output budget on discarded thinking.
+- Mobile full-screen navigation now places the slightly larger Home icon first, opens Chats from the right like the resource tabs, swaps between Chats and resource tabs without replaying the entrance animation, deactivates Home while another surface is open, lets Home dismiss that surface and return to the Home page, and starts the draggable Music DJ control below Home bookmarks; the Characters tab underline now also matches its pink icon on mobile and desktop (#5248).
+- Docker update checks now recognize stable-to-Staging/UAT channel switches and show the correct `staging` image tag and host-side switch instructions instead of claiming the stable container is already current (#5249).
+- Roleplay's Agents menu now offers a Stop Agents action while parallel or post-processing work is still running, without blocking new messages or swipes (#5237).
+- ComfyUI Video Generation workflows now support the same Base64 reference-image placeholders as image workflows, including `%reference_image%` and `%reference_image_01%` through `%reference_image_04%` (#5238).
+- Automatic backups, manual backups, and profile exports no longer fail at an artificial 8,192-entry ZIP ceiling; archive size and path-safety protections remain enforced (#5239).
+- Professor Mari now accepts an explicit authorization clause together with the concrete character or lorebook edit in the same user message, while preserving operation and entity safeguards (#5245).
+- Windows installer sources now refuse to download or install a release unless they were built or invoked with its exact commit pin, preserving the existing verified path used by official release executables.
+- NovelAI Diffusion v5 models (`nai-diffusion-5-full`, `nai-diffusion-5-curated`) now generate images successfully instead of returning a 500 error, by extending the V4+ model regex in `image-generation.ts` and `game-asset-generation.ts` to match v5 model IDs and route them through the `params_version: 3` code path (#5343).
+- NovelAI image connection model dropdown now shows only `nai-` prefixed models instead of the entire app-wide image model catalog, and the "Fetch from API" button is hidden for NovelAI connections since the `/oa/v1/models` endpoint returns text models, not image models (#5344).
+
+## [2.4.3]
+
+### Added
+
+- Lorebook Update agents can now optionally assign an integer injection order when creating or updating entries. Omitting it keeps the existing/default order, and approval review preserves the value through editing and commit. When creating a custom agent, the prompt editor now previews the complete response shape for the selected result type, including optional fields (#5225).
+- Added NanoGPT as a Video Generation connection with live model discovery, text- and image-to-video requests, asynchronous status polling, connection tests, and Game/sprite generation support (#5218).
+- The Game Mode narration box can now be collapsed to a slim handle, so the scene art, map, or running Experience behind it is visible without leaving the game. The choice is a saved preference that persists across chats and sessions, and the readability scrim and stacked segment log fold away with it. The box reopens itself whenever your text input is on screen, so it can never leave you unable to take your turn; anything else it is holding — narration still to read, a generation that failed, a combat that could not start — raises an indicator on the handle instead, one click from reading it. Capability API 1.13 lets a game-surface Experience request a temporary collapse for a cutscene without touching your saved preference (#5209).
+- Character and Persona cards now start at version `1.0`, automatically increase their version when saved edits change the card, and provide an enabled-by-default switch that can pause automatic versioning and revision snapshots without deleting existing history (#5202).
+- Beholder's Roleplay host now sends the active Persona and a name-keyed current-state object on every call, accepts both delta responses and legacy full snapshots, and safely merges deltas into the last valid full state before saving it (#5204).
+- Expanded Simplified Chinese UI localization across nearly the entire app, with the normal English fallback retained for newer strings that have not yet been translated (#5201).
+- Roleplay chats with active Tracker agents now expose an opt-in **Attach Lorebooks to Trackers** setting, which forwards the exact lorebook entries activated for the main response to automatic and manually retriggered Tracker prompts while leaving Author Notes attached (#5197).
+- Professor Mari (and every other connection) now survives proxy rate limits (#5183): a rate-limit response — HTTP 429, 529, or 503 with `Retry-After` — now pauses and automatically resumes the same request, honoring `Retry-After` with capped exponential backoff, instead of aborting the task the way Mari's up-to-13 back-to-back tool-call rounds previously did on a proxy capped at, say, five messages per minute. A new optional per-connection **Max Requests Per Minute** cap (Settings → Connections; `0` = unlimited, round-trips through connection import/export) proactively paces bursty callers so the limit is not exceeded in the first place, and the pause is surfaced as a "paused, resuming in Ns" status instead of a silent wait. Professor Mari also no longer discards the workspace steps she already completed when a request ultimately fails, and local-sidecar connections get a larger JSON command-protocol repair budget that no longer consumes her command-round budget, so a small local model can fumble the tool-call format a few times without starving the actual task.
+- Added Beholder as an official downloadable, Roleplay-only physical-state Agent. It tracks clothing by body slot, held items, wounds, missing parts, bare slots, and species; validates and carries its full snapshot into the next turn; and exposes the latest state plus Agent setup in a native Chat Settings drawer (#5188, Pasta-Devs/Marinara-Agents#401).
+- Echo Chamber now exposes an editable message delay in its Agents editor, and extensions can update the same `messageDelaySeconds` agent setting instead of relying on hardcoded reveal timing (#5177).
+- Persona cards can now be referenced by copied ID with `{{persona-21-character-card-ID}}`, resolving the card name in place and adding its authored fields and eligible attached lorebook context to the prompt (#5171).
+- Added **Assistant Reasoning Prefill** alongside the existing visible assistant prefill: compatible OpenAI-style endpoints can now continue hidden reasoning from `reasoning_content` on a partial assistant message, while visible-only prefills keep their existing request shape.
+- Game music is now context-bound (#5161): instead of generating a throwaway 30-second clip from a fresh mood prompt nearly every turn, each map area and each encounter tier (common, miniboss, boss, special — classified by the encounter generator) gets ONE persistent instrumental composition (default 2 minutes), generated lazily on first visit or first encounter into the game-assets music library under `music/area/<slug>/` and `music/tier/<tier>/`, where the Game Assets panel can audition, rename, or replace it like any other track. Deterministic scoring now always selects music — tier track in combat, area track elsewhere, the bundled state library as the floor — and keeps the current track while it still fits, so music changes when the context changes, never mid-scene. The scene analyzer no longer writes free-text music prompts (on-demand sound effects are unchanged).
+- Added first-class Audio connections: a new "Audio" provider type in Settings → Connections carries the speech backend (ElevenLabs, OpenAI-compatible, PocketTTS, xAI Voice), base URL, API key, model, default voice, and per-connection Game sound-effects / music capability toggles, with category-scoped default and fallback selection like image and video connections. TTS speech, voice/model discovery, and Game Mode audio generation now resolve through the audio connection (explicit pick → category default → fallback), the Game Setup wizard gains an audio-connection picker with per-game sound-effect and music toggles that gray out when no capable connection exists, and a one-time boot migration turns an already-configured legacy TTS settings blob into an equivalent default audio connection — the blob keeps serving playback knobs (speed, stability, extractor settings) and remains the fallback for setups without audio connections, a blob whose master TTS toggle was off migrates to no connection at all, and default-resolution keeps honoring that master toggle (only an explicitly requested connection bypasses it), so an upgrade never re-enables TTS on its own and existing installs keep working unchanged (#5146; docs follow-up: #5156).
+- Added capability API 1.12: spatial transition capability events (`spatial_transition_committed`, `spatial_transition_rejected`, and the `spatial_context_refresh` nudge) are now also addressed to the game-owning Experience package, so an Experience that sent a travel command learns the outcome the moment the host does instead of inferring it from later state reads. Transitions rejected on either silent HTTP path — the pre-stream owner-turn commit or the standalone REST commit, previously plain HTTP errors with no event at all, a gap that affected World Maps too — now synthesize a `spatial_transition_rejected` event carrying the error code, and only on definitive evidence: inconclusive failures (a network error that may have lost a successful commit) deliver the untyped refresh nudge instead of a fabricated verdict (#5143).
+- Added a host-run structured generation call for game-surface Experiences: `POST /api/game/:chatId/experience-generation` runs one bounded, non-streaming JSON call on the chat's GM connection with package-supplied instructions and an optional JSON schema (forwarded as provider-native structured output where supported), gated on the chat's stamped Experience, rate-limited in the one-shot-call class, serialized per chat, and answering truncation with an actionable error before the tolerant parser can repair a cut-off reply into a silently incomplete document (#5135).
+- Consolidated local regression commands around the filesystem-discovered Node lane: `pnpm regression` and `pnpm regression:node` now collect all 121 Node regressions with one shared build, `pnpm regression:ui` owns the separate Playwright lane with `pnpm smoke:ui` retained as a compatibility alias, and `pnpm test` checks the installer layout before the Node-only lane. Retained focused commands use exact runner filters, and 61 package-script aliases were removed without deleting regression files (#5132).
+- Grouped 31 clear-owner Launcher, Mari, Professor Mari, and Noodle regressions into domain directories while preserving all 121 automatically discovered files and stable focused commands. The move also ensures three file-backed regression fixtures close their databases before removing owned temporary storage (#5132).
+- Every image and video generation path now runs under a process-wide concurrency ceiling — default 4, configurable with `MARINARA_MEDIA_GENERATION_CONCURRENCY` (`0` disables it) — enforced inside the generators themselves, so while the ceiling is enabled a batch can no longer stampede a local ComfyUI/SwarmUI GPU or fan out unbounded requests against a paid provider (setting the limit to `0` opts out and restores the old unbounded behavior). Batch/automatic work never occupies the last slot ahead of interactive requests, waits are bounded by default (`MARINARA_MEDIA_GENERATION_WAIT_TIMEOUT_MS`; `0` waits indefinitely) so saturation fails loudly instead of hanging, and fallback-connection retries reuse the original request's slot (#5097).
+- Added host-owned `GET`/`PUT /api/game/:chatId/experience-state` routes so a game-surface Experience package can store its world state in the engine's per-message `game_engine_state` table instead of chat metadata: saves are scoped to the chat's stamped Experience (`experience:<id>` rows — invisible to turn-games, protected from turn-game start/resign wipes, and never able to shadow an active turn-game), anchored to the visible message so swiping or branching back to an earlier narration rewinds the world (a brand-new swipe continues from the latest save until the Experience writes one of its own), bounded per save, and pruned to the newest 100 anchors per chat (#5102).
+- Game checkpoints now capture every active engine-state blob (turn-games and Experiences) by value when the checkpoint is created and restore from that copy, replacing the timestamp re-lookup that silently restored stale or no state for any game that rewrites a single anchor in place — including in-place turn games like Tic-Tac-Toe and Rock-Paper-Scissors (#5102).
+- Added Inventory Tracker as an official downloadable Roleplay Agent, with separate currency, equipped, and carried-item lists; compact quantities; editable HUD and Tracker Panel grids; per-cell locks; retry support; and committed prompt context (#5105, Pasta-Devs/Marinara-Agents#361).
+- Added `POST /api/sprites/pixelize`: deterministic pixel-art post-processing for AI-generated images — nearest-kernel downscale to a target cell size, palette quantization against a supplied ramp, binary alpha, and a wrap-around seam score reporting tileability — so probabilistic model output can sit beside authored pixel art; identical input always produces identical bytes (#5096).
+- Character sprite-sheet generation accepts an optional `styleProfileId` so a bake can target a specific image style profile instead of always compiling against the user's active one; an absent field keeps today's resolution exactly, and unknown ids degrade the same way the gallery path degrades (#5095).
+- Added capability API 1.11 Experience combat seam: `game-surface` packages receive `combatActive` (true the instant the built-in combat UI mounts, unlike the lagging narrative scene state), the effective `combatStyle`, and `requestCombat()` — which routes into the same encounter-generation pass as the manual Start Combat button, minus the confirm dialog; packages still cannot supply combatants or combat state (#5094).
+- Added capability API 1.10 package assets: an Agent package manifest may declare `contributions.assets.paths`, and the Engine serves those image and JSON files over `/api/capability-packages/<id>/assets/<path>` with per-request hash verification, a passive content-type allowlist, and cheap `ETag`/`304` revalidation — so a package (for example a Game experience) can ship tilesets and sprite atlases instead of inlining art into its client bundle (#5091).
+- Agent package client bundles and assets now carry strong ETags derived from their manifest hashes and answer revalidations with `304 Not Modified`, so an unchanged package no longer re-downloads in full on every app load (#5082).
+- Let Professor Mari read your chat history: attach a chat from the composer's attach menu — sharing all, a range, or the last N messages — so Mari can see your roleplay and give grounded feedback, with a Context Viewer to review and remove what's attached to free up tokens (#5073).
+- Added visible, one-click copy controls for lorebook and lorebook-entry IDs in their editors (#5085).
+- Expanded Haptic Feedback to Conversation, Roleplay, and Game with capability-aware device descriptions, the full `0.0-1.0` intensity range, every Intiface output type, and named patterns for scalar and positional pumping actions.
+- Added an optional Roleplay speaker extractor for TTS autoplay that uses a dedicated connection to queue narration and exact dialogue with assigned character voices, stable Random NPC Voices fallbacks, and optional emotion cues.
+- Added an on-demand Advanced Settings storage optimizer that scans for old, unreferenced avatar images and deletes them only after an explicit confirmation (#5039).
+- Roleplay now releases Swipe, Continue, and the composer as soon as a reply is durably saved while its non-rewriting post-processing agents finish against that exact message and swipe in the background; overlapping runs keep independent progress state (#5155).
+- Added the official v2.4.3 What's New message to the Home experience, including the Inventory Tracker overview and screenshots.
+- Added `{{addnumvar::name::value}}` for numeric variable addition without changing `{{addvar}}` string concatenation (#5024).
+- Added a Personal Extension authoring guide with importable Browser and Server examples, package/API references, lifecycle guidance, and troubleshooting (#5026).
+
+### Fixed
+
+- Professor Mari now honors an explicit direct workspace-edit request when a smaller model omits or paraphrases its separate authorization quote, while still rejecting denials, how-to requests, wrong entities, and mismatched operations (#5325).
+- Single-option preset variables now use the standard settings switch, keeping their Android touch target and proportions consistent with the rest of the app (#5326).
+- Game Mode rerolls now restart narration at the beginning of the newly saved swipe, generated Timeline and Library journal entries can be edited, and the scene analyzer can repeat a beat's sound effect from one to five total plays. Branching from an earlier log entry also restores inventory and generated widgets to that point (#5287, #5327).
+- Merged Narrator group replies now use the configured default dialogue color for tagged speakers without a matching colored card instead of borrowing another participant's color (#5336).
+- Professor Mari's mobile message labels, action icons, context details, and suggestion guidance now follow the configured Chat Chrome Text Color, while her desktop close controls use the same full-size treatment as editor exits (#5273).
+- APK-managed Android setup no longer opens a separate localhost browser that asks the user to paste Marinara's private local-access secret, and its self-authenticating WebView/session routes no longer fail CSRF when Android reports an opaque `Origin: null`; `null` remains rejected for every other unsafe API route. The generated credential stays automatic inside the app, and releases now publish a stable one-click APK download asset alongside the versioned file (#5222; docs follow-up: #5223).
+- Game Mode no longer replaces a matching Character-library portrait when recovering a missing scene background or retrying a failed portrait load (#4746).
+- Character-created Conversation reactions can now be removed directly by clicking their chip on desktop or long-pressing it on mobile, without discarding the user's own matching reaction (#5216).
+- Character example dialogue now falls back into the Character Info marker when a prompt preset has no dedicated Dialogue Examples marker; presets that include a disabled Dialogue Examples marker continue to omit it intentionally.
+- Preserved Long-Term Memory recall in Roleplay chats when a custom preset's agent marker cannot be matched, using a logged fallback injection instead of silently dropping the selected memories.
+- Roleplay speaker extraction now prints the connection's raw response when debug mode is enabled, supplies the current reply's character as the fallback for ambiguous lines, and lets harmless label formatting such as `Maukie:` or `Maukie [chuckle]` resolve to the character's assigned voice instead of Random NPC Voice (#5210).
+- Termux session logging now starts before update checks, dependency repair, and builds, so launcher-stage crashes create the same timestamped diagnostic log as server-stage crashes; it starts only after restrictive log permissions are confirmed, flushes before exit, reports logging failures, and preserves the server's own exit status (#5208).
+- Automatic card versioning now preserves imported nonnumeric version labels instead of resetting them to `1.0` on the next content edit (#5202).
+- Active Roleplay summaries now form a leading system block when no prompt preset is selected, matching the existing fallback used when a preset omits its Chat Summary marker (#5196).
+- Stale file-storage writer leases on macOS now survive VPN and virtual-interface changes: new leases use the stable platform identity instead of hashing the currently visible network adapters, and existing v1 leases from the same Mac are reclaimed after their PID exits instead of blocking startup (#5194).
+- Custom lorebook-writing agents now support a configurable Read Behind depth, keep each delayed run attached to the assistant reply it processed, and avoid duplicate work when the newest reply is swiped. Lorebook Keeper's mobile Backfill controls now stack inside their settings card instead of overflowing it (#5191).
+- The staging update-channel warning now follows the active theme accent color instead of always rendering in amber (#5184).
+- Character avatar uploads now reject path-like character IDs before constructing their storage filename, keeping uploaded files confined to the avatar directory even when a malformed route parameter is supplied (#5181).
+- The Inventory Tracker section now appears for installs whose synced UI settings were saved before the section existed. The cross-device settings blob overwrote the locally migrated panel order on every load, and `trackerPanelSectionOrder` was the one tracker preference that blob never re-normalized on the way in, so the section stayed invisible until the panel was reordered by hand. Ingest now normalizes both the section order and the collapsed-section map and writes the corrected value back, so the stale order does not survive to re-arrive on another device. Any tracker section added in future would have hit the same gap.
+- Inventory Tracker entries edited by hand now get the same treatment as agent output. Tracker Panel and HUD edits wrote rows straight to state, skipping name trimming, duplicate merging, the quantity clamp, and the rule that keeps equipped gear out of carried inventory — so a value the agent could never emit could still be typed in. Equipping a carried item now moves it in a single write instead of leaving it in both lists, and the same rules are enforced on the server, which previously accepted any `playerStats` payload unchecked.
+- The Agent Suite JSON editor now reports malformed Inventory Tracker rows instead of accepting them. It only checked that the three keys were arrays, so a row without a name was stored as-is; validating first also avoids silently normalizing a hand-written group down to an empty list.
+- Gallery routes now serve valid raster images with the format detected from their bytes, so generated Noodle images stored with a mismatched `.png` extension render instead of returning 404 (Pasta-Devs/Marinara-Agents#392).
+- Opening the immutable Universal Preset no longer creates duplicate presets; its editor now offers an explicit **Create editable copy** action instead (#5142).
+- Gallery files now use the image format detected from their decoded bytes, preventing JPEG output advertised as PNG from being stored under a broken `.png` name (#5147).
+- Support Diagnostics now reports the Engine host OS separately from the browser OS, including correct iPadOS detection for desktop-class iPad user agents (#5157).
+- SillyTavern-style `setvar`, `getvar`, `addvar`, `incvar`, and `decvar` macros now persist independently in each chat across turns and restarts, with numeric `addvar` and returned increment/decrement values matching their compatible semantics (#5158).
+- Roleplay speaker-extractor emotion cues now remain inline as one or more bracketed indicators within the exact dialogue—such as `[irritated] ... [sigh]`—instead of being collapsed into a separate tone field (#5159).
+- Performance diagnostics now feature-detect the browser's `longtask` observer support before registering it, avoiding the unsupported-entry console warning (#5160).
+- Roleplay Spotify search now paginates requests in provider-safe batches of ten, and Music DJ restores an enabled context-repeat setting even when Spotify's immediate playback verification lags (#5163, #5165).
+- Large manual backups now prepare as a short-lived server job before Safari opens the completed ZIP stream, avoiding long idle download requests that Safari could terminate (#5164).
+- The Termux launcher now preserves timestamped server logs across Android process restarts and documents Android battery-optimization exclusions, making otherwise silent host-level terminations diagnosable (#5154).
+- Game Mode's Spotify Music DJ no longer fails deterministically for the artist and generic-search sources on apps subject to Spotify's February 2026 `GET /search` limit reduction (Development Mode apps, capped at 10 results per request; Extended Quota Mode apps kept the old behavior): the candidate pool's default of 50 was passed straight through, producing a 400 on every request for affected apps. Search now paginates in pages of 10 up to the requested pool size — safe under both quota modes — and a transient failure on a later page returns the results already collected instead of discarding them (#5163).
+- Professor Mari now wires up the preset variables she creates: her authoring guidance and worked example make her drop a variable's `{{variableName}}` macro into a prompt section, so a choice block she adds actually changes the assembled prompt instead of leaving the user a picker that does nothing (#5080).
+- Preserved omitted Inventory Tracker groups, kept equipped items out of carried inventory after lock merging and name normalization, clamped oversized quantities, and migrated existing Tracker Panel layouts to show the new section (#5125).
+- Kept launcher update snapshots small by excluding downloaded model caches and sidecar runtimes, while continuing to preserve user content and recovery backups (#5124).
+- Explained in the Windows launcher that non-Git installations cannot use automatic updates or commit-based stale-build checks, while version-based validation still runs (#5123).
+- Kept active characters in individual Conversation group chats responsive when another selected character is away, while preserving the away character's own configured delay and mention shortcut (#5122).
+- Reordered Storyboard Agent settings around separate Roleplay and Game Mode active flows, showed planning and provider-formatting stages in runtime order, kept setup visible, exposed image-aware Step 3 overrides in both chat editors, nested complete prompt collection editors inside their numbered stages, renamed the Stage 4 passthrough formatter, changed the default animation duration to 5 seconds, and hid animation-only controls for still-image defaults (#5120).
+- Added newly shipped built-in prompt choices to existing Storyboard agent configurations after package updates while preserving saved overrides, custom prompts, and current selections (#5118).
+- Kept valid Gallery images visible on Windows when canonical paths differ only by drive-letter or directory casing, without weakening traversal and symlink containment checks (#5099).
+- Made vectorized lorebook recall use model-appropriate query/document formatting, prioritize recent user turns, and reject incompatible stored vector spaces with useful debug diagnostics (#5104).
+- Added a server-side pre-execution authorization gate that binds Professor Mari workspace mutations to an explicit excerpt from the active user request, while retaining Keep/Restore as a second line of defense (#5093).
+- Honored each image style profile's selected prompt grammar for character avatars, portraits, and sprites instead of silently forcing compact tags (#5083).
+- Game checkpoints now capture and restore the turn-game engine state, so loading a checkpoint rewinds an active turn-game (UNO, Chess, Poker, Eight Ball) along with the story and map instead of leaving it on its post-checkpoint state (#5077).
+- Routed Game Mode time-advance and weather-update through the queued per-chat metadata patch path so they no longer silently revert a concurrent metadata write, which could permanently lock World Map movement as a stale definition (#5076).
+- Restored docked Tracker layout so the Roleplay transcript and composer resize beside the panel on either desktop edge instead of being covered by it (#5071).
+- Restored docked Tracker gutter scaling so the panel and all of its contents fit beside the centered Roleplay chat on either desktop edge without moving the transcript, composer, or scrollbar (#5071).
+- Expanded SwarmUI and ComfyUI LoRA strength controls from `-2..2` to `-100..100` so slider LoRAs can use their required weights (#5072).
+- Regex bundle imports now retain scripts flagged by the pattern-safety heuristic and show a warning instead of reporting those entries as skipped.
+- Kept NanoGPT Illustrator generation within its 4 MB reference-upload limit, preferred immediate hosted-result downloads, and hardened base64 fallback parsing so successful images are stored instead of rendering as broken output (#5058).
+- Kept Windows launcher updates from failing while protecting data by excluding the generated capability-package `node_modules` junction from update snapshots (#5052).
+- Prevented stopped or terminal-disconnected dev sessions from leaving nested server and client processes behind, and reused an already healthy local server on repeat launches instead of failing on its storage writer lease (#5062).
+- Started TTS autoplay as soon as assistant text is finalized instead of waiting for Illustrator, trackers, summaries, or other non-rewriting agents; active message-rewrite agents such as Prose Guardian and Continuity Checker still finish first (#5059).
+- Made the Roleplay speaker extractor's structured-output request compatible with Responses API providers that require the input message itself to mention `json` (#5059).
+- Kept long Roleplay speaker-extractor readings complete by packing narration into normal-sized requests, generating queued clips serially, and stopping visibly on a failed clip instead of silently skipping parts of the message (#5059).
+- Gave each character voice assignment its own roomy stacked controls, removed hollow trailing dropdown controls, and kept empty character guidance on semantic theme colors.
+- Improved Tracker Panel readability by giving long custom values more room to wrap and making the side control read as a neutral action instead of a selected mode (#3470).
+- Preserved complete Storyboard animation prompts through planning, image-aware refinement, and final video prompt persistence instead of silently clipping them at generic 1,200- and 650-character summary limits (#5041).
+- Let combat buff skills target allies and debuff skills target enemies, with accurate type labels and descriptions in both combat layouts (#5040).
+- Registered Slurp's package-owned storage tables so its standalone Creator feed can persist without touching legacy NoodleR data (#5049, Pasta-Devs/Marinara-Agents#348).
+- Left-aligned generated Conversation selfies with their message text on desktop instead of centering them in the message body (#5042).
+- Treated a literal `CSRF_TRUSTED_ORIGINS=null` as an unset value so it no longer prevents Marinara Engine from opening (#5030).
+- Stopped removed or disabled Example Dialogue markers from silently injecting character examples into prompts (#5031).
+- Restored persona creation through Professor Mari by supplying the persona reference-image default expected by storage validation (#5033).
+- Kept supported placement settings when importing character-scoped SillyTavern regexes that also contain unsupported placements, with a warning for the ignored values (#5036).
+- Capped game auto-checkpoints to the newest five per trigger type (session start/end, combat start/end, and the rest) so a long campaign no longer duplicates every captured tracker, map, and engine-state snapshot into unbounded memory and ever-larger checkpoint shard rewrites; your own manual checkpoints are never pruned (#5110).
+- Kept the caret at the chosen insertion point when typing quotes or apostrophes in expanded Character and Persona text editors (#4656).
+- Prevented multiple Marinara processes from silently overwriting a shared local data directory; stale diagnostic counts are repaired without hiding stored rows (#5013).
+- Let Termux recover its app-private storage lease after an Android restart instead of blocking launch on an exited process (#5029).
+- Omitted runtime Agent prompt sections when their Agent produced no output (#5023).
+- Presented iPad sidebars as full-width overlays in landscape as well as portrait by widening the mobile-shell breakpoint to cover newer iPad Pro 13" widths and requiring a touch-only pointer, so sidebars are no longer cramped on landscape iPads while hybrid touch laptops keep their desktop layout (#5034).
+
+### Changed
+
+- Split Game narration formatting, visual helpers, and tag parsing into focused chunks, reducing the main GameSurface chunk below the restored 500 KiB budget (#5215).
+- Coding-agent contributors now follow a Ponytail-inspired minimalism ladder that favors reuse, platform capabilities, and the smallest correct implementation without weakening safety or validation requirements (#5186).
+- Project validation now checks the maintained TypeScript and TSX source tree with Prettier before linting and building, so formatting drift is rejected by the same `pnpm check` command used in pull-request CI (#5181).
+- The Inventory Tracker panel now flows its entries as wrapping pills across the full panel width, with the quantity shown as `×N` only when it is above one. The previous layout split the panel into three fixed columns and reserved a quantity cell on every row, so at the widest setting each column was around 95 px and item names truncated — while a group holding two rows sat mostly empty. The panel also establishes its own container context, so it now lays out identically in the docked sidebar and the HUD popover instead of differing between them (#5125).
+- Advanced the stable release identity to v2.4.3 across the Engine, Home page, PWA manifest, Windows installer, Android bootstrap metadata, update checks, README, and release references. Android uses `versionName` `2.4.3` with `versionCode` `44` so it updates over every previously published APK.
+- Removed the shared 1 MiB JavaScript field limit from Browser and Server Personal Extensions while preserving their separate archive, CSS, storage, request, and sandbox boundaries (#5025).
+
+## [2.4.2]
+
+### Added
+
+- Added the v2.4.2 in-app What's New message with bundled images and looping videos so its update overview remains available without external media requests.
+- Let Game setup enable Illustrator's Dynamic LLM Prompt Generation before the first image request (#4964).
+- Added always-visible activation and vectorization status to lorebook entries in Professor Mari's Easy Viewer review cards: each entry now shows whether it is Constant, Selective, or Normal (using the lorebook editor's dot colors) and whether it is Vectorized, Not vectorized, or Vector excluded, with the before and after shown when Mari's edit changes them, so an entry's kind is clear at a glance instead of only when a setting happens to change (#4931).
+- Added a per-entry Reject control to Professor Mari's Easy Viewer: revert a single lorebook entry of a multi-entry change while keeping the rest applied, instead of only being able to Restore the whole change. Rejecting is refused for anything that could leave a dangling reference (an entry removed as part of deleting its lorebook, or a non-entry row), and the review card shrinks to the entries that remain (#4931).
+- Added a "View as prompt" preview to Professor Mari's Easy Viewer for character and preset edits: a before/after view of how the edit appears in the assembled prompt, with additions in green and removals in red. It is a synthetic preview assembled on its own (default preset, no persona or chat history), not a live chat prompt (#4931).
+- Added literal message search to Conversation and Roleplay chat headers, with compact results that jump to matching messages anywhere in the current chat (#4922).
+- Added a Roleplay Agents-menu stop control that appears only while the current chat has an active generation and can cancel server-side work that survived navigation or a reload (#4942).
+- Added a persisted Send on Enter toggle for Professor Mari and a reusable setup download on New Game's final step before the game starts (#4928, #4930).
+- Added Markdown previews to Conversation, Game, and section content in the preset editor, matching character and lorebook authoring (#4916).
+- Added Discord-style `__underline__` and `-# subtext` rendering throughout chat history and other shared Markdown surfaces (#4914).
+- Added an Easy Viewer to Professor Mari's Keep/Restore review cards: instead of raw `app_data` JSON, her edits now show as a readable before/after diff with removed text in red and added text in green, lorebook entries laid out like the entry editor (name, keys, content, toggles), and a per-change Dismiss control to hide reviewed items and reduce clutter. Deletions and disables are flagged prominently since they are the most consequential, and you can toggle each card between Easy and Raw independently (#4919).
+- Let Professor Mari set every user-editable lorebook entry setting when she creates or edits entries, not just the keyword-matching controls: activation chance (`probability`, clamped 0-100), timing (`sticky`, `cooldown`, `delay`, `ephemeral`), recursion (`preventRecursion`, `excludeRecursion`, `delayUntilRecursion`), inclusion-group weight, per-entry scan depth, lock, folder placement, character/tag/trigger matching filters, and per-entry vectorization (which she only enables when an embedding model is configured) (#4791).
+- Added shared and per-character New Start context markers to group Roleplay, with an avatar target picker and character-colored dividers that let newly introduced characters begin from a later message without truncating the rest of the cast's history (#4905).
+- Added character-targeted Roleplay message hiding through `/hide <character> <number/range>`, including quoted names and the existing single, range, and comma-separated message selectors (#4906).
+- Added a search box, collapsible entries, and sorting to the Professor Mari Skills and Memories panels. Each entry is now a drawer that expands in place to edit; its description shows on wider screens and collapses to just the name on small screens; both panels can be sorted by name (A to Z or Z to A), newest, or oldest; persistent memories are pinned to the top and marked with a star that stays visible while collapsed; and the open editor stays in view so saving or toggling a row no longer scrolls it away (#4868).
+- Added one-click support diagnostics that copy the current version, build, platform, graphics adapter, and active text model for issue reports (#4878).
+- Added SwarmUI as a video-generation backend, including authenticated distributed ComfyUI workflow submission, base64 reference images, model discovery, and MP4 retrieval (#4885).
+- Added responsive batch selection to chat Galleries, with filtered Select All, confirmed multi-image downloads and deletes, and selection cleanup between chats (#4859).
+- Added optional image prompting instructions to image connections, applying them inside existing selfie and Illustrator prompt-writing calls before provider review or generation.
+- Added a Gallery image-agent picker that can run any active custom image-producing agent alongside the base Illustrator (#4846).
+- Added an editable Storyboard Agent shot-planner stage that inspects each generated keyframe before video generation, persists its suitability classification, and falls back to the planned motion when image-aware refinement is unavailable or invalid. The Storyboard Agent page now explains the four-stage prompt workflow and orders its shared prompt editors from illustration through image-aware grounding to video generation (#4839, Pasta-Devs/Marinara-Agents#296).
+- Added batch selection to Character and Persona image galleries so selected images can be downloaded or deleted together after confirmation (#4832).
+- Added a persisted Auto, Low, Medium, or High output-quality choice to GPT Image generation connections (#4831).
+- Added optional character and persona reference sheets under Sprites, with upload, size-bounded AI creation, safe selection cleanup, and an explicit generation-reference toggle that falls back to existing likeness art; both Galleries include the same AI creation entrypoint (#4786).
+- Gave Professor Mari granular preset editing: she can now read a preset's individual sections, groups, and choice-blocks with content previews and add, update, or delete any one of them in place through the Keep/Restore review, instead of only creating or replacing a whole preset — also exposed through a new `mari presets` CLI (#4812).
+- Gave Professor Mari a persistent, retrievable memory: standing preferences and behavior directives you save (or ask her to remember) that she retrieves index-and-fetch: only a lightweight title/description index of your saved memories stays in her prompt every turn (capped by both entry count and total size, and paged so a large store never truncates ids out of reach) and she pulls a memory's full text when it is relevant, so the store stays token-cheap as it grows. Memories marked Persistent inject their full body every turn (charged in full against one budget), so those are meant to be few and small. Saved memories take precedence over her default behavior where they conflict (for example, opting back into edit-without-asking). Every memory she writes goes through the Keep/Restore review and lands disabled until you turn it on (with the review card's Keep & Enable action or the new Memories panel), so nothing she reads can quietly activate a standing instruction, and a dedicated Memories manager lets you create, edit, enable, and pin them directly (#4851).
+- Let Professor Mari propose safe data-only custom Home widgets for explicit confirmation, with persistent responsive cards that users can reorder, hide, restore, and delete from the Widgets manager (#4801).
+- Added the **Please Handle With Care** achievement for dragging the Home navigation Professor Mari around the screen (#4805).
+- Rebuilt Home as a full-width, Firefox-inspired Marinara browser with theme-matched chrome, generated bookmark and tab artwork, a responsive draggable and hideable widget desk with equal spatial slots, space-aware large-widget packing, fine-pointer hover lift and illumination, and a focused five-widget first-run composition, Community shortcuts, compact mobile chrome with fitted destination tabs and a Bookmarks menu, a live timezone-aware cyan-accented clock and calendar, visit-ordered mode-colored recent chats with band-free scene backgrounds, expression sprites, and a fitted three-card mobile view, latest-unlock and nearest-goal achievement previews with distinct shelf and launcher copy, a generated trophy bookmark that follows the master Achievements setting, separate FAQ and widget-manager windows, a highlighted Home onboarding tour, mobile-fitted Guide and Character of the Day cards, and an optional Professor Mari navigator that finds Engine destinations and named resource editors locally without AI, remembers its bounded desktop position, and dangles by her hoodie in a generated pixel animation while dragged (#4763).
+- Moved Noodle into an optional downloadable package that keeps its familiar interface in a Home tab with its paired Noodle/NoodleR logo, blue/pink mobile navigation, and a persistent new-refresh badge, automatically preserves availability for existing profiles, follows the staging Agent catalog during feature review, and leaves timeline data ready for reinstall after removal (#4763, Pasta-Devs/Marinara-Agents#278).
+- Added Arli AI as a built-in text provider for chat connections, using OpenAI-compatible chat completions with models loaded from the Arli AI `/models` endpoint.
+- Added a custom 1–40 place target to the New Game wizard's AI world-map draft options (#4783).
+- Added a compact context-budget indicator to Professor Mari Workspace when message token usage is enabled (#4752).
+- Added per-chat image style overrides for custom image agents, alongside their existing connection overrides (#4718).
+- Added attributed `marinara.fetch` traffic totals and sustained-rate warnings for full-page extensions (#4720).
+- Added SwarmUI image generation, optional account-token authentication, model discovery, and ComfyUI workflow submission through SwarmUI's distributed generation queue (#4702).
+- Added an accent-colored divider above the current Roleplay new-start boundary (#4709).
+- Guided package onboarding can open the active Roleplay chat's Summary popover and assigned prompt preset Sections editor directly.
+- Added explicit step-by-step and immediate World Maps travel modes, with one committed movement per accepted Roleplay or Game turn and recoverable queued routes (#4618).
+- Added a single setting that reduces ambient animations and effects throughout the interface, including automatic support for the operating system's reduced-motion preference (#4631).
+- Added per-chat image-connection overrides and an on-demand snapshot button for image-generating custom agents (#4686).
+- Added a downgrade guard that blocks launches and updates onto an older build once chat data has been sharded, plus an offline `unshard` escape hatch to recover access to chat history (#4738).
+- Added a one-time notice explaining the storage migration after upgrading, with a plain-language summary, a technical-details toggle, and a link to the storage troubleshooting guide (#4762).
+- Added tiered exact, substring, and semantic resolution to Professor Mari's fetch command, letting her find characters, personas, chats, and lorebooks by partial name or description instead of an exact match only (#4778).
+- Added lorebook-authoring guidance for workspace Professor Mari, exposing selective, whole-word, case-sensitive, and regex matching fields and walking her through a user-gated fidelity review so generated entries are no longer skeletal (#4796).
+- Added mari CLI flags for lorebook entry secondary keys, selective matching, selective logic, whole-word matching, case sensitivity, and regex on `add-entry` and `update-entry`, matching the app-data entry editor (#4811).
+- Added lorebook-authoring strategy guidance, a worked multi-control example, and macro/recursion documentation to the lorebook entries guide (#4814).
+- Made Professor Mari's Keep/Restore undo durable across restarts, persisting pending reviews to disk with a 14-day retention window and a 50-item cap (#4828).
+- Added optional, quota-limited synthetic audience activity for public NoodleR posts, with separate likes, replies, reposts, and a manual refresh action.
+- Added a persisted local-day NoodleR fan activity plan with four deterministic platform runs and resumable activity application state.
+- Preserved creator-level fan audience inheritance when editing individual archetype weights, and surfaced source-action failures in NoodleR profile controls.
+- Added a configurable automatic audience-run count, kept manual audience runs available outside that daily budget, and prevented malformed generated activities from failing an entire run.
+- Exposed **Max Parallel Agent Jobs** in local-model runtime settings and used it for agent scheduling and llama-server parallel slots while retaining the configured context budget per request (#4609).
+
+### Changed
+
+- Made Personal and External Extension cards more compact, with only power and delete actions on the card, a single-line status summary, clearer name and description regions, and package export moved into the extension editor.
+- Expanded profile-import previews and quarantine to cover executable tools, personal extensions, persistent Professor Mari memories, and active themes, preserving their contents for deliberate review and re-enabling.
+- Bound downloaded Agent installs and updates to the version and checksum the user reviewed, quarantined imported executable tools until review, and moved custom scripts plus Professor Mari transforms into terminable or OS-sandboxed workers while retaining an explicit reviewed-script fallback on unsupported systems.
+- Repeated local checks now reuse native TypeScript and ESLint caches for unchanged client files (#4938).
+- Manual Agent retries now resolve the same current settings, custom tools, and permitted built-in tools as normal Agent generation while retaining retry-specific historical context and Spotify playback verification (#4894).
+- Localized achievement definitions and official capability-package Home metadata through stable locale-aware contracts with English fallback, and refreshed Home's welcome copy (#4803, #4806).
+- Positioned Professor Mari's navigation helper at the bottom-left on her first appearance while preserving every remembered user placement.
+- Removed the standalone Browser tab and its tutorial step, moved card downloads into split Download/Open Library controls in Characters and Personas, and replaced browser-native card destination and embedded-lorebook prompts with a themed Marinara import flow.
+- Sharded stored messages and message swipes into per-chat files instead of rewriting a chat's entire history on every saved message, migrating existing installs automatically on first boot (#4735).
+- Sharded fourteen more chat-keyed tables (memory, agent runs, game state, calls, gallery, influences, and notes) into per-chat files, cutting write amplification on every turn (#4754).
+- Moved Home Professor Mari's available-name lists out of the system prompt into a per-turn message, stabilizing prompt caching and capping each category at 100 entries (#4771).
+- Ranked Home Professor Mari's available-names list by relevance to the current conversation instead of an alphabetical slice, falling back to alphabetical when relevance data isn't available (#4779).
+- Advanced the stable release identity to v2.4.2 across the Engine, PWA manifest, Windows installer, Android bootstrap APK, update checks, Home page, and release references. Android uses `versionName` `2.4.2` with `versionCode` `43` so it updates over every previously published APK (#4610).
+- Required AI-agent contributions to update the Unreleased changelog for every bug fix, behavior change, and new feature, keeping release notes aligned with the implementation that introduced each change (#4613).
+
+### Fixed
+
+- Fixed Playwright web-server startup on Windows when pnpm launcher metadata or inherited stdin is unavailable (#5126).
+- Included Noodle in Professor Mari's official 32-package catalog knowledge and corrected the current downloadable-package documentation for the v2.4.2 Agent catalog (#4992).
+- Kept version-tagged Docker release images on the stable Marinara Agents catalog instead of following staging after publication.
+- Kept dependency security updates pinned to patched resolutions and made the existing pnpm launcher handoff checks a required pull-request gate, protecting upgrades without forcing users onto a new package-manager major version (#4988).
+- Kept inline Game dialogue and group character macros responsive on malformed or very large generated text without limiting valid authored content (#4984).
+- Removed the 2 GiB application ceiling from automatic and downloadable full backups, using streamed ZIP64 archives so larger local libraries remain restorable without weakening safety limits for ordinary profile imports (#4982).
+- Hardened imported and model-authored content against pathological parsing inputs and reserved metadata keys without removing supported import formats or local tools.
+- Kept automatic and downloadable backups working when local media exceeds the profile importer's ordinary per-file limit, while preserving bounded streaming imports and omitting only an individual unreadable or unarchivable asset instead of failing the whole backup; any omissions are listed in `RESTORE.txt` and automatic-backup status.
+- Kept visible Android browsers connected to a same-device Termux server responsive with a lightweight loopback-only heartbeat, without restoring hidden-tab or remote-client polling (#4968).
+- Kept long-running SwarmUI image requests alive across idle container networking while retaining the configured ComfyUI generation deadline (#4969).
+- Restored Professor Mari preset creation while keeping Engine-owned preset identifiers protected from user input.
+- Updated Roleplay message-edit shortcut hints to mention Ctrl+Enter on Windows as well as Cmd+Enter on macOS (#4965).
+- Kept the Message Avatar Scale and related art-size sliders wide enough to remain visible and repeatedly adjustable in Chrome, including at larger interface display sizes (#4974).
+- Kept an already-installed Noodle Agent visible and usable after downloading an update while its replacement waits for the required Marinara Engine restart (#4976).
+- Prevented crafted profile archives from retargeting saved credentials, serving active files as trusted app content, escaping asset directories through imported metadata, reconstructing blocked theme CSS, or exhausting the importer with oversized metadata.
+- Kept Professor Mari suggestion chips in a single horizontally scrollable row on mobile instead of stacking them above the composer.
+- Hardened local security without removing extension or remote-access capabilities: made Professor Mari filters data-only, encrypted webhook credentials, bounded ZIP extraction and rich-chat network/CSS behavior, restricted automatic network trust to detected runtimes, privatized local data and backups, verified downloads and release commits, and patched audited dependencies.
+- Authenticated APK-managed Android localhost sessions without restricting manual Termux or LAN use, verified the pinned F-Droid Termux APK before install, bound native bridge calls to the exact Engine origin, and made release signing and bootstrap source commits fail closed.
+- Imported preset regex entries even when they contain unsupported SillyTavern placements, warning about ignored placement values instead of discarding the entire regex, and let Music DJ try the next candidate when Spotify accepts but cannot verify the first selected track (#4959, #4960).
+- Refreshed stale same-version browser clients when the server commit changes, so staging fixes such as NovelAI generation-setting saves and connection imports no longer remain hidden behind an older cached interface (#4957).
+- Kept the Termux-hosted server awake while the launcher is running and released the Android wake lock when it stops, preventing backgrounded Termux sessions from freezing until the terminal is reopened (#4956).
+- Kept Professor Mari's generated continuation suggestions available after opening and closing a lorebook (#4953).
+- Made SwarmUI image requests honor the configured ComfyUI timeout instead of inheriting a shorter transport timeout (#4954).
+- Kept canceled Professor Mari prompts out of the composer, made the first message edit persist, and retained retry for the latest response (#4947).
+- Preserved the complete provider-ready prompt produced by Game Mode's dynamic image prompt generator through prompt review and image submission (#4948).
+- Stopped Professor Mari's workspace verification guard from treating ordinary task-completion wording as an unverified data mutation (#4949).
+- Enforced each connection's Max Parallel Agent Jobs limit across separate post-processing Agent batches (#4950).
+- Removed deleted lorebooks from the active chat context immediately instead of leaving a stale cached attachment label (#4951).
+- Made turn-game bot move prompts visible when UI debug mode or `DEBUG_AGENTS` is enabled (follow-up to #4945).
+- Included custom world fields and persona inventory in Agent Suite tracker editing without replacing adjacent tracker data (#4937).
+- Exposed active custom image agents in Conversation Gallery's Illustrate picker, matching the existing Roleplay and Game action (#4940).
+- Resumed pending turn-game bot seats after a regular Conversation reply so UNO cannot remain frozen when a chat send wins the per-chat generation lock (#4941).
+- Made the Game minimap's zoom icons follow the selected interface accent instead of retaining a fixed color (#4944).
+- Matched embedded Long-Term Memory chat settings to the compact spacing, control sizing, typography, and surfaces used by other Agent menus (Pasta-Devs/Marinara-Agents#309).
+- Repaired common malformed JSON in Roleplay and Conversation summaries through the shared JSON-repair path instead of falling back to raw model output (#4925).
+- Kept NovelAI generation defaults from reverting when Save follows a newly committed setup field (#4929).
+- Cleared embedded character-book data and pointers when Professor Mari deletes a whole lorebook, then restored both to the actual embedding character on Restore, including empty and multi-linked books (#4932).
+- Preserved an enabled Spotify repeat setting when Music DJ replaces playback with a multi-song selection, looping the selected set as one context (#4934).
+- Kept a character's embedded lorebook in sync when Professor Mari edits it: adding, updating, or deleting an entry (or restoring one of those changes) in a lorebook embedded in a character card now rebuilds that character's copy, instead of leaving it stale as only her edits did before (#4927).
+- Gave Professor Mari a safe way to delete a single lorebook entry (`lorebook.deleteEntry`) and told her to use it instead of a raw `mari db delete`, which previously let her remove far more entries than intended when asked to delete just one (#4924).
+- Preserved unsent Home Professor Mari messages across editor navigation and app restarts until they are sent or explicitly cleared (#4915).
+- Taught workspace Professor Mari to revise an existing saved memory when asked, instead of declining that a matching memory "already exists": her guidance now includes a read-then-rewrite recipe and worked example for editing a memory's content in place (the same pattern she uses for preset sections), which also works on an enabled or persistent memory without turning it off (#4917).
+- Made Force To Call Tool serialize native required-tool controls for Google Gemini, Vertex AI, and compatible Anthropic requests, while safely falling back to automatic choice for manual Claude extended thinking and Mythos (#4907).
+- Fixed the open-issues regression failing on Windows checkouts: its chat-summary reorder check matched the entry container and the touch-reorder row within a fixed character distance that CRLF line endings pushed just over the limit, so it now verifies the shared desktop and touch reorder surface on the row element directly, independent of line endings and where the row is defined (#4911).
+- Restored Music DJ Spotify playback by clearing the previous repeat mode before replacing a multi-song context, reapplying repeat only after the selected first track is verified, and surfacing persistent URI mismatches as failures instead of false pending successes (#4903).
+- Made persona saves reliable: the editor now sends only the fields you actually changed, keeps edits made while a save is still running, prevents saves and avatar replacements from overlapping, blocks its own Back and Discard controls mid-write, and explains exactly which field a rejected save objected to — including an empty persona name.
+- Made Reduce Ambient Animations & Effects flatten costly backdrop blur on desktop as well as mobile, including shared Conversation overlays (#4897).
+- Applied embedded character-card fields when replacing an existing character's avatar, so updated card PNGs refresh the matching editor sections (#4896).
+- Kept automatic summaries chronologically ordered and hidden when requested, while allowing users to rearrange summary entries by drag and drop on desktop and mobile (#4891).
+- Clarified Professor Mari's character-card field guidance so requested backstory, appearance, and other sections are edited independently without replacing unrelated content (#4874).
+- Rewrote the animated glow in the Card CSS Theming guide example to animate `opacity` on an overlay layer instead of the message bubble's `box-shadow`. Animating `box-shadow` forced a full repaint every frame and could pin a weak GPU; the example now demonstrates the GPU-composited pattern instead (#4897).
+- Matched Feature agent pages to the shared Agent editor chrome and Chroma accent, and correctly recognized their owning package as installed. (#4892)
+- Kept the Your Guide Professor Mari action icon synchronized with its label color.
+- Kept Sidecar tracker counts and bulk local assignment current when capability Agent packages hydrate or refresh, and centralized Agent result-type admission behind one shared compatibility-tested vocabulary.
+- Kept explicitly selected persona-linked lorebooks usable outside their owner persona while preserving automatic owner matching and chat exclusions (#4887).
+- Extended the Roleplay New Start divider across the full message body for user messages as well as assistant messages (#4886).
+- Applied Game image prompt overrides and the selected Illustrator prompt template to Game prompt-director requests, including manual portraits that use the Illustrator agent's image connection and explicitly customized prompt settings when the general dynamic-prompt toggle is off (#4880).
+- Made Game combat use character-sheet levels, resource pools, and typed abilities instead of deriving levels from HP and treating every ability as an attack (#4881).
+- Recorded the fallback provider and model on messages it actually generated instead of displaying the failed primary model (#4879).
+- Remembered the Echo Chamber corner independently for each chat and flushes position changes immediately so they survive tab changes and app restarts (#4882).
+- Made chat generation-parameter send toggles authoritative, so disabling Verbosity omits it from provider requests even when a preset still has a selected verbosity value (#4883).
+- Fixed the Windows installer falsely rejecting the required pnpm version when its version command emits LF-only output, while continuing to reject failed commands and mismatched versions (#4875).
+- Kept Random Model chats on a stable configured embedding source during Memory Recall refreshes instead of falling back to the local embedder (#4864).
+- Restored installed feature-only packages such as Noodle to the Agents management pane while keeping them out of ordinary chat-agent pickers (#4865).
+- Preserved bold formatting nested inside italic user messages (#4866).
+- Made server-present UI settings authoritative when an older browser cache has no trustworthy timestamp, while retaining local values only for settings absent from the server (#4867).
+- Protected Marinara's stock Universal Preset from deletion and direct edits, restored it when missing or changed, and preserved requested edits in a separate editable copy (#4871).
+- Re-enabled Character card lorebook embedding immediately after an embedded lorebook is removed (#4872).
+- Preserved Game Send-on-Enter and tutorial-dismissal preferences across their sync and local-storage boundaries, and made Session Logs honor persisted token counts and current-session markers after message metadata hydration (#4869).
+- Kept Recent Chats previews separate on narrow desktop windows by limiting the constrained two-column layout to the four newest chats while preserving the existing mobile and wide-screen counts (#4858).
+- Scoped image-connection prompt instructions to image-producing agents, bounded stored instructions to 20,000 characters, and kept each retry agent on its own configured image connection.
+- Kept chat settings profiles within their saved chat mode, migrated legacy Visual Novel profiles to Roleplay on import, and prevented reusable profiles from overwriting branch identity (#4849).
+- Served the Home shell directly for unknown routes so Termux mobile launches cannot recurse through the server's 404 handler (#4850).
+- Corrected legacy Google Gemini `/v1` connection URLs to `/v1beta` for connection checks, model discovery, chat generation, and embeddings (#4854).
+- Removed the decorative address bar from mobile Home and the obsolete close action from Professor Mari's Home tab while retaining the full desktop browser frame (#4855).
+- Restored intuitive mobile swipe navigation for Conversation transcripts while preserving Roleplay swipes and interactive controls (#4841).
+- Made Memory Recall re-vectorization exclusive with background chunking so embedding-model changes cannot leave mixed vector dimensions (#4843).
+- Saved pending Lorebook vector settings before vectorization and surfaced provider or eligibility failures instead of reporting a misleading zero-vector success (#4844).
+- Recovered expected sharded chat history from its preserved pre-shard backup when a restored profile contains no message shards (#4845).
+- Kept Professor Mari's Home navigator enabled by default and visible with reduced effects, reset her to the default position when re-enabled, centered her drag handle, contained compact Field Notes and Community actions, and presented iPad sidebars as full-width overlays (#4826, #4827, #4829, #4830).
+- Sharpened Professor Mari's read-only guardrail so a "how do I…" question is answered or offered rather than performed, even when it names the change as its goal (for example "how do I make X have Y") — while a plainly-worded request to make that change, including a polite question form like "can you set X to Y", is still carried out — so she keys on intent rather than grammar and no longer edits without a clear instruction (#4838).
+- Reduced background autonomous-message polling to a lightweight candidate-id lookup instead of re-fetching the full chat list every 30 seconds (#4715).
+- Stopped the server's autonomous-messaging scheduler from sweeping every 60 seconds when no chats had changed, cutting idle load on self-hosted installs (#4716).
+- Stopped chat message history from being fully re-downloaded on reconnects, background generations, and Professor Mari workspace changes (#4719).
+- Replaced the `.env` config watcher's 2-second stat-poll with an event-driven directory watch (falling back to a slower 30-second poll only if needed), cutting a constant idle-wakeup cost on phone and Termux installs (#4723).
+- Moved the Chat Settings secret-plot reader off the shared chat transcript query, so **Load More** no longer disappears while older messages still exist and the secret-plot panel stays current after new messages arrive (#4725).
+- Replaced fixed 25ms Personal Extension sandbox polling with an adaptive cadence that idles down once traffic quiets, cutting background wakeups and flash writes for every running server extension on phone and Termux installs (#4727).
+- Bounded Professor Mari's workspace data reads so oversized character/lorebook fields are elided with a readable note and recoverable via drill-down, instead of being silently truncated mid-JSON (#4776).
+- Stopped Professor Mari from making unrequested changes when only asked to inspect, explain, or get how-to guidance, answering informational requests without modifying anything (#4816).
+- Routed every Professor Mari workspace create through the same Keep/Restore review as edits and deletes, so an unwanted creation can be undone in chat, and blocked creates from overwriting existing rows with colliding IDs (#4825).
+- Corrected Home and Appearance presentation regressions affecting semantic chat-mode colors, the Square avatar preview, Noodle notification placement, compact mobile Achievements, Discovery Desk spacing, mobile Bookmarks motion, and consistent widget-manager labels (#4809, #4817, #4818, #4819, #4820, #4821, #4823).
+- Restored Game party portrait file selection for Character, Persona, and NPC sheets whether or not the sheet editor is active (#4793).
+- Kept legacy reaction payloads out of rendered message content, accepted `/title <name>` in Professor Mari chats, and let her navigator open an exact saved chat title (#4782, #4794, #4800).
+- Standardized gradient-stop editing on Marinara's owned color controls and tightened Home responsiveness, including Guide overflow, deleted Recent Chats, semantic mode colors, decorative browser refresh behavior, larger Mari drag targeting, and pausing Home animations while the app is unfocused (#4797, #4799, #4802, #4804, #4807, #4808, #4809).
+- Kept blank messages and hidden command anchors out of Home's Recent Chats previews, counted paginated chat histories without materializing every message ID, stabilized history cursors across deletions, and rejected malformed cursors.
+- Applied the selected tag-import mode when a downloaded character card is imported as a persona.
+- Matched the Character and Persona Download/Open Library launchers to the Chats segmented controls with an exact centered split, fixed icon sizing, and single-line labels.
+- Kept Professor Mari's held navigation animation mounted, frame-snapped, paint-batched, and slightly wider so repeated grabs no longer flash the wrong sprite frame, stutter under pointer movement, or squash her proportions.
+- Mirrored Professor Mari's navigation speech-bubble tail from one canonical shape when her dialog switches sides and seated it flush against either dialog edge.
+- Centered the desktop **Ask Me Where Things Are** tutorial card and spotlighted Professor Mari's actual navigation bubble instead of her full-screen drag surface.
+- Standardized chat-mode icons across Home, Chats, creation flows, shortcuts, and linked chats: Conversation keeps its message bubble, Roleplay uses theater masks, and Game uses a gamepad without colliding with Lorebooks.
+- Kept mobile Chats, Settings, and tracker panels above the Home browser chrome so their controls remain tappable.
+- Stopped hidden Home and Professor surfaces from retaining navigation timers, pending focus frames, message-history requests, Discovery rotation, and workspace-status polling after their lifecycle ended.
+- Kept Professor Mari's navigation dialog controls clickable when her draggable sprite overlaps the dialog.
+- Kept Professor Mari suggestion chips visible after entering her Home tab instead of briefly showing them before loaded chat history made the composer jump.
+- Rejected malformed Persona create/edit fields and normalized downloaded Persona copies with fallback names plus unsafe-paint cleanup without changing saved Personas (#4857).
+- Kept NovelAI V4.5 style-plate file selection inside the Connection editor across Chromium platforms (#4777).
+- Deactivated and revealed lorebooks that lose their final owner, replaced Lorebook Keeper entry bodies without stacking duplicates, and added sandbox-safe structured file copy, move, and removal tools for Android/Termux (#4775).
+- Let readers scroll through Professor Mari history while her response is still streaming (#4774).
+- Replaced the browser-native single-chat deletion prompt in Professor Mari with Marinara's confirmation dialog (#4773).
+- Preserved Tracker panel controls at their configured width, kept the panel aligned beside the right sidebar, and made closing its detached window close the panel (#4772).
+- Displayed the actual error output beneath failed Professor Mari workspace tool events (#4770).
+- Quarantined an automatic-generation connection for six hours after three consecutive provider failures while keeping foreground chats available (#4769).
+- Moved smart group responder selection to the default Agent connection with Agent fallback and the connection's saved generation parameters instead of a fixed 512-token chat-connection call (#4765).
+- Shared Professor Mari's robust JSON repair waterfall with structured agents so repairable malformed or truncated output no longer wastes retries (#4753).
+- Revalidated replaceable user backgrounds so re-importing a different image under a deleted filename no longer displays stale browser-cached pixels (#4757).
+- Kept NovelAI V4.5 style-plate uploads inside the Connection editor by decoding oversized images directly to a bounded preview and avoiding redundant copies of their encoded data (#4748).
+- Replaced the Windows Chromium native Connection and Preset popups in new Conversation and Roleplay setup with readable themed selectors (#4750).
+- Kept explicitly disabled Boolean preset choices empty instead of injecting their first option into prompts (#4740).
+- Resolved current DeepSeek, MiMo, GLM, and Kimi output limits through NanoGPT, OpenRouter, and custom OAI-compatible connections, and stopped Professor Mari before executing tool calls from truncated output (#4741).
+- Sent explicit OpenRouter prompt-caching markers for every compatible model, including Gemini, instead of limiting the option to Claude (#4742).
+- Gave native Connection and Preset dropdown options readable theme colors in the new Conversation and Roleplay setup wizards on Chromium (#4743).
+- Prepared and bounded NovelAI V4.5 style-plate uploads before previewing them so large images no longer destabilize the Connection editor (#4744).
+- Let capability packages use the remote embedding source configured on their agent connection, retaining local MiniLM only as a fallback (#4745).
+- Reused matching avatars from the full Character library in both Game portrait-generation paths instead of repeatedly generating replacements (#4746).
+- Isolated the tracker panel's newest-message lookup from transcript pagination settings (#4724).
+- Preserved speaker names and timestamps in individual Conversation group history so characters can distinguish prior speakers (#4726).
+- Raised the default Termux Node.js heap limit for large profiles while preserving user-supplied limits (#4730).
+- Reconciled failed-generation prompts by submission ID so API errors do not show duplicate user messages (#4731).
+- Saved Echo Chamber resizing when pointer capture ends outside the resize handle, preserving its per-chat size across navigation and restarts (#4733).
+- Kept the selected Narrative Director push-story instruction in every individual group responder prompt, independent of queue and Secret Plot settings (#4734).
+- Allowed server extensions to finish storage writes registered through `onCleanup` during a polite stop.
+- Made edits to Conversation replies that contained character commands reach the model instead of the original wording (#4728).
+- Kept the full desktop Roleplay edit checkmark above overlapping message layers so its entire visible hit target remains clickable (#4700).
+- Made the Windows launcher and installer detect Node.js by running it directly instead of requiring `where.exe` (#4701).
+- Added the standard expanded editor and macro guide controls to Roleplay summary editors (#4710).
+- Matched Chats hover loading text and visible error details, including “Internal Server Error,” to the active accent/chroma text color (#4712).
+- Isolated the memoized Chat area from unrelated topbar state and stabilized message mutation callbacks, preventing unchanged Roleplay transcripts from rerendering when tabs open (#4713).
+- Applied the committed-message Markdown, action, and dialogue-color formatter to Roleplay output as it streams, while keeping updates coalesced to animation frames (#4714).
+- Show the localized validation error before restoring an invalid all-zero NoodleR fan activity weight.
+- Asked for confirmation before permanently deleting a prompt block from preset chat settings (#4698).
+- Let Professor Mari read trusted Wikipedia links through her structured wiki tools on Android while keeping raw shell networking sandboxed (#4691).
+- Stopped Illustrator from appending its generic anti-text list to NovelAI negative prompts, preserving the prompt supplied by the agent (#4692).
+- Converted NovelAI style-reference fidelity to the provider's inverse secondary-strength scale before sending the request (#4693).
+- Bounded delayed Roleplay typewriter catch-up and disabled competing Echo Chamber smooth scrolling during the main stream, keeping parallel-agent output fluid (#4694).
+- Kept Character and Persona gallery controls inside mobile cards, added deletion to their expanded image views, and matched Chat gallery delete actions to the configured accent (#4695).
+- Removed app-wide color-transition storms and synchronous cursor recoloring from animated accent ticks, and deferred offscreen gallery rendering to keep long sessions responsive (#4696).
+- Scoped cross-chat awareness in individual group conversations to the character currently replying (#4688).
+- Reconciled just-sent Roleplay messages with their saved IDs before editing so the first edit after stopping generation persists (#4678).
+- Retried one transient Roleplay message-edit save failure so remote sessions persist the edit without requiring another manual Save action (#4678).
+- Kept Persona tags, stats, saved statuses, avatar crops, tracker colors, and conversation settings intact across loading, editing, duplicating, restoring, and switching Personas by returning one consistent Persona API shape (#4646).
+- Included the active Conversation cast's avatar references and appearance descriptions in guided group selfies (#4676).
+- Added native Arli.ai image generation with authenticated text-to-image and image-to-image requests (#4672).
+- Let Professor Mari read complete lorebook entry bodies through her structured app-data tools instead of receiving only truncated entry previews (#4673).
+- Removed conflicting color-environment and unused React Compiler/Babel warnings from test and lint runs, refreshed smoke coverage for the current release, schema, agent, and Noodle settings surfaces, and preserved a reader's exact mobile chat position when the keyboard opens (#4670).
+- Kept source Chat Summary entries as inactive history after combining summaries in Roleplay mode instead of deleting them, and revealed that history immediately after each combine.
+- Removed local Character and Persona avatar files when their cards are deleted individually or through Danger Zone, including avatars retained only by deleted card-version history (#4668).
+- Installed the pinned pnpm automatically when the Windows installer cannot use Corepack, an existing pnpm, or its temporary runner (#4662).
+- Exposed saved prompt choices for active Roleplay tracker agents in Chat Settings, matching the existing Game-mode selector (#4663).
+- Centered the avatar-upload camera and inset the AI-generation action so both controls remain fully visible over the mini preview in Character and Persona editors (#4665).
+- Simplified proactive Conversation intent hints so check-ins follow the selected moment without extra tone instructions.
+- Distributed mobile topbar icons evenly across the available screen width without changing the desktop layout (#4666).
+- Kept the caret at the chosen insertion point while typing in expanded Character and Preset editors instead of repeatedly focusing the field and jumping to the end (#4656).
+- Restored a full, unobstructed hit target for Roleplay message edit controls so Save no longer reacts only near one corner (#4658).
+- Coalesced Roleplay streaming presentation to animation frames to limit Firefox accessibility-tree churn (#4659).
+- Added an independent Noodle timeline image-size setting, defaulting to the GPT-Image-compatible 1024x1536 portrait canvas instead of reusing the Illustrator dimensions (#4660).
+- Made NoodleR stage-profile drafts tolerate single-item array responses, extra model fields, and decorated handles from local models while ignoring model-provided disclosure modes, discarding invalid values, and applying the requested valid mode (#4626).
+- Removed deprecated generation parameters from single and bulk prompt-preset exports and ignored them when importing older Marinara or SillyTavern preset files (#4650).
+- Kept the selected prompt checkmark above the Presets avatar frame instead of clipping it into the rounded image border (#4651).
+- Kept Roleplay message editors open until the save is confirmed, so a delayed mobile save after stopping generation cannot briefly restore stale text or discard the first edit (#4649).
+- Kept the reasoning action visible when a provider reports hidden reasoning-token usage but omits the displayable summary, and explained the missing summary in the Model Thoughts panel.
+- Coalesced Professor Mari's streaming transcript work to animation frames and released her input lock before best-effort refreshes, preventing long replies and stalled cleanup requests from leaving the assistant unresponsive (#4628, #4637).
+- Stopped personal extensions and their policy from polling on every screen and in background tabs; existing query invalidation now refreshes them after changes (#4629).
+- Added each active Game tracker agent's available prompt templates to Chat Settings for quick per-chat selection (#4640).
+- Rebuilt incomplete Android/Termux output when a dist directory exists without its required entry file, preventing the server from starting into a browser and app 404 loop (#4639).
+- Raised profile ZIP import capacity from the former 1 GiB ceiling to the ZIP32 format limit while retaining per-entry and expanded-size safety limits (#4641).
+- Moved full Docker images to Debian Trixie so ARM64 sidecars can load the required glibc and libstdc++ symbols (#4638).
+- Matched the **Add character to active chat** button to the neighboring Character row actions in folders and standalone rows on desktop and mobile.
+- Stopped the NoodleR reserve poll from scanning the prepared-post and Noodle post tables every minute when automatic posting is off and no reserve posts exist, and backed the automatic timeline-refresh poll off to 15 minutes while refreshes are disabled, cutting idle CPU wake-ups on phone and Termux installs (#4630).
+- Removed duplicate safe-area padding from Noodle's mobile setup footer so the shared shell remains the single owner of spacing above Android navigation controls (#4586).
+- Kept the first edit to a sent user message after canceling generation instead of discarding it when transient swipe cleanup changes the active index (#4608).
+- Matched the **Add character to active chat** action to neighboring controls in folders and standalone Character rows, including a visible consistently sized icon on desktop and mobile (#4611).
+- Made **Clear Trackers** use the configured accent hover treatment instead of a destructive red state (#4612).
+- Made agent calls inherit the selected connection's temperature and parameter-send policy, with 0.7 as the default when no temperature is configured, and kept incompatible per-agent settings isolated during batching (#4614).
+- Reduced Spotify Music DJ execution to one full-context planning request followed by deterministic playback, and clarified per-round versus cumulative timing in agent debug output (#4615).
+- Added preset picture upload and replacement controls to the Presets panel and preset Overview editor, matching the existing lorebook picture workflow while cleaning up replaced and deleted artwork (#4624).
+- Prevented completed NoodleR profile-draft generations from restoring an editor after the user canceled, changed sources, or moved to another draft flow.
+
+## [2.4.1]
+
+### Added
+
+- Added a Creator management area to NoodleR profiles that tracks changes to the linked character or persona, shows expandable old/new source values, supports open-profile name and handle adoption, offers review-before-save re-drafting, and lets users accept the current source as the new baseline. Missing imported sources now disable generation and present a delete-only recovery state.
+- Let a capability package provide an entire Game mode: a package declaring the new `game-surface` slot draws its own HUD, menus and combat over the shared narration, is chosen while a game is created from the **Experiences** block of the setup wizard, and declares which built-in systems it replaces — anything left undeclared stays built-in, so an ordinary game is unchanged. Supporting host changes: packages holding `prompt-context` can now contribute to each turn's system prompt (the permission previously had no consumer), the resource facade gained optional write methods for the player persona and lorebooks, and the asset manifest is re-scanned after packages activate so art a package installs is visible without a second restart (#4526).
+- Added portable character-gallery image references: `card://self/gallery/<filename>` in a greeting or message resolves to whichever character is speaking, so gallery images embedded in a card keep working after export and import (character ids are regenerated on import, which broke id-based links). The character gallery gains a **Copy image reference** button that produces the portable form, editor field previews resolve it for the edited character, group-chat replies resolve `self` per speaker segment, and the native-export importer now preserves gallery filenames (sanitized, collision-safe) instead of renaming every image, which is the fix that makes the references survive the round trip. Documented in the Character Galleries and Sending & Streaming guides.
+- Added the **Hindi** documentation language pack, covering all 124 in-app guides (developer docs included) in natural Hindi, with English UI control names preserved for following instructions against the interface and Hindi sidebar category labels in the docs viewer. Select it under **Settings → General → Documentation Language** via **Download & Replace** (#4471).
+- Taught the docs viewer to render right-to-left documentation, ahead of the planned Arabic pack: each guide follows its served language's reading direction (untranslated English fallbacks stay left-to-right), code spans and fences keep their left-to-right order inside RTL prose, and lists/tables/panels use direction-aware styling. Three deliberate refinements are visible today: search highlights lose their slight inset so they can no longer sever cursive letter joining, sidebars whose category headers use non-Latin scripts (Japanese, Korean, Chinese, Hindi) drop the small-caps letter-spacing that misfit them, and the "Last updated" dates now follow the app's language instead of the browser's. Everything else renders identically for existing packs (#4489).
+- Added optional prompt-preset targeting to regex scripts and refreshed the existing character target picker so scoped regexes follow the selected preset or characters without clipped controls (#4446).
+
+### Changed
+
+- Advanced the stable release identity to v2.4.1 across the Engine, PWA manifest, Windows installer, Android bootstrap APK, update checks, Home page, and release references. Android uses `versionName` `2.4.1` with `versionCode` `42` so it updates over every previously published APK.
+
+### Fixed
+
+- Updated the pinned pnpm toolchain to 10.34.5 across launchers, installers, update commands, containers, and CI as routine maintenance. The Corepack pin includes the release tarball's SHA-512 digest, mismatched global versions are rejected, and launchers reselect the repository pin after pulling future updates. Existing 10.33.2 launchers can finish this one transition without requiring an extra restart (#4581).
+- Preserved full JannyAI definition fields by falling back to recovered page data when the original PNG is blocked, and stopped incomplete search metadata from masquerading as a complete character import (#4497).
+- Matched PocketTTS's official `localhost:8000` multipart `/tts` API and built-in voice catalog while retaining automatic compatibility with existing OpenAI-style PocketTTS wrapper URLs (#4499).
+- Let custom post-processing agents evaluate activation keywords against the completed assistant response, so Scan Depth 1 now sees the message the agent is meant to process (#4498).
+- Refined Roleplay Chat Summary controls with a centered Backfill action, a Chat Summary/Combine prompt switcher, and one Edit path that keeps the active prompt visible above template editing (#4501).
+- Sorted the **Settings → General → Language** dropdown by language code with English pinned first, matching the Documentation Language selector. The previous native-label sort used a different collation per entry, which scrambled the order across scripts (#4471).
+- Sent Noodle image instructions to the timeline model, and stopped the default Noodle Post Image template from appending them to the image-generation prompt, so directions like "mention build, clothing, pose, lighting" now shape the generated image description instead of reaching ComfyUI as literal prompt text. Custom templates that still reference `{{userInstructions}}` continue to append it verbatim. Raw style tokens belong in an image style profile, which applies to every Noodle image.
+- Stripped label text and language-model framing from the character personality and image-habit blocks in the Noodle image prompt, so the image model receives the descriptive values instead of sentences written for an LLM.
+- Dropped the `Character appearance notes:` header from the shared illustrator appearance block, which every caller appends directly to an image prompt, so diffusion models stop receiving the label as drawable text.
+- Kept Storyboard planner fallback warnings visible through prompt review and saved Game/Roleplay storyboards, made **Attach Card Appearance** authoritative without duplicating appearance context, and expanded fallback narration beats without cutting words (#4544).
+- Let Characters, Personas, Lorebooks, Agents, Presets, and Connections sidebar labels use the full desktop row width beneath hover actions, and made Conversation Call clip-length rows size to their panel instead of clipping labels beside fixed-width fields (#4449).
+- Removed accumulated duplicate built-in **Default** settings profiles during startup normalization while preserving one stable profile and active selection per chat mode (#4442).
+- Kept `/scene` chats and standalone conversions out of Conversation branch groups so original conversations remain visible in the Conversation sidebar (#4443).
+- Taught Professor Mari the supported custom `image_prompt` agent configuration, including marker activation and the image-generation capability, so she creates requested image agents instead of falsely refusing them (#4444).
+- Kept Google Gemini API keys in the `x-goog-api-key` header when fetching models instead of duplicating them in the URL, preventing compatible proxies from rejecting the query token with HTTP 401 (#4448).
+- Preserved the reader's pre-keyboard scroll position in mobile Roleplay instead of snapping the transcript to the newest message when the composer receives focus (#4589).
+- Kept Characters and Personas library artwork flush with the full height of mobile cards, made Character Chat actions match the compact Copy and Delete controls on desktop and mobile, and kept folder counts clear of Delete actions across Characters, Personas, Presets, Lorebooks, Connections, and Agents.
+- Kept the first confirmed edit to a sent Roleplay message after stopping generation, including on mobile where a transient missing/default swipe index previously made the edit look stale (#4592).
+- Restored Chub NSFW search results, including cards whose current search payload exposes the canonical NSFW topic without a boolean flag; filtered result totals and pagination now follow Chub's reported count, and the page label has its missing space (#4593).
+- Kept a provider-refused prompt out of the composer when that user turn was already saved in chat history, while still restoring drafts for requests that genuinely failed before persistence (#4594).
+- Made Game Mode dice cards preserve declared dice notation and avoid presenting discarded dice or success pools as false addition equations (#4683).
+
+## [2.4.0]
+
+### Added
+
+- Added validated JSON export and import for Conversation character schedules. Imports load as unsaved drafts, preserve the existing schedule until explicitly saved, and move restored routines to the current week (#4414).
+- Added Z.AI as a native Image Generation service with GLM-Image and CogView 4 models, model-aware aspect-ratio sizing, authenticated native requests, and safe local storage of returned image URLs (#4350).
+- Added compact multi-selection and bulk deletion to Professor Mari's chat history, including a single destructive confirmation and automatic replacement when the active chat is removed (#4353).
+- Added Character-ID macros such as `{{V1StGXR8_Z5jdHi6B-myT}}` for loading another card's context into the system prompt without its greetings or example dialogue, while still applying normally activated attached lorebooks (#4336).
+- Added selection and one-click condensation of multiple ordered chat summaries into a single summary entry (#4334).
+- Added a visibility toggle for reimported embedded Character lorebooks so they remain linked, active, and editable without cluttering general lorebook searches and selectors (#4333).
+- Added Illustrator-style image connection, reference-image, appearance, and prompt controls to custom agents whose result type is **Image Prompt** (#4337).
+- Added **Recent** as the default chat sort, based on last-message activity, while **Newest** and **Oldest** now use chat creation dates (#4341).
+- Added a single-shot animation director to Roleplay Gallery **Animate**. The selected Prompt Model now plans motion, camera behavior, supported dialogue, sound effects, ambience, and an ending hold from the exchange behind the Illustrator image, while the existing image remains frame zero and Game Storyboard behavior stays unchanged. Its duration-aware instructions are editable under **Settings > Generations > Video Generation Prompt Overrides** with `${durationSeconds}` support (#4311).
+- Added an external-only **Full page access** compatibility mode for legacy Browser Extensions such as WeatherTweaker. The safe opaque-origin Worker remains the default; page-level code requires both External Extension gates, explicit exact-hash approval with a dedicated high-risk disclosure, and fresh approval after every code, CSS, or permission change. Pre-sandbox `marinara.extension` v1 packages without an explicit capabilities field are classified into this review flow instead of silently failing in the Worker (#4319).
+- Added Browser Personal Extension API version 5 with read-only active chat and Character identifiers, plus separately reviewable permissions for bounded snapshots of the active Character cards and selected Persona. Extensions such as Notepad can keep per-chat or per-Character state and display active profile context without gaining access to messages, full libraries, undeclared fields, chat metadata, DOM, database, network, or mutation operations (#4316).
+- Added per-agent context controls for custom agents, allowing each agent to request only the chat history, Character, Persona, lorebook, summary, Author's Note, tracker, and recalled-memory context it needs (#4305).
+- Added Markdown preview toggles to Character, Persona, and lorebook text fields, and rendered formatted card text in library detail views (#4306).
+- Added the **Simplified Chinese** documentation language pack, covering all 124 in-app guides (developer docs included) in natural Simplified Chinese (simplified characters only, the Chinese SillyTavern community's established terms such as 世界书 and 角色卡, one term and one CJK-Latin spacing convention per concept so search always matches, product names kept in Latin script), with English UI control names preserved for following instructions against the interface and Chinese sidebar category labels in the docs viewer. Select it under **Settings → General → Documentation Language** via **Download & Replace** (#4435).
+- Added the **Korean** documentation language pack, covering all 123 in-app guides (developer docs included) in natural Korean (the 합니다체 register standard in Korean software, one transcription and one spacing per term so search always matches, product names kept in Latin script with correct particle attachment), with English UI control names preserved for following instructions against the interface — glossed to match the app's Korean UI translation where a shipped string exists — and Korean sidebar category labels in the docs viewer. Select it under **Settings → General → Documentation Language** via **Download & Replace** (#4374).
+- Added the **Japanese** documentation language pack, covering all 123 in-app guides (developer docs included) in natural Japanese (the polite です・ます register standard in Japanese software, one katakana spelling per term and half-width Latin and digits everywhere so search always matches, product names kept in Latin script), with English UI control names preserved for following instructions against the interface and Japanese sidebar category labels in the docs viewer. Select it under **Settings → General → Documentation Language** via **Download & Replace** (#4345).
+- Added the **Russian** documentation language pack, covering all 123 in-app guides (developer docs included) in natural Russian (the "вы" address of mainstream Russian software with gender-neutral phrasing, product names kept in Latin script and undeclined so search always matches, standard Cyrillic loanword declension), with English UI control names preserved for following instructions against the interface and Russian sidebar category labels in the docs viewer. Select it under **Settings → General → Documentation Language** via **Download & Replace** (#4281).
+- Added the **Polish** documentation language pack, covering all 123 in-app guides (developer docs included) in natural Polish (informal address with gender-neutral phrasing, product names kept undeclined so search always matches, standard Polish loanword declension), with English UI control names preserved for following instructions against the interface and Polish sidebar category labels in the docs viewer. Select it under **Settings → General → Documentation Language** via **Download & Replace** (#4235).
+
+- Added an optional radial-gauge layout for Persona and Character tracker stats, with editable icons, percentage readouts, subtle low-stat warnings, and improved featured-card spacing and thought placement.
+- Added the **Brazilian Portuguese** documentation language pack, covering all 123 in-app guides (developer docs included) in natural Brazilian Portuguese ("você", Brazilian vocabulary and current orthography), with English UI control names preserved for following instructions against the interface and Portuguese sidebar category labels in the docs viewer. Select it under **Settings → General → Documentation Language** via **Download & Replace**. The tutorial's language suggestion now also matches region-suffixed locales, so a pt-BR interface proposes the pt-br guides on first run (#4229).
+
+- Added the **French** documentation language pack, covering all 123 in-app guides (developer docs included) in natural standard French with informal address, English UI control names preserved for following instructions against the interface, and French sidebar category labels in the docs viewer. Select it under **Settings → General → Documentation Language** via **Download & Replace** (#4191).
+- Added the **German** documentation language pack, covering all 123 in-app guides (developer docs included) in natural standard German with informal address, English UI control names preserved for following instructions against the interface, and German sidebar category labels in the docs viewer. Select it under **Settings → General → Documentation Language** via **Download & Replace** (#4157).
+- Added a **Documentation Language** selector under **Settings → General** and at the end of the first-time tutorial. Languages ship as downloadable packs from the repository's `docs-i18n` branch: **Download & Replace** fetches the selected language into the data folder with per-file integrity verification and live progress, then removes the previous language's pack, so installs carry only one language and checkouts carry none. Guides without a translation open in English with an `EN` badge, the in-app docs search works in the active language, the choice survives every update path, the first start after an update automatically refreshes the pack when its translations changed, and a **Fix documentation** failsafe verifies, re-downloads, or resets a broken pack. Forks and mirrors can point `DOCS_I18N_BASE_URL` at their own copy of the branch (#4100).
+- Added the first documentation language pack: **Spanish**, covering all 123 in-app guides (developer docs included) in neutral international Spanish, with UI control names kept in English so instructions can be followed against the English interface. Contributor docs now require keeping every language pack on `docs-i18n` in step when guides change (#4100).
+- Added rotating daily, weekly, or monthly automatic full backups under **Settings → Advanced → Backup & Export**, with the latest run and failure state shown in the UI (#4071).
+- Added a **Retry** action to Game Mode character-sheet editing. It regenerates only the selected Persona or party member from their card and the current campaign history, keeps the result as an unsaved draft for review, and preserves the original sheet unless the user saves (#4048).
+- Added a compact **New Chat** launcher to Home that explains Conversation, Roleplay, and Game before opening the selected mode's existing setup wizard (#4058).
+- Added a Roleplay **Illustrator image connection** override in Chat Settings, separate from the prompt-writing connection and with the Illustrator Agent's configured image model as its fallback (#4057).
+
+### Changed
+
+- Matched the **Read how this agent works** action to the install, update, and uninstall button typography and styling in Download Agents.
+- Made Noodle and NoodleR switch to their existing mobile layouts whenever the center pane falls below the desktop width, including when sidebars reduce the available space on a desktop device.
+- Standardized resource-panel sorting controls on the shared width used by the Chats tab, so the Lorebooks selector no longer expands beyond neighboring tabs.
+- Made the empty **No messages yet** chat hover preview inherit the configured app accent instead of the default theme's fixed lavender-pink.
+- Kept World Maps navigation inside the **Agents** tab and **Chat Settings** by removing its dedicated launchers from the Chats sidebar and top bar.
+- Advanced the stable release identity to v2.4.0 across the Engine, PWA manifest, Windows installer, Android bootstrap APK, update checks, Home release link, and Professor Mari's What's New announcement. Android uses `versionName` `2.4.0` with `versionCode` `41` so it updates over every previously published APK.
+- Removed the retired Visual Novel mode identifier and its remaining compatibility branches from active schemas, runtime routing, UI labels, imports, and current documentation; Marinara's supported modes are now consistently Conversation, Roleplay, and Game (#4368).
+- Capitalized the native language names in the **Settings → General → Language** dropdown (Español, Français, Polski, Português (Brasil), Русский) to match the Documentation Language selector (#4191).
+- Renamed reusable Chat Settings Presets to **Settings Profiles** throughout Chat Settings, Roleplay quick setup, import/export, localization, and documentation. The word **preset** now identifies prompt presets in these flows, while existing exported profile files remain importable.
+- Added a Post/Impersonate quick toggle to CYOA choices and kept centered choices clear of the Tracker panel.
+- Tracker panels now appear as soon as their matching tracker agents are active, allowing starting data to be entered before the first agent run.
+- Refined **Impersonate** with server-backed prompt templates shared across browsers, read-only built-in previews, full-view editing, and a direct link to Quick Replies settings.
+- Made the Game dynamic-image prompt timeout configurable with `GAME_DYNAMIC_IMAGE_PROMPT_TIMEOUT_MS`, retaining 45 seconds as the default and accepting values from 10 seconds to 1 hour (#4052).
+- Made Game session conclusions prepare the next playable arc with refreshed goals, quest seeds, pressure clocks, factions, and named NPCs so the following session does not inherit a stale scenario plan (#4059).
+
+### Security
+
+- Updated the production web server, static-file serving, request client, archive, image-processing, HTML-sanitization, MCP transport, and supporting transitive dependencies to their patched releases; the shipped dependency graph now passes the production vulnerability audit with no known advisories.
+- Required normal authorization for proxy-forwarded Docker traffic by default while retaining `REQUIRE_AUTH_FOR_DOCKER_PROXY=false` as an explicit legacy opt-out for fully trusted upstream clients. Direct same-host Docker bridge/gateway traffic remains compatible with `BYPASS_AUTH_DOCKER`.
+- Pinned bundled llama.cpp, MLX, and uv runtime inputs to reviewed revisions and release assets with repository-owned sizes and SHA-256 digests, and locked every MLX Python dependency to hash-verified packages. Downloads now fail before extraction or execution when their content differs, cancellation remains effective between retries, and installed runtime stamps force explicit Engine-reviewed upgrades instead of following upstream `latest` or `main`.
+- Bounded NovelAI ZIP image decompression to 64 MiB, rejected oversized declared output before inflation, and required actual output to match the archive metadata so malformed or highly expanding provider responses fail safely.
+- Imported webhook functions now arrive disabled with hidden chat context access removed. The Functions panel shows the destination origin and requested privileges so users can inspect the full configuration before deliberately enabling it.
+- Restricted private generated-image result URLs to the configured provider's exact scheme, hostname, and port. Public CDN results remain supported, while redirects from a trusted local image provider can no longer reach another private service.
+
+### Fixed
+
+- Updated Professor Mari's official Agent knowledge and public catalog counts to cover all 31 downloadable packages, including Long-Term Memory and Storyboard, and corrected her package-update guidance to match the user-confirmed update flow.
+- Kept Noodle and NoodleR navigation, search, stage-profile, and bulk-create icons on their blue and pink mode accents, and made lorebook entry-type descriptions inherit editor chrome text instead of the default pink foreground (#4417).
+- Corrected several Korean interface strings surfaced by the Korean documentation review: stale character-card update items are now labeled 오래됨 instead of the self-contradictory 적용 불가 (the modal lets you override and apply them), the Mini Mari setting keeps the product name in Latin script, Custom Sources follows the 사용자 지정 convention, the regenerate concept is unified on 재생성 across ten strings, the Verbosity parameter reads 상세도, and the release labels use the 릴리스 spelling (#4376).
+- Made Name Prefix carry each responding character's identity into post-processing Agent prompts in multi-character Roleplay while keeping rewrite agents' raw response text unchanged (#4351).
+- Painted submitted Roleplay user messages before waiting for message-query cancellation, removing the multi-second gap between pressing Send and seeing the local message (#4357).
+- Made every Agent Run Interval count both user and assistant messages, including custom Agents, Illustrator, Lorebook Keeper, Card Evolution Auditor, About Me Keeper, Narrative Director Secret Plot maintenance, and Roleplay Storyboards (#4360).
+- Stopped PR description edits, CodeRabbit comments, and non-owner reviews from recreating the outside-contributor approval gate while retaining refreshes for base changes and approval-relevant SpicyMarinara reviews (#4361).
+- Isolated desktop and mobile Playwright servers and fixture data, made help tooltips non-blocking, kept focused mobile composers open during history scrolling, and aligned appearance and Tracker smoke checks with live application state so the complete browser sweep no longer fails from cross-project mutations or stale assertions (#4343).
+- Built the shared workspace before `pnpm dev:server` and documented the rebuild-and-restart boundary for shared source changes (#4327).
+- Removed Windows child-process calls that combined argument arrays with `shell: true`, eliminating Node.js DEP0190 warnings from startup, updates, native dependency repair, and client builds (#4332).
+- Stopped generic OpenAI-compatible connections from inheriting `reasoning_effort` for unknown models, added an explicit **Off** option that sends `none`, and made the Advanced Parameters toggle omit reasoning fields entirely (#4335).
+- Skipped corrupt or undecodable Noodle timeline images before captioning and multimodal generation, allowing the refresh to continue with text instead of forwarding invalid bytes to the model (#4310).
+- Added the missing delete action for generated scene videos in the Chat Gallery, including destructive confirmation, pinned-view cleanup, and removal of only the selected video file and metadata (#4314).
+- Made Professor Mari honor requests for only the last N chat messages or messages after a displayed post number, with range-aware pagination that no longer broadens those requests into whole-chat reads (#4308).
+- Trimmed leading and trailing whitespace from Character names when cards are saved or imported (#4303).
+- Made Memory Recall discard superseded message revisions and inject only the current edited message text (#4304).
+- Made the right-side Character and Persona searches use the same creator, version, notes, profile fields, tags, and Unicode-safe matching as their full libraries, so author searches no longer discard valid results (#4299).
+- Made Dynamic LLM Prompt generation for Game backgrounds read the latest completed GM turn as its primary scene source for both scene-analysis and Gallery requests, instead of merely rewriting the deterministic fallback prompt (#4300).
+- Corrected small factual defects in the guides found during translation review: the **Text & Scale** chat-text section now says four controls (not three), the chat-backgrounds save-location list now says three settings (not two), a link to the Card Browser guide no longer uses the tab's pre-rename "Browser" title, and six occurrences across five quoted button labels (**Search models…**, **Creating backup…**, **Switching…**, **Checking…**, **Refreshing…**) now use the same ellipsis character the app actually renders, so copying them into the docs search matches the interface. Mirrored across every language pack on `docs-i18n` (#4282).
+- Made `CHAT_GENERATION_TIMEOUT_MS` govern the time-to-first-byte budget for background generation as well, so a slow local model no longer fails the Noodle timeline refresh with `HeadersTimeoutError` / "fetch failed" after a fixed five minutes. The default stays at five minutes; raise the variable to give slow local models more room (#4174).
+- Documented the **Documentation Language** control in the settings overview guide (in English, Spanish, and German), and made the **Fix documentation** toast report what actually happened — pack re-downloaded, guides reset to English, or leftovers cleaned up — instead of always claiming a reset (#4158).
+
+- Rendered indented code fences correctly in the shared markdown renderer: a fence nested inside a list item (as in several developer guides) previously never closed and showed its ` ``` ` markers as literal text in the docs viewer, and list-nested code no longer renders or copies phantom leading spaces (#4100).
+- Replaced the unsafe built-in **Clean HTML (Outgoing Prompt)** regex with a validator-safe tag cleaner and migrated unchanged legacy defaults, restoring HTML and group-speaker-tag cleanup for Immersive HTML and Agent prompt history without overwriting customized scripts (#4101).
+- Streamed native profile and full-backup ZIP exports to disk with bounded JSONL table shards, preventing large libraries from failing with `Invalid string length` while preserving preview/import compatibility and archive integrity checks (#4064).
+- Included the live Character or Persona card as the first, explicitly labelled current revision in version history; saved revisions now show stable sequence numbers and second-precision edit times (#4040).
+- Made Conversation composer chrome focus the real text field, kept mobile thinking controls clear of participant names, and repaired the downloadable Calls surface's mobile participant labels and seven-button control rail (#4053, #4054).
+- Removed checked marks from unselected Character and Persona multi-select controls (#4055).
+- Enforced case-insensitive, globally unique public Noodle handles across Personas and Characters, including deterministic suffixes for auto-created profiles and reconciliation of older collisions (#4056).
+- Routed Krea models through OpenRouter's dedicated Images API while retaining image-only modality detection for every current `krea/` model (#4061).
+- Rewrote incomplete legacy UI-settings blobs with newly synced preferences, preserving an explicitly disabled Game Text Effects setting across staging updates (#4062).
+
+## [2.3.5]
+
+### Added
+
+- Added a built-in **kaomoji picker** to the composer (a `(◕‿◕)` button beside the emoji picker in Roleplay/Game, and a Kaomoji tab in the Conversation media panel) with categories and fuzzy keyword search, so emoticons like `¯\_(ツ)_/¯` and `(╯°□°）╯︵ ┻━┻` can be inserted without leaving the app (#4038).
+- Added user-defined **Custom Quick Replies**: create your own buttons in **Settings → General → Quick replies** that each send a fixed message, macro, or `/slash` command from the quick replies menu beside Send, in both Conversation and Roleplay/Game input (#4024).
+- Added a **Show Only Translation** toggle to **Chat Settings → Translation** that displays just the translated text in place of the original once a message is translated, and rendered translated text through the same markdown pipeline as messages so bold, italics, and quotes format correctly (#4024).
+- Added an `AGENT_CALL_TIMEOUT_MS` override for agent LLM calls (trackers, HTML reformatter, and other agents). The previous fixed 5-minute cap cancelled slow local models mid-stream and then burned a second 5 minutes on the automatic invalid-JSON retry; the cap is now configurable from 10 seconds to 1 hour and documented next to `CHAT_GENERATION_TIMEOUT_MS` (#3958).
+
+- Added safe host-rendered contribution slots to Browser Personal Extensions. `marinara.ui.registerContribution(...)` can add themed top-bar buttons, Extensions menu items, and right-side panels containing bounded text, actions, inputs, selects, toggles, sliders, and color controls. Marinara validates and renders every descriptor while activation and form events return only to the exact-hash-approved sandbox Worker; extensions never receive host DOM, markup, styling, React, network, or direct API authority. The existing constrained `marinara.ui.showWindow(...)` window supports the expanded controls as well.
+- Added Atlas Cloud as an image and video generation service, including curated starter models, text/reference image requests, asynchronous job polling, connection tests, and Game/scene-video routing (#3989).
+- Added an Android-only **Show Android status bar** control under **Settings > General > App Behavior**, preserving fullscreen as the default while allowing the Android app to remember and restore the time, battery level, and notification icons across restarts (#3985).
+- Added the UI-localization foundation with English fallback, lazily discovered locale JSON files, live Arabic, Chinese, French, German, Hindi, Japanese, Korean, Polish, Portuguese, Russian, and Spanish selection in **Settings > General**, contributor validation and documentation, and locale propagation into downloadable Agent interfaces (#3978).
+- Reintroduced disabled-by-default **Personal Extensions** in **Settings > Addons** as Professor Mari-authored drafts that require the user to inspect and approve the exact SHA-256 fingerprint. Third-party imports now live in a separate **External Extensions** section that remains hidden until the host sets `ENABLE_EXTERNAL_EXTENSIONS=true` and the user accepts the Danger Zone warning and opt-in.
+- Added review-gated public npm dependencies for Professor Mari's workspace changes. She can request a root, client, server, or shared package, but Marinara resolves it to an exact registry version and integrity and waits for the user before installing it with lifecycle scripts disabled.
+- Added **Set as avatar** to Character and Persona Gallery images in both the grid and full-size viewer, using path-contained, image-validated server copies (#3974).
+- Added separate Model and user target languages plus independent outgoing and incoming AI prompts to chat translation. Custom prompts support the `{{targetLanguage}}` placeholder, while existing single-language chat settings remain compatible (#3965).
+- Added a per-chat **Images Per Generation** setting to Illustrator in Conversation, Roleplay, and Game, generating up to four sequential image variants through the existing provider queue and gallery pipeline (#3966).
+
+### Changed
+
+- Reworked the Chat Settings **Prompt Preset** area. Roleplay now shows the preset-section editor directly once a preset is selected instead of hiding it behind a collapsible toggle. Conversation and Game show the effective Conversation/Game prompt (from the selected preset, or the built-in default when the preset has none) in an inline editor you can type in directly, expand to a full window, and browse macros from — and the redundant "open selected preset" shortcut button was removed. Chat Settings now also remembers which sections you left expanded and restores them the next time you open the drawer.
+- Synchronized the stable release identity as v2.3.5 across the Engine, PWA manifest, Windows installer, Android bootstrap APK, update checks, Home release link, and Professor Mari's What's New announcement. Android uses `versionName` `2.3.5` with `versionCode` `40` so it updates over every previously published APK.
+- Confined Professor Mari's raw shell commands to macOS Seatbelt or Linux Bubblewrap with outbound network denied, inherited server secrets removed, environment-secret and Git-internal files unreadable, and filesystem writes limited to ordinary workspace files and a private temporary directory. Dependency manifests, lockfiles, launchers, installers, and CI workflows are read-only in the shell and use an explicit in-chat review; raw package-manager mutations are blocked even when a package is cached. Raw shell now fails closed when no supported sandbox is available, while structured workspace and app-data tools remain available (#3973).
+- Made **Default Dialogue Color** permanently active for cards without their own dialogue color and removed its redundant Appearance toggle; Character and Persona card colors still take priority.
+
+### Security
+
+- Replaced full-trust Personal Extension execution with capability-restricted sandboxes. Browser code now runs in a watchdog-supervised Worker inside an opaque-origin iframe without Marinara DOM, origin, or network access. Server code now runs in a separate Node process under macOS Seatbelt or Linux Bubblewrap with a minimal environment, Node permissions, private protocol files, resource/message bounds, and no user-file, Marinara-file, network, child-process, worker, native-addon, or cross-process signal authority. Unsupported server platforms fail closed. External, legacy, profile-imported, manually stored, and unknown-source records remain invisible and unexecutable until both external-extension gates are open; closing either gate disables and stops them.
+- Rejected untrusted HTTP Host names before CORS, loopback authentication bypasses, or privileged reads can process a request, preventing DNS rebinding from exposing chats, galleries, backups, and other local data. Direct LAN, Tailscale, IPv4, IPv6, localhost, and local machine-name access remains available, while intentional public and reverse-proxy names can be added through `TRUSTED_HOSTS`.
+- Replaced silent startup updates for installed Agent packages with a responsive per-version confirmation. Choosing **No** records that decision without changing the installed package, and the existing **Update** action remains available in **Agents → Download Agents**.
+- Restricted official Agent catalog artifacts to their canonical Marinara-Agents repository URLs while preserving explicit custom-catalog overrides.
+
+### Fixed
+
+- Kept the mobile chat composer above the Android Firefox software keyboard by explicitly requesting content
+  resizing and sizing the app shell to the smallest live visual/layout viewport, including delayed keyboard geometry
+  updates after focus (#4044).
+- Improved character and persona card version history: restoring an older version now saves the current card to history first (so the newer version is never lost), each saved version keeps its own edit timestamp instead of the later save's time, and the side-by-side comparison view wraps long unbroken text such as URLs and HTML in creator notes instead of overflowing (#4040).
+- Made Settings tabs—including **Appearance**—resolve duplicate English labels against the selected locale instead
+  of falling back through an unrelated untranslated key, and routed the remaining static client interface copy,
+  editor and library controls, chat toolbars, notices, accessibility text, and Noodle surfaces through the English
+  localization catalog with an automated untranslated-UI audit.
+- Moved Character and Persona creator/version metadata beside the editable card name in editor headers, with responsive truncation that preserves the version and keeps long names from displacing header actions.
+- Stopped Conversation **Selfie** mode from pasting the image style profile's Generation Style Text verbatim into the final image prompt. The style now guides the prompt-building model (matching Roleplay illustration), so it still shapes the image without the redundant, CLIP-diluting copy (#4028).
+- Moved the Natural/Random progression choice onto the **Push Story** button: clicking it now opens a Naturally/Randomly selector that arms the chosen mode for the next response, replacing the mode controls previously buried in **Chat Settings → Agents → Narrative Director**, the add-agent setup, and the Narrative Director editor's Story Push Mode default (#4022).
+- Fetched the full Google Gemini model catalog in the connection editor by following the ListModels pagination, and refreshed the built-in Gemini/Gemma fallback list with the latest entries (#4021).
+- Gave in-app updates realistic install budgets on slow devices — update steps get four times as long on Android/Termux, where switching between stable and staging forces a near-full dependency reinstall — and update failures now report the failing pnpm step, timeouts, and the tail of the process output instead of an opaque `Command failed` (#4020).
+- Refreshed single- and multi-message deletion with the shared modal and control styling, including chroma-driven buttons, selection bars, checkboxes, and selected-message highlights instead of fixed destructive pink or red treatments.
+- Restored the immediate **Thinking…** placeholder in Roleplay and made Conversation and Roleplay expose one reasoning control as soon as the first reasoning chunk arrives. The existing Model Thoughts viewer now stays open and updates with the live reasoning stream, while completed messages retain their saved reasoning control (#3963).
+- Fixed Web Search (and other tools) returning empty or malformed parameters with GPT-5.6/5.5/5.4 and Codex models on the OpenAI Responses API. Streamed function-call arguments are keyed by the response item id rather than the call id, so the tool query is no longer dropped mid-stream (#4010).
+- Kept gradient **Accent Pulse** animating while the Appearance tab is open, so color changes can be previewed where the setting is configured.
+- Reworked Character and Persona avatar editing with a non-overlapping miniature AI wand, equal Upload/Generate actions in Metadata, a downward upload arrow, and accent-colored removal controls. Game Assets selection, menu, and removal states now follow the configured chroma instead of fixed pink or red treatments.
+- Fixed Character Tavern imports from the Card Browser: their cards store character data in compressed zTXt PNG chunks, which every Marinara card parser (Card Browser import, file/URL import, SillyTavern bulk import) now reads alongside tEXt and iTXt. Re-exporting such a character also strips the stale compressed data instead of shipping outdated card JSON (#4002).
+- Fixed the Windows launcher crash `ERR_INVALID_URL_SCHEME` in `protect-launcher-data.mjs` (and the same latent pattern in `read-launcher-env.mjs`): the run-directly guard now resolves `process.argv[1]` with `pathToFileURL`, so drive-letter paths no longer parse as URL schemes, update snapshots are created again, and auto-update is no longer skipped (#3997).
+- Listed ComfyUI models from the DiffusionModels folder (UNETLoader) alongside StableDiffusion checkpoints in the connection editor's "Fetch models from API", so models such as Anima and zImage are selectable without typing their names manually (#3993).
+- Let the Custom sound description use the full Settings card width and moved its actions below the copy so labels and buttons no longer collide on narrow screens.
+- Made installed theme icons and the third-party extension warning follow the selected accent color instead of hard-coded pink or yellow styling.
+- Disabled Venice.ai's optional `safe_mode` blur in native image requests so supported generations are returned without the provider's default censoring overlay (#3990).
+- Protected launcher-driven Engine updates with a private snapshot of the configured user-data directory outside the checkout and automatic restoration if an update attempt leaves that directory missing or empty. Launcher dependency refreshes now use the pinned lockfile instead of destructive forced reinstalls, preventing the Windows Fastify plugin type failures reported after v2.3.4 updates (#3961, #3976).
+- Installed and verified Sharp's WebAssembly runtime on Termux while suppressing unsupported Android native source builds, restoring NovelAI Precise Reference preprocessing without requiring an Android NDK (#3975).
+- Re-checked Do Not Disturb immediately before delayed foreground, exchange, and background autonomous generations, so enabling it while a message is waiting reliably suppresses that message (#3959).
+- Allowed an Agent explicitly assigned to Local Sidecar to start that runtime on demand even when the global tracker-sidecar default is disabled (#3960).
+- Made explicit Gallery **Illustrate** actions generate the requested image even when the Illustrator's automatic-generation decision says no (#3963).
+- Kept Conversation bubbles within the mobile viewport and exposed live Model Thoughts while a response is still streaming (#3964, #3971).
+- Saved image, video, and provider-default connection parameters before the final connection refresh, preventing stale cached defaults from replacing the user's latest values (#3972).
+- Enlarged generated image attachments in Conversation and Roleplay while keeping them contained within the chat viewport (#3966).
+- Restored per-game asset-folder selection in the new-game wizard, kept existing-game selection in the Asset Browser, anchored asset action menus to their buttons without viewport clipping, and stopped bundling the unrelated generic fantasy sprite pack (#3962).
+
+## [2.3.4]
+
+### Added
+
+- Added a read-only latest-release check to the Windows, macOS/Linux, and Termux launchers when automatic Engine updates are disabled. A newer published version now produces a console reminder with the installed version and its release-page link, while `--skip-update` still suppresses all update checks for one launch.
+- Added Grouped and Individual response modes to multi-character Conversations, including sequential, smart, manual, mention-directed, and autonomous character selection with a shared daily check-in budget and a token-use warning (#3887).
+- Added the user's current local time to every Noodle timeline refresh and an optional setting for attaching participating characters' existing generated schedules for the current day (#3886).
+- Added disabled-by-default custom GitHub agent repositories to Agents Manager, with manual preview/apply, explicit trust confirmation, stable sync identity, and bounded SSRF-safe archive validation (#3861).
+- Added explicit numeric overrides for Conversation chat check-in ceilings and removed the 50-message ceiling from Conversation and Roleplay recent-summary tails, while retaining conservative defaults and cost guidance (#3864).
+- Added **Noodle** to Lorebook entry Generation filters so entries can target Noodle context without being injected into other generation paths (#3842).
+- Added per-character **Hide From AI** controls to Roleplay group chats, with avatar-based multi-selection, recipient markers, and character-scoped prompt history while preserving the existing global hide option.
+- Added `||` (OR), `&&` (AND), parentheses, and equality-list shorthand to conditional prompt macros, with matching in-app and documentation examples.
+- Added the `{{group}}` prompt macro for listing every other active chat character, including during targeted Roleplay group generation.
+- Added a chibi Professor Mari artwork icon to Marinara's Universal Preset for existing and new users.
+- Added local ComfyUI video generation for API-format WAN and other workflows, including prompt, size, seed, frame-count, and uploaded first-frame placeholders (#3804).
+- Added an in-app and GitHub ComfyUI workflow guide covering API-format exports, Marinara placeholders, local and RunPod reference-image inputs, character-specific workflows, LAN setup, VRAM constraints, and troubleshooting (#3749).
+
+### Changed
+
+- Synchronized the stable release identity as v2.3.4 across the Engine, PWA manifest, Windows installer, Android bootstrap APK, update checks, Home release link, and Professor Mari's What's New announcement. Android uses `versionName` `2.3.4` with `versionCode` `39` so it updates over every previously published APK.
+
+### Fixed
+
+- Removed the extension feature completely: all extension CSS, browser, and server payload execution is gone; its Settings surface, client hooks, shared contract, and API routes were deleted; startup now permanently erases every retained server record and `extension-storage:*` setting; and the UI-state migration removes browser-local extension records automatically. The extension authoring guides, examples, and Professor Mari instructions were removed with the feature.
+- Prevented imported agent files from installing bundled custom functions, granting themselves tool access, or overwriting a curated Agent by reusing its internal type. Agent exports no longer bundle function definitions, and imported agents receive a fresh custom identity that requires the user to review and explicitly attach tools afterward (#3953).
+- Kept healthy SSE replies streaming after a backgrounded tab becomes visible again, using a grace period before falling back to the persisted full response only when the resumed stream makes no progress.
+- Expanded Music DJ's shared recent-track history to 250 Spotify tracks so 50-song candidate batches rotate across large playlists instead of repeatedly drawing from the same small recent window.
+- Removed the Background agent's obsolete image-generation toggle and runtime path. The agent now only selects existing library backgrounds, while Illustrator owns automatic and Gallery background generation. Gallery-generated backgrounds are applied to the active Roleplay chat instead of being attached as ordinary illustrations.
+- Stopped Roleplay generation immediately when **Stop** is pressed by sending the explicit server cancellation through the authenticated API client instead of allowing CSRF protection to discard it.
+- Made renamed Chat Summary preset markers use their authored wrapper name and resolved character-dependent summary macros against each individual group responder, allowing conditional summary knowledge to remain scoped to its intended character.
+- Kept Chat Summary entry editing responsive by isolating the live title and content draft from the rest of the summary popover until **Save** is pressed.
+- Kept automatic Roleplay Illustrator images on the same configured illustration canvas and requested orientation as manual Gallery generation, instead of leaving unattended images in a portrait/selfie-shaped layout (#3893).
+- Expanded Professor Mari's chat composer through approximately six lines before it scrolls internally (#3885).
+- Consolidated Cross-Chat Awareness under Connected Chats and restored normal spacing between Noodle references and Discord webhook controls (#3889).
+- Persisted enabled Conversation Selfie setup with its command toggle and default image-generation connection, keeping Generated Selfies active after chat creation (#3890).
+- Made Conversation character mentions always select the mentioned responder or responders, including legacy manual-response chats, and removed the redundant Reply When Mentioned toggle (#3891).
+- Made Conversation setup connect enabled Illustrator selfies to the default image-generation connection instead of leaving Generated Selfies inactive (#3880).
+- Recovered every Noodle timeline collection when local models return adjacent JSON objects, preserving posts and interactions alongside follows instead of parsing only the final object (#3881).
+- Routed Character and Persona sprite downloads through the Android shell's native file saver and stacked the sprite Upload action beneath its expression field on mobile so it stays inside the card (#3884).
+- Kept the desktop Tracker Panel out of the centered Roleplay chat column, shrinking it, responsively reflowing its controls, and proportionally scaling its typography to the available side gutter on narrower screens instead of shifting messages and the composer sideways or clipping its contents.
+- Stacked a top-corner Echo Chamber below the open Tracker Panel on the same desktop side and constrained its message area to the remaining visible height instead of letting the two panels overlap or spill below the screen.
+- Kept each historical user turn under the Persona that sent it when Name Prefix History is enabled, instead of relabeling every user message with the currently selected Persona.
+- Accepted the single-object array wrapper some local models return for generated Noodle profiles, preventing timeline refreshes from failing with HTTP 500 during first-time bio generation (#3871).
+- Gave current semantic lorebook matches the same context-budget priority as current keyword matches, so configured entry order—not activation method—decides which entries are attached when every match cannot fit.
+- Simplified Peek Prompt's exact-request view by removing redundant provider-formatting guidance.
+- Returned parsed chat metadata and character IDs from public chat reads so fresh sidebar tag filters match the shared API contract (#3857).
+- Deep-merged partial nested Character PATCH fields without materializing destructive defaults, preserving omitted extensions and embedded-lorebook data (#3858).
+- Validated and normalized native Marinara character cards before persistence while preserving unknown embedded-lorebook properties (#3859).
+- Applied enabled Connection generation defaults across every Noodle text-generation path and allowed custom OpenAI-compatible endpoints to receive explicitly enabled top-k, reasoning-effort, and verbosity parameters (#3845).
+- Kept dynamic NPC portrait prompt rewrites authoritative, resolved a usable text connection instead of silently bypassing enabled rewrites, allowed custom non-JSON output, removed legacy reputation-note leakage, and preserved explicit non-human species cues (#3846).
+- Removed unused agent/turn-game contract members, obsolete generated registries, duplicate tool arrays, Visual Novel types, chat-mode definitions, and redundant public aliases while preserving legacy downloadable-agent package parsing (#3847, #3848).
+- Regenerated merged Roleplay group replies with the full active character roster instead of narrowing the prompt to the previously saved speaker (#3850).
+- Made the Character editor's **Copy ID** action work on mobile and non-secure browser contexts and report only confirmed clipboard success (#3851).
+- Deprecated the two provider-visible no-op image-style rule flags while retaining their normalized persisted shape throughout 2.x for compatibility (#3852).
+- Added successful-download notices asking users to completely restart Marinara Engine after installing the local Gemma model or Local Whisper for Calls and Videos.
+- Updated the curated Gemma GGUF download sizes to match the current upstream files, preventing false file-size mismatch failures after their metadata changed (#3843).
+- Matched Roleplay's Active Context lorebook details to Conversation and Game, including activation sources, matched keys, semantic scores, current-location grouping, budget skips, and expandable entry content (#3840).
+- Kept the Roleplay **Hide From AI** action on the selected chroma/accent color and suppressed the browser's transient tap-highlight color.
+- Smoothed Roleplay typing and streamed replies by batching draft-state publication, pacing the Typewriter effect against bursty provider delivery, and replacing the repaint-heavy streaming glow with an opacity pulse (#3836).
+- Kept selected Roleplay backgrounds fitted to the resized chat area and repainted weather effects immediately after relayout, preventing Firefox flashes as desktop sidebars open and close (#3836).
+- Changed the TTS dialogue pause control to whole seconds from 1 through 60, migrating legacy sub-second and no-pause values to the new 1-second minimum.
+- Kept Character and Persona prompt sections in editor order across preset markers, fallbacks, agent lore, and Game/scene card contexts: Description, Personality, Backstory, Appearance, Scenario, then Example Dialogue when present (#3817).
+- Made PocketTTS server voices directly selectable for global, character, and narrator assignments while retaining custom voice IDs, URLs, and paths, and aligned new PocketTTS setups with the compatible server's default endpoint (#3786).
+- Streamed Roleplay and Game scene-video files with standard byte-range and HEAD handling instead of synchronously buffering complete MP4 files for every playback request (#3811).
+- Stopped the macOS/Linux and Termux launchers from sourcing `.env` as Bash code; launcher-owned settings now use Node's non-evaluating dotenv parser while preserving ambient-environment precedence (#3810).
+- Routed the Roleplay Gallery's **Background** action through Illustrator's background prompt mode instead of bypassing the agent with a raw scene-generation prompt (#3809).
+- Kept the full active Roleplay roster available while assembling a targeted character prompt so `{{group}}` lists the other character cards instead of resolving empty in manual group generation.
+- Applied the selected chroma text color to installed theme names in Settings > Addons instead of inheriting the hard-coded pink accent.
+- Persisted successful Roleplay tracker re-runs against the visible tracker state when a refreshed scene has no assistant reply yet, instead of spending the agent call and then reporting that no tracker changes were returned.
+- Vertically centered the Character editor's Regex Script edit and delete actions against each script's enable toggle.
+- Restored Character and Persona tracker-card color settings so appearance changes update the card preview immediately and persist when saved.
+- Stopped HTML-escaping angle brackets in prompt leaf content so character card fields, persona, lorebook entries, memories, and scene text now reach the model verbatim — `<thinking>`, `<scenario>`, and inline HTML like `<div>` are passed through as written instead of arriving as `&lt;thinking&gt;`, which had been corrupting cards, breaking roleplay HTML, and showing raw `&lt;` in the editor. This finalizes prompt leaf content as verbatim and **supersedes** the `<`/`&` prompt-boundary escaping added in #3108 (line above) and the untrusted-card-text escaping in the "Hardened prompt assembly" entry below, for Marinara's local single-user threat model. The framework's own structural section wrappers are emitted around this content and are unaffected, and the agent value/attribute escapers are unchanged (they still escape values into machine-parsed XML).
+- Made image prompt review display the subject-count-resolved dimensions actually sent to native NovelAI, kept Prompt Prefix count tokens out of scene sizing, and filled new NovelAI settings for legacy partial profiles (#3758).
+- Made recalled memories, cross-chat awareness, connected Roleplay/Game context, and their command instructions honor the active Conversation preset's XML, Markdown, or unwrapped format instead of emitting hardcoded XML (#3753).
+- Kept existing cropped Character and Persona avatars contained inside editor upload targets and prevented escaped image layers from hijacking page clicks (#3741, #3939).
+
+## [2.3.3]
+
+### Added
+
+- Added `CHAT_GENERATION_TIMEOUT_MS` for slow Conversation, Roleplay, and Game providers and `AUTO_UPDATE_ENABLED=false` for persistent launcher update opt-out on Windows, macOS/Linux, and Termux, without disabling manual updates (#3730).
+- Added persistent NovelAI V4.5 style plates with independent strength and fidelity, plus optional subject-count framing that selects portrait, square, or landscape dimensions (#3725, #3726).
+- Added compatibility-aware official Agent catalog selection so each Engine major installs and updates only from its matching catalog lane (#3712).
+- Added configurable pauses between generated TTS dialogue lines, with the saved preference shared across playback sessions (#3718).
+
+### Changed
+
+- Synchronized the stable release identity as v2.3.3 across the Engine, PWA manifest, Windows installer, Android bootstrap APK, update checks, and Home release link. Android uses `versionName` `2.3.3` with `versionCode` `38` so it updates over every previously published APK.
+
+### Fixed
+
+- Removed the redundant **Maps** and **Conversation Game** kind badges from Agent catalog details while preserving their manifest metadata, catalog filtering, and search labels (#3736).
+- Kept native selector labels and their shared Agent and Lorebook editor shells visually stable while Accent Pulse is enabled, including Hierarchical Maps, Agent Connection Override, Lorebook Prompt Position, and Connection Defaults controls (#3733).
+- Added a clearly labeled avatar upload/replace field above Name in Character Metadata, reusing the same upload and crop flow as the editor portrait so the action is discoverable on desktop and touch devices.
+- Accepted dot or comma decimal input for Connection temperature, top-p, and other generation parameters without truncating fractional values (#3713).
+- Kept mobile Game CYOA choices visible between compact widget rails and exposed a direct host action from the world-map surface to the full hierarchical map editor (#3691).
+- Prevented duplicate style and appearance instructions in image-generation prompts while preserving configured styles through compact-token and final prompt-length limits (#3728).
+- Stopped the v2.3.2 capability migration from selecting Hierarchical Maps in every Roleplay, Visual Novel, and Game chat. A one-time correction removes only the accidental selections from chats without existing map definitions or snapshots, preserving intentional Maps usage and all other agent selections (#3723).
+- Made Hierarchical Maps obey each chat's **Enable Agents** master toggle across Roleplay and Game UI, prompt generation, lorebook previews, retries, tracker state patches, session carryover, and checkpoints. Disabled chats no longer initialize or call Maps services.
+- Quarantined incompatible Hierarchical Maps 1.0.x runtimes before their database adapter can load, preventing the recurring `t.select is not a function` crash while leaving compatible package updates available.
+- Prevented pending Game tracker edits from calling Hierarchical Maps in chats where it is inactive, eliminating the **Failed to flush 1 game-state patch callback** error that blocked message sends.
+- Reset stale Character-panel search, tag, favorite, and scroll filters during the v2.3.3 update and made them session-only, so reopening Marinara shows the complete Character collection instead of an old filtered subset. Full Library sorting and position preferences remain preserved.
+
+## [2.3.2]
+
+### Added
+
+- Added capability API 1.3 host services for downloadable packages, including safe model routing, persistence, history/checkpoints, resources, logging, transactions, client contribution loading, and visible readiness/retry states (#3690).
+- Added reusable Game setup exports and imports. Initial Game Setup downloads now produce versioned `.marinara-game-setup.json` bundles that can refill the New Game wizard, remap available local resources, warn about missing ones, and require a replacement GM connection when necessary (#3701).
+- Added Venice.ai as an Image Generation service, including authenticated live image-model discovery and native `/image/generate` support with model-aware sizing and validated base64 responses (#3682).
+- Added responsive Background library folders, desktop and touch drag-and-drop organization, A-Z/Z-A/Newest/Oldest sorting, and collapsible tag filters without limiting the Background agent's available choices (#3678).
+- Added Conversation, Roleplay, and Game compatibility badges to Download Agents, including catalog search by supported mode (#3676).
+
+### Changed
+
+- Synchronized the stable release identity as v2.3.2 across the Engine, PWA manifest, Windows installer, Android bootstrap APK, update checks, Home release link, and What's New announcement. Android uses `versionName` `2.3.2` with `versionCode` `37` so it can update over every previously published APK.
+- Moved Conversation **About Me** drafting from per-editor **AI Write** controls to Professor Mari. Character and Persona Convo editors no longer expose a separate model connection or source settings; Professor Mari can inspect a saved character or persona, write the bio in their voice, and save it directly to the real About Me field.
+- Changed Noodle refreshes to choose active participants before first-time profile generation, skip characters that already have generated profiles, and send only the selected character cards to the timeline model. World/lore context and chat carryover now each have an 8,192-token budget so large invited rosters cannot inflate unrelated generations.
+- Renamed current user-facing Conversation Calls references to **Calls** while preserving package IDs and legacy compatibility symbols (#3676).
+- Moved Hierarchical Maps controls inside its active entry in Chat Settings → Agents instead of displaying a separate top-level settings section (#3679).
+
+### Fixed
+
+- Kept new Roleplay chats Persona-less when the user selects no Persona, including the first optimistic message snapshot, provider prompt, scene generation, and combat context; only Conversation mode may fall back to the globally active Persona.
+- Removed Roleplay Summary's 2,000-character truncation for each source message and the 64 KiB compiled-summary ceiling in `chats.json`, so chapter-length messages and accumulated summaries remain complete unless the selected model rejects the request.
+- Preserved greetings, example dialogue, creator notes, system prompts, post-history instructions, character versions, and alternate greetings when Professor Mari or another app-data caller updates an unrelated Character Card field (#3708).
+- Restored native undo and redo in shared text editors, including lorebook Content and Description fields, and made `Tab` / `Shift+Tab` indent or unindent every selected line without replacing the selection.
+- Resolved `{{user}}`, `{{char}}`, and other prompt macros in opening greetings and `/guided` instructions at the final provider boundary, including lorebook routing and embedding scans, so late prompt injections cannot send raw identity placeholders to models (#3704).
+- Raised Conversation routine-summary generations from a 512-token ceiling to an 8,192-token default, honored larger Connection overrides, and requested low reasoning effort so reasoning models still return visible summaries (#3696).
+- Allowed selected custom agents to run in Conversation, Roleplay, and Game chats whenever **Enable Agents** is on, while preserving per-mode availability rules for official packages (#3692).
+- Applied saved Connection Custom Parameters to every API-backed text generation that uses that connection, including Noodle and custom endpoints hosted locally, while preserving per-chat and per-call overrides.
+- Routed bare Cohere API roots and versioned API URLs through Cohere's OpenAI-compatible endpoint.
+- Kept the Noodle Carryover mode buttons equal-width while scaling their labels to remain fully visible with consistent spacing before each checkbox.
+- Made installed Conversation games appear immediately in slash-command autocomplete and activate or deactivate their command and runtime contributions without an Engine restart, while route-bearing packages retain their safe restart path (#3699).
+- Improved tracker-toolbar keyboard navigation with stable focus order, arrow/Home/End movement, and focus restoration when Escape closes the toolbar.
+- Reported Agent catalog HTTP failures with their actual status and error instead of diagnosing every failure as an internet outage, while preserving installed agents offline (#3706, #3707).
+- Made `@handle` mentions in Noodle replies open the referenced profile, and resolved active Persona, Character, and linked lorebook macros before Noodle refresh prompts reach the model (#3687).
+- Let Connection Custom Parameters preserve arbitrary JSON values and convenient bare string values instead of discarding invalid drafts, and restored unified reasoning-effort requests for dynamically discovered OpenRouter models (#3688).
+- Fixed the downloadable Conversation Calls package persisting a hardcoded assistant reply when typed-message generation failed. Package v1.0.4 no longer requires provider-native JSON mode and reports genuine provider failures instead of inventing character dialogue (#3685).
+- Made native profile imports atomic across file-storage rows and assets. Present archive assets are now fully decompressed, CRC-checked, and staged before live mutation; table upserts run in a serialized transaction; and promoted files roll back if a later write or durable database flush fails, while missing assets remain warning-only (#3683).
+- Fixed generated and manually replaced Game Journal NPC portraits failing to update when a reputation label was appended to the NPC name. Portrait matching now treats the display label and the tracked NPC as the same character throughout the live session (#3681).
+- Increased the final Game setup generation watchdog from 300 to 500 seconds so large GM blueprints have enough time to finish without extending unrelated in-session generation limits (#3684).
+- Fixed merged Roleplay group prompts stripping every historical speaker-tag example. The latest assistant message now keeps its `<speaker>` wrappers while older tags are still trimmed, and the instruction remains inside `<output_format>` when available or otherwise appends to the last user message (#3673).
+- Preserved the **Enable Agents** master switch during the v2.3 capability migration, so upgrading cannot silently reactivate selected agents or their model calls. Hierarchical Maps now remains independently available when selected (#3669).
+- Made the v2.3 capability migration restart-safe by writing its completion marker only after per-chat selections are migrated and flushed to durable storage; interrupted migrations retry idempotently on the next startup (#3670).
+- Fixed Conversation Calls failing to recognize downloaded Local Whisper models when `DATA_DIR` was not explicitly configured. Downloaded capability runtimes now inherit Engine's resolved host data directory instead of deriving a private nested model path (#3671).
+- Fixed Professor Mari returning blank character or lorebook generation turns, normalized common character-card field names, and made lorebook creation save generated entries atomically (#3674).
+- Fixed Tic-Tac-Toe failing to render when an installed legacy game client expects React on the global scope (#3675).
+- Kept cropped Character and Persona avatars contained inside the Colors message preview, including cards with additional sprites, instead of letting the preview image cover the editor (#3678).
+- Kept the Roleplay-default star anchored in one place when its selected state changes (#3678).
+- Vertically centered Chibi Professor Mari in her surprise-visit toast (#3678).
+
+## [2.3.1]
+
+### Added
+
+- Installed official agents and feature packages now check the Marinara-Agents catalog during server startup and automatically upgrade to the newest compatible version before their runtimes activate. Offline, incompatible, missing, or failed package updates leave the previously installed version available, while verified server-runtime failures continue to roll back automatically.
+- Conversation schedule creation now includes a global timezone selector that defaults to the browser-detected IANA timezone, can be overridden or reset to the current device zone, syncs across devices, and applies to existing and future Conversation chats. Schedule generation, presence, autonomous messages, temporal prompt context, and background server polling now honor the same saved selection.
+
+### Changed
+
+- Began the v2.3.1 development cycle and synchronized version metadata across packages, the PWA manifest, README release pointer, Windows installer sources, Android APK metadata, and shared update checks.
+- Android `versionName` is `2.3.1` with `versionCode 35`.
+
+### Fixed
+
+- Restored passwordless localhost access to container installs on Docker Desktop and custom Docker address pools. Docker runtime trust now recognizes the container's exact default IPv4 gateway in addition to the conventional `172.16.0.0/12` bridge range, while the existing `BYPASS_AUTH_DOCKER=false` and proxy-auth controls remain available.
+- Fixed Windows installs and updates failing during the shared-package build with `'pnpm' is not recognized` when the launcher correctly used Corepack without a global pnpm executable. The shared build now cleans its artifacts directly through Node, and the Windows installer guard prevents nested package-manager calls from returning.
+- Reworked Conversation prompt assembly so Peek Prompt groups Conversation turns under **Chat History**, character join/leave notices become timestamped history events only after a chat has actually started, reaction syntax lives inside **Commands**, and merged-group speaker-prefix and character-only response boundaries are emitted last in the preset's XML, Markdown, or plain output format. The built-in Conversation prompt and Marinara preset now use identity wording that fits both one-to-one and group chats, with a safe startup migration for existing bundled presets that still have the old lead sentence.
+- Restored Conversation group chats to one merged provider generation per turn, allowing the model to choose every present speaker within the grouped response instead of issuing a separate restricted request for each character. Roleplay Individual mode remains unchanged.
+- Preserved distinct Noodle authorship across persona switching: posts and replies retain their originating persona account and snapshot, timeline prompts identify each persona by handle and stable identity key, and chat carryover summaries name the persona account instead of collapsing activity into the currently selected identity.
+- Restored Card Browser and official agent-catalog requests when upstream services reject Undici's default identity or a Windows proxy strips the response `Content-Type`. Marinara now identifies those requests explicitly and permits only missing MIME headers for their trusted, size-capped JSON paths; present invalid content types and malformed catalog data remain rejected.
+
+## [2.3.0]
+
+### Added
+
+- Added a one-time, version-aware **What's New?** window for fresh installs and updates. It waits until first-run onboarding is complete, introduces each release's main features with Professor Mari, links directly to that version's GitHub release, and remembers the exact version shown so it does not reappear until the next update. The v2.3.0 announcement spotlights downloadable Agents, Hierarchical Maps, and Tactical Combat Mode with a compact, responsive battlefield preview.
+- Added an editable **Noodle Prompt** at the top of Noodle Settings, with a full-screen editor and one-click default restoration. The canonical default now contains the complete adult-platform, persona-authorship, interaction, and JSON instructions, while the separate timeline voice text is appended last. Its **Edit prompt** action now follows the standard Noodle Settings button treatment, with centered content and a clearly visible Noodle-blue pencil icon on desktop and mobile.
+- Added a **Combat Preference** to Game mode, chosen in the setup wizard and changeable later from the Chat Settings **Combat Style** section: keep the classic narrative combat, or switch to a new tactical battle style inspired by grid-based tactics RPGs. Tactical encounters play out on a terrain-painted battlefield with scene-matched backdrops, unit classes, party formations, per-unit movement and attack ranges, counters, critical hits, misses, and a full enemy phase driven by a deterministic seeded engine at four difficulty levels. Battles feature animated movement, floating damage popups, a draggable unit inspector and action menu, staged moves shown as translucent previews until confirmed, defeated units leaving the battlefield, restartable encounters, and a mobile-friendly layout.
+- Added a responsive full-page **Agents → Download Agents** library for installing, reading about, updating, and uninstalling official capability packages, with installed/uninstalled groupings ordered as Writer, Tracker, and Misc Agents, plus creator artwork with an Agents-star fallback. Card Evolution is classified as a Writer Agent and Hierarchical Maps as a Tracker Agent. On desktop, full-page libraries and resource editors open beside their originating sidebar; mobile keeps the focused full-screen flow. Fresh installs now contain no optional agents, while existing installations migrate their agents and chat feature selections without losing settings, runtime data, or history.
+- Added **Install All** and **Uninstall All** controls beneath Download Agents search. Bulk package changes run through a safe sequential queue with visible progress, partial-failure reporting, immediate catalog refresh, and confirmation before removing every installed agent.
+- Published first-party downloadable agents in the new [Pasta-Devs/Marinara-Agents](https://github.com/Pasta-Devs/Marinara-Agents) repository as individually verified packages. Its README now lists every Writer, Tracker, and Misc package, while repository contribution rules, issue and PR templates, catalog validation, protected review flow, and automatic CodeRabbit review keep future package work complete and reviewable. Conversation mode's About Me profile and `update_about_me` tool remain built into the Engine and are not downloadable agents.
+- Moved Hierarchical Maps, Conversation audio/video calls, UNO, Chess, Poker, 8-Ball Pool, Tic-Tac-Toe, and Rock-Paper-Scissors into optional packages with package-owned server runtimes and responsive client surfaces. Maps can be enabled as an agent in Roleplay and during or after Game creation.
+- Added a default-on Noodle setting that can exclude Professor Mari from account discovery and future generated activity without deleting existing timeline history ([#3598](https://github.com/Pasta-Devs/Marinara-Engine/issues/3598)).
+- Added **Open Full Library** to Personas, with the same responsive card grid, search, sorting, preview pane, paging, scroll restoration, and editor return flow as the Character Library.
+- Added separate opt-in browser and Android generation-completion notifications for manually started Conversation, Roleplay, Visual Novel, and Game replies that finish while Marinara is unfocused, without changing autonomous-message background notification preferences (#3588).
+
+### Changed
+
+- Categorized Marinara Engine's attributed OpenRouter traffic as **Roleplay** and **Game**, improving its visibility in OpenRouter's relevant app-ranking filters while preserving the GitHub repository as the canonical app referer.
+- Renamed **Bot Browser** to **Card Browser** throughout the interface, documentation, onboarding tutorial, and Professor Mari guidance, and renamed **Browse Online** to **Download Cards**.
+- Updated the Character and Persona full libraries to use the chroma text color selected in Settings for headings, counts, descriptions, metadata, tags, previews, and empty states instead of legacy fixed-color text.
+- Reworked Character and Persona sprite transparency around a native-alpha-first pipeline. Providers that cannot return transparent PNGs now receive a subject-aware saturated chroma matte, followed by border-connected soft matting and color despill; the optional neural remover is reserved for genuinely complex backgrounds, while saved legacy white-background sprites remain cleanable with restore points.
+- Made Local Whisper a Conversation Calls-owned download. Connections now shows Local Speech Model controls only while the Conversation Calls package is installed, and uninstalling Conversation Calls removes every downloaded Whisper model and its saved selection to reclaim disk space. Reinstalling Calls makes the models available to download again.
+- Removed the retired database compatibility stack, including its runtime backend switch, startup migrations, one-time importer and repair readers, old migration scripts, database-file backup handling, and external ORM/runtime dependencies. Storage schemas and query expressions are now file-native throughout the Engine.
+- Made file-native primary and natural-key constraints enforceable during atomic inserts and updates, preventing concurrent custom-media names, Noodle toggles, and lorebook links from persisting ambiguous duplicates.
+- Reduced the base Engine by removing more than 25,000 lines of optional agent, map, call, and table-game implementation code. The base now exposes small validated capability registries and compatibility bridges while downloaded packages supply feature code on demand.
+- Added a canonical 29-package catalog summary to both Professor Mari prompt paths and completed the public agent reference, README, and developer documentation so Mari can compare and recommend every Writer, Tracker, Misc, Maps, Calls, and Conversation-game package without confusing catalog availability with installation state.
+- Consolidated Conversation command controls and renamed selfie configuration as **Illustrator Settings** inside Chat Settings → Agents. Agent sections, settings, and package-owned command toggles now appear only for agents that are actually installed, while an empty setup-wizard Agents step links directly to the Agents tab and its Download Agents action.
+- Updated Professor Mari, onboarding, and agent documentation to explain the downloadable-agent workflow, package restarts, offline behavior, and backward-compatible migration.
+- Began the v2.3.0 development cycle and synchronized version metadata across packages, the PWA manifest, Windows installer sources, Android APK metadata, and shared update checks.
+- Android `versionName` is `2.3.0` with `versionCode 34`.
+
+### Fixed
+
+- Logged every Noodle timeline refresh model response in debug mode, including correction attempts, and persisted each raw attempt with its full rejection reason so malformed first responses remain auditable after a successful retry ([#3655](https://github.com/Pasta-Devs/Marinara-Engine/issues/3655)).
+- Fixed Conversation **About Me → AI Write** sending literal card macros such as `{{user}}` to the model. The one-shot draft now resolves selected card fields, lorebook entries, recent chat context, and extra direction with the active Conversation persona and character before provider submission ([#3646](https://github.com/Pasta-Devs/Marinara-Engine/issues/3646)).
+- Unified the online Card Browser with the Character, Persona, and Agent library shell: it now opens as **Cards Library**, introduces **Browse character cards online**, keeps the familiar back navigation and chroma-aware library background, and renders search failures in the selected chroma text color instead of legacy pink.
+- Changed **Uninvite everybody** and its confirmation action from destructive red to Noodle blue, and made the disabled custom mouse-pointer preference persist immediately so Firefox, PWAs, and quickly closed sessions do not silently turn it back on.
+- Fixed concluded Conversation scene summaries bypassing daily and weekly compaction because narrator history is represented as system-role prompt messages. Past scene summaries now fold into their normal day/week summaries and stay out of the verbatim recent-message tail, while current-day scene context and genuine system instructions remain intact ([#3641](https://github.com/Pasta-Devs/Marinara-Engine/issues/3641)).
+- Replaced stale Spotify, YouTube, or Custom player controls with clear **Download Music DJ Agent to configure** guidance and a direct **Download Agents** action on desktop and mobile whenever the always-available **Music Player** toggle is enabled without Music DJ installed.
+- Fixed Conversation selfie prompt generation ignoring the per-chat **Prompt Model** selection. Automatic character selfies and Gallery selfies now route their prompt-writing request through the selected text connection, including its provider, model, caching behavior, and local-sidecar support (#3638).
+- Applied downloaded package artwork to matching installed agents in the Agents sidebar, while preserving user-uploaded pictures and the star fallback for missing or failed images.
+- Restored the Characters sidebar header icon to the same pink-to-rose gradient used by the New Character action while keeping its topbar icon on the selected chroma accent.
+- Calibrated Lorebook semantic similarity against an unrelated-text baseline so embedding models whose raw cosine scores cluster around 0.97 no longer inject unrelated entries at every usable threshold or suppress relevant entries near 1.0 (#3627).
+- Replaced the nested presence animation used by expandable right-sidebar folders with an accessible grid transition, preventing Connections and Lorebooks folders from crashing the app shell with React hook-order errors (#3630).
+- Recognized OpenRouter's positive-form `No endpoints found that support image input` rejection as a non-vision model response, allowing Noodle timeline refreshes to retry once with the existing text-only prompt (#3631).
+- Moved the Game Assets manifest and rescan lifecycle out of Zustand into one React Query cache shared by Game surfaces and the Asset Browser, consolidated model/runtime and Whisper download SSE parsing, and made failed sidecar delete/unload actions propagate instead of silently succeeding (#3616).
+- Fixed Game Journal tabs refusing to scroll on desktop and iOS by giving the embedded journal a bounded flex viewport, and made replaced/generated NPC portraits refresh immediately even when the server reuses the same image URL (#3624).
+- Updated the Character Colors preview to render the active card's cropped avatar with an icon fallback, while keeping its sample narration free of formatting asterisks (#3622).
+- Preserved the standard `<START>` example-dialogue separator through XML prompt sanitization, including cards whose importer had already encoded the marker, without allowing other XML-looking card text through unescaped (#3623).
+- Removed every random-user instruction and profile placeholder from Noodle refresh prompts when Random Characters are disabled, while participant selection continues to exclude those accounts entirely (#3619).
+- Consolidated Chub, CharacterTavern, and Wyvern Bot Browser JSON requests behind a shared HTTPS-only `safeFetch` boundary with explicit provider hosts, JSON content-type validation, redirect rejection, cancellation-aware timeouts, and bounded response sizes (#3617).
+- Restored swipe-to-dismiss for mobile web toasts in both horizontal directions and upward, so touch users no longer need to target the small close control (#3625).
+- Renamed the Connections **Illustrator** defaults category to **Images**, hid image/video generation settings and `/illustrate` or `/selfie` commands until Illustrator is installed, kept `/help` first in slash suggestions, and refreshed `/help` and `/macros` feedback with chroma-aware styling.
+- Fixed Gallery generation controls appearing without an active Illustrator package. Illustrate, Selfie, Storyboard, Video, Animate, and Background actions now require Illustrator to be installed and enabled for that chat in every mode, while Roleplay Gallery replaces the separate Browse Images window with its asset search directly in the Gallery.
+- Unified Chat Settings → Agents and Conversation command toggles with the same accessible chroma-aware control styling used by the rest of Chat Settings, restored spacing between installed Conversation Calls settings and schedule-generation preferences, and changed Game setup's selected SFW/NSFW rating from green/red status colors to the selected accent color.
+- Fixed installed Conversation feature packages still behaving like per-chat pipeline agents. The six table games now appear in the Commands controls without separate Add Agent entries, Conversation Calls settings render directly below Illustrator settings using the native chroma controls and expand only after calls are enabled for that chat, and installed games/calls expose their surfaces and command runtimes without requiring legacy `activeAgentIds` metadata.
+- Fixed downloaded Maps and Conversation Calls packages failing against file-native storage with `Unsupported table: chats`, `Unsupported table: conversation_call_sessions`, or an undefined schema name. Capability-owned file-table and column objects now resolve safely through the Engine's registered schema names instead of requiring identical JavaScript object instances, while incompatible installed package versions are quarantined before their hooks can crash generation ([#3647](https://github.com/Pasta-Devs/Marinara-Engine/issues/3647)).
+- Updated Persona Status Bars’ **Add** button to follow the selected chroma accent instead of using hard-coded green styling.
+- Fixed Conversation Chat Settings hiding the **Selfies** command after Illustrator was installed. Package-owned commands now appear alongside their separate agent settings as soon as the matching agent is available.
+- Kept Chat Settings → Agents available in Conversation, Roleplay, and Game when no optional agents are installed. Built-in Conversation commands remain configurable without downloads, and the Conversation setup wizard now shows those commands plus only the extra commands owned by installed agents. Empty Roleplay and Game sections link directly to Download Agents, while the chat setup wizard removes its redundant decorative Agents icon from the empty state.
+- Made Game setup respect installed agent ownership: Hierarchical Maps, Music DJ, Lorebook Keeper, and Illustrator controls now appear only when their packages are installed, with Visual Generation renamed to Illustrator. Empty Game and Conversation setup states link directly to Download Agents, and the Game connection guidance now follows the selected chroma accent instead of hard-coded yellow styling.
+- Removed the inert **All agents** back control from the desktop Download Agents detail view while preserving its working list navigation on mobile.
+- Fixed uninstalling a downloadable agent leaving its card in the already-open Agents sidebar until the panel was closed and reopened. Capability registry updates now land before React publishes the refreshed package state, so installed-agent lists and empty states update immediately.
+- Fixed left and right sidebars disappearing before the desktop shell caught up, which briefly left an empty column beside the chat. Their reserved width now collapses in sync with the visible panel slide, including the full-width mobile chat sidebar. Lorebook entry filter chips now use consistent inset-safe borders so character, tag, generation, and additional-source choices are no longer clipped by their scrolling containers.
+- Fixed Group Conversation replies ignoring the documented inherited-speaker format in Bubble display. Each generated line now receives its own bubble while unprefixed consecutive lines retain the preceding character's identity (#3609).
+- Fixed recurring Roleplay characters losing tracker stats, custom fields, or their character-card avatar after being absent for several scenes. Character Tracker now receives card RPG configuration and bounded historical continuity, restores omitted prior values, and enforces card identity and artwork in normal and retry runs (#3606).
+- Fixed graceful shutdown completing before a file-native storage flush could drain newer writes queued during its active disk write, and made persistent close-time I/O failures reject shutdown instead of silently reporting success (#3602).
+- Fixed the Agent Editor custom-music folder picker omitting saved remote-admin and CSRF credentials by routing its privileged request through the shared API client (#3603).
+- Fixed dense Connections editor text flickering or shifting in Chromium browsers at the accent pulse's 500 ms update cadence. Editor reading surfaces now retain the selected base accent while headers and explicit accent chrome continue to pulse (#3599).
+- Fixed recalled-memory truncation splitting supplementary Unicode characters such as emoji or Lydian text into invalid UTF-16 surrogate halves, which caused strict provider JSON parsers to reject otherwise valid Conversation generations (#3596).
+- Fixed selected background-library images immediately disappearing in Roleplay mode because the renderer probed the GET-only image route with an unsupported HEAD request (#3592).
+- Fixed Noodle profile text edits resetting character avatars from their configured crop to the full source image. Unchanged avatars now preserve their crop, and previously lost crops recover from the matching character card on the next profile save.
+- Fixed a blank `TZ=` forcing server-side schedules and date-sensitive Conversation context into the synthetic `Etc/Unknown` UTC timezone. Blank values now inherit the host timezone, Noodle warns when timezone detection is unresolved, and chats remember the browser timezone for autonomous scheduling, temporal awareness, daily memories, and tool macros (#3590).
+
+## [2.2.1]
+
+### Added
+
+- Added Tic-Tac-Toe and Rock-Paper-Scissors as one-on-one Conversation-mode table games. Tic-Tac-Toe seats you against a character on a 3×3 board with a choice of X, O, or a random mark, and detects wins and draws. Rock-Paper-Scissors plays a best-of-3/5/7 match where each round's throw stays hidden from your opponent until both of you have thrown, then reveals the result. Both join the `[tic_tac_toe]`/`[rock_paper_scissors]` Conversation command family alongside `[chess]` and `[eightball]`, with `/tictactoe` (alias `/ttt`) and `/rps` slash commands, natural-language launchers, per-chat command toggles, and setup modals for opponent and game length.
+- Added a compact, expandable **Defaults** section to Connections for Main, Agents, Illustrator, and Videos. Each category now supports an optional fallback connection; failed generations retry once through that category's fallback while user cancellations and already-visible partial text streams remain protected from duplicate output. A toast identifies the fallback connection and model whenever the engine switches over.
+- Added drag-to-resize controls for the Echo Chamber on desktop and touch devices, with responsive text wrapping and correctly oriented handles in every screen corner.
+- Added native Android notification permission and delivery support to the APK wrapper so autonomous Conversation messages can notify mobile users while the app is backgrounded (#3572).
+- Added expandable Noodle poll vote details so tapping or clicking a vote count reveals which accounts selected each option (#3566).
+
+### Changed
+
+- Moved **Title / comment** into the primary identity fields directly below **Name** in both Character and Persona Metadata, while keeping it synchronized with the matching editor-header field.
+- Changed Noodle participant selection so invited characters remain the primary cast while random-user accounts appear only occasionally as supporting activity.
+- Moved media-wide queueing and prompt-review controls into a new **Overall Generations** settings group, renamed the queue option to **Queue media generation requests**, extended it to video generation, and added a Conversation toolbar hint linking users to generation settings.
+- Moved weather particle rendering off the main UI thread where supported, capped canvas resolution and mobile particle density, and reduced background polling/animation work to improve foreground smoothness and mobile battery use (#3567).
+- Added consistent Marinara Engine app attribution to every OpenRouter request path, including text, embeddings, image generation, model discovery, and video generation.
+- Bumped release metadata to v2.2.1 across packages, the PWA manifest, README release pointer, Windows installer sources, Android APK metadata, and the home-page-visible app version.
+- Android `versionName` is `2.2.1` with `versionCode 33`.
+
+### Fixed
+
+- Fixed NovelAI connection tests calling a retired subscription endpoint. Connection setup now directs users to Test Image, which verifies the real generation path (#3582).
+- Added a confirmation step before branching a chat from a message, preventing accidental branch creation from tightly spaced mobile Roleplay controls (#3583).
+- Fixed Noodle timeline prompts exposing internal character and account IDs, mentioning disabled random users, and repeatedly favoring the same early invited characters. Timeline generation now identifies accounts only by handle, omits random-user guidance when disabled, rotates the eligible roster fairly, and still prioritizes accounts involved in recent persona mentions or replies (#3584).
+
+- Fixed desktop top-bar navigation dismissing open chat tools such as Chat Settings, Gallery, Branches, Active Context, and Conversation Presence. Desktop shell panels now reflow those tools alongside the chat, while mobile navigation continues to dismiss floating chat UI.
+- Fixed Presets list metadata wrapping Regex AI/User badges above their patterns and Function badges below their names. Patterns and function names now truncate first so their badges remain beside them on one line.
+- Fixed Professor Mari's chat opening below the usable mobile viewport and hiding its composer on iPhones. The expanded chat now fills the app content area beneath the top bar and reserves the device's bottom safe area (#3569).
+- Fixed Professor Mari's structured `persona.create` action and `mari personas create` helper omitting required Conversation profile columns. Both creation paths now supply safe defaults and accept phonetic name, Convo display name, About Me, and Convo behavior values; the corresponding update helpers and command guidance were synchronized as well (#3571).
+- Hardened generation fallbacks so output already emitted through streaming callbacks is never replaced, failed toast delivery cannot cancel a working fallback, Roleplay background generation participates in Illustrator fallback routing, and Conversation selfie galleries record the connection and model that actually produced the image.
+- Fixed Present Characters tracker values crashing React when generated stats used structured `{ name, value, max, color }` objects; tracker displays now normalize those values safely (#3563).
+- Fixed autonomous group Conversation exchanges stopping at one capped or cooling-down character, sequential turns leaking other speakers, valid target replies being removed by wrong-speaker pruning, and OpenAI-compatible SSE responses losing content delivered through final message frames (#3573).
+- Fixed Roleplay chats opening at the oldest history position instead of the latest message, and updated **Show newer** and **Latest** controls to inherit the selected chroma text color.
+- Fixed Echo Chamber batches appearing all at once or too quickly by revealing queued reactions individually at randomized 10–30 second intervals, while protecting the active chat from stale delivery writes.
+- Fixed Echo Chamber corner controls pointing in the wrong vertical direction when the panel is anchored along the bottom edge.
+- Fixed image and video connections retaining or claiming the language-only **Fallback for Main** role after creation or provider changes.
+- Fixed corrected Noodle refreshes bypassing the same activity and authorship validation as the first attempt, empty refreshes being accepted without retry, persona IDs being offered as generated authors, and JSON-shaped image prompts without a usable prompt field being sent verbatim to image providers.
+- Fixed Android/Termux updates repeatedly forcing the entire dependency store to reinstall for the same stale build. The launcher now performs one rebuild, prunes unreferenced packages left by older releases, avoids irrelevant cross-platform binary downloads, and accepts the current Node 26 Termux runtime (#3540).
+- Fixed one malformed generated Noodle post, interaction, follow, or digest rejecting an otherwise valid refresh. Rows are now validated independently, while wholly malformed JSON or batches containing only invented account IDs receive one constrained retry with the exact active IDs (#3547, #3553).
+- Fixed XML agent prompt-template overrides escaping literal contract tags such as `<chat_summary>` and `<existing_entries>` while continuing to escape values inserted through macros (#3548).
+- Fixed Conversation group messages ignoring character-specific Convo display names in generation instructions, speaker parsing, sender labels, typing events, and historical base-name matching (#3550).
+- Added profile editing for directly invited Noodle characters, including display name, handle, bio, location, avatar, and banner; manual profile identity changes are preserved when the underlying character card is refreshed (#3551).
+- Fixed add-character searches in Conversation and Roleplay setup and Chat Settings ignoring card tags, descriptions, creator metadata, and title aliases (#3555).
+- Fixed Noodle's default generated-image path sending the post text and prompt-building meta-instructions directly to image providers. It now sends only the model's visual idea, character appearance, Noodle image direction, and selected image-generation style settings, with recovery for legacy or JSON-wrapped image prompts (#3554).
+- Fixed Noodle profile setup failing an entire refresh when one model-generated profile contains an overlong or malformed field. Generated profile text is safely bounded, invalid rows are skipped independently, and valid accounts from the same batch still apply (#3533).
+- Fixed Noodle forgetting the last selected persona after a browser refresh or app restart; the account choice now persists per browser and falls back safely when that persona no longer exists (#3535).
+- Fixed renamed character cards retaining their former Noodle display name. Bootstrap now refreshes entity-owned character names and avatars while preserving generated handles, bios, locations, and other Noodle profile data (#3537).
+- Fixed generated chat images being saved only to the chat gallery. Illustrator generations and retries across Roleplay/Game, Conversation command and Gallery selfies, and Conversation Call selfies now also create independent copies in every depicted character or persona gallery (#3538).
+- Restored Echo Chamber's queued Roleplay delivery: newly generated reactions now arrive one at a time with short delays, persistence races cannot reveal a whole batch, stale reveal counters are clamped, and inactive-chat retries cannot write into the visible chat's Echo panel.
+- Fixed character Advanced prompt controls being dropped from live Conversation and Game requests. System Prompts, Post-History Instructions, and Depth Prompts now cover Conversation participants plus Game party/character-GM cards, using the same shared injection path in preset assembly, direct mode assembly, and Prompt Preview.
+- Fixed Roleplay Illustrator comic and manga prompts being contradicted by an unconditional negative prompt that banned speech bubbles, captions, readable lettering, and SFX. Text suppression now remains enabled for ordinary illustrations but yields to explicit lettering requests in the final compiled prompt.
+- Fixed Roleplay Text to Speech replaying the previous assistant message whenever a new output generation failed. Autoplay now requires a successful generation with a genuinely new assistant-message revision, and failed partial outputs are never queued for automatic playback.
+
+## [2.2.0]
+
+### Added
+
+- Added **Noodle**, Marinara's fake social network and the headline feature of v2.2.0: invited characters and optional random users can create posts, nested replies, polls, images, likes, reposts, mentions, and notifications on a persistent generated timeline; personas can participate directly; automatic and manual refreshes support scheduling and social-memory carryover into Conversation, Roleplay, and Game; and the responsive mobile shell provides profile navigation, search, settings, notifications, and pinned bottom navigation.
+- Added long-term Noodle timeline recall: refreshes can now sample up to three posts older than 48 hours so characters may naturally remember, revisit, or interact with past activity.
+- Added native multimodal Noodle timeline context: refresh models can inspect images attached to recent posts and comments, with deterministic post/reply labels, bounded image inputs, and an automatic text-only fallback for models that reject vision content.
+- Added optional Noodle image captioning with a selectable vision connection so text-only timeline models can understand images attached to posts and replies (#3505).
+- Added prefix-matched `@handle` suggestions to Noodle post and reply composers, with click, touch, and keyboard insertion.
+- Added first-class custom fields and hide controls to World State and Present Character trackers, including inline editing, lock-aware persistence, tracker-agent updates, and matching displays in the Tracker Panel and Roleplay HUD (#3518).
+- Added per-agent manual scheduling for Roleplay tracker agents, so selected trackers can be excluded from automatic post-turn runs and triggered from the HUD without forcing the whole tracker suite into manual mode (#3522).
+- Added batch editing for selected Lorebook entries, letting one boolean setting such as recursion, case sensitivity, whole-word matching, vector exclusion, or enabled state be applied to thousands of entries in one atomic update (#3513).
+- Added Discord-style standard emoji shortcodes and Conversation autocomplete, so names such as `:crying:` render as Unicode emoji and `:cry…` suggestions appear alongside custom emoji (#3515).
+- Added server-backed extension storage APIs and client/server runtime helpers so installed extensions can persist validated, size-limited settings across devices (#3524).
+- Added a message-scoped Game state endpoint so extensions and integrations can retrieve the exact stored snapshot for a selected chat message and swipe (#3526).
+- Documentation search in the in-app docs viewer now highlights every occurrence of the active query in the opened guide, result titles, and snippets, and opens each result at its first highlighted match.
+- Added visible Game setup progress with an elapsed timer and indeterminate progress bar while the Game Master builds the initial world, plus live phase labels during the first turn (#3495).
+- Added an **Initial Game Setup** section to Game Mode Session History so players can review, copy, or download a `.txt` file containing the complete setup that created a successful campaign, including preferences, prompt choices, visual/storyboard options, safe model descriptors, and effective generation parameters without credentials or local IDs.
+- Added per-turn **Peek Prompt** actions to Game Mode Logs and **History Above Dialogue Box**, opening the exact cached prompt that was actually sent for that historical GM turn.
+- Added read-only replay for completed Game Mode sessions from Session History, including click-through narration, stored presentation cues, and deterministic choice forks that only permit the option selected during the original session (#3465).
+- Added a selectable **Comic Page Video** prompt for storyboard clips that interprets comic and manga panels as duration-aware ordered animation beats without changing the shared Game Video Prompt.
+- Added an Anime Episode presentation for Game Mode with coordinated **Anime Game Prompt**, **Comic Page Animation**, and **Comic Page Video** defaults; setup-time keyframe targeting; a `{{gameStoryboardKeyframeCount}}` GM macro; and independent storyboard prompt selectors that keep **Anime Episode Director** plus **Anime Game Video** available as the alternative still-shot combination.
+- Added GLM-5.2 to custom OpenAI-compatible connection model choices, including its 1M context and 128K output limits.
+- Added OpenAI GPT-5.6 Sol/Terra/Luna model support, including the `gpt-5.6` Sol alias, a `gpt-5.6-sol-pro` pro-mode alias, Responses API routing, GPT-5.6 `max` reasoning effort mapping, and reuse of the existing Exclude Past Reasoning toggle for GPT-5.6 reasoning context.
+- Added a configurable source picker (⚙️) for the Conversation "about me" AI-write, in both the character-card editor and the in-chat profile popout: choose which of the card fields (description, personality, scenario, backstory, appearance), the Convo behavior directive, the character's lorebook entries (with per-entry selection in the card editor), and recent chat context feed the draft. Defaults to personality only.
+- Added Professor Mari suggestion chips and guided creation follow-ups so Home Mari and legacy Mari chats can surface color-coded quick replies for step-by-step creation, editing, and contextual next actions.
+- Added a Revert control to the about-me editor (card editor and in-chat popout) to undo a manual or AI-write change, and an emoji picker in the about-me editor.
+- Added an optional per-character toggle to declare a character's Convo display name on its card in the prompt, so the model can map the display name to the right card in group chats.
+- The Convo display name is now shown as the sender label above messages in Conversation (read live, so renames reflect immediately), not only in the prompt and the profile popout.
+- Added Poker (No-Limit Texas Hold'em) as a Conversation-mode table game for 2-8 players: seeded fair dealing, full no-limit betting with all-ins and side pots, showdown hand ranking with natural-language labels, and multi-hand sessions with a rotating dealer button, optional blind escalation, an optional hand limit, and player-paced "Next hand" breaks between hands.
+- Added a selectable poker dealer: choose the silent house dealer or seat any chat character as the croupier, who announces hand starts, flop/turn/river reveals, showdowns, and blind increases in their own voice and personality — narration only, with dealing always seeded and fair.
+- Poker joins the `[poker]` Conversation command family alongside `[uno]` and `[chess]`, with a `/poker` slash command, natural-language launcher, per-chat command toggle, and a setup modal for players, dealer, and stakes.
+- Added 8-Ball Pool as a one-on-one Conversation-mode table game with a real 2D physics simulation: you aim and shoot for real — drag to aim with a guide line and ghost-ball preview, set power on a slider, and watch every shot play out with animated ball motion, collisions, cushion bounces, and pocket drops. Characters pick from an engine-computed shot menu (direct pots, bank shots, and safeties) in personality — daredevils take the showoff bank, tacticians play safe — and their choice is executed through the same physics with skill-based aim accuracy. Fouls (scratches and wrong-ball-first contact) give ball-in-hand with tap-to-place cue placement, slop counts, alternate breaks, and race-to-N matches with player-paced racks.
+- Added a selectable 8-ball announcer: seat any chat character as the pool-hall commentator, who calls the break, group assignment, fouls, great shots, and rack wins in their own voice — narration only, never affecting the rules.
+- 8-ball joins the `[eightball]` Conversation command family, with a `/8ball` slash command (alias `/pool`), natural-language launcher, per-chat command toggle, and a setup modal for the opponent, announcer, match length, and who breaks.
+- Added an opt-in **Lorebook context** setting to Noodle (off by default): when enabled, timeline refreshes scan recent post/reply text and active character profiles for lorebook keyword matches and include activated entries as world/lore context, reusing the same multi-character lorebook system group chats already use, with a Noodle-specific token budget that scales with the active character count.
+- Registered a **Noodle Timeline Voice & Tone** prompt override (Settings -> Generations -> Image Generation Prompt Overrides) so the tone and creative-freedom portion of Noodle's refresh prompt can be rewritten without code changes, while structured-action and output-format rules stay hardcoded outside the override so a rewrite cannot break refresh generation.
+- Noodle's opted-in chat context now includes a character's current Conversation-schedule status and activity (for example, "currently dnd (At the office)") alongside that chat's recent messages, when the chat both has **Allow Noodle references** on and a running character schedule. Scoped per chat, with no new schedule computation or cross-chat reconciliation.
+- Added an opt-in **Enhanced tone & continuity** setting to Noodle (off by default, Settings -> Timeline Writing): when enabled, each account's tone is grounded more strongly in its own Personality/Description/Backstory instead of a default upbeat voice, accounts are encouraged to react to, quote, or argue with each other's posts within the same refresh, older-post recall happens more often and favors posts relevant to currently active accounts, and the recall instruction is reworded to allow rather than discourage references. Off (the default) reproduces the prior tone and recall behavior exactly.
+
+### Changed
+
+- Updated UNO bot instructions and Wild tool guidance to expose the bot's remaining color counts and prefer its strongest held color instead of reflexively repeating the active color (#3512).
+- Changed random and exact Noodle participant selection to prioritize directly involved accounts, then accounts absent from the previous refresh, while retaining recently active accounts as a fallback when the pool is small (#3505).
+- Changed post-processing orchestration so Prose Guardian, Continuity Checker, and Immersive HTML share a dedicated rewrite call that is isolated from tracker batches, and hid the legacy About Me Keeper from the manually addable Agents library.
+- Changed Noodle's generated-image quota from a daily cap to **Images/refresh**, applied independently to every manual and automatic timeline refresh while preserving each user's saved limit.
+- Added a separate **Comic Page Animation** storyboard prompt with clip-duration panel budgets, causal panel order, continuity guidance, and timed motion direction while preserving the original **Comic Page** illustration prompt.
+- Refined comic storyboard animations from output review: Gemini Omni now receives complete untruncated prompt components, six-second pages may use a simple third beat without overcrowding, animation pages minimize lettering and repeated cast members, full-page establishes cannot reveal later consequences early, and clips reserve a final hold.
+- Changed storyboard videos to play once and hold on their final frame instead of looping. Background mode now starts each story beat's clip once with sound, lets narration display while it plays, waits before narration auto-advances, and exposes replay, play/pause, and mute controls in the desktop and mobile game toolbar.
+- Removed the obsolete Visual Novel coming-soon tab and grouped legacy/imported Visual Novel chats under Roleplay while preserving their schema, importer, and achievement compatibility; Game dialogue layout labels now use Dialogue Box wording.
+- Updated Noodle timeline guidance so characters may naturally be rude, petty, confrontational, revive grudges, form rivalries, and stir up interpersonal drama when it fits their established personalities and relationships.
+- Restyled Noodle around the Klusek blue logo asset, replacing the always-visible settings column with a profile-triggered drawer and a more Twitter-like central feed.
+- Updated Noodle image prompt generation so character posts may request either character-focused images or in-character memes when image generation is enabled.
+- Updated Noodle timeline generation guidance so characters and random users know they may occasionally create and vote in polls and naturally use Unicode emoji in posts and replies; when random users are enabled, they may also very occasionally post clearly fictional parody ads or absurd fake crypto scams.
+- Updated Noodle settings so selected character folders can be bulk-invited directly, and automated refreshes can be disabled by setting refreshes per day to `0`.
+- Updated Noodle posts with edit/delete actions for every post, toggleable likes/reposts, a confirmed timeline reset control, multi-character image references, and automatic character-gallery saves for generated character post images.
+
+### Fixed
+
+- Fixed the root recovery screen hydrating the legacy default pink before the selected app accent could mount; crash details, borders, focus rings, and recovery actions now inherit the saved chroma color, and remaining old pink application-chrome fallbacks use semantic accent tokens.
+- Added an actionable startup warning when the compiled client is missing, identifying the expected build path and the `pnpm build` command instead of silently serving only the API (#3529).
+- Fixed Illustrator defaulting to the Background prompt in new and existing Roleplay chats after the staging update; normal Illustration is restored as the default, affected stored agent configs are repaired once, and explicit per-chat Background choices remain intact (#3517).
+- Fixed the Windows uninstaller deleting current-layout user data under `packages/server/data`; uninstall now asks before application cleanup, safely preserves and restores retained data, supports the legacy root data folder, and removes the current `win` directory instead of a stale path (#3484).
+- Fixed semantic Lorebook search being unreachable for ordinary keyed entries; vector similarity now acts as the documented fallback when keyword matching misses while retaining score thresholds, maximum results, filters, and probability gates (#3511).
+- Fixed partially speaker-prefixed Conversation replies rendering their leading model text as narration beneath the user's message; the leading block now inherits the saved assistant character while edit and reaction attribution remain aligned (#3514).
+- Fixed Conversation and other non-assembled generation paths silently disabling reasoning when the UI showed the default **Maximum** effort; shared and server runtime defaults now agree while an explicit disabled value remains respected (#3498).
+- Fixed Noodle accounts repeatedly interacting with the same post or replying to their own comments without new involvement, while still allowing a return after an explicit tag or direct reply; also fixed profile validation errors rendering as `[object Object]` (#3505).
+- Fixed pending persona portrait focus and zoom changes being lost when a tab was refreshed or closed before the debounce completed by flushing the save on `pagehide` with a keepalive request (#3506).
+- Fixed Conversation replies leaking combined date-and-time and speaker prefixes such as `[11.07 15:53] Character: Hello!`; single and individual replies now store and display only `Hello!`, while merged group speaker boundaries remain intact.
+- Fixed Lorebook Overview sections briefly rearranging after Save by handing the editor the authoritative PATCH response before clearing its dirty state; Professor Mari-created lorebooks now normalize categories and advanced numeric settings so later manual edits, including Global changes, can be saved.
+- Fixed Roleplay streaming collapsing into the completed response when post-processing agents started, final response cleanup changed an already-painted prefix, the provider closed immediately after tracker work, or the browser tab lost visibility; authoritative cleanup now preserves typewriter progress, the live buffer remains authoritative through agent work, background tabs pause instead of flushing, held rewrites stream their final rewritten response before the durable message takes over, bottom-follow scrolling tracks the rewrite's committed DOM growth, and rewritten messages retain a persistent shield toggle for comparing the original and edited versions.
+- Fixed editing the preceding user message during Roleplay generation temporarily rendering the saved assistant response beside its live streaming presentation.
+- Fixed Text to Speech treating quotes inside generated HTML attributes and CSS as dialogue; markup is now removed before dialogue extraction, non-speech code/style blocks are discarded, and explicit speaker tags continue to route proper dialogue to the correct voice.
+- Fixed desktop sidebars stuttering over dense Roleplay transcripts by replacing continuous width animation with compositor-only transform and opacity motion, retaining panel content between visits, and performing each center-layout resize only once.
+
+- Fixed Noodle setting controls reverting to an earlier snapshot by serializing saves, keeping the edited value optimistic while the request completes, and returning the value re-read from persistent storage.
+- Preserved stored votes on older Noodle polls when manual or automatic refresh hydration briefly returns an incomplete interaction snapshot.
+
+- Fixed persona-authored Noodle comments bumping their target posts to the top of the timeline; a post now moves up only when another account directly responds to the active persona's comment.
+- Fixed failed Noodle image generations leaving a visible image prompt in place of the missing picture; Noodle now retries the image provider once, then publishes a clean text-only post if the second attempt also fails and clears orphan prompts from earlier failed posts.
+- Fixed provider concurrency-limit failures being reduced to generic agent errors or omitted from generation guidance; affected toasts now identify the concurrency limit and include the provider's message.
+- Fixed new Roleplay chats opening without character greetings because initial character assignment inserted a hidden join notice before greeting seeding (#3472).
+- Fixed the regex safety validator rejecting linear delimiter-bounded field patterns such as `([^|]+)\|([^|]+)\|([^|]+)` as polynomial backtracking risks while retaining rejection of overlapping broad-unbounded chains (#3471).
+- Fixed failed Game Mode Lorebook Keeper runs leaving no obvious recovery path: Session History now surfaces the failure immediately, keeps its background status fresh, and provides a dedicated **Retry Lorebook Keeper** action.
+- Fixed Game Mode status readouts written as standalone `<...>` lines being sanitized into empty narration steps, and removed segments made empty by display regex or macro processing.
+- Fixed Background storyboard playback state leaking between keyframes, which could rapidly pause, restart, or appear to fast-forward animations.
+- Fixed Grok CLI subscription requests failing to spawn (`E2BIG` / "Argument list too long") on long or multibyte-heavy transcripts by delivering the prompt via `--prompt-file` instead of a single inline `-p` argument; with the transport limit gone, an explicitly configured Max Context Window is now honored instead of being silently capped at 32k (the conservative 32k default is unchanged).
+- Fixed Text to Speech source switching discarding the previous provider's encrypted API key, endpoint, model, voice assignments, and provider parameters; each source now restores its own saved profile when selected again (#3467).
+- Fixed desktop Noodle emoji, custom emoji, and sticker insertions always appending to the end of post and reply drafts instead of replacing the active selection at the caret.
+- Fixed example dialogue `<START>` sentinels being escaped as `&lt;START&gt;` in XML-wrapped prompts while continuing to escape arbitrary imported markup (#3441).
+- Fixed Conversation **About Me** and Noodle avatars ignoring saved crop settings, and restored custom emoji rendering in Noodle profile bios (#3443).
+- Fixed structured Game and Noodle generations being rejected when a model wraps an otherwise valid JSON object or array in thinking, metadata, or other stray text.
+- Fixed GPT-5.6 Sol rejecting Noodle timeline/profile generation by supplying strict JSON schemas with `additionalProperties: false` at every object level and placing an explicit JSON instruction in Responses API input messages.
+- Fixed native Z.AI GLM-5.2 connections using legacy thinking parameters; Marinara now sends the documented `thinking.type` and compatible `reasoning_effort` values while preserving JSON mode on Z.AI endpoints.
+- Expanded every standard emoji picker from a hand-curated subset to the complete Unicode Emoji 17.0 base catalog, including science emoji such as 🧪 plus the previously missing travel, activity, object, symbol, animal, and flag groups.
+- Fixed Quick Replies' **Post only** action saving recognized slash commands as ordinary messages; known commands now execute normally while unknown slash-prefixed text can still be posted.
+- Moved **Quick replies** from Advanced settings to **General -> Input & Editing**, and clarified that image prompt review is a global generation preference rather than a Game-only option.
+- Fixed manual Noodle timeline refreshes bypassing **Expose image prompts before sending**; generated Noodle images now present their final positive and negative prompts for editing before provider submission.
+- Fixed character-assigned lorebooks failing validation when duplicated from the Lorebooks pane, while preserving their assignment and vector-search settings (#3433).
+- Fixed the Noodle reply image picker separator inheriting a pink chrome accent instead of using Noodle blue.
+- Fixed character-authored Noodle comments being read-only; their edit and delete controls now use the same flow as persona comments, while generated random-user comments remain protected.
+- Fixed custom and imported preset variables disabling **Confirm Choices** when a valid blank-valued option was selected (#3429).
+- Fixed turn-game bot table talk and dealer announcements leaking the model's chain-of-thought into chat when the connected model emits inline reasoning (e.g. a leading `<think>` block): narration now strips inline reasoning like the main generation pipeline, falls back to the factual event line when the output was all reasoning, and gets a larger output budget so reasoning models can still land the spoken line (#3427).
+- Fixed comma-separated lorebook activation-key input so pasted key lists are trimmed, split, and deduplicated into individual keys (#3422).
+- Fixed grouped Conversation reactions on mobile by keeping each speaker's reaction button visible and removing the ambiguous whole-block reaction target (#3424).
+- Fixed generated and uploaded Game assets being misclassified as native merely because they lived below a bundled-assets folder, restoring move and delete actions for user-owned files (#3425).
+- Fixed local git installs being unable to switch release channels from Settings unless general browser-applied updates were enabled; deliberate loopback channel switches now work while ordinary and remote update safety gates remain intact (#3426).
+- Completed Noodle's automatic timeline refresh scheduling: daily refresh times are now distributed across persisted local-day windows, survive restarts, collapse overdue slots into one catch-up refresh, retry safely after failures, and update an open Noodle timeline automatically.
+- Fixed PocketTTS voice refresh so built-in and custom voices returned by the provider `/v1/voices` endpoint are listed, including custom voices identified by URL/path fields (#3410).
+- Fixed Conversation Call live-mic input so Local Whisper/provider media submissions cannot queue unbounded speech segments and lock the call UI behind repeated "too many requests" failures (#3411).
+- Fixed Game Mode reputation widget updates accepting generated action descriptions longer than 50 characters, preventing scene-analysis reputation updates from failing on natural-language actions (#3409).
+- Fixed the v2.1.1 auto-update build regression by resolving the stale TypeScript errors that broke the server/client build during update (#3401).
+- Fixed the chat-specific about-me override being lost on reload or refetch — the popout read chat metadata without parsing it, so the override reset to the card default and, on save, could drop other characters' overrides.
+- Fixed the about-me AI-write failing on "thinking" models (e.g. Gemini 3.x) that spent the entire output budget on reasoning and returned no content; the output ceiling was raised and reasoning effort lowered.
+- Fixed the about-me source picker listing only "linked" lorebooks — a character whose lorebook is embedded now sees and can select its entries.
+- Fixed the Conversation participant-profiles block labeling the persona as "the user," which nudged some models toward sycophancy; the persona is now presented as just another participant.
+- Fixed the about-me profile popout on mobile (now a full-height sheet so the keyboard and emoji picker no longer overlap the field) and its overflow on desktop when the source panel is opened.
+- Fixed help tooltips stacking — opening one now closes any other.
+
+### Additional release scope
+
+#### Added
+
+- Added Conversation-mode profiles for characters and personas: a separate Convo display name, an "about me" profile (editable by hand or drafted by an AI-write button), and a Convo behavior directive with configurable insertion strategy, all Conversation-mode-only and never sent to the model in Roleplay, Visual Novel, or Game mode (#3368).
+- Added per-chat "about me" overrides (Discord per-server-profile style): click a participant's avatar in Conversation mode to view their effective profile and set, edit, or clear a chat-specific override that supersedes their default about-me in that conversation.
+- Added the opt-in **About Me Keeper** Conversation agent that lets characters keep their own about-me current on a configurable cadence, updating either their public card profile through the existing approval flow or a private, chat-specific one, and the opt-in **update_about_me** command so a character can update its own about-me in character mid-turn.
+- Extended card CSS theming so the Conversation about-me profile popout is customizable from a character's or persona's Creator Notes (new `mari-about-me-*` hooks documented in the Card CSS Theming Guide), and personas can now ship creator-notes CSS for their popout.
+- Added Grok 4.5 to the xAI / Grok model list and made new xAI connections default to it.
+- Added Conversation prompt relocation macros for auto-inserted context: `{{context}}`/`{{status}}`, `{{commands}}`, `{{reactRules}}`, `{{memories}}`, and `{{lorebook}}`.
+- Added a TTS cache export control in Text to Speech settings so generated cached voice clips can be downloaded from IndexedDB.
+- Added a Roleplay Chat Summary maximum output size setting under Summary Connection, defaulting to 4096 tokens for manual and automatic summaries.
+- Added a connected-chat shortcut to Game mode so connected Conversation and Game chats can switch back and forth like Conversation/Roleplay links.
+- Added a scene prompt setup dialog for user- and character-initiated scenes, remembering POV, tense, and optional prompt wishes for the next scene generation.
+
+#### Changed
+
+- Bumped release metadata to v2.2.0 across packages, the PWA manifest, README release pointer, Windows installer sources, Android APK metadata, and the home-page-visible app version.
+- Android `versionName` is `2.2.0` with `versionCode 32`.
+- Tagged releases now attach a clearly named, versioned source ZIP alongside the Windows installer and Android bootstrap APK, in addition to GitHub's automatic source archives.
+- Reworked Settings with search-first navigation, compact pinned controls, fixed top-level categories, and finer section shortcuts for faster navigation.
+- Updated the default Illustrator prompt rules so generated image prompts carry available character builds, clothing/outfits, and appearance details instead of relying on the image model to infer them.
+- Changed custom Roleplay Chat Summary prompts to apply globally across roleplay chats instead of only the currently open chat.
+
+#### Fixed
+
+- Fixed manual agent retry/rerun requests so only agents currently added to the chat can be resolved, preventing removed agents from being prompted by stale retry requests.
+- Fixed agent prompt assembly so the required output format is appended to the terminal user message after chat history using the selected chat prompt preset wrapper (`<output_format>`, `## Output Format`, or raw text).
+- Fixed non-Quest agents receiving active quest progress in current game-state context while keeping compact quest state available to the Quest Tracker when it is active.
+- Fixed Roleplay/VN chat branching so tracker snapshots copy to the branch instead of only copying Game Mode snapshots (#3385).
+- Fixed Lorebook Keeper approval previews and commits so updates to existing entries keep the existing text and include `newFacts` alongside proposed replacement content (#3384).
+- Fixed the mobile Characters panel **Load more** footer so it no longer overlaps or blocks the last character cards (#3383).
+- Fixed generated TTS playback so clips created while the tab is hidden or unfocused wait for the tab to return instead of being dropped (#3382).
+- Fixed prompt identity fallback so card fields referenced by macros are not duplicated, and fields can be intentionally suppressed by placing their macro in the prompt template (#3380, #3377).
+- Fixed Game Mode world setup lorebook generation so per-chat disabled lorebooks and hidden Game Lorebook Keeper books are excluded (#3376).
+- Fixed active lorebook controls so a pinned lorebook that is also active via persona, character, or global scope can still be disabled in the current chat (#3375).
+- Fixed Conversation command reminders so preset wrap format `None` no longer emits a literal `<commands>` XML wrapper (#3378).
+- Fixed roleplay streaming recovery so parallel agent events are deferred until the main assistant stream finishes, preventing late agent updates from replacing the streamed message.
+- Fixed the recovery/error page so **Internal Server Error** uses the configured chat chrome text color instead of a hard-coded pink.
+- Fixed Conversation Calls on Chromium browsers by allowing same-origin microphone, camera, and screen-capture access in the server permissions policy instead of blocking the browser permission prompt.
+- Fixed the Roleplay setup wizard's **Use Settings Presets** shortcut so system "joined the chat" notices no longer block seeding the selected character's first message (#3392).
+- Fixed Conversation-mode prompt assembly so the user's visible status and activity are always included in context unless the persona is set to Invisible, even when a relocated context macro is configured but not present after prompt resolution.
+
+## [2.1.1]
+
+### Added
+
+- Added a **Grok CLI (Subscription)** connection provider that routes chat requests through a local `grok` CLI login for SuperGrok / X Premium+ users, with in-app setup instructions and no API key or base URL fields.
+
+### Changed
+
+- Bumped release metadata to v2.1.1 across packages, the PWA manifest, README release pointer, Windows installer sources, Android APK metadata, and the home-page-visible app version.
+- Reorganized Settings so Addons combines Themes and Extensions, Generations houses image/video generation and prompt overrides, Imports uses the plural label, generation prompt editors start collapsed, and Danger Zone uses accent-color selections with no default checked categories.
+- Refreshed the in-app Credits modal from the GitHub contributors list and added credits sync/check helpers to the release workflow.
+- Split the server generation route into focused prompt, provider, context, and command-runtime modules so Conversation commands, Professor Mari actions, turn games, provider setup, and post-processing paths are easier to review and maintain.
+- Removed unused API Key and Base URL fields from local subscription/auth providers such as Claude Subscription, ChatGPT/Codex auth, and Grok CLI.
+
+### Fixed
+
+- Fixed Marinara profile/full backup exports so generated scene-video MP4s and reusable Conversation Call character video clips are included with their storage metadata and accepted on profile ZIP import (#3315).
+- Fixed Card Evolution Auditor review proposals being falsely marked stale from cached character data by refreshing the character card before validation, and added an explicit stale override path that appends edited replacement text after confirmation instead of blocking the proposal outright (#3314).
+- Fixed Memory Recall embedding creation for very large memories by chunking oversized recall text before sending it to embedding providers, preventing single giant entries from exceeding provider limits (#3317).
+- Fixed Windows/git updater and launcher flows so they use the pinned pnpm version, avoid stale aggregate clean/build commands, and rebuild shared/server/client in update-safe package steps (#3318, #3323, #3324).
+- Fixed Bot Browser avatar importing for sources that return generic or missing image content types, including Datacat, Character Tavern, Janitor/Janny, Pygmalion, and Wyvern avatar CDNs (#3319).
+- Fixed Game Mode NPC portrait generation so GM-generated NPC descriptions are distilled into canonical portrait guidance for the initial and later NPC asset prompts (#3321).
+- Fixed the Roleplay setup wizard's **Use Settings Presets** shortcut so it still seeds the selected character's first message when creating an empty chat (#3322).
+- Added phonetic name fields to Character and Persona metadata, resolves phonetic-name macros, and uses those values when sending Conversation Call voice lines to TTS so names can be pronounced correctly (#3325).
+- Fixed Conversation Call prompt macro resolution so live audio prompts, persona/character context, lorebook entries, daily history, and call transcript content resolve macros such as `{{user}}` before provider dispatch (#3326).
+- Fixed custom preset choice confirmation so edited multi-select preset variables can intentionally be saved empty instead of disabling **Confirm Choices** (#3327).
+- Fixed Conversation message avatars that were cropped in editors but appeared oversized in DMs/groups by restoring the relative avatar crop container (#3328).
+- Fixed Conversation mode prompt assembly so selected preset wrap formats (XML, Markdown, or None) are respected for instructions, daily summary/date blocks, current context, memories, and lorebook injections instead of always wrapping supplemental sections in XML.
+- Restored the Echo Chamber chat as a collapsible panel instead of making close/collapse hide the chamber permanently for the chat (#3329).
+- Fixed manual group Conversation character triggers so the prompted character receives recent visible group transcript context and does not answer from profile/lorebook content alone (#3330).
+- Fixed Roleplay `/guided respond for <character>` in individual group chats so Manual mode asks for an explicit target instead of no-oping, and Smart mode honors the requested character instead of the queued responder badge.
+- Fixed first-turn lorebook activation so opening chat messages remain keyword-scannable during the first user generation even when the recent-message scan window would otherwise drop earlier group greetings (#3332).
+- Fixed Text to Speech character voice assignment so users can add character voices using provider default voices, including ElevenLabs defaults, even before custom/account voices are loaded.
+- Added a per-chat Conversation Calls setting to disable generated bracketed voice cues for TTS providers that do not accept `[whispering]`, `[laughing]`, `[sighs]`, and similar tags.
+- Fixed Grok CLI (Subscription) connections so they no longer seed stale `grok-build-*` model aliases, can use the local CLI default model with a blank model field, and fetch selectable model IDs from `grok models`.
+- Fixed Grok CLI (Subscription) roleplay requests by preferring the safe headless Composer model when discovered, starting Grok CLI connections with a safer 32k context window, and surfacing a clearer context-limit hint when the CLI reports `max turns reached`.
+- Added Lorebook entry-status sorting, fixed continued assistant messages so appended text starts after a blank line, and removed the obsolete tracked `pr-evidence/` artifacts while ignoring future evidence folders (#3336).
+- Fixed Conversation-created scene chats so their Prompt Preset selector remains visible while still defaulting to None.
+- Made the Connections panel's unfiled/root drop area more forgiving so desktop users, including Windows users, can reliably drag connections out of folders without hitting a tiny target.
+- Fixed native lorebook import so nested folders keep their parent/child hierarchy instead of being flattened to the top level (#3347).
+- Fixed the character Lorebook tab so an embedded lorebook can be removed from the card: added a **Remove from card** action (including for cards with no linked copy), clarified that the row delete only unlinks the standalone while the embedded copy stays, and renamed **Edit Linked Lorebook** to **Edit Embedded Lorebook** (#3359).
+- Fixed a growing pause after each response completes in long chats: removed two O(n²) passes over the whole message history in the post-generation path (a per-message cachedPrompt eviction scan and the swipe-count lookup), so completing a response no longer takes tens of seconds in very large chats (#3402).
+
+## [2.1.0]
+
+### Added
+
+- Added an in-app documentation viewer: the guides shipped in the `docs` folder (installation, configuration, troubleshooting, macros, extensions, Game Mode, and more) can now be browsed and read inside Marinara via a **Documentation** button in the home page footer next to **Replay Tutorial**, and a new "Where can I find documentation?" FAQ entry that shows the on-disk docs path and opens the viewer (#3238).
+- Added Conversation-mode audio/video calls with per-chat call toggles, character-initiated incoming calls, a Discord-style desktop/mobile call surface, call-only chat, speaking highlights, mute/camera/screen-share controls, soundboard support, minimized active-call popouts, call history cards, and post-call summary injection.
+- Added Conversation Call message reactions, including user reactions in the call-only chat and hidden character `[react]` call commands that react to the user's latest written call message; character-initiated calls can now include a greeting that plays after the user answers.
+- Added Conversation Call character video presence: when enabled, Marinara uses the Default for Videos connection to generate cached avatar-based idle, talking, laughing, angry, crying, and sighing clips, then plays them in-call from TTS cues while returning characters to idle after speech.
+- Added per-slot Conversation Call clip generation from Character/Persona editor **Sprites -> Clips** empty/error clip cards, so individual idle/talking/reaction clips can be tested without generating the full batch.
+- Added Video Generation services for Google AI Studio (Gemini Omni/Veo), OpenRouter, and Seedance 2.0, including connection defaults, asynchronous job polling, MP4 download handling, OpenRouter first-frame references, Veo first/last-frame avatar interpolation, and Seedance first/last-frame URL references for cleaner generated loops.
+- Added Advanced > Video Generation settings for editing Game/Gallery scene-video defaults, Conversation Call clip lengths, and the reusable video prompt templates for Game scene videos and call presence clips.
+- Added opt-in custom Conversation Call video clips: when Character Video Presence and Custom Clips are enabled, characters can sparsely use `[custom_clip]` for explicit user-requested visual clips that are saved into that character's **Sprites -> Clips** library.
+- Added **Sprites -> Clips** to Character and Persona editors for reusable video-call presence clips, including standard idle/talking/reaction slots and named custom call clips.
+- Renamed Gallery clips to **Videos** for broader Roleplay/Game/Conversation generated or uploaded video assets, with Character and Persona Gallery **Images** / **Videos** tabs.
+- Added user-uploaded MP4 support for both Gallery **Videos** and reusable video-call clips: Character/Persona **Sprites -> Clips** can replace standard call-presence slots such as Idle or Talking or store extra custom call clips, and custom call-clip libraries now allow up to 128 entries.
+- Added animated Expression Engine portrait generation: Portrait sprite generation can use Video Generation connections to create short expression clips, convert them into looping GIF sprites, and save them into expression slots, with Advanced > Video Generation controls for duration and prompt templates.
+- Added Conversation call voice input through provider-native audio/video when supported, Local Whisper transcription with downloadable Whisper Tiny/Base models, browser speech recognition fallback, and manual system dictation mode.
+- Added xAI as a Text-to-Speech provider option with built-in voice fallbacks and xAI speech request handling.
+- Added Conversation mode reactions that can target an individual character's part of a merged multi-character reply, including per-segment add-reaction buttons, per-segment reaction rows, and prompt-visible `[User reacted with ...]` notes under the exact targeted segment (#3210).
+- Added character-to-character Conversation reactions through `[react: emoji="..." to "Character Name"]`, placing the reaction on the target character's most recent matching part and showing it in both UI chips and prompt context (#3210).
+- Conversation mode: character emoji reactions now have their own **Reactions** card in the per-command Commands grid (Chat Settings and the chat setup wizard), so they can be toggled independently like Selfies or Music (#3219).
+- Added the Agent Suite to the Chat Settings drawer's Agents section: a window listing the agents active in the current chat where you can view and edit everything they have stored — agent memory, tracker state, and custom-agent outputs — manually or with AI-assisted rewrites (select text, give an instruction, optionally attach grounding context such as character cards or active-lorebook entries, and pick a connection) (#3160).
+- Added first-class scene video generation for Game Mode, Roleplay, and Visual Novel galleries, including Video Generation connections for Gemini Omni and xAI Imagine, editable `game.video` prompts, manual Gallery video actions, per-image Animate buttons, Gallery video previews with prompt copy, live View Latest media, and draggable/resizable pinned video overlays.
+- Added Game Mode turn storyboards: the active storyboard prompt preset splits completed GM narration into anchored keyframes, renders keyframe media concurrently, follows the current story section in a draggable/resizable viewer, can be reopened from Gallery, and supports off-by-default **Automatic Storyboard Animations**.
+- Added per-chat Game Mode media prompt presets with separate **Illustration Prompt**, **Animation Prompt**, and **Game Video Prompt** selectors, read-only built-ins for Still Keyframes, Comic Page, Colored Manga, B&W Manga, and Cinematic Scene Video, plus chat-local editable copies.
+- Added Gallery **Images** and **Videos** tabs so generated videos are reachable without scrolling through every still image first.
+- Added an optional Game Illustrator toggle for Dynamic LLM Prompt Generation, letting the selected prompt model rewrite Game Mode NPC portrait, location background, and key-moment illustration prompts before image generation (#3225).
+- Added `/illustrate` in Conversation, Roleplay, and Game chats to trigger the same illustration action as the Gallery **Illustrate** button without opening the Gallery first.
+- Turn-game bots now choose their moves in character (#3308): move selection is steered by the character's personality, mood, and grudges instead of pure game logic, and UNO board summaries include a "What just happened" recap of recent plays so reactions track the actual game.
+- Characters seated in a turn game now carry their own seat's perspective into normal chat (#3308): mid-game replies know their own UNO hand or chess color and last move, spectators and unseated characters keep a hands-hidden view, and each generation request loads the game state once instead of once per responding character.
+- Turn-game hand secrecy is now personality-gated (#3308): in hidden-information games a seated character knows their hand is private and may deflect, tease, bluff, or let something slip according to their personality, while in open-information games like chess the same treatment applies to their plans.
+
+### Changed
+
+- Bumped release metadata to v2.1.0 across packages, the PWA manifest, README release pointer, Windows installer sources, Android APK metadata, and the home-page-visible app version.
+- Documented Conversation audio/video call setup, Local Whisper download, audio input modes, character-initiated call behavior, reusable video-call clips, and Professor Mari's built-in guidance for the feature.
+- Refreshed the v2.1.0 documentation set with current setup flows, provider lists, Bot Browser sources, Agent Suite behavior, knowledge sources, custom tools, emoji/sticker uploads, regex scripts, prompt presets, macros, Conversation/Roleplay/Game Mode workflows, Home Assistant setup, remote access, extension safety, container/iOS/Android update notes, storyboard/video guidance, and the current architecture map.
+- Made Android/Termux update builds use low-memory build wrappers: server builds transpile runtime JS with esbuild, client builds skip memory-heavy typechecking/PWA generation on Android, and the updater builds shared, server, and client sequentially on Android devices (#3156).
+- Removed the Gallery **View latest** button because galleries already show newest images and videos first.
+
+### Fixed
+
+- Fixed root-level Connections panel dragging by adding a Custom sort order backed by saved `sortOrder`, so unfiled connections can be reordered or moved into folders the same way foldered connections can (#3295).
+- Fixed merged group Conversation autonomous-message accounting so the selected autonomous character receives the saved message attribution, follow-up count, and daily-budget count instead of every turn being charged to the first group member (#3299).
+- Fixed launcher startup messages on Windows, macOS/Linux, and Termux so they show the configured bind host instead of always claiming `127.0.0.1`, while still printing/opening a browser-friendly local URL when the bind host is `0.0.0.0` (#3300).
+- Fixed Game Assets create menus inside the in-game floating asset browser so portaled New menus and create modals no longer close the browser, empty names cannot be submitted, and failed create actions keep the modal open with the error visible (#3301).
+- Improved mobile browser compatibility by lowering the production client bundle target for Safari and replacing newer `Array.prototype.at` / `replaceAll` usage in shared/client code paths that older iOS Safari versions may not provide (#3302).
+- Fixed Game Mode background selection from Settings so a manually selected chat background overrides automatic GM scene background selection until the user removes it (#3304).
+- Fixed character library favorites and non-favorites filtering so server-side pagination searches the full library before returning each 100-item page, and kept the **Load more** control in a bottom footer instead of overlapping character cards in both the side panel and full library (#3286).
+- Fixed Roleplay `/as` so `/as Character "message"` posts the exact message as that character, while bare `/as Character` still asks the model to generate that character's next response.
+- Fixed Roleplay tracker locks so AI tracker updates cannot bypass a locked field by renaming or replacing the locked row at the same position.
+- Fixed Game Mode NPC portrait generation so GM-created NPC profile descriptions from initial world setup are rebuilt from current game state at asset-send time, sent as required canonical visual guidance for portrait prompts, and preserved when generated avatars are written back to NPC metadata.
+- Fixed launcher startup ordering so `.env` values such as `BACKGROUNDREMOVER_AUTO_INSTALL=true` are loaded before optional background-remover setup begins (#3269).
+- Fixed Home Assistant documentation and defaults to point at Marinara's current port, note `WEBHOOK_LOCAL_URLS_ENABLED=true` for local webhooks, and explain that re-syncing updates existing generated tools.
+- Added delete controls to Character/Persona Gallery **Videos** and **Sprites -> Clips**, including call-video resets plus custom call clip and scene/game video cleanup from the originating stored media.
+- Forced generated Conversation Call character video clips to play silently in calls and **Sprites -> Clips** previews so provider-generated audio tracks cannot overlap Marinara's TTS playback.
+- Fixed Google AI Studio Veo reference-image clip generation by retrying with Google's alternate `bytesBase64Encoded` image payload when a Veo model rejects `inlineData`, preserving avatar first/last-frame loop requests.
+- Fixed Conversation Call video clips continuing to use stale avatar references by fingerprinting the actual avatar bytes for standard clip freshness and cache-busting regenerated `idle`/`talking`/reaction MP4 URLs.
+- Shortened default Conversation Call video-clip prompts so providers get crisp locked-camera loop instructions instead of long identity-preservation prompts that could invite camera drift.
+- Fixed **Sprites -> Clips** call-clip generation status so stale `generating` slots from older jobs no longer light up when only one clip, such as Idle, is being generated; Google Veo video extraction now also accepts more completed-operation shapes and reports provider no-video reasons.
+- Revised the default Conversation Call video-clip prompts using Google's Veo guidance so clip generation now gives providers explicit composition, subject identity, action, ambiance, locked-camera, looping, and focus instructions.
+- Fixed **Sprites -> Clips** call-clip prompts to use the provider-effective clip duration, so Google Veo avatar-reference clips now ask for the same 8-second loop length that Veo actually generates.
+- Trimmed Conversation Call video-clip prompts to avoid hard-coded lighting/ambiance and audio-related wording, making avatar-reference clips depend on the uploaded reference image instead of invented call-scene details.
+- Added non-destructive trim points for Conversation Call clips, with a small **Sprites -> Clips** trim editor and in-call playback that loops inside the saved start/end range.
+- Added a dismissible 10-second muted-microphone reminder when a Conversation Call starts, made **Sprites -> Clips** call-clip pre-generation queue provider requests one clip at a time, removed character-card description dumps from call-video generation prompts, strengthened locked-camera/reference-image loop instructions, and made standard call-video clips regenerate when the character avatar changes.
+- Fixed Seedance 2.0 completed video jobs so Marinara reads MP4 URLs returned in `data.results[]` instead of reporting a missing downloadable video.
+- Added an opt-in Seedance 2.0 temporary reference-frame upload toggle under **Default for Videos** in Video Generation connections, so local avatar/gallery first/last-frame references can be uploaded to temporary public URLs when Seedance cannot fetch local Marinara files directly.
+- Fixed group-chat character reactions always being credited to the first character in the chat: commands placed above the first `Name:` line of a merged reply now attribute to the speaker whose section they open (leaked `[HH:MM]` timestamps no longer skew this), merged group chats now instruct models to write the `[react:]` tag inside the reacting character's own section — and that several characters may react in the same reply — and a react aimed at the user's persona name (or "User") explicitly targets the user's latest message (#3220).
+- Hardened Conversation reaction processing against stalls and junk: the shared timestamp strip is no longer quadratic on pathological whitespace runs (~7s → <1ms at 100KB), each `[react:]` command persists with far fewer storage scans so multi-react group replies no longer block generations for seconds on large installs, malformed quote-bearing react tags stay visible instead of becoming junk text chips, and per-segment add-reaction buttons mount their emoji picker only while open.
+- Fixed Conversation Call video-clip avatar framing by preparing call-video references as top-aligned 16:9 frames before provider upload, reducing head/hair cropping when Seedance or other video providers animate square avatars.
+- Loosened Conversation Call talking-clip prompts so providers can animate natural speaking motion beyond mouth-only movement while keeping the camera, framing, and loop return stable.
+- Loosened Conversation Call reaction-clip prompts for laughing, angry, crying, and sighing states so providers can create smoother natural motion while preserving the locked camera, identity, accessories, and loop return.
+- Aligned Conversation Call reaction-clip prompts with the successful Talking/Idle prompt shape: one smooth restrained video-call motion, subtle breathing/body/expression motion, and a return to the first-frame pose by the final frame.
+- Tightened Conversation Call custom clip generation so the command prompt becomes the clip action, the action returns to the starting pose by the final frame, and Seedance receives explicit first/final avatar references even when both frames are identical.
+- Sequenced Conversation Call character video clips from ordered TTS cues, so lines like `[sighs] I thought so [soft laugh]` play sighing, talking, and laughing clips in order instead of using one reaction clip for the whole voice turn.
+- Improved Seedance 2.0 task-failure handling by extracting provider failure reasons from more response fields, logging compact failed task payloads, and retrying once when Seedance only reports an opaque unknown operation error.
+- Fixed lorebook entry rows collapsing when editing the entry title by making row-header inline controls opt out of the expand/collapse click handler (#3244).
+- Capped NanoGPT image-generation reference payloads at three images so Qwen Image/edit-capable NanoGPT models only receive the number of references those services accept.
+- Fixed Windows dark-mode contrast for prompt/chat preset dropdown option menus so preset choices no longer render as pale text on a white native popup (#3237).
+- Fixed Roleplay empty-input generation so pressing Generate after an assistant reply renders the new assistant output as its own bubble, while explicit `/continue` still appends to the previous assistant message.
+- Fixed Roleplay `/continue` with tracker agents enabled so late tracker/cache refreshes no longer restore the previous assistant text and make the continued output vanish.
+- Fixed Conversation call prompt assembly so call output JSON format and command instructions stay attached to the latest call input, adjacent same-role call history messages are merged, older TTS cue tags are stripped from call history, command turns use the same descriptive command guidance as normal Conversation mode, and `[end_call]` waits until prior voice lines finish before ending the call.
+- Fixed Conversation call command execution so hidden commands such as selfies, memories, music, haptics, influences, notes, soundboard actions, character leave, and call end are executed as call actions instead of leaking into the visible call chat.
+- Fixed Conversation call media and UI reliability by keeping speech-only transcripts out of the visible call chat, returning server-resolved character IDs for playback, preserving active calls while navigating elsewhere in Marinara, stacking the call popout with Professor Mari, improving mobile control scaling/participant tiling, and keeping offline characters out of calls.
+- Fixed group Conversation calls so each speaking character is prompted as its own ordered turn, server voice-capability checks match the call playback resolver more closely, and accidental voice turns for characters without a resolvable voice fall back to visible call text instead of disappearing.
+- Fixed Conversation Call video prompts so generated standard/custom character clips rely on the current avatar/reference frame and concise action/loop instructions instead of stale or overlong character-card dumps, helping video providers preserve visual constraints such as masks or hidden eyes from the reference.
+- Fixed Conversation Call prompts so calls with character video presence enabled explicitly tell the model that voice turns are paired with video-call clips.
+- Strengthened Conversation Call and animated Expression portrait video prompts so generated clips preserve identity/outfits/framing and return to matching first/final frames for cleaner loops; reaction call clips now default to 5 seconds.
+- Fixed the Connections panel Local Model card so a downloaded/running Local Whisper speech model is shown in the collapsed status instead of reporting the whole card as not downloaded when the Gemma helper model is absent.
+- Fixed 1:1 Conversation prompt history so assistant turns are speaker-labeled with the character name, preserving multi-turn user/assistant roles while making prior DM replies unambiguous to the model.
+- Prevented Echo Chamber from triggering on `/continue` generations; it now stays limited to fresh user messages rather than assistant continuation rewrites.
+- Fixed agent pipeline phase overrides so changing built-in agents such as Echo Chamber, Prose Guardian, Continuity, Immersive HTML, Expression, or Music DJ in the agent editor is respected in storage, normal generation, and manual agent retries instead of being forced back to a built-in default.
+- Fixed Android APK chat background imports by allowing WebView picker-granted `content://` image URIs and handling Android multi-select file picker results safely instead of returning null picker entries (#3233).
+- Fixed the Mari CLI flag parser so boolean flags such as `--tail`, `--raw`, `--patch`, `--strict`, and `--staged` no longer swallow positional arguments in commands like `mari chats messages --tail <chat-id>` (#3222).
+- Fixed Local Whisper availability after updates by adding a post-install native dependency repair step that rebuilds or refreshes `onnxruntime-node` for the Node architecture used to run Marinara, and documented the repair path for Windows, macOS/Linux, and Termux installs.
+- Renamed the editable scene-video prompt template from `game.omniVideo` to `game.video`, with legacy override fallback, and shortened scene-video prompts for smaller video providers by summarizing narration into a compact story beat, excerpting source illustration prompts, and loosening default motion guidance.
+- Fixed escaped roleplay HTML such as `&lt;font color=...&gt;` rendering as visible code by decoding allowed escaped tags before the existing sanitized HTML render path (#3206).
+- Fixed Professor Mari preset creation so structured `app_data` `preset.create`/`preset.update` commands can create prompt groups, prompt sections, and preset variables/choice blocks in the same reversible operation (#3207).
+- Added a root `pnpm mari -- --help` wrapper that exposes the built Mari CLI from source checkouts without requiring a global install or manual shell alias (#3208).
+- Fixed impersonate prompt assembly so fallback chat presets still drop conflicting non-marker sections, while explicitly selected impersonate presets keep their normal prompt sections (#3209).
+- Fixed Smart group response order so hidden responder selection no longer overrides `/guided` or `/impersonate` directives in Roleplay group chats (#3212).
+- Fixed stopped partial replies being cache-only placeholders, so editing a kept unfinished reply persists it as a real message instead of deleting it on refresh (#3213).
+- Fixed Game Mode party recruitment for mid-session NPCs by creating a game-scoped tracked NPC/card fallback instead of throwing when the NPC was not generated at setup (#3216).
+- Fixed starting the next Game Mode session when backup branches exist by using the active concluded session as the source and preventing branch labels from carrying into newly created sessions (#3229).
+- Removed the hard-coded three-sprite limit from Roleplay sprite selection, setup, and display paths so chats can enable all uploaded sprite owners they need (#3169).
+- Let Image Captioning use any non-image-generation connection instead of hiding local or custom multimodal models behind model-name heuristics (#3170).
+- Stabilized emoji and sticker popover positioning above the mobile composer when Android browsers resize the visual viewport around the keyboard (#3171).
+- Switched Persona editor textarea counters from raw character counts to the same approximate token counts used elsewhere in the UI (#3172).
+- Fixed Illustrator prompt tag cleanup so grouped weighted tags such as `(shaved head, bald:1.2)` stay intact during deduplication and negative-prompt extraction (#3173).
+- Fixed Windows server builds failing from install paths with spaces by launching the TypeScript compiler through Node directly instead of a shell-resolved shim.
+- Restored chat input and generation cleanup behavior so post-generation agents such as Illustrator keep the UI busy state without leaving a duplicate live-stream message visible, and preserved textarea caret position while quote formatting runs on apostrophes.
+- Removed the agent/tool write-path size cap on lorebook entry content so large entries are no longer truncated before storage.
+- Fixed readable text-file attachments being pre-truncated to 60,000 characters before prompt context fitting, so large uploaded text files can use the selected model's actual context window.
+- Fixed Termux dependency refreshes so Android installs that add the `wasm32` optional-dependency architecture run `pnpm install --force`, allowing `@img/sharp-wasm32` to be linked for sprite generation and other sharp-backed image processing (#3167).
+- Fixed Android/Termux git updates aborting during release rebuilds with exit status 134 by making the default package build scripts Android-aware and documenting the low-memory update path (#3156).
+- Fixed `pnpm install --frozen-lockfile` failures with `ERR_PNPM_TRUST_DOWNGRADE` for older locked dependencies such as `pino` and `semver` by disabling trust-downgrade enforcement for released Marinara installs.
+- Fixed partial installs after aborted pnpm runs so launchers detect missing workspace dependencies such as `chess.js` and repair `node_modules` before shared builds run.
+- Fixed non-interactive launcher, installer, and in-app updater installs so pnpm can purge and recreate stale dependency folders without stopping for a TTY confirmation prompt.
+- Hardened `start.bat` so the Windows launcher explicitly repairs dependencies and runs the root `pnpm build` whenever updates, version mismatches, commit mismatches, or missing build outputs require it, using Corepack/installed pnpm/temporary npx pnpm as available.
+
+### Platform Notes
+
+- Android `versionName` is `2.1.0` with `versionCode 29`.
+- Windows, macOS/Linux, Termux, Docker, APK, and PWA users can update through the usual v2 updater paths once release assets are published.
+
+## [2.0.9]
+
+### Added
+
+- Added Chess as a Conversation-mode table game, including setup UI, move validation, board state, and model/bot play support.
+- Added Image Captioning in Advanced Parameters so chats can describe image attachments through a chosen vision-capable connection before sending them to non-vision models.
+- Added an Anthropic connection toggle for extended 1-hour prompt-cache TTLs when users want cached context to survive longer between turns.
+
+### Changed
+
+- Converted Immersive HTML from static main-prompt injection into a Roleplay post-processing rewrite agent that works alongside Prose Guardian and Continuity Checker, preserving story meaning while adding diegetic HTML/CSS/JS visuals (#3094).
+- Increased default image-generation and ComfyUI polling timeouts so slower image editing and local/remote workflows have more room to finish.
+
+### Fixed
+
+- Fixed continue generation with rewrite agents so continued assistant messages are rewritten from the full merged message instead of being overwritten by only the new continuation text.
+- Added backoff for failed conversation summaries and server-side autonomous generations so permanent 4xx/model errors no longer retry every poll forever, while keeping stored failure metadata sanitized and bounded.
+- Fixed staging updates so Settings can target the current checkout branch, staging applies create/update a real local `staging` branch, and Windows/macOS/Linux/Termux launchers no longer drag staging installs back to stable `main`.
+- Expanded Professor Mari data commands with paginated chat message offsets, full lorebook entry lookup by entry id, entry descriptions in lorebook entry lists, and entry tag support for add/update flows.
+- Polished mobile input controls by using a paperclip attachment icon in Conversation mode, placing Game mode attachments before the address selector, hiding Roleplay's mobile emoji button, and tightening Game/Roleplay composer spacing.
+- Fixed migrated default agent prompts causing roleplay lag by keeping compatible agents batched with a raw JSON result map instead of wrapping JSON-only prompts in `<result>` tags, and made the default-prompt migration stop rewriting already-current named prompt options on every startup.
+- Fixed agent UI flicker by scoping agent processing and failure badges to the chat that owns the run, and stopped ChatArea from repeatedly auto-switching Game chats to the newest session during chat-list refreshes.
+- Reduced background request churn by stopping synced themes/extensions from polling every 15 seconds and slowing Professor Mari workspace status refreshes outside explicit workspace actions.
+- Fixed rewrite-agent notification timing so held assistant messages keep their post-processing marker until the final rewritten text lands.
+- Fixed failed send/generation recovery so timeout-style failures restore the submitted draft, completions, and attachments for retry.
+- Hardened prompt regex scripts against polynomial ReDoS by rejecting chained broad unbounded patterns and guarding long server-side replacement runs with a VM timeout.
+- Improved profile/backup ZIP import diagnostics when the selected archive does not contain `marinara-profile.json`.
+- Tightened Android Firefox chat input sizing so the mobile composer grows less rigidly and leaves more room for typed text.
+- Shortened mobile Roleplay and Conversation composer placeholders so command hints do not wrap and pull the input caret upward.
+- Fixed XML prompt wrapping so user-authored `>` characters, including Markdown blockquotes, reach the model as typed while `<` and `&` remain escaped for prompt-boundary safety (#3108).
+- Fixed legacy Immersive HTML built-in configs so stock saved prompts, descriptions, phases, and result settings migrate to the new post-processing defaults instead of showing the old static prompt.
+- Added hold-until-rewrite support for Immersive HTML, pinned it to JSON text-rewrite parsing, counted it as a real post-processing call in agent load estimates, and bundled Prose Guardian, Continuity Checker, and Immersive HTML into one rewrite pass when multiple built-in rewrite agents are active.
+- Added mobile chat composer minimization while scrolling through older messages, with automatic restore near the bottom, on downward scroll, or when the minimized input is tapped (#3091).
+- Fixed branch switching so a valid selected branch is not cleared just because the flat chat list briefly does not include it while detail/group caches are resolving (#3087).
+- Fixed provider requests so blank custom `model` parameters cannot erase the configured model, and corrected missing-model error guidance for MiMo/OpenAI-compatible endpoints (#3110).
+- Reduced tracker-panel freezes on chats with world-state/character-tracker agents by scoping tracker character/persona lookups to the active chat and containing off-screen tracker card rendering (#3104).
+- Reduced ChatArea render stalls by scoping chat character/persona, creator-notes CSS, and Conversation emoji/sticker lookups to the active chat instead of full libraries.
+- Lowered the mounted transcript render window in Conversation and Roleplay modes so long loaded chats keep fewer message components mounted at once.
+- Fixed giant imported libraries by paging character, persona, lorebook, full-library, and chat sidebar lists in 100-item batches with Load More controls, while keeping search routed across the full matching data set (#3153).
+- Fixed Debug Mode and Peek Prompt previews for `/guided` so the generated narrator instruction resolves macros like `{{user}}` the same way the real generation request does (#2906).
+
+### Platform Notes
+
+- Android `versionName` is `2.0.9` with `versionCode 28`.
+- Windows, macOS/Linux, Termux, Docker, APK, and PWA users can update through the usual v2 updater paths once release assets are published.
+
+## [2.0.8]
+
+### Fixed
+
+- Slowed custom cursor recoloring during Accent Pulse/RGB Mode and skipped cursor recolor work entirely when Marinara's custom pointer is disabled.
+- Hardened Windows, macOS/Linux, and Termux launcher updates so generated feature registries keep LF line endings on Windows, launchers stash untracked local files, main/detached installs reset to the exact fetched `origin/main` commit when a normal fast-forward refuses, and Git's real error prints if updating is still blocked.
+- Fixed the Android APK blocked-Termux fallback so it copies a full Marinara setup command instead of telling fresh Termux users to run a missing `./start-termux.sh`, and made the copied `allow-external-apps` command tolerate Termux builds without `termux-reload-settings`.
+
+### Platform Notes
+
+- Android `versionName` is `2.0.8` with `versionCode 27`.
+- Windows, macOS/Linux, Termux, Docker, APK, and PWA users can update through the usual v2 updater paths once release assets are published.
+
+## [2.0.7]
+
+### Added
+
+- Added structured no-shell Professor Mari `app_data` actions for character, persona, lorebook, lorebook entry, and theme reads/creation/updates so local models no longer need to compose `mari ...` shell commands for common creative data work.
+- Added an Android APK console shortcut under Settings > Advanced > Debug mode that opens Termux for server logs, while non-mobile-shell installs show disabled guidance (#2922).
+- Added lorebook semantic-search controls for vector query message depth, score threshold, and per-lorebook vector result limits, plus Active Context vector badges and scores for semantic lorebook hits (#2923, #2924).
+- Added a prominent Connections warning that the bundled Local Model is intended for tracker/helper work, not main chat, roleplay, Game Master narration, or Professor Mari creation tasks.
+- Added an explicit Local Model connection option for Professor Mari and non-Game chat generation paths when the sidecar model is downloaded, for users who still want to route main chat/roleplay requests through it.
+- Added persisted drag-and-drop ordering for custom Functions in the Presets panel, including desktop hover handles and mobile touch dragging.
+- Added a Game Illustrator Chat Settings toggle for automatic visual generation plus a Gallery Background action for Roleplay and Game scenes that creates a background-only image, applies it to the current scene, and saves it into the Appearance background library.
+- Added a Game mode decision-step branch button on the latest narration/dialogue beat so players can fork before choosing their next action.
+- Added customizable RPG stat pools for characters, personas, and Game character sheets so HP-like bars such as HP, MP, EP, or Sanity can be added, colored, tracked, and passed into Present Characters/agent context (#3077).
+- Added a per-chat Illustrator Prompt Model override in Chat Settings so selfie and illustration prompts can be written by a different text connection than the main chat model (#2969).
+- Added an Advanced > Message Tools toggle to include saved reasoning/thinking in chat exports; exports now omit reasoning by default unless the toggle is enabled.
+- Added a built-in `web_search` function-call tool under function selection so chats and agents can fetch compact current web results without custom webhook setup (#3074).
+- Added an Appearance > App Style toggle for Marinara's custom mouse pointer, made cursor rules theme-overridable, and recolored the custom pointer from the live Accent Color so RGB Mode and Accent Pulse animate it too. Cursor recoloring now pauses briefly during wheel scrolling so scroll repaints keep one stable custom cursor image instead of flickering, doubling, or jumping at scroll limits.
+- Added a startup migration that detects built-in agents still storing untouched pre-2.0.0 default prompt text and moves them back onto the live default prompt path so they receive current default prompt updates automatically.
+
+### Fixed
+
+- Fixed Professor Mari structured app-data creation so new characters, personas, lorebooks, lorebook entries, and non-activating themes save directly without a preview/approval loop.
+- Changed Professor Mari reversible app-data edits to save first and show an in-chat Keep/Restore review card instead of making Mari ask the user conversationally about `apply:true` or `apply:false`.
+- Fixed recursive macro parsing so character/persona field macros like `{{description}}` resolve nested macros such as `{{char}}` and `{{user}}` when used from prompt builder sections (#2925).
+- Fixed memory-recall and agent prompt blocks so `{{char}}`, `{{user}}`, and related prompt macros resolve inside `<memories>` and `<agents>` payload sections (#2927).
+- Fixed Illustrator image prompts in tagged/danbooru profiles so illustration, background, and selfie prompts preserve the generated tag list instead of being compacted/distilled like portraits (#2929).
+- Fixed chat lists sorted by newest/oldest so simply opening a chat no longer moves it to the top; recency now follows the newest saved message instead of chat-open touches or settings metadata (#2926).
+- Fixed Spotify DJ playlist and search tools so malformed model-supplied `limit` values are clamped before Spotify receives them, avoiding `Invalid limit` API errors.
+- Fixed RGB accent mode so opening the Appearance settings tab no longer pauses the live rainbow cycle and snaps the app accent back to the first color.
+- Fixed Game mode Journal subviews so Timeline, NPCs, Notes, and other tabs scroll inside the Session panel on both mobile and desktop (#2921).
+- Fixed TogetherAI image-generation URLs so full `/images/generations` endpoint URLs are not doubled when requests are sent.
+- Fixed legacy Extended Descriptions persona migration to explicitly keep the generated lorebook attached to the source persona.
+- Fixed Roleplay empty-submit continuation so pressing Enter after an assistant message creates a separate regenerable assistant response, while `/continue` remains the append-to-previous-message path (#2920).
+- Removed the unused Quick Replies "Group consecutive messages" setting that no longer affected chat rendering (#2920).
+- Fixed Professor Mari's lorebook helper text so `update-entry <entry-id>` and `delete-entry <entry-id>` explicitly refer to lorebook entry IDs, reducing accidental use of parent lorebook IDs.
+- Fixed `EXTENSIONS.md` so it documents SillyTavern-style extension folders and JavaScript behavior extensions, not only CSS styling.
+- Fixed v2.0.7 version metadata across packages, the homepage-visible app version, Windows installer sources, PWA manifest, README release pointer, and Android APK metadata.
+- Fixed regex scripts so display-side replacements share the server safety gate, macro values in Find are treated as literal text, macro values in Replace are not reinterpreted as replacement grammar, random Replace macros resolve once per script application, invalid flags/depth ranges show actionable validation, imports continue past bad entries with skip reasons, SillyTavern display placements import deliberately, a new Apply Mode radio supports prompt-only/display-only/both with legacy `promptOnly` migration, and script ordering/reorder writes remain stable across scoped and global scripts (#2931, #2933, #2934, #2935, #2936, #2937).
+- Fixed macro conditionals so numeric comparisons (`>`, `<`, `>=`, `<=`) evaluate numerically instead of falling through as truthy text, `{{else if}}` chains and macro-bearing conditions parse without leaking raw tags, random/dice macros resolve consistently for the same message seed, and runaway nested macro expansion is capped alongside reversed `{{random:X:Y}}` ranges and zero-sided `{{roll:Xd0}}` rolls (#2938, #2939, #2940, #2942, #2943).
+- Fixed group-chat join/leave markers so removing a character refreshes the visible transcript immediately and prompt previews keep the "has left the chat" event in the correct chronological position (#2901).
+- Fixed the Mini Mari surprise visit toast so its custom layout includes a dismiss button like other app toasts.
+- Fixed Browser back controls so they use the same icon-only editor-exit button style as card editors.
+- Fixed desktop drag handles in resource panels so draggable cards reveal their grip on row hover, agents expose a matching grip, and regex rows stop showing the grip constantly.
+- Fixed `{{agent::TYPE}}` prompt macro insertion so model-generated agent/tracker output is inserted as inert text instead of being re-run as dice, variable, or other macros (#2941).
+- Fixed shared theme and extension CSS safety so active themes, live preview, extension CSS, and extension `addStyle()` calls strip external network/script CSS constructs before injection (#2944).
+- Fixed extension imports so raw files and loose folders land disabled for review, JavaScript extension enabling asks for explicit confirmation, theme/extension deletion asks for confirmation, extension handler errors name the responsible extension, and toggling/editing one extension no longer restarts every other enabled extension (#2945, #2946, #2948, #2952).
+- Fixed synced theme hardening and migration/import diagnostics by adding the extension-style privileged write gate, a 256 KiB theme CSS cap, per-entry theme import skip reasons, and legacy-theme migration backoff/permanent-error handling (#2947, #2953, #2954).
+- Fixed card CSS sanitizing so app theme token protection includes popover/sidebar tokens and nested conditional at-rules preserve all outer conditions when scoped (#2950, #2951).
+- Fixed client TTS sequencing so failed chunks no longer discard successfully generated audio, and added a saved Progressive Playback option for local/self-hosted TTS backends to start playback while later chunks are still being fetched (#2949).
+- Fixed manual Gallery background generation so UI debug mode logs the final image prompt sent to the provider.
+- Fixed Spotify mini-player startup noise so disconnected Spotify state no longer polls playback endpoints, and Spotify's Web Playback SDK only loads after the user asks to use Marinara as the playback device.
+- Fixed chat tool resolution so Spotify tools stripped from provider prompts when Spotify is unavailable are also removed from the runtime allow-list, producing the intended "Tool not allowed" denial for hallucinated Spotify calls (#3020).
+- Fixed preset and prompt edge cases so conversation memories are no longer destructively pruned by daily awareness filtering, imported/duplicated presets preserve `defaultChoices`, grouped Chat History markers keep message boundaries, user-edited bundled presets are not wiped by seed refreshes once a snapshot baseline exists, prompt override defaults avoid ambiguous reverse-substitution collisions, preset variable option edits use the in-flight local option list, stored preset parameters are validated before provider use, and Dry Run preserves `topP=0` like real generation (#3022, #3023, #3024, #3025, #3026, #3027, #3028, #3029, #3030).
+- Fixed provider, connection, persona, folder, schedule, and impersonation edge cases so provider finish reasons survive Gemini/Anthropic/OpenAI/ChatGPT paths, Anthropic cache breakpoints stay on attachment-only turns, Local Model sampler parameters respect per-request values, connection mutation responses mask encrypted API keys, provider-category changes keep one agent default, manual model edits preserve max-output overrides, deleted characters/personas leave folders clean, stale persona activation returns 404 without clearing the active persona, character group avatars can be set, persona versions include saved status options, object-form imported persona stats survive import, conversation schedule generation uses queued metadata patches, manual conversation replies do not consume autonomous follow-up slots, in-turn group replies keep Name Prefix History context, and inline custom impersonate placeholders no longer drop whole instruction lines (#3033, #3034, #3035, #3036, #3037, #3038, #3039, #3040, #3041, #3042, #3043, #3044, #3045, #3046, #3047, #3048, #3049, #3050, #3051, #3052).
+- Fixed Chat Summary placement so enabled summaries automatically append to the end of the system prompt when the active preset has no enabled Chat Summary marker, while presets with an enabled marker still control the exact insertion point.
+- Hardened prompt assembly against XML/Markdown block-boundary prompt injection by escaping untrusted character/persona card text, chat history, summaries, lorebook text, recalled memory, awareness snippets, post-history instructions, and agent-result leaves before they enter engine-authored prompt wrappers.
+- Hardened custom script tool execution so enabled script tools no longer receive host-realm intrinsics that could expose server globals such as `process`, and clarified that the opt-in is for trusted in-process scripts only.
+- Fixed chat JSONL exports so hidden reasoning is emitted once instead of duplicated through message and swipe metadata, and stale NPC journal rows from unrelated Game chats are filtered from exported `gameJournal` metadata.
+- Fixed Roleplay smart group response selection so an empty selector result falls back to a valid character instead of aborting with "No response queue was created", and incomplete auto-created DM chats are cleaned up instead of remaining as empty orphaned chats (#3019).
+- Fixed Game mode History Above VN rows so stacked history messages expose the same copy, delete, edit, branch, and NPC portrait actions as the full Logs view.
+- Fixed a Game mode History Above VN visual jump when deleting a stacked narration beat by holding the stacked history shell height during the delete frame.
+- Fixed lorebook data edge cases so approval-gated Keeper updates append instead of overwriting entries, drawer autosaves stop clobbering header edits, nested explicit replacements still replace, character-linked lorebook sync preserves entry names/descriptions/settings, bulk imports validate folders before writing, moved entries clean up failed target copies, and entry-row optimistic toggles roll back on failed saves (#2970, #2971, #2972, #2977, #2978, #2980, #2981).
+- Fixed lorebook matching and scanning so whitespace-only keywords do not match everything, whole-word matching handles non-ASCII word characters, per-lorebook recursion depths below 3 are honored, sticky carry-over does not spend ephemeral activations, and invalid create-time scope conflicts are rejected (#2973, #2974, #2975, #2976, #2979).
+- Fixed chat branching so unknown cutoff message IDs are rejected instead of silently copying the full chat, every alternate swipe is preserved, active swipe indexes survive, and Game/turn-game snapshots are copied to the matching branched swipe (#2956, #2962).
+- Fixed swipe persistence races so structural swipe edits, generation extras, retry-agent extras, CYOA choices, sprites, attachments, and thinking data target the correct swipe even when users switch swipes while generation is finishing (#2960).
+- Fixed regenerated swipes so translations, sprites, choices, token counts, Gemini parts, attachments, and other old-swipe metadata do not leak onto the fresh swipe (#2958).
+- Fixed message editing so no-op saves no longer rewrite punctuation/whitespace, empty edit saves are ignored, and classic Conversation edits preserve the raw saved name/timestamp prefix instead of saving the stripped display copy (#2957, #2959).
+- Fixed imported Game JSONL transcripts so manual narration edits in `mes` override stale active-swipe content and imported source `gameId`/scene pointers are remapped or stripped so branch imports cannot drive another campaign's sessions (#2966).
+- Fixed turn-game engine cleanup so UNO/turn-game state is deleted when messages, chats, groups, or swipes are removed, preventing orphaned game state from resurfacing later (#2961).
+- Fixed conditional macros for persona cards by adding persona field operands/macros such as `personaDescription`, `personaPersonality`, and related fields to the shared macro engine (#2964).
+- Fixed Android Firefox mobile keyboard layout by sizing the mobile shell from the visual viewport and nudging chat input bars into view after keyboard focus (#2965).
+- Fixed swipe counter flashes after regenerate/switch by preserving cached swipe counts and moving optimistic swipe content/extra together with the active index (#2963).
+- Fixed Peek Prompt display so the Chat History section only shows user/assistant turns and no longer repeats system prompt/history wrapper content already shown in separate prompt sections.
+- Fixed agent retry and generation edge cases around Local Model sidecar fallback, built-in default tools, runtime phase normalization, retry persona/wrap-format parity, noncritical pre-generation failures, Spotify retry fallback, edit-message retry tools, lorebook-update permissions and scoping, Lorebook Keeper error isolation, message-scoped tracker effects, atomic Illustrator attachment appends, batch result parsing, text-rewrite markup preservation, JSON repair, custom-agent run listing/limits, sprite expression variants, and Custom Music DJ reset state (#2983, #2984, #2985, #2986, #2987, #2988, #2989, #2990, #2991, #2992, #2993, #2994, #2995, #2996, #2997, #2998, #2999, #3000, #3001, #3002).
+- Fixed custom tool and built-in tool-call edge cases so rich parameter schemas round-trip through the editor, blank webhook/script tools cannot be saved, built-in name collisions are rejected, empty schemas represent zero-argument tools, malformed nested parameter schemas are skipped before provider calls, textual tool-call parsing handles arrays in tags and closing-tag text inside string arguments, edit-message replacements are not capped at the summary append limit, chat variable caps are enforced inside the metadata write queue, automated summary entries are bounded safely, lorebook-entry keys/modes are normalized without data loss, and Spotify volume falls back on invalid input (#3005, #3006, #3007, #3008, #3009, #3010, #3011, #3012, #3013, #3014, #3015, #3016, #3017).
+- Fixed image and asset safety edge cases so image-prompt negation only moves the directly negated clause, local music file serving uses the same privileged gate as the folder picker, bundled native game assets cannot be deleted or moved through bulk routes, sprite-sheet grid dimensions validate before provider calls, reference images keep their real MIME type on chat-completions image backends, RunPod ComfyUI observes abort signals and rejects corrupt fallback image data, and chat/global gallery uploads validate real image bytes without leaving partial files or phantom-chat orphans (#3054, #3055, #3056, #3057, #3058, #3059, #3060, #3061, #3062, #3063).
+- Fixed mobile UI edge cases so Roleplay exposes the emoji picker on phones, composer emoji/GIF/sticker popovers clamp to short viewports, resource-panel action pills no longer cover row text, Spotify/media floating widgets stay reachable and below open mobile panels, Game Assets toolbar menus stay onscreen, and Game narration/readable copy actions are available on mobile (#3065, #3066, #3067, #3068, #3069, #3070, #3071).
+- Fixed Game Lorebook Keeper books carried from previous Game sessions so explicitly linked keeper lorebooks remain eligible for constant/keyword triggering in later sessions instead of being blocked by the old session chat ID (#3073).
+- Fixed Peek Prompt display so prompt/system sections surrounding Chat History stay visible while the Chat History block itself still lists only user and assistant turns.
+- Fixed `/impersonate` persona-description insertion so macros inside the persona description resolve before the impersonation instruction is appended (#3081).
+- Fixed regex import safety checks so optional `?` quantifiers do not incorrectly increase star height and reject valid patterns such as `(a+)?` (#3080).
+- Fixed Author's Notes autosave on fast chat switches so an outgoing chat cannot save the incoming chat's note text under the wrong chat ID (#3079).
+- Fixed Game Widget setup fields so label/stat drafts can be cleared or contain trailing spaces while editing, with normalization deferred until save/import/export (#3078).
+
+### Platform Notes
+
+- Android `versionName` is `2.0.7` with `versionCode 26`.
+- Windows, macOS/Linux, Termux, Docker, APK, and PWA users can update through the usual v2 updater paths once release assets are published.
+
+## [2.0.6]
+
+### Added
+
+- Added a synced custom theme Accent Pulse opt-in so CSS themes can request the built-in pulse with `--marinara-theme-accent-pulse: enabled`.
+- Added a Stable/Staging update channel selector with staging warnings and channel-aware apply checks (#2912).
+- Added searchable Home FAQ controls, saved Professor Mari chat history management, Game Mode manual background generation, and lorebook vector deletion controls (#2913, #2909, #2902, #2900).
+- Added Up/Down controls for alternate greetings in the Character Editor so card authors can reorder greetings without copy/paste work (#2917).
+- Added native Gemini API embedding support for Google and Vertex Gemini connections so lorebook vectorization and memory recall can use Gemini embedding models (#2889).
+- Added a per-chat AI translation prompt override in Chat Settings, with a restore-default action, so chats can customize the translation system prompt without losing the built-in default (#2883).
+- Added llama.cpp sidecar embedding endpoint controls for pooling type and physical batch size so Gemma and other embedding GGUF models can use OpenAI-compatible lorebook/memory embeddings when they require non-default pooling (#2863).
+
+### Changed
+
+- Chat Branches no longer shows a separate "Active" pill; the checkmark and active row highlight identify the selected branch, while rename/delete actions remain available for the active branch.
+- Memory recall chunking now behaves as read-behind storage when a chat message limit is set, keeping the active prompt tail out of durable memory chunks (#2862).
+
+### Fixed
+
+- Fixed compact UI layout polish around the Browser source menu, Settings tab labels, Game Assets import actions, Advanced update/admin buttons, and Lorebook overview control sizing/tooltips.
+- Fixed Import Profile and Advanced Danger Zone settings buttons so they use the shared neutral Marinara chrome button styling, with Danger Zone actions stacked one per row.
+- Fixed CodeRabbit review findings around recovery-boundary safety, Professor Mari chat switching, FAQ search accessibility, lorebook export/default compatibility, chat metadata patching, import mode validation, update channel checkout safety, and avatar crop normalization.
+- Fixed Chats sidebar Conversation rows so they match Roleplay/Game row density while blank/new Conversation chat fallback icons use the cyan mode color instead of the custom chat accent.
+- Fixed the Professor Mari home experience so desktop opens the chat inline in place of the home menu while mobile keeps its prior full-screen focus flow, the FAQ opens by default only on desktop, the FAQ/Professor launch card stays taller and evenly split with centered welcome copy on larger screens, the chat composer starts as a single-line input, achievements align to the home card width, missing-connection guidance points at the chain selector, closing the desktop chat no longer flashes homepage text, tutorial copy uses Chat Chrome text colors, Professor chat history controls live inside the chat window, and an in-progress Professor Mari chat can follow the user as an accent-bordered dismissible floating companion after they leave the home screen or open mobile detail sheets, with a DJ-sized circular mobile button and without loading the floating chat machinery while it is hidden on the home shell.
+- Fixed broad app slowness paths by avoiding full chat-list refetches when opening Chat Settings, removing eager settings preloads, showing immediate settings/branch loading feedback, skipping Game snapshot copy work for non-Game branches, and stripping bulky internal prompt/debug payloads from branched/exported/imported messages (#2914, #2913).
+- Fixed Game Mode setup list editing, guided generation macro resolution, game portrait/background prompt handling, NovelAI image sizing, image-prompt style compaction, and roleplay empty-send behavior (#2915, #2906, #2905, #2903, #2902, #2894, #2893, #2892).
+- Fixed chat export/import fidelity by preserving mode/persona metadata, resolving macros in exported transcripts, preserving group-chat speaker snapshots after member removal, stripping internal export payloads, and exporting compatible lorebook entries as arrays (#2913, #2910, #2904, #2901, #2897, #2895).
+- Fixed Professor Mari workspace/home behavior by saving previous chats on restart, exposing prior chats for rename/delete/reopen, preserving the selected persona, preventing repeated command-failure loops, asking clarifying questions before vague persona creation, and using a Termux-compatible `mari` shim path on Android (#2911, #2909, #2899, #2891).
+- Fixed persistent black-screen recovery, Android/touch popover dismissal around Author Notes and Chat Settings pickers, JannyAI detail imports, blank preset variable options, and default vectorization state for new lorebooks (#2908, #2907, #2900, #2898, #2896).
+- Fixed impersonation generations so preset-driven prompts skip regular preset instructions while preserving marker-provided context, preventing conflicting "respond as the assistant" system text from contaminating `/impersonate` prompts (#2886).
+- Fixed Professor Mari home-chat restart so chat messages are deleted only after the workspace reset succeeds, preventing failed restarts from causing delayed chat history loss (#2887).
+- Fixed Professor Mari workspace privileged-route access so trusted LAN/Tailscale clients can use the workspace when loopback-only mode is disabled, while database command execution remains loopback-only (#2884).
+- Fixed privileged-route parameter errors so missing or invalid admin access is not rewritten as a generation-parameter warning (#2884).
+- Fixed chat exports so saved thinking/reasoning content is included in text exports and mirrored in JSONL exports/imports (#2881).
+- Fixed sprite prompt compilation so concise user descriptions survive prompt review/compaction, and reviewed prompts no longer receive a second layout/negative suffix (#2871).
+- Fixed memory-recall branch contamination by pruning native chunks whose timestamp span no longer matches the current chat message log (#2862).
+- Fixed v2.0.6 release metadata across packages, the homepage-visible app version, Windows installer sources, PWA manifest, README release pointer, and Android APK metadata.
+
+### Platform Notes
+
+- Android `versionName` is `2.0.6` with `versionCode 25`.
+- Windows, macOS/Linux, Termux, Docker, APK, and PWA users can update through the usual v2 updater paths once release assets are published.
+
+## [2.0.5]
+
+### Added
+
+- Added regression infrastructure with prompt regression and Playwright smoke commands so high-risk prompt/UI flows can be checked before release.
+- Added A-Z, Z-A, Newest, and Oldest sorting controls to Browser, Presets, Connections, and Agents panels, with persisted sort choices.
+- Added a bulk alternate-greeting swipe insert path so first-message swipes can be added during roleplay setup without many slow client round trips.
+
+### Changed
+
+- Professor Mari now supports streaming in the home-page chat path and no longer limits Mari chat message count/length by default.
+- Professor Mari tool instructions are slimmer when the selected model supports structured `body.tools`, avoiding duplicate tool availability text in the system prompt.
+- Tool-capable streaming no longer disables streaming by default just because tool calling is enabled.
+- New roleplay setup opens the chat/settings wizard immediately and applies starred chat presets in the background while seeding top-level preset connection/prompt fields up front.
+
+### Fixed
+
+- Fixed Author's Notes leaking draft text across chats by remounting the panel per chat and resetting its local draft state when `chatId` changes.
+- Fixed roleplay first-message insertion on slow/mobile devices so alternate greetings are added through the new bulk path instead of a fragile sequential browser request chain.
+- Fixed dead desktop drag handles in Lorebooks/Presets-style lists so non-functional handles no longer create misleading indentation.
+- Fixed chat/message editor regressions from the stabilization pass, including tracker edit targeting, prompt-editor close handling, per-chat lorebook disabling, conversation card info, summary modal interaction, and swipe navigation behavior.
+- Fixed several agent editor prompt-customization paths so canon extra prompts can remain customized instead of reverting unexpectedly, while still allowing restoration to defaults.
+- Fixed Game mode and image-generation stabilization issues around setup timeouts, NovelAI/background generation, and generated NPC/agent metadata handling.
+- Fixed v2.0.5 release metadata across packages, the homepage-visible app version, Windows installer sources, PWA manifest, README release pointer, and Android APK metadata.
+
+### Platform Notes
+
+- Android `versionName` is `2.0.5` with `versionCode 24`.
+- Windows, macOS/Linux, Termux, Docker, APK, and PWA users can update through the usual v2 updater paths once release assets are published.
+
+## [2.0.4]
+
+### Added
+
+- Added Game mode HUD widget import/export controls in Chat Settings and the Game Setup Wizard so widget layouts can be reused between games.
+
+### Fixed
+
+- Fixed Roleplay streaming so failed post-processing/rewrite agent calls no longer drop the Typewriter effect from the final generated message.
+- Fixed Roleplay Chat Settings preset-variable configuration so clicking inside the "Configure Preset Variables" modal no longer closes Chat Settings before users can edit choices.
+- Fixed `/continue` so it can find the latest assistant message even when the transcript tail is not an assistant turn, injects a continuation cue into the prompt, and appends the model output to the continued assistant message.
+- Fixed Professor Mari's home-page chat connection so the selected connection is remembered across Marinara restarts instead of resetting to the first/default connection.
+- Fixed legacy group chats with the old Professor Mari character so those chats can still resolve her restored card while keeping the home-page assistant avatar out of Roleplay/Game expression matching.
+- Fixed agent activation regressions after removing the old global enabled state so adding agents to chats no longer depends on a legacy per-agent flag.
+- Fixed pinned Gallery images so pinned chat images persist across refresh/restart/chat switches and pinning from the full image view actually pins instead of only closing the lightbox.
+- Fixed Active Context lorebook reporting so Conversation, Roleplay, and Game modes show the cached lorebook scan from the last generation instead of a best-effort rescan that could disagree with the prompt.
+- Fixed Lorebook recursion defaults by making recursion opt-in with a "Recursion" toggle that is off by default for new/imported entries, and fixed keyword entry so pending keys are added when the user clicks away.
+- Fixed Game mode generated NPC portrait prompts so NPC descriptions created during world setup are available to portrait generation even when the NPC is not in the character library.
+- Fixed Characters and Lorebooks panel filters so search, sort, tag, category, and favorite filters persist while opening and returning from editors.
+- Fixed v2.0.4 release metadata across packages, the homepage-visible app version, Windows installer sources, PWA manifest, README release pointer, and Android APK metadata.
+
+### Platform Notes
+
+- Android `versionName` is `2.0.4` with `versionCode 23`.
+- Windows, macOS/Linux, Termux, Docker, APK, and PWA users can update through the usual v2 updater paths once release assets are published.
+
+## [2.0.3]
+
+### Added
+
+- Added a Re-run action to the Echo Chamber panel so users can retry the chamber output directly from the panel.
+- Added per-parameter include toggles for Advanced Parameters so strict providers can opt out of unsupported temperature, sampling, penalty, reasoning, verbosity, and max-token fields while keeping custom JSON parameters available.
+- Added a Custom Music DJ mode that can pick from local Game Assets music and play tracks through Marinara Engine's embedded accent-colored player, alongside the existing Spotify and YouTube modes.
+- Added a default-on Image Generation queue setting so providers that reject concurrent requests can receive one portrait/background/illustration request at a time.
+- Added extension manifest documentation and examples for folder-based extension imports.
+
+### Fixed
+
+- Fixed Conversation mode presence/status dots in the chat list and in-chat avatar overlay so they stay synced with live manual overrides and schedule-derived statuses instead of waiting for the next generation snapshot.
+- Fixed Conversation mode generation lag spikes by making repeated streaming indicator clears no-op and moving heavy generation/agent console payload logging behind Debug Mode.
+- Fixed Conversation mode command history so generated commands like `[selfie]` remain visible to future chat-history assembly.
+- Fixed Professor Mari connection defaults so she no longer sends the whole saved defaults object as raw custom parameters, respects connection max-token/reasoning/verbosity defaults, logs her model requests at debug level, and shows clearer parameter-rejection guidance.
+- Fixed Professor Mari workspace approval cards so long commands wrap, destructive database deletes show a larger warning with delete previews, and users can see that a restore copy is journaled before approval applies.
+- Fixed Professor Mari home-page sessions so the assistant path cannot schedule background autonomous messages.
+- Fixed local-provider textual tool calls so local models, including Gemma-style delimiter output, can be repaired into supported tool calls without rewriting unrelated assistant text.
+- Fixed curated sidecar GGUF downloads so rounded display sizes are no longer used as exact byte counts for final download validation.
+- Fixed Roleplay rolling summary compression so summarized tail messages can be auto-hidden from future AI context while preserving the summary ownership metadata needed to restore or inspect them.
+- Fixed summary auto-hide storage rollback reporting so a failed compensating undo is surfaced as a compound failure instead of looking like a clean all-or-nothing rollback.
+- Fixed chat notification sounds so rewrite/post-processing agents do not fire the completion ping until the final message is done, with a setting to play notification sounds only when Marinara is unfocused.
+- Fixed Game mode chat UI drawers so Chat Settings, Gallery, Session, Retry, Volume, Game Assets, and Active Context can swap in one click/tap without closing first, stay aligned to the toolbar, and avoid the Game-only double-open flash.
+- Fixed Game mode Chat Settings startup work and message rendering so opening the drawer no longer forces unnecessary full-history work.
+- Fixed image-generation prompt compilation so connection/style prompt and negative prefixes are not duplicated for ComfyUI, selfies, and Gallery Illustrate requests.
+- Fixed selfie prompt shaping so the distilled prompt preserves the user's useful prompt detail instead of collapsing it too aggressively.
+- Fixed Bot Browser result navigation so Back to results restores the previous mobile scroll position.
+- Fixed prompt macros so date/time values resolve in the user's browser timezone and `/continue` can append continuation text to the unfinished assistant message.
+- Fixed privileged-route guidance so ADMIN_SECRET setup and the `X-Admin-Secret` header are documented in Settings and configuration docs.
+
+### Platform Notes
+
+- Android `versionName` is `2.0.3` with `versionCode 22`.
+- Windows, macOS/Linux, Termux, Docker, APK, and PWA users can update through the usual v2 updater paths once release assets are published.
+
+## [2.0.2]
+
+### Fixed
+
+- Fixed Game mode world generation returning empty setup JSON on some providers by disabling implicit high-reasoning/high-verbosity defaults for the strict setup JSON call unless the user explicitly configured them.
+- Fixed a Game Setup Wizard cancel path that could silently hard-delete an existing campaign when stale metadata or a setup status made the wizard appear for a real game.
+- Fixed mobile editor navigation and Lorebooks controls so editor tabs remain usable on narrow screens, Lorebook category selection fits mobile layouts, and mobile sidebars/topbar controls remain reachable while editing.
+- Fixed mobile chat UI popovers across Conversation, Roleplay, and Game modes so Author's Notes, Active Context, Retry, Session, Volume, Game Assets, Gallery, and Chat Settings open beside the vertical toolbar, stay on screen, and close predictably when sidebars open.
+- Fixed duplicate Author's Notes popovers in Roleplay mode and restored chat export requests across all chat modes.
+- Fixed mobile notification stacking so the close action dismisses the visible stack consistently instead of leaving endless messages behind.
+- Fixed Preset editor mobile controls and variable-field caret behavior so options no longer spill off screen and typing does not reverse text.
+- Fixed Game mode mobile button sizing for map, party, and overflow controls so they match the other chat-mode toolbar buttons.
+- Fixed touch drag-and-drop ergonomics in tab libraries by limiting mobile dragging to explicit handles, preventing long-press freezes on Personas and Agents, narrowing the "drop here to move out of folder" target, and removing the unused drag handle from Agents.
+- Fixed Expression Engine sprite and avatar visual settings so device-specific positions, sizes, sides, opacities, and avatar overrides are cached locally per device instead of syncing unwanted layout changes across desktop and mobile.
+- Fixed Expression Engine emotion matching for non-Latin labels so Cyrillic, Chinese, comma-separated names, and other Unicode emotion names are preserved instead of collapsing into long underscores.
+- Fixed chat summary injection so generated summaries use the expected `<chat_summary>` marker and are included even when the preset section label is customized.
+- Fixed SD Web UI / AUTOMATIC1111-compatible image generation through llama-swap by sending the configured model as a top-level SDAPI `model` field while retaining native A1111 checkpoint override settings.
+- Fixed Music DJ agent editor display so YouTube provider prompt and tool details are reflected correctly.
+- Fixed Professor Mari command handling after the JSON protocol refactor so local-model command attempts are repaired through the new JSON command path instead of surfacing as broken plain text.
+- Fixed v2.0.2 release metadata across packages, homepage-visible app version, PWA manifest, Windows installer sources, README release pointer, and Android APK metadata.
+
+### Platform Notes
+
+- Android `versionName` is `2.0.2` with `versionCode 21`.
+- Windows, macOS/Linux, Termux, Docker, APK, and PWA users can update through the usual v2 updater paths once release assets are published.
+
+## [2.0.1]
+
+### Fixed
+
+- Fixed the Android APK first-launch bootstrap so the app checks the local Marinara server before showing the WebView, keeps the Install / Start screen visible while Termux or Android permission prompts are active, and no longer strands users on a raw `127.0.0.1:7860` connection error page.
+- Fixed Conversation Mode Active Context previews changing lorebook entries while idle by making preview-only probability and weighted group selection deterministic for unchanged chat state.
+- Fixed Conversation Mode input lag and slow DM switching in large chats by reducing per-keystroke work, throttling draft sync, and limiting rendered transcript work to the visible window.
+- Fixed Conversation setup flows where connection or semantic-search selectors could fail to persist selected connections, leave the picker at `None`, or keep the setup wizard/sidebar layered over the wrong newly created chat on mobile.
+- Fixed Conversation presence/status wording so away messages use the character's actual name, and improved multilingual character-name matching for avatars, lookup, search, and command matching.
+- Fixed Professor Mari chat behavior after v2.0.0: home-page sessions now survive refresh until manually reset, mobile layout starts below the top bar, the mobile CTA says "Ask Professor Mari", and tool/db command instructions are less likely to surface as plain text for local models.
+- Fixed Roleplay and generation parameter handling so chats using connection custom defaults respect reasoning/output settings, custom provider parameters continue to be sent, and stored provider reasoning remains routed correctly.
+- Fixed built-in local model generation so chat/preset Advanced Parameters control max output tokens instead of being capped by the local runtime fallback value.
+- Fixed suppressed/unknown-model parameter handling so max output tokens are still sent while sampler-specific parameters remain gated.
+- Fixed OpenRouter service tier handling so Flex/Priority and custom `service_tier` values still reach OpenRouter when unknown-model parameter suppression is active.
+- Fixed the post-release issue sweep for chat metadata cache corruption, mobile Characters panel scroll restoration, mobile notification bubbles, Bubble-style multi-speaker messages, Professor Mari mobile restart access, memory-recall embedder retries, YouTube player default visibility, display-size overflow, mobile panel layering, local textual tool calls, new/delete chat failure handling, and visible extension/Mari workspace import errors.
+- Fixed Roleplay agent toggles so enabled agents stay enabled after switching to persona, lorebook, or other editor screens instead of being overwritten by stale chat metadata.
+- Fixed Roleplay chat-settings presets so metadata-only actions like Advanced Parameters, Translation, Lorebooks, Memory Recall, Tool Use, tracker actions, and agent toggles no longer reset the preset selector back to custom settings.
+- Fixed mobile tab/library drag-and-drop ergonomics by requiring the explicit drag handle for touch dragging, restoring normal scrolling elsewhere, improving touch auto-scroll, and preserving folder tap open/close behavior.
+- Fixed browser/source dropdown layering, chat window layering, Chat Settings/Gallery mutual closing, and mobile topbar/sidebar stacking so popovers and side panels no longer hide underneath or cover the wrong UI region.
+- Fixed display-size scaling regressions where large/huge text caused topbar icons, settings buttons, regex rows, preset rows, and other tab controls to overlap or escape their containers.
+- Fixed notification/toast behavior so stacked notifications fade/dismiss consistently and special Professor Mari toast variants use the unified toast styling.
+- Fixed Game and Roleplay UI edge cases around widgets, branches, author-note style popovers, gallery image opening, pinned-image depth, YouTube player coloring, and chat toolbar buttons.
+- Fixed Game Illustrator wiring so Gallery → Illustrate, scene illustrations, NPC portraits, and background generation use the game chat's selected image connection and scene image instructions consistently.
+- Fixed Game Gallery → Illustrate so manual illustrations use the Game Illustrator image connection and asset pipeline directly, preventing false "No connection configured" errors from the retry-agent path.
+- Fixed NovelAI reference-image generation so uploaded/data-URL references are normalized to the base64 payload NovelAI expects before being sent.
+- Fixed ComfyUI reference-image avatar generation regressions, bot-browser import/delete flows, SillyTavern bulk import mappings, tracker field-lock serialization, and lorebook/import/export edge cases found during the post-2.0.0 stabilization pass.
+- Fixed Docker Compose onboarding documentation so the root `docker-compose.yml` location is linked clearly.
+- Fixed Marinara's Universal Preset v12 so the bundled language choice defaults to English instead of Polish.
+- Fixed legacy persona Extended Descriptions migration so old persona description blocks become persona-linked lorebook entries just like character Extended Descriptions.
+- Fixed version metadata for the v2.0.1 hotfix release across packages, the homepage-visible app version, Windows installer sources, PWA manifest, and Android APK metadata.
+
+### Platform Notes
+
+- Android `versionName` is `2.0.1` with `versionCode 20`; users need a rebuilt v2.0.1 APK for the bootstrap/WebView fix.
+- Windows, macOS/Linux, Termux, Docker, and PWA users can update through their usual v2 updater paths.
+
+## [2.0.0]
+
+### Release Highlights
+
+- Refactored major parts of the codebase, UI shell, prompt pipeline, storage/import paths, and agent orchestration so Marinara Engine is easier to extend after the 2.0 line.
+- Professor Mari is now a separate assistant living on the home page, capable of not only helping and creating stuff but also changing the theme of your frontend, creating agents, and extensions for you. Aka, fully customize your experience.
+- Rebuilt the app UI around unified settings controls, square-y chat/sidebar/tab affordances, accent-aware chrome, customizable text/background colors, a reset-to-default appearance action, and optional RGB/pulse accent effects. All available to customize from the Settings. Freshened up mobile view.
+- Reworked all the available Agents and made it easy for anyone to create their own custom one. Agents can also now easily be exported and imported.
+- Treated this as a release-stabilization pass: every known release-blocking bug and maintainer-tracked issue from the 2.0.0 sweep was addressed before preparing the release notes.
+- Marinara's Universal Preset v12 (new version) was set as a new default. Now Presets also include prompts for Conversation and Game modes you can use.
+
+### Added
+
+- Added a Local Model runtime toggle that starts llama.cpp with `--jinja` for OpenAI-compatible native tool calls.
+- Added tracker field locks for editable Roleplay HUD and Tracker Panel fields so manually pinned tracker values survive generated game-state updates.
+- Added a Termux bootstrap path to the Android APK. The APK now opens a running local server when available and otherwise offers setup actions that can hand the install/start command to Termux after Android's required user permissions.
+- Added folder-based import/export support for custom agents and browser extensions so more complex agents/extensions can travel with code and related files instead of only single JSON payloads.
+- Added Game Mode custom-agent selection in Chat Settings and aligned the Game setup wizard shell with Conversation and Roleplay setup styling.
+- Added UNO/turn-game support for Conversation chats, including in-character setup flow, bot turns, board state, and safer live snapshot handling.
+- Added stronger appearance customization: default accent color alignment, chat chrome text color coverage, app background color and gradient presets, RGB mode controls, and Marinara-style home-screen star glints.
+- Added release-ready Android APK naming and release-note notices for the Termux bootstrap shell.
+
+### Changed
+
+- Moved AI-assisted character, persona, lorebook, preset creation, and preset review workflows to Professor Mari.
+- Unified UI/UX styling across Settings, Characters, Presets, Agents, Browser, Connections, Chat Settings, top bar icons, sidebar tabs, buttons, sort controls, and repeated list rows.
+- Improved Game Mode setup, generation defaults, asset generation bounds, checkpoint restore paths, journal/conclusion serialization, HUD widget persistence, and tracker rendering/merging.
+- Improved prompt assembly around post-history preset sections, assistant prefill steering, context-window trimming, lorebook placement, visible tracker context, and prompt/debug parity.
+- Improved file-backed storage, backup/import/export fidelity, SillyTavern character/lorebook/preset mappings, avatar transcoding, browser card preservation, and JSONL chat import/export.
+- Improved local sidecar lifecycle, backend-aware requests, embedding paths, model provisioning checks, and local inference hardening.
+- Improved Conversation autonomous scheduling, character presence status scoping, chat settings controls, Music DJ descriptions/behavior, and top bar hover/focus behavior.
+- Updated Android docs, FAQ, troubleshooting, configuration, release-note rendering, and APK artifact naming around the new bootstrap-shell behavior.
+
+### Removed
+
+- Removed the deprecated standalone character, persona, and lorebook maker modals (replaced by Professor Mari) and their dedicated generation routes.
+- Removed the Preset editor's standalone review tab and dedicated preset-review route.
+
+### Fixed
+
+- Fixed the "Fetch Models" HTML error hint so non-image connections say "connection" instead of "image service."
+- Fixed server responsiveness issues where long generations could block unrelated UI/API work such as chat switching and `/api/health`.
+- Fixed Roleplay first-message confirmation layering so "Add Message" can be clicked without the Chat Settings drawer closing underneath it.
+- Fixed light-theme dropdown/list contrast in Chat Settings.
+- Fixed duplicate visual Prose Guardian/agent streaming artifacts when opening other menus mid-generation.
+- Fixed YouTube Music DJ first-track behavior to avoid Shorts-style picks where possible and clarified that Music DJ supports both Spotify and YouTube.
+- Fixed the Professor Mari surprise toast shape so it matches the rest of the toast UI.
+- Fixed max-context-window enforcement so non-history prompt material is prioritized first, recent chat history is windowed afterward, and response/free-token headroom is preserved.
+- Fixed RGB/accent styling drift across top bar icons, settings icons, hard-coded pink text, tab/list icons, New chat buttons, title gradients, and solid-color RGB pulse strength.
+- Fixed pinned gallery images layering so they stay above chat messages but below Chat Settings, trackers, author notes, summaries, session menus, and other chat UI windows.
+- Fixed custom agents in Game Mode chat settings so the picker appears in the Agents section and sits at the bottom of the section.
+- Fixed Android, Windows, Docker, Termux, and release-note wording that still described outdated APK/install behavior.
+- Fixed Claude Subscription assistant prefill steering so embedded `</assistant_prefill>` text cannot break the synthetic XML-style continuation prompt.
+- Fixed malformed provider/proxy response guards for Google/Gemini and related connection paths.
+- Fixed Game Mode tracker state races, retry result handling, field-lock persistence, widget persistence, malformed stats rendering, game-state snapshot integrity, and committed tracker context rendering.
+- Fixed prompt post-history system sections so they preserve metadata while being injected as user-side content at the configured depth instead of being glued to pre-history system prompts.
+- Fixed a broad sweep of import/export, storage, lorebook, agent, sidecar, game-generation, chat-sidebar, and provider edge cases found during the 2.0.0 stabilization pass.
+- And many, many more.
+
+### Platform Notes
+
+- Users upgrading from v1.6.1 can follow the new [Upgrading to v2.0.0](docs/UPGRADING.md) guide. Windows, macOS/Linux, and Termux git installs update by relaunching their platform launcher; Docker/Podman users pull the new image; iOS/iPadOS users update the host server and reload the PWA.
+- Windows installer sources are already set to `v2.0.0` and continue to build the Git/Node/pnpm bootstrap installer from tagged releases.
+- Android `versionName` is `2.0.0` with `versionCode 19`. Release APKs are now named as Termux bootstrap shells instead of "WebView shell requires Termux" artifacts.
+- Docker/GHCR release images continue to publish from `v*` tags, including regular and lite variants.
+- iOS/iPadOS remains a Safari PWA flow for v2.0.0. A jailbroken/sideloaded one-tap iOS bootstrap wrapper is still future work and is not included in this release.
+
+## [1.6.1]
+
+### Added
+
+- Added a Marinara-specific AI agent workflow overlay, adapted from the Chai Agent Workflow Pack, covering proof discipline, bugfix/feature lanes, issue filing, PR gates, and risky-work claim boundaries.
+- Added a None option for Roleplay message avatars so messages can render without avatar attachments.
+- Added default starting values for numeric Game HUD widgets, with setup/editor clamps that keep start values within the configured max.
+- Added a prompt override editor for registered prompt templates, including conversation selfie overrides, collapsible settings, and draft preservation.
+- Added shared drag-and-drop image upload dropzones for character avatars, chat gallery images, and background imports.
+- Added a manual Game Mode combat start control with confirmation so players can trigger encounter setup when a scene should enter combat.
+- Added a General quote-format preference for straight or curly dialogue quotes and apostrophes, with editor/input formatting support across chat, presets, characters, and personas.
+- Added conditional prompt macros, macro comment blocks, and Macro Reference guidance so presets and character/persona cards can keep author-only notes or branch prompt text by speaker/character.
+- Added Roleplay TTS narrator voice support and speaker-tagged dialogue voice routing so grouped character dialogue can queue per-character voice requests.
+- Added Roleplay Expression Avatar controls so Expression Engine selections can replace character avatars for matching messages, with sprite expression blocks hidden when avatar replacement is enabled.
+- Added Roleplay Music DJ source controls matching Game Mode so chats can choose playlist, liked-song, artist, or wider Spotify selection behavior.
+- Added an Illustrator run interval setting so scene illustrations are only eligible after a configurable number of assistant messages, and only successful image generations reset the interval.
+- Added Roleplay quick-edit gestures: double-click on desktop or double-tap on mobile opens a message editor.
+- Added a Chat Settings context toggle for excluding stored provider reasoning from future prompt context, enabled by default.
+- Added numbered ComfyUI reference placeholders `%reference_image_01%`-`%reference_image_04%` and `%reference_image_name_01%`-`%reference_image_name_04%`, with the legacy unnumbered placeholders kept as slot 01 aliases.
+- Added OpenRouter service-tier selection to generation parameters so OpenRouter connections and chats can request Flex or Priority routing.
+- Added a lorebook-level No Vector toggle so an entire lorebook can opt out of semantic embeddings without editing every entry.
+- Added a dedicated Game image prompt template editor in General Settings with variables, rendered previews, enable/disable control, and reset support for NPC portrait, background, and scene illustration prompts.
+- Added a copy control to stored guided-generation details so guidance can be reused as a ready-to-paste `/guided` command.
+
+### Changed
+
+- Removed the Conversation, Roleplay, and Game mode shortcuts from the topbar because the sidebar already owns mode navigation.
+- Widened the Glued Side Panel roleplay avatar presentation so the portrait strip has more visual presence.
+- Improved sprite wand cleanup with halo edge cleanup, clean/paint brush tools, unified brush controls, and better multi-pointer handling.
+- Polished Tracker Panel visual controls, thought bubbles, persona/tracker card styling, responsive world-state temperature display, and color preview restore/legacy tint behavior.
+- Improved Game Mode combat setup so encounter generation can run in the background after scene analysis, with debug logging and a wait state only when the player reaches combat before setup is ready.
+- Removed unreliable met/unmet status tracking from Game Mode NPC prompt context.
+- Improved Roleplay group chat Individual mode prompting so only the currently responding character card is included, other characters' prior messages are treated as user-side context, and the turn-owner instruction can be toggled.
+- Improved Roleplay streaming so the Streaming Speed slider uses a real typewriter reveal cadence instead of dumping fast server token bursts onto the screen.
+- Improved Roleplay Music DJ execution so it can trigger in Roleplay chats, respect its configured context/source constraints, strip large playlists into song candidates, and recover playable tracks from grouped post-generation agent results.
+- Unified Roleplay Agents & Actions plus Roleplay/Conversation input toolbar icon styling around the neutral grey-white treatment used by the emoji picker.
+- Polished mobile Roleplay/Conversation input toolbar controls with larger touch targets while keeping desktop density compact.
+- Updated the Roleplay input placeholder to invite writing a response without naming the active characters.
+- Limited agent-specific Chat Settings controls to chats where the matching agent has actually been added.
+- Updated Gemini topK handling so a disabled topK value sends `0` instead of falling back to the provider default.
+- Expanded the Roleplay Re-run Trackers action so it also retries active custom agents alongside built-in tracker agents.
+- Improved Settings update checks so git, Docker, and iPhone/iPad PWA clients get platform-specific update guidance, including the Docker release image tags published from `v1.6.1`.
+
+### Fixed
+
+- Fixed mobile Conversation chats where optional toolbar actions could squeeze the message textarea down until it appeared missing on narrow phone viewports.
+- Fixed tracker character-card lookup so active-chat card aliases from title/comment text resolve tracker rows before out-of-chat fallback cards, keeping group-chat tracker portraits and color settings attached to the intended character.
+- Fixed character tracker refreshes preserving user-uploaded NPC portraits and portrait framing across agent updates, including first snapshot writes.
+- Fixed the Roleplay HUD temperature chip so it respects the shared Tracker Panel Celsius/Fahrenheit display setting.
+- Added a stale client artifact cleanup step for the obsolete tracker data sidebar folder so installs, updates, checks, and builds are not tripped up by leftover local files after the tracker panel refactor.
+- Fixed Docker builds so the stale client artifact cleanup script is available before dependency install/build scripts run.
+- Fixed streaming Roleplay messages in Glued Side Panel avatar mode so the avatar frame keeps the selected scale and is revealed by the growing message instead of rescaling while tokens arrive.
+- Fixed Quest Board state merges so tracker updates no longer revert quest progress or keep completed empty-objective quests.
+- Fixed profile export/import fallback handling for large assets so profile exports can recover cleanly when embedded asset payloads are too large.
+- Fixed Windows installer updates for existing shallow release checkouts by fetching the resolved release commit before checkout.
+- Fixed mobile Game Mode character and party controls so sheet actions stay compact, long character names can remain accessible, and crowded party rosters collapse into a scrollable mobile party picker.
+- Fixed mobile Game Mode choice prompts so large choice sets stay readable and scroll inside the available play area instead of squishing buttons or pushing custom input off-screen.
+- Fixed mobile Game Mode side dialogue voice playback so voiced dialogue cues can play when the side line first appears.
+- Fixed Game Mode log deletion on mobile so deleting the currently viewed beat returns to the previous beat instead of the start of the turn.
+- Fixed Game Mode combat presentation across desktop and mobile: combatants scale to fit tighter screens, status badges no longer misalign portraits, ally NPC avatars resolve from character/game assets, action pacing is slower, desktop dialogue bubbles avoid overlap, and mobile combat dialogue is shown as tappable cues above the action box.
+- Fixed quote formatting and macro parsing so curly quotes do not break macro conditions, and quote-formatting no longer pushes editor cursors to the end while typing.
+- Fixed macro comments in character and persona card fields so `{{// ...}}` text is stripped before prompt assembly.
+- Fixed Roleplay prompt/debug routing around transformed group-chat messages so `<last_message>` follows the actual latest visible message and generated responses trim leading blank lines/spaces before line breaks.
+- Fixed Roleplay Music DJ false failure toasts after successful queueing, malformed-summary handling, and missing playable-track extraction.
+- Fixed Advanced Settings layout issues, including the Admin Access save button escaping its bounds and tooltip/expand icons crowding each other in non-Game chat settings.
+- Fixed gradient character names in Roleplay generated messages so the text uses the gradient instead of rendering as a solid gradient block.
+- Fixed rare Professor Mari toast visits so they can be dismissed.
+- Fixed Roleplay-to-Conversation DM commands so generated DMs mirror the initiating user message, reuse an existing character DM thread, and leave cardless NPC replies visible in Roleplay instead of trying to create an invalid Conversation chat.
+- Fixed Conversation prompt timestamps and current-time context so they use the browser/user timezone instead of falling back to UTC-like server time.
+- Fixed Assistant Prefill so generated messages are seeded with the configured prefill text instead of only sending it as prompt-only assistant context.
+- Fixed stored-guidance modals appearing underneath high-layer Roleplay controls on compact landscape screens.
+- Fixed preset depth-injected sections so short chats clamp them to the chat-history span instead of letting them float above the preset prompt context.
+
+## [1.6.0]
+
+### Added
+
+- Added optional image generation for the Background agent so Roleplay can create and reuse missing scene backgrounds from an agent-selected image connection.
+- Added `count`/`quantity` support to Game Mode inventory tags so `[inventory: action="remove" item="Coin" count="10"]` updates stacked item quantities directly. ([#899](https://github.com/Pasta-Devs/Marinara-Engine/issues/899))
+- Added `{{charSysInfo}}` and `{{charPostHistory}}` prompt macros so presets can place character system prompts and post-history instructions explicitly. ([#865](https://github.com/Pasta-Devs/Marinara-Engine/issues/865))
+- Added checkbox review controls for Continuity Checker findings so users can keep selected continuity fixes instead of dismissing the whole result. ([#858](https://github.com/Pasta-Devs/Marinara-Engine/issues/858))
+- Added schedule-less Conversation autonomous messaging so chatty characters can still reach out based on talkativeness and the user's status when schedules are off or missing. ([#840](https://github.com/Pasta-Devs/Marinara-Engine/issues/840))
+- Added Google Vertex AI as a connection provider for Gemini models, including Vertex model URLs, model listing, service-account JSON, OAuth bearer token, and API-key credential handling. ([#826](https://github.com/Pasta-Devs/Marinara-Engine/issues/826))
+- Added bulk chat transcript export from the sidebar multi-select bar, producing JSONL or text zip archives for selected chats or the full chat library. ([#823](https://github.com/Pasta-Devs/Marinara-Engine/issues/823))
+- Added `LOG_PRESET=prompt-connections` and `LOG_DISABLE_REQUEST_LOGGING` so prompt/model/connection troubleshooting can surface debug diagnostics without routine Fastify request-log noise. ([#798](https://github.com/Pasta-Devs/Marinara-Engine/issues/798))
+- Added explicit Illustrator try-again controls when image generation fails, including a toast action and a persistent Roleplay HUD retry button. ([#797](https://github.com/Pasta-Devs/Marinara-Engine/issues/797))
+- Added Local Model sidecar as a first-class embedding source, including an Embedding Connection option, lorebook vectorization support, and a stable `/api/sidecar/v1/embeddings` endpoint. ([#780](https://github.com/Pasta-Devs/Marinara-Engine/issues/780))
+- Added opt-in Turn Data Access settings for custom post-processing agents so they can receive current-turn pre-generation injections and parallel agent results without exposing that data to existing agents by default. ([#778](https://github.com/Pasta-Devs/Marinara-Engine/issues/778))
+- Added Memory Recall export/import for moving chat recall data between profiles or installs.
+- Added weighted random macro choices for SillyTavern-style random prompt variants.
+- Added a native Appearance background blur slider for Roleplay and Game mode backgrounds. ([#763](https://github.com/Pasta-Devs/Marinara-Engine/issues/763))
+- Added excluded-tag filtering for the character browser, including `-tag:"tag name"` search syntax and exclude toggles in the character tag picker. ([#702](https://github.com/Pasta-Devs/Marinara-Engine/issues/702))
+- Added a server-side autonomous conversation scheduler so enabled characters can generate restrained scheduled messages while the browser poller is absent, with client-presence checks to avoid duplicate client/server generations. ([#698](https://github.com/Pasta-Devs/Marinara-Engine/issues/698))
+- Reworked the avatar crop tool into a square-region selector with corner handles + interior pan, so users can pick the exact part of the source image that becomes the circle avatar. Replaces the prior zoom + pan slider on Character avatars and adds the same widget to Personas (previously had no crop UI). The original avatar file is never overwritten — the Roleplay glued side panel still shows the full portrait.
+- Added in-game access to Game Assets from the top-right game controls, including per-game asset selection.
+- Added `%reference_image_name%` placeholder for ComfyUI custom workflows. When the workflow contains this placeholder, Marinara uploads the reference image to ComfyUI's `input/` folder via `/upload/image` and substitutes the returned filename, so vanilla `LoadImage` nodes can use the reference without needing a base64 decode node. The existing `%reference_image%` placeholder still works for workflows that decode base64 themselves (e.g. via `ETN_LoadImageBase64`).
+- Added automated Windows installer builds for tagged GitHub Releases, and hardened release-asset workflows so the `.exe` installer and Android WebView shell APK attach from `v*` tag pushes even when the release itself is created by automation.
+- Added a full-screen Game Assets browser with search, previews, editing, multi-select, and bulk operations.
+- Added TTS playback controls, guided-action Quick Replies, direct swipe-number jumping, and clearer visible agent failure details.
+- Added Game Mode inventory amount controls, drag-swap inventory interactions, tracker card color customization, and visible unread state for background autonomous messages.
+- Added connection folders, per-connection prompt preset overrides, profile import progress feedback, and JSONL chat import into existing chats as new branches.
+- Added tag import controls, bulk tag removal, Grok image generation support, NovelAI prompt controls for selfies and Illustrator, and Conversation-mode function calls.
+- Added Lorebook keyword testing, vectorization exclusions, budget-skip visibility, and stronger regex safety protections.
+
+### Changed
+
+- Guided `/guided` requests and guided manual character replies now use Chat reply lorebook triggers instead of Continue/Autonomous triggers. Move lorebook entries from Continue/Autonomous to Chat reply if they should fire for guided replies.
+- Simplified `/emote` syntax so `/emote joy`, `/emote "Character" joy`, and `/emote "all" joy` work alongside the original named arguments. ([#764](https://github.com/Pasta-Devs/Marinara-Engine/issues/764))
+- Increased ComfyUI image generation polling to 5 minutes by default, matching the shared image request timeout used by Game Mode assets and documenting the image timeout env settings. ([#786](https://github.com/Pasta-Devs/Marinara-Engine/issues/786))
+- Increased the default image generation canvases to `1280x720` for backgrounds, `1024x1024` for portraits, and `896x1152` for selfies so newly generated assets look sharper out of the box. Existing saved image size settings are preserved. ([#913](https://github.com/Pasta-Devs/Marinara-Engine/issues/913))
+- Expanded Android APK disclaimers across GitHub Release notes, release asset naming, install docs, FAQ/troubleshooting, in-app update metadata, APK build output, and the Android shell's connection screen so users know the APK is a WebView shell and still requires the Termux launcher to be running.
+- Improved Game Mode Spotify and narration handling, scene prompts, startup recovery, and asset generation/regeneration flows.
+- Improved Docker runtime config, Docker Lite behavior, sharp handling, Linux sidecar fallback, Termux startup reliability, and the Docker Compose `HOME` default.
+- Added a Termux `--skip-update` startup option and improved startup port-collision handling.
+
+### Fixed
+
+- Fixed launcher and in-app updater updates for installer-created shallow release checkouts by fetching `main` into `origin/main` explicitly and moving detached release installs to the fetched `main` commit.
+- Compressed oversized chat image attachments before generation and capped provider-bound image payloads so large uploads no longer deadlock OpenAI replies with 413 errors. ([#912](https://github.com/Pasta-Devs/Marinara-Engine/issues/912))
+- Pruned stale prompt preset multi-select values from chat preset selections so edited option values no longer leave old strings in assembled prompts. ([#909](https://github.com/Pasta-Devs/Marinara-Engine/issues/909))
+- Made CSRF rejections visible in the UI so saves can no longer silently fail when Marinara is reached through an untrusted origin (e.g. a public IP, reverse-proxy domain, or Tailscale MagicDNS hostname). Three layers cover the issue: a sticky red banner appears at the top of the app on page load when the current browser origin would be rejected, with the exact `.env` line and a one-click copy button; the existing toast still fires on any in-session mutation that hits CSRF; and the 403 response now carries a stable `code` (`CSRF_ORIGIN_NOT_TRUSTED`, `CSRF_REFERER_NOT_TRUSTED`, `CSRF_CROSS_SITE`, or `CSRF_MISSING_HEADER`). The server logs the active CSRF auto-trust scope (loopback, HOST, private-IP literals, configured origins) on startup, and a new read-only `GET /api/csrf/origin-status` endpoint reports the current origin's trust verdict. Tailscale, Docker bridge, RFC 1918, and link-local IP-literal origins remain auto-trusted; only public IPs and DNS names need to be listed in `CSRF_TRUSTED_ORIGINS`. ([#722](https://github.com/Pasta-Devs/Marinara-Engine/issues/722))
+- Restored message number display in Conversation chats when the setting is enabled.
+- Fixed Docker images missing the optional background remover installer script, and added the Python venv runtime needed by the regular image installer.
+- Fixed fresh Docker installs so runtime `.env` creation and file-native storage stay inside the persistent `/app/data` volume.
+- Fixed Game mode image prompt review so prompt review modals can appear during first-start asset generation instead of suppressing the review flow.
+- Fixed Linux NVIDIA local-runtime setup in Docker by falling back to the official Vulkan/CPU llama.cpp builds when Linux CUDA release assets are unavailable.
+- Fixed GLM 5.1 via NanoGPT returning thinking-only text in Professor Mari chats by explicitly disabling thinking when reasoning is off and refusing to expose GLM thinking as visible chat output.
+- Fixed app settings reverting after reload when stale server-synced settings overwrote newer browser-local preferences.
+- Game mode now keeps the selected Appearance background when Scene Analysis is off instead of falling back to black.
+- Fixed Game Mode stuck starts, duplicated setup modals, HUD widget setup recovery, provider recovery, thinking-only or empty model replies, and scene intro recovery paths.
+- Fixed Game Mode asset generation prompt review, NPC portrait matching, sprite recovery, Professor-name avatar matching, and command-prompt regeneration replay.
+- Fixed Game Session Log flicker, deletion offsets, manual deletion persistence, and dice-roll dismissal when advancing dialogue.
+- Fixed Game Mode weather, storm ambience, sun overlay behavior, CYOA live updates, skill checks, inventory notifications, combat voice audio, mobile party access, tracker refreshes, and tracker edit persistence.
+- Fixed CJK Google font shard loading and scene-summary max-token overrides.
+- Fixed manual chat file deletion persistence and regenerate replay for command prompts.
+- Fixed Conversation disconnection aborts on Docker, markdown block preservation, hidden-message regeneration crashes, Up Arrow recall behavior, role editing, DM schedule inheritance, random connection schedule generation, and connected-chat placeholder branch names.
+- Fixed character avatar uploads preserving unsaved drafts, chat folder click targets, drag reorder behavior, text selection while dragging, folder storage atomicity, and Professor Mari continuation after tool/fetch work.
+- Fixed OpenAI ChatGPT request shape and SSE parsing, compressed provider JSON decoding (`gzip`, raw `gzip`, and Brotli), Gemini gzip decoding, provider identity handling, NovelAI V4 prompt/model handling, ComfyUI numeric workflow placeholders, Horde image endpoints, and Pygmalion avatar content-type fallback.
+- Fixed macro resolution in lorebooks and regex scripts, Lorebook Keeper overwrite/update behavior, depth-zero lorebook injections, Knowledge Retrieval and built-in agent prompt sections, roleplay leakage from Knowledge Retrieval prompts, preset identity sections, and regex lorebook matching ReDoS hardening.
+- Fixed Docker proxy auth behavior and clarified its network scope, and improved file-native backup/self-heal behavior.
+
+## [1.5.9]
+
+### Added
+
+- Improved sprite generation for expressions and full-body ones, allowing you to create matching full-body sprites for game mode to be shown alongside the expression ones.
+- Spotify music player with DJ Mari (can be toggled in Settings).
+- Cross-device extension storage, so browser extensions can sync through the server instead of staying tied to one device.
+- Editable agent context injections and secret plot controls.
+  Configurable impersonation controls, including an option to use CYOA choices as impersonation directions.
+- /hide and /unhide slash commands for bulk AI-context visibility control.
+- Start Chat actions from character views and the character panel.
+- Persona-specific saved status options.
+- Random expression sprite groups.
+- Copy-message support in Game mode.
+- Documentation updates for setup, updates, troubleshooting, iOS PWA use, and platform-specific install paths.
+- The `.env` is now auto-created on first run (empty placeholder pointing at .env.example).
+- Per-connection Fast Mode toggle for Claude (Subscription) — currently a no-op, kept for when Anthropic restores fast-mode routing.
+- "Diagnose Model Routing" button on Claude (Subscription) connections, reporting which model the SDK actually billed against.
+- OpenAI (ChatGPT) connections that use the local Codex ChatGPT login instead of an OpenAI API key.
+- Server-side warning when the SDK silently bills against a different model than requested.
+- Roleplay avatar and default sprite scale controls in Appearance settings.
+- Per-connection max parallel agent job controls, allowing agent-heavy chats to split same-connection work across multiple LLM calls.
+- Editable Game Session History map JSON in the current-session spoiler section.
+- Markdown rendering and live preview for Game journal notes.
+- Tracker Data Sidebar for viewing and editing live tracker data from the side panel.
+- `/emote name="Character" expression="expression"` for listing and manually switching roleplay sprite expressions.
+- Duplicate action for individual prompt preset blocks.
+- Close controls for Game mode choice prompts and quick-time event windows.
+- Agent tool calls for reading and replacing chat-wide string variables.
+- OpenRouter as an image generation service through the existing image connection flow.
+- Game setup can now review, edit, or remove generated HUD widgets and custom stat fields before the first turn starts.
+- Game mode NPC side banter now spreads long runs across later VN segments, reducing oversized popup stacks.
+- Roleplay Writer Agents can now pause before the main reply so their prompt injections can be reviewed and edited.
+- Game Session Logs now highlight entries included in a pending multi-message deletion.
+- Conversation settings now include a Commands section for toggling hidden character commands and configuring selfie and schedule command support.
+- Rare Chibi Professor Mari scroll toast easter egg with a matching thank-you response in Professor Mari chats.
+- Active World Info controls in Conversation and Game mode, including mobile access through the overflow menus.
+
+### Changed
+
+- Agents in Roleplay display rework.
+- Game mode inventory no longer has a hard item cap.
+- The `.env` changes hot-reload without a server restart for most settings (auth, IP allowlist, CSRF/CORS origins, and local-URL flags). Boot-bound vars still warn on change.
+- Tailscale (100.64.0.0/10) and Docker (172.16.0.0/12) traffic are trusted by default, skipping IP allowlist and Basic Auth, with BYPASS_AUTH_TAILSCALE / BYPASS_AUTH_DOCKER opt-outs.
+- CORS_ORIGINS is now hot-reloadable, and same-origin requests are auto-allowed regardless of config.
+- Network rejection, SSRF, CSRF, and CORS errors now name the exact env var and the line to paste into `.env` to fix them.
+
+### Fixed
+
+- Fixed local LM Studio connection JSON errors and .local provider endpoint validation.
+- Fixed agent output leaking into the main prompt, local model fallback handling, and Narrative Director cadence in group replies.
+- Fixed spurious aborts on normal generation completion and raw conversation streaming buffers appearing in the UI.
+- Fixed Roleplay DM routing to linked Conversation chats and connected chat branch labels.
+- Fixed retrying Conversation generation from the send button and refreshing Conversation status when opening chats.
+- Fixed Memory Recall refresh after message edits, reroll invalidation, and Termux embedding handling.
+- Fixed Lorebook import, embedded lorebook sync, legacy link hydration, duplicate links, stale linked counts, disabled lorebook activation, prompt preview gates, and several scoping edge cases.
+- Fixed Game mode combat targeting, mobile combat layout, combat HP initialization, enemy portraits, skill-check attributes, scene time drift, map regeneration after restored turns, typed choice prompts, background switching races, and scene intro recovery after asset failures.
+- Fixed grouped Conversation image attachments and selfie persistence to active swipes.
+- Fixed NovelAI image request settings and V4 native prompt input.
+- Fixed Google provider empty candidate handling, Claude Subscription model identity loss, llama.cpp embedding response parsing, and TTS provider diagnostics.
+- Fixed Docker and Lite Docker startup/install issues, including recursive app ownership layers, CPU-only hosts, and Rollup native binary restoration.
+- Fixed Lite Docker sprite generation by rebuilding the `sharp` native module after scriptless dependency installs.
+- Fixed conversation schedule generation so a connection max-token override replaces the old fixed schedule budget.
+- Removed the oversized Characters panel New Chat row button so character names and metadata are no longer truncated.
+- Fixed Active World Info so it reflects the lorebook entries used by the last generation instead of previewing the next turn.
+- Fixed Game setup JSON parsing for common LLM omissions such as a missing comma before the next property, and added line numbers to the JSON repair editor.
+- Fixed Game mode Talk to GM and Talk to Party turns so they skip scene/weather analysis instead of running the full scene-prep pipeline.
+- Fixed right-panel resize handle layering and custom font family normalization.
+- Improved combat in Game mode.
+- Claude (Subscription) silent model-identity loss; Opus and Haiku falsely self-identified as Sonnet because the SDK strips version awareness without the claude_code preset wrapping.
+- Bounded the CSRF/CORS rejection-log throttle caches (capped at 2048 with FIFO eviction) so attacker-controlled origin strings can't grow process memory without bound.
+- Unified the CSRF 403 response body to use origin across all branches (it was inconsistent for the Referer-not-trusted case).
+- Fixed Game mode inventory item names so long names wrap instead of truncating, and removed stale item-description rendering from inventory surfaces.
+- Various UI improvements.
+
+## [1.5.8]
+
+### Added
+
+- Special edition of Game mode Lorebook Keeper.
+- Guides for all modes.
+- QoL improvements to Lorebooks handling.
+- Optional intuitive swipe navigation lets Conversation and Roleplay users move through rerolls with arrow keys or touch swipes, with an opt-in reroll-at-the-end shortcut.
+- Roleplay chats can now optionally let characters create direct-message Conversation chats with hidden `[dm: ...]` commands.
+- Lorebook entries can now be selected in bulk and copied or moved to another lorebook.
+
+### Fixed
+
+- Various issues caused by the security tightening were fixed.
+- Sidecar issues fixed.
+- Improves the selfie regex, catching malformed commands.
+- Fixed context trimming.
+- MLX sidecar runtime installs the upstream `mlx-lm` source build so curated Gemma 4 MLX models can load on Apple Silicon.
+- Dry-run prompt preview now trims against manually configured preset Max Context Window values instead of only connection/model limits.
+- Script custom tools now show their disabled state in the editor and fail safely when `CUSTOM_TOOL_SCRIPT_ENABLED` is off instead of silently disappearing from agent tool pickers.
+- Browser extensions now load under CSP through Blob module execution instead of eval, keeping extension support without adding `unsafe-eval`.
+- Local sidecar runtime installation now works when the matching Admin Access secret is entered, even if `SIDECAR_RUNTIME_INSTALL_ENABLED` remains off.
+- Agent traffic now warns when the default agent connection may bill a provider. Agents explicitly set to Local Model are skipped with a visible warning when the sidecar is unavailable instead of silently falling back to a paid API connection.
+- Chat attachments now wait for file reads, preserve files in manual group mode, and expose supported text files like JSON/Markdown/CSV to the model instead of silently dropping them.
+- Fixed rolling in Game mode.
+- Lorebook Keeper updates now receive existing entry content, and append structured new facts instead of replacing user-written lorebook text.
+- Docker images now repair `/app/data` volume ownership before dropping to the non-root runtime user, preventing `EACCES` startup failures during file-storage migration.
+- OpenAI-compatible local streams now accept stricter and looser SSE `data:` formatting, Conversation mode visibly streams text again, and live reasoning chunks appear while a reply is still generating.
+- Expression agent sprite updates now repair stale character IDs from the current character name before dropping the expression, so existing characters keep their expressions mid-session.
+- Stability AI image connections now test against Stability's account endpoint, fetch legacy v1 engines when needed, and generate through the correct v2beta Stable Image task endpoints instead of probing `/models`.
+- Game mode party changes made from Chat Settings now sync to game metadata and carry into future sessions.
+- NanoGPT GPT Image 2 requests now normalize image size to a supported pixel budget instead of forwarding too-small canvases.
+- Conversation manual generations now share the autonomous in-progress guard, preventing async catch-up replies from duplicating the same user turn.
+- Edits made via "Edit Linked Lorebook" on a character with an embedded lorebook now persist back to the character's V2 `character_book`, so deleted entries no longer reappear when the character is reopened, and deleting the linked lorebook clears the embedded copy on the character and evicts the cached lorebook detail instead of leaving stale entries, a phantom Reimport button, and a ghost lorebook editor behind. Imported character cards no longer carry over a foreign `lorebookId` pointer in their extensions, the character editor verifies the linked lorebook actually exists before showing "Edit Linked Lorebook", and the lorebook editor surfaces a 404 with a toast instead of an infinite loading shimmer when opened against a deleted lorebook.
+
+## [1.5.7]
+
+### Added
+
+- Guide for Game mode.
+- Professor Mari can now create Lorebooks for you.
+- Days tracker in Game mode that you can edit.
+- Lorebook entry trigger mode can now be changed directly from the entry status dot.
+- Game mode interrupt button that allows you to interrupt the GM (with or without consequences to your game).
+- Various improvements to the Game mode's combat and inventory systems, more cinematic battles, better UI handling, and more overall mechanics.
+- Game mode map scaling.
+- New permanent tag that persists in Roleplay mode if a character passed you important information in Conversation mode.
+- Improvements to the Knowledge Router agent.
+- Storing the Conversation Theme background gradient separately for dark and light color schemes, so switching OS/browser theme automatically loads the correct gradient.
+- Custom agents now have a chat memory.
+- Prompt overrides the registry for image generation.
+- Active filter tab in Lorebooks.
+- Compressed Lorebooks.
+- Customizable generation settings for local image generation.
+- When generating schedules, they now receive context from the conversation chats you had with a character.
+- Hide/unhide messages in Roleplay mode.
+- Alternative display of logs for Game mode.
+- Custom agents can now choose a result type, including Text Rewrite for post-processing agents that edit the generated reply.
+- Setting to enable showing and editing image prompts before they're sent.
+- Setting to change the image dimensions for generation.
+- Various small QOL changes.
+- Custom agents' outputs can now be edited in the Agents button in the Roleplay mode.
+- Custom parameters field.
+- Sliders to control the sprite's size and opacity in Roleplay mode.
+- Custom activity statuses for the user.
+- Vectorized Lorebook entries are now visibly marked.
+- Character card version history with compare and restore controls.
+- Prefills.
+- File-backed storage now writes JSON tables under `DATA_DIR/storage`, and backups include those files.
+- Allowed token size outputs in agents.
+- Lorebook folders.
+- Game mode setup remembers custom genre, tone, setting, and goal options from previous games.
+- Optional trimming for incomplete model endings before generated messages are saved.
+- Draft translation button option in chat Translation settings for Conversation, Roleplay, and Game modes.
+- Native vs compatible export choices for profile, character, persona, and lorebook exports.
+- PocketTTS is now available as a local TTS provider.
+- Optional speech-to-text microphone buttons can be enabled for Conversation, Roleplay, and Game input fields.
+- Character imports now ask before extracting embedded character-card lorebooks into standalone Marinara lorebooks.
+- Home Assistant HACS integration that syncs Marinara custom tools and a Home Assistant agent for smart-home control.
+- Updated the supported toolchain to Node.js 24 LTS and pnpm 10.33.2 across launchers, installers, Docker images, docs, and CI, plus refreshed dependencies within their compatible ranges.
+- Lorebook entries can now be scoped by active characters, character tags, and generation triggers, and can scan selected character/persona fields as extra keyword-matching sources.
+- Game mode now has an optional Lorebook Keeper that updates a game-scoped lorebook after session conclusion and automatically attaches it to that game.
+
+### Security
+
+- Hardened default network access so loopback remains convenient while non-loopback private-network traffic fails closed unless Basic Auth, an allowlist, or an explicit unsafe opt-in is configured.
+- Added global unsafe-method CSRF/origin protections, security headers, route throttling, and shared privileged-route gates for admin, update, backup/import, sidecar, haptics, and custom-tool operations.
+- Added SSRF, path containment, upload validation, bulk-import capability tokens, and response-size guards around high-risk URL, file, and archive flows.
+- Disabled or gated risky execution paths by default, including API-driven update apply, custom script tools, sidecar runtime installs, and remote haptic control.
+- Removed the seeded default provider key, encrypted Spotify token storage, and redacted obvious secrets from profile export.
+- Hardened chat HTML sanitization and SVG/image handling, then upgraded vulnerable production and build dependencies.
+- Hardened Docker, Android WebView/backup, GitHub Actions action references, and Windows installer dependency verification.
+- Breaking/default changes: privileged routes now require `ADMIN_SECRET`, Docker binds to localhost by default, and update apply, custom script tools, and sidecar runtime installs are disabled until operators opt in with the documented environment switches.
+- Operators who intentionally need the old exposure model must set `ADMIN_SECRET`, choose a remote bind address for Docker/launchers, and explicitly enable only the required flows such as `UPDATES_APPLY_ENABLED`, `CUSTOM_TOOL_SCRIPT_ENABLED`, or `SIDECAR_RUNTIME_INSTALL_ENABLED`.
+
+### Fixed
+
+- Custom OpenAI-compatible endpoints like Venice no longer receive provider-specific request fields just because a fetched model ID matches an OpenAI, xAI, OpenRouter, or Z.AI naming pattern.
+- Addressed various security concerns.
+- Game mode dark screen error addressed.
+- Consolidated live persistence on file-backed storage, reducing release-to-release migration failures.
+- File-backed recovery now checks every known historical data location and repairs snapshots that missed chats during early v1.5.7 testing.
+- On mobile Roleplay, the branch quick-switcher now lives inside the three-dot toolbar menu, so it no longer overlaps the Agents' controls.
+- Settings Debug Mode now prints prompt, scene-analysis, party-turn, and game asset debug logs even when `LOG_LEVEL` is not set to `debug`.
+- Switching chats doesn't stop the generation of the previously triggered one.
+- Cross-conversations confusions addressed.
+- {{user}} and {{char}} macros now work in all modes.
+- Injections at a specific depth now work correctly.
+- Added Spotify OAuth redirect URI handling and manual paste-back.
+- [Start the game] is being sent twice upon starting the game.
+- Expression Engine now retrieves all the available sprites correctly upon retry.
+- Fixed unstable message pagination cursor.
+- Various errors were addressed.
+- Advanced parameters are now respected by local endpoints.
+- Improved the quality of some prompts.
+- Ensured the daily/weekly summaries trigger consistently.
+- We now handle assets in Game mode better.
+- Conversation mode characters no longer reply to themselves; instead, they reply to you.
+- Drag-and-drop on mobiles now works.
+- Custom agents can now rewrite your messages.
+- Full-body sprites in game mode now get updated properly.
+- Deleted characters from group chat no longer appear as Unknown.
+- Roleplay setup and connection setup dialogs now fit short screens with internal scrolling, and Custom Parameters starts empty with an example placeholder.
+- File-backed storage now supports Lorebook folders during generation and migration.
+- Deleting one saved character card version now leaves the rest of the version history intact.
+- Removed the legacy database setup step from the installer flow.
+- Fresh installs no longer install the old fallback storage packages.
+- Browser-tab character imports now preserve embedded Chub lorebooks as linked Marinara lorebooks.
+- OpenRouter Claude reasoning is requested with OpenRouter's unified `reasoning` payload again, restoring thinking capture for Sonnet/Opus reasoning models.
+- Sprite sheet prompts now more explicitly require complete slicable grids for expression and full-body pose generation.
+- Loopback LLM provider URLs are allowed by default again, so local model servers on `127.0.0.1`, `::1`, or `localhost` do not require the broad private-network URL opt-in.
+- Restored the animated Marinara logo on the home screen while keeping the static logo as the inactive-page fallback.
+- Tightened the home screen spacing so the logo, FAQ, credits, and special thanks fit more comfortably on desktop and mobile.
+- Windows installer updates now force-refresh the release tag and verify the resolved tag commit instead of aborting on legitimate v1.5.7 hotfix retags.
+- The v1.5.7 Android wrapper APK now uses a bumped `versionCode` for hotfix updates and the release workflow uploads an installable sideload APK.
+- Game Lorebook Keeper now continues in the background after a session is concluded instead of holding the End Session response open.
+- Launchers, installers, and in-app updates now fall back to installed or temporary pnpm when Corepack cannot resolve the exact pinned pnpm patch version.
+- Explicit ComfyUI and AUTOMATIC1111 image-generation connections can use LAN/private-network hosts without the broad image URL opt-in.
+- Restored scoped HTML/CSS rendering inside Roleplay messages and narrator bubbles.
+- Backup and profile export failures now surface the specific server/admin-secret error instead of a generic failure toast.
+- Haptic agent position commands now normalize PositionWithDuration-style outputs and continue executing later commands if one device command fails.
+- Lorebook entry drawers now autosave edits, so the manual Save Entry button is no longer needed.
+- Docker/LAN browser origins now pass CSRF checks when Marinara is reached through a mapped host port, and `CSRF_TRUSTED_ORIGINS=*` is honored as an explicit unsafe wildcard.
+- Loopback backup/profile export requests no longer require `ADMIN_SECRET` by default; remote privileged requests still do.
+- Turning off Conversation schedules now clears saved schedule metadata and resets affected character availability state.
+- Removed the Workbox `index.html` navigation fallback that caused non-precached-url console noise.
+- Various minor UI bugs.
+
+## [1.5.6]
+
+### Added
+
+- New connection provider Claude (Subscription) that routes chat through the locally installed Claude Agent SDK so requests bill against your Anthropic Pro / Max subscription instead of an `sk-ant-*` API key. Requires `npm i -g @anthropic-ai/claude-code` and a one-time `claude login` on the host running Marinara. This is the same auth mechanism Anthropic-endorsed integrations like Zed use; no proxy or third-party shim is involved. Built-in agent tools are disabled and use Marinara's own agent/tool layer. Embeddings are not supported on this provider; configure a separate connection for them.
+- The "Mari is thinking…" indicator appears above the composer while Professor Mari executes her embedded commands (create/update character, fetch, create chat, navigate). Makes it clear that her background work is running, not frozen. Bonus: Dottore is doing jumping jacks.
+- Dry-run generation endpoint (`POST /api/generate/dryRun`) that runs the full generation pipeline without side effects; no messages persisted, no agents or tools invoked, no Discord webhooks. Extensions can send a `userMessage` to preview "what if I said this", use `impersonate: true` to preview the user's next in-character line, enable optional injections (lorebook, trackers, chat summary), override the preset or connection, and optionally receive the assembled prompt instead of a completion (`returnPrompt: true`). Supports both non-streaming JSON responses and SSE streaming with abort capability. Intended as a stopgap extension API for flexible prompt inspection and silent generation.
+- In Game mode, NPCs can be added/removed from your party, plus now you can manage the party manually.
+- If you have Image Generation enabled in Game mode, during important scenes, the model now generates immersive VN-like scenes from the player's POV.
+- Overall improvements to generating expressions/full-body sprites for your characters.
+- Guided generations with a visible indicator.
+- Schedule generation preferences added for conversations.
+- Pygmalion, Jenny, and DataCat added to the Browser.
+- Pinnable taskbar shortcut via custom launcher.
+- Universal Tool Support for agents.
+- New Knowledge Router agent.
+- You can now link Personas to Lorebooks.
+- Drag-and-drop Lorebook entries.
+- Added ElevenLabs for TTS support.
+- TTS now supports character and NPC voices.
+- You can now see spoilers for Game mode and edit the plot accordingly to your needs in the History section.
+- Upon ending the Game session, you can now optionally include what you want to happen in the next session.
+- Separate volume levels for different sounds in Game mode.
+- Added the `/impersonate_prompt` command that allows you to change the impersonate prompt.
+- Added manual mode in Conversations that only makes the character respond when you ping them with `@name`.
+- Resizing sprites in game mode.
+- Conversation auto-summarization now has a Day Rollover Hour (so a late-night session doesn't get cut in half when calendar midnight passes) and a Recent Message Tail (keeps the last N messages verbatim across the day boundary so characters wake up remembering the actual flow of last night, not just the gist). Defaults: 4 AM rollover, 10-message tail.
+- Conversation characters can now emit durable `<note>...</note>` tags for connected roleplay and game chats. Notes persist in the target chat's prompt until cleared from Chat Settings.
+- Lorebook entries now use compact rows with inline controls and an expandable inline editor.
+- Lorebook entries can now be grouped into collapsible folders to reduce vertical clutter for stable or AI-managed entries. Folders have their own enable/disable toggle that gates every entry inside (regardless of each entry's own toggle) without modifying the entries' individual settings, so re-enabling a folder restores everything to how it was. Each folder is its own container — sort by Order works inside the folder, and a folder full of high-Order entries can sit above root-level entries with low Order without conflict. Move entries between folders via a per-row folder picker or drag-and-drop. Collapse state is per-browser (localStorage). Folders are flat in this release; nesting may follow.
+
+### Fixed
+
+- UI and other minor glitches in Game Mode.
+- Image Generation in game mode is not firing up for named NPCs in a scene.
+- More ComfyUI fixes.
+- Various general fixes and improvements.
+- Anchor link error.
+- We now enable the send button immediately after branching.
+- Remove background actually sticks across switches.
+- Sidecar CUDA runtime setup fix.
+- Light Mode readability issues.
+- Removed the ability to apply presets to Conversations, which broke the format.
+- Improved usability on mobile devices with small screens, where tapping tiny buttons could be difficult.
+- Navigational icons under messages now scale with the display size.
+- When selecting Personas during chat setups, you can now see their avatars.
+- Switching between chats doesn't cancel generations in progress.
+- Parameters added to Conversations and Roleplay setups.
+- Bugged NPC entries in Game mode journal.
+- Creating a new agent doesn't delete the old one.
+- Preset names are no longer set to Default upon being selected.
+- Black screen on search bar typing in chats was fixed.
+- Various UI fixes applied.
+- DeepSeek V4 is now supported.
+- Addressed the bug that deleted your Persona fields when uploading an avatar in an unsaved state.
+- Minor adjustments to some agent widgets.
+- Game mode now supports multiple maps.
+- Debug mode restored.
+- Expression Engine retries now load available sprites, validate returned expressions, and persist the corrected sprite state.
+
+## [1.5.5]
+
+### Added
+
+- New agent: Card Evolution Auditor that actively updates your characters as they grow.
+- Polska gurom!!! In Game mode.
+- GM can now add party members during the game and create character cards for them.
+- Turn, Scene Analysis, and Assets Image Generation retry button in Game mode.
+- Improved Game mode's structure and prompts.
+- Custom widgets, notes/books, session summaries, and inventory in Game mode are now all editable.
+- You can now upload custom NPC portraits in Game mode when clicking on the portraits.
+- The Characters tab now opens a full-page library with large card browsing, creator-note previews, and a selected-card overview before editing.
+- Chat galleries and character galleries now support selecting and uploading multiple images in one action.
+- Chat branches can now be switched from a selector at the top of the chat bar instead of only through Manage Chat Files.
+- Conversation schedules now let you customize per-character idle and DND response delays, plus inactivity follow-up timing.
+- Character titles to mirror the ones Personas have.
+- Various macros, see all under `/macros`.
+- Game mode combat improvements (statuses, abilities).
+- Bulk delete.
+- Search filters for chats in the Chats tab.
+- TTS support.
+- FAQ on the home page.
+
+### Fixed
+
+- Fresh installs and client builds no longer fail with `ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL` because the shared package now builds from root entrypoints instead of the client package's nested `predev` and `prebuild` hooks.
+- The lite container release workflow now inspects the correct `-lite` image tag instead of the nonexistent `*-lite-lite` tag, so tagged lite image publishing completes successfully again.
+- Fixed sidecar startup state and enabled logs for Ollama to see what's going on.
+- You can now use tab when writing lorebook entries.
+- Some image generation endpoints.
+- Clicking roleplay image attachments now opens them in Marinara's in-app lightbox instead of a new browser tab.
+- Auto-play in game mode now pauses when you're reading a note, a book, or doing a QTE event.
+- Opening a conversation no longer resets the autonomous-message inactivity timers just because the message history finished loading.
+- OpenAI-compatible connections no longer send reasoning payloads to models that do not support them.
+- Selfies and sprite generation no longer force a character avatar as a hidden reference image by default.
+- Explicitly adding or editing an agent no longer persists it as globally disabled.
+- Memory recall now stays inside a dedicated prompt budget before injection, preventing recalled history from crowding out agent and thinking context.
+- Exporting a modified character to PNG no longer reuses stale embedded card metadata from the avatar image.
+- Sprites get displayed automatically when you add Expression Engine to your chat, and their setup was moved to the Agents section of Chat Settings.
+- More ComfyUI fixes.
+- Group chats' inconsistent injections: now, upon regenerations, the model knows who should respond.
+- Game mode scene-wrap now only sends the current party's character names instead of the entire imported character library, preventing large libraries from tripping the 100-name limit.
+- Professor Mari now has access to all the fields in character cards/personas/lorebooks/etc. and can correctly split info into them.
+- The Windows installer now downloads Git from a valid prerequisite URL again instead of failing the autodownload step with a missing PowerShell `-Uri` argument.
+- Mobile UI fixes for Game mode.
+- Increased the output size to 16384 tokens on the new Game setup generation to prevent malformed JSON errors.
+- Decreased padding for text in boxes in the Glued Side Panel avatars option.
+- Edit Sheet in Game mode black screen bug.
+- CYOA choices can now be edited.
+- UI fixes.
+- Lorebook entries now don't stay active after they've been activated once, and the lorebooks respect the token limits of how many active entries there may be at once.
+- Custom widgets now may change between sessions.
+- No more looping music/ambiance in Game mode.
+- If a provider accepts a smaller context size than the overall model allows, we now automatically reduce the output size to match the allowed size.
+
+## [1.5.4]
+
+### Added
+
+- An option to control when the Narrative Director triggers to prevent rushing.
+- Every time you add an agent to a chat, you now see a window with its description and setup.
+- Macros support for {{user}} and {{char}} in Game mode.
+- Added translation support to the Game mode.
+- You can now address the GM directly in the Game mode.
+- Refresh cache button in Advanced Settings.
+
+### Fixed
+
+- OpenAI endpoint now correctly re-routes all GPT-5.4 models via Responses API.
+- Strengthened the regex to catch incorrect formatting of the messages in Conversations mode.
+- Restored the slight delay on receiving multi-line messages in Conversations mode.
+- Fixed mobile side displays of dialogues in Game mode.
+- Game mode incorrect starting narration.
+- ComfyUI generation for sprites and default workflow fixes.
+- Removed a bugged new chat creation from Manage Chat Files.
+- Bold dialogue formatting now supports Chinese and Japanese quotation marks.
+- Strengthened commands in Conversations mode.
+- Various mobile UI fixes.
+- Scenes cannot be branched anymore (that broke them).
+- Sprite generation triggering on unsupported platforms.
+- Cross-awareness with game mode.
+- Clicking on new conversation notifications while in Game mode now takes you to the Conversations correctly.
+- All GLM models now correctly receive only the `enable_thinking` parameter with `false/true` depending on whether you chose reasoning to be `None` or any other.
+- Improved Lorebook Keeper agent.
+- QTE in Game mode fix.
+
+## [1.5.3]
+
+### Added
+
+- Character galleries for storing reference images directly on a character instead of a specific chat.
+- Conversation mode swipe controls.
+- An option to delete a selected swipe instead of the entire message.
+- Prompt caching support and cache hit/write visibility for OpenRouter Claude connections.
+- Recommended models for the first Game generation.
+- A setting to disable bold dialogue formatting while keeping dialogue colors.
+- Custom parameters setup for initial Game mode generation.
+- Instant display of messages in game mode.
+- Discord Mirror for all chatting modes.
+- No more "Preset Variables" pop-up on presets without them.
+
+### Fixed
+
+- We no longer use browser pop-up windows, so the users won't accidentally permanently dismiss them.
+- Various setup fixes, including Docker runtime libraries and launcher/installer build steps.
+- Decreased text padding in Roleplay mode inside the message box area.
+- Session recordings can now be accessed.
+- Addressed storage-query errors.
+- Impersonate direction is now properly sent to the model.
+- Inventory is now saved and stored between game sessions.
+- We now apply the correct headers for official Anthropic calls.
+- Multi-line messages no longer collapse after editing in Conversations.
+- Character schedules now use your local timezone when generating.
+- Dialogue highlight colors now keep working even when bold dialogue is turned off.
+- Marinara landing-screen effects now stop rendering when they are off-screen, and they stay paused while the tab is inactive.
+- Text renders in HD.
+- We correctly catch Gemma-4's thinking tag.
+- Audio docker fix.
+- Selecting a new location in the Game mode now doesn't automatically transport you there.
+- Party-only Game turns no longer commit staged travel.
+- Game Discord Mirror now carries narrator labels across regular turns and new-session recaps.
+- Game chat parameter changes now override setup-time defaults after the game has already been created.
+
+## [1.5.2]
+
+### Added
+
+- General settings now include a persisted app-language selector at the top of the tab. It currently exposes only English and is ready for future translation PRs to extend it.
+- Added a new option to display character/persona avatars in the Roleplay mode (as a side panel, bigger size). Access it in the Appearance Settings.
+- NanoGPT support and improved image connection handling.
+- Added a macOS Apple Silicon-only MLX backend for the local sidecar.
+- Support for running different local models.
+
+### Fixed
+
+- Installed Windows desktop and Start Menu shortcuts now launch Marinara Engine with the correct working directory, so packaged installs no longer open and close immediately.
+- Windows installers and launchers now force the repo-pinned pnpm version through Corepack when available, so older global pnpm installs no longer break setup, and the batch installer restores the Marinara icon on the desktop shortcut.
+- Conversation mode no longer forces OpenAI-compatible backends like NovelAI onto the non-streaming transport path, preventing immediate cancellations while keeping complete-message rendering in the UI.
+- Character maker, persona maker, lorebook maker, prompt review, retry-agents, game setup, and other system tasks now obey the global Streaming Responses toggle instead of silently forcing streamed transport.
+- Image Generation connections can now keep ComfyUI selected on non-default hosts and ports, so remote ComfyUI servers still expose checkpoint fetching and custom workflow JSON.
+- Connection max-context limits now trim oversized prompts before generation, and prompt inspection shows the fitted prompt that was actually sent upstream.
+- OpenRouter connection provider preferences now carry through agent runs, game setup, GM/tool generations, and other helper flows instead of falling back to Auto router outside the main chat path.
+- Inline reasoning blocks wrapped in `<thought>...</thought>` or `<|think|>...<|/think|>` are now extracted into stored message thoughts, and game-mode JSON helpers strip those blocks before parsing model output.
+- Glued Side Panel roleplay avatars now fade and blur out more aggressively at the bottom so they merge into the message bubble instead of ending abruptly.
+- Clean installs no longer warn that pnpm ignored build scripts for `onnxruntime-node` and `protobufjs`, so Windows users do not need to run `pnpm approve-builds` or patch `package.json` by hand.
+- Added the no split mode flag to prevent the looping crash of Gemma-4 on multiple GPU systems.
+- Tracker agents can now use the built-in local sidecar through the normal Connection Override dropdown, and the Local Model card now provides a bulk action to point every built-in tracker at the local model.
+- Fixed new game mode sessions not starting after the last one concluded.
+
+## [1.5.1]
+
+### Added
+
+- Display of the time of the day in the game mode.
+- Custom game widgets can be moved around.
+
+### Changed
+
+- Removed the Quests tab from Game Mode. Game sessions deliberately do not use tracker agents for quests, so the journal now focuses on the code-driven data it actually maintains to avoid excessive generations.
+
+### Fixed
+
+- Returning to an active game session no longer reopens the full-screen world overview and blocks the current scene behind the black intro overlay.
+- Combat encounters now wait until narration and scene presentation finish before opening, and HUD widgets hide during combat and restore correctly afterward.
+- Loot drops now resolve to the correct item names instead of malformed combat-drop payloads.
+- Constant lorebook entries selected for Game Mode are now injected during world generation instead of being skipped during setup.
+- Non-English setup languages now propagate through setup generation and GM output formatting, so game text stays in the selected language.
+- `/game/setup` now streams upstream tokens during first-turn world generation, reducing timeout failures on slower local backends.
+- Map discoveries and NPC meetings now populate the journal from code-owned game state. Locations appear when discovered, and NPCs are logged when first met instead of only after a reputation change.
+- Our built-in Gemma-4 will now target available GPUs during generations.
+- Fixed Gemma-4 issues on Windows.
+- We now only install llama-cpp if you choose to host Gemma-4.
+
+## [1.5.0]
+
+### Added
+
+- Introducing the new **Game Mode**! A cross between a classic roleplay and a visual novel, fully driven by the AI GM! Embark on adventures either solo or with a party of characters of your choice. Or perhaps have one of your characters DM the game for you and others? The games span multiple sessions, and _anything_ can happen. The sky is the limit. Well, I guess your wallet, too.
+  - Follow an easy and quick game setup wizard to customize your game, or ask the model to come up with the ideas for you.
+  - The game's UI is a cross between RPGs (think Baldur's Gate) and visual novels. Witness dynamically changing dialogues, backgrounds, sprites, ambiance, music, sounds, and weather; all based on your current scene. The mode supports sprites and will show them with different expressions. You have an item inventory, an automatically updated journal storing information about your adventure, and an option to talk to your party whenever you feel like simply chatting with them instead of progressing.
+  - Your party, and you, all have unique character cards, secrets, and goals to achieve. Remember to keep morale high.
+  - Do dice rolls yourself or let the GM handle those for you.
+  - Play with the interactive widgets, travel to different locations via a map, build a reputation with NPCs and factions, and explore a dynamically changing world.
+  - Everything is handled on the backend. You just sit back, relax, and enjoy the experience.
+  - Seriously, just try it. It's fun. I put a lot of time and effort into it, so you'd better enjoy it, or I'll explode.
+- Automated sprite generation for expressions and full-body poses in character cards. These can be used for both roleplay and game modes.
+- Saved presets for starting new roleplays and conversations.
+- Option to save parameters (samplers) per connection.
+- Select, duplicate, and manage multiple chats/characters/lorebooks/personas/etc. at once.
+- More filters to sort by in lorebooks, and added an ability to lock entries from being edited by agents.
+- You may now generate images based on the chat anytime by pressing the "Illustrate" button in the Gallery.
+- Spellbooks were added as a separate lorebook category, used in combat.
+- Added an ability to download and use Gemma-4-E2B, a tiny model that can be run even on mobile devices and can handle trackers in roleplays and scene analysis for the game mode.
+- Other minor things I probably forgot about, have fun discovering them on your own.
+
+### Fixed
+
+- Expression Engine fix that prevented sprites from being generated.
+- Messages will no longer disappear and reappear only upon page refresh.
+- Scenes created out of conversations now inherit all the parameters from their original chat.
+- Fixed a "niche advanced parameter bug", if you know, you know.
+- Added full markdown support for roleplays.
+- Various Termux/iPhone native fixes for both installation and UI.
+- Text formatting with asterisks is now fixed.
+- Bettered image generation support.
+- Lorebook entries not working in scenes.
+- Numbered lists now display correctly.
+- You can now select a folder where your backup will be saved.
+- No more random scroll-ups when editing lorebooks.
+- Additional minor fixes that I can't be bothered enough to list, I want a break.
+
+## [1.4.8]
+
+### Added
+
+- Added `pnpm check`, version-sync helpers, and PR CI checks for version drift.
+- Added tracked-installer and release-note scripts plus a GitHub release workflow driven by `CHANGELOG.md`.
+
+### Changed
+
+- Startup config now resolves `.env` before env-sensitive server modules, normalizes repo-root data paths, and keeps `/api/*` 404s JSON-only.
+- Shell launchers now align on the resolved `PORT`, honor launcher-level browser auto-open consistently, and pin pnpm to the repo version.
+- Android now uses a build-time WebView server URL constant instead of a hardcoded Java literal, with optional `MARINARA_PORT` support in `android/build-apk.sh`.
+- The client app shell now lazy-loads editors, right-panel surfaces, onboarding, modals, and the main chat surface to reduce initial bundle weight.
+
+### Fixed
+
+- **Vanishing messages after generation** — Messages could disappear at the end of streaming in Roleplay mode due to the browser and service worker serving stale cached API responses. Added triple-layer cache busting (server `Cache-Control: no-store`, client `cache: "no-store"`, and Workbox `NetworkOnly` for API routes) and hardened the streaming-to-message transition with retry-on-failure and double-rAF React commit timing.
+- **Agent deletion foreign key constraint** — Deleting an agent no longer fails when chat history references its characters.
+- **Mode switch caching** — Switching between Conversation and Roleplay mode now correctly invalidates the cached chat data.
+- **Update system** — The in-app update check and notification flow now works reliably.
+- `CORS_ORIGINS=*` now behaves as explicit allow-all without credentials, while explicit origin lists retain credentialed CORS support.
+- GIF search no longer falls back to a shared embedded API key when `GIPHY_API_KEY` is unset.
+- Sidebar tab text metrics were made explicit so descenders like the `y` in `Roleplay` no longer clip.
+- Default log level changed to `warn` to reduce console noise.
+- Cross-post redirect handling corrected.
+- Restored local data-path compatibility so existing installs continue to resolve storage under `packages/server/data`.
+- Update checks now resolve the newest GitHub `v*` tag even when `releases/latest` is stale.
+
+## [1.4.7]
+
+### Added
+
+- **Persona Groups** — Organize personas into named groups with full CRUD and local storage.
+- **Group Scenario Override** — Replace individual character scenarios with a single shared scenario for group chats.
+- **AI Persona Maker** — Generate complete personas from a prompt using your LLM connection via SSE streaming.
+- **Import Persona** — Import personas from PNG character cards or JSON files.
+- **Quick Connection & Persona Switchers** — Floating popover switchers anchored to the chat input.
+- **Notification Bubbles** — Floating avatar notification bubbles for unread messages in background chats.
+
+### Changed
+
+- **Personas Panel Redesign** — Search, sort, active/inactive filter, plus New and Import action buttons.
+- **Quick Switcher Vertical Alignment** — Desktop quick switchers anchor to the input box container's top border.
+- **Conversation Edit Simplification** — Removed keyboard shortcuts from message editing; explicit cancel/save buttons only.
+- **Blank Line Collapsing** — Runs of 3+ consecutive newlines collapsed to a double newline.
+- **OpenRouter Thinking/Content Block Parsing** — Correctly parses thinking and content blocks from reasoning models.
+- **Claude 4.5/4.6 Temperature-Only Sampling** — Omits `top_p` for Claude models that only support temperature.
+
+### Fixed
+
+- Fixed quick switcher flash at (0,0) on mount.
+- Fixed notification bubbles not triggering from normal generation path.
+- Fixed notification character ID parsing (JSON string now properly parsed).
+- Fixed empty conversation response guard.
+- Fixed memory recall scoping.
+- Fixed Lorebook Keeper scoping.
+- Fixed missing `persona_groups` DB migration.
+
+## [1.4.6]
+
+### Added
+
+- **Bot Browser** — Browse, search, and one-click import characters from Chub.ai directly inside the app. Includes paginated grid view, sort by downloads, stars, or trending, an NSFW filter toggle, and full character detail previews.
+- **Chat Folders** — Organize chats into named, color-coded folders with drag-and-drop reorder. Move chats between folders, collapse or expand them, and filter by mode. State is persisted server-side.
+- **Slash Commands** — Added SillyTavern-style commands with autocomplete, including `/roll`, `/sys`, `/guided`, `/continue`, `/as <character>`, `/impersonate`, `/remind <time> <message>`, `/random`, `/scene`, and `/help`.
+- **AI Lorebook Maker** — Generate structured lorebook entries from a topic prompt using your LLM connection, with SSE streaming, batch support, and attach-to-existing-lorebook support.
+- **Connection Duplicate & Test** — Clone existing connections, including encrypted API keys, and test connectivity with provider-specific checks.
+- **ComfyUI Custom Workflows** — Paste custom workflow JSON with `%prompt%`, `%negative_prompt%`, `%width%`, `%height%`, `%seed%`, and `%model%` placeholders.
+- **OpenRouter Provider Preference** — Select a preferred upstream provider when routing through OpenRouter.
+- **Expanded Image Generation** — Added Pollinations, Stability AI, Together AI, NovelAI, ComfyUI, and AUTOMATIC1111 / SD Web UI alongside OpenAI-compatible image generation.
+- **Plain Text Chat Export** — Export chat history as readable plain text alongside the existing JSONL format.
+- **Embedding Base URL** — Configure a per-connection base URL for embedding endpoints.
+
+### Changed
+
+- **Performance — Streaming Re-render Optimization** — Extracted streaming UI into isolated components so the main chat area no longer re-renders on every streamed token.
+- **Performance — Zustand Selector Batching** — Combined UI store selectors with shallow comparison and memoized style objects to reduce unnecessary re-renders.
+- **Performance — Debounced UI Persistence** — Debounced `localStorage` writes and added unload or visibility flushes to reduce churn without losing data.
+- **Chat Text Appearance** — Unified chat text color under a single setting and set the default text stroke width to `0.5px`.
+- **Folder UX** — New folders now appear at the top, render above unfiled chats, and support inline rename plus hover-delete affordances.
+- **Roleplay Input Responsiveness** — Tightened responsive spacing and flex behavior in the input bar to prevent overflow.
+- **Home Page Mobile Layout** — Reduced mobile padding, constrained content width, and improved QuickStart card responsiveness.
+- **Tracker Injection Order** — Tracker data now injects before Output Format for correct prompt ordering.
+- **Settings Panel Polish** — Renamed reset actions to "Reset to default", removed redundant labels, and consolidated reset behavior.
+
+### Fixed
+
+- **Infinite re-render loop** — Wrapped the combined Zustand selector in `useShallow()` so `memo()` can short-circuit correctly.
+- **Message background opacity** — Corrected roleplay bubble colors to match the intended Tailwind neutral palette.
+- **New folders appearing at the bottom** — Fixed both the server-side sort order assignment and the client-side render ordering.
+- **Missing DB column migrations** — Added `openrouter_provider`, `comfyui_workflow`, and `embedding_base_url` to startup column migrations.
+- **Combat encounter `parseJSON`** — Corrected escape-sequence handling and added multi-stage sanitization for AI responses.
+- **Additional fixes and polish** — Includes smaller bug fixes that shipped as part of the same release.

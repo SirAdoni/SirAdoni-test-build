@@ -1,0 +1,254 @@
+// ──────────────────────────────────────────────
+// Reusable animated modal shell
+// Uses CSS animations instead of framer-motion to
+// avoid double-animation under React.StrictMode.
+// ──────────────────────────────────────────────
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode, type Ref, type RefObject } from "react";
+import { createPortal } from "react-dom";
+import { X } from "lucide-react";
+import {
+  NEUTRAL_PANEL_HEADER,
+  NEUTRAL_PANEL_SCROLL_AREA,
+  NEUTRAL_PANEL_SHELL,
+  NEUTRAL_PANEL_TITLE,
+} from "./neutral-surface-styles";
+import { useDialogFocusScope } from "../../hooks/use-dialog-focus-scope";
+import { useBackdropDismiss } from "../../hooks/use-backdrop-dismiss";
+import { useBackDismiss } from "../../hooks/use-back-dismiss";
+import { registerModalOverlay, type ModalOverlayRegistration } from "../../lib/modal-overlay-registry";
+import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
+import { useTranslation as useUiTranslation } from "react-i18next";
+
+interface ModalProps {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  children: ReactNode;
+  /** Width class, e.g. "max-w-md", "max-w-lg" */
+  width?: string;
+  contentRef?: Ref<HTMLDivElement>;
+  initialFocusRef?: RefObject<HTMLElement | null>;
+  restoreFocusRef?: RefObject<HTMLElement | null>;
+  focusScopePortalSelector?: string;
+  chatFloatingPanel?: boolean;
+  /** Below the sm breakpoint, fill the viewport edge-to-edge like a window instead of floating as a padded bubble. */
+  mobileFullscreen?: boolean;
+  /** Fill the viewport on every breakpoint, with no outer panel padding. */
+  fullScreen?: boolean;
+  /** Optional feature-local classes applied to the full panel, including its header. */
+  panelClassName?: string;
+  /** Optional feature-local classes applied to the scrollable content area. */
+  contentClassName?: string;
+  /** Optional feature-local style variables applied to the full panel. */
+  panelStyle?: CSSProperties;
+  closeDisabled?: boolean;
+  /** Let drag hit-testing reach content behind the modal while keeping the panel interactive. */
+  dragThrough?: boolean;
+}
+
+export function Modal({
+  open,
+  onClose,
+  title,
+  children,
+  width = "max-w-md",
+  contentRef,
+  initialFocusRef,
+  restoreFocusRef,
+  focusScopePortalSelector,
+  chatFloatingPanel = false,
+  mobileFullscreen = false,
+  fullScreen = false,
+  panelClassName,
+  contentClassName,
+  panelStyle,
+  closeDisabled = false,
+  dragThrough = false,
+}: ModalProps) {
+  const { t: localizeUi } = useUiTranslation();
+  const localize = useLocalizedUiText();
+  const localizedTitle = localize(title);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  // Track mounted state separately so we can play the exit animation
+  // before actually removing the DOM nodes.
+  const [mounted, setMounted] = useState(false);
+  const [animating, setAnimating] = useState<"enter" | "exit" | null>(null);
+  const enterRafRef = useRef<number | null>(null);
+  const backdropDismiss = useBackdropDismiss(onClose, closeDisabled);
+  // Only the topmost dialog traps Tab: a confirm stacked over a settings dialog
+  // is portaled outside the parent panel, and both traps fighting over every
+  // Tab would pin focus to the confirm's first control.
+  const overlayRegistrationRef = useRef<ModalOverlayRegistration | null>(null);
+  useDialogFocusScope(
+    open && mounted,
+    panelRef,
+    initialFocusRef,
+    restoreFocusRef,
+    focusScopePortalSelector,
+    () => overlayRegistrationRef.current?.isTopmost() ?? true,
+  );
+  // Hardware / gesture back closes the topmost modal. While closing is disabled
+  // the press is absorbed rather than ignored, matching Escape: an in-flight
+  // operation must not be interrupted by backgrounding the app.
+  useBackDismiss(open, () => {
+    if (!closeDisabled) onClose();
+  });
+
+  useEffect(() => {
+    if (enterRafRef.current !== null) {
+      cancelAnimationFrame(enterRafRef.current);
+      enterRafRef.current = null;
+    }
+
+    if (open) {
+      setMounted(true);
+      // Start enter animation on next frame so the DOM is present
+      enterRafRef.current = requestAnimationFrame(() => {
+        setAnimating("enter");
+      });
+    } else if (mounted) {
+      setAnimating("exit");
+    }
+
+    return () => {
+      if (enterRafRef.current !== null) {
+        cancelAnimationFrame(enterRafRef.current);
+        enterRafRef.current = null;
+      }
+    };
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Register as an open overlay, in opening order. Two readers: screens that
+  // draw their own full-page shell learn that a dialog is stacked above them,
+  // and the Escape listener below asks whether THIS dialog is the topmost one,
+  // since every open Modal hears the same keypress and none stops propagation.
+  useEffect(() => {
+    if (!open) return;
+    const registration = registerModalOverlay();
+    overlayRegistrationRef.current = registration;
+    return () => {
+      registration.release();
+      overlayRegistrationRef.current = null;
+    };
+  }, [open]);
+
+  // Close on Escape, but only the topmost open dialog: a confirm opened over a
+  // settings dialog must not take the settings dialog down with it.
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => {
+      // Escape during IME composition cancels the composition, not the dialog.
+      if (e.isComposing) return;
+      if (e.key !== "Escape" || closeDisabled) return;
+      if (!overlayRegistrationRef.current?.isTopmost()) return;
+      onClose();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [open, onClose, closeDisabled]);
+
+  // Remove from DOM after exit animation completes
+  const handleAnimationEnd = () => {
+    if (animating === "exit") {
+      setMounted(false);
+      setAnimating(null);
+    }
+  };
+
+  // Fallback: browsers skip CSS transitions in hidden tabs, so transitionend
+  // may never fire when a modal is closed programmatically while the tab is
+  // backgrounded (e.g. a game starting auto-closes its setup). Without this
+  // the overlay stays mounted forever and blocks clicks.
+  useEffect(() => {
+    if (animating !== "exit") return;
+    const timer = setTimeout(() => {
+      setMounted(false);
+      setAnimating(null);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [animating]);
+
+  if (!mounted) return null;
+
+  const isEntering = animating === "enter";
+
+  return createPortal(
+    <div
+      ref={overlayRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={localizedTitle}
+      data-chat-floating-panel={chatFloatingPanel ? "true" : undefined}
+      data-component="Modal"
+      className={`mari-modal fixed inset-0 z-[10000] flex items-center justify-center ${dragThrough ? "pointer-events-none" : ""} ${
+        fullScreen
+          ? "p-0"
+          : mobileFullscreen
+            ? "p-0 sm:p-4"
+            : "p-3 max-md:pt-[max(0.75rem,env(safe-area-inset-top))] max-md:pb-[max(0.75rem,var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))] sm:p-4"
+      }`}
+      style={{
+        opacity: isEntering ? 1 : 0,
+        transition: "opacity 150ms ease-out",
+      }}
+      onTransitionEnd={handleAnimationEnd}
+      {...backdropDismiss}
+    >
+      {/* Backdrop */}
+      <div
+        data-backdrop-dismiss-surface="true"
+        className="mari-modal-backdrop absolute inset-0 bg-black/55 backdrop-blur-[2px]"
+        style={{
+          opacity: isEntering ? 1 : 0,
+          transition: "opacity 150ms ease-out",
+        }}
+      />
+
+      {/* Panel */}
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        className={`mari-modal-panel ${NEUTRAL_PANEL_SHELL} relative flex w-full flex-col ${dragThrough ? "pointer-events-auto" : ""} ${
+          fullScreen
+            ? "h-full max-h-none max-w-none rounded-none border-0 pt-[env(safe-area-inset-top)] pb-[var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom))]"
+            : `${width} max-h-[calc(100dvh-1.5rem)] sm:max-h-[min(90dvh,52rem)]${
+                mobileFullscreen
+                  ? " max-sm:h-full max-sm:max-h-none max-sm:max-w-none max-sm:rounded-none max-sm:border-0 max-sm:pt-[env(safe-area-inset-top)] max-sm:pb-[var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom))]"
+                  : ""
+              }`
+        } ${panelClassName ?? ""}`}
+        style={{
+          ...panelStyle,
+          opacity: isEntering ? 1 : 0,
+          // Settle at `none`: an identity transform keeps the entire image library in a composited layer.
+          transform: isEntering ? undefined : "scale(0.97) translateY(6px)",
+          transition: "opacity 150ms ease-out, transform 150ms ease-out",
+        }}
+      >
+        {/* Header */}
+        <div className={`shrink-0 flex items-center justify-between ${NEUTRAL_PANEL_HEADER}`}>
+          <h2 className={NEUTRAL_PANEL_TITLE}>{localizedTitle}</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={closeDisabled}
+            aria-label={localizeUi("ui.ui.modal.value1Value2", { value1: localize("Close"), value2: localizedTitle })}
+            className="rounded-lg p-1.5 text-[var(--marinara-chat-chrome-panel-muted)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-highlight-text)] disabled:cursor-wait disabled:opacity-40"
+          >
+            <X size="1rem" />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div
+          ref={contentRef}
+          className={`min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4 ${NEUTRAL_PANEL_SCROLL_AREA} ${contentClassName ?? ""}`}
+        >
+          {children}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}

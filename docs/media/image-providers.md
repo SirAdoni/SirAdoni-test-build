@@ -1,0 +1,219 @@
+# Image Generation Providers and Setup
+
+This guide explains how to connect an image generation service to Marinara Engine. It also covers what each of the 19 services needs. Image generation powers scene illustrations, selfies, scene backgrounds, and generated avatars, portraits, and sprites.
+
+You set up image generation as a special kind of connection. Once one image connection works, every image feature in the app can use it.
+
+## How to add an image generation connection
+
+An **API key** is a secret password from a provider that lets Marinara use your account. A **Base URL** is the web address of the service's application interface. Marinara fills in the correct Base URL for you when you pick a service.
+
+Follow these steps to add an image connection.
+
+1. Open the **Connections** panel.
+2. Click **New** to open the **Create Connection** modal.
+3. Enter a name, then pick the **Image Generation** provider.
+4. In the connection editor, choose a **Service** from the grid.
+5. Paste your **API Key** if that service needs one. Free and local services do not.
+6. Pick a **Model** from the list, or type a model ID. Some services offer **Fetch Models from API** to load the current list.
+7. Choose **Reference images per request**. **Automatic** follows the selected provider, model, and workflow; a number sets a lower ceiling.
+8. Click **Save**.
+9. Click **Test Image** to confirm it works. Marinara generates a small test image.
+
+If **Test Image** returns a picture, your connection is ready. If it fails, check the API key and Base URL.
+
+## Choosing a service
+
+The services fall into three groups. Cloud services need an API key and an account, except **ChatGPT Subscription**, which signs in through your ChatGPT account instead. Free services need no key. Local services run image software on your own computer.
+
+The table below shows each service at a glance. Details and quirks follow in the per-service sections.
+
+| Service | API key | Where it runs |
+| --- | --- | --- |
+| OpenAI (DALL-E) | Yes | Cloud |
+| ChatGPT Subscription | No, uses your ChatGPT sign-in | Cloud |
+| Stability AI | Yes | Cloud |
+| Together AI | Yes | Cloud |
+| NovelAI | Yes | Cloud |
+| OpenRouter Images | Yes | Cloud |
+| xAI / Grok Imagine | Yes | Cloud |
+| Venice.ai | Yes | Cloud |
+| Z.AI | Yes | Cloud |
+| Atlas Cloud | Yes | Cloud |
+| fal.ai | Yes | Cloud |
+| NanoGPT | Yes | Cloud |
+| Block Entropy | Yes | Cloud |
+| RunPod Serverless (ComfyUI) | Yes | Cloud |
+| Pollinations | No | Free cloud |
+| Stable Horde | Optional | Free cloud |
+| SD Web UI (AUTOMATIC1111 / Forge) | No | Local |
+| ComfyUI | No | Local |
+| Draw Things | No | Local |
+
+## OpenAI (DALL-E)
+
+Cloud service with the default Base URL `https://api.openai.com/v1`. It needs an API key from your OpenAI account. It offers DALL-E and GPT Image models. It accepts up to 16 reference images.
+
+## ChatGPT Subscription
+
+Cloud service that uses your ChatGPT subscription instead of an API key. It signs in through the same local Codex CLI login as the **OpenAI (ChatGPT)** chat provider: run `codex login` once on the computer that hosts the Marinara server, then pick this service. The **API Key** and **Base URL** fields are hidden. See [Claude, ChatGPT, and Grok Subscription Connections](../connections/subscription-clis.md) for the sign-in steps.
+
+The **Image Model** field is optional and defaults to **Automatic**, which lets Marinara pick a suitable model from your ChatGPT account. It selects the ChatGPT model that drives generation, not an image model — the picture itself is always produced by ChatGPT's built-in image tool. Use **Fetch Models from API** if you want to pin a specific one. A **GPT Image Quality** selector controls the quality level; **Low** is roughly twice as fast and is a good default for scene art.
+
+ChatGPT's image tool decides the exact canvas on its own, so Marinara steers the orientation through the prompt and then contains the complete result inside your requested canvas without cropping its edges. Marinara can attach up to 20 reference images to this connection; choose a lower limit when faster uploads or a smaller reference set matters more. Usage counts against your ChatGPT plan's limits.
+
+## Stability AI
+
+Cloud service with the default Base URL `https://api.stability.ai/v2beta`. It needs a Stability AI API key. It offers Stable Diffusion and Stable Image models.
+
+## Together AI
+
+Cloud service with the default Base URL `https://api.together.xyz/v1`. It needs a Together AI API key. It offers FLUX and other open image models.
+
+## NovelAI
+
+Cloud service with the default Base URL `https://image.novelai.net`. It needs a NovelAI API key. It focuses on anime style art. On V4, V4.5, and V5 models, Marinara sends native per-character prompts with positions for multi-character storyboards and Illustrator scenes. Some newer features, like precise reference images, only work on a V4.5 model.
+
+## OpenRouter Images
+
+Cloud service with the default Base URL `https://openrouter.ai/api/v1`. It needs an OpenRouter API key. It reaches image models through OpenRouter's chat interface, so the exact models available vary by account.
+
+## xAI / Grok Imagine
+
+Cloud service with the default Base URL `https://api.x.ai/v1`. It needs an xAI API key. It uses Grok Imagine for image generation.
+
+## Venice.ai
+
+Cloud service with the default Base URL `https://api.venice.ai/api/v1`. It needs a Venice API key. Use **Fetch Models from API** to load the image models available to your account. Marinara uses Venice's native image endpoint, disables Venice's optional safe-mode blur, and automatically maps requested dimensions to each model's pixel, aspect-ratio, or resolution-tier sizing format. Provider-side policy or model limits can still reject a request.
+
+## Z.AI
+
+Cloud service with the default Base URL `https://api.z.ai/api/paas/v4`. It needs a general Z.AI API key; GLM Coding Plan keys and the `/api/coding/paas/v4` endpoint are not valid for image generation. Use **Fetch Models from API** to choose **GLM-Image** or **CogView 4**. Marinara maps the requested aspect ratio to a size supported by the selected model, sends the request to Z.AI's native image endpoint, and downloads the temporary result URL into local storage. This first version is text-to-image only and does not send reference images.
+
+## Atlas Cloud
+
+Cloud service with the default Base URL `https://api.atlascloud.ai/api/v1`. It needs an Atlas Cloud API key. **Fetch Models** loads Atlas Cloud's current text-to-image and image-to-image catalog. If the catalog cannot be reached, Marinara shows a small starter list for Nano Banana, Gemini Flash Image, and FLUX 1.1 Pro instead, and you can always type an exact Atlas Cloud image model ID. Jobs run asynchronously, so Marinara starts the generation and polls Atlas Cloud until the image is ready. Common text-to-image controls are mapped automatically; reference images are sent for model IDs that advertise image-to-image, edit, or Kontext behavior. Because Atlas model schemas can differ, check the selected model's Atlas Cloud documentation when using another model ID.
+
+## fal.ai
+
+Cloud service with the default **Base URL** `https://fal.run`. Create an API key at [fal.ai](https://fal.ai/dashboard/keys), then select **fal.ai** in the image service grid. The starter **Model** list offers `fal-ai/flux/schnell` and `fal-ai/flux/dev`; you can type another text-to-image endpoint ID with a compatible input/output schema. **Test Connection** checks the configuration only. **Test Image** sends a real generation request and uses your fal.ai credits.
+
+Marinara sends the prompt and requested dimensions, then downloads the first returned image into its existing image workflow. Negative prompts are appended as text instructions. Use **Custom Parameters** for model-specific options such as `seed`, `num_inference_steps`, or `image_size`. This integration uses synchronous text-to-image requests; it does not send reference images or resume interrupted jobs. Check the selected model's [API reference](https://fal.ai/models/fal-ai/flux/schnell/api) for its supported inputs.
+
+## NanoGPT
+
+Cloud service with the default Base URL `https://nano-gpt.com/api/v1`. It needs a NanoGPT API key. NanoGPT is an aggregator, so use **Fetch Models from API** to load its model list.
+
+## Block Entropy
+
+Cloud service with the default Base URL `https://api.blockentropy.ai`. It needs an API key. Marinara has no dedicated handler for Block Entropy, so it sends requests in the OpenAI compatible format. Its real compatibility is not confirmed, so test it with **Test Image** before you rely on it.
+
+## RunPod Serverless (ComfyUI)
+
+Cloud service with the default Base URL `https://api.runpod.ai/v2`. It runs a ComfyUI workflow on a RunPod serverless endpoint. It needs three things: your RunPod API token as the **API Key**, a **RunPod Endpoint ID**, and a **ComfyUI Workflow** JSON. See the ComfyUI workflow section below.
+
+## Pollinations
+
+Free cloud service with the default Base URL `https://image.pollinations.ai`. It needs no account and no API key. It is the fastest way to try image generation.
+
+## Stable Horde
+
+Free cloud service with the default Base URL `https://stablehorde.net/api/v2`. It is a crowdsourced network. An API key is optional. A free key gives you higher queue priority.
+
+## SD Web UI (AUTOMATIC1111 / Forge)
+
+Local service with the default Base URL `http://localhost:7860`. It talks to a Stable Diffusion Web UI running on your own computer. You must start that software with its application interface enabled. No API key is needed.
+
+## ComfyUI
+
+Local service with the default Base URL `http://127.0.0.1:8188`. It talks to a ComfyUI server running on your own computer. It supports a custom workflow, described below. No API key is needed.
+
+## Draw Things
+
+Local service with the default Base URL `http://localhost:7860`. It talks to the Draw Things app on macOS or iOS. Marinara treats it like an AUTOMATIC1111 server. No API key is needed.
+
+## Local services on your network
+
+The word `localhost` (also called loopback) means the same computer that runs Marinara. Local image servers on that same computer work with no extra setup.
+
+If your image server runs on a different computer on your home network, you must allow local network addresses in the server configuration. See the [Server Configuration Reference](../CONFIGURATION.md) for how to do that.
+
+When a provider returns a URL instead of image bytes, Marinara downloads public CDN URLs through its normal outbound-request safety checks. A private or loopback result URL is accepted only when its scheme, hostname, and port exactly match the configured image provider. Redirects from that private origin cannot jump to another local service. If a local proxy stores results on a different private origin, configure the proxy to serve those files through the same origin as its image API.
+
+## ComfyUI workflow JSON and RunPod
+
+For **ComfyUI** and **RunPod Serverless (ComfyUI)**, a **ComfyUI Workflow** field appears. Paste a workflow JSON that you exported from ComfyUI with **Save (API Format)**, **Export (API)**, or **Export to API**, depending on the frontend version. The field is labeled Optional for **ComfyUI** and Required for **RunPod Serverless (ComfyUI)**.
+
+Marinara fills your workflow using placeholders. Put these text markers in your workflow where the value should go.
+
+- `%prompt%` and `%negative_prompt%` for the prompts.
+- `%width%`, `%height%`, and `%seed%` for the image size and seed.
+- `%model%`, `%steps%`, `%cfg%`, `%sampler%`, `%scheduler%`, and `%denoise%` for generation settings.
+- `%reference_image%` and `%reference_image_01%` through `%reference_image_04%` to inject reference image data.
+- `%reference_image_name%` and `%reference_image_name_01%` through `%reference_image_name_04%` to upload reference images and inject their filenames for a local ComfyUI LoadImage node.
+
+The `%prompt%` placeholder is the important one. The editor warns you if it is missing. For **ComfyUI**, leaving the field empty uses a built-in default workflow. For **RunPod Serverless (ComfyUI)**, the workflow is required because the endpoint has no default. Both accept up to 4 raw base64 reference images; filename-upload placeholders are available only for local ComfyUI.
+
+See [ComfyUI Workflow Setup](comfyui.md) for the complete export process, JSON examples, placeholder quoting rules, reference-image setup, character-specific workflows, LAN access, and troubleshooting.
+
+## Local Image Defaults per connection
+
+When your service is **SD Web UI (AUTOMATIC1111 / Forge)**, **ComfyUI**, **NovelAI**, or **Draw Things**, a **Local Image Defaults** panel appears on the connection. For **Draw Things**, the panel shows the same fields and defaults as **SD Web UI (AUTOMATIC1111 / Forge)**. These settings only apply when this connection generates an image. A **Reset** button restores the built-in values.
+
+Every one of these four services shows a **Seed** field. A value of -1 keeps each image random. Any other number reuses the exact same seed every time.
+
+The other fields depend on the service.
+
+| Service | Field | Default |
+| --- | --- | --- |
+| AUTOMATIC1111 / Forge | Steps | 20 |
+| AUTOMATIC1111 / Forge | CFG Scale | 7 |
+| AUTOMATIC1111 / Forge | Sampler | Euler a |
+| AUTOMATIC1111 / Forge | Img2Img Denoise | 0.6 |
+| ComfyUI | Steps | 20 |
+| ComfyUI | CFG Scale | 7 |
+| ComfyUI | Sampler | euler_ancestral |
+| ComfyUI | Scheduler | normal |
+| ComfyUI | Denoise | 1 |
+| NovelAI | Steps | 28 |
+| NovelAI | Prompt Guidance | 6 |
+| NovelAI | Sampler | k_euler_ancestral |
+| NovelAI | Noise Schedule | karras |
+
+Each service also has **Prompt Prefix** and **Negative Prefix** text fields. Text you put there is added to the front of every prompt on this connection. Both AUTOMATIC1111 / Forge and ComfyUI have a **Clip Skip** field. AUTOMATIC1111 / Forge adds a **Restore faces** toggle. ComfyUI adds a toggle named **Upload a 1x1 placeholder when no reference image is provided**. It only matters for custom workflows with reference image placeholders. NovelAI adds **Guidance Rescale** and **UC Preset** fields.
+
+## Reference image support varies by provider
+
+A **reference image** is an existing picture you send along with your prompt. It helps the new image keep a character's face or an art style. Providers differ in how many they accept.
+
+| Provider | Reference images |
+| --- | --- |
+| OpenAI (DALL-E) | Up to 16 |
+| ChatGPT Subscription | Up to 20 |
+| NovelAI | Up to 16, V4.5 model only |
+| xAI / Grok Imagine | Up to 3 |
+| Venice.ai | Not supported for text-to-image generation |
+| Z.AI | Not supported in the current text-to-image integration |
+| Atlas Cloud | First image for compatible image-to-image, edit, or Kontext model IDs |
+| NanoGPT | Up to 3 |
+| Stability AI | First image only, used as image to image |
+| OpenRouter Images | Supported, no fixed limit |
+| ComfyUI and RunPod Serverless (ComfyUI) | Up to 4, through workflow placeholders |
+| Together AI, Pollinations, Stable Horde | Not supported |
+
+NovelAI precise reference images only work on a V4.5 model, such as `nai-diffusion-4-5-full`. NovelAI has not yet released Precise Reference for V5. If references are requested on another model, Marinara renders the image without them and records a warning in the server log.
+
+## Queue image generation requests
+
+The **Queue image generation requests** toggle lives in **Settings**, then **Generations**, then **Image Generation**. It is on by default.
+
+When it is on, Marinara sends image jobs one at a time. Keep it on for services that reject two requests at once. Turn it off only if your service handles many requests at the same time and you want them faster.
+
+## Related guides
+
+- [ComfyUI Workflow Setup](comfyui.md) explains custom local and RunPod workflow JSON step by step.
+- [Illustrator Agent](illustrator-agent.md) sets up automatic scene illustrations.
+- [Image Style Profiles](style-profiles.md) shapes the look of every generated image.
+- [Scene Backgrounds and the Gallery](scene-backgrounds.md) covers generated scene backgrounds.
+- [Selfies](../conversation/selfies.md) is the Conversation mode character selfie command.
+- [Supported AI Providers](../connections/providers-reference.md) lists every chat, image, and video provider.

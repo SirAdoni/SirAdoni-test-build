@@ -1,0 +1,10 @@
+{
+  "MD013": false,
+  "MD024": { "siblings_only": true, "allow_different_nesting": true },
+  "MD029": { "style": "ordered" },
+  "MD033": false,
+  "MD031": false,
+  "MD040": false,
+  "MD041": false,
+  "MD060": false
+}

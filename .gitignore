@@ -1,0 +1,75 @@
+# Scratch / planning files
+.work/
+.tmp/
+
+# Dependencies
+node_modules/
+.pnpm-store/
+.pnpm/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Database (contains all user data: chats, characters, lorebooks, presets, connections, agents, etc.)
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# Environment (may contain encryption keys)
+.env
+.env.timeouts.json
+.env.timeouts.json.*.tmp
+.env.local
+.env.production
+
+# Project pnpm config is tracked. The Termux launcher may append local platform
+# fixes to it on Android installs.
+!.npmrc
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# User data — uploaded avatars, backgrounds, sprites, and runtime files
+data/
+# The in-app documentation category folder is not user data
+!docs/data/
+packages/server/data/
+
+# Logs
+*.log
+
+# Browser smoke-test artifacts
+playwright-report/
+test-results/
+pr-evidence/
+
+# Temporary tests
+*.test.ts
+*.spec.ts
+
+# Custom agents (personal)
+.github/agents/qa.agent.md
+
+# Build output
+release/
+release-artifacts/
+
+# Installer artifacts are published on GitHub Releases, not tracked in source
+installer/*.exe
+win/installer/*.exe
+
+# Local docker compose overrides (per-machine dev config)
+docker-compose.override.yml
+docker-compose.override.yaml
+
+# MCP
+.playwright-mcp

@@ -1,0 +1,714 @@
+// ──────────────────────────────────────────────
+// React Query: Lorebook hooks
+// ──────────────────────────────────────────────
+import { useInfiniteQuery, useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
+import { api, ApiError } from "../lib/api-client";
+import type {
+  BulkUpdateLorebookEntriesInput,
+  Lorebook,
+  LorebookBulkEditInput,
+  LorebookBulkEditResult,
+  LorebookEntry,
+  LorebookFolder,
+  SetLorebooksEnabledResult,
+} from "@marinara-engine/shared";
+import { characterKeys } from "./use-characters";
+import { achievementKeys, trackAchievementEvent } from "./use-achievements";
+import {
+  collectAllPaginatedItems,
+  flattenPaginatedItems,
+  getNextPageOffset,
+  LIBRARY_PAGE_SIZE,
+  type PaginatedList,
+} from "../lib/list-pagination";
+
+export const lorebookKeys = {
+  all: ["lorebooks"] as const,
+  list: () => [...lorebookKeys.all, "list"] as const,
+  byCategory: (cat: string) => [...lorebookKeys.all, "category", cat] as const,
+  page: (category: string, search: string, sort: string, activeKey: string, campaign = "") =>
+    [...lorebookKeys.list(), "page", category, search, sort, activeKey, campaign] as const,
+  detail: (id: string) => [...lorebookKeys.all, "detail", id] as const,
+  entries: (lorebookId: string) => [...lorebookKeys.all, "entries", lorebookId] as const,
+  entry: (entryId: string) => [...lorebookKeys.all, "entry", entryId] as const,
+  folders: (lorebookId: string) => [...lorebookKeys.all, "folders", lorebookId] as const,
+  active: (chatId?: string | null) =>
+    chatId ? ([...lorebookKeys.all, "active", chatId] as const) : ([...lorebookKeys.all, "active"] as const),
+};
+
+export type LorebookListItem = Lorebook & {
+  characterNames?: string[];
+  personaNames?: string[];
+};
+
+// ── Lorebooks ──
+
+export function useLorebooks(category?: string, options: { includeHidden?: boolean } = {}) {
+  return useQuery({
+    queryKey: category ? lorebookKeys.byCategory(category) : lorebookKeys.list(),
+    queryFn: () => api.get<Lorebook[]>(category ? `/lorebooks?category=${category}` : "/lorebooks"),
+    select: options.includeHidden
+      ? undefined
+      : (lorebooks) => lorebooks.filter((lorebook) => !lorebook.hiddenFromLibrary),
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useLorebookPages(options: {
+  category?: string;
+  search?: string;
+  sort?: string;
+  /** Campaign id, or LIBRARY_CAMPAIGN_NONE for lorebooks in no campaign. */
+  campaign?: string;
+  /** Content key of the campaign filter membership; a change refetches the filtered pages. */
+  campaignRevision?: string;
+  active?: {
+    lorebookIds: string[];
+    characterIds: string[];
+    personaId?: string | null;
+    chatId?: string | null;
+  };
+}) {
+  const category = options.category ?? "";
+  const search = (options.search ?? "").trim();
+  const sort = options.sort ?? "";
+  const activeKey = options.active
+    ? [
+        [...options.active.lorebookIds].sort().join(","),
+        [...options.active.characterIds].sort().join(","),
+        options.active.personaId ?? "",
+        options.active.chatId ?? "",
+      ].join("|")
+    : "";
+
+  const campaign = options.campaign ?? "";
+
+  return useInfiniteQuery({
+    queryKey: lorebookKeys.page(
+      category,
+      search,
+      sort,
+      activeKey,
+      campaign ? `${campaign}#${options.campaignRevision ?? ""}` : "",
+    ),
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams({
+        limit: String(LIBRARY_PAGE_SIZE),
+        offset: String(Number(pageParam) || 0),
+      });
+      if (category) params.set("category", category);
+      if (search) params.set("search", search);
+      if (sort) params.set("sort", sort);
+      if (campaign) params.set("campaign", campaign);
+      if (options.active) {
+        params.set("active", "true");
+        if (options.active.lorebookIds.length > 0)
+          params.set("activeLorebookIds", options.active.lorebookIds.join(","));
+        if (options.active.characterIds.length > 0) params.set("characterIds", options.active.characterIds.join(","));
+        if (options.active.personaId) params.set("personaId", options.active.personaId);
+        if (options.active.chatId) params.set("chatId", options.active.chatId);
+      }
+      return api.get<PaginatedList<LorebookListItem>>(`/lorebooks?${params.toString()}`);
+    },
+    getNextPageParam: getNextPageOffset,
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function flattenLorebookPages(data: { pages?: Array<PaginatedList<LorebookListItem>> } | undefined) {
+  return flattenPaginatedItems(data?.pages);
+}
+
+export function fetchAllLorebookPages(
+  options: {
+    category?: string;
+    search?: string;
+    sort?: string;
+    active?: {
+      lorebookIds: string[];
+      characterIds: string[];
+      personaId?: string | null;
+      chatId?: string | null;
+    };
+  } = {},
+) {
+  const category = options.category ?? "";
+  const search = (options.search ?? "").trim();
+  const sort = options.sort ?? "";
+
+  return collectAllPaginatedItems<LorebookListItem>((offset) => {
+    const params = new URLSearchParams({
+      limit: String(LIBRARY_PAGE_SIZE),
+      offset: String(offset),
+    });
+    if (category) params.set("category", category);
+    if (search) params.set("search", search);
+    if (sort) params.set("sort", sort);
+    if (options.active) {
+      params.set("active", "true");
+      if (options.active.lorebookIds.length > 0) params.set("activeLorebookIds", options.active.lorebookIds.join(","));
+      if (options.active.characterIds.length > 0) params.set("characterIds", options.active.characterIds.join(","));
+      if (options.active.personaId) params.set("personaId", options.active.personaId);
+      if (options.active.chatId) params.set("chatId", options.active.chatId);
+    }
+    return api.get<PaginatedList<LorebookListItem>>(`/lorebooks?${params.toString()}`);
+  });
+}
+
+export function useLorebook(id: string | null) {
+  return useQuery({
+    queryKey: lorebookKeys.detail(id ?? ""),
+    queryFn: () => api.get<Lorebook>(`/lorebooks/${id}`),
+    enabled: !!id,
+    staleTime: 5 * 60_000,
+    retry: (failureCount, error) => !(error instanceof ApiError && error.status === 404) && failureCount < 3,
+  });
+}
+
+export function useCreateLorebook() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Record<string, unknown>) => api.post<Lorebook>("/lorebooks", data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: lorebookKeys.all });
+      void trackAchievementEvent("library_changed")
+        .finally(() => qc.invalidateQueries({ queryKey: achievementKeys.all }))
+        .catch(() => undefined);
+    },
+  });
+}
+
+export function useEmbedLorebook() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ characterId, lorebookId }: { characterId: string; lorebookId: string }) =>
+      api.post<{
+        success: boolean;
+        lorebookId: string;
+        entriesEmbedded: number;
+        refreshed: boolean;
+        characterBook: unknown;
+      }>(`/characters/${characterId}/embedded-lorebook/embed`, { lorebookId }),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: lorebookKeys.all });
+      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
+      qc.invalidateQueries({ queryKey: characterKeys.detail(variables.characterId) });
+    },
+  });
+}
+
+export function useUpdateLorebook() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: { id: string } & Record<string, unknown>) =>
+      api.patch<Lorebook>(`/lorebooks/${id}`, data),
+    onSuccess: (data, variables) => {
+      // The PATCH response is the authoritative updated row. Prime the detail
+      // cache before the editor marks its form clean so it never reloads the
+      // pre-save snapshot for one frame and remounts conditional sections.
+      qc.setQueryData(lorebookKeys.detail(variables.id), data);
+      qc.invalidateQueries({ queryKey: lorebookKeys.list() });
+      qc.invalidateQueries({ queryKey: [...lorebookKeys.all, "category"] });
+      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
+    },
+  });
+}
+
+/** Enable or disable many lorebooks at once; the result names the ones that flipped (for undo). */
+export function useSetLorebooksEnabled() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { ids: string[]; enabled: boolean }) =>
+      api.post<SetLorebooksEnabledResult>("/lorebooks/bulk-enabled", input),
+    onSuccess: (result) => {
+      if (result.changedIds.length === 0) return;
+      for (const id of result.changedIds) qc.invalidateQueries({ queryKey: lorebookKeys.detail(id) });
+      qc.invalidateQueries({ queryKey: lorebookKeys.list() });
+      qc.invalidateQueries({ queryKey: [...lorebookKeys.all, "category"] });
+      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
+    },
+  });
+}
+
+export function useUploadLorebookImage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, image }: { id: string; image: string }) =>
+      api.post<Lorebook>(`/lorebooks/${id}/image`, { image }),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: lorebookKeys.all });
+      qc.invalidateQueries({ queryKey: lorebookKeys.list() });
+      qc.invalidateQueries({ queryKey: lorebookKeys.detail(variables.id) });
+      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
+    },
+  });
+}
+
+export function useDeleteLorebook() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`/lorebooks/${id}`),
+    onSuccess: (_data, id) => {
+      // Evict the deleted lorebook's detail + entries instead of just
+      // marking them stale. `useLorebook`/`useLorebookEntries` set
+      // staleTime to 5 minutes, and TanStack returns cached `data` even
+      // after a refetch errors — so without explicit removal the next
+      // "Edit Embedded Lorebook" click would render a ghost editor with
+      // the deleted lorebook's name and metadata while the entries
+      // query reports 0 entries from the server.
+      qc.removeQueries({ queryKey: lorebookKeys.detail(id) });
+      qc.removeQueries({ queryKey: lorebookKeys.entries(id) });
+      qc.invalidateQueries({ queryKey: lorebookKeys.all });
+      qc.invalidateQueries({ queryKey: ["chats"] });
+      // The server clears `character_book` and the
+      // `extensions.importMetadata.embeddedLorebook` pointer for any
+      // character this lorebook was linked to. We do not know that
+      // characterId client-side (the detail cache may already be gone
+      // by this point), so blanket-invalidate character queries —
+      // missing this lets the character editor keep rendering stale
+      // entries and a broken "Edit Embedded Lorebook" button.
+      qc.invalidateQueries({ queryKey: characterKeys.all });
+    },
+  });
+}
+
+// ── Entries ──
+
+export function useLorebookEntries(lorebookId: string | null) {
+  return useQuery({
+    queryKey: lorebookKeys.entries(lorebookId ?? ""),
+    queryFn: () => api.get<LorebookEntry[]>(`/lorebooks/${lorebookId}/entries`),
+    enabled: !!lorebookId,
+  });
+}
+
+/**
+ * Fetch entries across multiple lorebooks in parallel. Each per-lorebook query
+ * is cached independently, so repeated calls with overlapping IDs reuse cached
+ * data. Returns the flattened entry array plus loading/error state — useful
+ * for the Knowledge Router's description-coverage badge.
+ *
+ * Deduplicates IDs defensively before issuing queries — duplicates can't reach
+ * this hook through the current UI, but a duplicate would otherwise register
+ * the same query twice and inflate aggregate counts in the consumer.
+ *
+ * **`entries` is `undefined` until every query has succeeded.** That's a
+ * deliberate API choice: returning a partial array on error would silently
+ * mislead any consumer that forgot to check `isError`. The type system now
+ * forces consumers to handle the unknown case.
+ */
+export function useEntriesAcrossLorebooks(lorebookIds: string[]): {
+  entries: LorebookEntry[] | undefined;
+  isLoading: boolean;
+  isFetching: boolean;
+  isError: boolean;
+  error: unknown;
+  refetch: () => Promise<unknown>;
+} {
+  const uniqueIds = Array.from(new Set(lorebookIds));
+  const queries = useQueries({
+    queries: uniqueIds.map((id) => ({
+      queryKey: lorebookKeys.entries(id),
+      queryFn: () => api.get<LorebookEntry[]>(`/lorebooks/${id}/entries`),
+    })),
+  });
+  const isLoading = queries.some((q) => q.isLoading);
+  const isError = queries.some((q) => q.isError);
+  const error = queries.find((q) => q.isError)?.error ?? null;
+  // Empty input is trivially "complete" — return [] so consumers can treat
+  // "no selection" as a valid known state instead of an unresolved one.
+  const allSucceeded = queries.length === 0 || queries.every((q) => q.isSuccess);
+  const entries = allSucceeded ? queries.flatMap((q) => q.data ?? []) : undefined;
+  return {
+    entries,
+    isLoading,
+    isFetching: queries.some((query) => query.isFetching),
+    isError,
+    error,
+    refetch: () => Promise.all(queries.map((query) => query.refetch())),
+  };
+}
+
+export function useCreateLorebookEntry() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ lorebookId, ...data }: { lorebookId: string } & Record<string, unknown>) =>
+      api.post<LorebookEntry>(`/lorebooks/${lorebookId}/entries`, data),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.lorebookId) });
+      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
+    },
+  });
+}
+
+export function useUpdateLorebookEntry() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ lorebookId, entryId, ...data }: { lorebookId: string; entryId: string } & Record<string, unknown>) =>
+      api.patch<LorebookEntry>(`/lorebooks/${lorebookId}/entries/${entryId}`, data),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.lorebookId) });
+      qc.invalidateQueries({ queryKey: lorebookKeys.entry(variables.entryId) });
+      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
+    },
+  });
+}
+
+export function useBulkUpdateLorebookEntries() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      lorebookId,
+      entryIds,
+      changes,
+    }: {
+      lorebookId: string;
+      entryIds: string[];
+      changes: BulkUpdateLorebookEntriesInput["changes"];
+    }) => api.patch<{ updated: number }>(`/lorebooks/${lorebookId}/entries/bulk`, { entryIds, changes }),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.lorebookId) });
+      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
+    },
+  });
+}
+
+/** Bulk editor: field changes and key add/remove across the selection in one request. */
+export function useBulkEditLorebookEntries() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ lorebookId, ...edit }: { lorebookId: string } & LorebookBulkEditInput) =>
+      api.post<LorebookBulkEditResult>(`/lorebooks/${lorebookId}/entries/bulk-edit`, edit),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.lorebookId) });
+      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
+    },
+  });
+}
+
+/** Bulk editor: delete the selection in one request. */
+export function useBulkDeleteLorebookEntries() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ lorebookId, entryIds }: { lorebookId: string; entryIds: string[] }) =>
+      api.post<{ deleted: number }>(`/lorebooks/${lorebookId}/entries/bulk-delete`, { entryIds }),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.lorebookId) });
+      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
+    },
+  });
+}
+
+export function useDeleteLorebookEntry() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ lorebookId, entryId }: { lorebookId: string; entryId: string }) =>
+      api.delete(`/lorebooks/${lorebookId}/entries/${entryId}`),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.lorebookId) });
+      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
+    },
+  });
+}
+
+export function useDuplicateLorebookEntry() {
+  const qc = useQueryClient();
+  return useMutation({
+    // Clone every field through the create path. The create schema drops server-managed
+    // fields (id/createdAt/updatedAt) and the route re-derives lorebookId, so each other
+    // field — keys, filters, position/depth/order, timing, etc. — carries over verbatim.
+    mutationFn: ({ lorebookId, entry }: { lorebookId: string; entry: LorebookEntry }) => {
+      const clone: Record<string, unknown> = { ...entry, name: `${entry.name} (Copy)` };
+      delete clone.id;
+      delete clone.createdAt;
+      delete clone.updatedAt;
+      return api.post<LorebookEntry>(`/lorebooks/${lorebookId}/entries`, clone);
+    },
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.lorebookId) });
+      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
+    },
+  });
+}
+
+export function useTransferLorebookEntries() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      sourceLorebookId,
+      targetLorebookId,
+      entryIds,
+      operation,
+    }: {
+      sourceLorebookId: string;
+      targetLorebookId: string;
+      entryIds: string[];
+      operation: "copy" | "move";
+    }) =>
+      api.post<{
+        operation: "copy" | "move";
+        sourceLorebookId: string;
+        targetLorebookId: string;
+        requested: number;
+        transferred: number;
+        created: LorebookEntry[];
+      }>(`/lorebooks/${sourceLorebookId}/entries/transfer`, {
+        targetLorebookId,
+        entryIds,
+        operation,
+      }),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.sourceLorebookId) });
+      qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.targetLorebookId) });
+      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
+    },
+  });
+}
+
+export function useReorderLorebookEntries() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      lorebookId,
+      entryIds,
+      folderId,
+    }: {
+      lorebookId: string;
+      entryIds: string[];
+      /**
+       * Container scope for the reorder. `undefined` renumbers every entry
+       * (legacy behavior). `null` reorders root-level entries only.
+       * A string ID reorders the entries inside that folder only.
+       */
+      folderId?: string | null;
+    }) =>
+      api.put<LorebookEntry[]>(`/lorebooks/${lorebookId}/entries/reorder`, {
+        entryIds,
+        ...(folderId !== undefined ? { folderId } : {}),
+      }),
+    onSuccess: (entries, variables) => {
+      qc.setQueryData(lorebookKeys.entries(variables.lorebookId), entries);
+      qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.lorebookId) });
+      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
+    },
+  });
+}
+
+// ── Folders ──
+
+export function useLorebookFolders(lorebookId: string | null) {
+  return useQuery({
+    queryKey: lorebookKeys.folders(lorebookId ?? ""),
+    queryFn: () => api.get<LorebookFolder[]>(`/lorebooks/${lorebookId}/folders`),
+    enabled: !!lorebookId,
+  });
+}
+
+export function useCreateLorebookFolder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ lorebookId, ...data }: { lorebookId: string } & Record<string, unknown>) =>
+      api.post<LorebookFolder>(`/lorebooks/${lorebookId}/folders`, data),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: lorebookKeys.folders(variables.lorebookId) });
+    },
+  });
+}
+
+export function useUpdateLorebookFolder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      lorebookId,
+      folderId,
+      ...data
+    }: {
+      lorebookId: string;
+      folderId: string;
+    } & Record<string, unknown>) => api.patch<LorebookFolder>(`/lorebooks/${lorebookId}/folders/${folderId}`, data),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: lorebookKeys.folders(variables.lorebookId) });
+      // Toggling folder.enabled changes which entries activate during scan
+      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
+    },
+  });
+}
+
+export function useDeleteLorebookFolder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ lorebookId, folderId, cascade }: { lorebookId: string; folderId: string; cascade?: boolean }) =>
+      api.delete(`/lorebooks/${lorebookId}/folders/${folderId}${cascade ? "?cascade=true" : ""}`),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: lorebookKeys.folders(variables.lorebookId) });
+      // Removing a folder reparents its entries to root, so the entry list shape changes.
+      qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.lorebookId) });
+      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
+    },
+  });
+}
+
+export function useReorderLorebookFolders() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ lorebookId, folderIds }: { lorebookId: string; folderIds: string[] }) =>
+      api.put<LorebookFolder[]>(`/lorebooks/${lorebookId}/folders/reorder`, { folderIds }),
+    onSuccess: (folders, variables) => {
+      qc.setQueryData(lorebookKeys.folders(variables.lorebookId), folders);
+      qc.invalidateQueries({ queryKey: lorebookKeys.folders(variables.lorebookId) });
+    },
+  });
+}
+
+export function useCloneLorebookFolder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ lorebookId, folderId }: { lorebookId: string; folderId: string }) =>
+      api.post<LorebookFolder>(`/lorebooks/${lorebookId}/folders/${folderId}/clone`),
+    onSuccess: (_data, variables) => {
+      // A clone adds folders AND entries, so refresh both lists + the active scan.
+      qc.invalidateQueries({ queryKey: lorebookKeys.folders(variables.lorebookId) });
+      qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.lorebookId) });
+      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
+    },
+  });
+}
+
+export interface ActiveLorebookEntry {
+  id: string;
+  name: string;
+  content: string;
+  keys: string[];
+  lorebookId: string;
+  lorebookName: string;
+  activationSources: Array<
+    "current_location" | "keyword" | "semantic" | "constant" | "always_loaded" | "sticky" | "recursive"
+  >;
+  order: number;
+  constant: boolean;
+  alwaysLoaded: boolean;
+  selective: boolean;
+  matchedKeys?: string[];
+  matchType?: "keyword" | "semantic" | "constant" | "always_loaded" | "sticky";
+  semanticScore?: number;
+}
+
+export interface BudgetSkippedLorebookEntry {
+  id: string;
+  name: string;
+  lorebookId: string;
+  lorebookName: string;
+  matchedKeys: string[];
+  activationSources: Array<
+    "current_location" | "keyword" | "semantic" | "constant" | "always_loaded" | "sticky" | "recursive"
+  >;
+  matchType?: "keyword" | "semantic" | "constant" | "always_loaded" | "sticky";
+  semanticScore?: number;
+  estimatedTokens: number;
+  lorebookBudget: number;
+  lorebookUsedTokens: number;
+  chatBudget: number;
+  chatUsedTokens: number;
+  blockedBy: "lorebook" | "chat" | "both" | "location";
+}
+
+export interface ActiveLorebookScan {
+  entries: ActiveLorebookEntry[];
+  budgetSkippedEntries: BudgetSkippedLorebookEntry[];
+  totalTokens: number;
+  totalEntries: number;
+}
+
+export function useActiveLorebookEntries(chatId: string | null, enabled = false) {
+  return useQuery({
+    queryKey: lorebookKeys.active(chatId),
+    queryFn: () => api.get<ActiveLorebookScan>(`/lorebooks/scan/${chatId}`),
+    enabled: !!chatId && enabled,
+    staleTime: 30_000,
+  });
+}
+
+// ── Lorebook tools: test scan and activation statistics ──
+
+export interface LorebookTestScanResult {
+  activated: Array<{
+    entryId: string;
+    name: string;
+    matchedKeys: string[];
+    activationSources: string[];
+    triggeredBy: string[];
+    probability: number | null;
+  }>;
+  blocked: Array<{
+    entryId: string;
+    name: string;
+    matchedKeys: string[];
+    reason:
+      | "secondary_keys"
+      | "filters"
+      | "conditions"
+      | "group"
+      | "probability"
+      | "recursion_only"
+      | "folder_disabled";
+  }>;
+  recursive: boolean;
+  scannedMessages: number;
+}
+
+/** Run the server's real scanner against pasted text or a chat, scoped to one lorebook. */
+export function runLorebookTestScan(lorebookId: string, input: { text?: string; chatId?: string }) {
+  return api.post<LorebookTestScanResult>(`/lorebooks/${lorebookId}/test`, input);
+}
+
+export interface LorebookEntryActivationStat {
+  entryId: string;
+  lorebookId: string;
+  count: number;
+  lastActivatedAt: string | null;
+  lastChatId: string | null;
+  /** Chats this entry fired in, newest first (at most 20). */
+  recentChats?: LorebookEntryRecentChat[];
+}
+
+export interface LorebookEntryRecentChat {
+  chatId: string;
+  /** Generations in this chat; 0 when only known from older statistics. */
+  count: number;
+  lastActivatedAt: string | null;
+  /** Null when the chat has since been deleted. */
+  chatName: string | null;
+  chatMode: "conversation" | "roleplay" | "game" | null;
+}
+
+export interface LorebookStaleEntries {
+  days: number;
+  cutoff: string;
+  lorebookLastActivatedAt: string | null;
+  lorebookActive: boolean;
+  entries: Array<{ entryId: string; lastActivatedAt: string | null }>;
+}
+
+/** Entries that have not fired in the last `days` days while their lorebook did. */
+export function useLorebookStaleEntries(lorebookId: string | null, days: number, enabled = true) {
+  return useQuery({
+    queryKey: [...lorebookKeys.all, "stale-entries", lorebookId ?? "", days] as const,
+    queryFn: () =>
+      api.get<LorebookStaleEntries>(`/lorebooks/${lorebookId}/stale-entries?days=${encodeURIComponent(String(days))}`),
+    enabled: !!lorebookId && enabled,
+    staleTime: 60_000,
+    // Keep the current list while another window loads so the toggle and picker stay mounted.
+    placeholderData: (previousData, previousQuery) =>
+      previousQuery?.queryKey[previousQuery.queryKey.length - 2] === (lorebookId ?? "") ? previousData : undefined,
+  });
+}
+
+export function useLorebookActivationStats(lorebookId: string | null) {
+  return useQuery({
+    queryKey: [...lorebookKeys.all, "activation-stats", lorebookId ?? ""] as const,
+    queryFn: () => api.get<LorebookEntryActivationStat[]>(`/lorebooks/${lorebookId}/activation-stats`),
+    enabled: !!lorebookId,
+    staleTime: 60_000,
+  });
+}

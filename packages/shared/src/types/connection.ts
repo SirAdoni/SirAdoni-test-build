@@ -1,0 +1,173 @@
+// ──────────────────────────────────────────────
+// API Connection Types
+// ──────────────────────────────────────────────
+
+/** Supported API providers. */
+export type APIProvider =
+  | "openai"
+  | "openai_chatgpt"
+  | "anthropic"
+  | "claude_subscription"
+  | "grok_subscription"
+  | "google"
+  | "google_vertex"
+  | "mistral"
+  | "cohere"
+  | "openrouter"
+  | "nanogpt"
+  | "xai"
+  | "arli"
+  | "zai"
+  | "custom"
+  | "image_generation"
+  | "video_generation"
+  | "audio"
+  | "decision";
+
+export const DECISION_SOURCES = ["typesafe", "openrouter", "custom"] as const;
+export type DecisionSource = (typeof DECISION_SOURCES)[number];
+
+export const DECISION_SOURCE_BASE_URLS = {
+  typesafe: "https://api.typesafe.ai",
+  openrouter: "https://openrouter.ai/api",
+  custom: "",
+} as const;
+
+export function defaultDecisionStateTokens(source: string | null | undefined): number {
+  return source === "custom" ? 3500 : 30000;
+}
+
+/** Audio backends an audio connection can target (the former TTS sources). */
+export const AUDIO_GENERATION_SOURCES = ["openai", "elevenlabs", "pockettts", "xai"] as const;
+export type AudioGenerationSource = (typeof AUDIO_GENERATION_SOURCES)[number];
+
+export const IMAGE_GENERATION_QUALITIES = ["auto", "low", "medium", "high", "xhigh", "max"] as const;
+export type ImageGenerationQuality = (typeof IMAGE_GENERATION_QUALITIES)[number];
+
+/** Highest user-configurable reference-image budget for one image-generation request. */
+export const MAX_IMAGE_REFERENCES_PER_REQUEST = 20;
+
+/** An API connection configuration. */
+export interface APIConnection {
+  id: string;
+  name: string;
+  provider: APIProvider;
+  /** Base URL for the API (custom endpoints) */
+  baseUrl: string;
+  /** Model identifier (e.g. "gpt-4o", "claude-sonnet-4-20250514") */
+  model: string;
+  /** Optional custom picture shown in the Connections panel */
+  imagePath: string | null;
+  /** Maximum context window size for this model */
+  maxContext: number;
+  /** Whether this connection is the default */
+  isDefault: boolean;
+  /** Whether this language connection is the fallback for main generations */
+  fallbackForMain: boolean;
+  /** Whether this connection is in the random-selection pool */
+  useForRandom: boolean;
+  /** Whether this connection is the default for all agents */
+  defaultForAgents: boolean;
+  /** Whether this connection is the category fallback for agents, images, or videos */
+  fallbackForAgents: boolean;
+  /** Whether provider-native prompt caching is enabled */
+  enableCaching: boolean;
+  /** Anthropic and Claude Subscription: request a 1-hour prompt-cache TTL. */
+  anthropicExtendedCacheTtl: boolean;
+  /** Conversation message depth for Anthropic cache breakpoints */
+  cachingAtDepth: number;
+  /** Model to use for embedding generation (e.g. "text-embedding-3-small") */
+  embeddingModel: string | null;
+  /** Separate base URL for the embedding backend (e.g. a second llama.cpp on a different port) */
+  embeddingBaseUrl: string | null;
+  /** Optional dedicated connection, or synthetic local sidecar id, to use for embeddings */
+  embeddingConnectionId: string | null;
+  /** Preferred provider when using OpenRouter (e.g. "anthropic", "google") */
+  openrouterProvider: string | null;
+  /** Explicit image backend selection for image-generation connections (e.g. ComfyUI on a remote host). */
+  imageGenerationSource: string | null;
+  /** ComfyUI workflow JSON for image or video generation */
+  comfyuiWorkflow: string | null;
+  /** Explicitly selected image generation service ID (e.g. "comfyui", "automatic1111"). Overrides URL inference when set. */
+  imageService: string | null;
+  /** For endpoint-based image services (e.g. RunPod Serverless): the endpoint ID sent alongside the base URL. */
+  imageEndpointId: string | null;
+  /** Instructions applied by an extra default-language-model call before image generation. */
+  imagePromptInstructions: string | null;
+  /** OpenAI GPT Image quality saved for this connection. */
+  imageGenerationQuality: ImageGenerationQuality;
+  /** Maximum reference images Marinara may attach, or null for the provider-aware automatic limit. */
+  maxImageReferences: number | null;
+  /** Explicit video backend selection for video-generation connections (e.g. Gemini Omni). */
+  videoGenerationSource: string | null;
+  /** Explicitly selected video generation service ID. Overrides URL/model inference when set. */
+  videoService: string | null;
+  /** Audio backend for audio connections (e.g. "elevenlabs"). Null for non-audio providers. */
+  audioSource: AudioGenerationSource | null;
+  /** System One backend; absent on older connections. */
+  decisionSource?: DecisionSource | null;
+  credentialsFromConnectionId?: string | null;
+  maxStateTokens?: number | null;
+  /** Default voice id/name for speech synthesis on this audio connection. */
+  audioVoice: string | null;
+  /** Whether this audio connection may generate game sound effects (ElevenLabs only today). */
+  audioSoundEffects: boolean;
+  /** Whether this audio connection may generate game music (ElevenLabs only today). */
+  audioMusic: boolean;
+  /** Default generation parameters for new chats using this connection (JSON) */
+  defaultParameters: string | null;
+  /** Prompt preset to use instead of a chat's selected preset when this connection is active */
+  promptPresetId: string | null;
+  /** Hard cap on max_tokens for the API response (for providers with lower limits, e.g. DeepSeek at 8192). */
+  maxTokensOverride: number | null;
+  /** Maximum number of agent LLM jobs Marinara may run at once for this connection. */
+  maxParallelJobs: number;
+  /** Cap on outbound requests per minute to this connection (null = unlimited). */
+  maxRequestsPerMinute: number | null;
+  /** Treat this endpoint as local/custom for Professor Mari tool-protocol fallbacks. */
+  treatAsLocalEndpoint: boolean;
+  /** Folder this connection belongs to (null = root/unfiled). */
+  folderId: string | null;
+  /** Manual sort order within a folder (lower = higher). 0 = use default sort. */
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A folder for organising API connections in the Connections panel. */
+export interface ConnectionFolder {
+  id: string;
+  name: string;
+  color: string;
+  sortOrder: number;
+  collapsed: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Model information returned from a provider. */
+export interface ModelInfo {
+  id: string;
+  name: string;
+  maxContext: number;
+  provider: APIProvider;
+  capabilities: ModelCapabilities;
+}
+
+/** What a model supports. */
+export interface ModelCapabilities {
+  streaming: boolean;
+  toolUse: boolean;
+  vision: boolean;
+  reasoning: boolean;
+}
+
+/** Test result for a connection. */
+export interface ConnectionTestResult {
+  success: boolean;
+  message: string;
+  latencyMs: number;
+  modelName: string | null;
+  decisionProbability?: number;
+  errorCode?: string;
+}

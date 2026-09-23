@@ -1,0 +1,624 @@
+// ──────────────────────────────────────────────
+// Generic API client for communicating with the backend
+// ──────────────────────────────────────────────
+
+import { CSRF_HEADER, CSRF_HEADER_VALUE } from "@marinara-engine/shared";
+import { showGenerationFallbackHeader, showGenerationFallbackToast } from "./generation-fallback-notice";
+import { reportClientDiagnostic } from "./client-diagnostics";
+import { i18n } from "../localization/i18n";
+
+const BASE = "/api";
+const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+export const ADMIN_SECRET_STORAGE_KEY = "marinara_admin_secret";
+type ApiRequestInit = RequestInit & { suppressClientDiagnostics?: boolean };
+
+function getAdminSecretHeader(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    const secret = window.localStorage.getItem(ADMIN_SECRET_STORAGE_KEY)?.trim();
+    return secret ? { "X-Admin-Secret": secret } : {};
+  } catch {
+    return {};
+  }
+}
+
+export class ApiError extends Error {
+  public readonly code?: string;
+  public readonly errorId?: string;
+  public readonly requestId?: string;
+  public readonly baseMessage: string;
+
+  constructor(
+    public status: number,
+    message: string,
+    public payload?: unknown,
+  ) {
+    const reference = isRecord(payload)
+      ? {
+          code: typeof payload.code === "string" ? payload.code : undefined,
+          errorId: typeof payload.errorId === "string" ? payload.errorId : undefined,
+          requestId: typeof payload.requestId === "string" ? payload.requestId : undefined,
+        }
+      : {};
+    const baseMessage = message.trim() || `HTTP ${status}`;
+    const alreadyReferences = reference.errorId && baseMessage.includes(reference.errorId);
+    const suffix =
+      reference.errorId && !alreadyReferences
+        ? ` (${i18n.t("ui.errors.reference", { defaultValue: "Reference: {{id}}", id: reference.errorId })}${reference.code ? `, ${reference.code}` : ""})`
+        : "";
+    super(`${baseMessage}${suffix}`);
+    this.baseMessage = baseMessage;
+    this.code = reference.code;
+    this.errorId = reference.errorId;
+    this.requestId = reference.requestId;
+    this.name = "ApiError";
+  }
+}
+
+/**
+ * Thrown by `streamEvents({ disconnectOnResume })` when an SSE reader makes no
+ * progress for a grace period after the tab resumes. The socket is likely
+ * half-open, so the caller should fall back to a refetch of the server-persisted
+ * result rather than treating it as a real failure.
+ */
+export class StreamResumeDisconnectError extends Error {
+  constructor() {
+    super("Stream disconnected while the tab was in the background");
+    this.name = "StreamResumeDisconnectError";
+  }
+}
+
+/**
+ * True when a stream error is best explained by the browser tearing down a
+ * backgrounded tab's connection rather than by a real failure: the resume
+ * watchdog tripped, or the page was hidden at some point during the stream and
+ * the error is a plain transport error (Firefox's "NetworkError when
+ * attempting to fetch resource", Chrome's "Failed to fetch") rather than a
+ * caller abort or an HTTP-level ApiError. The server-side run keeps going in
+ * that case, so the caller should wait for it to settle and refetch the
+ * persisted result instead of surfacing an error.
+ */
+export function isPassiveStreamDisconnect(
+  error: unknown,
+  pageWasHiddenDuringStream: boolean,
+  signal: AbortSignal,
+): boolean {
+  if (error instanceof StreamResumeDisconnectError) return true;
+  if (!pageWasHiddenDuringStream || signal.aborted) return false;
+  if (error instanceof DOMException && error.name === "AbortError") return false;
+  if (error instanceof ApiError) return false;
+  return error instanceof Error;
+}
+
+/**
+ * Compose an AbortSignal that fires after `timeoutMs` — with a "TimeoutError"
+ * DOMException reason so callers can tell "server never answered" from a real
+ * failure — while still honouring an upstream signal (e.g. React Query's
+ * unmount cancellation). Hand-rolled because the native way to combine an
+ * upstream signal with a deadline is AbortSignal.any + AbortSignal.timeout,
+ * and AbortSignal.any has a meaningfully higher engine floor; one code path
+ * for both the composed and the standalone case also keeps the TimeoutError
+ * reason contract in a single place (#5657).
+ */
+export function requestTimeoutSignal(timeoutMs: number, upstream?: AbortSignal | null): AbortSignal {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(new DOMException(`The server did not respond within ${timeoutMs}ms`, "TimeoutError"));
+  }, timeoutMs);
+  const clear = () => clearTimeout(timer);
+  controller.signal.addEventListener("abort", clear, { once: true });
+  if (upstream) {
+    if (upstream.aborted) {
+      clear();
+      controller.abort(upstream.reason);
+    } else {
+      upstream.addEventListener("abort", () => controller.abort(upstream.reason), { once: true });
+    }
+  }
+  return controller.signal;
+}
+
+/**
+ * True when a request failed because the server never answered inside the
+ * deadline — the frozen-host state (#5657/#5658) — as opposed to a refusal,
+ * network error, or deliberate cancellation.
+ */
+export function isRequestTimeoutError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "TimeoutError";
+}
+
+export const PRIVILEGED_ACCESS_HINT =
+  "This action needs loopback access or admin access. Open the app through localhost, or set ADMIN_SECRET=<secret> in the server .env and paste the same value in Settings → Advanced → Admin Access. Marinara sends it as the X-Admin-Secret header.";
+
+/**
+ * Build a user-facing message for a privileged-gated action (theme install,
+ * Professor Mari workspace mutation, etc.). The privileged gate replies 403 with a
+ * terse server message that doesn't tell the user how to recover, so surface the
+ * admin-secret hint for 403s; otherwise pass through the server/error message.
+ */
+export function getPrivilegedActionErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof ApiError && error.status === 403) {
+    return error.message ? `${PRIVILEGED_ACCESS_HINT} (${error.message})` : PRIVILEGED_ACCESS_HINT;
+  }
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+}
+
+export type JsonRepairKind = "game_setup" | "session_conclusion" | "campaign_progression" | "lorebook_keeper";
+
+export type JsonRepairRequest = {
+  kind: JsonRepairKind;
+  title: string;
+  rawJson: string;
+  applyEndpoint: string;
+  applyBody?: Record<string, unknown>;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function findNestedApiErrorMessage(value: unknown): string {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const message = findNestedApiErrorMessage(item);
+      if (message) return message;
+    }
+  } else if (isRecord(value)) {
+    for (const nested of Object.values(value)) {
+      const message = findNestedApiErrorMessage(nested);
+      if (message) return message;
+    }
+  }
+  return "";
+}
+
+export function getApiErrorMessage(value: unknown, fallback: string): string {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const message = getApiErrorMessage(item, "");
+      if (message) return message;
+    }
+    return fallback;
+  }
+  if (isRecord(value)) {
+    for (const key of ["message", "formErrors", "fieldErrors", "issues"] as const) {
+      if (!(key in value)) continue;
+      const message = findNestedApiErrorMessage(value[key]);
+      if (message) return message;
+    }
+  }
+  return fallback;
+}
+
+/** Format the first usable Zod validation issue in an API error payload. */
+export function formatFirstApiValidationIssue(error: unknown, fallback: string): string {
+  if (error instanceof ApiError && isRecord(error.payload) && Array.isArray(error.payload.issues)) {
+    for (const issue of error.payload.issues) {
+      if (!isRecord(issue) || typeof issue.message !== "string" || !issue.message.trim()) continue;
+      const path = Array.isArray(issue.path)
+        ? issue.path.filter((segment) => typeof segment === "string" || typeof segment === "number").join(".")
+        : typeof issue.path === "string"
+          ? issue.path
+          : "";
+      return path ? `${path}: ${issue.message.trim()}` : issue.message.trim();
+    }
+  }
+  if (error instanceof Error && error.message.trim()) return error.message;
+  return fallback;
+}
+
+function getSseDataPayload(line: string): string | null {
+  const normalized = line.endsWith("\r") ? line.slice(0, -1) : line;
+  if (!normalized.startsWith("data:")) return null;
+  const data = normalized.slice(5);
+  return (data.startsWith(" ") ? data.slice(1) : data).trimEnd();
+}
+
+function readSseDataPayloads(buffer: string, final = false): { payloads: string[]; rest: string } {
+  const lines = buffer.split(/\r?\n/);
+  const rest = final ? "" : (lines.pop() ?? "");
+  const payloads = lines.map(getSseDataPayload).filter((payload): payload is string => payload !== null);
+  return { payloads, rest };
+}
+
+function parseSseJsonPayload(data: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(data);
+    return isRecord(parsed) ? parsed : null;
+  } catch (error) {
+    console.warn("[api] Skipping malformed SSE frame", { error, data: data.slice(0, 200) });
+    return null;
+  }
+}
+
+async function releaseSseReader(reader: ReadableStreamDefaultReader<Uint8Array>, completed: boolean) {
+  if (!completed) {
+    try {
+      await reader.cancel();
+    } catch {
+      /* stream may already be closed or aborted */
+    }
+  }
+  try {
+    reader.releaseLock();
+  } catch {
+    /* lock may already be released */
+  }
+}
+
+export function getJsonRepairRequest(error: unknown): JsonRepairRequest | null {
+  if (!(error instanceof ApiError) || !isRecord(error.payload)) return null;
+  const repair = error.payload.jsonRepair;
+  if (!isRecord(repair)) return null;
+
+  const kind = repair.kind;
+  const title = repair.title;
+  const rawJson = repair.rawJson;
+  const applyEndpoint = repair.applyEndpoint;
+  if (
+    (kind !== "game_setup" &&
+      kind !== "session_conclusion" &&
+      kind !== "campaign_progression" &&
+      kind !== "lorebook_keeper") ||
+    typeof title !== "string" ||
+    typeof rawJson !== "string" ||
+    typeof applyEndpoint !== "string"
+  ) {
+    return null;
+  }
+
+  return {
+    kind,
+    title,
+    rawJson,
+    applyEndpoint,
+    applyBody: isRecord(repair.applyBody) ? repair.applyBody : undefined,
+  };
+}
+
+export function isJsonRepairApiError(error: unknown): boolean {
+  return getJsonRepairRequest(error) !== null;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await apiFetch(path, init);
+  showGenerationFallbackHeader(res);
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new ApiError(res.status, getApiErrorMessage(body.error, res.statusText), body);
+  }
+
+  // 204 No Content
+  if (res.status === 204) return undefined as T;
+
+  return res.json() as Promise<T>;
+}
+
+async function apiFetch(path: string, init?: ApiRequestInit): Promise<Response> {
+  const { suppressClientDiagnostics, ...requestInit } = init ?? {};
+  const headers = new Headers(requestInit.headers);
+  for (const [name, value] of Object.entries(getAdminSecretHeader())) {
+    headers.set(name, value);
+  }
+  const method = (requestInit.method ?? "GET").toUpperCase();
+  if (UNSAFE_METHODS.has(method)) {
+    headers.set(CSRF_HEADER, CSRF_HEADER_VALUE);
+    if (init?.body instanceof FormData) {
+      // Check the same unsafe-request gate before a proxy buffers a large upload.
+      await request<void>("/csrf/upload-preflight", {
+        method: "POST",
+        signal: requestTimeoutSignal(10_000, init.signal),
+      });
+    }
+  }
+
+  // Only default string bodies to JSON; FormData/Blob/etc. need browser-managed headers.
+  if (typeof requestInit.body === "string" && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  try {
+    return await fetch(`${BASE}${path}`, {
+      ...requestInit,
+      headers,
+      cache: "no-store",
+    });
+  } catch (error) {
+    if (
+      requestInit.signal?.aborted ||
+      (error instanceof DOMException && (error.name === "AbortError" || error.name === "TimeoutError"))
+    )
+      throw error;
+    const networkError = new ApiError(
+      0,
+      i18n.t("ui.errors.networkUnavailable", "Marinara could not be reached. Check your connection and try again."),
+      {
+        code: "ME_NETWORK",
+      },
+    );
+    if (!suppressClientDiagnostics) {
+      void reportClientDiagnostic({
+        kind: "network",
+        message: error instanceof Error ? error.message : String(error),
+        path,
+      });
+    }
+    throw networkError;
+  }
+}
+
+type SaveFilePickerWindow = Window &
+  typeof globalThis & {
+    showSaveFilePicker?: (options?: {
+      suggestedName?: string;
+      types?: Array<{
+        description?: string;
+        accept: Record<string, string[]>;
+      }>;
+    }) => Promise<{
+      createWritable: () => Promise<{
+        write: (data: Blob) => Promise<void>;
+        close: () => Promise<void>;
+      }>;
+    }>;
+  };
+
+function triggerBrowserDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+function getSavePickerTypes(blob: Blob, filename: string) {
+  const extension = filename.includes(".") ? filename.slice(filename.lastIndexOf(".")).toLowerCase() : "";
+  if (!extension) return undefined;
+  const mimeType = blob.type || "application/octet-stream";
+  return [
+    {
+      description: extension ? `${extension.slice(1).toUpperCase()} file` : "Export file",
+      accept: { [mimeType]: [extension] },
+    },
+  ];
+}
+
+async function saveBlob(blob: Blob, filename: string) {
+  const pickerWindow = window as SaveFilePickerWindow;
+  if (!window.isSecureContext || typeof pickerWindow.showSaveFilePicker !== "function") {
+    triggerBrowserDownload(blob, filename);
+    return;
+  }
+
+  try {
+    const handle = await pickerWindow.showSaveFilePicker({
+      suggestedName: filename,
+      types: getSavePickerTypes(blob, filename),
+    });
+    const writable = await handle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") return;
+    triggerBrowserDownload(blob, filename);
+  }
+}
+
+async function readDownloadFilename(res: Response, fallbackFilename: string) {
+  const disposition = res.headers.get("Content-Disposition");
+  if (!disposition) return fallbackFilename;
+
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;\n]+)/i);
+  if (utf8Match?.[1]) return decodeURIComponent(utf8Match[1]);
+
+  const match = disposition.match(/filename="?([^";\n]+)"?/);
+  return match?.[1] ? decodeURIComponent(match[1]) : fallbackFilename;
+}
+
+export const api = {
+  /** Return the raw response while still applying shared auth, CSRF, and cache policy. */
+  raw: (path: string, init?: ApiRequestInit) => apiFetch(path, init),
+
+  get: <T>(path: string, init?: RequestInit) => request<T>(path, init),
+
+  post: <T>(path: string, body?: unknown, init?: RequestInit) =>
+    request<T>(path, {
+      ...init,
+      method: "POST",
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    }),
+
+  put: <T>(path: string, body?: unknown) =>
+    request<T>(path, {
+      method: "PUT",
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    }),
+
+  patch: <T>(path: string, body?: unknown, init?: RequestInit) =>
+    request<T>(path, {
+      ...init,
+      method: "PATCH",
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    }),
+
+  delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
+
+  /** Download a JSON endpoint as a file (triggers browser save-as). */
+  download: async (path: string, fallbackFilename = "export.json", init?: RequestInit) => {
+    const res = await apiFetch(path, init);
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({ error: res.statusText }));
+      throw new ApiError(res.status, getApiErrorMessage(payload?.error, "Download failed"), payload);
+    }
+    const filename = await readDownloadFilename(res, fallbackFilename);
+    const blob = await res.blob();
+    await saveBlob(blob, filename);
+  },
+
+  /** Download a POST endpoint as a file (useful for bulk exports). */
+  downloadPost: async (path: string, body: unknown, fallbackFilename = "export.bin") => {
+    const res = await apiFetch(path, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    showGenerationFallbackHeader(res);
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({ error: res.statusText }));
+      throw new ApiError(res.status, getApiErrorMessage(payload?.error, "Download failed"), payload);
+    }
+    const filename = await readDownloadFilename(res, fallbackFilename);
+    const blob = await res.blob();
+    await saveBlob(blob, filename);
+  },
+
+  /**
+   * Stream an SSE endpoint. Returns an async iterable of all typed events.
+   */
+  streamEvents: async function* (
+    path: string,
+    body?: unknown,
+    signal?: AbortSignal,
+    options?: { disconnectOnResume?: boolean; resumeDisconnectGraceMs?: number },
+  ): AsyncGenerator<{ type: string; data: unknown } & Record<string, unknown>> {
+    const res = await apiFetch(path, {
+      method: "POST",
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal,
+    });
+    showGenerationFallbackHeader(res);
+
+    if (!res.ok || !res.body) {
+      let detail = `HTTP ${res.status}`;
+      let payload: unknown;
+      try {
+        const text = await res.text();
+        try {
+          const json = JSON.parse(text) as Record<string, unknown>;
+          payload = json;
+          detail =
+            (typeof json.error === "string" && json.error) ||
+            (typeof json.message === "string" && json.message) ||
+            text.slice(0, 200);
+        } catch {
+          detail = text.slice(0, 200) || detail;
+        }
+      } catch {
+        /* couldn't read body */
+      }
+      // Carry the parsed body: pre-stream rejections (e.g. a spatial owner-turn
+      // 409) put their machine-readable `code` there, and the generate catch
+      // path forwards it into the synthesized capability event.
+      throw new ApiError(res.status, detail, payload);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let completed = false;
+
+    // A half-open socket can leave reader.read() pending forever, either after a
+    // backgrounded tab resumes or while the page remains visible. Give a healthy
+    // stream enough time to deliver content or the server's 15-second keepalive.
+    const watchPendingRead = options?.disconnectOnResume === true && typeof document !== "undefined";
+    const resumeDisconnectGraceMs = Math.max(0, options?.resumeDisconnectGraceMs ?? 20_000);
+    let readPending = false;
+    let rejectOnResume: ((error: Error) => void) | null = null;
+    let resumeDisconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    const resumeDisconnect = watchPendingRead
+      ? new Promise<never>((_, reject) => {
+          rejectOnResume = reject;
+        })
+      : null;
+    const clearResumeDisconnectTimer = () => {
+      if (resumeDisconnectTimer === null) return;
+      clearTimeout(resumeDisconnectTimer);
+      resumeDisconnectTimer = null;
+    };
+    const startResumeDisconnectTimer = () => {
+      if (!readPending || document.visibilityState !== "visible" || resumeDisconnectTimer !== null) return;
+      resumeDisconnectTimer = setTimeout(() => {
+        resumeDisconnectTimer = null;
+        rejectOnResume?.(new StreamResumeDisconnectError());
+      }, resumeDisconnectGraceMs);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        clearResumeDisconnectTimer();
+      } else {
+        startResumeDisconnectTimer();
+      }
+    };
+    if (watchPendingRead) document.addEventListener("visibilitychange", onVisibility);
+
+    try {
+      while (true) {
+        const read = reader.read();
+        readPending = true;
+        if (watchPendingRead) startResumeDisconnectTimer();
+        let result: ReadableStreamReadResult<Uint8Array>;
+        try {
+          result = resumeDisconnect ? await Promise.race([read, resumeDisconnect]) : await read;
+        } finally {
+          readPending = false;
+          clearResumeDisconnectTimer();
+        }
+        const { done, value } = result;
+        if (done) {
+          completed = true;
+          buffer += decoder.decode();
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const parsedBuffer = readSseDataPayloads(buffer);
+        buffer = parsedBuffer.rest;
+
+        for (const data of parsedBuffer.payloads) {
+          if (data === "[DONE]") return;
+          const parsed = parseSseJsonPayload(data);
+          if (!parsed || typeof parsed.type !== "string") continue;
+          if (parsed.type === "fallback_used") showGenerationFallbackToast(parsed.data);
+          yield parsed as { type: string; data: unknown } & Record<string, unknown>;
+          if (parsed.type === "error") return;
+        }
+      }
+
+      for (const data of readSseDataPayloads(buffer, true).payloads) {
+        if (data === "[DONE]") return;
+        const parsed = parseSseJsonPayload(data);
+        if (!parsed || typeof parsed.type !== "string") continue;
+        if (parsed.type === "fallback_used") showGenerationFallbackToast(parsed.data);
+        yield parsed as { type: string; data: unknown } & Record<string, unknown>;
+        if (parsed.type === "error") return;
+      }
+    } finally {
+      if (watchPendingRead) document.removeEventListener("visibilitychange", onVisibility);
+      clearResumeDisconnectTimer();
+      await releaseSseReader(reader, completed);
+    }
+  },
+
+  /** Upload a file via multipart/form-data */
+  upload: async <T>(path: string, formData: FormData): Promise<T> => {
+    const res = await apiFetch(path, {
+      method: "POST",
+      body: formData,
+    });
+    showGenerationFallbackHeader(res);
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }));
+      throw new ApiError(res.status, getApiErrorMessage(body.error, res.statusText), body);
+    }
+
+    return res.json() as Promise<T>;
+  },
+};

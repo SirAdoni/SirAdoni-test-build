@@ -1,0 +1,476 @@
+// ──────────────────────────────────────────────
+// Character Regex Scripts — scoped-regex manager for the Advanced tab.
+// Lists, creates, edits, deletes, imports and exports the regex scripts that
+// target THIS character. These scripts are intentionally kept off the global
+// Presets → Regexes list; they apply only when a chat's "Scoped Regex Scripts"
+// mode includes this character.
+// ──────────────────────────────────────────────
+import { useCallback, useMemo, useState, type ChangeEvent } from "react";
+import { toast } from "sonner";
+import { Download, Pencil, Plus, Regex, Trash2, Upload } from "lucide-react";
+import {
+  useRegexScripts,
+  useImportRegexScript,
+  useDeleteRegexScript,
+  useUpdateRegexScript,
+  type RegexScriptRow,
+} from "../../hooks/use-regex-scripts";
+import { useUIStore } from "../../stores/ui.store";
+import { hasEditorLeaveHandler } from "../../lib/editor-leave";
+import { showConfirmDialog } from "../../lib/app-dialogs";
+import { downloadJsonFile } from "../../lib/download-json";
+import { getFolderImportEntries, isPatternSafe } from "@marinara-engine/shared";
+import { ApiError } from "../../lib/api-client";
+import { cn } from "../../lib/utils";
+import { SettingsSwitch } from "../panels/settings/SettingControls";
+import { useTranslation as useUiTranslation } from "react-i18next";
+
+// ── IO helpers (mirror the regex export/import format used by the Presets panel) ──
+function parseBooleanValue(value: unknown, fallback = true) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") return value === "true" || value === "1";
+  return fallback;
+}
+
+function parseStringArray(value: unknown): string[] {
+  const parsed = (() => {
+    if (Array.isArray(value)) return value;
+    if (typeof value !== "string") return [];
+    try {
+      const json = JSON.parse(value);
+      return Array.isArray(json) ? json : [];
+    } catch {
+      return [];
+    }
+  })();
+  return parsed.filter((item): item is string => typeof item === "string");
+}
+
+function parseNullableNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+type RegexApplyMode = "prompt" | "display" | "both";
+
+function isRegexApplyMode(value: unknown): value is RegexApplyMode {
+  return value === "prompt" || value === "display" || value === "both";
+}
+
+function looksLikeSillyTavernRegex(entry: Record<string, unknown>): boolean {
+  return (
+    typeof entry.scriptName === "string" ||
+    (Array.isArray(entry.placement) && entry.placement.some((placement) => typeof placement === "number")) ||
+    "markdownOnly" in entry ||
+    "markdown_only" in entry ||
+    "onlyFormatDisplay" in entry
+  );
+}
+
+function readRegexApplyMode(entry: Record<string, unknown>): RegexApplyMode {
+  if (isRegexApplyMode(entry.applyMode)) return entry.applyMode;
+  const promptOnly =
+    parseBooleanValue(entry.promptOnly, false) ||
+    parseBooleanValue(entry.prompt_only, false) ||
+    parseBooleanValue(entry.onlyFormatPrompt, false);
+  const markdownOnly =
+    parseBooleanValue(entry.markdownOnly, false) ||
+    parseBooleanValue(entry.markdown_only, false) ||
+    parseBooleanValue(entry.onlyFormatDisplay, false);
+  if (promptOnly && !markdownOnly) return "prompt";
+  if (markdownOnly && !promptOnly) return "display";
+  if (looksLikeSillyTavernRegex(entry)) return "both";
+  return promptOnly ? "prompt" : "display";
+}
+
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+// Scoped exports omit targetCharacterIds — the importer re-scopes to the target character.
+function serializeRegexScript(script: RegexScriptRow) {
+  return {
+    name: script.name,
+    enabled: parseBooleanValue(script.enabled),
+    findRegex: script.findRegex,
+    replaceString: script.replaceString,
+    trimStrings: parseStringArray(script.trimStrings),
+    placement: parseStringArray(script.placement),
+    flags: script.flags,
+    promptOnly: parseBooleanValue(script.promptOnly, false),
+    applyMode: isRegexApplyMode(script.applyMode)
+      ? script.applyMode
+      : readRegexApplyMode(script as unknown as Record<string, unknown>),
+    targetPromptPresetIds: parseStringArray(script.targetPromptPresetIds),
+    order: script.order,
+    minDepth: script.minDepth,
+    maxDepth: script.maxDepth,
+  };
+}
+
+function describeImportError(error: unknown): string {
+  if (error instanceof ApiError && isJsonRecord(error.payload)) {
+    const details = error.payload.details ?? error.payload.issues;
+    if (Array.isArray(details)) {
+      const messages = details
+        .map((issue) => {
+          if (!isJsonRecord(issue) || typeof issue.message !== "string") return null;
+          const path = Array.isArray(issue.path) ? issue.path.join(".") : "";
+          return path ? `${path}: ${issue.message}` : issue.message;
+        })
+        .filter((message): message is string => !!message);
+      if (messages.length > 0) return messages[0]!;
+    }
+  }
+  if (error instanceof Error && error.message) return error.message;
+  return "Failed to import";
+}
+
+function getNextRegexOrderBase(regexScripts: RegexScriptRow[] | undefined) {
+  return (regexScripts ?? []).reduce((maxOrder, script) => Math.max(maxOrder, script.order), -1) + 1;
+}
+
+function getUnsupportedStRegexPlacements(entry: unknown): number[] {
+  if (!isJsonRecord(entry) || !Array.isArray(entry.placement)) return [];
+  return entry.placement.filter(
+    (placement): placement is number =>
+      typeof placement === "number" && placement !== 0 && placement !== 1 && placement !== 2,
+  );
+}
+
+function normalizeRegexImportEntry(entry: unknown, fallbackOrder: number) {
+  if (!isJsonRecord(entry)) return null;
+  const name =
+    typeof entry.name === "string" ? entry.name : typeof entry.scriptName === "string" ? entry.scriptName : "";
+  let findRegex = typeof entry.findRegex === "string" ? entry.findRegex : "";
+  let flags = typeof entry.flags === "string" ? entry.flags : "gi";
+  const delimited = findRegex.match(/^\/(.+)\/([dgimsuy]*)$/s);
+  if (delimited) {
+    findRegex = delimited[1] ?? "";
+    flags = delimited[2] || "g";
+  }
+  if (!name || !findRegex) return null;
+
+  const stPlacementMap: Record<number, string> = { 0: "ai_output", 1: "user_input", 2: "ai_output" };
+  const rawPlacement = Array.isArray(entry.placement) ? entry.placement : [];
+  const mappedPlacement = rawPlacement
+    .map((placementValue) => (typeof placementValue === "number" ? stPlacementMap[placementValue] : placementValue))
+    .filter(
+      (placementValue): placementValue is string => placementValue === "ai_output" || placementValue === "user_input",
+    );
+
+  return {
+    name,
+    enabled: parseBooleanValue(entry.enabled, entry.disabled === undefined ? true : !parseBooleanValue(entry.disabled)),
+    findRegex,
+    replaceString: typeof entry.replaceString === "string" ? entry.replaceString : "",
+    trimStrings: parseStringArray(entry.trimStrings),
+    placement: mappedPlacement.length > 0 ? mappedPlacement : ["ai_output"],
+    flags,
+    promptOnly: readRegexApplyMode(entry) === "prompt",
+    applyMode: readRegexApplyMode(entry),
+    targetPromptPresetIds: parseStringArray(entry.targetPromptPresetIds),
+    order: typeof entry.order === "number" ? fallbackOrder + entry.order : fallbackOrder,
+    minDepth: parseNullableNumber(entry.minDepth),
+    maxDepth: parseNullableNumber(entry.maxDepth),
+  };
+}
+
+export function CharacterRegexSection({
+  characterId,
+  characterName,
+}: {
+  characterId: string | null;
+  characterName?: string;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  const { data: regexScripts } = useRegexScripts();
+  const importRegex = useImportRegexScript();
+  const updateRegex = useUpdateRegexScript();
+  const deleteRegex = useDeleteRegexScript();
+  const openRegexDetail = useUIStore((s) => s.openRegexDetail);
+  const editorDirty = useUIStore((s) => s.editorDirty);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importWarning, setImportWarning] = useState<string | null>(null);
+  const [importSuccess, setImportSuccess] = useState<string | null>(null);
+
+  const scopedScripts = useMemo(() => {
+    if (!characterId) return [];
+    return ((regexScripts ?? []) as RegexScriptRow[])
+      .filter((script) => parseStringArray(script.targetCharacterIds).includes(characterId))
+      .sort((a, b) => a.order - b.order);
+  }, [regexScripts, characterId]);
+
+  // Opening the full regex editor leaves (and unmounts) the character editor.
+  // Warn first if the character has unsaved changes so they aren't lost silently.
+  const openEditorGuarded = useCallback(
+    async (id: string, options?: { defaultCharacterIds?: string[] }) => {
+      if (editorDirty && !hasEditorLeaveHandler(useUIStore.getState())) {
+        const proceed = await showConfirmDialog({
+          title: localizeUi("ui.characters.characterregexsection.unsavedChanges"),
+          message: localizeUi(
+            "ui.characters.characterregexsection.thisCharacterHasUnsavedChangesOpeningTheRegexEditor",
+          ),
+          confirmLabel: localizeUi("ui.characters.characterregexsection.discardContinue"),
+          tone: "destructive",
+        });
+        if (!proceed) return;
+      }
+      openRegexDetail(id, {
+        ...options,
+        ...(characterId ? { returnTo: { characterId, tab: "advanced" } } : {}),
+      });
+    },
+    [editorDirty, openRegexDetail, characterId, localizeUi],
+  );
+
+  const handleCreate = useCallback(() => {
+    if (!characterId) return;
+    void openEditorGuarded("__new__", { defaultCharacterIds: [characterId] });
+  }, [characterId, openEditorGuarded]);
+
+  const handleExport = useCallback(() => {
+    if (scopedScripts.length === 0) {
+      toast.error(localizeUi("ui.characters.characterregexsection.noRegexesToExport"));
+      return;
+    }
+    const safeName =
+      (characterName ?? "character")
+        .trim()
+        .replace(/[^a-z0-9_-]+/gi, "-")
+        .toLowerCase() || "character";
+    downloadJsonFile(
+      {
+        kind: "marinara.regex-scripts",
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        regexScripts: scopedScripts.map(serializeRegexScript),
+      },
+      `${safeName}-regexes.json`,
+    );
+    toast.success(
+      localizeUi("ui.characters.characterregexsection.exportedValue1RegexValue2", {
+        value1: scopedScripts.length,
+        value2: scopedScripts.length === 1 ? "" : localizeUi("ui.lorebooks.lorebookeditor.es"),
+      }),
+    );
+  }, [scopedScripts, characterName, localizeUi]);
+
+  const handleImport = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      setImportError(null);
+      setImportWarning(null);
+      setImportSuccess(null);
+      const file = event.target.files?.[0];
+      if (!file || !characterId) return;
+
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        const entries = getFolderImportEntries(parsed, ["regexScripts", "regexes", "scripts"]);
+        if (entries.length === 0) throw new Error("No regex scripts found in file");
+
+        let imported = 0;
+        const failed: string[] = [];
+        const warnings: string[] = [];
+        const orderBase = getNextRegexOrderBase((regexScripts ?? []) as RegexScriptRow[]);
+        for (const [index, entry] of entries.entries()) {
+          const unsupportedPlacements = getUnsupportedStRegexPlacements(entry);
+          const normalized = normalizeRegexImportEntry(entry, orderBase + index);
+          if (!normalized) {
+            failed.push(`Entry ${index + 1}: missing name or find pattern.`);
+            continue;
+          }
+          try {
+            // Force-scope every imported script to this character.
+            await importRegex.mutateAsync({ ...normalized, targetCharacterIds: [characterId] });
+            imported++;
+            if (!isPatternSafe(normalized.findRegex.replace(/\{\{[^}]*\}\}/g, "x"))) {
+              warnings.push(
+                localizeUi("ui.regex.importUnsafePatternWarning", {
+                  value1: index + 1,
+                  value2: normalized.name,
+                }),
+              );
+            }
+            if (unsupportedPlacements.length > 0) {
+              warnings.push(
+                localizeUi("ui.panels.presetspanel.ignoredUnsupportedRegexPlacements", {
+                  value1: index + 1,
+                  value2: unsupportedPlacements.join(", "),
+                }),
+              );
+            }
+          } catch (error) {
+            failed.push(`Entry ${index + 1} (${normalized.name}): ${describeImportError(error)}`);
+          }
+        }
+
+        if (imported > 0) {
+          setImportSuccess(`Imported ${imported} regex script${imported === 1 ? "" : "s"}.`);
+        }
+        if (failed.length > 0) {
+          setImportError(`Skipped ${failed.length} regex script${failed.length === 1 ? "" : "s"}. ${failed[0]}`);
+        }
+        if (warnings.length > 0) {
+          setImportWarning(warnings.join(" "));
+        }
+        if (imported === 0 && failed.length === 0) {
+          setImportError("No valid regex scripts found in file.");
+        }
+      } catch (error) {
+        setImportError(error instanceof Error ? error.message : "Failed to import regex scripts");
+      }
+
+      event.target.value = "";
+    },
+    [characterId, importRegex, regexScripts, localizeUi],
+  );
+
+  const handleDelete = useCallback(
+    async (script: RegexScriptRow) => {
+      if (
+        await showConfirmDialog({
+          title: localizeUi("ui.characters.characterregexsection.deleteRegex_80a90f1"),
+          message: localizeUi("ui.characters.characterregexsection.deleteValue1", { value1: script.name }),
+          confirmLabel: localizeUi("lorebook.editor.batch.delete"),
+          tone: "destructive",
+        })
+      ) {
+        deleteRegex.mutate(script.id);
+      }
+    },
+    [deleteRegex, localizeUi],
+  );
+
+  return (
+    <div className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
+      <div className="flex items-center justify-between gap-2">
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold">
+          <Regex size="0.875rem" className="mari-chrome-accent-icon mari-accent-animated" />
+          {localizeUi("ui.characters.characterregexsection.regexScripts")}
+        </span>
+        {characterId && (
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={handleCreate}
+              className="mari-chrome-accent-text-muted mari-accent-animated rounded-lg p-1.5 transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]"
+              title={localizeUi("ui.characters.characterregexsection.createRegex")}
+            >
+              <Plus size="0.8125rem" />
+            </button>
+            <label
+              className="mari-chrome-accent-text-muted mari-accent-animated inline-flex cursor-pointer items-center justify-center rounded-lg p-1.5 transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]"
+              title={localizeUi("ui.characters.characterregexsection.importRegexesFromJson")}
+            >
+              <input type="file" accept="application/json" className="hidden" onChange={handleImport} />
+              <Upload size="0.8125rem" />
+            </label>
+            <button
+              type="button"
+              onClick={handleExport}
+              disabled={scopedScripts.length === 0}
+              className="mari-chrome-accent-text-muted mari-accent-animated rounded-lg p-1.5 transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] disabled:cursor-not-allowed disabled:opacity-35"
+              title={localizeUi("ui.characters.characterregexsection.exportRegexesToJson")}
+            >
+              <Download size="0.8125rem" />
+            </button>
+          </div>
+        )}
+      </div>
+
+      <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+        {localizeUi("ui.characters.characterregexsection.findReplacePatternsScopedToThisCharacterTheyStay")}
+      </p>
+
+      {!characterId ? (
+        <p className="py-1 text-[0.6875rem] text-[var(--muted-foreground)]">
+          {localizeUi("ui.characters.characterregexsection.saveThisCharacterFirstToAddScopedRegexScripts")}
+        </p>
+      ) : (
+        <>
+          {importError && <div className="text-xs text-red-500">{importError}</div>}
+          {importWarning && <div className="text-xs text-amber-500">{importWarning}</div>}
+          {importSuccess && <div className="text-xs text-green-500">{importSuccess}</div>}
+          {scopedScripts.length === 0 ? (
+            <p className="py-1 text-[0.6875rem] text-[var(--muted-foreground)]">
+              {localizeUi("ui.characters.characterregexsection.noRegexScriptsForThisCharacterYet")}
+            </p>
+          ) : (
+            <div className="space-y-1">
+              {scopedScripts.map((script) => {
+                const placements = parseStringArray(script.placement);
+                const enabled = script.enabled === "true";
+                return (
+                  <div
+                    key={script.id}
+                    className={cn(
+                      "flex items-start gap-2.5 rounded-xl p-2 transition-colors hover:bg-[var(--secondary)]",
+                      !enabled && "opacity-50",
+                    )}
+                  >
+                    <Regex size="0.875rem" className="mari-chrome-accent-icon mari-accent-animated mt-0.5 shrink-0" />
+                    <button
+                      type="button"
+                      className="min-w-0 flex-1 text-left"
+                      onClick={() => void openEditorGuarded(script.id)}
+                    >
+                      <div className="text-xs font-medium">{script.name}</div>
+                      <div className="mt-0.5 flex items-center gap-1">
+                        {placements.map((placement) => (
+                          <span
+                            key={placement}
+                            className="rounded bg-[var(--secondary)] px-1 py-0.5 text-[0.5rem] text-[var(--muted-foreground)]"
+                          >
+                            {placement === "ai_output"
+                              ? localizeUi("ui.characters.characterregexsection.ai")
+                              : localizeUi("ui.characters.advancedtab.user")}
+                          </span>
+                        ))}
+                        <span className="max-w-[6.25rem] truncate font-mono text-[0.5625rem] text-[var(--muted-foreground)]">
+                          /{script.findRegex}/{script.flags}
+                        </span>
+                      </div>
+                    </button>
+                    <SettingsSwitch
+                      ariaLabel={enabled ? "Disable regex" : "Enable regex"}
+                      title={
+                        enabled
+                          ? localizeUi("ui.characters.characterregexsection.disableRegex")
+                          : localizeUi("ui.characters.characterregexsection.enableRegex")
+                      }
+                      checked={enabled}
+                      onChange={(checked) => updateRegex.mutate({ id: script.id, enabled: checked })}
+                      className="mt-0.5 shrink-0 p-0 hover:bg-transparent"
+                    />
+                    <button
+                      type="button"
+                      className="mari-chrome-accent-text-muted mari-accent-animated mt-1.5 shrink-0 transition-colors hover:text-[var(--marinara-chat-chrome-button-text-hover)]"
+                      title={localizeUi("ui.characters.characterregexsection.editRegex")}
+                      onClick={() => void openEditorGuarded(script.id)}
+                    >
+                      <Pencil size="0.8125rem" />
+                    </button>
+                    <button
+                      type="button"
+                      className="mt-1.5 shrink-0 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+                      title={localizeUi("ui.characters.characterregexsection.deleteRegex")}
+                      onClick={() => handleDelete(script)}
+                    >
+                      <Trash2 size="0.8125rem" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}

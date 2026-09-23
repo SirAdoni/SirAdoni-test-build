@@ -1,0 +1,399 @@
+// ──────────────────────────────────────────────
+// Hook: Background Autonomous Polling
+// ──────────────────────────────────────────────
+// Polls for autonomous messages on inactive conversation chats.
+// Lives at the AppShell level so it persists across chat switches.
+// The active chat's autonomous messaging is handled by ConversationView.
+
+import { useEffect, useRef } from "react";
+import { normalizeAvatarCrop, type AvatarCrop, type Chat, type Message } from "@marinara-engine/shared";
+import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { api, ApiError } from "../lib/api-client";
+import { shouldSuppressAutonomousMessages, toAutonomousPresenceStatus } from "../lib/user-status";
+import { useChatStore } from "../stores/chat.store";
+import { useUIStore } from "../stores/ui.store";
+import { showLocalMessageNotification, showNativeMessageNotification } from "../lib/local-notifications";
+import { playConfiguredNotificationPing } from "../lib/notification-sound";
+import { captureChatMetadataVersion, chatKeys, guardServerChatSnapshot } from "./use-chats";
+import { characterKeys } from "./use-characters";
+import { upsertPersistedMessages } from "./use-generate";
+
+interface AutonomousCheckResult {
+  shouldTrigger: boolean;
+  characterIds: string[];
+  reason: string;
+  inactivityMs: number;
+  generationStartedAt?: number;
+  autonomousIntentKey?: string;
+}
+
+interface BusyDelayResult {
+  delayMs: number;
+  status: string;
+  activity: string;
+}
+
+interface RawChat {
+  id: string;
+  name: string;
+  mode?: string;
+  metadata?: string | Record<string, unknown>;
+}
+
+interface RawCharacter {
+  id: string;
+  data?: string | { name?: string };
+  avatarPath?: string | null;
+}
+
+/**
+ * Parse chat metadata safely from either a JSON string or an object.
+ */
+function parseMeta(chat: RawChat): Record<string, unknown> {
+  const raw = chat.metadata;
+  if (!raw) return {};
+  return typeof raw === "string" ? JSON.parse(raw) : raw;
+}
+
+/**
+ * Fetch the ids of chats eligible for background autonomous messaging.
+ *
+ * Prefers the lightweight server-filtered endpoint (#4704). Falls back to the
+ * legacy full-list fetch with local filtering when the endpoint is missing or
+ * returns an unexpected shape (an older server routes the path to GET /:id),
+ * so a new client against an old server keeps working instead of going
+ * silently dead. A definitive 404 latches the fallback for the session so we
+ * don't pay a guaranteed-404 round-trip on every tick; transient errors keep
+ * retrying, and a page reload after a server upgrade resets the latch.
+ */
+let candidatesEndpointUnavailable = false;
+
+async function fetchAutonomousCandidates(): Promise<Array<{ id: string }>> {
+  if (!candidatesEndpointUnavailable) {
+    try {
+      const candidates = await api.get<Array<{ id: string }>>("/chats/autonomous-candidates");
+      if (Array.isArray(candidates) && candidates.every((entry) => entry && typeof entry.id === "string")) {
+        return candidates;
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        candidatesEndpointUnavailable = true;
+        console.debug(
+          "[background-autonomous] Server predates /chats/autonomous-candidates; using legacy chat-list polling",
+        );
+      }
+      // Fall through to the legacy path either way.
+    }
+  }
+  const allChats = await api.get<RawChat[]>("/chats");
+  return allChats.filter((chat) => {
+    if (chat.mode !== "conversation") return false;
+    try {
+      const meta = parseMeta(chat);
+      if (meta.internalAssistant === "professor-mari") return false;
+      return !!meta.autonomousMessages;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * Background polling for autonomous messages on inactive conversation chats.
+ * Fetches the chat list on each tick so the effect doesn't depend on
+ * external React state (which would reset the timer on every re-render).
+ */
+export function useBackgroundAutonomousPolling() {
+  const qc = useQueryClient();
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const busyDelayTimers = useRef<Map<ReturnType<typeof setTimeout>, { chatId: string; startedAt?: number }>>(new Map());
+  const generatingForRef = useRef<Set<string>>(new Set());
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const delayTimers = busyDelayTimers.current;
+
+    const poll = async () => {
+      if (!mountedRef.current) return;
+
+      // Skip API calls while tab is hidden to prevent a burst of requests on return.
+      // Server-side inactivity tracking is unaffected; the next visible poll picks up correctly.
+      if (document.hidden) {
+        schedulePoll();
+        return;
+      }
+
+      const activeChatId = useChatStore.getState().activeChatId;
+
+      // Fetch only the autonomous-candidate chat ids (server-filtered, #4704) —
+      // the previous full /chats fetch materialized and serialized every chat
+      // (plus ran the DM-cleanup scans) every 30 seconds. Fetching directly
+      // rather than via useChats() also keeps the effect free of data deps
+      // that would restart the timer.
+      let candidateChats: Array<{ id: string }>;
+      try {
+        candidateChats = await fetchAutonomousCandidates();
+      } catch {
+        schedulePoll();
+        return;
+      }
+
+      // Client-side exclusions the server can't know: the open chat and
+      // chats we're already generating for.
+      const backgroundChats = candidateChats.filter((chat) => {
+        if (chat.id === activeChatId) return false;
+        if (generatingForRef.current.has(chat.id)) return false;
+        return true;
+      });
+
+      const userStatus = useUIStore.getState().userStatus;
+      const autonomousPresenceStatus = toAutonomousPresenceStatus(userStatus);
+
+      // Don't trigger autonomous messages when user is DND
+      if (shouldSuppressAutonomousMessages(userStatus) || backgroundChats.length === 0) {
+        if (shouldSuppressAutonomousMessages(userStatus) && backgroundChats.length > 0) {
+          await Promise.allSettled(
+            backgroundChats.map((chat) =>
+              api
+                .post("/conversation/activity/presence", { chatId: chat.id, userStatus: autonomousPresenceStatus })
+                .catch(() => {}),
+            ),
+          );
+        }
+        schedulePoll();
+        return;
+      }
+
+      // Check each background chat (sequentially to avoid hammering the server)
+      for (const chat of backgroundChats) {
+        // Don't proceed if this chat already has an in-flight generation
+        if (useChatStore.getState().abortControllers.has(chat.id)) continue;
+
+        try {
+          const result = await api.post<AutonomousCheckResult>("/conversation/autonomous/check", {
+            chatId: chat.id,
+            userStatus: autonomousPresenceStatus,
+          });
+
+          if (result.shouldTrigger && result.characterIds.length > 0) {
+            const characterId = result.characterIds[0]!;
+            const generationStartedAt = result.generationStartedAt;
+
+            // Check busy delay
+            const delay = await api.post<BusyDelayResult>("/conversation/busy-delay", { chatId: chat.id, characterId });
+
+            // Generate in background (after optional delay)
+            generatingForRef.current.add(chat.id);
+            const doGenerate = async () => {
+              let receivedTokens = false;
+              const savedMessages = new Map<string, Message>();
+              let shouldClearAutonomousFlag = true;
+              try {
+                const currentUserStatus = useUIStore.getState().userStatus;
+                if (shouldSuppressAutonomousMessages(currentUserStatus)) {
+                  await api
+                    .post("/conversation/activity/presence", {
+                      chatId: chat.id,
+                      userStatus: toAutonomousPresenceStatus(currentUserStatus),
+                    })
+                    .catch(() => {});
+                  return;
+                }
+
+                // Re-check guard — a generation may have started for this chat
+                // during the busy delay.
+                if (useChatStore.getState().abortControllers.has(chat.id)) {
+                  shouldClearAutonomousFlag = false;
+                  generatingForRef.current.delete(chat.id);
+                  await api
+                    .post("/conversation/autonomous/clear-in-progress", {
+                      chatId: chat.id,
+                      startedAt: generationStartedAt,
+                    })
+                    .catch(() => {});
+                  return;
+                }
+
+                const abortController = new AbortController();
+                useChatStore.getState().setAbortController(chat.id, abortController);
+                // Use streamEvents to drain the SSE — tokens aren't needed for background chats
+                try {
+                  for await (const event of api.streamEvents(
+                    "/generate",
+                    {
+                      chatId: chat.id,
+                      connectionId: null,
+                      forCharacterId: characterId,
+                      autonomous: true,
+                      autonomousIntentKey: result.autonomousIntentKey,
+                      skipPresenceDelay: true,
+                      streaming: useUIStore.getState().enableStreaming,
+                    },
+                    abortController.signal,
+                  )) {
+                    const streamEvent = event as { type: string; data?: unknown };
+                    const eventType = streamEvent.type;
+                    if (eventType === "token") receivedTokens = true;
+                    else if (eventType === "message_saved") {
+                      const savedMessage = streamEvent.data as Message;
+                      if (savedMessage?.id && savedMessage.chatId === chat.id) {
+                        savedMessages.set(savedMessage.id, savedMessage);
+                        if (savedMessage.role === "assistant") receivedTokens = true;
+                      }
+                    } else if (eventType === "text_rewrite") {
+                      const rewrite = streamEvent.data as { editedText?: unknown };
+                      if (typeof rewrite.editedText === "string") {
+                        const latestAssistant = Array.from(savedMessages.values())
+                          .reverse()
+                          .find((message) => message.role === "assistant");
+                        if (latestAssistant) {
+                          const nextExtra = {
+                            ...((latestAssistant.extra ?? {}) as unknown as Record<string, unknown>),
+                          };
+                          delete nextExtra.postProcessingPending;
+                          savedMessages.set(latestAssistant.id, {
+                            ...latestAssistant,
+                            content: rewrite.editedText,
+                            extra: nextExtra as unknown as Message["extra"],
+                          });
+                        }
+                      }
+                    } else if (eventType === "generation_discarded") {
+                      receivedTokens = false;
+                      savedMessages.clear();
+                    }
+                  }
+                } finally {
+                  if (useChatStore.getState().abortControllers.get(chat.id) === abortController) {
+                    useChatStore.getState().setAbortController(chat.id, null);
+                  }
+                }
+
+                // Only notify if the generation actually produced a message
+                if (!receivedTokens) return;
+
+                // Paint the exact persisted SSE row before notifying. A reset
+                // leaves a window where the sound and unread badge arrive while
+                // the cached chat still has no message.
+                upsertPersistedMessages(qc, chat.id, Array.from(savedMessages.values()));
+                void qc.invalidateQueries({ queryKey: chatKeys.messages(chat.id) });
+                qc.invalidateQueries({ queryKey: characterKeys.list() });
+                const unreadMetadataVersion = captureChatMetadataVersion(chat.id);
+                void api
+                  .post<Chat>(`/chats/${chat.id}/autonomous-unread`, { characterId })
+                  .then((updatedChat) => {
+                    qc.setQueryData(
+                      chatKeys.detail(chat.id),
+                      guardServerChatSnapshot(qc, updatedChat, unreadMetadataVersion),
+                    );
+                    qc.invalidateQueries({ queryKey: chatKeys.list() });
+                  })
+                  .catch(() => {
+                    /* persistence is best-effort; keep the local notification */
+                  });
+
+                // Resolve character name for the notification
+                let charName = "Someone";
+                let charAvatar: string | null = null;
+                let charAvatarCrop: AvatarCrop | null = null;
+                try {
+                  // Find the triggering character's name
+                  const charRow = await api.get<RawCharacter>(`/characters/${characterId}`);
+                  if (charRow) {
+                    const data = typeof charRow.data === "string" ? JSON.parse(charRow.data) : charRow.data;
+                    if (data?.name) charName = data.name;
+                    charAvatarCrop = normalizeAvatarCrop(data?.extensions?.avatarCrop);
+                    charAvatar = charRow.avatarPath ?? null;
+                  }
+                } catch {
+                  /* use fallback name */
+                }
+
+                // Play notification sound
+                const uiState = useUIStore.getState();
+                playConfiguredNotificationPing(
+                  uiState.convoNotificationSound,
+                  uiState.notificationSoundsOnlyWhenUnfocused,
+                );
+
+                // Increment unread badge
+                useChatStore.getState().incrementUnread(chat.id);
+
+                // Add floating avatar notification bubble
+                useChatStore.getState().addNotification(chat.id, charName, charAvatar, charAvatarCrop);
+
+                void showLocalMessageNotification({
+                  enabled: useUIStore.getState().conversationBrowserNotifications,
+                  characterName: charName,
+                  tag: `marinara-chat-${chat.id}`,
+                });
+                showNativeMessageNotification({
+                  enabled: useUIStore.getState().conversationMobileNotifications,
+                  characterName: charName,
+                  tag: `marinara-chat-${chat.id}`,
+                });
+
+                // Show a global toast so the user knows even from a different chat
+                toast(`${charName} sent you a message`, { icon: "💬" });
+              } catch {
+                // generation failed — non-critical
+              } finally {
+                if (!receivedTokens && shouldClearAutonomousFlag) {
+                  try {
+                    await api.post("/conversation/autonomous/clear-in-progress", {
+                      chatId: chat.id,
+                      startedAt: generationStartedAt,
+                    });
+                  } catch {
+                    /* non-critical */
+                  }
+                }
+                generatingForRef.current.delete(chat.id);
+              }
+            };
+
+            if (delay.delayMs > 0) {
+              const timerId = setTimeout(() => {
+                busyDelayTimers.current.delete(timerId);
+                doGenerate();
+              }, delay.delayMs);
+              busyDelayTimers.current.set(timerId, { chatId: chat.id, startedAt: generationStartedAt });
+            } else {
+              doGenerate();
+            }
+          }
+        } catch {
+          // Check failed — skip this chat, try next
+        }
+      }
+
+      schedulePoll();
+    };
+
+    const schedulePoll = () => {
+      if (!mountedRef.current) return;
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = setTimeout(poll, 30_000);
+    };
+
+    // Start polling after an initial delay (staggered from active autonomous polling at 10s)
+    pollTimerRef.current = setTimeout(poll, 20_000);
+
+    return () => {
+      mountedRef.current = false;
+      clearTimeout(pollTimerRef.current);
+      for (const [timer, lock] of delayTimers) {
+        clearTimeout(timer);
+        void api
+          .post("/conversation/autonomous/clear-in-progress", {
+            chatId: lock.chatId,
+            startedAt: lock.startedAt,
+          })
+          .catch(() => {});
+      }
+      delayTimers.clear();
+    };
+  }, [qc]); // Only depends on qc (which is stable) — timer lifecycle is self-managed
+}

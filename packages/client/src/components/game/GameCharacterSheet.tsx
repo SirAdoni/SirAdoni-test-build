@@ -1,0 +1,1386 @@
+// ──────────────────────────────────────────────
+// Game: Character Sheet Modal (tabletop-style character sheet)
+// ──────────────────────────────────────────────
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { createPortal } from "react-dom";
+import { useDialogFocusScope } from "../../hooks/use-dialog-focus-scope";
+import {
+  AlertTriangle,
+  Camera,
+  ClipboardCopy,
+  Heart,
+  Info,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Save,
+  Shield,
+  Sparkles,
+  Swords,
+  Target,
+  Trash2,
+  X,
+  Zap,
+} from "lucide-react";
+import type {
+  AvatarCrop,
+  RulesetDefinition,
+  RulesetLayerOptions,
+  RulesetLiveState,
+  RulesetSheetEnvelope,
+} from "@marinara-engine/shared";
+import { toast } from "sonner";
+import { cn, copyToClipboard, getAvatarCropStyle } from "../../lib/utils";
+import { GameRulesetSheet } from "./GameRulesetSheet";
+import { DraftNumberInput } from "../ui/DraftNumberInput";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
+import { NEUTRAL_SURFACE_VARIABLES } from "../ui/neutral-surface-styles";
+import {
+  createDefaultRpgStatPools,
+  normalizeRpgStatAttributes,
+  normalizeRpgStatPools,
+  syncRpgHpFromPools,
+  type RPGStatPool,
+} from "@marinara-engine/shared";
+import { useTranslation as useUiTranslation } from "react-i18next";
+import type { GameCharacterLibraryProfile } from "../../lib/game-character-profile";
+
+export interface GameCharacterSheetGameCard {
+  shortDescription: string;
+  class: string;
+  abilities: string[];
+  strengths: string[];
+  weaknesses: string[];
+  extra: Record<string, string>;
+  rpgStats?: {
+    attributes: Array<{ name: string; value: number }>;
+    hp: { value: number; max: number };
+    pools?: RPGStatPool[];
+  };
+}
+
+export interface CharacterSheetCard {
+  title: string;
+  subtitle?: string;
+  mood?: string;
+  status?: string;
+  level?: number;
+  avatarUrl?: string | null;
+  avatarCrop?: AvatarCrop | null;
+  stats?: Array<{ name: string; value: number; max?: number; color?: string }>;
+  inventory?: Array<{ name: string; quantity?: number; location?: string }>;
+  customFields?: Record<string, string>;
+  gameCard?: GameCharacterSheetGameCard;
+  libraryProfile?: GameCharacterLibraryProfile;
+}
+
+/** The pinned ruleset's half of the sheet, when the game has one. A game with no ruleset passes
+ *  nothing and the sheet looks exactly as it did before. */
+export type GameCharacterSheetRuleset =
+  /** The pin cannot be honoured on this install, so the ruleset half is a single explanatory line. */
+  | { status: "unavailable" }
+  /** The card holds a sheet this version cannot read. It is kept as it is, so nothing here may
+   *  edit or replace it, and live values measured against a guessed build would be wrong. */
+  | { status: "unreadable" }
+  | {
+      status: "ok";
+      /** The effective definition: the ruleset with the game's layers already on it. */
+      definition: RulesetDefinition;
+      /** The layers this game turned on, named after the ruleset in the sheet's heading. */
+      layers?: Array<{ id: string; label: string }>;
+      /** The pin's own record, which the catalog picker leaves hidden entries out by. */
+      layerOptions?: RulesetLayerOptions;
+      envelope: RulesetSheetEnvelope | undefined;
+      live: RulesetLiveState | undefined;
+      onLiveChange: (next: RulesetLiveState) => void;
+      onEnvelopeSave: (next: RulesetSheetEnvelope) => Promise<void> | void;
+      readOnly?: boolean;
+    };
+
+interface GameCharacterSheetProps {
+  card: CharacterSheetCard;
+  onClose: () => void;
+  onSave?: (gameCard: GameCharacterSheetGameCard | undefined) => Promise<void> | void;
+  onRegenerate?: () => Promise<GameCharacterSheetGameCard | undefined> | GameCharacterSheetGameCard | undefined;
+  onAvatarSelect?: (file: File) => Promise<void> | void;
+  isRegenerating?: boolean;
+  ruleset?: GameCharacterSheetRuleset;
+}
+
+interface GameCardDraft {
+  shortDescription: string;
+  class: string;
+  abilities: string[];
+  strengths: string[];
+  weaknesses: string[];
+  extraEntries: Array<{ key: string; value: string }>;
+  rpgStatsEnabled: boolean;
+  pools: RPGStatPool[];
+  attributes: Array<{ name: string; value: number }>;
+  hpValue: number;
+  hpMax: number;
+}
+
+type DraftListField = "abilities" | "strengths" | "weaknesses";
+
+const DEFAULT_ATTRIBUTES = [
+  { name: "STR", value: 10 },
+  { name: "DEX", value: 10 },
+  { name: "CON", value: 10 },
+  { name: "INT", value: 10 },
+  { name: "WIS", value: 10 },
+  { name: "CHA", value: 10 },
+];
+
+function createNewRpgPool(existing: readonly RPGStatPool[]): RPGStatPool {
+  const used = new Set(existing.map((pool) => pool.name.trim().toLowerCase()).filter(Boolean));
+  let index = existing.length + 1;
+  let name = `Pool ${index}`;
+  while (used.has(name.toLowerCase())) {
+    name = `Pool ${++index}`;
+  }
+  return { name, value: 100, max: 100, color: "#a78bfa" };
+}
+
+// Mirrors server's attributeModifier in skill-check.service.ts: floor((score - 10) / 2).
+function formatAttributeModifier(score: number): string {
+  const mod = Math.floor((score - 10) / 2);
+  return mod >= 0 ? `+${mod}` : `${mod}`;
+}
+
+const FIELD_LABEL_CLASS = "text-[0.6875rem] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]";
+const TEXT_INPUT_CLASS =
+  "w-full rounded-lg border border-[var(--marinara-chat-chrome-input-border)] bg-[var(--marinara-chat-chrome-input-bg)] px-3 py-2 text-sm text-[var(--foreground)] outline-none transition-colors focus:border-[var(--marinara-chat-chrome-input-border-focus)]";
+const NUMBER_INPUT_CLASS =
+  "w-full rounded-lg border border-transparent bg-[var(--marinara-chat-chrome-input-bg)] px-2.5 py-1.5 text-sm text-[var(--foreground)] outline-none transition-colors focus:border-[var(--marinara-chat-chrome-input-border-focus)]";
+
+function normalizeTextValue(value: unknown) {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+}
+
+function normalizeNumberValue(value: unknown, fallback: number) {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : fallback;
+}
+
+function normalizeDraftListSource(value: unknown) {
+  const entries = Array.isArray(value) ? value.map((entry) => normalizeTextValue(entry).trim()).filter(Boolean) : [];
+  return entries.length > 0 ? entries : [""];
+}
+
+function normalizeDraftExtraEntries(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return [{ key: "", value: "" }];
+  }
+
+  const entries = Object.entries(value as Record<string, unknown>)
+    .map(([key, entryValue]) => ({
+      key: normalizeTextValue(key).trim(),
+      value: normalizeTextValue(entryValue).trim(),
+    }))
+    .filter((entry) => entry.key || entry.value);
+
+  return entries.length > 0 ? entries : [{ key: "", value: "" }];
+}
+
+function normalizeDraftAttributes(value: unknown) {
+  // Only fall back to defaults when there is no attribute container at all; an empty list is kept empty.
+  if (!Array.isArray(value) && (!value || typeof value !== "object")) {
+    return DEFAULT_ATTRIBUTES.map((attr) => ({ ...attr }));
+  }
+
+  const entries = normalizeRpgStatAttributes(value)
+    .map((entry) => ({ name: normalizeTextValue(entry.name).trim(), value: normalizeNumberValue(entry.value, 0) }))
+    .filter((entry) => !!entry.name);
+
+  return entries;
+}
+
+function createDraft(gameCard?: GameCharacterSheetGameCard): GameCardDraft {
+  // Stored sheets can contain AI-generated or legacy values, so coerce them before binding to form inputs.
+  const rawGameCard = gameCard as (Record<string, unknown> & { rpgStats?: Record<string, unknown> }) | undefined;
+  const rawRpgStats =
+    rawGameCard?.rpgStats && typeof rawGameCard.rpgStats === "object" && !Array.isArray(rawGameCard.rpgStats)
+      ? rawGameCard.rpgStats
+      : undefined;
+  const rawHp =
+    rawRpgStats?.hp && typeof rawRpgStats.hp === "object" && !Array.isArray(rawRpgStats.hp)
+      ? (rawRpgStats.hp as Record<string, unknown>)
+      : undefined;
+  const pools = rawRpgStats
+    ? normalizeRpgStatPools(rawRpgStats as unknown as GameCharacterSheetGameCard["rpgStats"])
+    : createDefaultRpgStatPools();
+  const hp = syncRpgHpFromPools(pools, {
+    value: normalizeNumberValue(rawHp?.value ?? rawHp?.current, 100),
+    max: Math.max(1, normalizeNumberValue(rawHp?.max, 100)),
+  });
+
+  return {
+    shortDescription: normalizeTextValue(rawGameCard?.shortDescription).trim(),
+    class: normalizeTextValue(rawGameCard?.class).trim(),
+    abilities: normalizeDraftListSource(rawGameCard?.abilities),
+    strengths: normalizeDraftListSource(rawGameCard?.strengths),
+    weaknesses: normalizeDraftListSource(rawGameCard?.weaknesses),
+    extraEntries: normalizeDraftExtraEntries(rawGameCard?.extra),
+    rpgStatsEnabled: !!rawRpgStats,
+    pools,
+    attributes: normalizeDraftAttributes(rawRpgStats?.attributes),
+    hpValue: hp.value,
+    hpMax: hp.max,
+  };
+}
+
+function normalizeList(values: string[]) {
+  return values.map((value) => value.trim()).filter(Boolean);
+}
+
+function normalizeExtraEntries(entries: Array<{ key: string; value: string }>) {
+  const next: Record<string, string> = {};
+  for (const entry of entries) {
+    const key = entry.key.trim();
+    const value = entry.value.trim();
+    if (!key || !value) continue;
+    next[key] = value;
+  }
+  return next;
+}
+
+function normalizeDraft(draft: GameCardDraft): GameCharacterSheetGameCard | undefined {
+  const extra = normalizeExtraEntries(draft.extraEntries);
+  const abilities = normalizeList(draft.abilities);
+  const strengths = normalizeList(draft.strengths);
+  const weaknesses = normalizeList(draft.weaknesses);
+  const shortDescription = draft.shortDescription.trim();
+  const charClass = draft.class.trim();
+  const attributes = draft.attributes
+    .map((attr) => ({
+      name: attr.name.trim(),
+      value: Number.isFinite(attr.value) ? attr.value : 0,
+    }))
+    .filter((attr) => attr.name);
+
+  const rpgStats = draft.rpgStatsEnabled
+    ? (() => {
+        const pools = normalizeRpgStatPools({
+          hp: { value: Math.max(0, draft.hpValue), max: Math.max(1, draft.hpMax) },
+          pools: draft.pools,
+        });
+        return {
+          attributes,
+          hp: syncRpgHpFromPools(pools, { value: Math.max(0, draft.hpValue), max: Math.max(1, draft.hpMax) }),
+          pools,
+        };
+      })()
+    : undefined;
+
+  const hasContent =
+    !!shortDescription ||
+    !!charClass ||
+    abilities.length > 0 ||
+    strengths.length > 0 ||
+    weaknesses.length > 0 ||
+    Object.keys(extra).length > 0 ||
+    !!rpgStats;
+
+  if (!hasContent) return undefined;
+
+  return {
+    shortDescription,
+    class: charClass,
+    abilities,
+    strengths,
+    weaknesses,
+    extra,
+    ...(rpgStats ? { rpgStats } : {}),
+  };
+}
+
+function hasGameData(gameCard?: GameCharacterSheetGameCard) {
+  if (!gameCard) return false;
+  return (
+    !!gameCard.class ||
+    !!gameCard.shortDescription ||
+    gameCard.abilities.length > 0 ||
+    gameCard.strengths.length > 0 ||
+    gameCard.weaknesses.length > 0 ||
+    Object.keys(gameCard.extra).length > 0
+  );
+}
+
+function SectionHeader({ icon, title, className }: { icon: React.ReactNode; title: string; className?: string }) {
+  return (
+    <div
+      className={cn(
+        "mb-2.5 flex items-center gap-1.5 text-[0.6875rem] font-semibold uppercase tracking-wider",
+        className,
+      )}
+    >
+      {icon}
+      <span>{title}</span>
+    </div>
+  );
+}
+
+export function GameCharacterSheet({
+  card,
+  onClose,
+  onSave,
+  onRegenerate,
+  onAvatarSelect,
+  isRegenerating = false,
+  ruleset,
+}: GameCharacterSheetProps) {
+  const { t: localizeUi } = useUiTranslation();
+  const [isEditing, setIsEditing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isAvatarUploading, setIsAvatarUploading] = useState(false);
+  const avatarInputRef = useRef<HTMLInputElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  useDialogFocusScope(true, dialogRef);
+  const isEditingRef = useRef(isEditing);
+  isEditingRef.current = isEditing;
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+      // Closing discards the unsaved draft, so while editing Escape only leaves the focused field
+      // (which also commits a pending number edit). Cancel and the close button still exit.
+      if (isEditingRef.current) {
+        const dialog = dialogRef.current;
+        if (dialog && dialog !== document.activeElement && dialog.contains(document.activeElement)) dialog.focus();
+        return;
+      }
+      onClose();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+  const [draft, setDraft] = useState<GameCardDraft>(() => createDraft(card.gameCard));
+
+  // Reset only when the sheet shows a different character. The card object is rebuilt on every game-state
+  // update (a turn, an agent, a pool +/- on the ruleset half), and resetting on those closed the editor and
+  // threw away what the player was typing. Entering edit mode reseeds the draft from the live card anyway.
+  useEffect(() => {
+    setIsEditing(false);
+    setIsSaving(false);
+    setDraft(createDraft(card.gameCard));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [card.title]);
+
+  const previewGameCard = isEditing ? normalizeDraft(draft) : normalizeDraft(createDraft(card.gameCard));
+  const libraryRpgStats = !card.gameCard && !isEditing ? card.libraryProfile?.rpgStats : undefined;
+  const displayRpgStats = previewGameCard?.rpgStats ?? libraryRpgStats;
+  const hasRpgAttributes =
+    displayRpgStats && Array.isArray(displayRpgStats.attributes) && displayRpgStats.attributes.length > 0;
+  const previewRpgPools = previewGameCard?.rpgStats
+    ? normalizeRpgStatPools(previewGameCard.rpgStats)
+    : (libraryRpgStats?.pools ?? []);
+  const hasRpgPools = previewRpgPools.length > 0;
+  const hasRpgStats = Boolean(hasRpgAttributes || hasRpgPools);
+  const hasPersistentSheetData = hasGameData(previewGameCard) || hasRpgStats;
+  const hasLibraryProfile = Object.values(card.libraryProfile ?? {}).some(
+    (value) => typeof value === "string" && value.trim().length > 0,
+  );
+  const hasAnyData =
+    hasPersistentSheetData ||
+    !!ruleset ||
+    (card.stats?.length ?? 0) > 0 ||
+    (card.inventory?.length ?? 0) > 0 ||
+    Object.keys(card.customFields ?? {}).length > 0 ||
+    hasLibraryProfile;
+
+  const updateListItem = (field: DraftListField, index: number, value: string) => {
+    setDraft((prev) => ({
+      ...prev,
+      [field]: prev[field].map((item, itemIndex) => (itemIndex === index ? value : item)),
+    }));
+  };
+
+  const addListItem = (field: DraftListField) => {
+    setDraft((prev) => ({ ...prev, [field]: [...prev[field], ""] }));
+  };
+
+  const removeListItem = (field: DraftListField, index: number) => {
+    setDraft((prev) => {
+      const next = prev[field].filter((_, itemIndex) => itemIndex !== index);
+      return { ...prev, [field]: next.length > 0 ? next : [""] };
+    });
+  };
+
+  const updateExtraEntry = (index: number, field: "key" | "value", value: string) => {
+    setDraft((prev) => ({
+      ...prev,
+      extraEntries: prev.extraEntries.map((entry, entryIndex) =>
+        entryIndex === index ? { ...entry, [field]: value } : entry,
+      ),
+    }));
+  };
+
+  const addExtraEntry = () => {
+    setDraft((prev) => ({
+      ...prev,
+      extraEntries: [...prev.extraEntries, { key: "", value: "" }],
+    }));
+  };
+
+  const removeExtraEntry = (index: number) => {
+    setDraft((prev) => {
+      const next = prev.extraEntries.filter((_, entryIndex) => entryIndex !== index);
+      return { ...prev, extraEntries: next.length > 0 ? next : [{ key: "", value: "" }] };
+    });
+  };
+
+  const updateAttribute = (index: number, field: "name" | "value", value: string | number) => {
+    setDraft((prev) => ({
+      ...prev,
+      attributes: prev.attributes.map((attr, attrIndex) =>
+        attrIndex === index
+          ? {
+              ...attr,
+              [field]: field === "value" ? Number(value) || 0 : String(value),
+            }
+          : attr,
+      ),
+    }));
+  };
+
+  const addAttribute = () => {
+    setDraft((prev) => ({
+      ...prev,
+      attributes: [...prev.attributes, { name: "NEW", value: 10 }],
+    }));
+  };
+
+  const removeAttribute = (index: number) => {
+    setDraft((prev) => {
+      const next = prev.attributes.filter((_, attrIndex) => attrIndex !== index);
+      // An empty list is a valid sheet (createDraft keeps it empty too), so removing the last
+      // attribute must not quietly bring back all six defaults.
+      return { ...prev, attributes: next };
+    });
+  };
+
+  const updatePool = (index: number, patch: Partial<RPGStatPool>) => {
+    setDraft((prev) => {
+      const pools = prev.pools.map((pool, poolIndex) => (poolIndex === index ? { ...pool, ...patch } : pool));
+      const hp = syncRpgHpFromPools(pools, { value: prev.hpValue, max: prev.hpMax });
+      return { ...prev, pools, hpValue: hp.value, hpMax: hp.max };
+    });
+  };
+
+  const addPool = () => {
+    setDraft((prev) => ({ ...prev, pools: [...prev.pools, createNewRpgPool(prev.pools)] }));
+  };
+
+  const removePool = (index: number) => {
+    setDraft((prev) => {
+      const pools = prev.pools.filter((_, poolIndex) => poolIndex !== index);
+      const nextPools = pools.length > 0 ? pools : createDefaultRpgStatPools();
+      const hp = syncRpgHpFromPools(nextPools, { value: prev.hpValue, max: prev.hpMax });
+      return { ...prev, pools: nextPools, hpValue: hp.value, hpMax: hp.max };
+    });
+  };
+
+  const handleCancelEdit = () => {
+    setDraft(createDraft(card.gameCard));
+    setIsEditing(false);
+  };
+
+  const handleSave = async () => {
+    if (!onSave || isSaving) return;
+    setIsSaving(true);
+    try {
+      await onSave(normalizeDraft(draft));
+      onClose();
+    } catch {
+      return;
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleRegenerate = async () => {
+    if (!onRegenerate || isSaving || isRegenerating) return;
+    try {
+      const regenerated = await onRegenerate();
+      if (regenerated) setDraft(createDraft(regenerated));
+    } catch {
+      return;
+    }
+  };
+
+  const handleAvatarChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file || !onAvatarSelect || isAvatarUploading) return;
+    setIsAvatarUploading(true);
+    try {
+      await onAvatarSelect(file);
+    } finally {
+      setIsAvatarUploading(false);
+    }
+  };
+
+  // Plain text of what the sheet shows (the saved sheet, not an unsaved draft), for pasting into notes or chat.
+  const buildSheetText = () => {
+    const lines: string[] = [card.level != null ? card.title + " (" + localizeUi("ui.game.gamecharactersheet.lvl") + " " + card.level + ")" : card.title];
+    const description = previewGameCard?.shortDescription || (!previewGameCard?.class ? card.subtitle : undefined);
+    if (previewGameCard?.class) lines.push(localizeUi("ui.game.gamecharactersheet.class") + ": " + previewGameCard.class);
+    if (description) lines.push(description);
+    const pushSection = (title: string, entries: string[]) => {
+      if (entries.length === 0) return;
+      lines.push("", title + ":", ...entries.map((entry) => "- " + entry));
+    };
+    const attributeEntries = hasRpgAttributes
+      ? displayRpgStats.attributes.map((attr) => attr.name + " " + attr.value + " (" + formatAttributeModifier(attr.value) + ")")
+      : [];
+    const poolEntries = previewRpgPools.map((pool) => pool.name + ": " + pool.value + "/" + pool.max);
+    pushSection(localizeUi("ui.characters.statstab.attributes"), [...attributeEntries, ...poolEntries]);
+    pushSection(
+      localizeUi("editor.tabs.stats"),
+      (card.stats ?? []).map((stat) => stat.name + ": " + stat.value + "/" + (stat.max ?? 100)),
+    );
+    pushSection(localizeUi("ui.game.gamecharactersheet.abilities"), previewGameCard?.abilities ?? []);
+    pushSection(localizeUi("ui.game.gamecharactersheet.strengths"), previewGameCard?.strengths ?? []);
+    pushSection(localizeUi("ui.game.gamecharactersheet.weaknesses"), previewGameCard?.weaknesses ?? []);
+    pushSection(
+      localizeUi("ui.game.gamecharactersheet.details"),
+      Object.entries(previewGameCard?.extra ?? {}).map(([key, value]) => key.replace(/_/g, " ") + ": " + value),
+    );
+    pushSection(
+      localizeUi("ui.game.gamecharactersheet.traits"),
+      Object.entries(card.customFields ?? {}).map(([key, value]) => key + ": " + value),
+    );
+    return lines.join("\n");
+  };
+
+  const handleCopyAsText = async () => {
+    if (await copyToClipboard(buildSheetText())) {
+      toast.success(localizeUi("ui.game.gamecharactersheet.sheetCopied"));
+    } else {
+      toast.error(localizeUi("ui.game.gamecharactersheet.sheetCopyFailed"));
+    }
+  };
+
+  return createPortal(
+    <div
+      data-game-skip-bg-nav="true"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3 pb-[max(var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)),0.75rem)] pt-[max(env(safe-area-inset-top),0.75rem)] backdrop-blur-sm sm:p-4"
+      onClick={onClose}
+    >
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        data-component="GameCharacterSheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label={card.title}
+        className={cn(
+          NEUTRAL_SURFACE_VARIABLES,
+          "marinara-chat-popover relative flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-panel-bg)] shadow-2xl supports-[height:100dvh]:max-h-[85dvh]",
+        )}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {(onSave || onRegenerate || !isEditing) && (
+          <div className="absolute right-11 top-3 z-10 flex max-w-[calc(100%-4rem)] flex-wrap items-center justify-end gap-1 sm:right-12 sm:gap-2">
+            {isEditing ? (
+              <>
+                <button
+                  onClick={handleCancelEdit}
+                  disabled={isSaving || isRegenerating}
+                  className="inline-flex h-8 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-button-bg)] px-2.5 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--foreground)] disabled:opacity-60 sm:h-auto sm:px-3 sm:py-1.5"
+                >
+                  {localizeUi("chat.delete.dialog.cancel")}
+                </button>
+                {onRegenerate && (
+                  <button
+                    onClick={() => void handleRegenerate()}
+                    disabled={isRegenerating || isSaving}
+                    className="inline-flex h-8 min-w-8 items-center justify-center gap-1.5 rounded-lg border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-button-bg)] px-2 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--foreground)] disabled:cursor-wait disabled:opacity-60 sm:h-auto sm:min-w-0 sm:px-3 sm:py-1.5"
+                    title={localizeUi("game.characterSheet.regenerate.help")}
+                    aria-label={localizeUi("game.characterSheet.regenerate.label")}
+                  >
+                    <RefreshCw size={13} className={cn(isRegenerating && "animate-spin")} />
+                    <span className="hidden sm:inline">
+                      {isRegenerating
+                        ? localizeUi("game.characterSheet.regenerate.loading")
+                        : localizeUi("game.characterSheet.regenerate.label")}
+                    </span>
+                  </button>
+                )}
+                <button
+                  onClick={() => void handleSave()}
+                  disabled={isSaving || isRegenerating}
+                  className="inline-flex h-8 min-w-8 items-center justify-center gap-1.5 rounded-lg bg-[var(--marinara-chat-chrome-highlight-bg)] px-2 text-xs font-semibold text-[var(--foreground)] ring-1 ring-[var(--marinara-chat-chrome-panel-border)] transition-colors hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] disabled:opacity-60 sm:h-auto sm:min-w-0 sm:px-3 sm:py-1.5"
+                  title={
+                    isSaving
+                      ? localizeUi("ui.noodle.stageprofileform.saving")
+                      : localizeUi("ui.game.gamecharactersheet.saveSheet")
+                  }
+                  aria-label={
+                    isSaving
+                      ? localizeUi("ui.game.gamecharactersheet.savingSheet")
+                      : localizeUi("ui.game.gamecharactersheet.saveSheet_69c9b5b")
+                  }
+                >
+                  <Save size={13} />
+                  <span className="hidden sm:inline">
+                    {isSaving
+                      ? localizeUi("ui.noodle.stageprofileform.saving")
+                      : localizeUi("ui.game.gamecharactersheet.saveSheet")}
+                  </span>
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void handleCopyAsText()}
+                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg p-0 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--foreground)] sm:h-auto sm:w-auto sm:p-1.5"
+                  title={localizeUi("ui.game.gamecharactersheet.copyAsText")}
+                  aria-label={localizeUi("ui.game.gamecharactersheet.copyAsText")}
+                >
+                  <ClipboardCopy size={14} />
+                </button>
+                {onSave && (
+                <button
+                  onClick={() => {
+                    // Reseed on entry: the parked draft can hold residue from
+                    // an edit session torn down mid-typing (the number inputs
+                    // flush pending edits on unmount, and their index-captured
+                    // commits land in whatever draft is current by then).
+                    // Editing must always start from the live card.
+                    setDraft(createDraft(card.gameCard));
+                    setIsEditing(true);
+                  }}
+                  disabled={isRegenerating}
+                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-button-bg)] p-0 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--foreground)] disabled:opacity-60 sm:h-auto sm:w-auto sm:min-w-0 sm:gap-1.5 sm:px-3 sm:py-1.5"
+                  title={localizeUi("ui.game.gamecharactersheet.editSheet")}
+                  aria-label={localizeUi("ui.game.gamecharactersheet.editSheet_8c3fdc2")}
+                >
+                  <Pencil size={13} />
+                  <span className="hidden sm:inline">{localizeUi("ui.game.gamecharactersheet.editSheet")}</span>
+                </button>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        <button
+          onClick={onClose}
+          className="absolute right-3 top-3 z-10 flex h-7 w-7 items-center justify-center rounded-lg p-0 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--foreground)] sm:h-auto sm:w-auto sm:p-1.5"
+          aria-label={localizeUi("ui.game.gamecharactersheet.closeCharacterSheet")}
+          title={localizeUi("ui.game.gamecharactersheet.closeCharacterSheet")}
+        >
+          <X className="h-4 w-4 sm:h-[18px] sm:w-[18px]" />
+        </button>
+
+        <div className="relative border-b border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-highlight-bg)] px-4 py-4 sm:px-5">
+          <div className="flex items-center gap-3 sm:gap-4">
+            {card.avatarUrl ? (
+              <CharacterPhoto
+                src={card.avatarUrl}
+                name={card.title}
+                className="group/avatar relative block h-16 w-16 shrink-0 overflow-hidden rounded-xl border-2 border-[var(--marinara-chat-chrome-panel-border)] shadow-xl transition-colors hover:border-[var(--marinara-chat-chrome-input-border-focus)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)] sm:h-20 sm:w-20"
+                onUpdate={onAvatarSelect ? () => avatarInputRef.current?.click() : undefined}
+                updateDisabled={isAvatarUploading}
+              >
+                <img
+                  src={card.avatarUrl}
+                  alt={card.title}
+                  className="h-full w-full object-cover"
+                  style={getAvatarCropStyle(card.avatarCrop)}
+                />
+              </CharacterPhoto>
+            ) : (
+              <button
+                type="button"
+                onClick={() => avatarInputRef.current?.click()}
+                disabled={!onAvatarSelect || isAvatarUploading}
+                className="group/avatar relative block h-16 w-16 shrink-0 overflow-hidden rounded-xl border-2 border-[var(--marinara-chat-chrome-panel-border)] shadow-xl sm:h-20 sm:w-20"
+                aria-label={localizeUi("ui.game.gamecharactersheet.changePortrait", { name: card.title })}
+                title={localizeUi("ui.game.gamecharactersheet.changePortrait", { name: card.title })}
+              >
+                <span className="flex h-full w-full items-center justify-center bg-[var(--marinara-chat-chrome-highlight-bg)] text-xl font-bold text-[var(--muted-foreground)] sm:text-2xl">
+                  {card.title[0]}
+                </span>
+                {onAvatarSelect ? <Camera className="absolute inset-0 m-auto text-white" size="1rem" /> : null}
+              </button>
+            )}
+            <input
+              ref={avatarInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              onChange={(event) => void handleAvatarChange(event)}
+              className="sr-only"
+              tabIndex={-1}
+            />
+            {/* On phones the header buttons float over this row: the title (or the level badge, when
+                there is one) keeps clear of them, and the edit toolbar is wider than the view one. */}
+            <div
+              className={cn(
+                "min-w-0 flex-1 sm:pr-64",
+                card.level == null && (isEditing ? "pr-40" : "pr-24"),
+              )}
+            >
+              <h2
+                className="scrollbar-hide max-w-full touch-pan-x overflow-x-auto whitespace-nowrap text-lg font-bold text-[var(--foreground)] [-webkit-overflow-scrolling:touch] sm:truncate sm:overflow-hidden"
+                title={card.title}
+              >
+                {card.title}
+              </h2>
+              {previewGameCard?.class && (
+                <p className="text-xs font-medium text-[var(--muted-foreground)]">{previewGameCard.class}</p>
+              )}
+              {previewGameCard?.shortDescription && !previewGameCard.class && (
+                <p className="text-xs text-[var(--muted-foreground)]">{previewGameCard.shortDescription}</p>
+              )}
+              {card.subtitle && !previewGameCard?.class && !previewGameCard?.shortDescription && (
+                <p className="text-xs text-[var(--muted-foreground)]">{card.subtitle}</p>
+              )}
+              {card.mood && (
+                <div className="mt-1.5 flex items-center gap-1.5">
+                  <Heart size={11} className="text-[var(--marinara-chat-chrome-panel-muted)]" />
+                  <span className="text-[0.6875rem] italic text-[var(--marinara-chat-chrome-panel-muted)]">
+                    {card.mood}
+                  </span>
+                </div>
+              )}
+              {card.status && (
+                <p className="mt-1 line-clamp-2 text-[0.6875rem] text-[var(--muted-foreground)]">{card.status}</p>
+              )}
+            </div>
+            {card.level != null && (
+              <div
+                className={cn(
+                  "flex items-center gap-1 rounded border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-input-bg)] px-1.5 py-0.5 sm:mr-0",
+                  isEditing ? "mr-40" : "mr-24",
+                )}
+              >
+                <span className="text-[0.4375rem] uppercase tracking-wider text-[var(--muted-foreground)]">
+                  {localizeUi("ui.game.gamecharactersheet.lvl")}
+                </span>
+                <span className="text-xs font-bold leading-none text-[var(--foreground)]">{card.level}</span>
+              </div>
+            )}
+          </div>
+          {previewGameCard?.shortDescription && previewGameCard.class && (
+            <p className="mt-2 text-[0.6875rem] italic text-[var(--muted-foreground)]">
+              {previewGameCard.shortDescription}
+            </p>
+          )}
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          {/* The pinned ruleset's live sheet sits above the legacy stats: it is what the game's
+              rules actually run on, and the legacy blocks are the free-form notes beside it. */}
+          {!isEditing && ruleset && (
+            <div className="border-b border-[var(--marinara-chat-chrome-panel-border)] px-5 py-4">
+              {ruleset.status === "ok" ? (
+                <GameRulesetSheet
+                  definition={ruleset.definition}
+                  layers={ruleset.layers}
+                  layerOptions={ruleset.layerOptions}
+                  cardName={card.title}
+                  envelope={ruleset.envelope}
+                  live={ruleset.live}
+                  onLiveChange={ruleset.onLiveChange}
+                  onEnvelopeSave={ruleset.onEnvelopeSave}
+                  readOnly={ruleset.readOnly}
+                />
+              ) : (
+                <p className="text-xs text-[var(--muted-foreground)]">
+                  {localizeUi(
+                    ruleset.status === "unreadable"
+                      ? "game.ruleset.sheet.unreadable"
+                      : "game.ruleset.sheet.unavailable",
+                  )}
+                </p>
+              )}
+            </div>
+          )}
+          {isEditing && (
+            <>
+              <div className="border-b border-[var(--marinara-chat-chrome-panel-border)] px-5 py-4">
+                <SectionHeader
+                  icon={<Pencil size={12} />}
+                  title={localizeUi("ui.game.gamecharactersheet.sheetDetails")}
+                  className="text-[var(--muted-foreground)]"
+                />
+                <div className="space-y-3">
+                  <label className="block space-y-1.5">
+                    <span className={FIELD_LABEL_CLASS}>{localizeUi("ui.game.gamecharactersheet.class")}</span>
+                    <input
+                      type="text"
+                      value={draft.class}
+                      onChange={(e) => setDraft((prev) => ({ ...prev, class: e.target.value }))}
+                      placeholder={localizeUi("ui.game.gamecharactersheet.classOrRole")}
+                      className={TEXT_INPUT_CLASS}
+                    />
+                  </label>
+                  <label className="block space-y-1.5">
+                    <span className={FIELD_LABEL_CLASS}>
+                      {localizeUi("ui.game.gamecharactersheet.shortDescription")}
+                    </span>
+                    <textarea
+                      value={draft.shortDescription}
+                      onChange={(e) => setDraft((prev) => ({ ...prev, shortDescription: e.target.value }))}
+                      placeholder={localizeUi("ui.game.gamecharactersheet.briefCharacterSummary")}
+                      rows={3}
+                      className={cn(TEXT_INPUT_CLASS, "resize-y")}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <div className="border-b border-[var(--marinara-chat-chrome-panel-border)] px-5 py-4">
+                <div className="mb-2.5 flex items-center justify-between gap-3">
+                  <SectionHeader
+                    icon={<Shield size={12} />}
+                    title={localizeUi("ui.personas.personastatstab.rpgAttributes")}
+                    className="mb-0 text-[var(--muted-foreground)]"
+                  />
+                  <label className="flex items-center gap-2 text-xs text-[var(--muted-foreground)]">
+                    <input
+                      type="checkbox"
+                      checked={draft.rpgStatsEnabled}
+                      onChange={(e) => setDraft((prev) => ({ ...prev, rpgStatsEnabled: e.target.checked }))}
+                      className="h-4 w-4 rounded accent-[var(--foreground)]"
+                    />
+                    {localizeUi("ui.presets.sectionstab.enable")}
+                  </label>
+                </div>
+                {draft.rpgStatsEnabled ? (
+                  <div className="space-y-3">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className={FIELD_LABEL_CLASS}>{localizeUi("ui.characters.statstab.pools")}</span>
+                        <button
+                          onClick={addPool}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-[var(--marinara-chat-chrome-panel-border)] px-3 py-1.5 text-xs text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--foreground)]"
+                        >
+                          <Plus size={13} />
+                          {localizeUi("ui.game.gamecharactersheet.addPool")}
+                        </button>
+                      </div>
+                      {draft.pools.map((pool, index) => (
+                        <div
+                          key={`pool-${index}`}
+                          className="grid grid-cols-[2rem_minmax(0,1fr)_5rem_5rem_auto] gap-2 max-sm:grid-cols-1"
+                        >
+                          <input
+                            type="color"
+                            value={pool.color}
+                            onChange={(e) => updatePool(index, { color: e.target.value })}
+                            className="h-9 w-8 rounded border border-[var(--marinara-chat-chrome-panel-border)] bg-transparent p-0.5 max-sm:w-full"
+                            aria-label={localizeUi("ui.game.gamecharactersheet.value1Color", {
+                              value1: pool.name || localizeUi("ui.game.gamecharactersheet.pool"),
+                            })}
+                          />
+                          <input
+                            type="text"
+                            value={pool.name}
+                            onChange={(e) => updatePool(index, { name: e.target.value })}
+                            placeholder={localizeUi("ui.game.gamecharactersheet.hp")}
+                            className={TEXT_INPUT_CLASS}
+                          />
+                          <DraftNumberInput
+                            value={pool.value}
+                            onCommit={(value) => updatePool(index, { value: Math.max(0, value) })}
+                            min={0}
+                            selectOnFocus
+                            ariaLabel={`${pool.name || "Pool"} value`}
+                            className={NUMBER_INPUT_CLASS}
+                          />
+                          <DraftNumberInput
+                            value={pool.max}
+                            min={1}
+                            onCommit={(value) => updatePool(index, { max: Math.max(1, value) })}
+                            selectOnFocus
+                            ariaLabel={`${pool.name || "Pool"} max`}
+                            className={NUMBER_INPUT_CLASS}
+                          />
+                          <button
+                            onClick={() => removePool(index)}
+                            className="inline-flex items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-panel-border)] px-2 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-red-400 max-sm:h-9"
+                            title={localizeUi("ui.game.gamecharactersheet.removePool")}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="space-y-2">
+                      {draft.attributes.map((attr, index) => (
+                        <div key={`attribute-${index}`} className="grid grid-cols-[minmax(0,1fr)_7rem_auto] gap-2">
+                          <input
+                            type="text"
+                            value={attr.name}
+                            onChange={(e) => updateAttribute(index, "name", e.target.value)}
+                            placeholder={localizeUi("ui.game.gamecharactersheet.str")}
+                            className={TEXT_INPUT_CLASS}
+                          />
+                          <DraftNumberInput
+                            value={attr.value}
+                            onCommit={(value) => updateAttribute(index, "value", value)}
+                            selectOnFocus
+                            className={NUMBER_INPUT_CLASS}
+                          />
+                          <button
+                            onClick={() => removeAttribute(index)}
+                            className="inline-flex items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-panel-border)] px-2 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-red-400"
+                            title={localizeUi("ui.game.gamecharactersheet.removeAttribute")}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        onClick={addAttribute}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-[var(--marinara-chat-chrome-panel-border)] px-3 py-1.5 text-xs text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--foreground)]"
+                      >
+                        <Plus size={13} />
+                        {localizeUi("ui.game.gamecharactersheet.addAttribute")}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm text-[var(--muted-foreground)]">
+                    {localizeUi("ui.game.gamecharactersheet.useThisWhenTheSheetShouldTrackHpAnd")}
+                  </p>
+                )}
+              </div>
+
+              <div className="border-b border-[var(--marinara-chat-chrome-panel-border)] px-5 py-4">
+                <div className="mb-2.5 flex items-center justify-between gap-3">
+                  <SectionHeader
+                    icon={<Zap size={12} />}
+                    title={localizeUi("ui.game.gamecharactersheet.abilities")}
+                    className="mb-0 text-[var(--muted-foreground)]"
+                  />
+                  <button
+                    onClick={() => addListItem("abilities")}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-[var(--marinara-chat-chrome-panel-border)] px-3 py-1.5 text-xs text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--foreground)]"
+                  >
+                    <Plus size={13} />
+                    {localizeUi("ui.characters.metadatatab.add")}
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  {draft.abilities.map((ability, index) => (
+                    <div key={`ability-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                      <input
+                        type="text"
+                        value={ability}
+                        onChange={(e) => updateListItem("abilities", index, e.target.value)}
+                        placeholder={localizeUi("ui.game.gamecharactersheet.dualWieldingArcaneShieldEtc")}
+                        className={TEXT_INPUT_CLASS}
+                      />
+                      <button
+                        onClick={() => removeListItem("abilities", index)}
+                        className="inline-flex items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-panel-border)] px-2 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-red-400"
+                        title={localizeUi("ui.game.gamecharactersheet.removeAbility")}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="border-b border-[var(--marinara-chat-chrome-panel-border)] px-5 py-4">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <div className="mb-2.5 flex items-center justify-between gap-3">
+                      <SectionHeader
+                        icon={<Target size={11} />}
+                        title={localizeUi("ui.game.gamecharactersheet.strengths")}
+                        className="mb-0 text-emerald-500/80"
+                      />
+                      <button
+                        onClick={() => addListItem("strengths")}
+                        className="inline-flex items-center gap-1 rounded-lg border border-dashed border-[var(--marinara-chat-chrome-panel-border)] px-2 py-1 text-[0.6875rem] text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--foreground)]"
+                      >
+                        <Plus size={12} />
+                        {localizeUi("ui.characters.metadatatab.add")}
+                      </button>
+                    </div>
+                    <div className="space-y-2">
+                      {draft.strengths.map((strength, index) => (
+                        <div key={`strength-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                          <input
+                            type="text"
+                            value={strength}
+                            onChange={(e) => updateListItem("strengths", index, e.target.value)}
+                            placeholder={localizeUi("ui.game.gamecharactersheet.reliableQuickThinkerEtc")}
+                            className={TEXT_INPUT_CLASS}
+                          />
+                          <button
+                            onClick={() => removeListItem("strengths", index)}
+                            className="inline-flex items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-panel-border)] px-2 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-red-400"
+                            title={localizeUi("ui.game.gamecharactersheet.removeStrength")}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="mb-2.5 flex items-center justify-between gap-3">
+                      <SectionHeader
+                        icon={<AlertTriangle size={11} />}
+                        title={localizeUi("ui.game.gamecharactersheet.weaknesses")}
+                        className="mb-0 text-red-400/80"
+                      />
+                      <button
+                        onClick={() => addListItem("weaknesses")}
+                        className="inline-flex items-center gap-1 rounded-lg border border-dashed border-[var(--marinara-chat-chrome-panel-border)] px-2 py-1 text-[0.6875rem] text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--foreground)]"
+                      >
+                        <Plus size={12} />
+                        {localizeUi("ui.characters.metadatatab.add")}
+                      </button>
+                    </div>
+                    <div className="space-y-2">
+                      {draft.weaknesses.map((weakness, index) => (
+                        <div key={`weakness-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                          <input
+                            type="text"
+                            value={weakness}
+                            onChange={(e) => updateListItem("weaknesses", index, e.target.value)}
+                            placeholder={localizeUi("ui.game.gamecharactersheet.impulsivePoorSwimmerEtc")}
+                            className={TEXT_INPUT_CLASS}
+                          />
+                          <button
+                            onClick={() => removeListItem("weaknesses", index)}
+                            className="inline-flex items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-panel-border)] px-2 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-red-400"
+                            title={localizeUi("ui.game.gamecharactersheet.removeWeakness")}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-b border-[var(--marinara-chat-chrome-panel-border)] px-5 py-4">
+                <div className="mb-2.5 flex items-center justify-between gap-3">
+                  <SectionHeader
+                    icon={<Info size={12} />}
+                    title={localizeUi("ui.game.gamecharactersheet.details")}
+                    className="mb-0 text-[var(--muted-foreground)]"
+                  />
+                  <button
+                    onClick={addExtraEntry}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-[var(--marinara-chat-chrome-panel-border)] px-3 py-1.5 text-xs text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--foreground)]"
+                  >
+                    <Plus size={13} />
+                    {localizeUi("ui.game.gamecharactersheet.addDetail")}
+                  </button>
+                </div>
+                <p className="mb-3 text-[0.6875rem] text-[var(--muted-foreground)]">
+                  {localizeUi("ui.game.gamecharactersheet.addCustomDetailsLikeSkillsWeaponElementSpecialtyOr")}
+                </p>
+                <div className="space-y-2">
+                  {draft.extraEntries.map((entry, index) => (
+                    <div
+                      key={`extra-${index}`}
+                      className="grid grid-cols-[10rem_minmax(0,1fr)_auto] gap-2 max-sm:grid-cols-1"
+                    >
+                      <input
+                        type="text"
+                        value={entry.key}
+                        onChange={(e) => updateExtraEntry(index, "key", e.target.value)}
+                        placeholder={localizeUi("ui.game.gamecharactersheet.skills")}
+                        className={TEXT_INPUT_CLASS}
+                      />
+                      <input
+                        type="text"
+                        value={entry.value}
+                        onChange={(e) => updateExtraEntry(index, "value", e.target.value)}
+                        placeholder={localizeUi("ui.game.gamecharactersheet.lockpickingSurvivalMarksmanship")}
+                        className={TEXT_INPUT_CLASS}
+                      />
+                      <button
+                        onClick={() => removeExtraEntry(index)}
+                        className="inline-flex items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-panel-border)] px-2 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-red-400 max-sm:h-10"
+                        title={localizeUi("ui.game.gamecharactersheet.removeDetail")}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+
+          {!isEditing && hasRpgStats && displayRpgStats && (
+            <div className="border-b border-[var(--marinara-chat-chrome-panel-border)] px-5 py-4">
+              <SectionHeader
+                icon={<Shield size={12} />}
+                title={localizeUi("ui.characters.statstab.attributes")}
+                className="text-[var(--muted-foreground)]"
+              />
+              {hasRpgAttributes && (
+                <div className="mb-3 grid grid-cols-3 gap-2">
+                  {displayRpgStats.attributes.map((attr) => (
+                    <div
+                      key={attr.name}
+                      className="flex flex-col items-center rounded-lg border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-highlight-bg)] px-2 py-1.5"
+                    >
+                      <span className="text-[0.5625rem] font-bold uppercase tracking-widest text-[var(--muted-foreground)]">
+                        {attr.name}
+                      </span>
+                      <span className="text-lg font-bold leading-tight text-[var(--foreground)]">{attr.value}</span>
+                      <span className="text-[0.625rem] font-mono leading-none text-[var(--muted-foreground)]">
+                        {formatAttributeModifier(attr.value)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {hasRpgPools && (
+                <div className="space-y-2">
+                  {previewRpgPools.map((pool) => {
+                    const poolMax = Math.max(1, Number(pool.max) || 1);
+                    const poolValue = Math.max(0, Math.min(poolMax, Number(pool.value) || 0));
+                    return (
+                      <div key={pool.name}>
+                        <div className="mb-0.5 flex items-center justify-between text-xs">
+                          <span className="font-medium text-[var(--foreground)]/80">{pool.name}</span>
+                          <span className="font-mono text-[var(--muted-foreground)]">
+                            {poolValue}/{poolMax}
+                          </span>
+                        </div>
+                        <div className="h-2.5 overflow-hidden rounded-full bg-[var(--marinara-chat-chrome-highlight-bg)] ring-1 ring-[var(--marinara-chat-chrome-panel-border)]">
+                          <div
+                            className="h-full rounded-full transition-all"
+                            style={{
+                              width: `${(poolValue / poolMax) * 100}%`,
+                              background: pool.color,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {card.stats && card.stats.length > 0 && (
+            <div className="border-b border-[var(--marinara-chat-chrome-panel-border)] px-5 py-4">
+              <SectionHeader
+                icon={<Shield size={12} />}
+                title={localizeUi("editor.tabs.stats")}
+                className="text-[var(--muted-foreground)]"
+              />
+              <div className="space-y-2">
+                {card.stats.map((stat) => {
+                  const max = Math.max(1, stat.max ?? 100);
+                  const value = Math.max(0, Math.min(max, stat.value));
+                  const width = (value / max) * 100;
+                  return (
+                    <div key={stat.name}>
+                      <div className="mb-0.5 flex items-center justify-between text-xs">
+                        <span className="font-medium text-[var(--foreground)]/80">{stat.name}</span>
+                        <span className="font-mono text-[var(--muted-foreground)]">
+                          {value}/{max}
+                        </span>
+                      </div>
+                      <div className="h-2 overflow-hidden rounded-full bg-[var(--marinara-chat-chrome-highlight-bg)] ring-1 ring-[var(--marinara-chat-chrome-panel-border)]">
+                        <div
+                          className="h-full rounded-full transition-all"
+                          style={{
+                            width: `${width}%`,
+                            background: stat.color || "var(--foreground)",
+                          }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {!isEditing && previewGameCard && previewGameCard.abilities.length > 0 && (
+            <div className="border-b border-[var(--marinara-chat-chrome-panel-border)] px-5 py-4">
+              <SectionHeader
+                icon={<Zap size={12} />}
+                title={localizeUi("ui.game.gamecharactersheet.abilities")}
+                className="text-[var(--muted-foreground)]"
+              />
+              <div className="space-y-1">
+                {previewGameCard.abilities.map((ability, index) => (
+                  <div
+                    key={`${ability}-${index}`}
+                    className="rounded-lg bg-[var(--marinara-chat-chrome-highlight-bg)] px-2.5 py-1.5 text-xs text-[var(--foreground)]/80"
+                  >
+                    {ability}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {!isEditing &&
+            previewGameCard &&
+            (previewGameCard.strengths.length > 0 || previewGameCard.weaknesses.length > 0) && (
+              <div className="border-b border-[var(--marinara-chat-chrome-panel-border)] px-5 py-4">
+                <div className="grid grid-cols-2 gap-3">
+                  {previewGameCard.strengths.length > 0 && (
+                    <div>
+                      <SectionHeader
+                        icon={<Target size={11} />}
+                        title={localizeUi("ui.game.gamecharactersheet.strengths")}
+                        className="text-emerald-500/80"
+                      />
+                      <div className="space-y-0.5">
+                        {previewGameCard.strengths.map((strength, index) => (
+                          <div key={`${strength}-${index}`} className="text-[0.6875rem] text-[var(--foreground)]/70">
+                            • {strength}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {previewGameCard.weaknesses.length > 0 && (
+                    <div>
+                      <SectionHeader
+                        icon={<AlertTriangle size={11} />}
+                        title={localizeUi("ui.game.gamecharactersheet.weaknesses")}
+                        className="text-red-400/80"
+                      />
+                      <div className="space-y-0.5">
+                        {previewGameCard.weaknesses.map((weakness, index) => (
+                          <div key={`${weakness}-${index}`} className="text-[0.6875rem] text-[var(--foreground)]/70">
+                            • {weakness}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+          {!isEditing && previewGameCard && Object.keys(previewGameCard.extra).length > 0 && (
+            <div className="border-b border-[var(--marinara-chat-chrome-panel-border)] px-5 py-4">
+              <SectionHeader
+                icon={<Info size={12} />}
+                title={localizeUi("ui.game.gamecharactersheet.details")}
+                className="text-[var(--muted-foreground)]"
+              />
+              <div className="space-y-1.5 text-xs">
+                {Object.entries(previewGameCard.extra).map(([key, value]) => (
+                  <div key={key} className="flex items-start justify-between gap-3">
+                    <span className="shrink-0 capitalize text-[var(--muted-foreground)]">{key.replace(/_/g, " ")}</span>
+                    <span className="text-right text-[var(--foreground)]/80">{value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {card.inventory && card.inventory.length > 0 && (
+            <div className="border-b border-[var(--marinara-chat-chrome-panel-border)] px-5 py-4">
+              <SectionHeader
+                icon={<Swords size={12} />}
+                title={localizeUi("ui.game.gamecharactersheet.inventory")}
+                className="text-[var(--muted-foreground)]"
+              />
+              <div className="space-y-1">
+                {card.inventory.map((item) => (
+                  <div
+                    key={`${item.name}-${item.location ?? "bag"}`}
+                    className="flex items-center justify-between rounded-lg bg-[var(--marinara-chat-chrome-highlight-bg)] px-2.5 py-1.5 text-xs"
+                  >
+                    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                      <span className="min-w-0 whitespace-normal break-words text-[var(--foreground)]/80 [overflow-wrap:anywhere]">
+                        {item.name}
+                      </span>
+                      {item.location && (
+                        <span className="rounded bg-[var(--foreground)]/10 px-1.5 py-0.5 text-[0.5625rem] text-[var(--muted-foreground)]">
+                          {item.location}
+                        </span>
+                      )}
+                    </div>
+                    {item.quantity != null && item.quantity > 1 && (
+                      <span className="font-mono text-[var(--muted-foreground)]">
+                        {localizeUi("ui.panels.imagedimensionrow.x")}
+                        {item.quantity}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {card.customFields && Object.keys(card.customFields).length > 0 && (
+            <div className="border-b border-[var(--marinara-chat-chrome-panel-border)] px-5 py-4">
+              <SectionHeader
+                icon={<Sparkles size={12} />}
+                title={localizeUi("ui.game.gamecharactersheet.traits")}
+                className="text-[var(--muted-foreground)]"
+              />
+              <div className="space-y-1.5 text-xs">
+                {Object.entries(card.customFields).map(([key, value]) => (
+                  <div key={key} className="flex items-start justify-between gap-3">
+                    <span className="shrink-0 text-[var(--muted-foreground)]">{key}</span>
+                    <span className="text-right text-[var(--foreground)]/80">{value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {!isEditing && card.libraryProfile && hasLibraryProfile && (
+            <div className="border-b border-[var(--marinara-chat-chrome-panel-border)] px-5 py-4">
+              <SectionHeader
+                icon={<Info size={12} />}
+                title={localizeUi("ui.game.gamecharactersheet.libraryProfile")}
+                className="text-[var(--muted-foreground)]"
+              />
+              <div className="space-y-2 text-xs leading-relaxed text-[var(--foreground)]/80">
+                {(
+                  [
+                    ["description", "ui.game.gamecharactersheet.libraryDescription"],
+                    ["personality", "ui.game.gamecharactersheet.libraryPersonality"],
+                    ["backstory", "ui.game.gamecharactersheet.libraryBackstory"],
+                    ["appearance", "ui.game.gamecharactersheet.libraryAppearance"],
+                    ["aboutMe", "ui.game.gamecharactersheet.libraryAboutMe"],
+                  ] as const
+                ).map(([field, label]) => {
+                  const value = card.libraryProfile?.[field];
+                  return typeof value === "string" && value.trim() ? (
+                    <p key={field}>
+                      <span className="font-semibold text-[var(--foreground)]">{localizeUi(label)}: </span>
+                      {value}
+                    </p>
+                  ) : null;
+                })}
+              </div>
+            </div>
+          )}
+
+          {!isEditing && !hasAnyData && (
+            <div className="px-5 py-8 text-center">
+              <p className="text-sm text-[var(--muted-foreground)]">
+                {localizeUi("ui.game.gamecharactersheet.characterDataWillPopulateAsTheStoryProgresses")}
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}

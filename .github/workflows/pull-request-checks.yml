@@ -1,0 +1,110 @@
+name: Pull Request Checks
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pnpm-validate:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run project checks
+        run: pnpm check
+
+      - name: Test dependency update handoff
+        run: pnpm regression:launcher-update
+
+      - name: Run focused security regressions
+        run: pnpm regression:security
+
+      - name: Test release tag validation
+        run: pnpm regression:release
+
+      - name: Validate pull request gate topology
+        run: node scripts/validate-pr-triage.mjs
+
+      - name: Test owner approval evaluator
+        run: node scripts/test-owner-approval.mjs
+
+      - name: Check version drift
+        run: pnpm version:check
+
+      - name: Check tracked installer artifacts
+        run: pnpm guard:installer-artifacts
+
+  windows-launcher-regressions:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          run_install: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:shared
+      - name: Verify Windows restart ownership and ESM loader paths
+        run: node scripts/run-regressions.mjs --filter scripts/regressions/restart-supervisor.regression.ts
+      - name: Verify native console Ctrl+C finishes graceful shutdown
+        # Retain the fixture's own readiness/close deadlines without the general
+        # regression runner's shorter 30s whole-file cap.
+        timeout-minutes: 5
+        run: pnpm --filter @marinara-engine/server exec tsx ../../scripts/regressions/server-signal-shutdown.regression.ts
+
+  container-build-test:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Build Docker image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          push: false

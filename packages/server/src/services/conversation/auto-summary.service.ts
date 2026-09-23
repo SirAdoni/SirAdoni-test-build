@@ -1,0 +1,700 @@
+// ──────────────────────────────────────────────
+// Conversation Auto-Summaries
+// ──────────────────────────────────────────────
+// Shared daily/weekly summary generation for conversation mode.
+
+import type { DaySummaryEntry, WeekSummaryEntry } from "@marinara-engine/shared";
+import type { BaseLLMProvider } from "../llm/base-provider.js";
+import { createDiagnostic } from "../../lib/diagnostics.js";
+import { tryParseJsonRecord } from "../../lib/json-repair.js";
+import { stripConversationPromptTimestamps } from "./transcript-sanitize.js";
+import { formatZonedConversationDate, toZonedWallClockDate } from "./timezone.js";
+
+export interface ConversationSummaryMessage {
+  id?: string;
+  role: string;
+  content: string | null;
+  characterId?: string | null;
+  createdAt?: string | null;
+}
+
+export function countConversationMessagesAfterSummaryAnchor(
+  messages: Array<{ id?: string | null; role: string }>,
+  anchorMessageId: string | null | undefined,
+): number {
+  const isConversationMessage = (message: { role: string }) => message.role === "user" || message.role === "assistant";
+  const countAllConversationMessages = () => messages.filter(isConversationMessage).length;
+  const anchor = typeof anchorMessageId === "string" && anchorMessageId.trim() ? anchorMessageId.trim() : null;
+  if (!anchor) return countAllConversationMessages();
+  const anchorIndex = messages.findIndex((message) => message.id === anchor);
+  if (anchorIndex < 0) return countAllConversationMessages();
+  return messages.slice(anchorIndex + 1).filter(isConversationMessage).length;
+}
+
+/**
+ * One failed bucket. `errorId` and `errorCode` let callers log one summary line
+ * (event conversation.summary) instead of a line per bucket. `error` stays for the
+ * API response the client already reads.
+ */
+export interface ConversationSummaryFailedDay {
+  date: string;
+  error: string;
+  errorId: string;
+  errorCode: string;
+}
+
+export interface ConversationSummaryFailedWeek {
+  weekKey: string;
+  error: string;
+  errorId: string;
+  errorCode: string;
+}
+
+/** Thrown when a summary call runs past its budget; classifies as ME_TIMEOUT. */
+export class SummaryTimeoutError extends Error {
+  readonly timeoutMs: number;
+  constructor(timeoutMs: number) {
+    super("Summary timeout");
+    this.name = "TimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+export interface ConversationSummaryRunResult {
+  daySummaries: Record<string, DaySummaryEntry>;
+  weekSummaries: Record<string, WeekSummaryEntry>;
+  newlyGeneratedDays: Record<string, DaySummaryEntry>;
+  newlyConsolidatedWeeks: Record<string, WeekSummaryEntry>;
+  summaryFailures: ConversationSummaryFailures;
+  summaryFailureMetadataChanged: boolean;
+  failedDays: ConversationSummaryFailedDay[];
+  failedWeeks: ConversationSummaryFailedWeek[];
+  missingDayCount: number;
+  processedDayCount: number;
+  remainingMissingDayCount: number;
+}
+
+interface ConversationSummaryDayBucket {
+  date: string;
+  msgs: Array<{ role: string; content: string; author: string; ts: Date }>;
+}
+
+export interface ConversationSummaryFailureRecord {
+  attempts: number;
+  lastAttemptAt: string;
+  lastError: string;
+  model: string;
+  permanent: boolean;
+}
+
+export interface ConversationSummaryFailures {
+  days: Record<string, ConversationSummaryFailureRecord>;
+  weeks: Record<string, ConversationSummaryFailureRecord>;
+}
+
+interface GenerateMissingConversationSummariesOptions {
+  messages: ConversationSummaryMessage[];
+  metadata: Record<string, unknown>;
+  provider: BaseLLMProvider;
+  model: string;
+  personaName: string;
+  charIdToName: Map<string, string>;
+  now?: Date;
+  rolloverHour?: number;
+  timeZone?: string;
+  timeoutMs?: number;
+  maxTokens?: number;
+  maxMissingDays?: number;
+  /** Request abort signal. An abort stops the run and is rethrown, never recorded as a summary failure. */
+  signal?: AbortSignal;
+}
+
+const DEFAULT_SUMMARY_TIMEOUT_MS = 300_000;
+const DAILY_TRANSCRIPT_CHUNK_CHARS = 32_000;
+const MAX_SUMMARY_CHUNKS_PER_DAY = 12;
+const SUMMARY_TRANSIENT_RETRY_BASE_MS = 5 * 60_000;
+const SUMMARY_TRANSIENT_RETRY_MAX_MS = 60 * 60_000;
+const SUMMARY_PERMANENT_RETRY_MS = 24 * 60 * 60_000;
+const MAX_STORED_SUMMARY_FAILURE_ERROR_CHARS = 240;
+
+function createSummaryFailureMap(): Record<string, ConversationSummaryFailureRecord> {
+  return Object.create(null) as Record<string, ConversationSummaryFailureRecord>;
+}
+
+function coerceFailureRecord(value: unknown): ConversationSummaryFailureRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const attempts = Number(record.attempts);
+  const lastAttemptAt = typeof record.lastAttemptAt === "string" ? record.lastAttemptAt : "";
+  const lastError = typeof record.lastError === "string" ? record.lastError : "";
+  const model = typeof record.model === "string" ? record.model : "";
+  if (!Number.isFinite(attempts) || attempts <= 0 || !lastAttemptAt || !lastError || !model) return null;
+  return {
+    attempts: Math.floor(attempts),
+    lastAttemptAt,
+    lastError,
+    model,
+    permanent: record.permanent === true,
+  };
+}
+
+export function normalizeConversationSummaryFailures(raw: unknown): ConversationSummaryFailures {
+  const empty: ConversationSummaryFailures = { days: createSummaryFailureMap(), weeks: createSummaryFailureMap() };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return empty;
+  const record = raw as Record<string, unknown>;
+  for (const [bucketName, target] of [
+    ["days", empty.days],
+    ["weeks", empty.weeks],
+  ] as const) {
+    const bucket = record[bucketName];
+    if (!bucket || typeof bucket !== "object" || Array.isArray(bucket)) continue;
+    for (const [key, value] of Object.entries(bucket as Record<string, unknown>)) {
+      const failure = coerceFailureRecord(value);
+      if (failure) target[key] = failure;
+    }
+  }
+  return empty;
+}
+
+function coerceSummaryEntry(value: unknown): DaySummaryEntry | null {
+  if (typeof value === "string") {
+    const summary = value.trim();
+    return summary ? { summary, keyDetails: [] } : null;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const summary = typeof record.summary === "string" ? record.summary.trim() : "";
+  const keyDetails = Array.isArray(record.keyDetails)
+    ? record.keyDetails.filter((detail): detail is string => typeof detail === "string" && detail.trim().length > 0)
+    : [];
+  return summary || keyDetails.length > 0 ? { summary, keyDetails } : null;
+}
+
+export function normalizeDaySummaries(raw: unknown): Record<string, DaySummaryEntry> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, DaySummaryEntry> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const entry = coerceSummaryEntry(value);
+    if (entry) out[key] = entry;
+  }
+  return out;
+}
+
+export function normalizeWeekSummaries(raw: unknown): Record<string, WeekSummaryEntry> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, WeekSummaryEntry> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const entry = coerceSummaryEntry(value);
+    if (entry) out[key] = entry;
+  }
+  return out;
+}
+
+export function parseConversationDateKey(dateKey: string): Date {
+  const [dd, mm, yyyy] = dateKey.split(".");
+  return new Date(Number(yyyy), Number(mm) - 1, Number(dd));
+}
+
+export function formatConversationDateKey(date: Date): string {
+  return `${String(date.getDate()).padStart(2, "0")}.${String(date.getMonth() + 1).padStart(2, "0")}.${date.getFullYear()}`;
+}
+
+export function getConversationWeekMonday(date: Date): Date {
+  const day = date.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + diff);
+}
+
+function logicalDate(date: Date, rolloverHour: number, timeZone?: string): Date {
+  return toZonedWallClockDate(new Date(date.getTime() - rolloverHour * 3_600_000), timeZone);
+}
+
+function logicalDateKey(date: Date, rolloverHour: number, timeZone?: string): string {
+  return formatZonedConversationDate(date, timeZone, rolloverHour);
+}
+
+function getMessageAuthor(
+  message: ConversationSummaryMessage,
+  personaName: string,
+  charIdToName: Map<string, string>,
+): string {
+  if (message.role === "user") return personaName;
+  if (message.characterId && charIdToName.has(message.characterId)) return charIdToName.get(message.characterId)!;
+  if (message.role === "assistant") return "Character";
+  if (message.role === "narrator") return "Narrator";
+  return "System";
+}
+
+function buildDayBuckets(
+  messages: ConversationSummaryMessage[],
+  personaName: string,
+  charIdToName: Map<string, string>,
+  rolloverHour: number,
+  timeZone?: string,
+): ConversationSummaryDayBucket[] {
+  const buckets = new Map<string, ConversationSummaryDayBucket>();
+  for (const message of messages) {
+    if (!message.createdAt) continue;
+    const createdAt = new Date(message.createdAt);
+    if (!Number.isFinite(createdAt.getTime())) continue;
+    const content = stripConversationPromptTimestamps((message.content ?? "").trim());
+    if (!content) continue;
+
+    const date = logicalDateKey(createdAt, rolloverHour, timeZone);
+    const bucket = buckets.get(date) ?? { date, msgs: [] };
+    bucket.msgs.push({
+      role: message.role,
+      content,
+      author: getMessageAuthor(message, personaName, charIdToName),
+      ts: createdAt,
+    });
+    buckets.set(date, bucket);
+  }
+
+  return [...buckets.values()].sort(
+    (a, b) => parseConversationDateKey(a.date).getTime() - parseConversationDateKey(b.date).getTime(),
+  );
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, signal?: AbortSignal, onTimeout?: () => void): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const guard = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      // Reject first so the race settles as a timeout, not as the abort it triggers.
+      reject(new SummaryTimeoutError(ms));
+      onTimeout?.();
+    }, ms);
+    timer.unref?.();
+    if (signal) {
+      onAbort = () => reject(signal.reason ?? new Error("Summary aborted"));
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
+  return Promise.race([promise, guard]).finally(() => {
+    if (timer) clearTimeout(timer);
+    if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+  });
+}
+
+function cleanJsonishResponse(raw: string): string {
+  const trimmed = raw.trim();
+  const fenceMatch = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+  if (fenceMatch) return fenceMatch[1]!.trim();
+  const first = trimmed.indexOf("{");
+  const last = trimmed.lastIndexOf("}");
+  if (first >= 0) return trimmed.slice(first, last > first ? last + 1 : undefined);
+  return trimmed;
+}
+
+export function parseSummaryResponse(raw: string): DaySummaryEntry {
+  const trimmed = raw.trim();
+  const parsed = tryParseJsonRecord(cleanJsonishResponse(trimmed));
+  if (parsed) {
+    return {
+      summary: (typeof parsed.summary === "string" ? parsed.summary : trimmed).trim(),
+      keyDetails: Array.isArray(parsed.keyDetails)
+        ? parsed.keyDetails.filter((detail): detail is string => typeof detail === "string" && detail.trim().length > 0)
+        : [],
+    };
+  }
+  return { summary: trimmed, keyDetails: [] };
+}
+
+function dailySummarySystemPrompt(date: string, scope: string): string {
+  return [
+    `You are a conversation memory assistant. You will receive ${scope} DM conversation from ${date}.`,
+    `Produce a JSON object with two fields, in this order:`,
+    ``,
+    `1. "keyDetails" — An array of short, specific strings listing things the characters MUST remember going forward. Include:`,
+    `   - Promises or commitments made ("Alice promised to call Bob tomorrow morning")`,
+    `   - Plans or appointments ("They agreed to watch a movie together on Friday")`,
+    `   - Unresolved questions or topics left hanging ("Bob asked about Alice's job interview — she said she'd tell him later")`,
+    `   - Emotional events that would affect future interactions ("Alice confided she's been feeling lonely lately")`,
+    `   - New information revealed ("Bob mentioned he has a sister named Clara")`,
+    `   - Requests or things someone said they'd do ("Alice said she'd send the recipe")`,
+    `   If nothing important needs to be carried forward, use an empty array.`,
+    ``,
+    `2. "summary" — A few short atmospheric notes (1-3 brief sentences, third person). These are terse field notes, NOT prose — no flourishes, no literary phrasing. The summary is consumed by a weekly summarizer that builds a relational arc, so focus on things that aggregate meaningfully across days:`,
+    `   - Setting: when they talked (time of day, how long), where each character was, what they were doing`,
+    `   - Physical or emotional state of each character during the talk ("Alice was sleepy in bed the whole time", "Bob was buzzing with excitement")`,
+    `   - Tonal register and how it shifted ("started playful, turned tender when he opened up")`,
+    `   - The character of events as experienced ("heated argument about boundaries", "quiet check-in", "rapid-fire flirting")`,
+    `   Do NOT restate items already in keyDetails — the summary's job is the felt experience AROUND the facts, not the facts themselves.`,
+    `   Avoid: "A buoyant exchange where the energy bloomed from initial pleasantries into a tender celebration."`,
+    `   Prefer: "Buoyant evening chat. Mood warm throughout, lots of mutual hype."`,
+    `   If the day was uneventful, a single sentence is fine.`,
+    ``,
+    `Respond with ONLY valid JSON. No markdown fences, no extra text.`,
+    `Example: { "keyDetails": ["Alice promised to send Bob the recipe for pasta", "They planned to meet for coffee on Saturday", "Alice mentioned her sister Clara is visiting next week"], "summary": "Evening chat after work. Bob still at the office, Alice in pajamas at home. Warm and easy throughout, Alice tired by the end but in good spirits." }`,
+  ].join("\n");
+}
+
+function chunkTranscriptLines(lines: string[], maxChars: number): string[] {
+  const chunks: string[] = [];
+  let current = "";
+  for (const line of lines) {
+    const next = current ? `${current}\n${line}` : line;
+    if (next.length > maxChars && current) {
+      chunks.push(current);
+      current = line;
+    } else {
+      current = next;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks.slice(0, MAX_SUMMARY_CHUNKS_PER_DAY);
+}
+
+async function summarizeTranscript(
+  provider: BaseLLMProvider,
+  model: string,
+  systemPrompt: string,
+  userContent: string,
+  timeoutMs: number,
+  maxTokens = 4096,
+  signal?: AbortSignal,
+): Promise<DaySummaryEntry> {
+  signal?.throwIfAborted();
+  // Own controller so a timeout also cancels the in-flight provider request,
+  // while a caller abort still reaches it.
+  const requestController = new AbortController();
+  const forwardAbort = () => requestController.abort(signal?.reason);
+  signal?.addEventListener("abort", forwardAbort, { once: true });
+  let result: Awaited<ReturnType<BaseLLMProvider["chatComplete"]>>;
+  try {
+    result = await withTimeout(
+      provider.chatComplete(
+        [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userContent },
+        ],
+        { model, temperature: 0.3, maxTokens, signal: requestController.signal },
+      ),
+      timeoutMs,
+      signal,
+      () => requestController.abort(new SummaryTimeoutError(timeoutMs)),
+    );
+  } finally {
+    signal?.removeEventListener("abort", forwardAbort);
+  }
+  // Some providers report an abort as an empty "abort" finish instead of throwing.
+  signal?.throwIfAborted();
+  return parseSummaryResponse(result.content ?? "");
+}
+
+async function summarizeDayBucket(
+  provider: BaseLLMProvider,
+  model: string,
+  bucket: ConversationSummaryDayBucket,
+  timeoutMs: number,
+  maxTokens: number,
+  signal?: AbortSignal,
+): Promise<DaySummaryEntry> {
+  const transcriptLines = bucket.msgs.map((message) => `${message.author}: ${message.content}`);
+  const chunks = chunkTranscriptLines(transcriptLines, DAILY_TRANSCRIPT_CHUNK_CHARS);
+
+  if (chunks.length <= 1) {
+    return summarizeTranscript(
+      provider,
+      model,
+      dailySummarySystemPrompt(bucket.date, "a full day's"),
+      chunks[0] ?? "",
+      timeoutMs,
+      maxTokens,
+      signal,
+    );
+  }
+
+  const partials: DaySummaryEntry[] = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const partial = await summarizeTranscript(
+      provider,
+      model,
+      dailySummarySystemPrompt(bucket.date, `part ${i + 1} of ${chunks.length} of a long day's`),
+      chunks[i]!,
+      timeoutMs,
+      maxTokens,
+      signal,
+    );
+    if (partial.summary || partial.keyDetails.length > 0) partials.push(partial);
+  }
+
+  const combinedInput = partials
+    .map((entry, index) => {
+      const keyDetails = entry.keyDetails.length > 0 ? `\nKey details: ${entry.keyDetails.join("; ")}` : "";
+      return `[Part ${index + 1}]\n${entry.summary}${keyDetails}`;
+    })
+    .join("\n\n");
+
+  return summarizeTranscript(
+    provider,
+    model,
+    [
+      `You are a conversation memory assistant. You will receive partial summaries for ${bucket.date}.`,
+      `Combine them into one final JSON object with "summary" and "keyDetails".`,
+      `Remove duplicates, preserve unresolved promises/plans, and keep only durable details that matter later.`,
+      `Respond with ONLY valid JSON. No markdown fences, no extra text.`,
+    ].join("\n"),
+    combinedInput,
+    timeoutMs,
+    maxTokens,
+    signal,
+  );
+}
+
+function weekSummarySystemPrompt(rangeLabel: string): string {
+  return [
+    `You are a conversation memory assistant. You will receive a week's worth of daily entries (date, terse atmospheric notes, key facts) for the week of ${rangeLabel}.`,
+    `Produce a JSON object with two fields, in this order:`,
+    ``,
+    `1. "keyDetails" — A consolidated array of short, specific strings listing things the characters MUST still remember going forward. Review the daily key details and:`,
+    `   - KEEP details that are still relevant (upcoming plans, ongoing commitments, unresolved topics)`,
+    `   - MERGE duplicates or evolving items into their latest state`,
+    `   - DROP details that were already resolved during the week (e.g. "promised to send recipe" if it was sent later that week)`,
+    `   - ADD any overarching patterns or relationship developments worth remembering`,
+    ``,
+    `2. "summary" — A few terse atmospheric notes (3-5 brief sentences, third person) capturing the week's ARC, not its events. These are field notes, NOT prose — no flourishes, no literary phrasing. The daily entries already cover what felt like what each day; your job is to find the shape across them. Focus on:`,
+    `   - Tonal evolution across the week ("started distant, warmed up by Wednesday")`,
+    `   - Recurring patterns or rhythms ("late-night chats most evenings", "she kept circling back to her recordings")`,
+    `   - Relationship developments worth remembering ("noticeably more openly affectionate by week's end")`,
+    `   - Significant emotional shifts or turning points`,
+    `   Do NOT restate items already in keyDetails — the summary's job is the felt arc AROUND the facts, not the facts themselves. Do not chronicle "Monday they did X, Tuesday they did Y" — that's a list, not an arc.`,
+    `   Avoid: "The week unfolded as a tender progression from initial pleasantries into deeply intimate confessions, with their bond visibly deepening."`,
+    `   Prefer: "Mostly late-evening chats. Tone shifted from playful to tender mid-week after a vulnerable confession. Both more openly affectionate by Sunday."`,
+    ``,
+    `Respond with ONLY valid JSON. No markdown fences, no extra text.`,
+    `Example: { "keyDetails": ["Alice's sister Clara visiting next weekend", "Bob still off alcohol after the tequila incidents", "They agreed to weekend plans on Saturday"], "summary": "Mostly late-evening chats, often past midnight. Alice leaning on him through some recurring work doubts. Tone shifted from playful to tender mid-week after a vulnerable confession. Both more openly affectionate by Sunday." }`,
+  ].join("\n");
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function storedSummaryFailureError(error: string): string {
+  const sanitized = error
+    .replace(/[\u0000-\u001f\u007f]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  if (!sanitized) return "Summary generation failed";
+  return sanitized.length > MAX_STORED_SUMMARY_FAILURE_ERROR_CHARS
+    ? `${sanitized.slice(0, MAX_STORED_SUMMARY_FAILURE_ERROR_CHARS - 1)}…`
+    : sanitized;
+}
+
+function isPermanentSummaryFailure(error: string): boolean {
+  return /\b(?:400|401|403|404|405|410|422)\b/u.test(error);
+}
+
+function transientSummaryRetryDelayMs(attempts: number): number {
+  return Math.min(SUMMARY_TRANSIENT_RETRY_MAX_MS, SUMMARY_TRANSIENT_RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1));
+}
+
+function shouldSkipFailedSummary(
+  record: ConversationSummaryFailureRecord | undefined,
+  model: string,
+  now: Date,
+): boolean {
+  if (!record || record.model !== model) return false;
+  const lastAttemptTime = new Date(record.lastAttemptAt).getTime();
+  if (!Number.isFinite(lastAttemptTime)) return false;
+  if (record.permanent) return now.getTime() - lastAttemptTime < SUMMARY_PERMANENT_RETRY_MS;
+  return now.getTime() - lastAttemptTime < transientSummaryRetryDelayMs(record.attempts);
+}
+
+function recordSummaryFailure(
+  previous: ConversationSummaryFailureRecord | undefined,
+  error: string,
+  model: string,
+  now: Date,
+): ConversationSummaryFailureRecord {
+  return {
+    attempts: previous && previous.model === model ? previous.attempts + 1 : 1,
+    lastAttemptAt: now.toISOString(),
+    lastError: storedSummaryFailureError(error),
+    model,
+    permanent: isPermanentSummaryFailure(error),
+  };
+}
+
+/**
+ * The one warn line fields for a summary run with failures, shared by the generate
+ * path and the summaries route. Returns null when nothing failed. Only dates, week
+ * keys, ids and codes: never the error text or transcript.
+ */
+export function conversationSummaryFailureFields(
+  chatId: string,
+  run: Pick<
+    ConversationSummaryRunResult,
+    "failedDays" | "failedWeeks" | "processedDayCount" | "remainingMissingDayCount"
+  >,
+): Record<string, unknown> | null {
+  if (run.failedDays.length === 0 && run.failedWeeks.length === 0) return null;
+  const all = [...run.failedDays, ...run.failedWeeks];
+  return {
+    event: "conversation.summary",
+    chatId,
+    outcome: "failed",
+    failedDays: run.failedDays.map((failure) => failure.date),
+    failedWeeks: run.failedWeeks.map((failure) => failure.weekKey),
+    errorCodes: [...new Set(all.map((failure) => failure.errorCode))],
+    sampleErrorId: all[0]?.errorId,
+    processedDayCount: run.processedDayCount,
+    remainingMissingDayCount: run.remainingMissingDayCount,
+  };
+}
+
+export async function generateMissingConversationSummaries(
+  options: GenerateMissingConversationSummariesOptions,
+): Promise<ConversationSummaryRunResult> {
+  const rolloverHour = Math.max(0, Math.min(11, Math.floor(options.rolloverHour ?? 4)));
+  const timeoutMs = options.timeoutMs ?? DEFAULT_SUMMARY_TIMEOUT_MS;
+  const maxTokens = options.maxTokens ?? 4096;
+  const now = options.now ?? new Date();
+  const todayDateKey = logicalDateKey(now, rolloverHour, options.timeZone);
+  const daySummaries = normalizeDaySummaries(options.metadata.daySummaries);
+  const weekSummaries = normalizeWeekSummaries(options.metadata.weekSummaries);
+  const summaryFailures = normalizeConversationSummaryFailures(options.metadata.conversationSummaryFailures);
+  let summaryFailureMetadataChanged = false;
+
+  const buckets = buildDayBuckets(
+    options.messages,
+    options.personaName,
+    options.charIdToName,
+    rolloverHour,
+    options.timeZone,
+  );
+  const pastBuckets = buckets.filter((bucket) => bucket.date !== todayDateKey);
+  const missingBuckets = pastBuckets.filter(
+    (bucket) =>
+      !daySummaries[bucket.date] && !shouldSkipFailedSummary(summaryFailures.days[bucket.date], options.model, now),
+  );
+  const maxMissingDays =
+    typeof options.maxMissingDays === "number" && Number.isFinite(options.maxMissingDays)
+      ? Math.max(0, Math.floor(options.maxMissingDays))
+      : missingBuckets.length;
+  const bucketsToProcess = missingBuckets.slice(0, maxMissingDays);
+
+  const newlyGeneratedDays: Record<string, DaySummaryEntry> = {};
+  const newlyConsolidatedWeeks: Record<string, WeekSummaryEntry> = {};
+  const failedDays: ConversationSummaryFailedDay[] = [];
+  const failedWeeks: ConversationSummaryFailedWeek[] = [];
+
+  for (const bucket of bucketsToProcess) {
+    try {
+      options.signal?.throwIfAborted();
+      const entry = await summarizeDayBucket(
+        options.provider,
+        options.model,
+        bucket,
+        timeoutMs,
+        maxTokens,
+        options.signal,
+      );
+      if (entry.summary || entry.keyDetails.length > 0) {
+        daySummaries[bucket.date] = entry;
+        newlyGeneratedDays[bucket.date] = entry;
+        if (summaryFailures.days[bucket.date]) {
+          delete summaryFailures.days[bucket.date];
+          summaryFailureMetadataChanged = true;
+        }
+      }
+    } catch (error) {
+      if (options.signal?.aborted) throw error;
+      const message = errorMessage(error);
+      const reference = createDiagnostic(error);
+      failedDays.push({ date: bucket.date, error: message, errorId: reference.errorId, errorCode: reference.code });
+      summaryFailures.days[bucket.date] = recordSummaryFailure(
+        summaryFailures.days[bucket.date],
+        message,
+        options.model,
+        now,
+      );
+      summaryFailureMetadataChanged = true;
+    }
+  }
+
+  const messageDaysByWeek = new Map<string, Set<string>>();
+  for (const bucket of pastBuckets) {
+    const weekKey = formatConversationDateKey(getConversationWeekMonday(parseConversationDateKey(bucket.date)));
+    const set = messageDaysByWeek.get(weekKey) ?? new Set<string>();
+    set.add(bucket.date);
+    messageDaysByWeek.set(weekKey, set);
+  }
+
+  const daysByWeek = new Map<string, Array<{ dateKey: string; entry: DaySummaryEntry }>>();
+  for (const [dateKey, entry] of Object.entries(daySummaries)) {
+    const weekKey = formatConversationDateKey(getConversationWeekMonday(parseConversationDateKey(dateKey)));
+    const days = daysByWeek.get(weekKey) ?? [];
+    days.push({ dateKey, entry });
+    daysByWeek.set(weekKey, days);
+  }
+
+  for (const [weekKey, days] of daysByWeek) {
+    if (weekSummaries[weekKey]) continue;
+    if (shouldSkipFailedSummary(summaryFailures.weeks[weekKey], options.model, now)) continue;
+    const monday = parseConversationDateKey(weekKey);
+    const nextMonday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 7);
+    if (logicalDate(now, rolloverHour, options.timeZone).getTime() < nextMonday.getTime()) continue;
+
+    const messageDays = messageDaysByWeek.get(weekKey);
+    if (messageDays && [...messageDays].some((dateKey) => !daySummaries[dateKey])) continue;
+
+    try {
+      days.sort(
+        (a, b) => parseConversationDateKey(a.dateKey).getTime() - parseConversationDateKey(b.dateKey).getTime(),
+      );
+      const sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6);
+      const rangeLabel = `${weekKey} – ${formatConversationDateKey(sunday)}`;
+      const dayBlocks = days.map((day) => {
+        const keyDetails = day.entry.keyDetails.length > 0 ? `\nKey details: ${day.entry.keyDetails.join("; ")}` : "";
+        return `[${day.dateKey}]\n${day.entry.summary}${keyDetails}`;
+      });
+      const entry = await summarizeTranscript(
+        options.provider,
+        options.model,
+        weekSummarySystemPrompt(rangeLabel),
+        dayBlocks.join("\n\n"),
+        timeoutMs,
+        maxTokens,
+        options.signal,
+      );
+      if (entry.summary || entry.keyDetails.length > 0) {
+        weekSummaries[weekKey] = entry;
+        newlyConsolidatedWeeks[weekKey] = entry;
+        if (summaryFailures.weeks[weekKey]) {
+          delete summaryFailures.weeks[weekKey];
+          summaryFailureMetadataChanged = true;
+        }
+      }
+    } catch (error) {
+      if (options.signal?.aborted) throw error;
+      const message = errorMessage(error);
+      const reference = createDiagnostic(error);
+      failedWeeks.push({ weekKey, error: message, errorId: reference.errorId, errorCode: reference.code });
+      summaryFailures.weeks[weekKey] = recordSummaryFailure(
+        summaryFailures.weeks[weekKey],
+        message,
+        options.model,
+        now,
+      );
+      summaryFailureMetadataChanged = true;
+    }
+  }
+
+  return {
+    daySummaries,
+    weekSummaries,
+    newlyGeneratedDays,
+    newlyConsolidatedWeeks,
+    summaryFailures,
+    summaryFailureMetadataChanged,
+    failedDays,
+    failedWeeks,
+    missingDayCount: missingBuckets.length,
+    processedDayCount: bucketsToProcess.length,
+    remainingMissingDayCount: Math.max(0, missingBuckets.length - bucketsToProcess.length),
+  };
+}

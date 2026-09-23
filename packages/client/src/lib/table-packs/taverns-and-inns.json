@@ -1,0 +1,119 @@
+{
+  "id": "taverns-and-inns",
+  "name": "Taverns and inns",
+  "description": "Tavern names, menus, drinks and the people behind the bar.",
+  "tables": [
+    {
+      "name": "Tavern Name",
+      "dice": null,
+      "description": "A sign over the door.",
+      "rows": [
+        { "text": "The [[Tavern Adjective]] [[Tavern Noun]]", "weight": 8 },
+        { "text": "The [[Tavern Noun]] and [[Tavern Noun]]", "weight": 4 },
+        { "text": "The [[Tavern Noun]]'s Rest", "weight": 2 },
+        "The Last Candle",
+        "Three Kettles",
+        "The Drowned Bell",
+        "Mother Hollin's",
+        "The Wet Anchor",
+        "The Crooked Step",
+        "Gate and Garland",
+        "The Salted Ear",
+        "The Broken Wheel",
+        "Nine Nails",
+        "The Warm Hearth at the Ford"
+      ]
+    },
+    {
+      "name": "Tavern Adjective",
+      "dice": null,
+      "rows": [
+        "Laughing", "Drunken", "Silver", "Rusty", "Sleeping", "Golden", "Wandering", "Crooked",
+        "Grinning", "Hollow", "Painted", "Honest", "Weeping", "Stubborn", "Blind", "Three-Legged",
+        "Copper", "Lucky", "Muddy", "Singing", "Lame", "Frozen", "Burnt", "Jolly",
+        "Wicked", "Patient", "Tipsy", "Barefoot", "One-Eyed", "Velvet"
+      ]
+    },
+    {
+      "name": "Tavern Noun",
+      "dice": null,
+      "rows": [
+        "Stag", "Lantern", "Goose", "Kettle", "Boar", "Mermaid", "Anvil", "Hound",
+        "Tankard", "Crow", "Barrel", "Maiden", "Oak", "Fiddler", "Wyvern", "Plough",
+        "Harp", "Badger", "Bishop", "Pig", "Moon", "Ferryman", "Wolf", "Candle",
+        "Dragon", "Cartwheel", "Owl", "Shepherd", "Trout", "Bell"
+      ]
+    },
+    {
+      "name": "Inn Menu",
+      "dice": null,
+      "description": "Tonight's board, chalked by the door.",
+      "rows": [
+        { "text": "[[Inn Dish]] with [[Inn Side]], and [[Inn Drink]] to wash it down", "weight": 6 },
+        { "text": "[[Inn Dish]] or [[Inn Dish]], both with [[Inn Side]]", "weight": 3 },
+        "Yesterday's stew, reheated and honest about it",
+        "Bread, cheese and whatever the cook will not name",
+        "Nothing hot until the fire is fixed, so cold [[Inn Dish]]",
+        "A feast day special: [[Inn Dish]], [[Inn Dish]] and a sweet cake",
+        "Porridge only; the cook is at a funeral",
+        "[[Inn Dish]] for coin, [[Inn Side]] free with any song",
+        "A single pot of [[Inn Dish]] and a long wait",
+        "[[Inn Drink]] by the jug, food by request",
+        "Fried fish and [[Inn Side]]; the river was generous",
+        "The cook's mother's recipe: [[Inn Dish]] that tastes of pepper and regret"
+      ]
+    },
+    {
+      "name": "Inn Dish",
+      "dice": null,
+      "rows": [
+        "mutton stew", "roast capon", "eel pie", "barley soup", "venison sausages", "pease pudding",
+        "smoked trout", "pork and apple pie", "rabbit in cider", "mushroom broth", "goat cheese tart",
+        "salt beef", "leek and onion pottage", "honey-glazed ham", "fried river crayfish", "lamb shank",
+        "blood pudding", "turnip and bacon hash", "pigeon pie", "baked carp with herbs",
+        "spiced lentils", "boiled fowl", "cabbage rolls", "a thick oat porridge"
+      ]
+    },
+    {
+      "name": "Inn Side",
+      "dice": null,
+      "rows": [
+        "black bread", "buttered turnips", "pickled onions", "roast parsnips", "a wedge of hard cheese",
+        "stewed apples", "fried bread", "boiled greens", "crackling", "mushy peas",
+        "a heel of rye loaf", "a spoon of mustard"
+      ]
+    },
+    {
+      "name": "Inn Drink",
+      "dice": null,
+      "rows": [
+        { "text": "small beer", "weight": 3 },
+        { "text": "brown ale", "weight": 3 },
+        "sour cider", "honey mead", "watered wine", "spiced wine, warm", "pear brandy",
+        "a dark stout that sticks to the cup", "juniper spirit", "goat's milk", "blackberry wine",
+        "barley water", "a smoky northern whisky", "cherry cordial", "the house special, which is green",
+        "hot mulled ale", "plum wine", "a pale southern lager"
+      ]
+    },
+    {
+      "name": "Tavern Keeper",
+      "dice": null,
+      "description": "Who is behind the bar.",
+      "rows": [
+        "a broad retired soldier who keeps a cudgel under the counter",
+        "a young widow running the place alone and doing it well",
+        "twin sisters who finish each other's arguments",
+        "a nervous man who owes money to someone in the back room",
+        "a retired adventurer with a wall of trophies and tall tales",
+        "a halfling matron who knows every guest's name by the second night",
+        "a silent giant of a woman who communicates in nods",
+        "a former priest who still blesses every barrel",
+        "a gossip who trades rumours for tips",
+        "a cheerful cook who is plainly running the place instead of the owner",
+        "an old sailor who rings a bell for every good tip",
+        "a sharp-eyed widow who waters the wine for strangers only",
+        "a boy of fifteen minding the inn while his parents are away"
+      ]
+    }
+  ]
+}

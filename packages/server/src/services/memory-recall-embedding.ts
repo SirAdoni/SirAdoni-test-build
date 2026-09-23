@@ -1,0 +1,323 @@
+import { LOCAL_SIDECAR_CONNECTION_ID, PROVIDERS, localAuthProviderBaseUrl } from "@marinara-engine/shared";
+import { createHash } from "node:crypto";
+import type { DB } from "../db/connection.js";
+import { logRecovered, logRepeated } from "../lib/log-events.js";
+import { isLocalEmbedderAvailable } from "./local-embedder.js";
+import { getLocalSidecarProvider, LOCAL_SIDECAR_MODEL } from "./llm/local-sidecar.js";
+import { createLLMProvider } from "./llm/provider-registry.js";
+import type { MemoryRecallEmbeddingInputType, MemoryRecallEmbeddingSource } from "./memory-recall.js";
+import { sidecarModelService } from "./sidecar/sidecar-model.service.js";
+import { createConnectionsStorage } from "./storage/connections.storage.js";
+
+type ConnectionStorage = ReturnType<typeof createConnectionsStorage>;
+type ConnectionWithKey = NonNullable<Awaited<ReturnType<ConnectionStorage["getWithKey"]>>>;
+type EmbeddingConnectionLike = Omit<
+  Pick<
+    ConnectionWithKey,
+    | "id"
+    | "name"
+    | "provider"
+    | "baseUrl"
+    | "apiKey"
+    | "maxContext"
+    | "openrouterProvider"
+    | "maxTokensOverride"
+    | "claudeFastMode"
+    | "treatAsLocalEndpoint"
+    | "defaultParameters"
+    | "embeddingConnectionId"
+    | "embeddingBaseUrl"
+    | "embeddingModel"
+  >,
+  "provider"
+> & { provider: string };
+const VECTOR_VERDICT_TTL_MS = 60_000;
+
+let cachedVectorizerVerdict: { key: string; available: boolean; at: number } | null = null;
+
+function parseMetadata(raw: unknown): Record<string, unknown> {
+  if (!raw) return {};
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+    } catch {
+      return {};
+    }
+  }
+  return typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+}
+
+function resolveBaseUrl(connection: { baseUrl: string | null; provider: string }): string {
+  if (connection.baseUrl) return connection.baseUrl.replace(/\/+$/, "");
+  const localAuthBaseUrl = localAuthProviderBaseUrl(connection.provider);
+  if (localAuthBaseUrl) return localAuthBaseUrl;
+  const providerDef = PROVIDERS[connection.provider as keyof typeof PROVIDERS];
+  return providerDef?.defaultBaseUrl ?? "";
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export interface MemoryRecallEmbeddingInputProfile {
+  id: string;
+  queryPrefix: string;
+  documentPrefix: string;
+}
+
+const DEFAULT_EMBEDDING_INPUT_PROFILE: MemoryRecallEmbeddingInputProfile = {
+  id: "plain-v1",
+  queryPrefix: "",
+  documentPrefix: "",
+};
+
+/**
+ * Apply the asymmetric input prefixes required by common retrieval models.
+ * Unknown models remain untouched because adding an unsupported instruction
+ * can be more damaging than omitting one.
+ */
+export function resolveMemoryRecallEmbeddingInputProfile(model: string): MemoryRecallEmbeddingInputProfile {
+  const normalized = model.toLowerCase();
+  if (normalized.includes("snowflake-arctic-embed") && normalized.includes("v2")) {
+    return { id: "snowflake-arctic-v2", queryPrefix: "query: ", documentPrefix: "" };
+  }
+  if (/(^|[/_.-])e5([/_.-]|$)/u.test(normalized)) {
+    return { id: "e5", queryPrefix: "query: ", documentPrefix: "passage: " };
+  }
+  if (normalized.includes("nomic-embed-text")) {
+    return { id: "nomic-embed-text", queryPrefix: "search_query: ", documentPrefix: "search_document: " };
+  }
+  return DEFAULT_EMBEDDING_INPUT_PROFILE;
+}
+
+export function formatMemoryRecallEmbeddingTexts(
+  texts: string[],
+  model: string,
+  inputType: MemoryRecallEmbeddingInputType,
+): string[] {
+  const profile = resolveMemoryRecallEmbeddingInputProfile(model);
+  const prefix = inputType === "query" ? profile.queryPrefix : profile.documentPrefix;
+  return prefix ? texts.map((text) => `${prefix}${text}`) : texts;
+}
+
+export function createMemoryRecallEmbeddingSpaceId(
+  kind: string,
+  model: string,
+  ...parts: Array<string | null | undefined>
+): string {
+  const profile = resolveMemoryRecallEmbeddingInputProfile(model);
+  const digest = createHash("sha256")
+    .update(JSON.stringify([...parts, model, profile.id].map((part) => part?.trim() ?? "")))
+    .digest("hex");
+  return `${kind}:${digest}`;
+}
+
+function buildVectorizerCacheKey(options: {
+  chatMetadata?: unknown;
+  connectionId?: string | null;
+  activeConnection?: EmbeddingConnectionLike | null;
+  activeBaseUrl?: string | null;
+}): string {
+  const chatMeta = parseMetadata(options.chatMetadata);
+  const active = options.activeConnection ?? null;
+  return JSON.stringify({
+    connectionId: options.connectionId ?? active?.id ?? "default",
+    activeBaseUrl: options.activeBaseUrl ?? "",
+    provider: active?.provider ?? "",
+    embeddingConnectionId:
+      nonEmptyString(chatMeta.embeddingConnectionId) ?? nonEmptyString(active?.embeddingConnectionId) ?? "",
+    embeddingBaseUrl: nonEmptyString(active?.embeddingBaseUrl) ?? "",
+    embeddingModel: nonEmptyString(active?.embeddingModel) ?? "",
+  });
+}
+
+export function resetMemoryRecallVectorizerCache(): void {
+  cachedVectorizerVerdict = null;
+}
+
+function isLocalSidecarEmbeddingSupported(): boolean {
+  return (
+    sidecarModelService.getResolvedBackend() === "llama_cpp" &&
+    sidecarModelService.isEnabled() &&
+    sidecarModelService.getConfiguredModelRef() !== null
+  );
+}
+
+export async function resolveMemoryRecallEmbeddingSource(
+  db: DB,
+  options: {
+    chatMetadata?: unknown;
+    connectionId?: string | null;
+    activeConnection?: EmbeddingConnectionLike | null;
+    activeBaseUrl?: string | null;
+  },
+): Promise<MemoryRecallEmbeddingSource | null> {
+  const connections = createConnectionsStorage(db);
+  if (options.connectionId === "random") {
+    // A random chat stores a sentinel rather than a persisted connection id.
+    // Use one stable, embedding-capable member of its pool so rebuilding and
+    // later recall queries stay in the same vector space.
+    const pool = (await connections.listRandomPool()).sort((left, right) => left.id.localeCompare(right.id));
+    for (const connection of pool) {
+      const source = await resolveMemoryRecallEmbeddingSource(db, {
+        chatMetadata: options.chatMetadata,
+        connectionId: connection.id,
+        activeConnection: connection,
+        activeBaseUrl: resolveBaseUrl(connection),
+      });
+      if (source) return source;
+    }
+    return null;
+  }
+
+  let activeConnection =
+    options.activeConnection ?? (options.connectionId ? await connections.getWithKey(options.connectionId) : null);
+  if (!activeConnection && !options.connectionId) {
+    const defaultConnection = await connections.getDefault();
+    activeConnection = defaultConnection ? await connections.getWithKey(defaultConnection.id) : null;
+  }
+  if (!activeConnection) return null;
+
+  const chatMeta = parseMetadata(options.chatMetadata);
+  const embeddingConnId =
+    nonEmptyString(chatMeta.embeddingConnectionId) ?? nonEmptyString(activeConnection.embeddingConnectionId);
+
+  if (embeddingConnId === LOCAL_SIDECAR_CONNECTION_ID) {
+    if (!isLocalSidecarEmbeddingSupported()) {
+      logRepeated(
+        "ltm.recall:sidecar-unsupported",
+        "warn",
+        { event: "ltm.recall", stage: "embed", outcome: "skipped", source: "sidecar" },
+        "[memory-recall] Local sidecar was selected for embeddings, but sidecar embeddings require an enabled llama.cpp local model",
+      );
+      return null;
+    }
+
+    const provider = getLocalSidecarProvider();
+    const label = "Local Model sidecar";
+    const configuredModelRef = sidecarModelService.getConfiguredModelRef() ?? LOCAL_SIDECAR_MODEL;
+    const spaceId = createMemoryRecallEmbeddingSpaceId(
+      "sidecar",
+      configuredModelRef,
+      sidecarModelService.getResolvedBackend(),
+    );
+    const repeatKey = `ltm.recall:embed:${spaceId}`;
+    return {
+      spaceId,
+      label,
+      async embed(texts: string[], signal?: AbortSignal, inputType: MemoryRecallEmbeddingInputType = "document") {
+        try {
+          const vectors = await provider.embed(
+            formatMemoryRecallEmbeddingTexts(texts, configuredModelRef, inputType),
+            LOCAL_SIDECAR_MODEL,
+            signal,
+          );
+          logRecovered(repeatKey, { source: label }, "[memory-recall] embedding source working again");
+          return vectors;
+        } catch (err) {
+          logRepeated(
+            repeatKey,
+            "warn",
+            { event: "ltm.recall", stage: "embed", outcome: "failed", source: label, model: LOCAL_SIDECAR_MODEL, err },
+            "[memory-recall] Configured embedding source failed",
+          );
+          return null;
+        }
+      },
+    };
+  }
+
+  let embeddingConnection = activeConnection;
+  let embeddingBaseUrl = options.activeBaseUrl ?? null;
+
+  if (embeddingConnId) {
+    const configuredConnection = await connections.getWithKey(embeddingConnId);
+    if (configuredConnection) {
+      embeddingConnection = configuredConnection;
+      embeddingBaseUrl = resolveBaseUrl(configuredConnection);
+    }
+  }
+
+  embeddingBaseUrl =
+    nonEmptyString(embeddingConnection.embeddingBaseUrl) ?? embeddingBaseUrl ?? resolveBaseUrl(embeddingConnection);
+  // Dedicated embedding connections may provide credentials/base URL while the
+  // active chat connection remains the source of the selected embedding model.
+  const embeddingModel =
+    nonEmptyString(embeddingConnection.embeddingModel) ?? nonEmptyString(activeConnection.embeddingModel);
+
+  if (!embeddingModel || !embeddingBaseUrl) return null;
+
+  const provider = createLLMProvider(
+    embeddingConnection.provider,
+    embeddingBaseUrl,
+    embeddingConnection.apiKey,
+    embeddingConnection.maxContext,
+    embeddingConnection.openrouterProvider,
+    embeddingConnection.maxTokensOverride,
+    embeddingConnection.claudeFastMode === "true",
+    embeddingConnection.treatAsLocalEndpoint === "true",
+    embeddingConnection.defaultParameters,
+    embeddingConnection.id,
+  );
+  const label = `${embeddingConnection.name || embeddingConnection.provider} (${embeddingModel})`;
+  const spaceId = createMemoryRecallEmbeddingSpaceId(
+    "remote",
+    embeddingModel,
+    embeddingConnection.provider,
+    embeddingBaseUrl,
+  );
+  const repeatKey = `ltm.recall:embed:${spaceId}`;
+
+  return {
+    spaceId,
+    label,
+    async embed(texts: string[], signal?: AbortSignal, inputType: MemoryRecallEmbeddingInputType = "document") {
+      try {
+        const vectors = await provider.embed(
+          formatMemoryRecallEmbeddingTexts(texts, embeddingModel, inputType),
+          embeddingModel,
+          signal,
+        );
+        logRecovered(repeatKey, { source: label }, "[memory-recall] embedding source working again");
+        return vectors;
+      } catch (err) {
+        logRepeated(
+          repeatKey,
+          "warn",
+          {
+            event: "ltm.recall",
+            stage: "embed",
+            outcome: "failed",
+            source: label,
+            provider: embeddingConnection.provider,
+            model: embeddingModel,
+            connectionId: embeddingConnection.id,
+            err,
+          },
+          "[memory-recall] Configured embedding source failed",
+        );
+        return null;
+      }
+    },
+  };
+}
+
+export async function isMemoryRecallVectorizerAvailable(
+  db: DB,
+  options: {
+    chatMetadata?: unknown;
+    connectionId?: string | null;
+    activeConnection?: EmbeddingConnectionLike | null;
+    activeBaseUrl?: string | null;
+  },
+): Promise<boolean> {
+  const key = buildVectorizerCacheKey(options);
+  const now = Date.now();
+  if (cachedVectorizerVerdict?.key === key && now - cachedVectorizerVerdict.at < VECTOR_VERDICT_TTL_MS) {
+    return cachedVectorizerVerdict.available;
+  }
+  const available = (await resolveMemoryRecallEmbeddingSource(db, options)) !== null || isLocalEmbedderAvailable();
+  cachedVectorizerVerdict = { key, available, at: now };
+  return available;
+}

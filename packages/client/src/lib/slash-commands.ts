@@ -1,0 +1,1513 @@
+// ──────────────────────────────────────────────
+// Slash Commands — SillyTavern-style / commands
+// ──────────────────────────────────────────────
+import { api } from "./api-client";
+import { useChatStore } from "../stores/chat.store";
+import { useUIStore } from "../stores/ui.store";
+import { useConversationGamesStore } from "../stores/conversation-games.store";
+import { useGalleryStore } from "../stores/gallery.store";
+import { toast } from "sonner";
+import { startSceneWithPromptPreferences } from "./scene-generation";
+import { isMessageHidden } from "./message-visibility";
+export { isMessageHidden } from "./message-visibility";
+import {
+  SUPPORTED_MACROS,
+  buildGuidedGenerationInstructionMessage,
+  buildNarratorInstructionMessage,
+  isWithinDiceLimits,
+  normalizeTextForMatch,
+  parseDiceNotation,
+  rollParsedDice,
+  type ParsedDiceNotation,
+} from "@marinara-engine/shared";
+
+export interface SlashCommand {
+  name: string;
+  aliases?: string[];
+  description: string;
+  usage: string;
+  /** Capability package that must be active before this command is advertised or executed. */
+  requiredCapabilityId?: string;
+  /** Chat surfaces where this command is relevant. */
+  modes?: Array<"conversation" | "roleplay">;
+  /** If true, command is executed locally and doesn't send to the LLM */
+  local?: boolean;
+  /** Execute the command. Returns a string result, or null if it dispatches an action elsewhere. */
+  execute: (args: string, ctx: SlashCommandContext) => Promise<SlashCommandResult>;
+}
+
+export interface SlashCommandContext {
+  chatId: string;
+  mode?: "conversation" | "roleplay";
+  /** Trigger an LLM generation (with optional user message) */
+  generate: (params: {
+    chatId: string;
+    connectionId: string | null;
+    userMessage?: string;
+    generationGuide?: string;
+    generationGuideSource?: "narrator" | "guide" | "game_start";
+    continueMessageId?: string;
+    mentionedCharacterNames?: string[];
+    forCharacterId?: string;
+    impersonate?: boolean;
+    attachments?: { type: string; data: string }[];
+    impersonatePresetId?: string;
+    impersonateConnectionId?: string;
+    impersonateBlockAgents?: boolean;
+    impersonatePromptTemplate?: string;
+  }) => Promise<boolean | void>;
+  /** Insert a message directly into the chat (no LLM) */
+  createMessage: (data: {
+    role: string;
+    content: string;
+    characterId?: string | null;
+    extra?: Record<string, unknown>;
+  }) => void | Promise<void>;
+  /** Invalidate chat queries to refresh the UI */
+  invalidate: () => void;
+  /** Invalidate the character detail cache after character-owned changes. */
+  invalidateCharacter?: (characterId: string) => void;
+  /** Character names in the current chat */
+  characterNames: string[];
+  /** Characters available in the current roleplay scene */
+  characters?: Array<{ id: string; name: string }>;
+  /** Manual individual group replies need a target character instead of an auto-selected responder. */
+  requiresManualGuideTarget?: boolean;
+  /** Clears a pending smart-response badge for a character after an explicit targeted command. */
+  removeQueuedResponse?: (characterId: string) => void;
+  /** Latest assistant message, used when /continue appends to an unfinished reply */
+  latestAssistantMessageId?: string | null;
+  /** Role of the last message in the chat. /continue only appends to a trailing
+   *  assistant reply; otherwise it generates a fresh response. */
+  lastMessageRole?: string | null;
+  /** Apply a manual sprite expression override */
+  setSpriteExpression?: (characterId: string, expression: string) => void | Promise<void>;
+  /** Trigger the same image illustration action exposed in the chat Gallery. */
+  illustrate?: (prompt?: string) => void | Promise<void>;
+  /** Trigger the same Conversation selfie action exposed in the chat Gallery. */
+  selfie?: (characterId?: string) => void | Promise<void>;
+  /** Active downloadable capability packages available to this composer. */
+  availableCapabilityIds?: ReadonlySet<string>;
+  /** Installed Conversation games that contribute manual slash launchers. */
+  conversationGames?: readonly ConversationGameSlashContribution[];
+}
+
+export interface ConversationGameSlashContribution {
+  packageId: string;
+  packageName: string;
+  command: string;
+  aliases: readonly string[];
+}
+
+export interface SlashCommandAvailability {
+  mode?: "conversation" | "roleplay";
+  availableCapabilityIds?: ReadonlySet<string>;
+  conversationGames?: readonly ConversationGameSlashContribution[];
+}
+
+function isSlashCommandAvailable(command: SlashCommand, availability: SlashCommandAvailability = {}): boolean {
+  if (command.requiredCapabilityId && availability.availableCapabilityIds) {
+    if (!availability.availableCapabilityIds.has(command.requiredCapabilityId)) return false;
+  }
+  if (command.modes && availability.mode && !command.modes.includes(availability.mode)) return false;
+  return true;
+}
+
+function quoteCommandArgument(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (!/[\s"\\]/u.test(trimmed)) return trimmed;
+  return `"${trimmed.replace(/["\\]/g, "\\$&")}"`;
+}
+
+function formatAvailableCharacterList(characters: Array<{ name: string }>): string {
+  return characters.map((character) => character.name).join(", ");
+}
+
+function buildStatusCommandHelp(characters: Array<{ id: string; name: string }>): string {
+  const available = formatAvailableCharacterList(characters);
+  const exampleTarget = characters[0]?.name ?? "Character Name";
+  const exampleArg = quoteCommandArgument(exampleTarget) || '"Character Name"';
+  return [
+    "Usage: /status <online|idle|dnd|offline|clear> [character name]",
+    "Examples:",
+    `/status online ${exampleArg}`,
+    `/status clear ${exampleArg}`,
+    available ? `Available: ${available}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function formatGuidedTargetHelp(characters: Array<{ name: string }>): string {
+  const available = formatAvailableCharacterList(characters);
+  return `Use /guided respond for <character> <direction>${available ? `\nAvailable: ${available}` : ""}`;
+}
+
+function trimGuideSeparator(value: string): string {
+  return value.replace(/^\s*[:;,-]\s*/u, "").trim();
+}
+
+function guidedTargetRemainder(args: string): string | null {
+  const trimmed = args.trim();
+  const match =
+    trimmed.match(/^(?:respond|reply|answer)\s+(?:for|as|from)\s+/iu) ?? trimmed.match(/^(?:for|as|from)\s+/iu);
+  return match ? trimmed.slice(match[0].length).trim() : null;
+}
+
+function splitLeadingQuotedTarget(value: string): { targetName: string; rest: string } | null {
+  const match = value.match(/^["']([^"']+)["']([\s\S]*)$/u);
+  if (!match) return null;
+  return { targetName: match[1]!.trim(), rest: match[2] ?? "" };
+}
+
+function resolveGuidedCharacterTarget(
+  args: string,
+  characters: Array<{ id: string; name: string }> = [],
+): { character: { id: string; name: string }; guideText: string } | null {
+  const remainder = guidedTargetRemainder(args);
+  if (!remainder) return null;
+
+  const quotedTarget = splitLeadingQuotedTarget(remainder);
+  if (quotedTarget) {
+    const quotedName = normalizeTextForMatch(quotedTarget.targetName);
+    const character = characters.find((candidate) => normalizeTextForMatch(candidate.name) === quotedName);
+    return character ? { character, guideText: trimGuideSeparator(quotedTarget.rest) } : null;
+  }
+
+  const sortedCharacters = [...characters].sort(
+    (a, b) => normalizeTextForMatch(b.name).length - normalizeTextForMatch(a.name).length,
+  );
+  for (const character of sortedCharacters) {
+    const normalizedName = normalizeTextForMatch(character.name);
+    if (!normalizedName) continue;
+
+    const words = Array.from(remainder.matchAll(/\S+/gu));
+    for (const word of words) {
+      const end = (word.index ?? 0) + word[0].length;
+      const prefix = remainder.slice(0, end);
+      const normalizedPrefix = normalizeTextForMatch(prefix.replace(/[:;,-]+$/u, ""));
+      if (normalizedPrefix === normalizedName) {
+        return { character, guideText: trimGuideSeparator(remainder.slice(end)) };
+      }
+      if (!normalizedName.startsWith(normalizedPrefix)) break;
+    }
+  }
+
+  return null;
+}
+
+export interface SlashCommandResult {
+  /** If true, don't send to the LLM / don't do normal send */
+  handled: boolean;
+  /** Optional feedback to show (ephemeral, not persisted) */
+  feedback?: string;
+}
+
+async function translateSlash(key: string, options?: Record<string, unknown>): Promise<string> {
+  const { translate } = await import("../localization/i18n");
+  return translate(key, options);
+}
+
+// ── Dice roller ────────────────
+
+function parseDice(notation: string): ParsedDiceNotation | null {
+  const parsed = parseDiceNotation(notation);
+  // Same caps the server dice route enforces. Without them "/roll 99999999d6"
+  // spins the render thread, and "0d6" rolls nothing at all (the shared grammar
+  // already refuses a count below one).
+  if (!parsed || !isWithinDiceLimits(parsed)) return null;
+  return parsed;
+}
+
+// ── Reminder parser ────────────────
+
+function parseReminder(input: string): { ms: number; timeStr: string; message: string } | null {
+  const match = input.match(/^((?:\d+[hms])+)\s+(.+)$/is);
+  if (!match) return null;
+
+  const timeRaw = match[1]!;
+  const message = match[2]!.trim();
+  if (!message) return null;
+
+  let ms = 0;
+  const h = timeRaw.match(/(\d+)h/i);
+  const m = timeRaw.match(/(\d+)m/i);
+  const s = timeRaw.match(/(\d+)s/i);
+  if (h) ms += parseInt(h[1]!, 10) * 3_600_000;
+  if (m) ms += parseInt(m[1]!, 10) * 60_000;
+  if (s) ms += parseInt(s[1]!, 10) * 1_000;
+  if (ms === 0) return null;
+
+  const parts: string[] = [];
+  if (h) parts.push(`${h[1]}h`);
+  if (m) parts.push(`${m[1]}m`);
+  if (s) parts.push(`${s[1]}s`);
+
+  return { ms, timeStr: parts.join(""), message };
+}
+
+function buildMacroHelpText(): string {
+  const sections = new Map<string, string[]>();
+
+  for (const macro of SUPPORTED_MACROS) {
+    const lines = sections.get(macro.category) ?? [];
+    lines.push(`${macro.syntax} - ${macro.description}`);
+    sections.set(macro.category, lines);
+  }
+
+  return [
+    "Supported Macros:",
+    "Tip: In group chats, a bracketed block containing character macros like {{char}} and {{description}} repeats once per character.",
+    'Conditional blocks: {{#if character == "Dottore"}}Dottore prompt{{else}}Fallback prompt{{/if}}',
+    "Conditionals support char, character, speaker, group, user, preset variables, comparisons, || (OR), && (AND), parentheses, equality-list shorthand, and straight or typographic quotes.",
+    ...Array.from(sections.entries()).flatMap(([category, lines], index) =>
+      index === 0 ? ["", `${category}:`, ...lines] : ["", `${category}:`, ...lines],
+    ),
+    "",
+    "Input Actions:",
+    "{{prompt}} - Open the prompt preview for the current chat without sending a message",
+  ].join("\n");
+}
+
+const MACRO_HELP_TEXT = buildMacroHelpText();
+const ILLUSTRATE_SLASH_TIMEOUT_MS = 1_800_000;
+
+function withSlashCommandTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const deadline = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, deadline]).finally(() => {
+    if (timeout) clearTimeout(timeout);
+  });
+}
+
+export function getSlashCommandUsage(
+  command: SlashCommand,
+  translate: (key: string, options: { defaultValue: string }) => string,
+): string {
+  return translate(`ui.chat.slash.usage.${command.name}`, { defaultValue: command.usage });
+}
+
+async function buildSlashHelpText(availability: SlashCommandAvailability): Promise<string> {
+  const { translate } = await import("../localization/i18n");
+  const availableCommands = getAvailableSlashCommands(availability);
+  return [
+    translate("ui.chat.slash.help.title"),
+    "",
+    translate("ui.chat.slash.help.arguments"),
+    translate("ui.chat.slash.help.ranges"),
+    "",
+    ...availableCommands.map((command) => `${getSlashCommandUsage(command, translate)} - ${command.description}`),
+  ].join("\n");
+}
+
+function parseImpersonatePromptArg(args: string): string {
+  let prompt = args.trim();
+  if (!prompt) return "";
+
+  const quote = prompt[0] ?? "";
+  const closeQuote = quote === "\u201c" ? "\u201d" : quote === "\u2018" ? "\u2019" : quote;
+  if (quote === '"' || quote === "'" || quote === "\u201c" || quote === "\u2018") {
+    prompt = prompt.slice(1);
+    if (prompt.endsWith(closeQuote)) {
+      prompt = prompt.slice(0, -1);
+    }
+  }
+
+  return prompt.trim();
+}
+
+function parseNamedArgs(input: string): Record<string, string> {
+  const values: Record<string, string> = {};
+  const argPattern =
+    /([A-Za-z][\w-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|\u201c([^\u201d]*)\u201d|\u2018([^\u2019]*)\u2019|([^\s]+))/g;
+  let match: RegExpExecArray | null;
+  while ((match = argPattern.exec(input))) {
+    values[match[1]!.toLowerCase()] = (match[2] ?? match[3] ?? match[4] ?? match[5] ?? match[6] ?? "").trim();
+  }
+  return values;
+}
+
+function parseCommandTokens(input: string): Array<{ value: string; quoted: boolean }> {
+  const tokens: Array<{ value: string; quoted: boolean }> = [];
+  const tokenPattern =
+    /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|\u201c([^\u201d\\]*(?:\\.[^\u201d\\]*)*)\u201d|\u2018([^\u2019\\]*(?:\\.[^\u2019\\]*)*)\u2019|(\S+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = tokenPattern.exec(input))) {
+    const quoted = match[1] !== undefined || match[2] !== undefined || match[3] !== undefined || match[4] !== undefined;
+    const raw = (match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5] ?? "").trim();
+    if (!raw) continue;
+    tokens.push({ value: raw.replace(/\\(["'\u201c\u201d\u2018\u2019\\])/g, "$1"), quoted });
+  }
+  return tokens;
+}
+
+function normalizeLookup(value: string): string {
+  return normalizeTextForMatch(value);
+}
+
+function isAllEmoteTarget(value: string): boolean {
+  const normalized = normalizeLookup(value);
+  return normalized === "all" || normalized === "*";
+}
+
+function findSceneCharacter<T extends { name: string }>(characters: T[], name: string): T | null {
+  const normalized = normalizeLookup(name);
+  if (!normalized) return null;
+  return (
+    characters.find((character) => normalizeLookup(character.name) === normalized) ??
+    characters.find((character) => normalizeLookup(character.name).includes(normalized)) ??
+    null
+  );
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function unescapeCommandQuotedText(value: string): string {
+  return value.replace(/\\(["'\u201c\u201d\u2018\u2019\\])/g, "$1");
+}
+
+function parseLeadingQuotedSegment(input: string): { value: string; rest: string } | null {
+  const trimmed = input.trimStart();
+  const quotePairs: Record<string, string> = {
+    '"': '"',
+    "'": "'",
+    "\u201c": "\u201d",
+    "\u2018": "\u2019",
+  };
+  const quote = trimmed[0];
+  const closingQuote = quote ? quotePairs[quote] : undefined;
+  if (!quote || !closingQuote) return null;
+
+  let escaped = false;
+  for (let i = 1; i < trimmed.length; i += 1) {
+    const char = trimmed[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === closingQuote) {
+      return {
+        value: unescapeCommandQuotedText(trimmed.slice(1, i)),
+        rest: trimmed.slice(i + 1).trim(),
+      };
+    }
+  }
+
+  return null;
+}
+
+function stripSingleWrappingQuotePair(input: string): string {
+  const trimmed = input.trim();
+  const quotePairs: Record<string, string> = {
+    '"': '"',
+    "'": "'",
+    "\u201c": "\u201d",
+    "\u2018": "\u2019",
+  };
+  const opening = trimmed[0];
+  const closing = opening ? quotePairs[opening] : undefined;
+  if (opening && closing && trimmed.endsWith(closing) && trimmed.length >= 2) {
+    return unescapeCommandQuotedText(trimmed.slice(1, -1)).trim();
+  }
+  return trimmed;
+}
+
+function resolveAsCommandTarget(
+  args: string,
+  characters: Array<{ id: string | null; name: string }>,
+): { target: { id: string | null; name: string } | null; requestedName: string; message: string } {
+  const trimmed = args.trim();
+  if (!trimmed) return { target: null, requestedName: "", message: "" };
+
+  const quotedTarget = parseLeadingQuotedSegment(trimmed);
+  if (quotedTarget) {
+    const target = findSceneCharacter(characters, quotedTarget.value);
+    return {
+      target,
+      requestedName: quotedTarget.value,
+      message: stripSingleWrappingQuotePair(quotedTarget.rest),
+    };
+  }
+
+  const sortedCharacters = [...characters].sort((a, b) => b.name.length - a.name.length);
+  for (const character of sortedCharacters) {
+    const pattern = new RegExp(`^${escapeRegExp(character.name)}(?:\\s+|$)`, "iu");
+    const match = trimmed.match(pattern);
+    if (match) {
+      return {
+        target: character,
+        requestedName: character.name,
+        message: stripSingleWrappingQuotePair(trimmed.slice(match[0].length).trim()),
+      };
+    }
+  }
+
+  const tokens = parseCommandTokens(trimmed);
+  for (let length = tokens.length; length >= 1; length -= 1) {
+    const requestedName = tokens
+      .slice(0, length)
+      .map((token) => token.value)
+      .join(" ")
+      .trim();
+    const target = findSceneCharacter(characters, requestedName);
+    if (target) {
+      return {
+        target,
+        requestedName,
+        message: stripSingleWrappingQuotePair(
+          tokens
+            .slice(length)
+            .map((token) => token.value)
+            .join(" "),
+        ),
+      };
+    }
+  }
+
+  const fallbackName = tokens[0]?.value ?? trimmed;
+  return { target: null, requestedName: fallbackName, message: "" };
+}
+
+async function listSpriteExpressions(characterId: string): Promise<string[]> {
+  try {
+    const sprites = await api.get<Array<{ expression?: string }>>(`/sprites/${encodeURIComponent(characterId)}`);
+    const expressions = sprites
+      .map((sprite) => sprite.expression?.trim())
+      .filter((expression): expression is string => !!expression);
+    return Array.from(new Set(expressions)).sort((a, b) => a.localeCompare(b));
+  } catch {
+    return [];
+  }
+}
+
+async function buildEmoteListFeedback(characters: Array<{ id: string; name: string }>): Promise<string> {
+  const rows = await Promise.all(
+    characters.map(async (character) => {
+      const expressions = await listSpriteExpressions(character.id);
+      return `${character.name}: ${expressions.length > 0 ? expressions.join(", ") : "no uploaded expression sprites"}`;
+    }),
+  );
+
+  return [
+    "Available Emotes:",
+    "",
+    ...rows,
+    "",
+    'Use /emote joy, /emote "Character" joy, or /emote "all" joy to switch expressions.',
+  ].join("\n");
+}
+
+function matchSpriteExpression(expressions: string[], requested: string): string | null {
+  const normalized = normalizeLookup(requested);
+  if (!normalized) return null;
+  return (
+    expressions.find((expression) => normalizeLookup(expression) === normalized) ??
+    expressions.find((expression) => normalizeLookup(expression).includes(normalized)) ??
+    null
+  );
+}
+
+const CONVERSATION_STATUS_VALUES = ["online", "idle", "dnd", "offline"] as const;
+
+type ConversationStatusValue = (typeof CONVERSATION_STATUS_VALUES)[number];
+
+function isConversationStatusValue(value: string): value is ConversationStatusValue {
+  return CONVERSATION_STATUS_VALUES.includes(value as ConversationStatusValue);
+}
+
+// ── Message index parser (for /hide and /unhide) ────────────────
+
+/**
+ * Parse a message index expression into a sorted, deduplicated array of
+ * 1-indexed positions. Supports: `5`, `3-8`, `2,5,9`, `2-5,8,12-14`.
+ * Returns null if the expression is empty or contains invalid tokens.
+ */
+function parseMessageIndices(input: string): number[] | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+
+  const indices = new Set<number>();
+  const parts = trimmed.split(",");
+
+  for (const part of parts) {
+    const segment = part.trim();
+    if (!segment) continue;
+
+    // Range: N-M
+    if (segment.includes("-")) {
+      const range = segment.match(/^(\d+)\s*-\s*(\d+)$/u);
+      if (!range) return null;
+      const start = Number.parseInt(range[1]!, 10);
+      const end = Number.parseInt(range[2]!, 10);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start < 1 || end < 1) return null;
+      const lo = Math.min(start, end);
+      const hi = Math.max(start, end);
+      for (let i = lo; i <= hi; i++) indices.add(i);
+    } else {
+      // Single number
+      if (!/^\d+$/u.test(segment)) return null;
+      const n = Number.parseInt(segment, 10);
+      if (!Number.isFinite(n) || n < 1) return null;
+      indices.add(n);
+    }
+  }
+
+  return indices.size > 0 ? Array.from(indices).sort((a, b) => a - b) : null;
+}
+
+type TargetedHideParseResult =
+  | { kind: "global"; indices: number[] }
+  | { kind: "targeted"; character: { id: string; name: string }; indices: number[] }
+  | { kind: "error"; reason: "usage" | "roleplay_only" | "unknown" | "ambiguous"; targetName?: string };
+
+export function parseTargetedHideArguments(
+  input: string,
+  mode: SlashCommandContext["mode"],
+  characters: Array<{ id: string; name: string }> = [],
+): TargetedHideParseResult {
+  const globalIndices = parseMessageIndices(input);
+  if (globalIndices) return { kind: "global", indices: globalIndices };
+
+  const trimmed = input.trim();
+  const quoted = parseLeadingQuotedSegment(trimmed);
+  const unquoted = trimmed.match(/^(\S+)\s+(.+)$/u);
+  let targetName = (quoted?.value ?? unquoted?.[1] ?? "").trim();
+  const indexExpression = (quoted?.rest ?? unquoted?.[2] ?? "").trim();
+  let indices = parseMessageIndices(indexExpression);
+  const rangeFirst = trimmed.match(/^(\d+(?:\s*-\s*\d+)?(?:\s*,\s*\d+(?:\s*-\s*\d+)?)*)\s+(.+)$/u);
+  // Preserve name-first syntax, but require quotes when numeric names could
+  // also be interpreted as message indices.
+  const hasLegacyTarget =
+    indices && characters.some((character) => normalizeLookup(character.name).includes(normalizeLookup(targetName)));
+  if (rangeFirst) {
+    const quotedRangeTarget = parseLeadingQuotedSegment(rangeFirst[2]!);
+    const isQuotedRangeTarget = quotedRangeTarget?.rest === "";
+    const rangeTargetName = isQuotedRangeTarget ? quotedRangeTarget.value.trim() : rangeFirst[2]!.trim();
+    const hasRangeTarget = characters.some((character) =>
+      normalizeLookup(character.name).includes(normalizeLookup(rangeTargetName)),
+    );
+    if (hasLegacyTarget && hasRangeTarget && !isQuotedRangeTarget) {
+      return { kind: "error", reason: "ambiguous", targetName: rangeTargetName };
+    }
+    if (!hasLegacyTarget || isQuotedRangeTarget) {
+      targetName = rangeTargetName;
+      indices = parseMessageIndices(rangeFirst[1]!);
+    }
+  }
+  if (!targetName || !indices) return { kind: "error", reason: "usage" };
+  if (mode !== "roleplay") return { kind: "error", reason: "roleplay_only" };
+
+  const normalizedTarget = normalizeLookup(targetName);
+  const exact = characters.filter((character) => normalizeLookup(character.name) === normalizedTarget);
+  const candidates =
+    exact.length > 0
+      ? exact
+      : characters.filter((character) => normalizeLookup(character.name).includes(normalizedTarget));
+  if (candidates.length === 0) return { kind: "error", reason: "unknown", targetName };
+  if (candidates.length > 1) return { kind: "error", reason: "ambiguous", targetName };
+  return { kind: "targeted", character: candidates[0]!, indices };
+}
+
+function readHiddenFromAICharacterIds(extra: unknown): string[] {
+  let parsed: Record<string, unknown> = {};
+  try {
+    parsed =
+      typeof extra === "string"
+        ? (JSON.parse(extra) as Record<string, unknown>)
+        : ((extra ?? {}) as Record<string, unknown>);
+  } catch {
+    parsed = {};
+  }
+  const value = parsed.hiddenFromAICharacterIds;
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.filter((id): id is string => typeof id === "string" && !!id.trim())));
+}
+
+// ── Command definitions ────────────────
+
+const COMMANDS: SlashCommand[] = [
+  {
+    name: "help",
+    description: "Show available slash commands",
+    usage: "/help",
+    local: true,
+    async execute(_args, ctx) {
+      return {
+        handled: true,
+        feedback: await buildSlashHelpText({
+          mode: ctx.mode,
+          availableCapabilityIds: ctx.availableCapabilityIds,
+          conversationGames: ctx.conversationGames,
+        }),
+      };
+    },
+  },
+  {
+    name: "roll",
+    aliases: ["r", "dice"],
+    description: "Roll dice (e.g. 2d6, 1d20+5)",
+    usage: "/roll [dice (optional)]",
+    local: true,
+    async execute(args, ctx) {
+      const notation = args.trim() || "1d20";
+      const parsed = parseDice(notation);
+      if (!parsed) return { handled: true, feedback: `Invalid dice notation: ${notation}` };
+      const { rolls, total: sum } = rollParsedDice(parsed);
+      const modStr = parsed.modifier > 0 ? `+${parsed.modifier}` : parsed.modifier < 0 ? `${parsed.modifier}` : "";
+      const detail = parsed.count > 1 ? ` [${rolls.join(", ")}]${modStr}` : modStr ? ` (${rolls[0]}${modStr})` : "";
+      const text = `🎲 **${notation}** → **${sum}**${detail}`;
+      await ctx.createMessage({
+        role: "narrator",
+        content: text,
+        extra: { diceRollResult: { notation, rolls, modifier: parsed.modifier, total: sum } },
+      });
+      return { handled: true };
+    },
+  },
+  {
+    name: "games",
+    aliases: ["game", "play"],
+    description: "Choose a conversation game to start",
+    usage: "/games",
+    local: true,
+    async execute(args, ctx) {
+      if (ctx.mode === "roleplay") {
+        return { handled: true, feedback: "Conversation games can only be played in conversation chats." };
+      }
+
+      if (args.trim()) {
+        return {
+          handled: true,
+          feedback: "Use an installed game's own slash command, or /games to choose one.",
+        };
+      }
+
+      useConversationGamesStore.getState().openPicker(ctx.chatId);
+      return { handled: true };
+    },
+  },
+  {
+    name: "sys",
+    aliases: ["system"],
+    description: "Insert a system message",
+    usage: "/sys [message]",
+    local: true,
+    async execute(args, ctx) {
+      if (!args.trim()) return { handled: true, feedback: "Usage: /sys <message text>" };
+      await ctx.createMessage({ role: "system", content: args.trim() });
+      return { handled: true };
+    },
+  },
+  {
+    name: "send",
+    description: "Post a message as your persona without triggering generation",
+    usage: "/send [message]",
+    local: true,
+    async execute(args, ctx) {
+      const content = stripSingleWrappingQuotePair(args);
+      if (!content) return { handled: true, feedback: "Usage: /send <message>" };
+      await ctx.createMessage({ role: "user", content, characterId: null });
+      return { handled: true };
+    },
+  },
+  {
+    name: "guided",
+    aliases: ["narrator", "narrate", "nar"],
+    description: "Steer the narrative — the AI will narrate events in the direction you describe",
+    usage: "/guided [direction] | /guided respond for [name] [direction (optional)]",
+    async execute(args, ctx) {
+      if (!args.trim()) return { handled: true, feedback: "Usage: /guided <direction to steer the narrative>" };
+      const characters = ctx.characters ?? [];
+      const targetedResponse = resolveGuidedCharacterTarget(args, characters);
+      if (targetedResponse) {
+        const generationGuide = targetedResponse.guideText
+          ? buildGuidedGenerationInstructionMessage(targetedResponse.guideText)
+          : undefined;
+        ctx.removeQueuedResponse?.(targetedResponse.character.id);
+        await ctx.generate({
+          chatId: ctx.chatId,
+          connectionId: null,
+          forCharacterId: targetedResponse.character.id,
+          mentionedCharacterNames: [targetedResponse.character.name],
+          ...(generationGuide ? { generationGuide, generationGuideSource: "guide" as const } : {}),
+        });
+        return { handled: true };
+      }
+
+      if (guidedTargetRemainder(args) !== null || ctx.requiresManualGuideTarget) {
+        return { handled: true, feedback: formatGuidedTargetHelp(characters) };
+      }
+
+      await ctx.generate({
+        chatId: ctx.chatId,
+        connectionId: null,
+        generationGuide: buildNarratorInstructionMessage(args),
+        generationGuideSource: "narrator",
+      });
+      return { handled: true };
+    },
+  },
+  {
+    name: "continue",
+    aliases: ["cont"],
+    description: "Continue the AI response without sending a message",
+    usage: "/continue",
+    async execute(_args, ctx) {
+      // Only append to the latest assistant message when it is actually the last
+      // message in the chat. When the user has posted a newer message (e.g. via
+      // /impersonate), there is no trailing reply to continue, so generate a
+      // fresh response instead of appending to an earlier message such as the
+      // scenario / first message.
+      if (ctx.lastMessageRole === "assistant" && ctx.latestAssistantMessageId) {
+        await ctx.generate({ chatId: ctx.chatId, connectionId: null, continueMessageId: ctx.latestAssistantMessageId });
+        return { handled: true };
+      }
+      if (!ctx.lastMessageRole) {
+        return { handled: true, feedback: "There is no assistant message to continue." };
+      }
+      await ctx.generate({ chatId: ctx.chatId, connectionId: null });
+      return { handled: true };
+    },
+  },
+  {
+    name: "as",
+    aliases: ["respond"],
+    description: "Post a message as a character, or generate that character's next response",
+    usage: "/as [name] [message (optional)]",
+    async execute(args, ctx) {
+      const characters: Array<{ id: string | null; name: string }> = [...(ctx.characters ?? [])];
+      for (const name of ctx.characterNames) {
+        if (!characters.some((character) => normalizeLookup(character.name) === normalizeLookup(name))) {
+          characters.push({ id: null, name });
+        }
+      }
+      const { target, requestedName, message } = resolveAsCommandTarget(args, characters);
+      if (!args.trim()) return { handled: true, feedback: 'Usage: /as <character name> "message"' };
+      if (!target) {
+        return {
+          handled: true,
+          feedback: `Character "${requestedName || args.trim()}" not found. Available: ${
+            characters.length > 0 ? formatAvailableCharacterList(characters) : ctx.characterNames.join(", ")
+          }`,
+        };
+      }
+
+      if (message) {
+        if (!target.id) {
+          return {
+            handled: true,
+            feedback: `Character metadata for "${target.name}" is still loading. Try again in a moment.`,
+          };
+        }
+        await ctx.createMessage({ role: "assistant", characterId: target.id, content: message });
+        return { handled: true };
+      }
+
+      // No explicit text: preserve the existing shortcut that asks the model to
+      // continue as the named character.
+      await ctx.generate({
+        chatId: ctx.chatId,
+        connectionId: null,
+        userMessage: `[Respond as ${target.name}]`,
+      });
+      return { handled: true };
+    },
+  },
+  {
+    name: "emote",
+    aliases: ["emotion", "sprite"],
+    description: "List or switch roleplay sprite expressions",
+    usage: '/emote [expression (optional)] | /emote "[name]" [expression (optional)]',
+    local: true,
+    async execute(args, ctx) {
+      const sceneCharacters = ctx.characters ?? [];
+      if (sceneCharacters.length === 0) {
+        return {
+          handled: true,
+          feedback: "No roleplay characters are available for /emote in this chat.",
+        };
+      }
+
+      const namedArgs = parseNamedArgs(args);
+      let requestedName = namedArgs.name ?? namedArgs.character ?? "";
+      let requestedExpression = namedArgs.expression ?? namedArgs.emotion ?? namedArgs.sprite ?? "";
+      let applyToAll = false;
+
+      if (!args.trim() || (!requestedExpression && !requestedName)) {
+        const tokens = parseCommandTokens(args);
+        if (tokens.length === 0) {
+          return { handled: true, feedback: await buildEmoteListFeedback(sceneCharacters) };
+        }
+
+        if (tokens.length === 1) {
+          const token = tokens[0]!;
+          if (isAllEmoteTarget(token.value)) {
+            return { handled: true, feedback: await buildEmoteListFeedback(sceneCharacters) };
+          }
+
+          const quotedTarget = token.quoted ? findSceneCharacter(sceneCharacters, token.value) : null;
+          if (quotedTarget) {
+            requestedName = token.value;
+          } else if (sceneCharacters.length === 1) {
+            requestedExpression = token.value;
+          } else {
+            requestedExpression = token.value;
+            applyToAll = true;
+          }
+        } else {
+          const [targetToken, ...expressionTokens] = tokens;
+          requestedExpression = expressionTokens
+            .map((token) => token.value)
+            .join(" ")
+            .trim();
+          if (targetToken && isAllEmoteTarget(targetToken.value)) {
+            applyToAll = true;
+          } else {
+            requestedName = targetToken?.value ?? "";
+          }
+        }
+      }
+
+      if (requestedName && isAllEmoteTarget(requestedName)) {
+        requestedName = "";
+        applyToAll = true;
+      }
+
+      if (applyToAll) {
+        if (!requestedExpression) {
+          return { handled: true, feedback: await buildEmoteListFeedback(sceneCharacters) };
+        }
+        if (!ctx.setSpriteExpression) {
+          return {
+            handled: true,
+            feedback: "Sprite switching is only available in roleplay chats with sprites enabled.",
+          };
+        }
+
+        const matches = await Promise.all(
+          sceneCharacters.map(async (character) => {
+            const availableExpressions = await listSpriteExpressions(character.id);
+            return {
+              character,
+              expression: matchSpriteExpression(availableExpressions, requestedExpression),
+            };
+          }),
+        );
+        const missing = matches.filter((entry) => !entry.expression);
+        if (missing.length > 0) {
+          return {
+            handled: true,
+            feedback: `Expression "${requestedExpression}" is not available for all characters. Missing: ${missing
+              .map((entry) => entry.character.name)
+              .join(", ")}.`,
+          };
+        }
+
+        for (const match of matches) {
+          await ctx.setSpriteExpression(match.character.id, match.expression!);
+        }
+        ctx.invalidate();
+        return {
+          handled: true,
+          feedback: `Emote updated for ${matches.length} character${matches.length === 1 ? "" : "s"} -> ${requestedExpression}`,
+        };
+      }
+
+      let target = requestedName ? findSceneCharacter(sceneCharacters, requestedName) : null;
+      if (!target && !requestedName && sceneCharacters.length === 1) {
+        target = sceneCharacters[0]!;
+      }
+
+      if (!target) {
+        return {
+          handled: true,
+          feedback: `Character "${requestedName || "(missing)"}" not found. Available: ${sceneCharacters
+            .map((character) => character.name)
+            .join(", ")}`,
+        };
+      }
+
+      const availableExpressions = await listSpriteExpressions(target.id);
+      if (!requestedExpression) {
+        return {
+          handled: true,
+          feedback: [
+            `Available Emotes for ${target.name}:`,
+            "",
+            availableExpressions.length > 0 ? availableExpressions.join(", ") : "No uploaded expression sprites.",
+            "",
+            `Use /emote "${target.name}" expression to switch one manually.`,
+          ].join("\n"),
+        };
+      }
+
+      const expression = matchSpriteExpression(availableExpressions, requestedExpression);
+      if (!expression) {
+        return {
+          handled: true,
+          feedback:
+            availableExpressions.length > 0
+              ? `Expression "${requestedExpression}" not found for ${target.name}. Available: ${availableExpressions.join(", ")}`
+              : `No uploaded expression sprites found for ${target.name}.`,
+        };
+      }
+
+      if (!ctx.setSpriteExpression) {
+        return {
+          handled: true,
+          feedback: "Sprite switching is only available in roleplay chats with sprites enabled.",
+        };
+      }
+
+      await ctx.setSpriteExpression(target.id, expression);
+      ctx.invalidate();
+      return { handled: true, feedback: `Emote updated: ${target.name} -> ${expression}` };
+    },
+  },
+  {
+    name: "status",
+    description: "Set or clear a conversation status override",
+    usage: "/status [online|idle|dnd|offline|clear] [name (optional)]",
+    local: true,
+    async execute(args, ctx) {
+      if (ctx.mode !== "conversation") {
+        return { handled: true, feedback: "/status is only available in conversation mode." };
+      }
+
+      const characters = ctx.characters ?? [];
+      if (characters.length === 0) {
+        return { handled: true, feedback: "No character metadata found for this chat." };
+      }
+
+      const tokens = parseCommandTokens(args);
+      const action = normalizeLookup(tokens[0]?.value ?? "");
+      if (!action) {
+        return { handled: true, feedback: buildStatusCommandHelp(characters) };
+      }
+
+      const requestedName = tokens
+        .slice(1)
+        .map((token) => token.value)
+        .join(" ")
+        .trim();
+
+      const resolveTargetCharacter = () => {
+        if (requestedName) {
+          return findSceneCharacter(characters, requestedName);
+        }
+        if (characters.length === 1) {
+          return characters[0]!;
+        }
+        return null;
+      };
+
+      if (action === "clear") {
+        const target = resolveTargetCharacter();
+        if (!target) {
+          return {
+            handled: true,
+            feedback: requestedName
+              ? `Character "${requestedName}" not found. Available: ${formatAvailableCharacterList(characters)}`
+              : buildStatusCommandHelp(characters),
+          };
+        }
+
+        try {
+          // The override belongs to the character, so it applies in every chat.
+          await api.patch(`/characters/${target.id}`, {
+            data: { extensions: { conversationStatusOverride: null } },
+            skipVersionSnapshot: true,
+          });
+          ctx.invalidateCharacter?.(target.id);
+          ctx.invalidate();
+          return { handled: true, feedback: `Cleared ${target.name}'s status override.` };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unknown error";
+          return { handled: true, feedback: `Failed to update status: ${message}` };
+        }
+      }
+
+      if (!isConversationStatusValue(action)) {
+        return {
+          handled: true,
+          feedback: `Status must be one of: online, idle, dnd, offline, clear.\n\n${buildStatusCommandHelp(characters)}`,
+        };
+      }
+
+      const target = resolveTargetCharacter();
+      if (!target) {
+        return {
+          handled: true,
+          feedback: requestedName
+            ? `Character "${requestedName}" not found. Available: ${formatAvailableCharacterList(characters)}`
+            : buildStatusCommandHelp(characters),
+        };
+      }
+
+      try {
+        await api.patch(`/characters/${target.id}`, {
+          data: {
+            extensions: {
+              conversationStatusOverride: {
+                status: action,
+                activity: null,
+                createdAt: new Date().toISOString(),
+                expiresAt: null,
+              },
+            },
+          },
+          skipVersionSnapshot: true,
+        });
+        ctx.invalidateCharacter?.(target.id);
+        ctx.invalidate();
+        return { handled: true, feedback: `Set ${target.name} to ${action}.` };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        return { handled: true, feedback: `Failed to update status: ${message}` };
+      }
+    },
+  },
+  {
+    name: "impersonate",
+    aliases: ["imp"],
+    description: "Generate a response as your character ({{user}}), optionally with a direction",
+    usage: "/impersonate [direction (optional)]",
+    async execute(args, ctx) {
+      const direction = args.trim();
+      const { impersonatePresetId, impersonateConnectionId, impersonateBlockAgents, impersonatePromptTemplate } =
+        useUIStore.getState();
+      const trimmedPromptTemplate = impersonatePromptTemplate.trim();
+      await ctx.generate({
+        chatId: ctx.chatId,
+        connectionId: null,
+        impersonate: true,
+        ...(direction ? { userMessage: direction } : {}),
+        ...(impersonatePresetId ? { impersonatePresetId } : {}),
+        ...(impersonateConnectionId ? { impersonateConnectionId } : {}),
+        ...(impersonateBlockAgents !== undefined ? { impersonateBlockAgents } : {}),
+        ...(trimmedPromptTemplate ? { impersonatePromptTemplate: trimmedPromptTemplate } : {}),
+      });
+      return { handled: true };
+    },
+  },
+  {
+    name: "impersonate_prompt",
+    aliases: ["imp_prompt"],
+    description: "Set the prompt prefix used by /impersonate in this chat",
+    usage: "/impersonate_prompt [prompt|reset]",
+    local: true,
+    async execute(args, ctx) {
+      const raw = args.trim();
+      if (!raw) {
+        return {
+          handled: true,
+          feedback:
+            'Usage: /impersonate_prompt "You will now play as my OC:"\nUse /impersonate_prompt reset to return to the default impersonation prompt.',
+        };
+      }
+
+      if (/^(reset|clear|default)$/i.test(raw)) {
+        await api.patch(`/chats/${ctx.chatId}/metadata`, { impersonatePrompt: null });
+        ctx.invalidate();
+        return { handled: true, feedback: "Impersonate prompt reset to the default." };
+      }
+
+      const prompt = parseImpersonatePromptArg(raw);
+      if (!prompt) {
+        return { handled: true, feedback: "Please provide a prompt, or use /impersonate_prompt reset." };
+      }
+
+      await api.patch(`/chats/${ctx.chatId}/metadata`, { impersonatePrompt: prompt });
+      ctx.invalidate();
+      return { handled: true, feedback: `Impersonate prompt updated:\n${prompt}` };
+    },
+  },
+  {
+    name: "remind",
+    aliases: ["reminder", "timer"],
+    description: "Set a timed reminder — the AI will message you after the specified time",
+    usage: "/remind [time] [message]",
+    local: true,
+    async execute(args, ctx) {
+      const parsed = parseReminder(args.trim());
+      if (!parsed) {
+        return {
+          handled: true,
+          feedback:
+            "Usage: /remind <time> <message>\nExamples: /remind 30m hang up laundry, /remind 1h30m check the oven",
+        };
+      }
+
+      const { ms, timeStr, message } = parsed;
+      const chatId = ctx.chatId;
+      const invalidate = ctx.invalidate;
+
+      setTimeout(async () => {
+        try {
+          await api.post(`/chats/${chatId}/messages`, {
+            role: "narrator",
+            content: `⏰ **Reminder:** ${message}`,
+          });
+          try {
+            invalidate();
+          } catch {
+            /* component may have unmounted */
+          }
+        } catch {
+          /* chat may have been deleted */
+        }
+        toast("⏰ Reminder!", { description: message, duration: 30_000 });
+      }, ms);
+
+      return {
+        handled: true,
+        feedback: `⏰ Reminder set for ${timeStr} from now: "${message}"\n(Keep this tab open — the reminder lives in your browser session.)`,
+      };
+    },
+  },
+  {
+    name: "random",
+    aliases: ["rand", "event"],
+    description: "Introduce a random event to shake up the plot",
+    usage: "/random",
+    async execute(_args, ctx) {
+      await ctx.generate({
+        chatId: ctx.chatId,
+        connectionId: null,
+        userMessage:
+          "[Narrator instruction — do not include a reply from {{user}}. Instead: And now, something completely different. Introduce a random, unexpected event to stir up the plot. Be creative and surprising — throw a curveball that keeps things interesting!]",
+      });
+      return { handled: true };
+    },
+  },
+  {
+    name: "scene",
+    aliases: ["rp"],
+    description: "Start a roleplay scene branching from this conversation",
+    usage: "/scene [description (optional)]",
+    local: true,
+    async execute(args, ctx) {
+      const prompt = args.trim();
+
+      // If no prompt and no messages, guide the user
+      if (!prompt) {
+        const msgs = await api.get<unknown[]>(`/chats/${ctx.chatId}/messages`);
+        if (!msgs || msgs.length === 0) {
+          return {
+            handled: true,
+            feedback:
+              "No conversation history to base a scene on. Provide a description or chat first: /scene <description>",
+          };
+        }
+      }
+
+      await startSceneWithPromptPreferences({
+        chatId: ctx.chatId,
+        prompt,
+        initiatorCharId: null,
+        connectionId: null,
+        onCreated: () => {
+          // Invalidate chats so the new scene appears in the sidebar.
+          ctx.invalidate();
+        },
+      });
+      return { handled: true };
+    },
+  },
+  {
+    name: "goto",
+    aliases: ["jump", "scroll"],
+    description: "Scroll to a specific message number (e.g. /goto 27)",
+    usage: "/goto [number]",
+    local: true,
+    async execute(args, ctx) {
+      const raw = args.trim();
+      const n = Number.parseInt(raw, 10);
+      if (!raw || !Number.isFinite(n) || n < 1 || String(n) !== raw) {
+        return { handled: true, feedback: "Usage: /goto <positive message number> (e.g. /goto 27)" };
+      }
+      useChatStore.getState().requestGotoMessage(ctx.chatId, n);
+      return { handled: true };
+    },
+  },
+  {
+    name: "illustrate",
+    aliases: ["ill"],
+    description: "Generate a gallery illustration for the current chat",
+    usage: "/illustrate [prompt (optional)]",
+    requiredCapabilityId: "illustrator",
+    modes: ["roleplay"],
+    local: true,
+    async execute(args, ctx) {
+      if (!ctx.illustrate) {
+        return { handled: true, feedback: "Illustrate is not available in this chat." };
+      }
+      if (useGalleryStore.getState().illustratingChatIds.has(ctx.chatId)) {
+        return { handled: true, feedback: "Illustration generation is already running for this chat." };
+      }
+
+      useGalleryStore.getState().setChatIllustrating(ctx.chatId, true);
+      try {
+        await withSlashCommandTimeout(
+          Promise.resolve(ctx.illustrate(args.trim() || undefined)),
+          ILLUSTRATE_SLASH_TIMEOUT_MS,
+          "Illustration generation timed out.",
+        );
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Image generation failed.");
+      } finally {
+        useGalleryStore.getState().setChatIllustrating(ctx.chatId, false);
+      }
+      return { handled: true };
+    },
+  },
+  {
+    name: "selfie",
+    description: "Generate a Conversation selfie",
+    usage: "/selfie [name (optional)]",
+    requiredCapabilityId: "illustrator",
+    modes: ["conversation"],
+    local: true,
+    async execute(args, ctx) {
+      if (!ctx.selfie) {
+        return { handled: true, feedback: "Selfie generation is not available in this chat." };
+      }
+      if (useGalleryStore.getState().selfieGeneratingChatIds.has(ctx.chatId)) {
+        return { handled: true, feedback: "Selfie generation is already running for this chat." };
+      }
+
+      const requestedCharacter = args.trim();
+      const target = requestedCharacter ? findSceneCharacter(ctx.characters ?? [], requestedCharacter) : null;
+      if (requestedCharacter && !target) {
+        const available = formatAvailableCharacterList(ctx.characters ?? []);
+        return {
+          handled: true,
+          feedback: available
+            ? `Character not found: ${requestedCharacter}\nAvailable: ${available}`
+            : "Add a character to this conversation before generating a selfie.",
+        };
+      }
+
+      useGalleryStore.getState().setChatGeneratingSelfie(ctx.chatId, true);
+      try {
+        await withSlashCommandTimeout(
+          Promise.resolve(ctx.selfie(target?.id)),
+          ILLUSTRATE_SLASH_TIMEOUT_MS,
+          "Selfie generation timed out.",
+        );
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Selfie generation failed.");
+      } finally {
+        useGalleryStore.getState().setChatGeneratingSelfie(ctx.chatId, false);
+      }
+      return { handled: true };
+    },
+  },
+  {
+    name: "hide",
+    description: "Hide messages from AI context (won't be sent to the LLM on future turns)",
+    usage: "/hide [range] [name (optional)]",
+    local: true,
+    async execute(args, ctx) {
+      const parsed = parseTargetedHideArguments(args, ctx.mode, ctx.characters);
+      if (parsed.kind === "error") {
+        const feedback =
+          parsed.reason === "roleplay_only"
+            ? await translateSlash("ui.chat.slash.hideTargetRoleplayOnly")
+            : parsed.reason === "unknown"
+              ? await translateSlash("ui.chat.slash.hideTargetUnknown", { name: parsed.targetName })
+              : parsed.reason === "ambiguous"
+                ? await translateSlash("ui.chat.slash.hideTargetAmbiguous", { name: parsed.targetName })
+                : await translateSlash("ui.chat.slash.hideUsage");
+        return {
+          handled: true,
+          feedback,
+        };
+      }
+
+      const messages: Array<{ id: string; extra?: unknown }> = await api.get(`/chats/${ctx.chatId}/messages`);
+      const total = messages.length;
+      const max = parsed.indices[parsed.indices.length - 1]!;
+      if (max > total) {
+        return {
+          handled: true,
+          feedback: await translateSlash("ui.chat.slash.messageOutOfRange", { index: max, total }),
+        };
+      }
+
+      if (parsed.kind === "targeted") {
+        const targets = parsed.indices
+          .map((index) => messages[index - 1]!)
+          .filter(
+            (message) =>
+              !isMessageHidden(message) && !readHiddenFromAICharacterIds(message.extra).includes(parsed.character.id),
+          );
+        await Promise.all(
+          targets.map((message) =>
+            api.patch(`/chats/${ctx.chatId}/messages/${message.id}/extra`, {
+              hiddenFromAICharacterIds: [...readHiddenFromAICharacterIds(message.extra), parsed.character.id],
+            }),
+          ),
+        );
+        ctx.invalidate();
+        toast.success(
+          await translateSlash("ui.chat.slash.hiddenFromCharacter", {
+            count: targets.length,
+            name: parsed.character.name,
+          }),
+        );
+        return { handled: true };
+      }
+
+      // Existing index-only syntax remains a global hide.
+      const targetIds = parsed.indices
+        .filter((idx) => !isMessageHidden(messages[idx - 1]!))
+        .map((idx) => messages[idx - 1]!.id);
+      if (targetIds.length > 0) {
+        await api.patch(`/chats/${ctx.chatId}/messages/bulk-hidden`, { messageIds: targetIds, hidden: true });
+      }
+
+      ctx.invalidate();
+      toast.success(`Hidden ${targetIds.length} message${targetIds.length !== 1 ? "s" : ""} from AI context`);
+      return { handled: true };
+    },
+  },
+  {
+    name: "unhide",
+    description: "Restore previously hidden messages back into AI context",
+    usage: "/unhide [range]",
+    local: true,
+    async execute(args, ctx) {
+      const indices = parseMessageIndices(args);
+      if (!indices) {
+        return {
+          handled: true,
+          feedback: "Usage: /unhide <indices> — e.g. /unhide 5, /unhide 3-8, /unhide 2-5,9,12",
+        };
+      }
+
+      const messages: Array<{ id: string; extra?: unknown }> = await api.get(`/chats/${ctx.chatId}/messages`);
+      const total = messages.length;
+      const max = indices[indices.length - 1]!;
+      if (max > total) {
+        return {
+          handled: true,
+          feedback: `Message ${max} doesn't exist. This chat has ${total} messages.`,
+        };
+      }
+
+      // Only send IDs for messages that are currently hidden
+      const targetIds = indices
+        .filter((idx) => isMessageHidden(messages[idx - 1]!))
+        .map((idx) => messages[idx - 1]!.id);
+
+      if (targetIds.length > 0) {
+        await api.patch(`/chats/${ctx.chatId}/messages/bulk-hidden`, {
+          messageIds: targetIds,
+          hidden: false,
+        });
+      }
+
+      ctx.invalidate();
+      toast.success(`Restored ${targetIds.length} message${targetIds.length !== 1 ? "s" : ""} to AI context`);
+      return { handled: true };
+    },
+  },
+  {
+    name: "macros",
+    aliases: ["macro"],
+    description: "List supported prompt macros like {{user}} and {{char}}",
+    usage: "/macros",
+    local: true,
+    async execute() {
+      return { handled: true, feedback: MACRO_HELP_TEXT };
+    },
+  },
+];
+
+function buildConversationGameSlashCommands(games: readonly ConversationGameSlashContribution[] = []): SlashCommand[] {
+  const reserved = new Set(
+    COMMANDS.flatMap((command) => [command.name, ...(command.aliases ?? [])]).map((name) => name.toLowerCase()),
+  );
+  const commands: SlashCommand[] = [];
+  for (const game of games) {
+    const name = game.command.startsWith("/") ? game.command.slice(1).toLowerCase() : "";
+    if (!/^[a-z0-9-]+$/u.test(name) || reserved.has(name)) continue;
+    reserved.add(name);
+    const aliases = game.aliases
+      .map((alias) => alias.trim().toLowerCase())
+      .filter((alias) => {
+        if (!/^[a-z0-9-]+$/u.test(alias) || reserved.has(alias)) return false;
+        reserved.add(alias);
+        return true;
+      });
+    commands.push({
+      name,
+      aliases,
+      description: `Start ${game.packageName}`,
+      usage: game.command,
+      requiredCapabilityId: game.packageId,
+      modes: ["conversation"],
+      local: true,
+      async execute(args, ctx) {
+        if (args.trim()) return { handled: true, feedback: `Usage: ${game.command}` };
+        useConversationGamesStore.getState().openSetup(game.packageId, ctx.chatId);
+        return { handled: true };
+      },
+    });
+  }
+  return commands;
+}
+
+function getAvailableSlashCommands(availability: SlashCommandAvailability = {}): SlashCommand[] {
+  return [...COMMANDS, ...buildConversationGameSlashCommands(availability.conversationGames)].filter((command) =>
+    isSlashCommandAvailable(command, availability),
+  );
+}
+
+/** Find a matching command for the given input. */
+export function matchSlashCommand(
+  input: string,
+  availability: SlashCommandAvailability = {},
+): { command: SlashCommand; args: string } | null {
+  if (!input.startsWith("/")) return null;
+  const spaceIdx = input.indexOf(" ");
+  const cmdName = (spaceIdx === -1 ? input.slice(1) : input.slice(1, spaceIdx)).toLowerCase();
+  const args = spaceIdx === -1 ? "" : input.slice(spaceIdx + 1);
+
+  for (const cmd of getAvailableSlashCommands(availability)) {
+    if ((cmd.name === cmdName || cmd.aliases?.includes(cmdName)) && isSlashCommandAvailable(cmd, availability)) {
+      return { command: cmd, args };
+    }
+  }
+  return null;
+}
+
+/** Keep Quick Replies' Post Only action from saving a real slash command as plain chat text. */
+export function shouldExecuteQuickPostAsCommand(input: string, availability: SlashCommandAvailability = {}): boolean {
+  return matchSlashCommand(input.trim(), availability) !== null;
+}
+
+/** Get all commands that match a partial prefix (for autocomplete). */
+export function getSlashCompletions(partial: string, availability: SlashCommandAvailability = {}): SlashCommand[] {
+  if (!partial.startsWith("/")) return [];
+  const rawPrefix = partial.slice(1);
+  if (rawPrefix.includes(" ")) return [];
+  const prefix = rawPrefix.trim().toLowerCase();
+  const availableCommands = getAvailableSlashCommands(availability);
+  if (!prefix) return availableCommands;
+  return availableCommands.filter(
+    (command) => command.name.startsWith(prefix) || command.aliases?.some((alias) => alias.startsWith(prefix)),
+  );
+}
+
+export { COMMANDS as SLASH_COMMANDS };

@@ -1,0 +1,113 @@
+// ──────────────────────────────────────────────
+// Discord Webhook Mirror — one-way message relay
+// ──────────────────────────────────────────────
+import { logger } from "../lib/logger.js";
+import { safeFetch } from "../utils/security.js";
+// Posts messages to a Discord channel webhook with per-character identity.
+// Webhook API: https://discord.com/developers/docs/resources/webhook#execute-webhook
+
+const DISCORD_WEBHOOK_REGEX = /^https:\/\/discord(?:app)?\.com\/api\/webhooks\/\d+\/[\w-]+$/;
+
+/** Validate that a string looks like a Discord webhook URL. */
+export function isValidDiscordWebhook(url: string): boolean {
+  return DISCORD_WEBHOOK_REGEX.test(url.trim());
+}
+
+interface WebhookPayload {
+  content: string;
+  username?: string;
+  avatar_url?: string;
+  allowed_mentions?: { parse: string[]; roles?: string[]; users?: string[] };
+}
+
+// ── Per-webhook rate-limit queue (Discord allows ~5 req/5s per webhook) ──
+const MIN_INTERVAL_MS = 1200; // ~50 req/min — safe headroom
+const MAX_RATE_LIMIT_ATTEMPTS = 3;
+const webhookQueues = new Map<string, { busy: boolean; queue: Array<() => Promise<void>> }>();
+
+function enqueue(webhookUrl: string, task: () => Promise<void>) {
+  let entry = webhookQueues.get(webhookUrl);
+  if (!entry) {
+    entry = { busy: false, queue: [] };
+    webhookQueues.set(webhookUrl, entry);
+  }
+  entry.queue.push(task);
+  drain(webhookUrl);
+}
+
+async function drain(webhookUrl: string) {
+  const entry = webhookQueues.get(webhookUrl);
+  if (!entry || entry.busy) return;
+  entry.busy = true;
+  while (entry.queue.length > 0) {
+    const task = entry.queue.shift()!;
+    try {
+      await task();
+    } catch {
+      /* logged inside task */
+    }
+    if (entry.queue.length > 0) await sleep(MIN_INTERVAL_MS);
+  }
+  entry.busy = false;
+  // Clean up empty queue entries to prevent unbounded Map growth
+  if (entry.queue.length === 0) {
+    webhookQueues.delete(webhookUrl);
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Post a message to a Discord webhook.
+ * Fire-and-forget — errors are logged but never thrown to callers.
+ * Messages are queued per-webhook to respect Discord's rate limits.
+ */
+export function postToDiscordWebhook(
+  webhookUrl: string,
+  opts: { content: string; username?: string; avatarUrl?: string },
+): void {
+  if (!isValidDiscordWebhook(webhookUrl)) return;
+
+  const content = opts.content.trim();
+  if (!content) return;
+
+  enqueue(webhookUrl, async () => {
+    // Discord caps content at 2000 chars
+    const truncated = content.length > 1997 ? content.slice(0, 1997) + "..." : content;
+
+    // Suppress @everyone/@here/role/user pings on relayed LLM/user content.
+    const body: WebhookPayload = { content: truncated, allowed_mentions: { parse: [] } };
+    if (opts.username) body.username = opts.username.slice(0, 80);
+    if (opts.avatarUrl) body.avatar_url = opts.avatarUrl;
+
+    for (let attempt = 1; attempt <= MAX_RATE_LIMIT_ATTEMPTS; attempt++) {
+      try {
+        const res = await safeFetch(webhookUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          maxResponseBytes: 128 * 1024,
+        });
+
+        // Respect Discord rate limit (429), then re-send so the message is not lost
+        if (res.status === 429) {
+          const retryAfterSec = Number(res.headers.get("Retry-After"));
+          await sleep((Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? retryAfterSec : 2) * 1000);
+          if (attempt === MAX_RATE_LIMIT_ATTEMPTS) {
+            logger.warn("[discord-webhook] Rate limited; message dropped after %d attempts", MAX_RATE_LIMIT_ATTEMPTS);
+          }
+          continue;
+        }
+        if (!res.ok) {
+          logger.error("[discord-webhook] POST failed (%d): %s", res.status, await res.text().catch(() => ""));
+        }
+        return;
+      } catch (err) {
+        logger.error(err, "[discord-webhook] Network error");
+        return;
+      }
+    }
+  });
+}

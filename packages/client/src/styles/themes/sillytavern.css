@@ -1,0 +1,578 @@
+/* ═══════════════════════════════════════════════
+   SILLYTAVERN VISUAL THEME
+   A faithful recreation of SillyTavern's classic
+   dark UI. Activated via data-visual-theme="sillytavern"
+   on :root. Disables Y2K effects and uses flat styling.
+   ═══════════════════════════════════════════════
+
+   THEME VARIABLE CONTRACT
+   ───────────────────────
+   Every visual theme must define the same set of CSS
+   custom properties so components can depend on a
+   single, stable interface. The complete list:
+
+   Core UI (25)
+     --background, --foreground,
+     --card, --card-foreground,
+     --popover, --popover-foreground,
+     --primary, --primary-foreground,
+     --secondary, --secondary-foreground,
+     --muted, --muted-foreground,
+     --accent, --accent-foreground,
+     --destructive, --destructive-foreground,
+     --border, --input, --ring, --radius,
+     --sidebar, --sidebar-foreground, --sidebar-border,
+     --sidebar-accent, --sidebar-accent-foreground
+
+   Glow (2)
+     --glow-primary, --glow-accent
+
+   Glass effects (5)
+     --glass-bg, --glass-border,
+     --glass-strong-bg, --glass-strong-border,
+     --glass-strong-shadow
+
+   Glow effects (5)
+     --glow-color-1, --glow-color-2, --glow-color-3,
+     --glow-sm-1, --glow-sm-2
+
+   Scrollbar (2)
+     --scrollbar-track, --scrollbar-border
+
+   Cursor (1)
+     --cursor-pink
+
+   Y2K palette (7)
+     --y2k-pink, --y2k-purple, --y2k-blue,
+     --y2k-mint, --y2k-peach, --y2k-lavender, --y2k-yellow
+
+   Conversation surfaces (2)
+     --marinara-conversation-gradient-from,
+     --marinara-conversation-gradient-to
+
+   Pastel palette (8)
+     --pastel-rose, --pastel-lilac, --pastel-sky,
+     --pastel-mint, --pastel-coral, --pastel-peach,
+     --pastel-lavender, --pastel-periwinkle
+
+   RGB palette (8)
+     --rgb-red, --rgb-orange, --rgb-yellow, --rgb-green,
+     --rgb-cyan, --rgb-blue, --rgb-indigo, --rgb-violet
+
+   Font / Layout (2)
+     --font-y2k, --app-font-size
+
+   Total: 67 variables
+
+   NOTE: Even when a theme disables certain effects
+   (glass, glow, custom cursors, etc.) via CSS class
+   overrides, it should still define every variable so
+   the full contract is explicit. This makes it easy to
+   copy any theme file as a starting template.
+   ═══════════════════════════════════════════════ */
+
+/* ─── Dark-mode variable overrides ─── */
+[data-visual-theme="sillytavern"],
+[data-visual-theme="sillytavern"][data-theme="dark"] {
+  /* Core ST palette */
+  --background: #0b0b0f;
+  --foreground: #cccccc;
+  --card: rgba(21, 21, 29, 0.92);
+  --card-foreground: #cccccc;
+  --popover: rgba(21, 21, 29, 0.95);
+  --popover-foreground: #cccccc;
+  --primary: #4a72b0;
+  --primary-foreground: #ffffff;
+  --secondary: #16161e;
+  --secondary-foreground: #c0bfcf;
+  --marinara-conversation-gradient-from: var(--secondary);
+  --marinara-conversation-gradient-to: var(--secondary);
+  --muted: #1c1c28;
+  --muted-foreground: #8888a0;
+  --accent: #1e1e2e;
+  --accent-foreground: #cccccc;
+  --destructive: var(--primary);
+  --destructive-foreground: var(--primary-foreground);
+  --border: rgba(255, 255, 255, 0.08);
+  --input: rgba(255, 255, 255, 0.08);
+  --ring: #4a72b0;
+  --radius: 0.5rem;
+  --sidebar: #0e0e14;
+  --sidebar-foreground: #c0bfcf;
+  --sidebar-border: rgba(255, 255, 255, 0.06);
+  --sidebar-accent: rgba(74, 114, 176, 0.12);
+  --sidebar-accent-foreground: #5d8fd4;
+  --glow-primary: rgba(74, 114, 176, 0.08);
+  --glow-accent: rgba(74, 114, 176, 0.05);
+
+  /* Map Y2K palette → muted ST equivalents */
+  --y2k-pink: #5d8fd4;
+  --y2k-purple: #7a7aaa;
+  --y2k-blue: #5d8fd4;
+  --y2k-mint: #55a87a;
+  --y2k-peach: #c49a6c;
+  --y2k-lavender: #9090b8;
+  --y2k-yellow: #c4b060;
+
+  --pastel-rose: #9090b8;
+  --pastel-lilac: #7a7aaa;
+  --pastel-sky: #5d8fd4;
+  --pastel-mint: #55a87a;
+  --pastel-coral: #c07070;
+  --pastel-peach: #c49a6c;
+  --pastel-lavender: #9090b8;
+  --pastel-periwinkle: #7a7aaa;
+
+  --rgb-red: #c44040;
+  --rgb-orange: #c49a6c;
+  --rgb-yellow: #c4b060;
+  --rgb-green: #55a87a;
+  --rgb-cyan: #50a0b0;
+  --rgb-blue: #5d8fd4;
+  --rgb-indigo: #7a7aaa;
+  --rgb-violet: #9070a0;
+
+  /* Glass effects — disabled via class overrides, but defined for contract completeness */
+  --glass-bg: linear-gradient(
+    135deg,
+    rgba(74, 114, 176, 0.04) 0%,
+    rgba(90, 90, 140, 0.04) 50%,
+    rgba(80, 160, 176, 0.04) 100%
+  );
+  --glass-border: rgba(255, 255, 255, 0.06);
+  --glass-strong-bg: linear-gradient(
+    135deg,
+    rgba(74, 114, 176, 0.08) 0%,
+    rgba(90, 90, 140, 0.08) 50%,
+    rgba(80, 160, 176, 0.08) 100%
+  );
+  --glass-strong-border: rgba(255, 255, 255, 0.1);
+  --glass-strong-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), inset 0 1px rgba(255, 255, 255, 0.06);
+
+  /* Glow effect colors — effects disabled, but kept for completeness */
+  --glow-color-1: rgba(74, 114, 176, 0.15);
+  --glow-color-2: rgba(90, 90, 140, 0.1);
+  --glow-color-3: rgba(80, 160, 176, 0.05);
+  --glow-sm-1: rgba(74, 114, 176, 0.1);
+  --glow-sm-2: rgba(90, 90, 140, 0.05);
+
+  /* Scrollbar — restyled via class overrides, but vars defined for completeness */
+  --scrollbar-track: rgba(255, 255, 255, 0.04);
+  --scrollbar-border: rgba(0, 0, 0, 0.4);
+
+  /* Cursor — disabled via class overrides; no custom cursor SVG */
+  --cursor-pink: none;
+
+  /* Font: Noto Sans is SillyTavern's house font, but respect user's custom font choice */
+  --font-y2k:
+    "Straight Quotes", var(--font-user, "Noto Sans"), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --app-font-size: 0.875rem;
+}
+
+/* ─── Light-mode overrides for ST theme ─── */
+[data-visual-theme="sillytavern"][data-theme="light"] {
+  --background: #e8e8ec;
+  --foreground: #1a1a24;
+  --card: rgba(255, 255, 255, 0.88);
+  --card-foreground: #1a1a24;
+  --popover: rgba(255, 255, 255, 0.92);
+  --popover-foreground: #1a1a24;
+  --primary: #3a609a;
+  --primary-foreground: #ffffff;
+  --secondary: #d8d8e0;
+  --secondary-foreground: #2a2a3e;
+  --marinara-conversation-gradient-from: var(--secondary);
+  --marinara-conversation-gradient-to: var(--secondary);
+  --muted: #d0d0da;
+  --muted-foreground: #606078;
+  --accent: #d4d4de;
+  --accent-foreground: #1a1a24;
+  --destructive: var(--primary);
+  --destructive-foreground: var(--primary-foreground);
+  --border: rgba(0, 0, 0, 0.1);
+  --input: rgba(0, 0, 0, 0.1);
+  --ring: #3a609a;
+  --sidebar: #dddde4;
+  --sidebar-foreground: #2a2a3e;
+  --sidebar-border: rgba(0, 0, 0, 0.08);
+  --sidebar-accent: rgba(58, 96, 154, 0.1);
+  --sidebar-accent-foreground: #3a609a;
+  --glow-primary: rgba(58, 96, 154, 0.06);
+  --glow-accent: rgba(58, 96, 154, 0.04);
+
+  --y2k-pink: #3a609a;
+  --y2k-purple: #5a5a80;
+  --y2k-blue: #3a609a;
+  --y2k-mint: #2a7a50;
+  --y2k-peach: #a07a4a;
+  --y2k-lavender: #606088;
+  --y2k-yellow: #9a8a30;
+
+  /* Glass effects — disabled via class overrides, but defined for contract completeness */
+  --glass-bg: linear-gradient(135deg, rgba(58, 96, 154, 0.04) 0%, rgba(90, 90, 128, 0.04) 100%);
+  --glass-border: rgba(0, 0, 0, 0.06);
+  --glass-strong-bg: linear-gradient(135deg, rgba(58, 96, 154, 0.08) 0%, rgba(90, 90, 128, 0.08) 100%);
+  --glass-strong-border: rgba(0, 0, 0, 0.08);
+  --glass-strong-shadow: 0 4px 16px rgba(0, 0, 0, 0.06), inset 0 1px rgba(255, 255, 255, 0.3);
+
+  /* Glow effect colors — effects disabled, but kept for completeness */
+  --glow-color-1: rgba(58, 96, 154, 0.12);
+  --glow-color-2: rgba(90, 90, 128, 0.08);
+  --glow-color-3: rgba(80, 160, 176, 0.04);
+  --glow-sm-1: rgba(58, 96, 154, 0.08);
+  --glow-sm-2: rgba(90, 90, 128, 0.04);
+
+  /* Scrollbar — restyled via class overrides, but vars defined for completeness */
+  --scrollbar-track: rgba(0, 0, 0, 0.06);
+  --scrollbar-border: rgba(0, 0, 0, 0.08);
+
+  /* Cursor — disabled; no custom cursor */
+  --cursor-pink: none;
+
+  --app-font-size: 0.875rem;
+}
+
+/* ─── Restore native cursors when the Marinara custom pointer is off ─── */
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] *),
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] a),
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] button),
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] input),
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] select),
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] textarea),
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] .cursor-pointer),
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] .cursor-grab),
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] .cursor-help),
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] .cursor-default),
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] .cursor-text),
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] .cursor-move),
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] .cursor-not-allowed),
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] input[type="color"]) {
+  cursor: unset !important;
+}
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] a),
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] button),
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] .cursor-pointer),
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] .cursor-grab),
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] label[class*="cursor-pointer"]),
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] input[type="color"]) {
+  cursor: pointer !important;
+}
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] .cursor-not-allowed),
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] .disabled\:cursor-not-allowed:disabled) {
+  cursor: not-allowed !important;
+}
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] .cursor-grab) {
+  cursor: grab !important;
+}
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] .active\:cursor-grabbing:active) {
+  cursor: grabbing !important;
+}
+:where(:root:not([data-marinara-custom-cursor="enabled"])[data-visual-theme="sillytavern"] .cursor-help) {
+  cursor: help !important;
+}
+
+/* ─── Disable glow / decorative effects ─── */
+[data-visual-theme="sillytavern"] .glow-primary,
+[data-visual-theme="sillytavern"] .glow-sm {
+  box-shadow: none;
+}
+
+[data-visual-theme="sillytavern"] .bunny-glow {
+  animation: none;
+  box-shadow: none;
+}
+
+[data-visual-theme="sillytavern"] .gradient-border::before {
+  display: none;
+}
+
+[data-visual-theme="sillytavern"] .btn-glow::after {
+  display: none;
+}
+
+[data-visual-theme="sillytavern"] .pulse-glow {
+  animation: none;
+  box-shadow: none;
+}
+
+[data-visual-theme="sillytavern"] .animate-pulse-ring {
+  animation: none;
+  box-shadow: none;
+}
+
+/* ─── Disable scanlines & noise overlays ─── */
+[data-visual-theme="sillytavern"] .retro-scanlines::after {
+  display: none !important;
+}
+
+[data-visual-theme="sillytavern"] .btn-scanlines::after {
+  display: none !important;
+}
+
+[data-visual-theme="sillytavern"] .noise-bg::before {
+  display: none !important;
+}
+
+/* ─── Disable decorative stars ─── */
+[data-visual-theme="sillytavern"] .y2k-star,
+[data-visual-theme="sillytavern"] .y2k-star-md,
+[data-visual-theme="sillytavern"] .y2k-star-lg {
+  display: none !important;
+}
+
+/* ─── Simpler scrollbar ─── */
+[data-visual-theme="sillytavern"] * {
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+
+[data-visual-theme="sillytavern"] ::-webkit-scrollbar {
+  width: 0.5rem;
+}
+
+[data-visual-theme="sillytavern"] ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+[data-visual-theme="sillytavern"] ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border: none;
+  border-radius: 0.25rem;
+}
+
+[data-visual-theme="sillytavern"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* ─── Flat glass panels (no blur / gradients) ─── */
+[data-visual-theme="sillytavern"] .glass {
+  backdrop-filter: none;
+  background: var(--card);
+  border: 1px solid var(--border);
+}
+
+[data-visual-theme="sillytavern"] .glass-strong {
+  backdrop-filter: none;
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+/* ─── Simpler retro divider → solid muted line ─── */
+[data-visual-theme="sillytavern"] .retro-divider {
+  background: var(--border);
+  animation: none;
+  mask-image: none;
+}
+
+/* ─── Simpler retro badge ─── */
+[data-visual-theme="sillytavern"] .retro-badge {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+}
+
+/* ─── Simpler retro card ─── */
+[data-visual-theme="sillytavern"] .retro-card {
+  backdrop-filter: none;
+  background: var(--card);
+  border: 1px solid var(--border);
+  animation: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+[data-visual-theme="sillytavern"] .retro-card:hover {
+  transform: none;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* ─── OS-window → clean ST panel ─── */
+[data-visual-theme="sillytavern"] .os-window {
+  backdrop-filter: none;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+[data-visual-theme="sillytavern"] .os-window:hover {
+  transform: none;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.3);
+}
+
+[data-visual-theme="sillytavern"] .os-title-bar {
+  border-bottom-color: var(--border);
+}
+
+[data-visual-theme="sillytavern"] .os-window-btn.close {
+  background: #c44040;
+}
+[data-visual-theme="sillytavern"] .os-window-btn.minimize {
+  background: #b09430;
+}
+[data-visual-theme="sillytavern"] .os-window-btn.maximize {
+  background: #409040;
+}
+
+[data-visual-theme="sillytavern"] .os-window-btn:hover {
+  box-shadow: none;
+}
+
+/* ─── Disable retro glow text ─── */
+[data-visual-theme="sillytavern"] .retro-glow-text {
+  color: var(--primary);
+  text-shadow: none;
+}
+
+/* ─── Disable 3D card tilt ─── */
+[data-visual-theme="sillytavern"] .card-3d-tilt:hover {
+  transform: none;
+}
+
+/* ─── Pastel gradient bar → solid ST accent ─── */
+[data-visual-theme="sillytavern"] .pastel-gradient {
+  background: var(--primary);
+  animation: none;
+}
+
+/* ─── Glimmer bubbles → flat ST message style ─── */
+[data-visual-theme="sillytavern"] .glimmer-avatar-ring {
+  background: var(--border);
+  box-shadow: none;
+}
+
+[data-visual-theme="sillytavern"] .glimmer-avatar-ring:hover {
+  box-shadow: none;
+  transform: none;
+}
+
+[data-visual-theme="sillytavern"] .glimmer-name-gradient {
+  background: none;
+  -webkit-background-clip: unset;
+  -webkit-text-fill-color: var(--primary);
+  background-clip: unset;
+}
+
+[data-visual-theme="sillytavern"] .glimmer-bubble-char {
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+[data-visual-theme="sillytavern"] .glimmer-bubble-user {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border: 1px solid var(--primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+[data-visual-theme="sillytavern"] .glimmer-streaming {
+  box-shadow: 0 0 0 2px rgba(74, 114, 176, 0.3);
+  animation: st-stream-pulse 2s ease-in-out infinite;
+}
+
+@keyframes st-stream-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px rgba(74, 114, 176, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(74, 114, 176, 0.5);
+  }
+}
+
+/* ─── Texting bubbles → ST style ─── */
+[data-visual-theme="sillytavern"] .texting-bubble-user {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+[data-visual-theme="sillytavern"] .texting-bubble-other {
+  background: var(--card);
+  border-color: var(--border);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* ─── RPG mode → muted ST feel ─── */
+[data-visual-theme="sillytavern"] .rpg-chat-area {
+  background: var(--background);
+}
+
+[data-visual-theme="sillytavern"] .rpg-avatar-glow::after {
+  display: none;
+}
+
+[data-visual-theme="sillytavern"] .rpg-avatar-panel::after {
+  display: none;
+}
+
+[data-visual-theme="sillytavern"] .rpg-char-name {
+  background: none;
+  -webkit-background-clip: unset;
+  -webkit-text-fill-color: var(--primary);
+  background-clip: unset;
+}
+
+[data-visual-theme="sillytavern"] .rpg-streaming::after {
+  border-color: rgba(74, 114, 176, 0.55);
+  box-shadow: inset 0 0 14px rgba(74, 114, 176, 0.2);
+}
+
+/* ─── Function call card → cleaner look ─── */
+[data-visual-theme="sillytavern"] .fn-call-card {
+  background: rgba(74, 114, 176, 0.06);
+  border-color: rgba(74, 114, 176, 0.2);
+}
+
+[data-visual-theme="sillytavern"] .fn-call-card .fn-name {
+  color: var(--primary);
+}
+
+/* ─── Shimmer → neutral grey ─── */
+[data-visual-theme="sillytavern"] .shimmer {
+  background: linear-gradient(90deg, #16161e 25%, #1e1e2e 50%, #16161e 75%);
+  background-size: 200% 100%;
+}
+
+/* ─── OS button pastel → flat ST button ─── */
+[data-visual-theme="sillytavern"] .os-button-pastel {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+
+[data-visual-theme="sillytavern"] .os-button-pastel:hover {
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+/* ─── Light-mode ST overrides for glass ─── */
+[data-visual-theme="sillytavern"][data-theme="light"] .glass {
+  background: var(--card);
+  border: 1px solid var(--border);
+}
+
+[data-visual-theme="sillytavern"][data-theme="light"] .glass-strong {
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+/* ─── Light-mode ST scrollbar ─── */
+[data-visual-theme="sillytavern"][data-theme="light"] ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+[data-visual-theme="sillytavern"][data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+  border-color: transparent;
+}
+
+[data-visual-theme="sillytavern"][data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+/* ─── Light-mode ST shimmer ─── */
+[data-visual-theme="sillytavern"][data-theme="light"] .shimmer {
+  background: linear-gradient(90deg, #d8d8e0 25%, #e0e0e8 50%, #d8d8e0 75%);
+  background-size: 200% 100%;
+}

@@ -1,0 +1,212 @@
+// ──────────────────────────────────────────────
+// Routes: Browser (proxy to character sources)
+// ──────────────────────────────────────────────
+import type { FastifyInstance, FastifyPluginOptions } from "fastify";
+import { fetchBotBrowserJson, type BotBrowserJsonFetchOptions } from "../services/bot-browser/fetch-json.js";
+import { resolveValidatedImage, safeFetch } from "../utils/security.js";
+
+const CHUB_API_BASE = "https://api.chub.ai";
+const CHUB_AVATARS = "https://avatars.charhub.io";
+const AVATAR_PROXY_MAX_BYTES = 10 * 1024 * 1024;
+const CARD_DOWNLOAD_MAX_BYTES = 256 * 1024 * 1024;
+
+async function fetchAvatarImage(url: string, signal: AbortSignal) {
+  const res = await safeFetch(url, {
+    signal,
+    policy: { allowedProtocols: ["https:"] },
+    maxResponseBytes: AVATAR_PROXY_MAX_BYTES,
+  });
+  if (!res.ok) return null;
+  const buf = Buffer.from(await res.arrayBuffer());
+  const image = resolveValidatedImage(buf);
+  if (!image) throw new Error("Unsupported avatar image content");
+  return { buf, mimeType: image.mimeType };
+}
+
+export interface BotBrowserRoutesOptions extends FastifyPluginOptions {
+  fetchJson?: (url: string | URL, options: BotBrowserJsonFetchOptions) => Promise<unknown>;
+}
+
+export async function botBrowserRoutes(app: FastifyInstance, options: BotBrowserRoutesOptions) {
+  const fetchJson = options.fetchJson ?? fetchBotBrowserJson;
+  // ── Search characters on Chub ──
+  app.get<{
+    Querystring: {
+      q?: string;
+      page?: string;
+      sort?: string;
+      nsfw?: string;
+      tags?: string;
+      excludeTags?: string;
+      asc?: string;
+      min_tokens?: string;
+      max_tokens?: string;
+      require_images?: string;
+      require_lore?: string;
+      require_expressions?: string;
+      require_alternate_greetings?: string;
+      max_days_ago?: string;
+      special_mode?: string;
+      username?: string;
+    };
+  }>("/chub/search", async (req) => {
+    const {
+      q = "",
+      page = "1",
+      sort = "download_count",
+      nsfw = "true",
+      tags,
+      excludeTags,
+      asc,
+      min_tokens = "50",
+      max_tokens,
+      require_images,
+      require_lore,
+      require_expressions,
+      require_alternate_greetings,
+      max_days_ago,
+      special_mode,
+      username,
+    } = req.query;
+
+    // Build params exactly as Chub API expects them
+    const params = new URLSearchParams({
+      search: q,
+      first: "48",
+      page,
+      namespace: "characters",
+      nsfw,
+      nsfl: nsfw,
+      nsfw_only: "false",
+      chub: "true",
+      count: "true",
+      include_forks: "true",
+      venus: "false",
+      min_tokens,
+    });
+
+    // Sort: only set if not "default" (default = let Chub decide relevance)
+    if (sort && sort !== "default") {
+      params.set("sort", sort);
+    }
+
+    // Ascending sort direction
+    if (asc === "true") {
+      params.set("asc", "true");
+    }
+
+    // Time period filter
+    if (max_days_ago && max_days_ago !== "0") {
+      params.set("max_days_ago", max_days_ago);
+    }
+
+    // Special mode (e.g. "newcomer" for Recent Hits)
+    if (special_mode) {
+      params.set("special_mode", special_mode);
+    }
+
+    // Author/username filter
+    if (username) {
+      params.set("username", username);
+    }
+
+    // Token limits
+    if (max_tokens) params.set("max_tokens", max_tokens);
+
+    // Tag filters
+    if (tags) params.set("topics", tags);
+    if (excludeTags) params.set("excludetopics", excludeTags);
+
+    // Feature filters
+    if (require_images === "true") params.set("require_images", "true");
+    if (require_lore === "true") params.set("require_lore", "true");
+    if (require_expressions === "true") params.set("require_expressions", "true");
+    if (require_alternate_greetings === "true") params.set("require_alternate_greetings", "true");
+
+    const data = await fetchJson(`${CHUB_API_BASE}/search?${params}`, {
+      allowedHosts: ["api.chub.ai"],
+      method: "GET",
+      headers: { Accept: "application/json" },
+    });
+    return data;
+  });
+
+  // ── Get full character data from Chub ──
+  app.get<{ Params: { "*": string } }>("/chub/character/*", async (req) => {
+    const fullPath = (req.params as Record<string, string>)["*"];
+    if (!fullPath) throw new Error("Missing character path");
+    const nocache = Date.now();
+    const data = await fetchJson(
+      `${CHUB_API_BASE}/api/characters/${encodeURI(fullPath)}?full=true&nocache=${nocache}`,
+      {
+        allowedHosts: ["api.chub.ai"],
+        maxResponseBytes: 8 * 1024 * 1024,
+        headers: { Accept: "application/json", "Cache-Control": "no-cache" },
+      },
+    );
+    return data;
+  });
+
+  // ── Download character card PNG from Chub (for import) ──
+  app.get<{ Params: { "*": string } }>("/chub/download/*", async (req, reply) => {
+    const fullPath = (req.params as Record<string, string>)["*"];
+    if (!fullPath) throw new Error("Missing character path");
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60_000);
+    try {
+      const res = await safeFetch(`${CHUB_AVATARS}/avatars/${encodeURI(fullPath)}/chara_card_v2.png`, {
+        signal: controller.signal,
+        policy: { allowedProtocols: ["https:"] },
+        allowedContentTypes: ["image/png", "application/octet-stream"],
+        allowMissingContentType: true,
+        maxResponseBytes: CARD_DOWNLOAD_MAX_BYTES,
+      });
+      if (!res.ok) throw new Error(`Download failed: ${res.status}`);
+
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (resolveValidatedImage(buf)?.mimeType !== "image/png") throw new Error("Downloaded card is not a PNG image");
+      return reply
+        .header("Content-Type", "image/png")
+        .header("Content-Disposition", `attachment; filename="character.png"`)
+        .send(buf);
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
+
+  // ── Proxy character avatar images (avoids CORS for thumbnails) ──
+  // `full=1` prefers the card PNG over the compressed `avatar.webp` thumbnail,
+  // for the enlarged view. Both sources are tried either way, so a card that
+  // only publishes one of them still resolves.
+  app.get<{ Params: { "*": string }; Querystring: { full?: string } }>("/chub/avatar/*", async (req, reply) => {
+    const fullPath = (req.params as Record<string, string>)["*"];
+    if (!fullPath) throw new Error("Missing avatar path");
+    const preferCardPng = req.query.full === "1";
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    try {
+      const sources = preferCardPng ? ["chara_card_v2.png", "avatar.webp"] : ["avatar.webp", "chara_card_v2.png"];
+      const primary = await fetchAvatarImage(
+        `${CHUB_AVATARS}/avatars/${encodeURI(fullPath)}/${sources[0]}`,
+        controller.signal,
+      );
+      const image =
+        primary ??
+        (await fetchAvatarImage(`${CHUB_AVATARS}/avatars/${encodeURI(fullPath)}/${sources[1]}`, controller.signal));
+      if (!image) return reply.status(404).send({ error: "Avatar not found" });
+      return reply
+        .header("Content-Type", image.mimeType)
+        .header("Cache-Control", "public, max-age=86400")
+        .send(image.buf);
+    } catch (err) {
+      if ((err as Error).message.includes("Unsupported avatar image content")) {
+        return reply.status(415).send({ error: "Unsupported avatar content type" });
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
+}

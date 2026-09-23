@@ -1,0 +1,815 @@
+// ──────────────────────────────────────────────
+// Routes: Agents
+// ──────────────────────────────────────────────
+import type { FastifyInstance } from "fastify";
+import { existsSync } from "fs";
+import { mkdir, readFile, unlink, writeFile } from "fs/promises";
+import { extname, join } from "path";
+import {
+  agentSuiteRewriteSchema,
+  customAgentImportPolicyUpdateSchema,
+  createAgentConfigSchema,
+  importAgentConfigSchema,
+  updateAgentConfigSchema,
+  BUILT_IN_AGENTS,
+  CUSTOM_AGENT_IMPORT_SOURCE_SETTING,
+  CUSTOM_AGENT_PERMISSIONS_EXPLICIT_SETTING,
+  DEFAULT_AGENT_TOOLS,
+  LOCAL_SIDECAR_CONNECTION_ID,
+  PROVIDERS,
+  createImportedAgentType,
+  getDefaultBuiltInAgentSettings,
+  localAuthProviderBaseUrl,
+  normalizeCustomAgentCapabilities,
+  normalizeAgentPhaseForType,
+  type CustomAgentCapability,
+} from "@marinara-engine/shared";
+import { requirePrivilegedAccess } from "../middleware/privileged-gate.js";
+import { BEHOLDER_STATE_RATE_LIMIT } from "../middleware/rate-limit.js";
+import {
+  getCustomAgentImportPolicy,
+  setCustomAgentImportsEnabled,
+} from "../services/agents/custom-agent-import-policy.service.js";
+import { createAgentsStorage } from "../services/storage/agents.storage.js";
+import { agentConfigs } from "../db/schema/index.js";
+import { eq } from "../db/file-query.js";
+import { createChatsStorage } from "../services/storage/chats.storage.js";
+import { createConnectionsStorage } from "../services/storage/connections.storage.js";
+import { createLLMProvider } from "../services/llm/provider-registry.js";
+import { getLocalSidecarProvider } from "../services/llm/local-sidecar.js";
+import { createLocalSidecarGenerationConnection } from "../services/generation/local-sidecar-generation-connection.js";
+import {
+  escapeTextRewriteFrameDelimiter,
+  normalizeTextRewriteFrameLabel,
+  normalizeTextRewriteResponse,
+} from "../services/generation/text-rewrite-safety.js";
+import { normalizeBeholderState } from "../services/agents/beholder-state.js";
+import { isDebugAgentsEnabled } from "../config/runtime-config.js";
+import { logDebugOverride, logger } from "../lib/logger.js";
+import { DATA_DIR } from "../utils/data-dir.js";
+import { assertInsideDir, extensionFromImageMime, isAllowedImageBuffer } from "../utils/security.js";
+import { z } from "zod";
+
+const AGENT_IMAGES_DIR = join(DATA_DIR, "agents", "images");
+const AGENT_IMAGE_URL_PREFIX = "/api/agents/images/file/";
+const IMPORT_UNSAFE_AGENT_SETTING_KEYS = new Set([
+  "spotifyAccessToken",
+  "spotifyRefreshToken",
+  "spotifyExpiresAt",
+  "spotifyScope",
+  "youtubeApiKey",
+  "sourceLorebookIds",
+  "sourceFileIds",
+  "writableLorebookId",
+  "writableLorebookIds",
+  "targetLorebookId",
+  "imageConnectionId",
+  "lorebookWriteEnabled",
+  "customAgentRepositorySource",
+  CUSTOM_AGENT_IMPORT_SOURCE_SETTING,
+  CUSTOM_AGENT_PERMISSIONS_EXPLICIT_SETTING,
+]);
+
+const updateAgentRunSchema = z.object({
+  resultData: z.unknown(),
+  // Optional owner hint: keeps the lazy file store from loading every chat's agent_runs
+  // shards for a bare-id lookup. The chat is always open when a run is edited.
+  chatId: z.string().min(1).optional(),
+});
+
+const TEXT_REWRITE_SYSTEM_PROMPT = [
+  "You are a precise text editor embedded in a roleplay application. You may edit chat prose, dialogue, memory, tracker state, or generated notes. Rewrite ONLY the provided excerpt according to the user's instruction.",
+  "Rules:",
+  "- Return ONLY the rewritten excerpt. No explanations, no preamble, no code fences.",
+  "- The excerpt may be a fragment of a larger document; the surrounding document is provided for context but must NOT be included in your output.",
+  "- Reference context blocks (character cards, lorebook entries) may be provided. Use them to ground names, facts, and details, but never copy them into the output beyond what the instruction requires.",
+  "- If the excerpt is JSON or a fragment of JSON, keep the same structural shape so the result can be spliced back without breaking the document.",
+  "- Preserve everything the instruction does not ask to change, including established facts, chronology, speaker and action ownership, explicit choices, consent, relationships, and unresolved ambiguity.",
+  "- Never invent dialogue, actions, thoughts, feelings, motives, moral judgments, habits, authority, or new facts unless the user's instruction explicitly requests them.",
+  "- Treat user-authored character decisions and interiority as intentional. Do not soften, sanitize, correct, or reinterpret them merely because they are forceful, profane, unusual, or morally complex.",
+].join("\n");
+
+const secretPlotArcSchema = z
+  .object({
+    description: z.string().optional(),
+    protagonistArc: z.string().optional(),
+    characterArc: z.string().optional(),
+    completed: z.boolean().optional(),
+  })
+  .passthrough();
+
+const secretPlotDirectionTextSchema = z.string().trim().min(1);
+
+const secretPlotMemoryPatchSchema = z
+  .object({
+    overarchingArc: z.union([z.string(), secretPlotArcSchema, z.null()]).optional(),
+    sceneDirections: z
+      .union([
+        z.array(
+          z.object({
+            direction: secretPlotDirectionTextSchema,
+            fulfilled: z.boolean().optional(),
+          }),
+        ),
+        z.null(),
+      ])
+      .optional(),
+    recentlyFulfilled: z.union([z.array(z.string()), z.null()]).optional(),
+    staleDetected: z.union([z.boolean(), z.null()]).optional(),
+    pacing: z.union([z.string(), z.null()]).optional(),
+  })
+  .passthrough();
+
+function normalizeSecretPlotMemoryPatch(patch: Record<string, unknown>): Record<string, unknown> {
+  const parsed = secretPlotMemoryPatchSchema.parse(patch);
+  const normalized: Record<string, unknown> = { ...parsed };
+  if ("sceneDirections" in parsed) {
+    normalized.sceneDirections = (parsed.sceneDirections ?? [])
+      .map((entry) => ({ ...entry, direction: entry.direction.trim() }))
+      .filter((entry) => entry.direction.length > 0);
+  }
+  if ("recentlyFulfilled" in parsed) normalized.recentlyFulfilled = parsed.recentlyFulfilled ?? [];
+  if ("staleDetected" in parsed) normalized.staleDetected = parsed.staleDetected === true;
+  return normalized;
+}
+
+function parseAgentSettings(value: unknown): Record<string, unknown> {
+  if (!value) return {};
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+    } catch {
+      return {};
+    }
+  }
+  return typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function buildImportedAgentInput(input: ReturnType<typeof importAgentConfigSchema.parse>) {
+  const sourceSettings = { ...input.agent.settings };
+  delete sourceSettings[CUSTOM_AGENT_PERMISSIONS_EXPLICIT_SETTING];
+  if (input.agent.resultType) sourceSettings.resultType = input.agent.resultType;
+  const requestedCapabilities = normalizeCustomAgentCapabilities(sourceSettings);
+  const approvedCapabilities: Partial<Record<CustomAgentCapability, boolean>> = {};
+  for (const capability of input.approvedCapabilities) {
+    if (requestedCapabilities[capability] !== true) {
+      throw new Error(`The imported Agent did not request the ${capability} capability`);
+    }
+    approvedCapabilities[capability] = true;
+  }
+
+  const settings = { ...input.agent.settings };
+  for (const key of IMPORT_UNSAFE_AGENT_SETTING_KEYS) delete settings[key];
+  delete settings.enabledTools;
+  delete settings.capabilities;
+  delete settings.customCapabilities;
+  settings.customCapabilities = approvedCapabilities;
+  settings[CUSTOM_AGENT_PERMISSIONS_EXPLICIT_SETTING] = true;
+  settings[CUSTOM_AGENT_IMPORT_SOURCE_SETTING] = input.source;
+
+  return {
+    ...input.agent,
+    type: createImportedAgentType(input.agent.type),
+    enabled: true,
+    connectionId: null,
+    imagePath: null,
+    settings,
+  };
+}
+
+function normalizeRunInterval(value: unknown, fallback: number, max = 100): number {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.min(max, Math.floor(parsed)) : fallback;
+}
+
+function parseImageUpload(image: string): { buffer: Buffer; hintedExt: string } {
+  let base64 = image;
+  let hintedExt = "png";
+  if (base64.startsWith("data:")) {
+    const match = base64.match(/^data:image\/([\w.+-]+);base64,/i);
+    if (match?.[1]) {
+      hintedExt = match[1].replace("+xml", "");
+      base64 = base64.slice(base64.indexOf(",") + 1);
+    }
+  }
+  return { buffer: Buffer.from(base64, "base64"), hintedExt };
+}
+
+function getSafeAgentImagePath(filename: string): string | null {
+  if (!filename || filename.includes("..") || filename.includes("/") || filename.includes("\\")) return null;
+  try {
+    return assertInsideDir(AGENT_IMAGES_DIR, join(AGENT_IMAGES_DIR, filename));
+  } catch {
+    return null;
+  }
+}
+
+export async function agentsRoutes(app: FastifyInstance) {
+  const storage = createAgentsStorage(app.db);
+  const chats = createChatsStorage(app.db);
+  const connections = createConnectionsStorage(app.db);
+  /**
+   * Delete an uploaded agent image once no agent row points at it any more.
+   * Rows are read directly (not via storage.list) so soft-deleted built-ins and
+   * duplicated agents that share one imagePath still count as references.
+   */
+  const removeAgentImageIfUnreferenced = async (imagePath: string | null | undefined) => {
+    if (!imagePath?.startsWith(AGENT_IMAGE_URL_PREFIX)) return;
+    const filepath = getSafeAgentImagePath(imagePath.slice(AGENT_IMAGE_URL_PREFIX.length));
+    if (!filepath) return;
+    try {
+      const refs = await app.db.select().from(agentConfigs).where(eq(agentConfigs.imagePath, imagePath));
+      if (refs.length > 0) return;
+      await unlink(filepath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        logger.warn(error, "Could not remove unreferenced agent image %s", filepath);
+      }
+    }
+  };
+  const getOrCreateConfigByType = async (agentType: string) => {
+    const existing = await storage.getByType(agentType);
+    if (existing) return existing;
+    const builtIn = BUILT_IN_AGENTS.find((a) => a.id === agentType);
+    if (!builtIn) return null;
+    return storage.create({
+      type: builtIn.id,
+      name: builtIn.name,
+      description: builtIn.description,
+      phase: normalizeAgentPhaseForType(builtIn.id, builtIn.phase),
+      connectionId: null,
+      imagePath: null,
+      promptTemplate: "",
+      settings: {
+        ...getDefaultBuiltInAgentSettings(builtIn.id),
+        ...(DEFAULT_AGENT_TOOLS[builtIn.id]?.length ? { enabledTools: DEFAULT_AGENT_TOOLS[builtIn.id] } : {}),
+      },
+    });
+  };
+
+  app.get("/", async () => {
+    return storage.list();
+  });
+
+  app.get("/import-policy", async () => getCustomAgentImportPolicy(app.db));
+
+  app.patch("/import-policy", async (req, reply) => {
+    if (!requirePrivilegedAccess(req, reply, { feature: "Custom Agent imports" })) return;
+    const { enabled } = customAgentImportPolicyUpdateSchema.parse(req.body);
+    return setCustomAgentImportsEnabled(app.db, enabled);
+  });
+
+  app.post("/import", async (req, reply) => {
+    if (!requirePrivilegedAccess(req, reply, { feature: "Custom Agent import" })) return;
+    if (!(await getCustomAgentImportPolicy(app.db)).enabled) {
+      return reply.status(403).send({
+        error: "Custom Agent imports are disabled",
+        message: "Enable Agent imports in Advanced Settings → Danger Zone first.",
+      });
+    }
+    try {
+      const input = importAgentConfigSchema.parse(req.body);
+      return storage.create(buildImportedAgentInput(input));
+    } catch (error) {
+      return reply.status(400).send({
+        error: error instanceof Error ? error.message : "Invalid Agent import",
+      });
+    }
+  });
+
+  app.get<{ Params: { filename: string } }>("/images/file/:filename", async (req, reply) => {
+    const filepath = getSafeAgentImagePath(req.params.filename);
+    if (!filepath || !existsSync(filepath)) return reply.status(404).send({ error: "Image not found" });
+
+    const buffer = await readFile(filepath);
+    const imageInfo = isAllowedImageBuffer(buffer, extname(filepath));
+    if (!imageInfo) return reply.status(404).send({ error: "Image not found" });
+
+    return reply
+      .header("Content-Type", imageInfo.mimeType)
+      .header("Cache-Control", "public, max-age=31536000, immutable")
+      .send(buffer);
+  });
+
+  /** Get editable custom-agent outputs for a roleplay chat. */
+  app.get<{ Params: { chatId: string }; Querystring: { limit?: string } }>("/runs/:chatId/custom", async (req) => {
+    const parsed = req.query.limit ? Number.parseInt(req.query.limit, 10) : undefined;
+    const parsedLimit = Number.isFinite(parsed) ? parsed : undefined;
+    return storage.listCustomRunsForChat(req.params.chatId, parsedLimit);
+  });
+
+  /**
+   * Persist an operator correction to the Beholder physical state.
+   *
+   * The state a chat carries forward is the result of the agent's last successful
+   * run, which is also what the next prompt is built from — so a correction has to
+   * land there to mean anything. Without this, a hand-set slot would look right on
+   * screen and be narrated away on the next turn.
+   *
+   * The body is normalized before it is stored, so a malformed correction is refused
+   * rather than written into the state the prompt is built from.
+   */
+  app.put<{ Params: { chatId: string } }>(
+    "/beholder-state/:chatId",
+    { config: { rateLimit: BEHOLDER_STATE_RATE_LIMIT } },
+    async (req, reply) => {
+      // Deliberately NOT behind requirePrivilegedAccess.
+      //
+      // It was, and the effect was that correcting a slot returned 403 for everyone not
+      // on loopback. That gate admits a request only from loopback or with an
+      // X-Admin-Secret header, and a browser has no way to send that header — so behind
+      // a reverse proxy, on a LAN, or through a tunnel, every correction and the whole
+      // "start over" action failed, with no setting an operator could change to fix it.
+      // It failed quietly too: the gate does not log, so the server said nothing.
+      //
+      // The gate was the wrong tool for this route. This writes one chat's own tracked
+      // state, which is the same kind of act as editing a message in that chat, and
+      // chats.routes.ts guards none of its writes this way. Sitting next to the
+      // genuinely administrative routes in this file — import-policy, import — made it
+      // look like company it does not keep.
+      //
+      // What protects it instead: the app-wide Basic Auth hook registered in app.ts,
+      // which every route in the product sits behind; the rate limit configured above;
+      // and normalizeBeholderState below, which refuses a malformed body rather than
+      // letting it reach the state the next prompt is built from.
+      const body = req.body as { state?: unknown } | undefined;
+      const state = normalizeBeholderState(body?.state);
+      if (!state) return reply.status(400).send({ error: "Invalid Beholder state" });
+      const run = await storage.getLastSuccessfulRunByType("beholder", req.params.chatId);
+      if (!run) return reply.status(404).send({ error: "No Beholder run to correct yet" });
+      // The run can be deleted between the lookup and the write. Reporting success then
+      // would tell the operator their correction was saved when it was discarded.
+      const updated = await storage.updateRunResultData(run.id, state, req.params.chatId);
+      if (!updated) return reply.status(409).send({ error: "The Beholder run changed while saving; try again" });
+      return { state, messageId: run.messageId ?? null, createdAt: run.createdAt ?? null };
+    },
+  );
+
+  /** Get the latest validated Beholder physical-state snapshot for a roleplay chat. */
+  app.get<{ Params: { chatId: string } }>("/beholder-state/:chatId", async (req) => {
+    const run = await storage.getLastSuccessfulRunByType("beholder", req.params.chatId);
+    return {
+      state: normalizeBeholderState(run?.resultData) ?? { characters: [] },
+      messageId: run?.messageId ?? null,
+      createdAt: run?.createdAt ?? null,
+    };
+  });
+
+  /**
+   * A summary of Beholder's recent runs, for the panel's diagnostic view.
+   *
+   * Only shapes and timings: how long each run took, how many slots it changed, and
+   * whether it failed. The extracted state itself is not repeated here — the panel
+   * already holds the current one — so this stays a health signal rather than a second
+   * copy of the chat's contents.
+   */
+  app.get<{ Params: { chatId: string }; Querystring: { limit?: string } }>(
+    "/beholder-runs/:chatId",
+    { config: { rateLimit: BEHOLDER_STATE_RATE_LIMIT } },
+    async (req) => {
+      const parsed = req.query.limit ? Number.parseInt(req.query.limit, 10) : undefined;
+      // Clamped once, here, and used for both the fetch and the slice. The raw value
+      // reached the slice unchecked, so limit=0 or a negative returned an empty window
+      // while storage had quietly normalised its own end to at least one row.
+      const wanted = Math.max(1, Math.min(Number.isFinite(parsed) ? (parsed as number) : 5, 50));
+      // One extra, so the oldest run in the window still has a predecessor to be
+      // compared against and is not reported as having introduced everything it holds.
+      const runs = await storage.listRunsByTypeForChat("beholder", req.params.chatId, wanted + 1);
+
+      /** Slots per character, as a comparable map. */
+      const slotMap = (data: unknown) => {
+        const state = normalizeBeholderState(data);
+        // Keyed the way the normalizer identifies a character, which is case-folded.
+        // Keying by the raw name made "Maggie" and "maggie" two people, so one run
+        // spelling a name differently read as one character leaving and another
+        // arriving — a page of invented changes from a capital letter. The display
+        // name is carried alongside so the answer still reads naturally.
+        const map = new Map<string, { name: string; slots: Map<string, string> }>();
+        for (const character of state?.characters ?? []) {
+          const slots = new Map<string, string>();
+          for (const [slot, value] of Object.entries(character.body ?? {})) {
+            slots.set(slot, JSON.stringify(value ?? null));
+          }
+          map.set(character.name.toLocaleLowerCase("en-US"), { name: character.name, slots });
+        }
+        return map;
+      };
+
+      const maps = runs.map((run) => slotMap(run.resultData));
+      return runs.slice(0, wanted).map((run, index) => {
+        // Indexed access is typed as possibly-undefined; index is bounded by slice.
+        const now = maps[index] ?? new Map<string, { name: string; slots: Map<string, string> }>();
+        // Runs come back newest first, so the NEXT entry is the previous state.
+        const before = maps[index + 1] ?? null;
+        // Over the union of both states, not just the current one. Visiting only what
+        // is here now cannot see a removal: a garment taken off deletes the slot, and a
+        // character who leaves the scene disappears entirely, so the message that did it
+        // reported no change at all — on a panel whose whole purpose is tracking things
+        // being put on and taken off.
+        const changes: { name: string; slots: string[] }[] = [];
+        for (const key of new Set([...now.keys(), ...(before?.keys() ?? [])])) {
+          const currentEntry = now.get(key);
+          const previousEntry = before?.get(key);
+          const current = currentEntry?.slots ?? new Map<string, string>();
+          const previous = previousEntry?.slots ?? new Map<string, string>();
+          const name = currentEntry?.name ?? previousEntry?.name ?? key;
+          const touched: string[] = [];
+          for (const slot of new Set([...current.keys(), ...previous.keys()])) {
+            if (current.get(slot) !== previous.get(slot)) touched.push(slot);
+          }
+          // A character who appears or disappears is a change even when they carried no
+          // tracked slots, and reporting only slot differences swallowed that entirely.
+          // The panel draws one badge per slot, so such an entry shows nothing there —
+          // which is right, because there is nothing to show — but the answer this route
+          // gives is now true rather than conveniently empty.
+          const presenceChanged = now.has(key) !== (before?.has(key) ?? false);
+          if (touched.length || presenceChanged) changes.push({ name, slots: touched.sort() });
+        }
+        return {
+          messageId: run.messageId ?? null,
+          createdAt: run.createdAt ?? null,
+          durationMs: run.durationMs ?? null,
+          success: run.success,
+          error: run.error ?? null,
+          characters: now.size,
+          slots: [...now.values()].reduce((total, entry) => total + entry.slots.size, 0),
+          // What THIS run changed, rather than everything it holds. Null when there is
+          // no earlier run to compare against: the first extraction in a chat did not
+          // "change" the whole body, it established it, and saying otherwise would put
+          // a wall of badges on one message.
+          changes: before ? changes : null,
+        };
+      });
+    },
+  );
+
+  /** Get run interval status for built-in cadence-gated agents. */
+  app.get<{ Params: { agentType: string; chatId: string } }>("/cadence/:agentType/:chatId", async (req, reply) => {
+    const { agentType, chatId } = req.params;
+    const builtIn = BUILT_IN_AGENTS.find((agent) => agent.id === agentType);
+    if (!builtIn) return reply.status(404).send({ error: "Unknown agent type" });
+
+    const defaults = getDefaultBuiltInAgentSettings(agentType);
+    if (defaults.runInterval === undefined) {
+      return reply.status(404).send({ error: "Agent does not use run intervals" });
+    }
+    const fallback = normalizeRunInterval(defaults.runInterval, 1);
+    const config = await storage.getByType(agentType);
+    const settings = { ...defaults, ...parseAgentSettings(config?.settings) };
+    const runInterval = normalizeRunInterval(settings.runInterval, fallback);
+
+    const lastRun = await storage.getLastSuccessfulRunByType(agentType, chatId);
+    const messages = await chats.listMessages(chatId);
+    let messagesSinceLastRun: number | null = null;
+    let lastRunMessageFound: boolean | null = null;
+
+    if (lastRun) {
+      const lastRunIdx = messages.findIndex((message: any) => message.id === lastRun.messageId);
+      lastRunMessageFound = lastRunIdx >= 0;
+      messagesSinceLastRun =
+        lastRunIdx >= 0
+          ? messages
+              .slice(lastRunIdx + 1)
+              .filter((message: any) => message.role === "user" || message.role === "assistant").length
+          : runInterval;
+    }
+
+    const remainingMessages =
+      runInterval <= 1 || !lastRun ? 0 : Math.max(0, runInterval - ((messagesSinceLastRun ?? 0) + 1));
+
+    return {
+      agentType,
+      runInterval,
+      lastSuccessfulRun: lastRun ? { messageId: lastRun.messageId, createdAt: lastRun.createdAt } : null,
+      messagesSinceLastRun,
+      remainingMessages,
+      runsNextMessage: remainingMessages === 0,
+      lastRunMessageFound,
+    };
+  });
+
+  /** Edit the persisted output of a custom agent run. */
+  app.patch<{ Params: { runId: string } }>("/runs/:runId", async (req, reply) => {
+    const input = updateAgentRunSchema.parse(req.body);
+    const run = await storage.getRunWithConfig(req.params.runId, input.chatId);
+    if (!run) return reply.status(404).send({ error: "Agent run not found" });
+    if (BUILT_IN_AGENTS.some((agent) => agent.id === run.agentType)) {
+      return reply.status(403).send({ error: "Built-in agent runs are not editable here" });
+    }
+    return storage.updateRunResultData(req.params.runId, input.resultData, run.chatId ?? undefined);
+  });
+
+  app.get<{ Params: { id: string } }>("/:id", async (req, reply) => {
+    const agent = await storage.getById(req.params.id);
+    if (!agent) return reply.status(404).send({ error: "Agent not found" });
+    return agent;
+  });
+
+  app.post("/", async (req) => {
+    const input = createAgentConfigSchema.parse(req.body);
+    return storage.create(input);
+  });
+
+  app.patch<{ Params: { agentType: string } }>("/type/:agentType", async (req, reply) => {
+    const config = await getOrCreateConfigByType(req.params.agentType);
+    if (!config) {
+      return reply.status(404).send({ error: "Agent is not configured" });
+    }
+    const data = updateAgentConfigSchema.parse(req.body);
+    const updated = await storage.update(config.id, data);
+    if (updated && data.imagePath !== undefined && data.imagePath !== config.imagePath) {
+      await removeAgentImageIfUnreferenced(config.imagePath);
+    }
+    return updated;
+  });
+
+  app.patch<{ Params: { id: string } }>("/:id", async (req) => {
+    const data = updateAgentConfigSchema.parse(req.body);
+    const previous = data.imagePath !== undefined ? await storage.getById(req.params.id) : null;
+    const updated = await storage.update(req.params.id, data);
+    if (updated && previous && data.imagePath !== previous.imagePath) {
+      await removeAgentImageIfUnreferenced(previous.imagePath);
+    }
+    return updated;
+  });
+
+  app.post<{ Params: { id: string } }>("/:id/image", async (req, reply) => {
+    const config = (await storage.getById(req.params.id)) ?? (await getOrCreateConfigByType(req.params.id));
+    if (!config) return reply.status(404).send({ error: "Agent not found" });
+
+    const body = (req.body ?? {}) as { image?: unknown };
+    if (typeof body.image !== "string" || !body.image) return reply.status(400).send({ error: "No image data provided" });
+
+    const { buffer, hintedExt } = parseImageUpload(body.image);
+    const imageInfo = isAllowedImageBuffer(buffer, `.${hintedExt}`);
+    if (!imageInfo) return reply.status(400).send({ error: "Unsupported or invalid agent image" });
+
+    const ext = extensionFromImageMime(imageInfo.mimeType);
+    await mkdir(AGENT_IMAGES_DIR, { recursive: true });
+    const filename = `agent-${config.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}.${ext}`;
+    const filepath = assertInsideDir(AGENT_IMAGES_DIR, join(AGENT_IMAGES_DIR, filename));
+    await writeFile(filepath, buffer);
+
+    const previousImagePath = config.imagePath;
+    const nextImagePath = `${AGENT_IMAGE_URL_PREFIX}${filename}`;
+    const updated = await storage.update(config.id, { imagePath: nextImagePath });
+    if (!updated) {
+      await removeAgentImageIfUnreferenced(nextImagePath);
+      return reply.status(404).send({ error: "Agent not found" });
+    }
+    if (previousImagePath !== nextImagePath) await removeAgentImageIfUnreferenced(previousImagePath);
+    return updated;
+  });
+
+  app.delete<{ Params: { id: string } }>("/:id", async (req, reply) => {
+    try {
+      const builtInByType = BUILT_IN_AGENTS.find((agent) => agent.id === req.params.id);
+      const existing = builtInByType ? null : await storage.getById(req.params.id);
+      const existingBuiltInType =
+        existing && BUILT_IN_AGENTS.some((agent) => agent.id === existing.type) ? existing.type : null;
+
+      if (builtInByType || existingBuiltInType) {
+        await storage.softDeleteBuiltIn(builtInByType?.id ?? existingBuiltInType!);
+      } else {
+        await storage.remove(req.params.id);
+        await removeAgentImageIfUnreferenced(existing?.imagePath);
+      }
+      return reply.status(204).send();
+    } catch (err) {
+      req.log.error(err, "Failed to delete agent %s", req.params.id);
+      return reply.status(500).send({ error: "Failed to delete agent. Try restarting the server and retrying." });
+    }
+  });
+
+  /** Legacy endpoint retained for compatibility. Agent activation is chat-scoped. */
+  app.put<{ Params: { agentType: string } }>("/toggle/:agentType", async (req, reply) => {
+    const { agentType } = req.params;
+    const builtIn = BUILT_IN_AGENTS.find((a) => a.id === agentType);
+    if (!builtIn) {
+      return reply.status(404).send({ error: "Unknown agent type" });
+    }
+
+    const existing = await storage.getByType(agentType);
+    if (existing) {
+      return existing;
+    }
+
+    // First toggle — create a normal config; chats decide whether it runs.
+    return storage.create({
+      type: builtIn.id,
+      name: builtIn.name,
+      description: builtIn.description,
+      phase: normalizeAgentPhaseForType(builtIn.id, builtIn.phase),
+      connectionId: null,
+      imagePath: null,
+      promptTemplate: "",
+      settings: {
+        ...getDefaultBuiltInAgentSettings(builtIn.id),
+        ...(DEFAULT_AGENT_TOOLS[builtIn.id]?.length ? { enabledTools: DEFAULT_AGENT_TOOLS[builtIn.id] } : {}),
+      },
+    });
+  });
+
+  /** Get echo chamber messages for a chat (for persistence across refreshes). */
+  app.get<{ Params: { chatId: string } }>("/echo-messages/:chatId", async (req) => {
+    return storage.getEchoMessages(req.params.chatId);
+  });
+
+  /** Clear all echo chamber messages for a chat. */
+  app.delete<{ Params: { chatId: string } }>("/echo-messages/:chatId", async (req, reply) => {
+    await storage.clearEchoMessages(req.params.chatId);
+    return reply.status(204).send();
+  });
+
+  /** Clear all agent runs and memory for a specific chat. */
+  app.delete<{ Params: { chatId: string } }>("/runs/:chatId", async (req, reply) => {
+    const chatId = req.params.chatId;
+
+    // Before wiping all memory, preserve Narrative Director's secret plot arc.
+    // The arc is long-term structure that only clears when the Director is removed from the chat.
+    let preservedArc: unknown;
+    let preservedConfigId: string | null = null;
+    try {
+      for (const type of ["director", "secret-plot-driver"]) {
+        const config = await storage.getByType(type);
+        if (!config) continue;
+        const mem = await storage.getMemory(config.id, chatId);
+        if (mem.overarchingArc !== undefined && mem.overarchingArc !== null) {
+          preservedArc = mem.overarchingArc;
+          preservedConfigId = config.id;
+          break;
+        }
+      }
+    } catch {
+      /* non-critical */
+    }
+
+    await storage.clearRunsForChat(chatId);
+    await storage.clearMemoryForChat(chatId);
+
+    // Restore the overarching arc
+    if (preservedArc !== undefined && preservedConfigId) {
+      try {
+        await storage.setMemory(preservedConfigId, chatId, "overarchingArc", preservedArc);
+      } catch {
+        /* non-critical */
+      }
+    }
+
+    return reply.status(204).send();
+  });
+
+  /** Read persistent memory for an agent in a chat (JSON values). */
+  app.get<{ Params: { agentType: string; chatId: string } }>("/memory/:agentType/:chatId", async (req, reply) => {
+    const config = await storage.getByType(req.params.agentType);
+    if (!config) {
+      return reply.status(404).send({ error: "Agent is not configured" });
+    }
+    const memory = await storage.getMemory(config.id, req.params.chatId);
+    return { agentConfigId: config.id, memory };
+  });
+
+  /** Patch memory keys for an agent in a chat. Body: { patch: { key: value, ... } } */
+  app.patch<{
+    Params: { agentType: string; chatId: string };
+    Body: { patch?: Record<string, unknown> };
+  }>("/memory/:agentType/:chatId", async (req, reply) => {
+    const config = await getOrCreateConfigByType(req.params.agentType);
+    if (!config) {
+      return reply.status(404).send({ error: "Agent is not configured" });
+    }
+    const body = (req.body ?? {}) as { patch?: Record<string, unknown> };
+    const patch = body.patch;
+    if (!patch || typeof patch !== "object") {
+      return reply.status(400).send({ error: "Body must be { patch: { key: value, ... } }" });
+    }
+    let normalizedPatch: Record<string, unknown>;
+    try {
+      normalizedPatch =
+        req.params.agentType === "director" || req.params.agentType === "secret-plot-driver"
+          ? normalizeSecretPlotMemoryPatch(patch)
+          : patch;
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return reply.status(400).send({
+          error: "Invalid Secret Plot memory patch",
+          issues: err.issues,
+        });
+      }
+      throw err;
+    }
+    await storage.setMemories(config.id, req.params.chatId, normalizedPatch);
+    const memory = await storage.getMemory(config.id, req.params.chatId);
+    return { agentConfigId: config.id, memory };
+  });
+
+  /** Clear all memory for a specific agent in a specific chat (used when removing an agent from a chat). */
+  app.delete<{ Params: { agentType: string; chatId: string } }>("/memory/:agentType/:chatId", async (req, reply) => {
+    const config = await storage.getByType(req.params.agentType);
+    if (config) {
+      await storage.clearMemoryForAgentInChat(config.id, req.params.chatId);
+    }
+    return reply.status(204).send();
+  });
+
+  /**
+   * POST /api/agents/suite/rewrite
+   * Shared AI-assisted edit: rewrite a text fragment with the user's
+   * instruction via a chosen connection. One-shot, non-streaming.
+   */
+  app.post("/suite/rewrite", async (req) => {
+    const input = agentSuiteRewriteSchema.parse(req.body);
+
+    if (input.connectionId === "random") {
+      throw Object.assign(new Error("AI Rewrite requires a specific connection; choose one from the list"), {
+        statusCode: 400,
+      });
+    }
+
+    const useLocalSidecar = input.connectionId === LOCAL_SIDECAR_CONNECTION_ID;
+    const conn = useLocalSidecar
+      ? createLocalSidecarGenerationConnection()
+      : await connections.getWithKey(input.connectionId);
+    if (!conn) {
+      throw Object.assign(new Error("API connection not found"), { statusCode: 400 });
+    }
+
+    let baseUrl = conn.baseUrl;
+    if (!baseUrl) {
+      const providerDef = PROVIDERS[conn.provider as keyof typeof PROVIDERS];
+      baseUrl = providerDef?.defaultBaseUrl ?? "";
+    }
+    const localAuthBaseUrl = localAuthProviderBaseUrl(conn.provider);
+    if (!baseUrl && localAuthBaseUrl) baseUrl = localAuthBaseUrl;
+    if (!baseUrl) {
+      throw Object.assign(new Error("No base URL configured for this connection"), { statusCode: 400 });
+    }
+
+    const provider = useLocalSidecar
+      ? getLocalSidecarProvider()
+      : createLLMProvider(
+          conn.provider,
+          baseUrl,
+          conn.apiKey,
+          conn.maxContext,
+          conn.openrouterProvider,
+          conn.maxTokensOverride,
+          conn.claudeFastMode === "true",
+          conn.treatAsLocalEndpoint === "true",
+          conn.defaultParameters,
+          conn.id,
+        );
+
+    const contextLines: string[] = [];
+    if (input.agentName) contextLines.push(`Agent: ${normalizeTextRewriteFrameLabel(input.agentName)}`);
+    if (input.dataLabel) contextLines.push(`Data: ${normalizeTextRewriteFrameLabel(input.dataLabel)}`);
+    // Keep the frame intact: labels stay single-line and content can't
+    // close the delimiter early (names/entries are user- or import-authored).
+    const referenceBlock = input.contextSections?.length
+      ? `Reference context selected by the user (grounding only — do not output):\n${input.contextSections
+          .map(
+            (section) =>
+              `<<<CONTEXT: ${normalizeTextRewriteFrameLabel(section.label)}\n${escapeTextRewriteFrameDelimiter(
+                section.content,
+                "CONTEXT>>>",
+              )}\nCONTEXT>>>`,
+          )
+          .join("\n")}\n\n`
+      : "";
+    const documentBlock =
+      input.documentText && input.documentText !== input.selectedText
+        ? `Full document (context only — do not output):\n<<<DOCUMENT\n${escapeTextRewriteFrameDelimiter(
+            input.documentText,
+            "DOCUMENT>>>",
+          )}\nDOCUMENT>>>\n\n`
+        : "";
+    const userContent =
+      `${contextLines.length ? `${contextLines.join("\n")}\n\n` : ""}` +
+      `${referenceBlock}` +
+      `${documentBlock}` +
+      `Excerpt to rewrite:\n<<<EXCERPT\n${escapeTextRewriteFrameDelimiter(input.selectedText, "EXCERPT>>>")}\nEXCERPT>>>\n\n` +
+      `Instruction: ${input.instruction}`;
+
+    const debugOverrideEnabled = input.debugMode === true || isDebugAgentsEnabled();
+    logDebugOverride(debugOverrideEnabled, "[debug/text-rewrite] system prompt:\n%s", TEXT_REWRITE_SYSTEM_PROMPT);
+    logDebugOverride(debugOverrideEnabled, "[debug/text-rewrite] user prompt:\n%s", userContent);
+
+    const result = await provider.chatComplete(
+      [
+        { role: "system", content: TEXT_REWRITE_SYSTEM_PROMPT },
+        { role: "user", content: userContent },
+      ],
+      { model: conn.model, temperature: 0.3 },
+    );
+
+    logDebugOverride(debugOverrideEnabled, "[debug/text-rewrite] raw response:\n%s", result.content ?? "");
+    const rewrittenText = normalizeTextRewriteResponse(input.selectedText, result.content ?? "");
+    if (!rewrittenText.trim()) {
+      throw Object.assign(new Error("The model returned an empty response"), { statusCode: 502 });
+    }
+    return { rewrittenText };
+  });
+}

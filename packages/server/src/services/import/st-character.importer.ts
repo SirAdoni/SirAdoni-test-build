@@ -1,0 +1,870 @@
+// ──────────────────────────────────────────────
+// Importer: SillyTavern Character (JSON / V2 Card / CharX)
+// ──────────────────────────────────────────────
+import type { DB } from "../../db/connection.js";
+import { characters as charactersTable } from "../../db/schema/index.js";
+import { logger } from "../../lib/logger.js";
+import { createCharactersStorage } from "../storage/characters.storage.js";
+import { createLorebooksStorage } from "../storage/lorebooks.storage.js";
+import { createRegexScriptsStorage } from "../storage/regex-scripts.storage.js";
+import { importSTLorebook } from "./st-lorebook.importer.js";
+import { capImportedRulesetSheets, isPatternSafe } from "@marinara-engine/shared";
+import type {
+  CharacterBookEntryPosition,
+  CharacterBookEntryRole,
+  CharacterData,
+  CreateRegexScriptInput,
+  RegexPlacement,
+} from "@marinara-engine/shared";
+import { existsSync, mkdirSync } from "fs";
+import { unlink, writeFile } from "fs/promises";
+import { join } from "path";
+import { randomUUID } from "crypto";
+import { DATA_DIR } from "../../utils/data-dir.js";
+import { isAllowedImageBuffer } from "../../utils/security.js";
+import AdmZip from "adm-zip";
+import { normalizeTimestampOverrides, type TimestampOverrides } from "./import-timestamps.js";
+import { restoreSprites } from "./marinara.importer.js";
+
+const AVATAR_DIR = join(DATA_DIR, "avatars");
+const IMPORT_METADATA_KEY = "importMetadata";
+
+/** Remove Marinara sprite binaries from card metadata before the normalized card is stored. */
+export function takeEmbeddedMarinaraSprites(raw: Record<string, unknown>): unknown {
+  const cardData = raw.data && typeof raw.data === "object" ? (raw.data as Record<string, unknown>) : raw;
+  if (!cardData.extensions || typeof cardData.extensions !== "object") return undefined;
+  const extensions = cardData.extensions as Record<string, unknown>;
+  if (!extensions.marinara || typeof extensions.marinara !== "object") return undefined;
+  const marinara = extensions.marinara as Record<string, unknown>;
+  const sprites = marinara.sprites;
+  delete marinara.sprites;
+  return sprites;
+}
+
+function ensureAvatarDir() {
+  if (!existsSync(AVATAR_DIR)) {
+    mkdirSync(AVATAR_DIR, { recursive: true });
+  }
+}
+
+function countEmbeddedLorebookEntries(book: unknown): number {
+  return getCharacterBookEntries(book).length;
+}
+
+async function removeImportedAvatarFile(avatarPath: string | undefined) {
+  if (!avatarPath?.startsWith("/api/avatars/file/")) return;
+  const filename = avatarPath.split("/").pop();
+  if (!filename) return;
+  try {
+    await unlink(join(AVATAR_DIR, filename));
+  } catch (err) {
+    logger.warn(err, "Failed to roll back imported character avatar");
+  }
+}
+
+async function rollbackImportedCharacter(db: DB, characterId: string | undefined, avatarPath: string | undefined) {
+  if (!characterId) {
+    await removeImportedAvatarFile(avatarPath);
+    return;
+  }
+
+  const characterStorage = createCharactersStorage(db);
+  const lorebookStorage = createLorebooksStorage(db);
+  try {
+    const linkedLorebooks = (await lorebookStorage.listByCharacter(characterId)) as Array<{ id?: string }>;
+    for (const lorebook of linkedLorebooks) {
+      if (typeof lorebook.id === "string") {
+        await lorebookStorage.remove(lorebook.id);
+      }
+    }
+  } catch (err) {
+    logger.warn(err, "Failed to roll back imported character lorebook");
+  }
+
+  try {
+    await characterStorage.remove(characterId);
+  } catch (err) {
+    logger.warn(err, "Failed to roll back imported character");
+  }
+
+  await removeImportedAvatarFile(avatarPath);
+}
+
+/**
+ * Import a SillyTavern character card (JSON format).
+ * Handles V1, V2, Pygmalion, and RisuAI formats.
+ * If _avatarDataUrl is present, saves the avatar image.
+ */
+export interface STCharacterImportPreview {
+  success: boolean;
+  name?: string;
+  hasEmbeddedLorebook: boolean;
+  embeddedLorebookEntries: number;
+  error?: string;
+}
+
+export interface STCharacterImportOptions {
+  timestampOverrides?: TimestampOverrides | null;
+  importEmbeddedLorebook?: boolean;
+  tagImportMode?: STCharacterTagImportMode;
+  existingTagKeys?: ReadonlySet<string>;
+  /** Where embedded regex scripts land: scoped to the character (default) or global. */
+  regexScriptScope?: "character" | "global";
+}
+
+// SillyTavern regex placement ids → our placement strings (1 = user input, 2 = AI output).
+// Unknown-only placement arrays are skipped by the importer instead of being
+// silently remapped to AI output.
+function convertStPlacements(placement: unknown): RegexPlacement[] | null {
+  if (!Array.isArray(placement)) return ["ai_output"];
+  const out: RegexPlacement[] = [];
+  for (const n of placement) {
+    if (n === 1 && !out.includes("user_input")) out.push("user_input");
+    else if (n === 2 && !out.includes("ai_output")) out.push("ai_output");
+  }
+  return out.length > 0 ? out : null;
+}
+
+function readBooleanFlag(value: unknown): boolean {
+  return value === true || value === "true" || value === 1 || value === "1";
+}
+
+function convertStRegexApplyMode(s: Record<string, unknown>): "prompt" | "display" | "both" {
+  if (s.applyMode === "prompt" || s.applyMode === "display" || s.applyMode === "both") return s.applyMode;
+  const promptOnly =
+    readBooleanFlag(s.promptOnly) || readBooleanFlag(s.prompt_only) || readBooleanFlag(s.onlyFormatPrompt);
+  const markdownOnly =
+    readBooleanFlag(s.markdownOnly) || readBooleanFlag(s.markdown_only) || readBooleanFlag(s.onlyFormatDisplay);
+  if (promptOnly && !markdownOnly) return "prompt";
+  if (markdownOnly && !promptOnly) return "display";
+  return "both";
+}
+
+/**
+ * Convert a SillyTavern card's embedded `regex_scripts` into CreateRegexScriptInput
+ * rows scoped to the imported character. ST stores the pattern as `/source/flags`
+ * (or a bare source) and placements as numbers; scripts with an empty or
+ * ReDoS-prone source, or one that won't compile, are skipped.
+ */
+function convertStRegexScripts(
+  stScripts: unknown,
+  characterId: string,
+  scope: "character" | "global",
+): CreateRegexScriptInput[] {
+  if (!Array.isArray(stScripts)) return [];
+  const out: CreateRegexScriptInput[] = [];
+  for (const [index, entry] of stScripts.entries()) {
+    if (!entry || typeof entry !== "object") continue;
+    const s = entry as Record<string, unknown>;
+    const rawFind = typeof s.findRegex === "string" ? s.findRegex.trim() : "";
+    if (!rawFind) continue;
+    // ST patterns are usually `/source/flags`; fall back to treating the whole string as the source.
+    const delimited = /^\/(.*)\/([a-z]*)$/is.exec(rawFind);
+    const source = delimited ? delimited[1]! : rawFind;
+    if (!source || !isPatternSafe(source)) continue;
+    const flags = Array.from(new Set((delimited?.[2] ?? "").replace(/[^gimsuy]/g, ""))).join("");
+    try {
+      new RegExp(source, flags);
+    } catch {
+      continue;
+    }
+    const placement = convertStPlacements(s.placement);
+    if (!placement) continue;
+    const applyMode = convertStRegexApplyMode(s);
+    out.push({
+      name: typeof s.scriptName === "string" && s.scriptName.trim() ? s.scriptName.trim() : "Imported regex",
+      enabled: s.disabled !== true,
+      findRegex: source,
+      replaceString: typeof s.replaceString === "string" ? s.replaceString : "",
+      trimStrings: Array.isArray(s.trimStrings) ? s.trimStrings.filter((t): t is string => typeof t === "string") : [],
+      placement,
+      flags,
+      promptOnly: applyMode === "prompt",
+      applyMode,
+      targetCharacterIds: scope === "global" ? [] : [characterId],
+      targetPromptPresetIds: [],
+      // Preserve the card's authoring order so multi-script imports keep a stable
+      // execution/list order (all-zero ties leave it undefined). Gaps from skipped
+      // entries are harmless — list() only sorts by ascending order.
+      order: index,
+      minDepth: typeof s.minDepth === "number" ? s.minDepth : null,
+      maxDepth: typeof s.maxDepth === "number" ? s.maxDepth : null,
+    });
+  }
+  return out;
+}
+
+export type STCharacterTagImportMode = "all" | "none" | "existing";
+
+export async function importSTCharacter(raw: Record<string, unknown>, db: DB, options?: STCharacterImportOptions) {
+  const storage = createCharactersStorage(db);
+  const normalizedTimestamps = normalizeTimestampOverrides(options?.timestampOverrides);
+  const shouldImportEmbeddedLorebook = options?.importEmbeddedLorebook ?? true;
+  const tagImportMode = options?.tagImportMode ?? "all";
+  const embeddedMarinaraSprites = takeEmbeddedMarinaraSprites(raw);
+
+  // Extract avatar data URL if present (from PNG import)
+  const avatarDataUrl = raw._avatarDataUrl as string | null;
+  delete raw._avatarDataUrl;
+
+  // Extract browser source marker if present
+  const botBrowserSource = raw._botBrowserSource as string | null;
+  delete raw._botBrowserSource;
+
+  const data = normalizeCharacterData(raw);
+  const rawEmbeddedLorebook = extractRawCharacterBook(raw) ?? data.character_book;
+  if (rawEmbeddedLorebook) {
+    data.character_book = normalizeCharacterBook(rawEmbeddedLorebook);
+  }
+  data.tags = await filterImportedTags(data.tags, db, tagImportMode, options?.existingTagKeys);
+
+  // Tag with browser source if imported from browser
+  if (botBrowserSource) {
+    data.extensions.botBrowserSource = botBrowserSource;
+  }
+
+  const existingImportMetadata =
+    data.extensions[IMPORT_METADATA_KEY] && typeof data.extensions[IMPORT_METADATA_KEY] === "object"
+      ? (data.extensions[IMPORT_METADATA_KEY] as Record<string, unknown>)
+      : {};
+  const cardSpecMetadata = buildCardSpecMetadata(raw);
+  const embeddedLorebookEntries = countEmbeddedLorebookEntries(data.character_book);
+  const hasEmbeddedLorebook = embeddedLorebookEntries > 0;
+  // Strip any `lorebookId` carried by the source card. That ID references
+  // the exporter's database (e.g. a different Marinara instance), not
+  // ours, so preserving it leaves an orphan pointer that makes "Edit
+  // Linked Lorebook" open a 404 editor before the auto-import below has
+  // a chance to set the real ID. The fresh value is written below at the
+  // end of the auto-import branch when (and only when) we actually
+  // created a lorebook in this DB.
+  const carriedEmbeddedLorebook =
+    typeof existingImportMetadata.embeddedLorebook === "object" && existingImportMetadata.embeddedLorebook
+      ? (existingImportMetadata.embeddedLorebook as Record<string, unknown>)
+      : {};
+  const { lorebookId: _staleLorebookId, ...sanitizedEmbeddedLorebook } = carriedEmbeddedLorebook;
+  void _staleLorebookId;
+  data.extensions[IMPORT_METADATA_KEY] = {
+    ...existingImportMetadata,
+    ...(cardSpecMetadata ? { card: cardSpecMetadata } : {}),
+    embeddedLorebook: {
+      ...sanitizedEmbeddedLorebook,
+      hasEmbeddedLorebook,
+    },
+  };
+
+  // Save avatar image if provided
+  let avatarPath: string | undefined;
+  if (avatarDataUrl && avatarDataUrl.startsWith("data:image/")) {
+    // Strip data URL header → raw base64
+    const base64 = avatarDataUrl.split(",")[1];
+    if (base64) {
+      const declaredExt = avatarDataUrl.match(/^data:image\/([\w+]+);/)?.[1]?.replace("+xml", "");
+      const avatarBuffer = Buffer.from(base64, "base64");
+      const imageInfo = isAllowedImageBuffer(avatarBuffer, declaredExt ? `.${declaredExt}` : undefined);
+      if (imageInfo) {
+        ensureAvatarDir();
+        const filename = `${randomUUID()}.${imageInfo.ext}`;
+        const filePath = join(AVATAR_DIR, filename);
+        await writeFile(filePath, avatarBuffer);
+        avatarPath = `/api/avatars/file/${filename}`;
+      }
+    }
+  }
+
+  const character = await storage.create(data, avatarPath, normalizedTimestamps);
+  const charId = (character as { id?: string } | null)?.id;
+
+  // Extract character_book into a standalone lorebook linked to this character
+  let lorebookResult: { lorebookId?: string; entriesImported?: number } | null = null;
+  if (shouldImportEmbeddedLorebook && data.character_book && charId) {
+    const bookRaw = rawEmbeddedLorebook as unknown as Record<string, unknown>;
+    // ST character_book uses the same shape as World Info
+    const wiData: Record<string, unknown> = {
+      name: `${data.name}'s Lorebook`,
+      entries: bookRaw.entries ?? {},
+      description: bookRaw.description,
+      scan_depth: bookRaw.scan_depth,
+      scanDepth: bookRaw.scanDepth,
+      token_budget: bookRaw.token_budget,
+      tokenBudget: bookRaw.tokenBudget,
+      recursive_scanning: bookRaw.recursive_scanning,
+      recursiveScanning: bookRaw.recursiveScanning,
+      max_recursion_depth: bookRaw.max_recursion_depth,
+      maxRecursionDepth: bookRaw.maxRecursionDepth,
+      extensions: bookRaw.extensions ?? {},
+    };
+
+    try {
+      const result = await importSTLorebook(wiData, db, {
+        characterId: charId,
+        namePrefix: data.name,
+        timestampOverrides: options?.timestampOverrides,
+      });
+      if (result && "lorebookId" in result) {
+        lorebookResult = {
+          lorebookId: result.lorebookId as string,
+          entriesImported: result.entriesImported as number,
+        };
+
+        const updatedImportMetadata = {
+          ...(data.extensions[IMPORT_METADATA_KEY] as Record<string, unknown>),
+          embeddedLorebook: {
+            ...(((data.extensions[IMPORT_METADATA_KEY] as Record<string, unknown>)?.embeddedLorebook as
+              | Record<string, unknown>
+              | undefined) ?? {}),
+            hasEmbeddedLorebook: true,
+            lorebookId: result.lorebookId as string,
+          },
+        };
+        data.extensions[IMPORT_METADATA_KEY] = updatedImportMetadata;
+        await storage.update(charId, { extensions: { ...data.extensions } }, undefined, {
+          updatedAt: normalizedTimestamps?.updatedAt ?? normalizedTimestamps?.createdAt ?? null,
+          skipVersionSnapshot: true,
+        });
+      } else if (hasEmbeddedLorebook) {
+        throw new Error(
+          typeof result?.error === "string"
+            ? result.error
+            : "Character imported but the embedded lorebook could not be saved — the import has been rolled back.",
+        );
+      }
+    } catch (err) {
+      await rollbackImportedCharacter(db, charId, avatarPath);
+      logger.warn(err, "Rolled back character import after embedded lorebook import failed");
+      throw err;
+    }
+  }
+
+  // Import any regex scripts embedded in the ST card, scoped to this character.
+  if (charId) {
+    // Read from the normalized extensions: convertRisuToV2 lifts Risu-style
+    // regex_scripts / regexScripts there, and V1/V2/V3 cards keep theirs as-is.
+    const normalizedExtensions =
+      data.extensions && typeof data.extensions === "object" ? (data.extensions as Record<string, unknown>) : {};
+    const importedRegex = convertStRegexScripts(
+      normalizedExtensions.regex_scripts,
+      charId,
+      options?.regexScriptScope ?? "character",
+    );
+    if (importedRegex.length > 0) {
+      const regexStorage = createRegexScriptsStorage(db);
+      let created = 0;
+      for (const input of importedRegex) {
+        try {
+          await regexStorage.create(input);
+          created += 1;
+        } catch (err) {
+          logger.warn(err, "Failed to import an embedded regex script");
+        }
+      }
+      if (created > 0) logger.info("Imported %d embedded regex script(s) for character %s", created, charId);
+    }
+  }
+
+  if (charId && embeddedMarinaraSprites !== undefined) {
+    try {
+      await restoreSprites(embeddedMarinaraSprites, charId);
+    } catch (err) {
+      logger.warn(err, "Skipped optional embedded sprite restore for %s", charId);
+    }
+  }
+
+  return {
+    success: true,
+    characterId: charId,
+    name: data.name,
+    embeddedLorebook: {
+      hasEmbeddedLorebook,
+      entries: embeddedLorebookEntries,
+      imported: !!lorebookResult,
+      skipped: hasEmbeddedLorebook && !shouldImportEmbeddedLorebook,
+    },
+    ...(lorebookResult ? { lorebook: lorebookResult } : {}),
+  };
+}
+
+export function inspectSTCharacter(raw: Record<string, unknown>): STCharacterImportPreview {
+  try {
+    const data = normalizeCharacterData(raw);
+    const embeddedLorebookEntries = countEmbeddedLorebookEntries(data.character_book);
+    return {
+      success: true,
+      name: data.name,
+      hasEmbeddedLorebook: embeddedLorebookEntries > 0,
+      embeddedLorebookEntries,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      hasEmbeddedLorebook: false,
+      embeddedLorebookEntries: 0,
+      error: error instanceof Error ? error.message : "Invalid character card",
+    };
+  }
+}
+
+/**
+ * Import a CharX (.charx) file — RisuAI Character Card V3 zip format.
+ * Extracts card.json and the main icon asset from the zip.
+ */
+export async function importCharX(buf: Buffer, db: DB, options?: STCharacterImportOptions) {
+  const zip = new AdmZip(buf);
+
+  // Extract card.json from root of the zip
+  const cardJson = readCharXCardJson(zip);
+  if (!cardJson) return { success: false, error: "Invalid .charx file: missing card.json at root." };
+
+  // Resolve the main icon asset from the zip
+  let avatarDataUrl: string | null = null;
+
+  // The card.json is a CCv3 wrapper: { spec: "chara_card_v3", data: { ... } }
+  const cardData = (cardJson.data ?? cardJson) as Record<string, unknown>;
+  const assets = cardData.assets as Array<{ type: string; uri: string; name: string; ext: string }> | undefined;
+
+  if (assets && Array.isArray(assets)) {
+    // Find the main icon asset
+    const mainIcon =
+      assets.find((a) => a.type === "icon" && a.name === "main") ?? assets.find((a) => a.type === "icon");
+
+    if (mainIcon && mainIcon.uri) {
+      avatarDataUrl = resolveCharXAsset(zip, mainIcon.uri, mainIcon.ext);
+    }
+  }
+
+  // If no icon found via assets, check for common fallback paths
+  if (!avatarDataUrl) {
+    for (const fallback of [
+      "assets/icon/images/main.png",
+      "assets/icon/images/main.webp",
+      "assets/icon/images/main.jpg",
+    ]) {
+      const entry = zip.getEntry(fallback);
+      if (entry) {
+        const ext = fallback.split(".").pop() ?? "png";
+        const data = entry.getData();
+        const imageInfo = isAllowedImageBuffer(data, `.${ext}`);
+        if (imageInfo) {
+          avatarDataUrl = `data:${imageInfo.mimeType};base64,${data.toString("base64")}`;
+          break;
+        }
+      }
+    }
+  }
+
+  // Attach avatar and delegate to the standard importer
+  if (avatarDataUrl) {
+    cardJson._avatarDataUrl = avatarDataUrl;
+  }
+
+  return importSTCharacter(cardJson as Record<string, unknown>, db, options);
+}
+
+export function inspectCharX(buf: Buffer): STCharacterImportPreview {
+  try {
+    const zip = new AdmZip(buf);
+    const cardJson = readCharXCardJson(zip);
+    if (!cardJson) {
+      return {
+        success: false,
+        hasEmbeddedLorebook: false,
+        embeddedLorebookEntries: 0,
+        error: "Invalid .charx file: missing card.json at root.",
+      };
+    }
+    return inspectSTCharacter(cardJson);
+  } catch (error) {
+    return {
+      success: false,
+      hasEmbeddedLorebook: false,
+      embeddedLorebookEntries: 0,
+      error: error instanceof Error ? error.message : "Invalid .charx file",
+    };
+  }
+}
+
+function readCharXCardJson(zip: AdmZip): Record<string, unknown> | null {
+  const cardEntry = zip.getEntry("card.json");
+  if (!cardEntry) return null;
+  return JSON.parse(cardEntry.getData().toString("utf-8")) as Record<string, unknown>;
+}
+
+function normalizeCharacterData(raw: Record<string, unknown>): CharacterData {
+  // Detect format
+  if ((raw.spec === "chara_card_v2" || raw.spec === "chara_card_v3") && raw.data) {
+    // V2 / V3 format — extract from data wrapper
+    return normalizeV2(raw.data as Record<string, unknown>);
+  }
+  if (raw.type === "character" && raw.data) {
+    // RisuAI format
+    const data = raw.data && typeof raw.data === "object" ? (raw.data as Record<string, unknown>) : {};
+    return convertRisuToV2({ ...raw, ...data });
+  }
+  if (raw.char_name || raw.name) {
+    // V1 / Pygmalion format — convert to V2
+    return convertV1toV2(raw);
+  }
+  // Try treating the whole object as character data
+  return normalizeV2(raw);
+}
+
+function extractRawCharacterBook(raw: Record<string, unknown>): unknown {
+  if ((raw.spec === "chara_card_v2" || raw.spec === "chara_card_v3") && raw.data && typeof raw.data === "object") {
+    return selectBestCharacterBook(raw.character_book, (raw.data as Record<string, unknown>).character_book);
+  }
+  if (raw.type === "character" && raw.data && typeof raw.data === "object") {
+    return selectBestCharacterBook(raw.character_book, (raw.data as Record<string, unknown>).character_book);
+  }
+  return raw.character_book;
+}
+
+function getCharacterBookEntries(raw: unknown): Record<string, unknown>[] {
+  if (!raw || typeof raw !== "object") return [];
+  const entries = (raw as Record<string, unknown>).entries;
+  if (Array.isArray(entries))
+    return entries.filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === "object");
+  if (entries && typeof entries === "object") {
+    return Object.values(entries).filter(
+      (entry): entry is Record<string, unknown> => !!entry && typeof entry === "object",
+    );
+  }
+  return [];
+}
+
+function selectBestCharacterBook(...books: unknown[]): unknown {
+  let best: unknown = null;
+  let bestNamedEntries = -1;
+
+  for (const book of books) {
+    if (!book || typeof book !== "object") continue;
+    const entries = getCharacterBookEntries(book);
+    if (entries.length === 0) continue;
+    const namedEntries = entries.filter((entry) => firstNonEmptyString(entry.comment, entry.name)).length;
+    if (namedEntries > bestNamedEntries) {
+      best = book;
+      bestNamedEntries = namedEntries;
+    }
+  }
+
+  return best;
+}
+
+function normalizeCharacterBookPosition(value: unknown): CharacterBookEntryPosition {
+  if (typeof value === "string") {
+    if (value === "after_char" || value === "at_depth" || value === "depth") return value;
+    if (value === "outlet") return 7;
+    return "before_char";
+  }
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 7) {
+    return value as CharacterBookEntryPosition;
+  }
+  return "before_char";
+}
+
+function normalizeCharacterBookRole(value: unknown): CharacterBookEntryRole | undefined {
+  if (value === "system" || value === "user" || value === "assistant") return value;
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 2) {
+    return value as CharacterBookEntryRole;
+  }
+  return undefined;
+}
+
+function optionalRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function pickDefinedFields(source: Record<string, unknown>, fields: string[]): Record<string, unknown> {
+  const picked: Record<string, unknown> = {};
+  for (const field of fields) {
+    if (source[field] !== undefined) picked[field] = source[field];
+  }
+  return picked;
+}
+
+const V3_CHARACTER_DATA_FIELDS = [
+  "group_only_greetings",
+  "nickname",
+  "assets",
+  "creation_date",
+  "source",
+  "creator_notes_multilingual",
+];
+
+const CHARACTER_BOOK_ENTRY_PASSTHROUGH_FIELDS = [
+  "probability",
+  "useProbability",
+  "use_probability",
+  "selectiveLogic",
+  "sticky",
+  "cooldown",
+  "delay",
+  "group",
+  "groupWeight",
+  "scanDepth",
+  "scan_depth",
+  "matchWholeWords",
+  "match_whole_words",
+  "caseSensitive",
+  "case_sensitive",
+  "useRegex",
+  "regex",
+  "preventRecursion",
+  "excludeRecursion",
+  "delayUntilRecursion",
+  "vectorized",
+  "outletName",
+];
+
+function buildCardSpecMetadata(raw: Record<string, unknown>) {
+  const spec = typeof raw.spec === "string" ? raw.spec : null;
+  const specVersion = typeof raw.spec_version === "string" ? raw.spec_version : null;
+  if (!spec && !specVersion) return null;
+
+  return {
+    ...(spec ? { spec } : {}),
+    ...(specVersion ? { specVersion } : {}),
+  };
+}
+
+function tagKey(value: string) {
+  return value.trim().toLocaleLowerCase();
+}
+
+export async function getExistingCharacterTagKeys(db: DB) {
+  const tags = new Set<string>();
+  const rows = await db.select({ data: charactersTable.data }).from(charactersTable);
+  for (const row of rows) {
+    try {
+      const data = JSON.parse(row.data) as { tags?: unknown };
+      if (!Array.isArray(data.tags)) continue;
+      for (const tag of data.tags) {
+        if (typeof tag !== "string") continue;
+        const key = tagKey(tag);
+        if (key) tags.add(key);
+      }
+    } catch {
+      // Ignore malformed character records; import can still proceed.
+    }
+  }
+  return tags;
+}
+
+async function filterImportedTags(
+  tags: string[],
+  db: DB,
+  mode: STCharacterTagImportMode,
+  existingTagKeys?: ReadonlySet<string>,
+) {
+  if (mode === "all" || tags.length === 0) return tags;
+  if (mode === "none") return [];
+
+  const existingTags = existingTagKeys ?? (await getExistingCharacterTagKeys(db));
+  return tags.filter((tag) => existingTags.has(tagKey(tag)));
+}
+
+/** Resolve an asset URI from a CharX zip to a data URL. */
+function resolveCharXAsset(zip: AdmZip, uri: string, ext?: string): string | null {
+  // Handle embeded:// URIs (note: spec uses "embeded" not "embedded")
+  let zipPath: string | null = null;
+
+  if (uri.startsWith("embeded://")) {
+    zipPath = uri.slice("embeded://".length);
+  } else if (uri.startsWith("embedded://")) {
+    // Accept the common misspelling too
+    zipPath = uri.slice("embedded://".length);
+  } else if (uri.startsWith("data:image/")) {
+    // Already a data URL
+    return uri;
+  } else if (!uri.includes("://") && uri !== "ccdefault:") {
+    // Treat as a relative path within the zip
+    zipPath = uri;
+  }
+
+  if (!zipPath) return null;
+
+  const entry = zip.getEntry(zipPath);
+  if (!entry) return null;
+
+  const data = entry.getData();
+  const fileExt = ext ?? zipPath.split(".").pop() ?? "png";
+  const imageInfo = isAllowedImageBuffer(data, `.${fileExt}`);
+  if (!imageInfo) return null;
+  return `data:${imageInfo.mimeType};base64,${data.toString("base64")}`;
+}
+
+function normalizeV2(raw: Record<string, unknown>): CharacterData {
+  // Ruleset sheets travel dormant under their key; only one the boundary would refuse is dropped.
+  // The raw key is taken out of the spread below, so a value that is not a sheet map leaves nothing.
+  const { rulesetSheets: rawRulesetSheets, ...rawExtensions } = optionalRecord(raw.extensions);
+  const importedSheets = capImportedRulesetSheets(rawRulesetSheets);
+  if (importedSheets.dropped.length > 0) {
+    logger.warn(
+      "[import] Dropped %d unusable ruleset sheet(s) from an imported character: %s",
+      importedSheets.dropped.length,
+      importedSheets.dropped.join(", "),
+    );
+  }
+  return {
+    name: String(raw.name ?? "Unknown"),
+    summary: String(raw.summary ?? "")
+      .trim()
+      .slice(0, 500),
+    description: String(raw.description ?? ""),
+    personality: String(raw.personality ?? ""),
+    scenario: String(raw.scenario ?? ""),
+    first_mes: String(raw.first_mes ?? ""),
+    mes_example: String(raw.mes_example ?? ""),
+    creator_notes: String(raw.creator_notes ?? ""),
+    system_prompt: String(raw.system_prompt ?? ""),
+    post_history_instructions: String(raw.post_history_instructions ?? ""),
+    tags: Array.isArray(raw.tags) ? raw.tags.map(String) : [],
+    creator: String(raw.creator ?? ""),
+    character_version: String(raw.character_version ?? ""),
+    alternate_greetings: Array.isArray(raw.alternate_greetings) ? raw.alternate_greetings.map(String) : [],
+    extensions: {
+      ...rawExtensions,
+      talkativeness: Number(rawExtensions.talkativeness ?? 0.5),
+      fav: Boolean(rawExtensions.fav),
+      world: String(rawExtensions.world ?? ""),
+      depth_prompt: {
+        prompt: String((rawExtensions.depth_prompt as Record<string, unknown>)?.prompt ?? ""),
+        depth: Number((rawExtensions.depth_prompt as Record<string, unknown>)?.depth ?? 4),
+        role:
+          ((rawExtensions.depth_prompt as Record<string, unknown>)?.role as "system" | "user" | "assistant") ??
+          "system",
+      },
+      backstory: String(rawExtensions.backstory ?? ""),
+      appearance: String(rawExtensions.appearance ?? ""),
+      ...(importedSheets.sheets ? { rulesetSheets: importedSheets.sheets } : {}),
+    },
+    character_book: normalizeCharacterBook(raw.character_book),
+    ...pickDefinedFields(raw, V3_CHARACTER_DATA_FIELDS),
+  };
+}
+
+/** Coerce an unknown value into a string array, handling single-string and missing cases. */
+function normalizeStringArray(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.map(String);
+  if (typeof raw === "string") return [raw];
+  return [];
+}
+
+function firstNonEmptyString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
+}
+
+/**
+ * Normalize a character_book from any format (ST World Info or V2 spec) into
+ * the V2 CharacterBook shape with entries as an array of CharacterBookEntry objects.
+ */
+function normalizeCharacterBook(raw: unknown): CharacterData["character_book"] {
+  if (!raw || typeof raw !== "object") return null;
+  const book = raw as Record<string, unknown>;
+
+  const entries = getCharacterBookEntries(book).map((e, i) => {
+    const position = normalizeCharacterBookPosition(e.position);
+    const depth = typeof e.depth === "number" && Number.isFinite(e.depth) ? e.depth : null;
+    const role = normalizeCharacterBookRole(e.role);
+    const title = firstNonEmptyString(e.comment, e.name) ?? `Entry ${i + 1}`;
+    const passthrough = pickDefinedFields(e, CHARACTER_BOOK_ENTRY_PASSTHROUGH_FIELDS);
+
+    return {
+      ...passthrough,
+      keys: normalizeStringArray(e.key ?? e.keys),
+      secondary_keys: normalizeStringArray(e.keysecondary ?? e.secondary_keys),
+      content: String(e.content ?? ""),
+      extensions: (e.extensions ?? {}) as Record<string, unknown>,
+      enabled: e.disable != null ? !e.disable : e.enabled != null ? Boolean(e.enabled) : true,
+      insertion_order: (e.order ?? e.insertion_order ?? 100) as number,
+      case_sensitive: Boolean(e.caseSensitive ?? e.case_sensitive ?? false),
+      name: title,
+      priority: (e.priority ?? 10) as number,
+      id: (e.uid ?? e.id ?? i) as number,
+      comment: title,
+      selective: Boolean(e.selective ?? false),
+      constant: Boolean(e.constant ?? false),
+      position,
+      ...(depth !== null ? { depth } : {}),
+      ...(role !== undefined ? { role } : {}),
+    };
+  });
+
+  return {
+    name: String(book.name ?? ""),
+    description: String(book.description ?? ""),
+    scan_depth: Number(book.scan_depth ?? book.scanDepth ?? 2),
+    token_budget: Number(book.token_budget ?? book.tokenBudget ?? 2048),
+    recursive_scanning: Boolean(book.recursive_scanning ?? book.recursiveScanning ?? false),
+    extensions: (book.extensions ?? {}) as Record<string, unknown>,
+    entries,
+  };
+}
+
+function convertV1toV2(raw: Record<string, unknown>): CharacterData {
+  return normalizeV2({
+    name: raw.char_name ?? raw.name ?? "Unknown",
+    description: raw.char_persona ?? raw.description ?? "",
+    personality: raw.personality ?? "",
+    scenario: raw.world_scenario ?? raw.scenario ?? "",
+    first_mes: raw.char_greeting ?? raw.first_mes ?? "",
+    mes_example: raw.example_dialogue ?? raw.mes_example ?? "",
+    // Preserve V2 fields when present instead of discarding them
+    creator_notes: raw.creator_notes ?? "",
+    system_prompt: raw.system_prompt ?? "",
+    post_history_instructions: raw.post_history_instructions ?? "",
+    tags: raw.tags ?? [],
+    creator: raw.creator ?? "",
+    character_version: raw.character_version ?? "",
+    alternate_greetings: raw.alternate_greetings ?? [],
+    extensions: raw.extensions ?? {},
+    character_book: raw.character_book ?? null,
+  });
+}
+
+function convertRisuToV2(raw: Record<string, unknown>): CharacterData {
+  const risuExtensions: Record<string, unknown> = {
+    ...optionalRecord(raw.extensions),
+    ...pickDefinedFields(raw, [
+      "depth_prompt",
+      "depthPrompt",
+      "talkativeness",
+      "fav",
+      "world",
+      "regex_scripts",
+      "regexScripts",
+      "backstory",
+      "appearance",
+    ]),
+  };
+  if (risuExtensions.depth_prompt === undefined && raw.depthPrompt !== undefined) {
+    risuExtensions.depth_prompt = raw.depthPrompt;
+  }
+  if (risuExtensions.regex_scripts === undefined && raw.regexScripts !== undefined) {
+    risuExtensions.regex_scripts = raw.regexScripts;
+  }
+
+  return normalizeV2({
+    name: raw.name ?? "Unknown",
+    description: raw.description ?? "",
+    personality: raw.personality ?? "",
+    scenario: raw.scenario ?? "",
+    first_mes: raw.firstMessage ?? raw.first_mes ?? raw.first_message ?? "",
+    mes_example: raw.exampleMessage ?? raw.mes_example ?? raw.example_dialogue ?? "",
+    system_prompt: raw.systemPrompt ?? "",
+    creator_notes: raw.creatorNotes ?? "",
+    post_history_instructions:
+      raw.postHistoryInstructions ?? raw.post_history_instructions ?? raw.jailbreak ?? raw.jailbreakPrompt ?? "",
+    tags: Array.isArray(raw.tags) ? raw.tags.map(String) : [],
+    creator: String(raw.creator ?? ""),
+    character_version: raw.characterVersion ?? raw.character_version ?? "",
+    alternate_greetings: Array.isArray(raw.alternateGreetings)
+      ? raw.alternateGreetings.map(String)
+      : Array.isArray(raw.alternate_greetings)
+        ? raw.alternate_greetings.map(String)
+        : [],
+    extensions: risuExtensions,
+    character_book: raw.character_book ?? raw.characterBook ?? raw.lorebook ?? raw.world_info ?? raw.worldInfo ?? null,
+  });
+}

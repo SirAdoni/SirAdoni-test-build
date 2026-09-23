@@ -1,0 +1,1177 @@
+// ──────────────────────────────────────────────
+// Chat & Message Types
+// ──────────────────────────────────────────────
+
+import type { MariWorkspaceTraceItem } from "./professor-mari-workspace.js";
+import type { GameDicePlaceholderRecord } from "../utils/dice-placeholder.js";
+import type { GenerationGuideSource } from "../utils/generation-guide.js";
+import type { HapticFeedbackSensitivity } from "./haptic.js";
+import type { CustomEmojiSelectionPrefs } from "../schemas/custom-emoji.schema.js";
+import type { DiceRollResult, GameDicePoolConsumption, GameDicePoolMismatch } from "./game.js";
+import type { SpotifySourceType } from "./spotify.js";
+import type {
+  RoleplayCommandActivity,
+  RoleplayCommandAudience,
+  RoleplayCommandToggles,
+  RoleplayDocument,
+  RoleplayPrivateCommand,
+} from "./roleplay-command.js";
+import type { GameContinuityMetadata } from "./game-continuity.js";
+
+export type { SpotifySourceType } from "./spotify.js";
+
+/** The three primary chat modes the engine supports. */
+export type ChatMode = "conversation" | "roleplay" | "game";
+
+/** How a multi-character (group) chat is handled. */
+export type GroupChatMode = "merged" | "individual";
+
+/** How individual-mode group chats decide response order. */
+export type GroupResponseOrder = "sequential" | "smart" | "manual";
+
+export interface KnowledgeAgentSourceSettings {
+  /** When true/omitted, this agent uses the chat's active lorebooks unless fixed sources are selected. */
+  useChatActiveLorebooks?: boolean;
+  /** Fixed lorebook IDs this agent should read instead of chat-active lorebooks. Empty means no fixed override. */
+  sourceLorebookIds?: string[];
+  /** Uploaded file source IDs. Used by Knowledge Retrieval only. */
+  sourceFileIds?: string[];
+}
+
+export const CONVERSATION_COMMAND_KEYS = [
+  "schedule_update",
+  "cross_post",
+  "selfie",
+  "memory",
+  "scene",
+  "call",
+  "uno",
+  "chess",
+  "poker",
+  "eightball",
+  "tic_tac_toe",
+  "rock_paper_scissors",
+  "music",
+  "haptic",
+  "influence",
+  "note",
+  "react",
+] as const;
+
+export type ConversationCommandKey = (typeof CONVERSATION_COMMAND_KEYS)[number];
+
+export type ConversationCommandToggles = Partial<Record<ConversationCommandKey, boolean>>;
+
+/** Downloadable agent package that owns each optional Conversation command. */
+export const CONVERSATION_COMMAND_AGENT_IDS: Partial<Record<ConversationCommandKey, string>> = {
+  selfie: "illustrator",
+  call: "conversation-calls",
+  uno: "uno",
+  chess: "chess",
+  poker: "poker",
+  eightball: "eightball",
+  tic_tac_toe: "tic-tac-toe",
+  rock_paper_scissors: "rock-paper-scissors",
+  music: "spotify",
+  haptic: "haptic",
+};
+
+export type ConversationPresenceStatus = "online" | "idle" | "dnd" | "offline";
+
+export interface ConversationStatusOverride {
+  status: ConversationPresenceStatus;
+  activity?: string | null;
+  createdAt: string;
+  expiresAt?: string | null;
+}
+
+/** Role of a message in the conversation. */
+export type MessageRole = "user" | "assistant" | "system" | "narrator";
+
+/** Which side sprite sidebars / default sprite layouts prefer. */
+export type SpriteSide = "left" | "right";
+
+/** A saved on-screen sprite anchor position within the chat area. */
+export interface SpritePlacement {
+  /** Horizontal anchor percentage within the chat stage. */
+  x: number;
+  /** Vertical anchor percentage within the chat stage. */
+  y: number;
+}
+
+/** Optional display overrides for one character or persona's roleplay sprites. */
+export interface SpriteCharacterVisualSettings {
+  /** Preferred default side for this subject when no freeform placement is saved. */
+  spritePosition?: SpriteSide;
+  /** Expression sprite scale multiplier. */
+  expressionSpriteScale?: number;
+  /** Full-body sprite scale multiplier. */
+  fullBodySpriteScale?: number;
+  /** Expression sprite opacity multiplier. */
+  expressionSpriteOpacity?: number;
+  /** Full-body sprite opacity multiplier. */
+  fullBodySpriteOpacity?: number;
+}
+
+/** A single chat conversation. */
+export interface Chat {
+  id: string;
+  name: string;
+  mode: ChatMode;
+  characterIds: string[];
+  /** Groups related chats together (like ST "chat files" per character) */
+  groupId: string | null;
+  personaId: string | null;
+  /** Character card currently being played as the user identity. */
+  personaCharacterId: string | null;
+  promptPresetId: string | null;
+  connectionId: string | null;
+  /** ID of a linked chat (conversation ↔ roleplay bidirectional link) */
+  connectedChatId: string | null;
+  /** Folder this chat belongs to (null = root/unfiled) */
+  folderId: string | null;
+  /** Manual sort order within a folder (lower = higher). 0 = use default updatedAt sort. */
+  sortOrder: number;
+  /** Timestamp of the newest saved message; null until the chat has messages. */
+  lastMessageAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  metadata: ChatMetadata;
+}
+
+/** A folder for organising chats in the sidebar. */
+export interface ChatFolder {
+  id: string;
+  name: string;
+  mode: ChatMode;
+  color: string;
+  sortOrder: number;
+  collapsed: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A single day's auto-generated conversation summary. */
+export interface DaySummaryEntry {
+  /** Narrative recap of the day. */
+  summary: string;
+  /** Short strings the characters must remember going forward. */
+  keyDetails: string[];
+}
+
+/** A single week's consolidated conversation summary (Monday → Sunday). */
+export interface WeekSummaryEntry {
+  /** Narrative recap of the week. */
+  summary: string;
+  /** Consolidated key details the characters must remember going forward. */
+  keyDetails: string[];
+}
+
+/** A chat-scoped prompt template used by manual rolling summary generation. */
+export interface ChatSummaryPromptTemplate {
+  id: string;
+  name: string;
+  prompt: string;
+}
+
+/** Server app-setting key for Roleplay Chat Summary prompt templates shared across all roleplays. */
+export const CHAT_SUMMARY_PROMPT_SETTINGS_KEY = "chat-summary-prompts";
+
+/** Global Roleplay Chat Summary prompt template settings. */
+export interface ChatSummaryPromptSettings {
+  templates: ChatSummaryPromptTemplate[];
+  activeTemplateId: string | null;
+  combinePrompt: string;
+}
+
+/** Rolling summary entry category. Extensible beyond rolling summaries later. */
+export type ChatSummaryEntryKind = "rolling";
+
+/** Whether a rolling summary entry was user-created, agent-created, or migrated from the legacy blob. */
+export type ChatSummaryEntryOrigin = "manual" | "automated" | "legacy";
+
+/** Source selector used to create a rolling summary entry. */
+export type ChatSummaryEntrySource = "last" | "range" | "agent";
+
+/** A single structured rolling chat summary entry. */
+export interface ChatSummaryEntry {
+  id: string;
+  kind: ChatSummaryEntryKind;
+  origin: ChatSummaryEntryOrigin;
+  title: string;
+  content: string;
+  enabled: boolean;
+  sourceMode: ChatSummaryEntrySource;
+  messageCount?: number;
+  rangeStartIndex?: number;
+  rangeEndIndex?: number;
+  messageIds?: string[];
+  /**
+   * The exact messages this entry hid from AI when "Hide summarised messages" was
+   * on (the summarized set minus the protected tail). Persisted so deletion can
+   * restore precisely what was hidden, rather than assuming it equals messageIds.
+   * Absent on entries created before this field or when nothing was hidden.
+   */
+  hiddenMessageIds?: string[];
+  promptTemplateId?: string | null;
+  tokenEstimate: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A vectorized recall fragment created from one chat's messages. */
+export interface ChatMemoryChunk {
+  id: string;
+  chatId: string;
+  content: string;
+  messageCount: number;
+  firstMessageAt: string;
+  lastMessageAt: string;
+  createdAt: string;
+  /** False when chunking succeeded but embedding generation was unavailable. */
+  hasEmbedding: boolean;
+  /** Current vectorization state for display. */
+  embeddingStatus?: "vectorized" | "pending" | "unavailable";
+}
+
+/**
+ * Defaults for `ChatMetadata.summaryTailMessages`. `DEFAULT` applies only when
+ * the value is unset; an explicit `MIN` (0) means "hide the whole batch".
+ * There is intentionally no upper limit because the user controls the context
+ * and model budget for this local app.
+ */
+export const SUMMARY_TAIL_MESSAGES = { MIN: 0, DEFAULT: 10 } as const;
+
+export function normalizeSummaryTailMessages(value: unknown): number {
+  const { MIN, DEFAULT } = SUMMARY_TAIL_MESSAGES;
+  if (value === undefined || value === null) return DEFAULT;
+  const parsed = Math.floor(Number(value));
+  if (!Number.isFinite(parsed) || parsed < MIN) return MIN;
+  return parsed;
+}
+export const CHAT_SUMMARY_OUTPUT_TOKENS = { MIN: 1, MAX: 32768, DEFAULT: 4096 } as const;
+
+export type CampaignMemoryBranchHeldRecordType =
+  | "entity"
+  | "fact"
+  | "knowledge"
+  | "event"
+  | "current-state"
+  | "relationship";
+
+export interface CampaignMemoryBranchHeldRecord {
+  recordType: CampaignMemoryBranchHeldRecordType;
+  recordId: string;
+  reason: string;
+}
+
+export interface CampaignMemoryBranchManifest {
+  sourceChatId: string;
+  operationId: string;
+  copied: {
+    entities: number;
+    facts: number;
+    knowledge: number;
+    events: number;
+    currentState: number;
+    relationships: number;
+  };
+  held: CampaignMemoryBranchHeldRecord[];
+}
+
+export type GameStoryboardViewerDisplayMode = "floating" | "background";
+
+/** Extra metadata stored on a chat. */
+export interface ChatMetadata {
+  /** Opt-in coordinated Roleplay context and scene memory. */
+  advancedMemory?: import("./advanced-memory.js").AdvancedMemorySettings;
+  /** Durable maintenance checkpoint; model calls never hold a storage transaction. */
+  advancedMemoryState?: import("./advanced-memory.js").AdvancedMemoryJob & {
+    sourceFingerprint?: string;
+    boundaryMessageId?: string | null;
+    activeSceneId?: string | null;
+  };
+  /** Roleplay presentation only; omitted chats use the Appearance default. */
+  roleplayDisplayStyle?: "classic" | "visual-novel";
+  /** Branch-scoped campaign-memory copy manifest; held records remain absent and require review. */
+  campaignMemoryBranch?: CampaignMemoryBranchManifest;
+  /** Incremental Game Keeper configuration. Missing means continuity review is off. */
+  gameContinuity?: GameContinuityMetadata;
+  /** Chat-local tracker icon overrides keyed by persona id, unique character id, or tracker character slot. */
+  trackerStatIconOverrides?: Record<string, import("../constants/stat-icons.js").TrackerStatIconAssignment[]>;
+  /** Compiled enabled rolling summary text for context injection. Derived from summaryEntries when present. */
+  summary: string | null;
+  /** Display label for a branch; absent on root chats and older branches. */
+  branchName?: string;
+  /** Immediate source chat for Engine-created branches. */
+  branchParentChatId?: string | null;
+  /** Source message at which an Engine-created branch was forked. */
+  branchParentMessageId?: string | null;
+  /** Copied message corresponding to branchParentMessageId. */
+  branchMessageId?: string | null;
+  /** Structured rolling summary entries. Missing means legacy summary-only metadata. */
+  summaryEntries?: ChatSummaryEntry[];
+  /** Recent message count used by manual rolling summary generation and automatic summaries. */
+  summaryContextSize?: number;
+  /** User-message cadence for the automated roleplay summary updater. */
+  summaryRunInterval?: number;
+  /** Whether the Chat Summary popover should automatically generate rolling Roleplay summaries. */
+  automaticSummaryEnabled?: boolean;
+  /** Keep recent automatic summaries in context while retrieving relevant older Conversation weeks or Roleplay entries. */
+  semanticSummaryRetrievalEnabled?: boolean;
+  /** Last assistant message ID processed by the automatic Roleplay summary updater. */
+  lastAutomaticSummaryMessageId?: string | null;
+  /** Chat-scoped manual summary prompt templates. Missing or empty uses the built-in default. */
+  summaryPromptTemplates?: ChatSummaryPromptTemplate[];
+  /** Selected manual summary prompt template ID. Null/omitted uses the built-in default. */
+  activeSummaryPromptTemplateId?: string | null;
+  /** Optional text connection used for manual and automatic Roleplay chat summaries. Null uses the agent default. */
+  summaryConnectionId?: string | null;
+  /** Maximum output tokens requested from the model for manual and automatic Roleplay chat summaries. */
+  summaryMaxTokens?: number;
+  /**
+   * When true, the automatic roleplay rolling summary hides the
+   * messages it summarized (hiddenFromAI=true) except the most-recent
+   * `summaryTailMessages`, so the summary is a net token reduction. Opt-in:
+   * undefined/false never hides (back-compat for existing chats). Read by the
+   * SERVER auto-summary path; promoted from the browser-local ui.store
+   * `summaryPopoverSettings.hideSummarisedMessages` preference.
+   */
+  hideSummarisedMessages?: boolean;
+  /** Custom tags for organisation */
+  tags: string[];
+  /** Whether agents are enabled for this chat */
+  enableAgents: boolean;
+  /** Attach shared chat-summary context to Roleplay agents only when true. Missing/false excludes summaries. */
+  attachSummariesToAgents?: boolean;
+  /** When true, agent output proposals such as lorebook, summary, and card updates require user review. */
+  agentWriteApprovalRequired?: boolean;
+  /** Per-agent enable overrides (agentId → boolean) */
+  agentOverrides: Record<string, boolean>;
+  /** Agent IDs scoped to this chat. Non-empty = only these agents run; empty = use globally-enabled agents. */
+  activeAgentIds: string[];
+  /** Per-chat selected named prompt template for each agent type. Missing/default = the agent's default prompt. */
+  agentPromptTemplateIds?: Record<string, string>;
+  /** Whether Illustrator should append matched character card appearance text to image prompts. */
+  illustratorIncludeCharacterAppearance?: boolean;
+  /** Whether Illustrator should send matching character/persona avatar references to image providers. */
+  illustratorUseAvatarReferences?: boolean;
+  /** Optional per-chat LLM connection override used only to write Illustrator/selfie image prompts. */
+  illustratorPromptConnectionId?: string | null;
+  /** Optional per-chat image generation connection override used by Illustrator. */
+  illustratorImageConnectionId?: string | null;
+  /** Number of image variants generated for each Illustrator request. */
+  illustratorImagesPerGeneration?: number;
+  /** Whether Roleplay Illustrator may generate and activate a reusable background after a scene-location change. */
+  illustratorAutoBackgroundsEnabled?: boolean;
+  /** Whether Conversation selfie commands should send the matching character avatar as a reference image. */
+  selfieUseAvatarReferences?: boolean;
+  /** Whether Conversation selfie commands should append matched character card appearance text to image prompts. */
+  selfieIncludeCharacterAppearance?: boolean;
+  /** Whether Game Mode scene illustrations should send matching character/persona avatar references. */
+  gameImageUseAvatarReferences?: boolean;
+  /** Whether Game Mode scene illustrations should append matched character-card appearance fields. */
+  gameImageIncludeCharacterAppearance?: boolean;
+  /** Whether storyboard keyframes should use the selected provider-facing image prompt template. Defaults to true. */
+  gameStoryboardUsePromptTemplate?: boolean;
+  /** When false, Game Mode keeps manual Illustrator controls but stops automatic visual generations. */
+  gameImageAutoGenerationEnabled?: boolean;
+  /** When true, Game Mode asks the chat LLM to rewrite generated asset prompts before image generation. */
+  gameImageDynamicPromptEnabled?: boolean;
+  /** Per-chat source overrides for knowledge agents. */
+  knowledgeAgentSources?: Partial<Record<"knowledge-retrieval" | "knowledge-router", KnowledgeAgentSourceSettings>>;
+  /** Per-chat image settings overrides for custom image agents, keyed by agent type. */
+  customAgentImageSettings?: Partial<
+    Record<string, { imageConnectionId?: string | null; styleProfileId?: string | null }>
+  >;
+  /** Narrative Director mode used when Push Story is armed. */
+  narrativeDirectorMode?: "natural" | "random";
+  /** Whether Narrative Director maintains a hidden Secret Plot arc for this roleplay chat. */
+  narrativeDirectorSecretPlotEnabled?: boolean;
+  /** User/assistant message cadence for Narrative Director Secret Plot maintenance. */
+  narrativeDirectorSecretPlotRunInterval?: number;
+  /** Explicit target lorebook for the Lorebook Keeper in this chat. Null/omitted = auto-pick. */
+  lorebookKeeperTargetLorebookId?: string | null;
+  /** How many assistant responses behind the latest available one Lorebook Keeper should read from. */
+  lorebookKeeperReadBehindMessages?: number;
+  /** Per-chat custom-emoji selection preferences — how the model is told which custom emojis it may use. */
+  customEmojiSelection?: CustomEmojiSelectionPrefs;
+  /** Tool/function IDs scoped to this chat. Non-empty = only these tools are sent; empty = use all enabled tools. */
+  activeToolIds: string[];
+  /** Require a compatible provider to call one enabled tool on the first tool round. */
+  forceToolCall?: boolean;
+  /** Per-chat variable selections for preset variables (variableName → value or values) */
+  presetChoices: Record<string, string | string[]>;
+  /** Chat-wide string variables persisted by agent tool calls (key → value). */
+  agentVariables?: Record<string, string>;
+  /** SillyTavern-compatible local macro variables persisted in this chat. */
+  macroVariables?: Record<string, string>;
+  /** Group chat mode: "merged" (narrator) or "individual" (separate characters) */
+  groupChatMode?: GroupChatMode;
+  /** Group individual mode: color dialogues with speaker tags */
+  groupSpeakerColors?: boolean;
+  /** Group individual mode: prefix chat history turns with the speaker name before prompt merging. */
+  groupSpeakerNamesInHistory?: boolean;
+  /** Group individual mode response order: "sequential" or "smart" (agent-decided) */
+  groupResponseOrder?: GroupResponseOrder;
+  /** When true/omitted, individual group turns append a responding-character instruction to the prompt. */
+  groupTurnPromptEnabled?: boolean;
+  /** Chat members that are temporarily excluded from group prompt/generation participation. */
+  inactiveCharacterIds?: string[];
+  /** Characters with visible roleplay sprites enabled for this chat. */
+  spriteCharacterIds?: string[];
+  /** Which sprite file families the roleplay Expression Engine may display. */
+  spriteDisplayModes?: Array<"expressions" | "full-body">;
+  /** Preferred sidebar / default layout side for chat sprites. */
+  spritePosition?: SpriteSide;
+  /**
+   * How creator-notes card CSS is applied in this chat:
+   * "exclusive" (each character's CSS only styles their own messages) or "chat"
+   * (all card CSS styles the whole chat area). Defaults to "disabled" (off) —
+   * card styling is opt-in per chat.
+   */
+  cardCssMode?: "disabled" | "exclusive" | "chat";
+  /**
+   * How character-scoped regex scripts (those with target characters) apply at
+   * display time in this chat: "exclusive" (a scoped script only transforms its
+   * own character's messages) or "chat" (all scoped scripts transform every
+   * message). Missing/null inherits the prompt preset (otherwise "disabled").
+   * Global scripts (no target characters) are unaffected.
+   */
+  scopedRegexMode?: "disabled" | "exclusive" | "chat" | null;
+  /** Legacy display scale for roleplay Expression Engine sprites. */
+  spriteScale?: number;
+  /** Display scale for roleplay Expression Engine expression sprites. Falls back to spriteScale. */
+  expressionSpriteScale?: number;
+  /** Display scale for roleplay Expression Engine full-body sprites. Falls back to spriteScale. */
+  fullBodySpriteScale?: number;
+  /** Legacy display opacity for roleplay Expression Engine sprites. */
+  spriteOpacity?: number;
+  /** Display opacity for roleplay Expression Engine expression sprites. Falls back to spriteOpacity. */
+  expressionSpriteOpacity?: number;
+  /** Display opacity for roleplay Expression Engine full-body sprites. Falls back to spriteOpacity. */
+  fullBodySpriteOpacity?: number;
+  /** Saved freeform positions for enabled roleplay sprites. */
+  spritePlacements?: Record<string, SpritePlacement>;
+  /** Per-character or per-persona sprite layout overrides. Missing values inherit the chat-wide layout. */
+  spriteCharacterVisualSettings?: Record<string, SpriteCharacterVisualSettings>;
+  /** When true, roleplay message avatars use the per-message Expression Engine sprite when one is available. */
+  expressionAvatarsEnabled?: boolean;
+  /** Non-empty text replaces individual character card scenarios for this group chat. */
+  groupScenarioText?: string;
+  /** Prose Guardian per-chat banned words/settings applied to the rewrite prompt. */
+  proseGuardianBannedWords?: string | null;
+  /** Prose Guardian per-chat prose habits to remove. */
+  proseGuardianAvoidInstructions?: string | null;
+  /** Prose Guardian per-chat preferred style instructions. */
+  proseGuardianStyleInstructions?: string | null;
+  /** Shared Prose Guardian / Continuity Checker toggle. When true/omitted, hide the raw response until rewriting finishes. */
+  proseGuardianHoldForRewrite?: boolean;
+  /** When true, tracker agents only run when the user manually triggers them (not after every generation) */
+  manualTrackers?: boolean;
+  /** When true, Roleplay tracker agents receive lorebook entries activated for the main generation. */
+  attachLorebooksToTrackers?: boolean;
+  /** Per-agent manual tracker mode overrides (agent type → manual). */
+  manualTrackerAgentTypes?: Record<string, boolean>;
+  /** Whether to recall memories from this chat during generation. Default: true for conversation/scenes, false for roleplay. */
+  enableMemoryRecall?: boolean;
+  /** Discord webhook URL to mirror messages to a Discord channel. */
+  discordWebhookUrl?: string;
+  /** When true, Noodle timeline refreshes may include this chat's recent messages as generation context. */
+  noodleTimelineContextEnabled?: boolean;
+  /** When true, the Slurp package may add this chat's characters' recent Slurp activity to the prompt. Off unless set. */
+  slurp2ActivityContextEnabled?: boolean;
+  /** Per-chat ephemeral / enabled overrides for lorebook entries (entryId → state).
+   *  Tracked per-chat so ephemeral countdown in one chat doesn't affect others. */
+  entryStateOverrides?: Record<string, { ephemeral?: number | null; enabled?: boolean }>;
+  /** Per-chat sticky/cooldown/delay runtime state for lorebook entries. */
+  entryTimingStates?: Record<string, import("./lorebook.js").LorebookEntryTimingState>;
+  /** Per-chat global lorebook token budget. Missing uses app default; 0 means unlimited. */
+  lorebookTokenBudget?: number | null;
+  /** Lorebook IDs the user has explicitly disabled for THIS chat. Auto-activated
+   *  books (bound to a present character / global / the active persona) that the
+   *  user turned off via the chat Lorebooks panel land here; the scope filter
+   *  drops them before injection without unbinding the book. */
+  excludedLorebookIds?: string[];
+  /** ID of the settings profile most recently applied to this chat (drives the profile dropdown). */
+  appliedChatPresetId?: string | null;
+  /** Custom prompt prefix used by the /impersonate slash command. */
+  impersonatePrompt?: string | null;
+  /** Show a manual draft translation button beside the send control. */
+  showInputTranslateButton?: boolean;
+  /** Legacy shared translation target. Directional targets fall back to this value. */
+  translationTargetLang?: string;
+  /** Target language used when translating the user's outgoing draft. */
+  translationInputTargetLang?: string;
+  /** Target language used when translating incoming assistant responses. */
+  translationOutputTargetLang?: string;
+  /** Legacy shared AI translation prompt. Directional prompts fall back to this value. */
+  translationPrompt?: string | null;
+  /** AI system prompt for outgoing draft translation. Supports {{targetLanguage}}. */
+  translationInputPrompt?: string | null;
+  /** AI system prompt for incoming response translation. Supports {{targetLanguage}}. */
+  translationOutputPrompt?: string | null;
+  /** Show only the translated text in place of the original message once a translation exists. */
+  translationDisplayOnly?: boolean;
+  /** Allow roleplay characters to create direct-message conversation chats with hidden [dm] commands. */
+  roleplayDmCommandsEnabled?: boolean;
+  /** Hidden character commands are opt-in, independently of automatic agents. */
+  roleplayCommandsEnabled?: boolean;
+  roleplayCommandToggles?: RoleplayCommandToggles;
+  /** An actual group participant, used only for individual Roleplay generations. */
+  roleplayCommandNarratorId?: string | null;
+  roleplayRollAudience?: RoleplayCommandAudience;
+  roleplayCombatAudience?: RoleplayCommandAudience;
+  roleplayDocumentAudience?: RoleplayCommandAudience;
+  roleplaySoundConnectionId?: string | null;
+  /** Chat-scoped Intiface Central WebSocket URL for haptic manual and auto-connect. */
+  hapticIntifaceUrl?: string | null;
+  /** Haptic response style for any chat mode. Missing = standard. */
+  hapticSensitivity?: HapticFeedbackSensitivity;
+  /** When true, very brief accidental brushes may trigger small haptic feedback. Missing/false = only deliberate contact. */
+  hapticIncidentalContact?: boolean;
+  /** Music source constraint for Music DJ in roleplay chats. */
+  spotifySourceType?: SpotifySourceType;
+  /** Spotify playlist ID used when spotifySourceType is "playlist". */
+  spotifyPlaylistId?: string | null;
+  /** Human-readable playlist name cached for prompts/display. */
+  spotifyPlaylistName?: string | null;
+  /** Spotify artist name used when spotifySourceType is "artist". */
+  spotifyArtist?: string | null;
+  /** Recent Spotify track URIs played by the roleplay/conversation Music DJ. */
+  spotifyRecentTracks?: string[];
+  /** Durable count of autonomous messages the user has not viewed yet. */
+  autonomousUnreadCount?: number;
+  /** Character IDs that contributed to the current autonomous unread state. */
+  autonomousUnreadCharacterIds?: string[];
+  /** Timestamp of the newest autonomous unread message. */
+  autonomousUnreadAt?: string | null;
+  /** Daily autonomous attention-budget counts by character. */
+  autonomousDailyBudget?: { date: string; counts: Record<string, number> };
+  /** Per-chat override for the daily autonomous check-in cap. Null/omitted uses talkativeness defaults. */
+  autonomousDailyCapOverride?: number | null;
+  /** Last successful autonomous message timestamp by character and intent key. */
+  intentCooldowns?: Record<string, Record<string, string>>;
+
+  // ── Conversation Mode Fields ──
+  /** Whether conversation character schedules are enabled for this chat. */
+  conversationSchedulesEnabled?: boolean;
+  /** IANA timezone used to evaluate Conversation schedules and temporal context. */
+  conversationTimeZone?: string;
+  /** Allow conversation characters to use hidden command tags. Default: true. */
+  characterCommands?: boolean;
+  /** Per-command Conversation command enable overrides. Missing/true means enabled. */
+  conversationCommandToggles?: ConversationCommandToggles;
+  /** Allow this conversation to start local AI audio/video calls. Default: false. */
+  conversationCallsEnabled?: boolean;
+  /** Allow characters to ring the user through the call command. Default: true when calls are enabled. */
+  conversationCharactersCanCall?: boolean;
+  /** Ask call models to include TTS/video voice cues in bracket tags. Default: true. */
+  conversationCallVoiceCues?: boolean;
+  /** Text connection used to summarize completed calls. Null/omitted uses the Agent default, then chat. */
+  conversationCallSummaryConnectionId?: string | null;
+  /** Chat-scoped generated schedules for conversation characters. */
+  characterSchedules?: Record<string, unknown>;
+  /** Chat-scoped manual status overrides for conversation characters. */
+  conversationStatusOverrides?: Record<string, ConversationStatusOverride>;
+  /** Chat-scoped derived presence status per character, updated each generation. Replaces extensions.conversationStatus to avoid cross-chat bleed. */
+  conversationCharacterStatuses?: Record<string, { status: ConversationPresenceStatus; activity: string }>;
+  /** Conversation mode ONLY: per-chat "about me" overrides keyed by character id or persona id.
+   *  When set, supersedes the card/persona default about-me in the prompt and viewer. */
+  conversationAboutMeOverrides?: Record<string, string>;
+  /** Conversation mode ONLY: whether participant about-mes are auto-injected into the prompt. Default true. */
+  conversationAboutMeInject?: boolean;
+  /** Week start timestamp for the current generated conversation schedules. */
+  scheduleWeekStart?: string;
+  /** Chat-scoped selfie prompt-builder template. Empty/null uses the global/default prompt. */
+  selfiePrompt?: string | null;
+  /** Extra positive prompt/tags appended to generated conversation selfie prompts. */
+  selfiePositivePrompt?: string;
+  /** Extra negative prompt/tags sent with generated conversation selfies. */
+  selfieNegativePrompt?: string;
+
+  // ── Game Mode Fields ──
+  /** UUID linking all sessions of one game */
+  gameId?: string;
+  /** Session number within a game (1-based) */
+  gameSessionNumber?: number;
+  /** Current session lifecycle status */
+  gameSessionStatus?: import("./game.js").GameSessionStatus;
+  /** Whether the first game intro screen has been dismissed for this game chat. */
+  gameIntroPresented?: boolean;
+  /** Timestamp for when the current game session was created/started */
+  gameCurrentSessionStartedAt?: string;
+  /** Current game state (exploration, dialogue, combat, travel_rest) */
+  gameActiveState?: import("./game.js").GameActiveState;
+  /** Whether the game should maintain visible custom HUD widgets. */
+  enableCustomWidgets?: boolean;
+  /** Whether GM is a standalone narrator or an existing character */
+  gameGmMode?: import("./game.js").GameGmMode;
+  /** Character ID used as GM (when gameGmMode is "character") */
+  gameGmCharacterId?: string;
+  /** Party member IDs for the player's party; library character IDs or `npc:<slug>` tracked-NPC IDs. */
+  gamePartyCharacterIds?: string[];
+  /** ID of the linked party chat */
+  gamePartyChatId?: string;
+  /** Current area map */
+  gameMap?: import("./game.js").GameMap | null;
+  /** All generated/known maps for this game session/campaign. */
+  gameMaps?: import("./game.js").GameMap[];
+  /** ID of the map the party is currently on. */
+  activeGameMapId?: string | null;
+  /** Inactive recovery map retained only until an initial hierarchical map is saved or Game start falls back. */
+  gameInitialMapFallback?: import("./game.js").GameMap | null;
+  /** Summaries of all previous sessions */
+  gamePreviousSessionSummaries?: import("./game.js").SessionSummary[];
+  /** Optional positive limit for previous session summaries sent to the GM prompt. */
+  gamePromptRecentSessionLimit?: number;
+  /** When enabled, include detailed party cards only for current/mentioned party members. */
+  gamePromptFocusedCharacterReferences?: boolean;
+  /** GM-only: overarching story arc and plot (never sent to party agent) */
+  gameStoryArc?: string;
+  /** GM-only: planned plot twists (never sent to party agent) */
+  gamePlotTwists?: string[];
+  /** Active dialogue sub-scene chat ID */
+  gameDialogueChatId?: string | null;
+  /** Active combat sub-scene chat ID */
+  gameCombatChatId?: string | null;
+  /** Live combat encounter snapshot — restored on page refresh while a fight is in progress. */
+  gameCombatState?: import("./game.js").GameCombatStateSnapshot | null;
+  /** Runtime override for combat presentation style (Pattern B). Takes effect next battle. */
+  gameCombatStyle?: import("./game.js").GameCombatStyle;
+  /** Live tactical (grid) battle snapshot — restored on page refresh while a tactical fight is in progress. */
+  gameTacticalCombatSnapshot?: import("../features/tactical-combat/types.js").TacticalCombatState | null;
+  /** The ruleset this game was created on, pinned for the game's lifetime. Absent means
+   *  `engine-legacy`: the Engine's own rules, exactly as before rulesets existed. */
+  gameRuleset?: import("../schemas/ruleset.schema.js").RulesetRef;
+  /** User's initial game setup preferences */
+  gameSetupConfig?: import("./game.js").GameSetupConfig | null;
+  /** Immutable creation-time setup retained for viewing and sharing after the campaign changes. */
+  gameInitialSetup?: import("./game.js").GameInitialSetupSnapshot | null;
+  /** Generated game blueprint, including campaign plan and initial HUD widgets. */
+  gameBlueprint?: Record<string, unknown> | null;
+  /** Runtime HUD widget state shown in Game Mode. */
+  gameWidgetState?: import("./game.js").HudWidget[];
+  /** Tracked NPCs with reputation */
+  gameNpcs?: import("./game.js").GameNpc[];
+  /** How separate NPC replies receive character-specific knowledge; absent keeps legacy shared GM dialogue. */
+  gameNpcKnowledgeMode?: "legacy" | "isolated";
+  /** Create a linked Character-library card when Game Mode confirms a named NPC. Defaults to true. */
+  gameAutoCreateNpcCharacters?: boolean;
+  /** NPC identities the user removed and does not want automatically re-created. */
+  gameIgnoredNpcIds?: string[];
+  /** Current-session turn number when the last rare generated scene illustration was created. */
+  gameLastIllustrationTurn?: number;
+  /** Session number where the last rare generated scene illustration was created. */
+  gameLastIllustrationSessionNumber?: number | null;
+  /** Background tag for the last rare generated scene illustration. */
+  gameLastIllustrationTag?: string;
+  /** Connection used for Game Mode scene-video generation. */
+  gameVideoConnectionId?: string | null;
+  /** Optional independent tool-planning pass before the Game narrator. */
+  gameGmToolConnectionId?: string | null;
+  /** Let the GM query already-vectorized lore without enabling the other optional tools. */
+  gameLorebookSearch?: boolean;
+  /** Rewrite Game narration after new text-command dice rolls; absent means enabled. */
+  gameDiceOutcomeNarration?: boolean;
+  /**
+   * Finish a rolled Game turn in one provider request: the GM commits its prose blind,
+   * the engine rolls afterwards and fills the result in, and the narration rewrite never
+   * fires. Absent means off.
+   */
+  gameOneRequestDice?: boolean;
+  /**
+   * The sighted pool, a sub-option of `gameOneRequestDice` and off by default. The engine
+   * throws one die of each size before the turn and shows the head values to the GM, so a
+   * number that itself has to pick between three or more endings can be narrated in the
+   * same pass. The GM sees the number before it decides what to check, so it can steer
+   * outcomes in a way the blind forms do not allow; the engine's record is still what is
+   * saved. Only read while `gameOneRequestDice` is on.
+   */
+  gameDicePoolMode?: boolean;
+  /** How many values per size the GM is shown. Absent means 1, which is the smallest
+   *  window the mechanism works at and the largest single mitigation it has. */
+  gameDicePoolWindow?: number;
+  /** Accepted turns a size may go unspent before it is rethrown. Absent means 3; 0 is off. */
+  gameDicePoolAgeTurns?: number;
+  /** Serialize narration, agents, and scene media within this Game chat. */
+  gameSequentialAgents?: boolean;
+  /** Master visibility/runtime switch for manual Game Mode scene videos. */
+  gameSceneVideosEnabled?: boolean;
+  /** Selected Game Mode scene/storyboard video prompt template. */
+  gameVideoPromptTemplateId?: string | null;
+  /** Selected Game Mode prompt template for storyboard keyframe clips only. */
+  gameStoryboardVideoPromptTemplateId?: string | null;
+  /** Chat-local Game Mode scene/storyboard video prompt templates. */
+  gameVideoPromptTemplates?: import("./agent.js").AgentPromptTemplateOption[];
+  /** Selected provider-facing image prompt template for storyboard keyframes. */
+  gameStoryboardImagePromptTemplateId?: string | null;
+  /** Chat-local provider-facing storyboard image prompt templates. */
+  gameStoryboardImagePromptTemplates?: import("./agent.js").AgentPromptTemplateOption[];
+  /** When true, completed Game Mode GM turns automatically create storyboard keyframe illustrations. */
+  gameStoryboardAutoIllustrationsEnabled?: boolean;
+  /** When true, completed Game Mode GM turns automatically create storyboard keyframe videos. */
+  gameStoryboardAutoGenerationEnabled?: boolean;
+  /** Master visibility/runtime switch for Game Mode storyboard controls. */
+  gameStoryboardsEnabled?: boolean;
+  /** Target number of Game Mode storyboard keyframes to create per GM turn. */
+  gameStoryboardKeyframeCount?: number;
+  /** Per-chat storyboard animation clip duration in seconds. Null/omitted uses Video Generation settings. */
+  gameStoryboardAnimationDurationSeconds?: number | null;
+  /** How the Game Mode storyboard viewer is displayed in the game surface. */
+  gameStoryboardViewerDisplayMode?: GameStoryboardViewerDisplayMode;
+  /** Selected Game Mode storyboard prompt template for image-only auto storyboards. */
+  gameStoryboardIllustrationPromptTemplateId?: string | null;
+  /** Selected Game Mode storyboard prompt template for animation-ready auto storyboards. */
+  gameStoryboardAnimationPromptTemplateId?: string | null;
+  /** Chat-local storyboard prompt templates, merged with built-in storyboard prompt modes. */
+  gameStoryboardPromptTemplates?: import("./agent.js").AgentPromptTemplateOption[];
+  /** Chat-level toggle for Stage 3 image-aware storyboard motion refinement. */
+  storyboardAgentImageAwareShotPlanningEnabled?: boolean | null;
+  /** Chat-level Stage 3 image-aware planner selection. Null/omitted uses the Storyboard Agent default. */
+  storyboardAgentAnimationRefinementTemplateId?: string | null;
+  /** Use native NovelAI V4/V4.5 per-character captions for multi-character storyboard illustrations. Defaults to true. */
+  gameStoryboardUseNovelAiCharacterPrompts?: boolean;
+  /** Last generated scene-video record ID for this game. */
+  gameLastSceneVideoId?: string | null;
+  /** Connection used for roleplay/gallery scene-video generation. */
+  sceneVideoConnectionId?: string | null;
+  /** Last generated roleplay/gallery scene-video record ID. */
+  sceneLastVideoId?: string | null;
+  /** Game-mode GM instruction override. Empty/null uses the built-in default prompt. */
+  gameSystemPrompt?: string | null;
+  /** Selected built-in or chat-local Game Mode GM prompt template. */
+  gameGmPromptTemplateId?: string | null;
+  /** Chat-local Game Mode GM prompt templates. */
+  gameGmPromptTemplates?: import("./agent.js").AgentPromptTemplateOption[];
+  /** Additional game-mode generation instructions appended to the final GM format reminder. */
+  gameSpecialInstructions?: string | null;
+  /** Generic Game Mode Music DJ toggle. Legacy gameUseSpotifyMusic remains the Spotify-specific pipeline flag. */
+  gameUseMusicDj?: boolean;
+  /** Extra user instructions for game scene illustration prompts. */
+  gameImagePromptInstructions?: string | null;
+  /** Per-game asset browser folder exclusions. Omitted/null means every asset folder is available. */
+  gameAssetSelection?: { excludedFolders?: string[] } | null;
+  /** When true, Game Mode uses Music DJ for Spotify music instead of local music assets. */
+  gameUseSpotifyMusic?: boolean;
+  /** Music source constraint for Music DJ in Game Mode. */
+  gameSpotifySourceType?: SpotifySourceType;
+  /** Spotify playlist ID used when gameSpotifySourceType is "playlist". */
+  gameSpotifyPlaylistId?: string | null;
+  /** Human-readable playlist name cached for prompts/display. */
+  gameSpotifyPlaylistName?: string | null;
+  /** Spotify artist name used when gameSpotifySourceType is "artist". */
+  gameSpotifyArtist?: string | null;
+  /** Recent Spotify track URIs played by Game Mode Spotify music. */
+  gameRecentSpotifyTracks?: string[];
+  /** Run Game Lorebook Keeper after a session is concluded. */
+  gameLorebookKeeperEnabled?: boolean;
+  /** Chat-scoped lorebook maintained by Game Lorebook Keeper. */
+  gameLorebookKeeperLorebookId?: string | null;
+  /** Status of the most recent Game Lorebook Keeper session-end run. */
+  gameLorebookKeeperLastRun?: {
+    sessionNumber: number;
+    status: "running" | "success" | "failed";
+    runId?: string;
+    phase?: "extracting" | "saving" | "complete" | "incomplete" | "manual";
+    updatedAt: string;
+    lorebookId?: string | null;
+    entryCount?: number;
+    totalBatches?: number;
+    completedBatches?: number;
+    totalMessages?: number;
+    processedMessages?: number;
+    sourceMessageIds?: string[];
+    sourceHash?: string;
+    coverageVerified?: false;
+    errorCode?: string;
+    error?: string;
+  } | null;
+
+  // ── Conversation-Mode Auto-Summarization ──
+  /** Per-day auto-generated conversation summaries (key: "DD.MM.YYYY"). */
+  daySummaries?: Record<string, DaySummaryEntry>;
+  /** Per-week consolidated conversation summaries (key: Monday "DD.MM.YYYY"). */
+  weekSummaries?: Record<string, WeekSummaryEntry>;
+  /**
+   * Hour of day (0-11, local time) at which a conversation "day" rolls over for
+   * summarization. Messages sent before this hour are filed under the previous
+   * day, so a late-night session isn't cut off mid-conversation. Default: 4.
+   */
+  dayRolloverHour?: number;
+  /**
+   * How many of the most recent messages to keep verbatim even after they've
+   * been summarized. In conversation mode this bridges the day boundary so
+   * characters pick up the actual flow of recent conversation, not just the
+   * gist. In roleplay mode it is the protected tail for
+   * `hideSummarisedMessages`: the last N messages stay visible (never hidden)
+   * when the auto-summary hides the rest. 0 disables (hide the whole batch).
+   * Any non-negative whole number is accepted. Default: 10.
+   */
+  summaryTailMessages?: number;
+  /** When true or omitted, prior provider reasoning metadata is not replayed into future prompts. */
+  excludePastReasoning?: boolean;
+  /** Most recent assistant reasoning blocks to replay when enabled. Default: 1; 0 includes all. */
+  pastReasoningLimit?: number;
+
+  /** Any extra key-value data */
+  [key: string]: unknown;
+}
+
+/** A single message within a chat. */
+export interface Message {
+  id: string;
+  chatId: string;
+  role: MessageRole;
+  /** Which character sent this (null for user messages / narration) */
+  characterId: string | null;
+  content: string;
+  /** Index into the swipes array for the currently displayed alternative */
+  activeSwipeIndex: number;
+  /** Number of swipes for this message (0 or 1 = no alternatives) */
+  swipeCount?: number;
+  /** Server-side file-table position used only for stable pagination cursors */
+  rowid?: number;
+  createdAt: string;
+  /** Extra display data */
+  extra: MessageExtra;
+}
+
+/** A file or image attached to a chat message. */
+export interface MessageAttachment {
+  type: string;
+  data?: string;
+  url?: string;
+  filename?: string;
+  name?: string;
+  prompt?: string;
+  galleryId?: string;
+}
+
+/** A reaction on a Conversation message: an emoji token + who reacted. */
+export interface MessageReaction {
+  /** The reaction token: a unicode emoji (e.g. "😂") or a custom-emoji ref ":name:". */
+  emoji: string;
+  /** Resolved image URL for a custom-emoji reaction (snapshot at react time); null/absent for unicode. */
+  imageUrl?: string | null;
+  /** Who reacted: the "user" sentinel for the human, or character ids for bots. */
+  by: string[];
+  /**
+   * For grouped multi-speaker messages: index of the speaker segment this reaction
+   * targets (the client's grouped-segment order). Absent/null targets the whole
+   * message — 1:1 chats, legacy data, and block-level reactions all stay that way.
+   */
+  segment?: number | null;
+  /**
+   * Speaker name of the targeted segment, captured at react time. Lets the client
+   * detect a stale `segment` index after an edit/regeneration re-segments the
+   * content (mismatches fall back to whole-message display), and lets the server
+   * tell characters whose line was reacted to. Null for a narration segment.
+   */
+  segmentSpeaker?: string | null;
+}
+
+/** A quote snapshot retains the selected text even if its source is edited or deleted. */
+export interface MessageReply {
+  messageId: string;
+  name: string;
+  content: string;
+}
+
+/** A character's scene invitation, retained with the response that proposed it. */
+export interface ConversationSceneRequest {
+  prompt: string;
+  background?: string | null;
+  planHint?: string | null;
+  initiatorCharId?: string | null;
+  initiatorCharName?: string | null;
+  connectionId?: string | null;
+}
+
+/** Additional data attached to a message. */
+export interface MessageExtra {
+  /** Quoted snapshot shown in the transcript and included only for the latest user turn in prompts. */
+  replyTo?: MessageReply;
+  /** Display-formatted text (may differ from raw content) */
+  displayText: string | null;
+  /** Whether this message was generated by the AI vs typed by user */
+  isGenerated: boolean;
+  /** Token count of this message */
+  tokenCount: number | null;
+  /** Generation metadata */
+  generationInfo: GenerationInfo | null;
+  /** User-uploaded or generated attachments associated with this message. */
+  attachments?: MessageAttachment[] | null;
+  /** Client-generated ID that correlates a submitted user turn with its durable row. */
+  submissionId?: string | null;
+  /** Persisted translated text for this message, if the user generated one. */
+  translation?: string | null;
+  /** User hid the persisted translation from display without deleting it. */
+  translationHidden?: boolean | null;
+  /** Conversation-mode reactions on this message (emoji/custom-emoji + who reacted). */
+  reactions?: MessageReaction[] | null;
+  /** When true, this message marks the "new start" of the conversation — all earlier messages are excluded from context */
+  isConversationStart?: boolean;
+  /** Character IDs whose individual Roleplay context begins at this message. */
+  conversationStartForCharacterIds?: string[];
+  /** Model's reasoning/thinking content (if available) */
+  thinking?: string | null;
+  /** Original assistant message before a post-processing rewrite, retained for version comparison. */
+  proseGuardianOriginalText?: string | null;
+  /** Rewritten assistant message retained so the user can compare and restore either version. */
+  proseGuardianRewrittenText?: string | null;
+  /** Timestamp for the last post-processing rewrite applied to this message. */
+  proseGuardianRewrittenAt?: string | null;
+  /**
+   * Conversation-mode assistant content before hidden character commands were
+   * stripped from visible display. Used for future prompt history so commands
+   * like [selfie] remain part of the model-visible transcript.
+   */
+  conversationCommandContent?: string | null;
+  sceneRequest?: ConversationSceneRequest | null;
+  /** Private actions for this swipe, never replayed into shared prompt history. */
+  roleplayPrivateCommands?: RoleplayPrivateCommand[] | null;
+  /** Provider reasoning from a private turn must not be replayed into shared history. */
+  roleplayPrivateContext?: boolean;
+  /** This empty command-only turn was automatically hidden from the reader. */
+  roleplayPrivateOnly?: boolean;
+  roleplayDocuments?: RoleplayDocument[] | null;
+  /** User-only command disclosures. Their labels and raw text never enter prompt history. */
+  roleplayCommandActivity?: RoleplayCommandActivity[] | null;
+  /** Professor Mari workspace trace shown on the home assistant transcript. */
+  mariWorkspaceTimeline?: MariWorkspaceTraceItem[] | null;
+  /** True when this Mari turn deferred mutating commands behind an Accept action (#5725 Manual mode). */
+  mariDeferredMutations?: boolean | null;
+  /** Per-swipe sprite expressions from the Expression Engine agent */
+  spriteExpressions?: Record<string, string> | null;
+  /** Per-swipe CYOA choices from the CYOA Choices agent */
+  cyoaChoices?: Array<{ label: string; text: string }> | null;
+  /** Presentation-only Game Mode cues retained so completed turns can be replayed without rerunning scene analysis. */
+  gameReplayCue?: {
+    background?: string | null;
+    music?: string | null;
+    ambient?: string | null;
+    sfx?: string[];
+    directions?: import("./game.js").DirectionCommand[];
+    segmentEffects?: import("./sidecar.js").SceneSegmentEffect[];
+  } | null;
+  /** Snapshot of the persona that was active when this message was sent (user messages only) */
+  personaSnapshot?: {
+    personaId: string;
+    source?: "persona" | "character";
+    name: string;
+    avatarUrl?: string | null;
+    /** JSON-encoded AvatarCrop captured at send time so re-edits don't restyle past messages. */
+    avatarCrop?: string | null;
+    nameColor?: string | null;
+    dialogueColor?: string | null;
+    boxColor?: string | null;
+  } | null;
+  /** Stored for generation context but hidden from the visible chat transcript */
+  hiddenFromUser?: boolean;
+  /** When true, the visible message is excluded from future AI prompt context */
+  hiddenFromAI?: boolean;
+  /** User bookmark shown in the chat's Bookmarks list. Never sent to the model. */
+  bookmark?: import("../utils/message-marks.js").MessageBookmark | null;
+  /** Keep this message in prompt context even when the context message limit would drop it. */
+  pinnedToContext?: boolean;
+  /** Private user note on this message. Never sent to the model and left out of exports by default. */
+  privateNote?: string | null;
+  /** A chapter starts at this message: user-written title and summary. Never sent to the model. */
+  chapter?: import("../utils/message-marks.js").MessageChapter | null;
+  /** Character IDs whose generation context excludes this message. Global hiddenFromAI takes precedence. */
+  hiddenFromAICharacterIds?: string[];
+  /** When true, Roleplay renders this generated assistant turn as a fresh bubble instead of grouping with the previous assistant turn. */
+  startsNewAssistantBubble?: boolean;
+  /** Structured dice roll payload rendered by the chat UI. */
+  diceRollResult?: DiceRollResult | null;
+  /** Every Game roll in this swipe, in execution order. Older turns use diceRollResult. */
+  diceRollResults?: DiceRollResult[] | null;
+  /** Real roll records survived, but the separate outcome narration request failed. */
+  gameOutcomeNarrationFailed?: boolean;
+  /** What the one-request dice pass did on this turn, when the switch was on. */
+  gameDiceTurn?: GameDiceTurnNotice | null;
+  /** Separate tool planner billing; never added to the narrator model's usage. */
+  gameToolPlanning?: GameToolPlanningInfo | null;
+  /**
+   * Cached pipeline injections (prose-guardian, director, knowledge-retrieval, etc.)
+   * saved with this assistant message — reused when regenerating that swipe unless refreshed.
+   */
+  contextInjections?: Array<{ agentType: string; agentName?: string; text: string }> | null;
+  /** Fingerprint of the compiled chat summary used when prompt caches/reasoning were stored. */
+  chatSummaryFingerprint?: string | null;
+  /**
+   * Hidden command-generation options needed to make swipes/regenerations replay
+   * the same slash-command or guided-regenerate prompt behavior.
+   */
+  generationReplay?: {
+    impersonate?: true;
+    userMessage?: string | null;
+    generationGuide?: string | null;
+    generationGuideSource?: GenerationGuideSource | null;
+    narrativeDirectorMode?: "natural" | "random" | null;
+    impersonatePresetId?: string | null;
+    impersonateConnectionId?: string | null;
+    impersonateBlockAgents?: boolean;
+    impersonatePromptTemplate?: string | null;
+  } | null;
+}
+
+/**
+ * Summary of the one-request dice pass for one Game turn. Saved on the assistant
+ * message and mirrored on a `game_dice_turn_notice` SSE frame, so the session log can
+ * say in plain words what the engine could and could not roll. Every field is optional
+ * and only truthy values are written, so a clean turn stores nothing.
+ */
+export interface GameDiceTurnNotice {
+  /** Which blind forms actually resolved this turn, in first-seen order. */
+  forms?: Array<"branch" | "placeholder">;
+  /**
+   * One record per substituted placeholder, in reading order: the body as the model
+   * wrote it, the dice actually thrown, and where the number landed. The saved content
+   * carries a bare number so the prompt leaf and the transcript both read as prose, so
+   * this is the only audit trail of what that number was.
+   */
+  placeholders?: GameDicePlaceholderRecord[];
+  /** Spans the pass refused to read and replaced with a visible notice. Never a number. */
+  unreadablePlaceholders?: number;
+  /** Branch blocks the pass could not read. The roll stands, the narration does not. */
+  branchFailures?: number;
+  /** The pass itself threw; its fallback rewrite ran and the turn was kept. */
+  passFailed?: boolean;
+  /**
+   * The pool values this turn actually spent, in spend order. Only ever written while
+   * the sighted pool sub-option is on, so a chat that never turned it on stores nothing.
+   */
+  poolSlots?: GameDicePoolConsumption[];
+  /**
+   * Checks and `[dice:]` tags the pool had no value left for. Nothing was rolled and
+   * nothing was written: the tag went back sparse and the outcome is owed to the next
+   * turn. Never a number, and never a second request to get one.
+   */
+  poolOverflow?: number;
+  /** What the model claimed that disagreed with what the engine spent. Recorded, never obeyed. */
+  poolMismatches?: GameDicePoolMismatch[];
+}
+
+export interface GameToolPlanningInfo {
+  connectionId?: string;
+  model: string;
+  provider: string;
+  usage: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | null;
+}
+
+/** Metadata about how a message was generated. */
+export interface GenerationInfo {
+  model: string;
+  provider: string;
+  temperature: number | null;
+  tokensPrompt: number | null;
+  tokensCompletion: number | null;
+  /** Input tokens in the latest completed model request, including cache but excluding output. */
+  tokensLastRequestInput?: number | null;
+  /** Occupied tokens in the latest completed model request, including cache and output; null when unreported. */
+  tokensContext?: number | null;
+  /** Completed main-model requests in this turn; agent and separate Game planner calls are excluded. */
+  requestCount?: number;
+  tokensAcceptedPrediction?: number | null;
+  tokensRejectedPrediction?: number | null;
+  /** Completion tokens excluding hidden reasoning tokens. */
+  tokensVisibleCompletion?: number | null;
+  tokensCompletionAudio?: number | null;
+  /** Provider-reported hidden reasoning-token usage, when available. */
+  tokensReasoning?: number | null;
+  tokensCachedPrompt?: number | null;
+  tokensCacheWritePrompt?: number | null;
+  durationMs: number | null;
+  /** Time from generation start until reasoning yielded to visible output. */
+  reasoningDurationMs?: number | null;
+  finishReason: string | null;
+}
+
+/** A swipe (alternate response) for a message. */
+export interface MessageSwipe {
+  id: string;
+  messageId: string;
+  index: number;
+  content: string;
+  createdAt: string;
+  extra: MessageExtra;
+}
+
+/** Payload sent to start a generation. */
+export interface GenerateRequest {
+  chatId: string;
+  userMessage: string | null;
+  /** Client-generated ID used to confirm that this exact user turn was persisted. */
+  submissionId?: string | null;
+  /** If set, regenerate the message at this ID */
+  regenerateMessageId: string | null;
+  /** If set, append the generated continuation to this assistant message */
+  continueMessageId?: string | null;
+  /** Whether a continued response is separated from the existing message by a blank line. */
+  continueAddsNewline?: boolean;
+  /** Override connection for this generation */
+  connectionId: string | null;
+  /** Background currently displayed on the active chat surface. */
+  currentBackground?: string | null;
+  /** Validated owner-mode movement committed with the user turn. */
+  pendingSpatialTransition?: import("./spatial-context.js").PendingSpatialTransition | null;
+  /** One-shot attachments sent with the user message. */
+  attachments?: MessageAttachment[];
+  /** One-shot Narrative Director mode for this generation, if the user armed Push Story. */
+  narrativeDirectorMode?: "natural" | "random" | null;
+}
+
+/** An SSE event from the generation stream. */
+export interface StreamEvent {
+  type: "token" | "agent_update" | "game_state" | "done" | "error";
+  data: string;
+  agentId?: string;
+  messageId?: string;
+}
+
+/** An OOC influence queued from a conversation chat to be injected into a roleplay chat. */
+export interface OocInfluence {
+  id: string;
+  sourceChatId: string;
+  targetChatId: string;
+  content: string;
+  anchorMessageId: string;
+  consumed: boolean;
+  createdAt: string;
+}
+
+/** A durable note emitted from a conversation chat that persists in the connected roleplay's prompt until cleared. */
+export interface ConversationNote {
+  id: string;
+  sourceChatId: string;
+  targetChatId: string;
+  content: string;
+  anchorMessageId: string;
+  createdAt: string;
+}
+
+export interface HistoricalPersonaIdentitySummary {
+  personaId: string;
+  source: "persona" | "character";
+  name: string;
+  avatarUrl?: string | null;
+  count: number;
+}
+
+export interface ChatPersonaAttributionsSummary {
+  unassignedCount: number;
+  allUserMessageCount: number;
+  identities: HistoricalPersonaIdentitySummary[];
+}
+
+export function normalizeManualTrackerAgentTypes(value: unknown): Record<string, boolean> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const manualTypes: Record<string, boolean> = {};
+  for (const [agentType, enabled] of Object.entries(value as Record<string, unknown>)) {
+    const key = agentType.trim();
+    if (key && enabled === true) manualTypes[key] = true;
+  }
+  return manualTypes;
+}

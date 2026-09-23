@@ -1,0 +1,194 @@
+name: Pull Request Triage
+
+on:
+  pull_request_target:
+    types: [opened, reopened, edited, synchronize, ready_for_review]
+    branches: [staging, main]
+
+concurrency:
+  group: pull-request-triage-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  branch-policy:
+    name: Branch policy check
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Validate pull request target
+        env:
+          AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ "$BASE_REF" = "staging" ]; then
+            exit 0
+          fi
+
+          if [ "$BASE_REF" = "main" ] &&
+             [ "$AUTHOR_LOGIN" = "SpicyMarinara" ] &&
+             [ "$HEAD_REPO" = "$REPOSITORY" ]; then
+            if [ "$HEAD_REF" = "staging" ]; then
+              exit 0
+            fi
+
+            case "$HEAD_REF" in
+              hotfix/*)
+                exit 0
+                ;;
+            esac
+          fi
+
+          echo "::error::Contributions must target staging. Main accepts only SpicyMarinara's same-repository staging promotion or hotfix/* PR."
+          exit 1
+
+  owner-approval:
+    name: Evaluate staging owner approval
+    if: github.event.pull_request.base.ref == 'staging'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Checkout trusted base revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Publish owner approval status
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MEMBERS_TOKEN_CONFIGURED: ${{ secrets.PASTA_DEVS_MEMBERS_TOKEN != '' }}
+          PASTA_DEVS_MEMBERS_TOKEN: ${{ secrets.PASTA_DEVS_MEMBERS_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node scripts/evaluate-owner-approval.mjs
+
+  label:
+    name: Auto-label
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Label by title or branch
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const labels = {
+              feature: { color: 'a2eeef', description: 'New feature or enhancement' },
+              bugfix:  { color: 'd73a4a', description: 'Bug fix' },
+            };
+
+            // Ensure the label exists with the right color; update it if it drifted.
+            async function ensureLabel(name) {
+              const opts = { owner: context.repo.owner, repo: context.repo.repo };
+              try {
+                await github.rest.issues.createLabel({ ...opts, name, ...labels[name] });
+              } catch (e) {
+                if (e.status === 422) {
+                  await github.rest.issues.updateLabel({ ...opts, name, ...labels[name] });
+                }
+              }
+            }
+
+            const pr = context.payload.pull_request;
+            const title = pr.title.toLowerCase();
+            const branch = (pr.head.ref || '').toLowerCase();
+            const add = [];
+
+            if (title.includes('[feature]') || title.startsWith('feat') || branch.startsWith('feat/') || branch.startsWith('feature/')) {
+              add.push('feature');
+            }
+            if (title.includes('[issue]') || title.includes('[bug]') || title.startsWith('fix') || branch.startsWith('fix/') || branch.startsWith('bugfix/')) {
+              add.push('bugfix');
+            }
+
+            for (const name of add) {
+              await ensureLabel(name);
+            }
+
+            if (add.length) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                labels: add,
+              });
+            }
+      - name: Label by path
+        uses: actions/labeler@634933edcd8ababfe52f92936142cc22ac488b1b # v6.0.1
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          configuration-path: .github/labeler.yml
+          sync-labels: true
+
+  template-check:
+    name: Pull Request template check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Exempt trusted contributor
+        if: contains(fromJSON('["MEMBER","OWNER","COLLABORATOR"]'), github.event.pull_request.author_association)
+        run: echo "Trusted contributor; pull request template validation is not required."
+
+      - name: Check Pull Request body against template
+        if: >-
+          !contains(fromJSON('["MEMBER","OWNER","COLLABORATOR"]'), github.event.pull_request.author_association)
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          failed=0
+
+          # 1. Check for a linked issue: "Closes #" followed by at least one digit
+          if ! echo "$PR_BODY" | grep -qP '(Closes|Fixes|Resolves) #\d'; then
+            echo "::error::Missing linked issue. The PR body must contain 'Closes #<number>' (or Fixes/Resolves) referencing an open issue."
+            failed=1
+          fi
+
+          # Helper: extract a section's content between its heading and the next ## heading,
+          # strip the heading line itself, HTML comments, and blank lines.
+          section_content() {
+            echo "$PR_BODY" | sed -n "/## $1/,/^## /p" | head -n -1 \
+              | sed "/^## $1/d" | sed 's/<!--.*-->//g' | sed '/^\s*$/d'
+          }
+
+          # 2. Check that "Why this change" has real content
+          if [ -z "$(section_content 'Why this change')" ]; then
+            echo "::error::The 'Why this change' section is empty. Please describe the user problem, bug, or goal this PR addresses."
+            failed=1
+          fi
+
+          # 3. Check that "What changed" has real content (not just a bare dash)
+          what_content=$(section_content 'What changed' | sed '/^-\s*$/d')
+          if [ -z "$what_content" ]; then
+            echo "::error::The 'What changed' section is empty. Please list the key changes in this PR."
+            failed=1
+          fi
+
+          # 4. Check that "Validation" has at least one ticked checkbox
+          validation_section=$(echo "$PR_BODY" | sed -n '/## Validation/,/^## /p' | head -n -1)
+          if ! echo "$validation_section" | grep -qP '\[x\]'; then
+            echo "::error::No validation checkboxes are ticked. Please run through the checklist and tick the items you have actually verified."
+            failed=1
+          fi
+
+          if [ "$failed" -eq 1 ]; then
+            echo ""
+            echo "Please update the PR description to satisfy the template requirements above."
+            exit 1
+          fi
+
+          echo "Pull Request template checks passed."

@@ -1,0 +1,289 @@
+// ──────────────────────────────────────────────
+// Panel: Browser (sidebar — shows imported characters)
+// ──────────────────────────────────────────────
+import { useState, useMemo, useCallback } from "react";
+import { toast } from "sonner";
+import { useCharacters, useDeleteCharacter } from "../../hooks/use-characters";
+import { useStartChatFromCharacter } from "../../hooks/use-start-chat-from-character";
+import { useUIStore, type ResourcePanelSort } from "../../stores/ui.store";
+import { Search, User, Bot, Trash2, ArrowUpDown } from "lucide-react";
+import { cn, getAvatarCropStyle } from "../../lib/utils";
+import { sortBasicPanelItems } from "../../lib/panel-sort";
+import { ContextMenu, type ContextMenuItem } from "../ui/ContextMenu";
+import { showConfirmDialog } from "../../lib/app-dialogs";
+import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
+import { useTranslation as useUiTranslation } from "react-i18next";
+import { ChatModeIcon } from "../chat/ChatModeIcon";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
+
+type CharacterRow = { id: string; data: string; avatarPath: string | null; createdAt: string; updatedAt: string };
+
+export function BotBrowserPanel() {
+  const { t: localizeUi } = useUiTranslation();
+  const localize = useLocalizedUiText();
+  const { data: characters, isLoading } = useCharacters();
+  const deleteCharacter = useDeleteCharacter();
+  const openCharacterDetail = useUIStore((s) => s.openCharacterDetail);
+  const characterDetailId = useUIStore((s) => s.characterDetailId);
+  const closeCharacterDetail = useUIStore((s) => s.closeCharacterDetail);
+  const openBotBrowser = useUIStore((s) => s.openBotBrowser);
+  const botBrowserOpen = useUIStore((s) => s.botBrowserOpen);
+  const sort = useUIStore((s) => s.botBrowserPanelSort);
+  const setSort = useUIStore((s) => s.setBotBrowserPanelSort);
+  const { startChatFromCharacter } = useStartChatFromCharacter();
+  const [search, setSearch] = useState("");
+  const [deletingCharacterId, setDeletingCharacterId] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    charId: string;
+    charName: string;
+    firstMes?: string;
+    altGreetings?: string[];
+  } | null>(null);
+
+  const parsed = useMemo(() => {
+    if (!characters) return [];
+    return (characters as CharacterRow[]).reduce<
+      { id: string; name: string; avatarPath: string | null; createdAt: string; updatedAt: string }[]
+    >((acc, c) => {
+      const d = JSON.parse(c.data);
+      if (d.extensions?.botBrowserSource) {
+        acc.push({
+          id: c.id,
+          name: d.name ?? "Unnamed",
+          avatarPath: c.avatarPath,
+          createdAt: c.createdAt,
+          updatedAt: c.updatedAt,
+        });
+      }
+      return acc;
+    }, []);
+  }, [characters]);
+
+  const filtered = useMemo(() => {
+    if (!search) return parsed;
+    const q = search.toLowerCase();
+    return parsed.filter((c) => c.name.toLowerCase().includes(q));
+  }, [parsed, search]);
+
+  const sorted = useMemo(
+    () =>
+      sortBasicPanelItems(
+        filtered,
+        sort,
+        (char) => char.name,
+        (char) => char.createdAt || char.updatedAt,
+      ),
+    [filtered, sort],
+  );
+
+  const getCharacterGreeting = useCallback(
+    (charId: string): { firstMes?: string; altGreetings: string[] } => {
+      const raw = (characters as CharacterRow[] | undefined)?.find((c) => c.id === charId);
+      if (!raw) return { altGreetings: [] };
+      try {
+        const d = JSON.parse(raw.data) as { first_mes?: string; alternate_greetings?: string[] };
+        return { firstMes: d.first_mes, altGreetings: d.alternate_greetings ?? [] };
+      } catch {
+        return { altGreetings: [] };
+      }
+    },
+    [characters],
+  );
+
+  const handleDeleteCharacter = useCallback(
+    async (character: { id: string; name: string }) => {
+      const confirmed = await showConfirmDialog({
+        title: localizeUi("ui.panels.botbrowserpanel.deleteImportedCharacter"),
+        message: localizeUi("ui.panels.botbrowserpanel.deleteValue1FromYourImportedCharactersThisCannotBe", {
+          value1: character.name,
+        }),
+        confirmLabel: localizeUi("lorebook.editor.batch.delete"),
+        tone: "destructive",
+      });
+      if (!confirmed) return;
+
+      setDeletingCharacterId(character.id);
+      try {
+        await deleteCharacter.mutateAsync(character.id);
+        if (characterDetailId === character.id) closeCharacterDetail();
+        toast.success(localizeUi("ui.panels.botbrowserpanel.deletedValue1", { value1: character.name }));
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : localizeUi("ui.panels.botbrowserpanel.failedToDeleteCharacter"),
+        );
+      } finally {
+        setDeletingCharacterId(null);
+      }
+    },
+    [characterDetailId, closeCharacterDetail, deleteCharacter, localizeUi],
+  );
+
+  return (
+    <div className="flex flex-col gap-2 p-3">
+      {/* Download cards button */}
+      <button
+        onClick={openBotBrowser}
+        className={cn(
+          "mari-chrome-control mari-chrome-control--primary w-full text-xs",
+          botBrowserOpen && "mari-chrome-control--selected",
+        )}
+      >
+        <Bot size="0.875rem" />
+        {localizeUi("ui.panels.botbrowserpanel.downloadCards")}
+      </button>
+
+      {/* Search + Sort */}
+      <div className="flex gap-1.5">
+        <div className="relative flex-1">
+          <Search
+            size="0.8125rem"
+            className="mari-chrome-field-icon pointer-events-none absolute left-3 top-1/2 -translate-y-1/2"
+          />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={localize("Search imported...")}
+            className="mari-chrome-field h-10 w-full py-0 pl-8 pr-3 text-xs md:h-9"
+          />
+        </div>
+        <div className="relative">
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as ResourcePanelSort)}
+            className="mari-chrome-field mari-chrome-sort-field mari-accent-animated h-10 appearance-none py-0 pl-2.5 pr-7 text-[0.6875rem] md:h-9"
+            title={localizeUi("ui.panels.agentspanel.sortOrder")}
+            aria-label={localizeUi("ui.panels.botbrowserpanel.sortImportedCharacters")}
+          >
+            <option value="name-asc">{localizeUi("ui.panels.backgroundpicker.aZ")}</option>
+            <option value="name-desc">{localizeUi("ui.panels.backgroundpicker.zA")}</option>
+            <option value="newest">{localizeUi("ui.panels.backgroundpicker.newest")}</option>
+            <option value="oldest">{localizeUi("ui.panels.backgroundpicker.oldest")}</option>
+          </select>
+          <ArrowUpDown
+            size="0.625rem"
+            className="mari-chrome-field-icon mari-chrome-sort-icon mari-accent-animated pointer-events-none absolute right-2 top-1/2 -translate-y-1/2"
+          />
+        </div>
+      </div>
+
+      {/* Character list */}
+      {isLoading ? (
+        <div className="mari-chrome-text-muted py-4 text-center text-xs">
+          {localizeUi("ui.characters.characterlibraryview.loading")}
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="mari-chrome-text-muted py-4 text-center text-xs">
+          {search
+            ? localizeUi("ui.panels.botbrowserpanel.noMatches")
+            : localizeUi("ui.panels.botbrowserpanel.noImportedCharactersYet")}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-0.5">
+          {sorted.map((char) => (
+            <div
+              key={char.id}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                const greeting = getCharacterGreeting(char.id);
+                setContextMenu({
+                  x: e.clientX,
+                  y: e.clientY,
+                  charId: char.id,
+                  charName: char.name,
+                  firstMes: greeting.firstMes,
+                  altGreetings: greeting.altGreetings,
+                });
+              }}
+              className="group flex items-center gap-1 rounded-xl transition-all hover:bg-[var(--sidebar-accent)]"
+            >
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => openCharacterDetail(char.id)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    openCharacterDetail(char.id);
+                  }
+                }}
+                className="flex min-w-0 flex-1 items-center gap-2.5 rounded-xl p-2 text-left"
+              >
+                <div className="mari-panel-gradient-surface mari-panel-gradient--browser relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl shadow-sm">
+                  {char.avatarPath ? (
+                    <CharacterPhoto
+                      src={char.avatarPath}
+                      name={char.name}
+                      wrapperClassName="relative block h-full w-full"
+                      className="block h-full w-full"
+                    >
+                      <img
+                        src={char.avatarPath}
+                        alt={char.name}
+                        loading="lazy"
+                        className="h-full w-full object-cover"
+                        style={getAvatarCropStyle()}
+                      />
+                    </CharacterPhoto>
+                  ) : (
+                    <User size="0.875rem" />
+                  )}
+                </div>
+                <span className="min-w-0 flex-1 truncate text-xs font-medium">{char.name}</span>
+              </div>
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  void handleDeleteCharacter(char);
+                }}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+                disabled={deletingCharacterId !== null}
+                className="mari-chrome-control mari-chrome-control--small mr-1 h-8 w-8 shrink-0 p-0 disabled:cursor-wait disabled:opacity-50"
+                title={localizeUi("ui.panels.botbrowserpanel.deleteValue1", { value1: char.name })}
+                aria-label={localizeUi("ui.panels.botbrowserpanel.deleteValue1", { value1: char.name })}
+              >
+                <Trash2 size="0.75rem" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {contextMenu &&
+        (() => {
+          const items: ContextMenuItem[] = [
+            {
+              label: "Quick Start Roleplay",
+              icon: <ChatModeIcon mode="roleplay" size="0.75rem" />,
+              onSelect: () =>
+                startChatFromCharacter({
+                  characterId: contextMenu.charId,
+                  characterName: contextMenu.charName,
+                  mode: "roleplay",
+                  firstMessage: contextMenu.firstMes,
+                  alternateGreetings: contextMenu.altGreetings,
+                }),
+            },
+            {
+              label: "Quick Start Conversation",
+              icon: <ChatModeIcon mode="conversation" size="0.75rem" />,
+              onSelect: () =>
+                startChatFromCharacter({
+                  characterId: contextMenu.charId,
+                  characterName: contextMenu.charName,
+                  mode: "conversation",
+                }),
+            },
+          ];
+          return <ContextMenu x={contextMenu.x} y={contextMenu.y} items={items} onClose={() => setContextMenu(null)} />;
+        })()}
+    </div>
+  );
+}

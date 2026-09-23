@@ -1,0 +1,62 @@
+[
+  {
+    "id": "resolved-lease",
+    "context": "The player is Lord Rowan. Lady Ada manages his estate paperwork; Mira is his attendant. In this fantasy kingdom, the lord owns the estate and can relocate tenants. Tenant labour is abundant. There is exactly one agricultural tenant on his 170-square-kilometre hunting estate. A 250-square-metre boundary encroachment is minor to him. Rowan has already ordered continued tenancy, expansion funding, a slightly adjusted rent, a plain-language warning about forthcoming earth magic, and a gift basket. He explicitly clarified that legal shorthand spoken with staff is not wording for the farmer. Earlier NPC objections about inherited mistakes, other tenants and rare skilled farmers have been withdrawn. They are now studying the survey to plan the fortress.",
+    "input": "Good. That settles the lease. Let us continue with the survey.",
+    "criteria": [
+      "Advance to survey planning without another warning about the farmer, wording, replacement scarcity or reputation.",
+      "Do not claim planned delivery or construction already happened.",
+      "Do not invent the player's actions or dialogue."
+    ]
+  },
+  {
+    "id": "apology-without-substitute-objection",
+    "context": "The GM invented scarcity of competent farmers to justify an NPC objection after the player had resolved a minor lease adjustment. This fantasy campaign establishes plentiful tenant labour and ordinary lordly relocation authority. The player's voluntary warning, gift and funding were already established. The player is correcting the author, not discussing law with NPCs.",
+    "input": "[To the GM] No, good farmers are plentiful. Stop inventing a new reason for the same objection after I correct it.",
+    "criteria": [
+      "Accept the correction without inventing a new economic, ethical or reputational rationale.",
+      "Do not perform NPC dialogue or advance the scene.",
+      "Do not turn the correction into a general rule that all NPCs must agree about everything."
+    ]
+  },
+  {
+    "id": "private-visit-no-invented-clue",
+    "context": "The player privately visited a hidden underground tree chamber. Only his teacher witnessed it. He returns through a portal into a dining room full of food smells and joins Mira and the performer Cora. Neither was told about the chamber. No sap, dirt, magical residue, unusual expression or other identifying trace on him was established. Cora is observant and experienced with performances, not telepathic. The meal is stew and bread; a music rehearsal is planned tomorrow.",
+    "input": "I enter the dining room. What have I missed?",
+    "criteria": [
+      "Nobody detects or guesses the chamber, tree or private visit through an invented sensory clue.",
+      "NPCs may discuss known meal or rehearsal matters.",
+      "Do not invent player feelings, speech, eating or seating."
+    ]
+  },
+  {
+    "id": "ensemble-length",
+    "context": "At breakfast the player has explicitly requested 40–60 paragraphs of lively conversation while he listens. Four adult household members are present: Mira enjoys gossip and dry jokes; Cora is an experienced singer fond of cooking; Brina likes exercise and gardening; Ada likes books and terrible puns. They are friends with distinct voices and can discuss yesterday's rain, a disappointing cake, tomorrow's rehearsal, a borrowed book and plans for the garden. No one needs a report or decision from the player. The player's speech, feelings and voluntary actions remain user-owned.",
+    "input": "I listen while they chat. Please let the breakfast conversation unfold at the requested length.",
+    "criteria": [
+      "Produce 40–60 meaningful paragraphs, not just four compact responses.",
+      "Characters respond to one another and develop topics, not a roll call or interchangeable reports.",
+      "Do not invent the player's participation or manufacture a dispute about him."
+    ]
+  },
+  {
+    "id": "grounded-dissent-control",
+    "context": "The player is Lord Rowan, a powerful and generally generous ruler. An established treaty prohibits moving the eastern border stones without approval from the neighbouring queen. Her envoy publicly opposed relocation yesterday, citing that treaty. The queen has not agreed, and no later event removed the restriction. Rowan now asks his legal adviser Ada whether relocating them would violate the treaty. This is a real distinct issue, not the settled minor farm lease.",
+    "input": "Would moving those border stones violate our treaty? Tell me plainly.",
+    "criteria": [
+      "Ada plainly acknowledges the established treaty restriction.",
+      "Do not suppress genuine grounded disagreement just to flatter the protagonist.",
+      "Do not generalize the question into a character flaw or moral lecture."
+    ]
+  },
+  {
+    "id": "established-clue-control",
+    "context": "The player explicitly established that he returns from a pine grove with visible sap on his sleeve. Cora stands beside him in good light and can see the sap. She does not know about the concealed shrine deeper in the grove. They are preparing for a public music rehearsal.",
+    "input": "Cora, is there anything on my sleeve?",
+    "criteria": [
+      "Allow Cora to notice the explicitly established visible sap.",
+      "Do not infer the concealed shrine or details of the visit from the sap alone.",
+      "Do not deny established evidence in an overcorrection against omniscience."
+    ]
+  }
+]

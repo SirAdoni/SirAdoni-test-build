@@ -1,0 +1,2017 @@
+import { isDeepStrictEqual } from "node:util";
+import type { ChatMessage } from "../../services/llm/base-provider.js";
+import {
+  GENERATION_PARAMETER_SEND_KEYS,
+  SUMMARY_TAIL_MESSAGES,
+  applyTrackerFieldLocksToGameStatePatch,
+  characterTrackerLockPrefix,
+  customTrackerFieldLockPrefix,
+  generationParametersSchema,
+  normalizeInventoryTrackerRows,
+  normalizeTrackerFieldLocksForState,
+  extractCharacterCardCastMembers,
+  normalizeTextForMatch,
+  type CharacterCardCastSource,
+  normalizeSummaryTailMessages,
+  normalizeWorldCustomFields,
+  isTrackerRowsUpdate,
+  isNamedTrackerRow,
+  normalizeThinkingTagPairs,
+  parseTrackerFieldLocks,
+  parseTrackerHiddenFields,
+  resolveMacros,
+  resolveTrackerRowsUpdate,
+  roleplayInventoryTrackerRowLockPrefix,
+  resolveChatPersonaCandidate,
+  unwrapConversationInstructions,
+  wrapConversationInstructions,
+  type CharacterStat,
+  type GameState,
+  type GenerationParameterSendMap,
+  type GenerationParameters,
+  type InventoryTrackerRow,
+  type InventoryTrackerGroup,
+  type MacroContext,
+  type PlayerStats,
+  type WrapFormat,
+} from "@marinara-engine/shared";
+import { wrapContent } from "../../services/prompt/format-engine.js";
+import { isPromptCacheBoundary } from "../../services/prompt/merger.js";
+import { parseStoredRulesetLive } from "../../services/storage/game-state.storage.js";
+import {
+  appendReadableAttachmentsToContent,
+  extractFileAttachmentInputs,
+  extractImageAttachmentDataUrls,
+  parseExtra,
+  type PromptAttachment,
+} from "../../services/generation/prompt-attachments.js";
+
+export { resolveBaseUrl } from "../../services/generation/connection-base-url.js";
+export {
+  createLocalSidecarGenerationConnection,
+  type LocalSidecarGenerationConnection,
+} from "../../services/generation/local-sidecar-generation-connection.js";
+export {
+  resolveRoleplayChatSummary,
+  resolveRoleplayChatSummaryForPrompt,
+} from "../../services/generation/roleplay-summary-retrieval.js";
+export {
+  appendReadableAttachmentsToContent,
+  buildReadableAttachmentBlocks,
+  escapeXmlAttribute,
+  extractFileAttachmentInputs,
+  extractImageAttachmentDataUrls,
+  getAttachmentFilename,
+  parseExtra,
+  type PromptAttachment,
+} from "../../services/generation/prompt-attachments.js";
+
+export type SimpleMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+  images?: string[];
+  files?: Array<{ type: string; data: string; filename?: string }>;
+  contextKind?: "prompt" | "history" | "injection";
+  providerMetadata?: Record<string, unknown>;
+};
+export type SpeakerPrefixMessage = SimpleMessage & {
+  characterId?: string | null;
+  name?: string | null;
+  personaSnapshotName?: string | null;
+  providerMetadata?: Record<string, unknown>;
+};
+export type StoredGenerationParameters = Partial<GenerationParameters>;
+
+export function hasProviderMessagePayload(message: {
+  content: string;
+  images?: unknown[];
+  files?: unknown[];
+  providerMetadata?: Record<string, unknown>;
+  tool_calls?: unknown[];
+  tool_call_id?: string;
+}): boolean {
+  return (
+    !!message.content.trim() ||
+    !!message.images?.length ||
+    !!message.files?.length ||
+    Object.keys(message.providerMetadata ?? {}).length > 0 ||
+    !!message.tool_calls?.length ||
+    !!message.tool_call_id
+  );
+}
+
+/**
+ * Preserve the route-layer export while sharing the same Persona policy with
+ * the client: every mode requires an explicit chat Persona selection.
+ */
+export function resolveActivePersonaCandidate<T extends { id: string }>(
+  personas: readonly T[],
+  chatPersonaId: string | null | undefined,
+  chatMode: string | null | undefined,
+): T | null {
+  return resolveChatPersonaCandidate(personas, chatPersonaId, chatMode);
+}
+
+const PROMPT_WRAP_FORMATS = new Set<WrapFormat>(["xml", "markdown", "none"]);
+
+export function normalizePromptWrapFormat(value: unknown): WrapFormat {
+  return typeof value === "string" && PROMPT_WRAP_FORMATS.has(value as WrapFormat) ? (value as WrapFormat) : "xml";
+}
+
+export function formatConversationInstructionsForWrap(prompt: string, wrapFormat: WrapFormat): string {
+  const body = unwrapConversationInstructions(prompt);
+  if (wrapFormat === "xml") return wrapConversationInstructions(body);
+  if (!body.trim()) return "";
+  if (wrapFormat === "markdown") return `## Instructions\n${body}`;
+  return body;
+}
+export function buildGenerationGuideInstruction(
+  generationGuide: unknown,
+  promptMacroContext: MacroContext,
+): string | null {
+  const rawGenerationGuide = typeof generationGuide === "string" ? generationGuide.trim() : "";
+  if (!rawGenerationGuide) return null;
+
+  const normalizedGenerationGuide = resolveMacros(
+    rawGenerationGuide,
+    {
+      ...promptMacroContext,
+      variables: { ...promptMacroContext.variables },
+      localVariables: { ...promptMacroContext.localVariables },
+    },
+    { trimResult: false },
+  ).trim();
+
+  return normalizedGenerationGuide
+    ? `Take the following into special consideration for your next message: ${normalizedGenerationGuide}`
+    : null;
+}
+
+function createEmptyPlayerStats(): PlayerStats {
+  return { stats: [], attributes: null, skills: {}, inventory: [], activeQuests: [], status: "" };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function extractPatchRecord(patch: Record<string, unknown>, field: string): Record<string, unknown> | null {
+  const value = patch[field];
+  return isPlainRecord(value) ? value : null;
+}
+
+function extractPatchArray<T>(patch: Record<string, unknown>, field: string, fallback: T[]): T[] {
+  const value = patch[field];
+  return Array.isArray(value) ? (value as T[]) : fallback;
+}
+
+function extractPlayerStatsPatch(patch: Record<string, unknown>): Record<string, unknown> {
+  return extractPatchRecord(patch, "playerStats") ?? {};
+}
+
+function extractPlayerStatsPatchArray<T>(patch: Record<string, unknown>, field: keyof PlayerStats, fallback: T[]): T[] {
+  const value = extractPlayerStatsPatch(patch)[field];
+  return Array.isArray(value) ? (value as T[]) : fallback;
+}
+
+type PlayerStatsArrayField = {
+  [K in keyof PlayerStats]-?: NonNullable<PlayerStats[K]> extends unknown[] ? K : never;
+}[keyof PlayerStats];
+
+/** Resolve explicit item updates before the existing lock/persistence path. */
+export function resolveTrackerGroupUpdate(
+  value: unknown,
+  previous: readonly unknown[],
+  lockState: GameState | null | undefined,
+  group: InventoryTrackerGroup | "customTrackerFields" | "presentCharacters",
+) {
+  const locks = normalizeTrackerFieldLocksForState(lockState?.fieldLocks, lockState);
+  return resolveTrackerRowsUpdate(
+    value,
+    previous,
+    group === "presentCharacters" ? "characterId" : "name",
+    (row, index) => {
+      if (group === "customTrackerFields" && row.locked === true) return false;
+      const identity = {
+        name: typeof row.name === "string" ? row.name : "",
+        characterId: typeof row.characterId === "string" ? row.characterId : "",
+      };
+      const prefix =
+        group === "presentCharacters"
+          ? characterTrackerLockPrefix(identity, index)
+          : group === "customTrackerFields"
+            ? customTrackerFieldLockPrefix(identity, index)
+            : roleplayInventoryTrackerRowLockPrefix(group, identity, index);
+      return !Object.entries(locks).some(([key, locked]) => locked && key.startsWith(`${prefix}.`));
+    },
+  );
+}
+
+/** Keep explicit world removals through the client lock merge, without re-sending rejected removals. */
+export function buildWorldCustomFieldsStreamValue(source: unknown, previous: unknown, next: unknown) {
+  const fields = normalizeWorldCustomFields(next);
+  if (!isTrackerRowsUpdate(source)) return fields;
+  const names = new Set(fields.map((field) => field.name));
+  return {
+    updates: fields,
+    removed: normalizeWorldCustomFields(previous)
+      .filter((field) => !names.has(field.name))
+      .map((field) => field.name),
+  };
+}
+
+export function buildLockedPlayerStatsArrayPatch<T>({
+  field,
+  values,
+  snapshot,
+  lockState,
+  basePlayerStats,
+}: {
+  field: PlayerStatsArrayField;
+  values: T[];
+  snapshot: { playerStats?: unknown } | null | undefined;
+  lockState: GameState | null | undefined;
+  basePlayerStats?: PlayerStats;
+}) {
+  const existingPlayerStats = parseSnapshotPlayerStats(snapshot);
+  // Keep row positions until locks are merged, then discard nameless Custom Tracker rows.
+  const rawValues =
+    field === "customTrackerFields" ? values.map((row) => (isNamedTrackerRow(row) ? row : ({} as T))) : values;
+  const lockedPatch = applyTrackerFieldLocksToGameStatePatch({ playerStats: { [field]: rawValues } }, lockState);
+  const mergedValues = extractPlayerStatsPatchArray<T>(lockedPatch, field, rawValues);
+  const lockedValues = field === "customTrackerFields" ? mergedValues.filter(isNamedTrackerRow) : mergedValues;
+  const playerStats = { ...(basePlayerStats ?? existingPlayerStats), [field]: lockedValues };
+  const existingValues = existingPlayerStats[field];
+  const changed = !isDeepStrictEqual(lockedValues, Array.isArray(existingValues) ? existingValues : []);
+  const patch = {
+    playerStats: { [field]: lockedValues },
+  } as { playerStats: Partial<Record<PlayerStatsArrayField, T[]>> };
+  return { changed, patch, playerStats, values: lockedValues };
+}
+
+const INVENTORY_TRACKER_PLAYER_STATS_FIELDS = [
+  "inventoryTrackerCurrencies",
+  "inventoryTrackerEquipped",
+  "inventoryTrackerInventory",
+] as const;
+
+type InventoryTrackerPlayerStatsField = (typeof INVENTORY_TRACKER_PLAYER_STATS_FIELDS)[number];
+type InventoryTrackerPlayerStats = Pick<PlayerStats, InventoryTrackerPlayerStatsField>;
+
+function inventoryTrackerQuantityMap(
+  playerStats: InventoryTrackerPlayerStats,
+): Map<string, { name: string; quantity: number }> {
+  const quantities = new Map<string, { name: string; quantity: number }>();
+  for (const field of INVENTORY_TRACKER_PLAYER_STATS_FIELDS) {
+    for (const row of normalizeInventoryTrackerRows(playerStats[field])) {
+      const key = normalizeTextForMatch(row.name);
+      if (!key) continue;
+      const existing = quantities.get(key);
+      quantities.set(key, {
+        name: row.name,
+        quantity: (existing?.quantity ?? 0) + (row.qty ?? 1),
+      });
+    }
+  }
+  return quantities;
+}
+
+/** New owned quantities only; moving an item between tracker groups is not an acquisition. */
+export function findInventoryTrackerAcquisitions(
+  previousPlayerStats: InventoryTrackerPlayerStats,
+  nextPlayerStats: InventoryTrackerPlayerStats,
+): Array<{ name: string; quantity: number }> {
+  const previous = inventoryTrackerQuantityMap(previousPlayerStats);
+  const next = inventoryTrackerQuantityMap(nextPlayerStats);
+  const acquisitions: Array<{ name: string; quantity: number }> = [];
+  for (const [key, item] of next) {
+    const quantity = item.quantity - (previous.get(key)?.quantity ?? 0);
+    if (quantity > 0) acquisitions.push({ name: item.name, quantity });
+  }
+  return acquisitions;
+}
+
+// `clampInventoryTrackerQty` and `normalizeInventoryTrackerRows` now live in
+// `@marinara-engine/shared` so the hand-edit paths (tracker panel, HUD popover,
+// Agent Suite editor, chat game-state route) apply the same rules this route
+// already applied to agent output.
+
+export function buildLockedInventoryTrackerPatch({
+  data,
+  snapshot,
+  lockState,
+}: {
+  data: Record<string, unknown>;
+  snapshot: { playerStats?: unknown } | null | undefined;
+  lockState: GameState | null | undefined;
+}) {
+  const existingPlayerStats = parseSnapshotPlayerStats(snapshot);
+  const existingRows = (field: InventoryTrackerPlayerStatsField): InventoryTrackerRow[] => {
+    const rows = existingPlayerStats[field];
+    return Array.isArray(rows) ? (rows as InventoryTrackerRow[]) : [];
+  };
+
+  // Only a group the agent actually emitted may rewrite that group. Treating an
+  // absent key as an empty array wipes state the model simply did not mention
+  // this turn — the destructive absent-vs-empty failure mode from #2370/#2724.
+  const currencyUpdate = resolveTrackerGroupUpdate(
+    data.currencies,
+    existingRows("inventoryTrackerCurrencies"),
+    lockState,
+    "currencies",
+  );
+  const equippedUpdate = resolveTrackerGroupUpdate(
+    data.equipped,
+    existingRows("inventoryTrackerEquipped"),
+    lockState,
+    "equipped",
+  );
+  const inventoryUpdate = resolveTrackerGroupUpdate(
+    data.inventory,
+    existingRows("inventoryTrackerInventory"),
+    lockState,
+    "inventory",
+  );
+  const emittedCurrencies = currencyUpdate !== undefined;
+  const emittedEquipped = equippedUpdate !== undefined;
+  const emittedInventory = inventoryUpdate !== undefined;
+
+  const currencies = emittedCurrencies
+    ? normalizeInventoryTrackerRows(currencyUpdate)
+    : existingRows("inventoryTrackerCurrencies");
+  const equipped = emittedEquipped
+    ? normalizeInventoryTrackerRows(equippedUpdate)
+    : existingRows("inventoryTrackerEquipped");
+  const carried = emittedInventory
+    ? normalizeInventoryTrackerRows(inventoryUpdate)
+    : existingRows("inventoryTrackerInventory");
+
+  const excludedNames = new Set([...currencies, ...equipped].map((row) => normalizeTextForMatch(row.name)));
+  const inventory = carried.filter((row) => !excludedNames.has(normalizeTextForMatch(row.name)));
+
+  const rawPlayerStatsPatch: Partial<Record<InventoryTrackerPlayerStatsField, InventoryTrackerRow[]>> = {};
+  if (emittedCurrencies) rawPlayerStatsPatch.inventoryTrackerCurrencies = currencies;
+  if (emittedEquipped) rawPlayerStatsPatch.inventoryTrackerEquipped = equipped;
+  // Equipping an item has to drop it from a carried list the agent did not
+  // resend, so write the carried group when exclusivity actually changed it too.
+  if (emittedInventory || !isDeepStrictEqual(inventory, carried)) {
+    rawPlayerStatsPatch.inventoryTrackerInventory = inventory;
+  }
+
+  if (Object.keys(rawPlayerStatsPatch).length === 0) {
+    return { changed: false, patch: { playerStats: {} }, playerStats: existingPlayerStats, values: {} };
+  }
+
+  const lockedPatch = applyTrackerFieldLocksToGameStatePatch({ playerStats: rawPlayerStatsPatch }, lockState);
+  const lockedPlayerStatsPatch = extractPlayerStatsPatch(lockedPatch);
+  const values: Partial<Record<InventoryTrackerPlayerStatsField, InventoryTrackerRow[]>> = {};
+  for (const field of INVENTORY_TRACKER_PLAYER_STATS_FIELDS) {
+    const locked = lockedPlayerStatsPatch[field];
+    if (Array.isArray(locked)) values[field] = locked as InventoryTrackerRow[];
+    else if (rawPlayerStatsPatch[field]) values[field] = rawPlayerStatsPatch[field];
+  }
+
+  const changed = Object.entries(values).some(([field, rows]) => {
+    const existing = existingPlayerStats[field as keyof PlayerStats];
+    return !isDeepStrictEqual(rows, Array.isArray(existing) ? existing : []);
+  });
+  return {
+    changed,
+    patch: { playerStats: values },
+    playerStats: { ...existingPlayerStats, ...values },
+    values,
+  };
+}
+
+function parseSnapshotPersonaStats(snapshot: { personaStats?: unknown } | null | undefined): CharacterStat[] {
+  const raw = snapshot?.personaStats;
+  if (!raw) return [];
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return Array.isArray(parsed) ? (parsed as CharacterStat[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function buildLockedPersonaTrackerPatch({
+  stats,
+  status,
+  hasStats,
+  hasStatus,
+  snapshot,
+  lockState,
+}: {
+  stats: CharacterStat[];
+  status: string;
+  hasStats?: boolean;
+  hasStatus?: boolean;
+  snapshot: { personaStats?: unknown; playerStats?: unknown } | null | undefined;
+  lockState: GameState | null | undefined;
+}) {
+  const rawPatch: Record<string, unknown> = {};
+  if (hasStats ?? stats.length > 0) rawPatch.personaStats = stats;
+
+  const rawPlayerStatsPatch: Record<string, unknown> = {};
+  if (hasStatus ?? !!status) rawPlayerStatsPatch.status = status;
+  if (Object.keys(rawPlayerStatsPatch).length > 0) rawPatch.playerStats = rawPlayerStatsPatch;
+
+  const patch = applyTrackerFieldLocksToGameStatePatch(rawPatch, lockState);
+  const updates: Record<string, string> = {};
+  const existingPersonaStats = parseSnapshotPersonaStats(snapshot);
+  const existingPlayerStats = parseSnapshotPlayerStats(snapshot);
+
+  const lockedPersonaStats = extractPatchArray<CharacterStat>(patch, "personaStats", []);
+  const personaStatsChanged =
+    Array.isArray(patch.personaStats) && !isDeepStrictEqual(lockedPersonaStats, existingPersonaStats);
+  if (personaStatsChanged) updates.personaStats = JSON.stringify(lockedPersonaStats);
+
+  const lockedPlayerStatsPatch = extractPlayerStatsPatch(patch);
+  const playerStats = { ...existingPlayerStats };
+  let hasPlayerStatsPatch = false;
+  if (Object.prototype.hasOwnProperty.call(lockedPlayerStatsPatch, "status")) {
+    playerStats.status = typeof lockedPlayerStatsPatch.status === "string" ? lockedPlayerStatsPatch.status : "";
+    hasPlayerStatsPatch = true;
+  }
+  const playerStatsChanged = hasPlayerStatsPatch && !isDeepStrictEqual(playerStats, existingPlayerStats);
+  if (playerStatsChanged) updates.playerStats = JSON.stringify(playerStats);
+
+  return {
+    changed: personaStatsChanged || playerStatsChanged,
+    patch,
+    updates,
+  };
+}
+
+export function parseSnapshotPlayerStats(snapshot: { playerStats?: unknown } | null | undefined): PlayerStats {
+  const raw = snapshot?.playerStats;
+  if (!raw) return createEmptyPlayerStats();
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return isPlainRecord(parsed) ? (parsed as unknown as PlayerStats) : createEmptyPlayerStats();
+  } catch {
+    return createEmptyPlayerStats();
+  }
+}
+
+export function shouldAbortOnPassiveGenerationDisconnect(args: { impersonate?: boolean }): boolean {
+  // Once admitted, every generation path persists its accepted result on the
+  // server. A lost SSE consumer is passive; only the explicit abort route may
+  // cancel the provider work, including impersonation turns.
+  void args;
+  return false;
+}
+
+export function resolveProviderTopK(topK: number): number | undefined {
+  const normalized = Number.isFinite(topK) ? Math.max(0, Math.trunc(topK)) : 0;
+  return normalized > 0 ? normalized : undefined;
+}
+
+export function normalizeServiceTier(value: unknown): "flex" | "priority" | null {
+  return value === "flex" || value === "priority" ? value : null;
+}
+
+export function mergeCustomParameters(
+  base: Record<string, unknown> | null | undefined,
+  next: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(base ?? {})) {
+    if (!isUnsafeCustomParameterKey(key)) merged[key] = value;
+  }
+  if (!next) return merged;
+  for (const [key, value] of Object.entries(next)) {
+    if (isUnsafeCustomParameterKey(key)) continue;
+    if (value === undefined) continue;
+    const current = merged[key];
+    if (isPlainRecord(current) && isPlainRecord(value)) {
+      merged[key] = mergeCustomParameters(current, value);
+    } else {
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
+
+function isUnsafeCustomParameterKey(key: string): boolean {
+  return key === "__proto__" || key === "constructor" || key === "prototype";
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const trimmed = item.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized;
+}
+
+export function resolveKnowledgeSourceLorebookIds(args: {
+  settings: Record<string, unknown> | null | undefined;
+  chatActiveLorebookIds: unknown;
+}): { sourceLorebookIds: string[]; source: "manual" | "chat_active" | "none" } {
+  const manualIds = normalizeStringArray(args.settings?.sourceLorebookIds);
+  if (manualIds.length > 0) {
+    return { sourceLorebookIds: manualIds, source: "manual" };
+  }
+
+  if (args.settings?.useChatActiveLorebooks === false) {
+    return { sourceLorebookIds: [], source: "none" };
+  }
+
+  const chatActiveIds = normalizeStringArray(args.chatActiveLorebookIds);
+  return {
+    sourceLorebookIds: chatActiveIds,
+    source: chatActiveIds.length > 0 ? "chat_active" : "none",
+  };
+}
+
+/** Find last message index matching a role (or predicate). Returns -1 if not found. */
+export function findLastIndex(messages: SimpleMessage[], role: string): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]!.role === role) return i;
+  }
+  return -1;
+}
+
+function isLastMessagePromptBlock(content: unknown): boolean {
+  if (typeof content !== "string") return false;
+  const trimmed = content.trim();
+  const lowerContent = trimmed.toLowerCase();
+  if (lowerContent.startsWith("<last_message>") || lowerContent.endsWith("</last_message>")) return true;
+  const firstNewline = trimmed.indexOf("\n");
+  return isLastMessageHeadingLine(firstNewline >= 0 ? trimmed.slice(0, firstNewline) : trimmed);
+}
+
+function isLastMessageHeadingLine(line: string): boolean {
+  const heading = line.trim();
+  if (!heading.startsWith("##") || !/\s/u.test(heading[2] ?? "")) return false;
+  return heading.slice(2).trim().toLowerCase() === "last message";
+}
+
+function stripBoundaryLastMessageWrapper(content: string): string {
+  let stripped = content.trim();
+  if (stripped.toLowerCase().startsWith("<last_message>")) {
+    stripped = stripped.slice("<last_message>".length).trimStart();
+  }
+  if (stripped.toLowerCase().endsWith("</last_message>")) {
+    stripped = stripped.slice(0, -"</last_message>".length).trimEnd();
+  }
+  const firstNewline = stripped.indexOf("\n");
+  const firstLine = firstNewline >= 0 ? stripped.slice(0, firstNewline) : stripped;
+  if (isLastMessageHeadingLine(firstLine)) {
+    stripped = firstNewline >= 0 ? stripped.slice(firstNewline + 1) : "";
+  }
+  return stripped.trim();
+}
+
+function hasBoundaryChatHistoryClose(content: string): boolean {
+  const trimmed = content.trimEnd();
+  const closingTag = "</chat_history>";
+  return trimmed.slice(-closingTag.length).toLowerCase() === closingTag;
+}
+
+function stripBoundaryChatHistoryClose(content: string): string {
+  const trimmed = content.trimEnd();
+  const closingTag = "</chat_history>";
+  return trimmed.slice(-closingTag.length).toLowerCase() === closingTag
+    ? trimmed.slice(0, -closingTag.length).trimEnd()
+    : trimmed;
+}
+
+function appendBoundaryChatHistoryClose(content: string): string {
+  return `${content.trimEnd()}\n</chat_history>`;
+}
+
+export function dedupeLastMessageWrappers<T extends { content: string }>(messages: T[]): void {
+  const lastMessageIndexes: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    if (isLastMessagePromptBlock(messages[i]!.content)) {
+      lastMessageIndexes.push(i);
+    }
+  }
+  if (lastMessageIndexes.length <= 1) return;
+
+  const keepIndex = lastMessageIndexes[lastMessageIndexes.length - 1]!;
+  for (const index of lastMessageIndexes) {
+    if (index === keepIndex) continue;
+    let content = stripBoundaryLastMessageWrapper(messages[index]!.content);
+    const previousMessage = messages[index - 1];
+    if (previousMessage && hasBoundaryChatHistoryClose(previousMessage.content)) {
+      messages[index - 1] = {
+        ...previousMessage,
+        content: stripBoundaryChatHistoryClose(previousMessage.content),
+      };
+      content = appendBoundaryChatHistoryClose(content);
+    }
+    messages[index] = {
+      ...messages[index]!,
+      content,
+    };
+  }
+}
+
+/** Tracker context is injected outside chat history, directly before the latest history/last-message block. */
+export function findTrackerContextInsertIndex(
+  messages: Array<{ role: "system" | "user" | "assistant"; content?: string; contextKind?: string }>,
+): number {
+  let latestHistoryIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]!.contextKind === "history") {
+      latestHistoryIndex = i;
+      break;
+    }
+  }
+
+  let latestLastMessageBlockIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (isLastMessagePromptBlock(messages[i]!.content)) {
+      latestLastMessageBlockIndex = i;
+      break;
+    }
+  }
+
+  if (latestLastMessageBlockIndex >= 0 && latestLastMessageBlockIndex > latestHistoryIndex) {
+    return latestLastMessageBlockIndex;
+  }
+  if (latestHistoryIndex >= 0) {
+    return latestHistoryIndex;
+  }
+  if (latestLastMessageBlockIndex >= 0) {
+    return latestLastMessageBlockIndex;
+  }
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]!.role === "user") return i;
+  }
+
+  return messages.length;
+}
+
+type PromptRoleMessage = ChatMessage & {
+  id?: string | null;
+  characterId?: string | null;
+};
+
+function clonePromptRoleMessage<T extends PromptRoleMessage>(message: T): T {
+  return {
+    ...message,
+    ...(message.images ? { images: [...message.images] } : {}),
+    ...(message.files ? { files: message.files.map((file) => ({ ...file })) } : {}),
+    ...(message.media ? { media: message.media.map((media) => ({ ...media })) } : {}),
+    ...(message.providerMetadata ? { providerMetadata: { ...message.providerMetadata } } : {}),
+  };
+}
+
+function appendPromptMessageContent(target: PromptRoleMessage, source: PromptRoleMessage) {
+  target.content = `${target.content}\n\n${source.content}`;
+  if (target.contextKind !== source.contextKind) {
+    delete target.contextKind;
+  }
+  if (source.images?.length) {
+    target.images = [...(target.images ?? []), ...source.images];
+  }
+  if (source.files?.length) {
+    target.files = [...(target.files ?? []), ...source.files.map((file) => ({ ...file }))];
+  }
+  if (source.media?.length) target.media = [...(target.media ?? []), ...source.media];
+  if (source.providerMetadata) {
+    target.providerMetadata = {
+      ...(target.providerMetadata ?? {}),
+      ...source.providerMetadata,
+    };
+  }
+}
+
+/**
+ * Provider-safe role normalization for strict prompt presets.
+ *
+ * System blocks before chat history stay as provider system messages. Once
+ * conversation turns have started, later system blocks are appended to the
+ * latest user message so the request remains system/user/assistant/user...
+ * without making post-history preset sections removable during context fitting.
+ * History-context system messages are already positioned in the transcript, so
+ * they become user messages in place instead of moving to the latest user turn.
+ * Depth injections follow the same rule because they are also inserted at an
+ * exact history position.
+ */
+export function appendNonLeadingSystemMessagesToLastUser<T extends PromptRoleMessage>(messages: T[]): T[] {
+  const result: T[] = [];
+  let pastLeadingSystem = false;
+  let lastUserIndex = -1;
+
+  for (const message of messages) {
+    const cloned = clonePromptRoleMessage(message);
+    if (!pastLeadingSystem) {
+      if (cloned.role !== "system") pastLeadingSystem = true;
+      result.push(cloned);
+      if (cloned.role === "user") lastUserIndex = result.length - 1;
+      continue;
+    }
+
+    if (cloned.role === "system" && !isPromptCacheBoundary(cloned)) {
+      const converted = { ...cloned, role: "user" as const };
+      if (cloned.contextKind === "history" || cloned.contextKind === "injection") {
+        result.push(converted as T);
+        lastUserIndex = result.length - 1;
+        continue;
+      }
+      if (lastUserIndex >= 0) {
+        appendPromptMessageContent(result[lastUserIndex]!, converted);
+      } else {
+        result.push(converted as T);
+        lastUserIndex = result.length - 1;
+      }
+      continue;
+    }
+
+    result.push(cloned);
+    if (cloned.role === "user") lastUserIndex = result.length - 1;
+  }
+
+  return result;
+}
+
+/** Format only audience-filtered, context-fitted messages, preserving live tool exchanges. */
+export function postProcessMessages(
+  messages: ChatMessage[],
+  parameters: Pick<StoredGenerationParameters, "strictRoleFormatting" | "singleUserMessage"> = {},
+): ChatMessage[] {
+  const single = parameters.singleUserMessage === true;
+  const apply = parameters.strictRoleFormatting !== false && !single;
+  const source = apply ? appendNonLeadingSystemMessagesToLastUser(messages) : messages;
+  const result: ChatMessage[] = [];
+  let leadingSystem = true;
+  for (const original of source) {
+    if (!hasProviderMessagePayload(original) && !original.media?.length) continue;
+    const message = clonePromptRoleMessage(original);
+    if (message.role !== "system") leadingSystem = false;
+    const protocolMessage = message.role === "tool" || !!message.tool_calls?.length;
+    if (single && !leadingSystem && !protocolMessage) {
+      message.content = `[${message.role.toUpperCase()}]\n${message.content}`;
+      message.role = "user";
+      // Provider reasoning signatures belong to assistant turns, not a user transcript.
+      delete message.providerMetadata;
+    }
+    const previous = result.at(-1);
+    const canMerge =
+      previous &&
+      previous.role === message.role &&
+      !protocolMessage &&
+      !previous.tool_calls?.length &&
+      !isPromptCacheBoundary(previous) &&
+      !isPromptCacheBoundary(message) &&
+      !(message.role === "assistant" && (previous.providerMetadata || message.providerMetadata));
+    if (canMerge && (leadingSystem || apply || single)) {
+      appendPromptMessageContent(previous, message);
+    } else {
+      result.push(message);
+    }
+  }
+  return result;
+}
+/**
+ * Put the exact current history-user turn after injected Game guidance while
+ * preserving an optional trailing assistant prefill.
+ *
+ * The message id is required deliberately: depth-zero card/lore injections can
+ * also use the user role, so a generic "last user" move can select prompt text
+ * instead of the player's real turn.
+ */
+export function moveUserHistoryMessageToPromptTail<T extends PromptRoleMessage>(
+  messages: T[],
+  messageId: string,
+  options: { beforeTrailingAssistant?: boolean } = {},
+): boolean {
+  const sourceIndex = messages.findIndex(
+    (message) => message.id === messageId && message.role === "user" && message.contextKind === "history",
+  );
+  if (sourceIndex < 0) return false;
+
+  const [currentUserMessage] = messages.splice(sourceIndex, 1);
+  if (!currentUserMessage) return false;
+
+  let targetIndex = messages.length;
+  if (options.beforeTrailingAssistant && messages[targetIndex - 1]?.role === "assistant") {
+    targetIndex -= 1;
+  }
+  messages.splice(targetIndex, 0, currentUserMessage);
+  return true;
+}
+
+export function isMessageHiddenFromAI(message: { extra?: unknown }): boolean {
+  return parseExtra(message.extra).hiddenFromAI === true;
+}
+
+export function getMessageHiddenFromAICharacterIds(message: { extra?: unknown }): string[] {
+  const value = parseExtra(message.extra).hiddenFromAICharacterIds;
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+export function getMessageConversationStartCharacterIds(message: { extra?: unknown }): string[] {
+  const value = parseExtra(message.extra).conversationStartForCharacterIds;
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+export function isMessageHiddenFromAIForCharacter(
+  message: { extra?: unknown },
+  characterId: string | null | undefined,
+): boolean {
+  if (isMessageHiddenFromAI(message)) return true;
+  return typeof characterId === "string" && getMessageHiddenFromAICharacterIds(message).includes(characterId);
+}
+
+export function isRoleplaySummaryMode(chatMode: string): boolean {
+  return chatMode === "roleplay";
+}
+
+/**
+ * Resolve the roleplay summary tail (how many recent messages stay visible when
+ * the auto-summary hides the rest) from the chat's `summaryTailMessages` value.
+ * `DEFAULT` only when the value is genuinely unset; an explicit `MIN` (0) means
+ * "hide the whole batch". A present-but-invalid value (NaN, negative) fails
+ * closed to `MIN` so corrupt metadata hides more rather than silently leaking
+ * extra context. There is intentionally no upper cap.
+ */
+export function resolveRoleplaySummaryTail(value: unknown): number {
+  return normalizeSummaryTailMessages(value);
+}
+
+/**
+ * Compute which summarized message IDs the roleplay rolling summary should hide,
+ * protecting the most-recent `tail` *visible* messages so recent context stays
+ * in the prompt. Pure: `messages` must be chat-ordered (ascending). Returns the
+ * subset of `entryMessageIds` that is not in the protected tail.
+ */
+export function computeSummaryHideIds(args: {
+  messages: Array<{ id: string; extra?: unknown }>;
+  entryMessageIds: string[];
+  tail: number;
+}): string[] {
+  const { messages, entryMessageIds, tail } = args;
+  if (entryMessageIds.length === 0) return [];
+  const { MIN } = SUMMARY_TAIL_MESSAGES;
+  const clampedTail = Number.isFinite(tail) ? Math.max(MIN, Math.floor(tail)) : MIN;
+  const visible = messages.filter((message) => !isMessageHiddenFromAI(message));
+  const tailIdSet = new Set(clampedTail > 0 ? visible.slice(-clampedTail).map((message) => message.id) : []);
+  const entryIdSet = new Set(entryMessageIds);
+  return messages
+    .filter((message) => entryIdSet.has(message.id) && !tailIdSet.has(message.id))
+    .map((message) => message.id);
+}
+
+/** Return the one-based range covered by selected messages in the full chat order. */
+export function computeSummaryMessageRange(
+  allMessages: readonly { id: string }[],
+  selectedMessages: readonly { id: string }[],
+): { startIndex: number; endIndex: number } | null {
+  const messageIndexes = new Map(allMessages.map((message, index) => [message.id, index + 1]));
+  const selectedIndexes = selectedMessages
+    .map((message) => messageIndexes.get(message.id))
+    .filter((index): index is number => index !== undefined);
+  if (selectedIndexes.length === 0) return null;
+  return {
+    startIndex: Math.min(...selectedIndexes),
+    endIndex: Math.max(...selectedIndexes),
+  };
+}
+
+/**
+ * Select the messages a non-range rolling summary should cover. Normally the most
+ * recent `contextSize` *visible* messages (the historical `visible.slice(-contextSize)`
+ * behavior). When a previous summary has already hidden earlier messages, the window is
+ * extended back to that summary's hidden boundary, so a protected tail that has drifted
+ * beyond the last `contextSize` visible messages is re-summarized and hidden on this run
+ * instead of staying visible forever and accumulating (#2879). Because each entry's hide
+ * window is `entryMessageIds` minus the tail, the LLM-facing batch and the hide set share
+ * this selection; extending it is what lets a stranded tail be reclaimed.
+ *
+ * The boundary is identified ONLY by messages a live summary entry actually summarized
+ * (its `messageIds` / `hiddenMessageIds`) — NOT by the bare `hiddenFromAI` flag. That
+ * flag is ambiguous: the user's manual "Hide from AI" toggle writes the same flag, so
+ * keying off it would let a stray manual hide on an early message be misread as a summary
+ * boundary and balloon the window to (nearly) the whole chat. With no summary-owned
+ * hidden message before the window (e.g. the first summary, or only manual hides), the
+ * plain last-`size` window is used. Pure: `messages` must be chat-ordered (ascending).
+ */
+export function selectRollingSummaryMessages<T extends { id: string; extra?: unknown }>(args: {
+  messages: T[];
+  contextSize: number;
+  summaryEntries?: ReadonlyArray<{ enabled?: boolean; hiddenMessageIds?: string[]; messageIds?: string[] }>;
+}): T[] {
+  const { messages, contextSize } = args;
+  const size = Number.isFinite(contextSize) ? Math.max(0, Math.floor(contextSize)) : 0;
+  if (size <= 0) return [];
+  const visible = messages.filter((message) => !isMessageHiddenFromAI(message));
+  // Fewer visible messages than the window — nothing can have drifted out of it.
+  if (visible.length <= size) return visible;
+  // Ids owned by a live (enabled) summary entry — what it summarized. A manual "Hide from
+  // AI" never appears here, so it can't be mistaken for a boundary. We include both
+  // `hiddenMessageIds` and `messageIds` so entries created before `hiddenMessageIds`
+  // existed (see ChatSummaryEntry) still anchor a boundary; the hidden check in the scan
+  // keeps the protected tail (also in `messageIds`, but visible) from being chosen.
+  const summaryOwned = new Set<string>();
+  for (const entry of Array.isArray(args.summaryEntries) ? args.summaryEntries : []) {
+    if (entry?.enabled === false) continue;
+    for (const id of Array.isArray(entry?.hiddenMessageIds) ? entry.hiddenMessageIds : []) summaryOwned.add(id);
+    for (const id of Array.isArray(entry?.messageIds) ? entry.messageIds : []) summaryOwned.add(id);
+  }
+  if (summaryOwned.size === 0) return visible.slice(-size);
+  // The previous summary's boundary: the most recent hidden message owned by a summary.
+  let lastBoundaryIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (isMessageHiddenFromAI(messages[i]!) && summaryOwned.has(messages[i]!.id)) {
+      lastBoundaryIndex = i;
+      break;
+    }
+  }
+  // No summary-hidden message precedes the window — keep the plain last-`size` window.
+  if (lastBoundaryIndex < 0) return visible.slice(-size);
+  // Visible messages accumulated since that boundary. Extend the window to cover all of
+  // them when they exceed `size`, pulling a drifted protected tail back into the batch.
+  const sinceBoundary = messages
+    .slice(lastBoundaryIndex + 1)
+    .filter((message) => !isMessageHiddenFromAI(message)).length;
+  return visible.slice(-Math.max(size, sinceBoundary));
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export interface CharacterIdentity {
+  name: string;
+  nameAliases: string[];
+}
+
+function readCharacterIdentity(data: unknown): CharacterIdentity | null {
+  try {
+    const parsed = typeof data === "string" ? JSON.parse(data) : data;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const name = (parsed as { name?: unknown }).name;
+    if (typeof name !== "string" || !name.trim()) return null;
+    const aliases = (parsed as { extensions?: { nameAliases?: unknown } | null }).extensions?.nameAliases;
+    return {
+      name: name.trim(),
+      nameAliases: Array.isArray(aliases)
+        ? aliases
+            .filter((alias): alias is string => typeof alias === "string" && !!alias.trim())
+            .map((alias) => alias.trim())
+        : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Supply the chat's full character list to include disabled members without reading unrelated cards. */
+export async function resolveCharacterIdentityMap(
+  characterIds: string[],
+  getCharacterById: (id: string) => Promise<{ data?: unknown } | null | undefined>,
+): Promise<Map<string, CharacterIdentity>> {
+  const entries = await Promise.all(
+    characterIds.map(async (id) => {
+      const row = await getCharacterById(id);
+      const identity = readCharacterIdentity(row?.data);
+      return identity ? ([id, identity] as const) : null;
+    }),
+  );
+
+  return new Map(entries.filter((entry): entry is readonly [string, CharacterIdentity] => !!entry));
+}
+
+export async function resolveCharacterNameMap(
+  characterIds: string[],
+  getCharacterById: (id: string) => Promise<{ data?: unknown } | null | undefined>,
+): Promise<Map<string, string>> {
+  const identities = await resolveCharacterIdentityMap(characterIds, getCharacterById);
+  return new Map([...identities].map(([id, identity]) => [id, identity.name]));
+}
+
+function prefixSpeakerName(content: string, speakerName: string): string {
+  const speaker = speakerName.trim();
+  if (!speaker) return content;
+  const trimmed = content.trim();
+  const alreadyPrefixed = new RegExp(`^${escapeRegex(speaker)}\\s*:`, "i").test(trimmed);
+  if (alreadyPrefixed) return trimmed;
+  return trimmed ? `${speaker}: ${trimmed}` : `${speaker}:`;
+}
+
+export function readPersonaSnapshotName(extra: unknown): string | null {
+  const snapshot = parseExtra(extra).personaSnapshot;
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
+  const name = (snapshot as { name?: unknown }).name;
+  return typeof name === "string" && name.trim() ? name.trim() : null;
+}
+
+export function prefixGroupIndividualHistorySpeakers<T extends SpeakerPrefixMessage>(
+  messages: T[],
+  options: {
+    personaName: string;
+    characterNamesById: ReadonlyMap<string, string>;
+  },
+): T[] {
+  const personaName = options.personaName.trim() || "User";
+
+  return messages.map((message) => {
+    let speakerName: string | null = null;
+    if (message.role === "user") {
+      speakerName = message.personaSnapshotName?.trim() || personaName;
+    } else if (message.role === "assistant") {
+      speakerName =
+        (message.characterId ? (options.characterNamesById.get(message.characterId) ?? null) : null) ??
+        (typeof message.name === "string" && message.name.trim() ? message.name.trim() : null);
+    }
+
+    if (!speakerName) return message;
+    const content = prefixSpeakerName(message.content, speakerName);
+    return content === message.content ? message : { ...message, content };
+  });
+}
+
+export function canUseMessageForUserRegeneration(input: {
+  message: { role?: unknown; extra?: unknown };
+  supportsHiddenFromAI: boolean;
+}): boolean {
+  return !(input.message.role === "user" && input.supportsHiddenFromAI && isMessageHiddenFromAI(input.message));
+}
+
+function parsePromptAttachments(extra: unknown): PromptAttachment[] | undefined {
+  const rawAttachments = parseExtra(extra).attachments;
+  if (!Array.isArray(rawAttachments)) return undefined;
+  const attachments = rawAttachments.filter(isPromptAttachment);
+  return attachments.length ? attachments : undefined;
+}
+
+export function resolveUserRegenerationPersistentAttachments(message: {
+  role?: unknown;
+  extra?: unknown;
+}): PromptAttachment[] | undefined {
+  if (message.role !== "user") return undefined;
+  return parsePromptAttachments(message.extra);
+}
+
+function isPromptAttachment(value: unknown): value is PromptAttachment {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Build the instruction used when regenerating a user-authored message as a swipe.
+ * The original user text and readable attachments are wrapped in
+ * <original_user_message> tags so downstream generation can return only
+ * replacement user-message text.
+ */
+export function buildUserMessageRegenerationInstruction(message: { content?: unknown; extra?: unknown }): string {
+  const original = typeof message.content === "string" ? message.content.trim() : "";
+  const attachments = parsePromptAttachments(message.extra);
+  const originalWithAttachments = appendReadableAttachmentsToContent(original, attachments);
+  return [
+    "Regenerate the user's previous message as an alternate swipe.",
+    "Write only the replacement user message text.",
+    "Do not answer as the assistant, continue the assistant side, or describe what the assistant does next.",
+    "",
+    "<original_user_message>",
+    originalWithAttachments,
+    "</original_user_message>",
+  ].join("\n");
+}
+
+export function buildUserMessageRegenerationPrompt(message: { content?: unknown; extra?: unknown }): SimpleMessage {
+  const attachments = parsePromptAttachments(message.extra);
+  const images = extractImageAttachmentDataUrls(attachments);
+  const files = extractFileAttachmentInputs(attachments);
+  return {
+    role: "user",
+    content: buildUserMessageRegenerationInstruction(message),
+    ...(images.length ? { images } : {}),
+    ...(files.length ? { files } : {}),
+  };
+}
+
+export function buildUserMessageRegenerationPromptFromSource(source: SimpleMessage): SimpleMessage {
+  return {
+    role: "user",
+    content: buildUserMessageRegenerationInstruction({ content: source.content }),
+    ...(source.images?.length ? { images: source.images } : {}),
+    ...(source.files?.length ? { files: source.files } : {}),
+  };
+}
+
+/**
+ * Build the context-facing version of a user message being regenerated.
+ * This preserves the original user text and attachments for prompt shaping
+ * without adding the provider-facing rewrite instruction.
+ */
+export function buildUserMessageRegenerationSourceMessage(message: {
+  content?: unknown;
+  extra?: unknown;
+}): SimpleMessage {
+  const original = typeof message.content === "string" ? message.content : "";
+  const attachments = parsePromptAttachments(message.extra);
+  const content = appendReadableAttachmentsToContent(original, attachments);
+  const images = extractImageAttachmentDataUrls(attachments);
+  const files = extractFileAttachmentInputs(attachments);
+  return {
+    role: "user",
+    content,
+    ...(images.length ? { images } : {}),
+    ...(files.length ? { files } : {}),
+  };
+}
+
+export function appendGenerationTailMessages(
+  messages: SimpleMessage[],
+  options: {
+    assistantPrefill: string;
+    assistantReasoningPrefill: string;
+    supportsAssistantReasoningPrefill: boolean;
+    followUpIteration: number;
+    impersonate: boolean;
+    isGoogleProvider: boolean;
+    regenerateUserMessage: SimpleMessage | null;
+  },
+): { assistantPrefillInjected: boolean; googleUserRegenerationInjected: boolean } {
+  if (options.followUpIteration !== 0) {
+    return { assistantPrefillInjected: false, googleUserRegenerationInjected: false };
+  }
+
+  const shouldAppendGoogleUserRegeneration =
+    !options.impersonate && options.isGoogleProvider && !!options.regenerateUserMessage;
+  const assistantPrefill = options.assistantPrefill.trim();
+  const shouldAppendAssistantPrefill = !options.impersonate && !!assistantPrefill;
+  const assistantReasoningPrefill = options.assistantReasoningPrefill.trim();
+  const shouldAppendReasoningPrefill =
+    !options.impersonate && options.supportsAssistantReasoningPrefill && !!assistantReasoningPrefill;
+  const shouldAppendAssistantMessage =
+    !options.impersonate && (shouldAppendAssistantPrefill || shouldAppendReasoningPrefill);
+
+  if (shouldAppendAssistantMessage) {
+    // Strip the trailing edge: Anthropic's Messages API rejects a final assistant
+    // message ending in whitespace (HTTP 400), which surfaces to users as a refusal.
+    // A prefill ending in "\n" or a space is common. The user-facing prefill is
+    // rendered separately, so only what is sent to the API is trimmed.
+    messages.push({
+      role: "assistant",
+      content: shouldAppendAssistantPrefill ? options.assistantPrefill.trimEnd() : "",
+      ...(shouldAppendReasoningPrefill
+        ? {
+            providerMetadata: {
+              reasoning_content: options.assistantReasoningPrefill.trimEnd(),
+              partial: true,
+            },
+          }
+        : {}),
+    });
+  }
+
+  if (shouldAppendGoogleUserRegeneration) {
+    messages.push(options.regenerateUserMessage!);
+  }
+
+  return {
+    assistantPrefillInjected: shouldAppendAssistantPrefill,
+    googleUserRegenerationInjected: shouldAppendGoogleUserRegeneration,
+  };
+}
+
+export function resolveActiveCharacterIds(
+  characterIds: string[],
+  metadata: Record<string, unknown>,
+  options: { mode?: string; allowEmpty?: boolean } = {},
+): string[] {
+  if (options.mode === "game") return characterIds;
+
+  const inactiveIds = Array.isArray(metadata.inactiveCharacterIds)
+    ? new Set(metadata.inactiveCharacterIds.filter((id): id is string => typeof id === "string"))
+    : new Set<string>();
+  const activeIds = characterIds.filter((id) => !inactiveIds.has(id));
+
+  if (activeIds.length > 0 || options.allowEmpty) return activeIds;
+  return characterIds;
+}
+
+export function resolveCharacterActivityUpdate(
+  data: unknown,
+  chatCharacterIds: string[],
+): { activeCharacterIds: string[]; inactiveCharacterIds: string[] } | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const requestedIds = (data as Record<string, unknown>).activeCharacterIds;
+  if (!Array.isArray(requestedIds) || requestedIds.length === 0) return null;
+
+  const allowedIds = new Set(chatCharacterIds);
+  const selectedIds = new Set<string>();
+  for (const id of requestedIds) {
+    if (typeof id !== "string" || !allowedIds.has(id)) return null;
+    selectedIds.add(id);
+  }
+
+  const activeCharacterIds = chatCharacterIds.filter((id) => selectedIds.has(id));
+  if (activeCharacterIds.length === 0) return null;
+  return {
+    activeCharacterIds,
+    inactiveCharacterIds: chatCharacterIds.filter((id) => !selectedIds.has(id)),
+  };
+}
+
+export function shouldRunCharacterActivityAgents(options: {
+  mode: string;
+  impersonate: boolean;
+  regenerateMessageId?: string | null;
+  continueMessageId?: string | null;
+}): boolean {
+  return (
+    (options.mode === "conversation" || options.mode === "roleplay") &&
+    !options.impersonate &&
+    !options.regenerateMessageId &&
+    !options.continueMessageId
+  );
+}
+
+export type GroupGenerationMode = "merged" | "individual";
+
+/** Resolve the stored generation mode for every group-capable chat mode. */
+export function resolveGroupGenerationMode(
+  _chatMode: string | null | undefined,
+  configuredMode: unknown,
+): GroupGenerationMode {
+  return configuredMode === "individual" ? "individual" : "merged";
+}
+
+export function shouldRestoreRegenerationCharacterTarget(
+  chatMode: string | null | undefined,
+  configuredMode: unknown,
+  characterIds: string[],
+): boolean {
+  const isRoleplayGroup = chatMode === "roleplay";
+  return !(
+    isRoleplayGroup &&
+    characterIds.length > 1 &&
+    resolveGroupGenerationMode(chatMode, configuredMode) === "merged"
+  );
+}
+
+export function resolvePromptCharacterIdsForTarget(
+  characterIds: string[],
+  targetCharacterId: string | null | undefined,
+): string[] {
+  if (typeof targetCharacterId === "string" && characterIds.includes(targetCharacterId)) {
+    return [targetCharacterId];
+  }
+  return characterIds;
+}
+
+export function shouldPreferLatestVisibleGameState(input: {
+  attachments?: unknown[] | null;
+  impersonate?: boolean;
+  regenerateMessageId?: string | null;
+  userMessage?: string | null;
+}): boolean {
+  if (input.impersonate === true || !!input.regenerateMessageId) return true;
+  return !input.userMessage?.trim() && !input.attachments?.length;
+}
+
+export function resolveVisibleGameStateAnchor(
+  messages: Array<{ role?: unknown; id?: unknown; activeSwipeIndex?: unknown; extra?: unknown }>,
+): { messageId: string; swipeIndex: number } | null {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    const markedSystemAnchor =
+      message.role === "system" && parseExtra(message.extra).gameStateAnchor === "checkpoint_restore";
+    if ((message.role !== "assistant" && !markedSystemAnchor) || typeof message.id !== "string" || !message.id) {
+      continue;
+    }
+    const swipeIndex =
+      typeof message.activeSwipeIndex === "number" &&
+      Number.isInteger(message.activeSwipeIndex) &&
+      message.activeSwipeIndex >= 0
+        ? message.activeSwipeIndex
+        : 0;
+    return { messageId: message.id, swipeIndex };
+  }
+  return null;
+}
+
+export function resolveRegenerationGameStateAnchor(
+  messages: Array<{ role?: unknown; id?: unknown; activeSwipeIndex?: unknown }>,
+  regenerateMessageId: string | null | undefined,
+): { messageId: string; swipeIndex: number } | null {
+  if (!regenerateMessageId) return resolveVisibleGameStateAnchor(messages);
+  const targetIndex = messages.findIndex((message) => message.id === regenerateMessageId);
+  if (targetIndex < 0) return resolveVisibleGameStateAnchor(messages);
+  return resolveVisibleGameStateAnchor(messages.slice(0, targetIndex));
+}
+
+export function resolveRegenerationGameStateFallbackMessageIds(
+  messages: Array<{ role?: unknown; id?: unknown }>,
+  regenerateMessageId: string | null | undefined,
+): string[] | null {
+  if (!regenerateMessageId) return null;
+  const targetIndex = messages.findIndex((message) => message.id === regenerateMessageId);
+  const boundedMessages = targetIndex >= 0 ? messages.slice(0, targetIndex) : messages;
+  const ids = new Set<string>([""]);
+  for (const message of boundedMessages) {
+    if (message.role === "assistant" && typeof message.id === "string") {
+      ids.add(message.id);
+    }
+  }
+  return Array.from(ids);
+}
+
+export function formatSeparateAgentInjection(agentType: string, text: string, wrapFormat: string): string {
+  const meta =
+    agentType === "knowledge-router"
+      ? { heading: "Knowledge Router", tag: "knowledge_router" }
+      : agentType === "knowledge-retrieval"
+        ? { heading: "Knowledge Retrieval", tag: "knowledge_retrieval" }
+        : agentType === "director"
+          ? { heading: "Narrative Director", tag: "narrative_director" }
+          : agentType === "long-term-memory"
+            ? { heading: "Long-Term Memory", tag: "long_term_memory" }
+            : { heading: agentType, tag: agentType.replace(/[^a-z0-9_-]/gi, "_") };
+
+  if (wrapFormat === "none") return `${meta.heading}:\n${text}`;
+  if (wrapFormat === "markdown") return `## ${meta.heading}\n${text}`;
+  return `<${meta.tag}>\n${text}\n</${meta.tag}>`;
+}
+
+export function appendSeparateAgentInjectionMessage(
+  messages: SimpleMessage[],
+  agentType: string,
+  text: string,
+  wrapFormat: string,
+): void {
+  messages.push({
+    role: "system",
+    content: formatSeparateAgentInjection(agentType, text, wrapFormat),
+    contextKind: "injection",
+  });
+}
+
+export function shouldEnableAgentsForGeneration({
+  chatEnableAgents,
+  impersonate,
+  impersonateBlockAgents,
+}: {
+  chatEnableAgents: boolean;
+  impersonate: boolean;
+  impersonateBlockAgents: boolean;
+}): boolean {
+  return chatEnableAgents && !(impersonate && impersonateBlockAgents);
+}
+
+export function shouldInjectIdentityFallback({
+  chatMode,
+  presetId,
+}: {
+  chatMode: string;
+  presetId: string | null | undefined;
+}): boolean {
+  if (chatMode === "game") return false;
+  // Conversation mode never runs the preset assembler (it is excluded from the
+  // assemblePrompt path), so the preset only supplies the conversation prompt
+  // text — it never injects character/persona card info. Without the identity
+  // fallback, selecting a prompt preset leaves the model with only the
+  // character names and no description/personality. Always inject the fallback
+  // for conversation mode; the injector self-guards against duplicating a
+  // profile that a custom prompt already contains.
+  if (chatMode === "conversation") return true;
+  return !presetId;
+}
+
+/** Parse connection/chat stored generation parameters without injecting schema defaults. */
+export function parseStoredGenerationParameters(raw: unknown): StoredGenerationParameters | null {
+  let parsed = raw;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return null;
+    }
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+
+  const result = generationParametersSchema.partial().safeParse(parsed);
+  if (result.success) return result.data;
+
+  // Older installs or extension callers may leave one malformed field in an
+  // otherwise useful parameter blob. Salvage valid scalar fields instead of
+  // dropping the whole advanced-parameter fallback.
+  const source = parsed as Record<string, unknown>;
+  const out: StoredGenerationParameters = {};
+  if (source.temperature !== undefined) {
+    const temperature = generationParametersSchema.shape.temperature.safeParse(source.temperature);
+    if (temperature.success) out.temperature = temperature.data;
+  }
+  if (source.topP !== undefined) {
+    const topP = generationParametersSchema.shape.topP.safeParse(source.topP);
+    if (topP.success) out.topP = topP.data;
+  }
+  if (source.topK !== undefined) {
+    const topK = generationParametersSchema.shape.topK.safeParse(source.topK);
+    if (topK.success) out.topK = topK.data;
+  }
+  if (source.minP !== undefined) {
+    const minP = generationParametersSchema.shape.minP.safeParse(source.minP);
+    if (minP.success) out.minP = minP.data;
+  }
+  if (source.maxTokens !== undefined) {
+    const maxTokens = generationParametersSchema.shape.maxTokens.safeParse(source.maxTokens);
+    if (maxTokens.success) out.maxTokens = maxTokens.data;
+  }
+  if (source.maxContext !== undefined) {
+    const maxContext = generationParametersSchema.shape.maxContext.safeParse(source.maxContext);
+    if (maxContext.success) out.maxContext = maxContext.data;
+  }
+  if (source.frequencyPenalty !== undefined) {
+    const frequencyPenalty = generationParametersSchema.shape.frequencyPenalty.safeParse(source.frequencyPenalty);
+    if (frequencyPenalty.success) out.frequencyPenalty = frequencyPenalty.data;
+  }
+  if (source.presencePenalty !== undefined) {
+    const presencePenalty = generationParametersSchema.shape.presencePenalty.safeParse(source.presencePenalty);
+    if (presencePenalty.success) out.presencePenalty = presencePenalty.data;
+  }
+  if (
+    source.reasoningEffort === null ||
+    ["low", "medium", "high", "xhigh", "maximum"].includes(String(source.reasoningEffort))
+  ) {
+    out.reasoningEffort = source.reasoningEffort as StoredGenerationParameters["reasoningEffort"];
+  }
+  if (source.verbosity === null || ["low", "medium", "high"].includes(String(source.verbosity))) {
+    out.verbosity = source.verbosity as StoredGenerationParameters["verbosity"];
+  }
+  if (source.serviceTier === null || source.serviceTier === "flex" || source.serviceTier === "priority") {
+    out.serviceTier = source.serviceTier as StoredGenerationParameters["serviceTier"];
+  }
+  if (typeof source.assistantPrefill === "string") out.assistantPrefill = source.assistantPrefill;
+  if (typeof source.assistantReasoningPrefill === "string") {
+    out.assistantReasoningPrefill = source.assistantReasoningPrefill;
+  }
+  if (Array.isArray(source.customThinkingTags)) {
+    out.customThinkingTags = normalizeThinkingTagPairs(source.customThinkingTags);
+  }
+  if (isPlainRecord(source.customParameters)) {
+    out.customParameters = mergeCustomParameters({}, source.customParameters);
+  }
+  if (isPlainRecord(source.managedCustomParameters)) {
+    const managedCustomParameters = generationParametersSchema.shape.managedCustomParameters.safeParse(
+      source.managedCustomParameters,
+    );
+    if (managedCustomParameters.success) out.managedCustomParameters = managedCustomParameters.data;
+  }
+  if (isPlainRecord(source.enabledParameters)) {
+    const enabledParameters: GenerationParameterSendMap = {};
+    for (const key of GENERATION_PARAMETER_SEND_KEYS) {
+      if (typeof source.enabledParameters[key] === "boolean") enabledParameters[key] = source.enabledParameters[key];
+    }
+    if (Object.keys(enabledParameters).length > 0) out.enabledParameters = enabledParameters;
+  }
+  for (const key of [
+    "squashSystemMessages",
+    "showThoughts",
+    "useMaxContext",
+    "strictRoleFormatting",
+    "singleUserMessage",
+  ] as const) {
+    const value = source[key];
+    if (typeof value === "boolean") out[key] = value;
+  }
+  if (Array.isArray(source.stopSequences) && source.stopSequences.every((item) => typeof item === "string")) {
+    out.stopSequences = source.stopSequences;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/**
+ * Inject text into the `</output_format>` section if present,
+ * otherwise append to the last user message (or last message overall).
+ */
+export function injectIntoOutputFormatOrLastUser(
+  messages: SimpleMessage[],
+  block: string,
+  opts?: { indent?: boolean },
+): void {
+  const prefix = opts?.indent ? "    " : "";
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i]!;
+    if (msg.content.includes("</output_format>")) {
+      messages[i] = {
+        ...msg,
+        content: msg.content.replace("</output_format>", () => prefix + block + "\n</output_format>"),
+      };
+      return;
+    }
+  }
+
+  const lastUserIdx = findLastIndex(messages, "user");
+  const lastIdx = lastUserIdx >= 0 ? lastUserIdx : messages.length - 1;
+  if (lastIdx < 0) {
+    messages.push({ role: "user", content: block });
+    return;
+  }
+  const target = messages[lastIdx]!;
+  messages[lastIdx] = { ...target, content: target.content + "\n\n" + block };
+}
+
+/**
+ * Remove speaker wrappers from older group-chat history while preserving the
+ * latest assistant turn as a concrete formatting example for the model.
+ */
+export function stripSpeakerTagsExceptLastAssistant(messages: SimpleMessage[]): void {
+  const lastAssistantIdx = findLastIndex(messages, "assistant");
+  const speakerCloseRegex = /<\/speaker>/g;
+
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i]!;
+    if (message.role === "system" || i === lastAssistantIdx || !message.content.includes("<speaker=")) continue;
+
+    const content = message.content
+      .replace(/<speaker="[^"]*">/g, "")
+      .replace(speakerCloseRegex, "")
+      .replace(/^\s*\n/gm, "")
+      .trim();
+    messages[i] = { ...message, content };
+  }
+}
+
+/** Build wrapped field parts from a record of { fieldName: value }. */
+export function wrapFields(
+  fields: Record<string, string | undefined | null>,
+  format: "xml" | "markdown" | "none",
+): string[] {
+  const parts: string[] = [];
+  for (const [name, value] of Object.entries(fields)) {
+    if (value) parts.push(wrapContent(value, name, format, 2));
+  }
+  return parts;
+}
+
+function trackerCharacterIdKey(character: Record<string, unknown>) {
+  return typeof character.characterId === "string" ? character.characterId.trim().toLowerCase() : "";
+}
+
+function trackerCharacterNameKey(character: Record<string, unknown>) {
+  return normalizeTextForMatch(character.name);
+}
+
+function trackerCharacterKey(character: Record<string, unknown>) {
+  return trackerCharacterIdKey(character) || trackerCharacterNameKey(character) || null;
+}
+
+function isNpcTrackerAvatarPath(value: unknown): value is string {
+  return typeof value === "string" && value.trim().startsWith("/api/avatars/npc/");
+}
+
+function isTrackerAvatarCrop(value: unknown): value is Record<string, unknown> {
+  if (!isPlainRecord(value)) return false;
+
+  const hasCurrentShape =
+    typeof value.srcX === "number" &&
+    typeof value.srcY === "number" &&
+    typeof value.srcWidth === "number" &&
+    typeof value.srcHeight === "number" &&
+    Number.isFinite(value.srcX) &&
+    Number.isFinite(value.srcY) &&
+    Number.isFinite(value.srcWidth) &&
+    Number.isFinite(value.srcHeight) &&
+    value.srcX >= 0 &&
+    value.srcY >= 0 &&
+    value.srcWidth > 0 &&
+    value.srcHeight > 0 &&
+    value.srcX + value.srcWidth <= 1.001 &&
+    value.srcY + value.srcHeight <= 1.001;
+  if (hasCurrentShape) return true;
+
+  return (
+    typeof value.zoom === "number" &&
+    typeof value.offsetX === "number" &&
+    typeof value.offsetY === "number" &&
+    Number.isFinite(value.zoom) &&
+    Number.isFinite(value.offsetX) &&
+    Number.isFinite(value.offsetY) &&
+    value.zoom > 0 &&
+    (value.fullImage === undefined || typeof value.fullImage === "boolean")
+  );
+}
+
+export function isManualTrackerCharacterId(value: unknown): boolean {
+  return typeof value === "string" && value.trim().startsWith("manual-");
+}
+
+function mergeTrackerStats(previous: unknown, next: unknown) {
+  if (!Array.isArray(previous) || previous.length === 0) return next;
+  const nextStats = Array.isArray(next) ? next : [];
+  const nextNames = new Set(
+    nextStats.map((stat) => normalizeTextForMatch(isPlainRecord(stat) ? stat.name : "")).filter(Boolean),
+  );
+  return [
+    ...nextStats,
+    ...previous.filter((stat) => {
+      const name = normalizeTextForMatch(isPlainRecord(stat) ? stat.name : "");
+      return name && !nextNames.has(name);
+    }),
+  ];
+}
+
+const MAX_TRACKER_CHARACTER_HISTORY = 50;
+
+/** Collect the most recently seen distinct tracker characters within a prompt-safe bound. */
+export function collectLatestTrackerCharacterHistory(
+  snapshots: Array<{ presentCharacters?: unknown }>,
+): Array<Record<string, unknown>> {
+  const history: Array<Record<string, unknown>> = [];
+  const seenIds = new Set<string>();
+  const seenNames = new Set<string>();
+  for (const snapshot of snapshots) {
+    const characters = parseJsonField<unknown[]>(snapshot.presentCharacters, []);
+    for (const value of characters) {
+      if (!isPlainRecord(value)) continue;
+      const id = trackerCharacterIdKey(value);
+      const name = trackerCharacterNameKey(value);
+      if ((id && seenIds.has(id)) || (!id && name && seenNames.has(name))) continue;
+      history.push(value);
+      if (id) seenIds.add(id);
+      if (name) seenNames.add(name);
+      if (history.length >= MAX_TRACKER_CHARACTER_HISTORY) return history;
+    }
+  }
+  return history;
+}
+
+type TrackerCharacterCardIdentity = CharacterCardCastSource & {
+  id: string;
+  name: string;
+  avatarPath?: string | null;
+  avatarCrop?: unknown;
+};
+
+function getExplicitNameAliases(value: unknown): string[] {
+  if (typeof value !== "string") return [];
+  const aliases = new Set<string>();
+  const patterns = [
+    /"([^"\n]{1,80})"/gu,
+    /“([^”\n]{1,80})”/gu,
+    /'([^'\n]{1,80})'/gu,
+    /‘([^’\n]{1,80})’/gu,
+    /\(([^()\n]{1,80})\)/gu,
+  ];
+  for (const pattern of patterns) {
+    for (const match of value.matchAll(pattern)) {
+      const alias = normalizeTextForMatch(match[1]);
+      if (alias) aliases.add(alias);
+    }
+  }
+  return [...aliases];
+}
+
+function buildUniqueCanonicalNames(names: readonly string[]): Map<string, string> {
+  const namesByKey = new Map<string, string>();
+  const duplicateKeys = new Set<string>();
+  for (const name of names) {
+    const trimmedName = name.trim();
+    const key = normalizeTextForMatch(trimmedName);
+    if (!key) continue;
+    if (namesByKey.has(key)) duplicateKeys.add(key);
+    else namesByKey.set(key, trimmedName);
+  }
+  for (const key of duplicateKeys) namesByKey.delete(key);
+  return namesByKey;
+}
+
+function resolveExplicitCanonicalName(value: unknown, namesByKey: Map<string, string>): string | null {
+  const exactName = namesByKey.get(normalizeTextForMatch(value));
+  if (exactName) return exactName;
+
+  const aliasMatches = getExplicitNameAliases(value)
+    .map((alias) => namesByKey.get(alias))
+    .filter((candidate): candidate is string => !!candidate);
+  const uniqueMatches = new Set(aliasMatches);
+  return uniqueMatches.size === 1 ? aliasMatches[0]! : null;
+}
+
+/** Canonicalize only structured Game Mode VN speaker labels, leaving prose and ambiguous aliases unchanged. */
+export function canonicalizeGamePartySpeakerLabels(content: string, canonicalNames: readonly string[]): string {
+  const namesByKey = buildUniqueCanonicalNames(canonicalNames);
+  if (!content || namesByKey.size === 0) return content;
+
+  return content.replace(
+    /^(\s*)\[([^\]\r\n]+)\](\s+\[(?:main|side|thought|whisper:[^\]\r\n]+)\]\s+\[[^\]\r\n]+\]\s*:)/gmu,
+    (line, indentation: string, speakerName: string, suffix: string) => {
+      const canonicalName = resolveExplicitCanonicalName(speakerName, namesByKey);
+      return canonicalName ? `${indentation}[${canonicalName}]${suffix}` : line;
+    },
+  );
+}
+
+const TRACKER_CAST_ID_SEPARATOR = ":cast:";
+
+/**
+ * Character id for one member of a multi-character card: `<cardId>:cast:<normalized name>`.
+ * Cast ids stay stable across turns so locks, manual edits, NPC avatars, and
+ * continuity keep pointing at the same person even when the card itself is one row.
+ */
+export function buildTrackerCastCharacterId(cardId: string, name: unknown): string {
+  return `${cardId}${TRACKER_CAST_ID_SEPARATOR}${normalizeTextForMatch(name)}`;
+}
+
+export function parseTrackerCastCharacterId(value: unknown): { cardId: string; nameKey: string } | null {
+  if (typeof value !== "string") return null;
+  const index = value.indexOf(TRACKER_CAST_ID_SEPARATOR);
+  if (index <= 0) return null;
+  const cardId = value.slice(0, index).trim();
+  const nameKey = normalizeTextForMatch(value.slice(index + TRACKER_CAST_ID_SEPARATOR.length));
+  return cardId && nameKey ? { cardId, nameKey } : null;
+}
+
+/**
+ * Canonicalize tracked characters against the chat's character cards.
+ *
+ * A tracked entry that matches a card by id, exact name, or an explicit alias
+ * takes the card's id, name, and avatar, and duplicates collapse into one row.
+ * That keeps single-character cards stable when a model drifts between
+ * "Mari" and 'Marisol "Mari"'.
+ *
+ * Some cards describe several people (a scenario card with a cast). The
+ * tracker reports each of them with the card's id and their own name. Merging
+ * those would erase everyone but the last one, so a card is treated as a
+ * multi-character card when its own text lists a cast (see
+ * `extractCharacterCardCastMembers`), when the batch carries two or more
+ * distinctly named members for it, or when `previousCharacters` already holds
+ * a cast id for it. An entry that merely repeats the title of a card with a
+ * known cast is dropped once this result supplies an individual member.
+ * Cast members keep their own name under a `<cardId>:cast:<name>` id, do not
+ * inherit the card avatar, and are not reported in the returned card-id set,
+ * so the NPC avatar path (library, stored, or generated portraits) applies.
+ */
+export function applyTrackerCharacterCardIdentity(
+  characters: Array<Record<string, unknown>>,
+  cards: TrackerCharacterCardIdentity[],
+  options: { previousCharacters?: ReadonlyArray<Record<string, unknown>> } = {},
+): Set<string> {
+  const cardsById = new Map(cards.map((card) => [card.id.trim().toLowerCase(), card]));
+  const cardsByName = new Map<string, TrackerCharacterCardIdentity>();
+  const duplicateNames = new Set<string>();
+  for (const card of cards) {
+    const name = normalizeTextForMatch(card.name);
+    if (!name) continue;
+    if (cardsByName.has(name)) duplicateNames.add(name);
+    else cardsByName.set(name, card);
+  }
+  for (const name of duplicateNames) cardsByName.delete(name);
+  const canonicalCardNamesByKey = new Map([...cardsByName].map(([key, card]) => [key, card.name]));
+
+  // Cards whose text lists a cast are multi-character from the first turn on,
+  // and a bare member name (no id) links to its card through this map.
+  const declaredCastCardIds = new Set<string>();
+  const cardsByCastMember = new Map<string, TrackerCharacterCardIdentity>();
+  const ambiguousCastMembers = new Set<string>();
+  for (const card of cards) {
+    const members = extractCharacterCardCastMembers(card);
+    if (members.length === 0) continue;
+    declaredCastCardIds.add(card.id);
+    for (const member of members) {
+      const key = normalizeTextForMatch(member);
+      if (!key || cardsByName.has(key)) continue;
+      if (cardsByCastMember.has(key) && cardsByCastMember.get(key) !== card) ambiguousCastMembers.add(key);
+      else cardsByCastMember.set(key, card);
+    }
+  }
+  for (const key of ambiguousCastMembers) cardsByCastMember.delete(key);
+
+  type ResolvedTrackerCharacter = {
+    character: Record<string, unknown>;
+    card: TrackerCharacterCardIdentity | undefined;
+    /** The entry names the card itself (exact name, explicit alias, or no name at all). */
+    isCardName: boolean;
+    /** Normalized member name when the entry names someone other than the card. */
+    castNameKey: string;
+    viaCastId: boolean;
+  };
+
+  const resolved: ResolvedTrackerCharacter[] = characters.map((character) => {
+    const nameKey = trackerCharacterNameKey(character);
+    const castId = parseTrackerCastCharacterId(character.characterId);
+    const castCard = castId ? cardsById.get(castId.cardId.toLowerCase()) : undefined;
+    if (castId && castCard) {
+      return { character, card: castCard, isCardName: false, castNameKey: nameKey || castId.nameKey, viaCastId: true };
+    }
+
+    const explicitCanonicalName = resolveExplicitCanonicalName(character.name, canonicalCardNamesByKey);
+    const card =
+      cardsById.get(trackerCharacterIdKey(character)) ??
+      cardsByName.get(nameKey) ??
+      (explicitCanonicalName ? cardsByName.get(normalizeTextForMatch(explicitCanonicalName)) : undefined);
+    if (!card) {
+      const castCard =
+        nameKey && !isManualTrackerCharacterId(character.characterId) ? cardsByCastMember.get(nameKey) : undefined;
+      if (castCard) return { character, card: castCard, isCardName: false, castNameKey: nameKey, viaCastId: false };
+      return { character, card: undefined, isCardName: false, castNameKey: "", viaCastId: false };
+    }
+
+    const cardNameKey = normalizeTextForMatch(card.name);
+    const isCardName =
+      !nameKey ||
+      nameKey === cardNameKey ||
+      (!!explicitCanonicalName && normalizeTextForMatch(explicitCanonicalName) === cardNameKey);
+    return { character, card, isCardName, castNameKey: isCardName ? "" : nameKey, viaCastId: false };
+  });
+
+  // Multi-character cards: remembered from earlier snapshots, or evidenced by
+  // this batch naming two or more distinct members of the same card.
+  const castCardIds = new Set<string>(declaredCastCardIds);
+  for (const previous of options.previousCharacters ?? []) {
+    const parsed = parseTrackerCastCharacterId(previous.characterId);
+    const card = parsed ? cardsById.get(parsed.cardId.toLowerCase()) : undefined;
+    if (card) castCardIds.add(card.id);
+  }
+  const memberNamesByCard = new Map<string, Set<string>>();
+  for (const entry of resolved) {
+    if (!entry.card) continue;
+    if (entry.viaCastId) castCardIds.add(entry.card.id);
+    if (!entry.castNameKey) continue;
+    const members = memberNamesByCard.get(entry.card.id) ?? new Set<string>();
+    members.add(entry.castNameKey);
+    memberNamesByCard.set(entry.card.id, members);
+  }
+  for (const [cardId, members] of memberNamesByCard) {
+    if (members.size >= 2) castCardIds.add(cardId);
+  }
+
+  const matchedIds = new Set<string>();
+  const canonicalCharacters: Array<Record<string, unknown>> = [];
+  const canonicalIndexByKey = new Map<string, number>();
+  const pushOrMerge = (key: string, next: Record<string, unknown>) => {
+    const existingIndex = canonicalIndexByKey.get(key);
+    if (existingIndex === undefined) {
+      canonicalIndexByKey.set(key, canonicalCharacters.length);
+      canonicalCharacters.push(next);
+    } else {
+      canonicalCharacters[existingIndex] = { ...canonicalCharacters[existingIndex], ...next };
+    }
+  };
+
+  for (const { character, card, isCardName, castNameKey } of resolved) {
+    if (!card) {
+      canonicalCharacters.push(character);
+      continue;
+    }
+
+    if (castCardIds.has(card.id) && isCardName && (memberNamesByCard.get(card.id)?.size ?? 0) > 0) {
+      // Replace the old merged title only when this result includes a member, preserving legacy state otherwise.
+      continue;
+    }
+
+    if (castCardIds.has(card.id) && !isCardName && castNameKey) {
+      const castId = buildTrackerCastCharacterId(card.id, castNameKey);
+      const castCharacter: Record<string, unknown> = {
+        ...character,
+        characterId: castId,
+        name: typeof character.name === "string" ? character.name.trim() : castNameKey,
+      };
+      // A member never wears the card's portrait; NPC avatar enrichment finds their own.
+      if (card.avatarPath && castCharacter.avatarPath === card.avatarPath) {
+        castCharacter.avatarPath = null;
+        castCharacter.avatarCrop = null;
+      }
+      pushOrMerge(castId, castCharacter);
+      continue;
+    }
+
+    pushOrMerge(`card:${card.id}`, {
+      ...character,
+      characterId: card.id,
+      name: card.name,
+      avatarPath: card.avatarPath ?? null,
+      avatarCrop: card.avatarCrop ?? null,
+    });
+    matchedIds.add(card.id);
+  }
+  characters.splice(0, characters.length, ...canonicalCharacters);
+  return matchedIds;
+}
+
+export function preserveTrackerCharacterUiFields(
+  nextCharacters: Array<Record<string, unknown>>,
+  previousCharacters: Array<Record<string, unknown>>,
+): void {
+  const previousByKey = new Map<string, Record<string, unknown>>();
+  const previousByName = new Map<string, Record<string, unknown>>();
+  const previousNameCounts = new Map<string, number>();
+  for (const character of previousCharacters) {
+    const key = trackerCharacterKey(character);
+    if (key) previousByKey.set(key, character);
+    const name = trackerCharacterNameKey(character);
+    if (name) previousNameCounts.set(name, (previousNameCounts.get(name) ?? 0) + 1);
+    if (name) previousByName.set(name, character);
+  }
+
+  for (const character of nextCharacters) {
+    const key = trackerCharacterKey(character);
+    const name = trackerCharacterNameKey(character);
+    const previous =
+      (key ? previousByKey.get(key) : null) ??
+      (name && previousNameCounts.get(name) === 1 ? previousByName.get(name) : null);
+    const previousPortraitFocusX = previous?.portraitFocusX;
+    const previousPortraitFocusY = previous?.portraitFocusY;
+    const previousPortraitZoom = previous?.portraitZoom;
+    const previousAvatarPath = previous?.avatarPath;
+    const previousAvatarCrop = previous?.avatarCrop;
+    const previousCustomFields = isPlainRecord(previous?.customFields) ? previous.customFields : null;
+    const nextCustomFields = isPlainRecord(character.customFields) ? character.customFields : null;
+    if (previousCustomFields) {
+      // Character custom fields are user-defined tracker structure. Merge model
+      // values over it so an omitted field cannot erase the user's configuration.
+      character.customFields = { ...previousCustomFields, ...(nextCustomFields ?? {}) };
+    }
+    character.stats = mergeTrackerStats(previous?.stats, character.stats);
+    if (
+      (typeof character.avatarPath !== "string" || !character.avatarPath.trim()) &&
+      isNpcTrackerAvatarPath(previousAvatarPath)
+    ) {
+      character.avatarPath = previousAvatarPath.trim();
+    }
+    if (!isTrackerAvatarCrop(character.avatarCrop) && isTrackerAvatarCrop(previousAvatarCrop)) {
+      character.avatarCrop = previousAvatarCrop;
+    }
+    if (
+      (typeof character.portraitFocusX !== "number" || !Number.isFinite(character.portraitFocusX)) &&
+      typeof previousPortraitFocusX === "number" &&
+      Number.isFinite(previousPortraitFocusX)
+    ) {
+      character.portraitFocusX = previousPortraitFocusX;
+    }
+    if (
+      (typeof character.portraitFocusY !== "number" || !Number.isFinite(character.portraitFocusY)) &&
+      typeof previousPortraitFocusY === "number" &&
+      Number.isFinite(previousPortraitFocusY)
+    ) {
+      character.portraitFocusY = previousPortraitFocusY;
+    }
+    if (
+      (typeof character.portraitZoom !== "number" || !Number.isFinite(character.portraitZoom)) &&
+      typeof previousPortraitZoom === "number" &&
+      Number.isFinite(previousPortraitZoom)
+    ) {
+      character.portraitZoom = previousPortraitZoom;
+    }
+  }
+}
+
+/** Parse game state JSON fields from a DB row. */
+export function parseJsonField<T>(value: unknown, fallback: T): T {
+  if (value == null) return fallback;
+  if (typeof value !== "string") return value as T;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+export function parseGameStateRow(row: Record<string, unknown>): GameState {
+  const manualOverrides = parseJsonField<Record<string, string> | null>(row.manualOverrides, null);
+  const fieldLocks = parseTrackerFieldLocks(row.fieldLocks);
+  const hiddenTrackerFields = parseTrackerHiddenFields(row.hiddenTrackerFields);
+  return {
+    id: row.id as string,
+    chatId: row.chatId as string,
+    messageId: row.messageId as string,
+    swipeIndex: row.swipeIndex as number,
+    date: row.date as string | null,
+    time: row.time as string | null,
+    location: row.location as string | null,
+    weather: row.weather as string | null,
+    temperature: row.temperature as string | null,
+    worldCustomFields: normalizeWorldCustomFields(parseJsonField<unknown[]>(row.worldCustomFields, [])),
+    presentCharacters: parseJsonField<any[]>(row.presentCharacters, []),
+    recentEvents: parseJsonField<string[]>(row.recentEvents, []),
+    playerStats: parseJsonField<PlayerStats | null>(row.playerStats, null),
+    personaStats: parseJsonField<any[] | null>(row.personaStats, null),
+    manualOverrides,
+    fieldLocks,
+    hiddenTrackerFields,
+    rulesetLive: parseStoredRulesetLive(row.rulesetLive),
+    createdAt: row.createdAt as string,
+  };
+}

@@ -1,0 +1,618 @@
+// Game: Inventory Panel
+import { useState, useCallback, useEffect, useMemo } from "react";
+import {
+  DndContext,
+  type DragEndEvent,
+  MouseSensor,
+  TouchSensor,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import { ArrowUpDown, Check, ChevronLeft, ChevronRight, Minus, Package, Plus, Search, Wand2, X } from "lucide-react";
+import { cn } from "../../lib/utils";
+import { useTranslation as useUiTranslation } from "react-i18next";
+import type { InventoryIdentity } from "./game-inventory-identity";
+
+export interface InventoryItem extends InventoryIdentity {
+  name: string;
+  quantity: number;
+}
+
+interface GameInventoryProps {
+  items: InventoryItem[];
+  open: boolean;
+  onClose: () => void;
+  /** Called when the user wants to add a new item */
+  onAddItem?: () => Promise<string | null> | string | null;
+  /** Called when the user wants to use an item during input phase */
+  onUseItem?: (item: InventoryItem) => void;
+  /** Called when the user wants to rename an item */
+  onRenameItem?: (item: InventoryItem, nextName: string) => Promise<string | null> | string | null;
+  /** Called when the user wants to manually remove one unit of an item */
+  onRemoveItem?: (item: InventoryItem) => void | Promise<void>;
+  /** Called when the user wants to manually add one unit of an item */
+  onIncrementItem?: (item: InventoryItem) => void | Promise<void>;
+  /** Called when the user drags one item onto another to swap their positions */
+  onReorderItem?: (fromIndex: number, toIndex: number) => void | Promise<void>;
+  /** Whether the player can interact (input phase) */
+  canInteract?: boolean;
+}
+
+const ITEMS_PER_PAGE = 20;
+
+type InventorySortMode = "original" | "name" | "quantity";
+const SORT_MODES: InventorySortMode[] = ["original", "name", "quantity"];
+
+/** Case- and accent-insensitive search key. View-only: never written back to the inventory. */
+function searchKey(value: string): string {
+  return value.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().trim().replace(/\s+/g, " ");
+}
+
+function sameIdentity(a: InventoryIdentity, b: InventoryIdentity): boolean {
+  return a.itemId ? a.itemId === b.itemId : a.name === b.name;
+}
+
+export function GameInventory({
+  items,
+  open,
+  onClose,
+  onAddItem,
+  onUseItem,
+  onRenameItem,
+  onRemoveItem,
+  onIncrementItem,
+  onReorderItem,
+  canInteract,
+}: GameInventoryProps) {
+  const { t: localizeUi } = useUiTranslation();
+  const [selectedItem, setSelectedItem] = useState<InventoryIdentity | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renamePending, setRenamePending] = useState(false);
+  const [addPending, setAddPending] = useState(false);
+  const [amountPending, setAmountPending] = useState<"increment" | "decrement" | null>(null);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [query, setQuery] = useState("");
+  const [sortMode, setSortMode] = useState<InventorySortMode>("original");
+
+  // Mouse: 4px distance threshold so quick clicks still select.
+  // Touch: 200ms hold within 5px so swipe-to-scroll still works on mobile.
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
+  );
+
+  const handleItemClick = useCallback(
+    (item: InventoryItem) => {
+      setSelectedItem((prev) => (prev && sameIdentity(prev, item) ? null : item));
+    },
+    [],
+  );
+
+  const handleUse = useCallback(
+    (item: InventoryItem) => {
+      onUseItem?.(item);
+      setSelectedItem(null);
+    },
+    [onUseItem],
+  );
+
+  // Clear selection if the selected item was removed
+  useEffect(() => {
+    if (selectedItem && !items.some((i) => sameIdentity(selectedItem, i))) {
+      setSelectedItem(null);
+    }
+  }, [items, selectedItem]);
+
+  // Rows without an itemId that share a name are indistinguishable to the host, which acts on the
+  // first one. Highlight exactly that row so the selection matches what the actions will change.
+  const selectedIndex = selectedItem ? items.findIndex((item) => sameIdentity(selectedItem, item)) : -1;
+  const selectedInventoryItem = selectedIndex >= 0 ? items[selectedIndex]! : null;
+
+  // Search and sort only change what is shown. Each entry keeps its stored index for reorder.
+  const trimmedQuery = searchKey(query);
+  const viewActive = trimmedQuery !== "" || sortMode !== "original";
+  const viewEntries = useMemo(() => {
+    const entries = items
+      .map((item, index) => ({ item, index }))
+      .filter((entry) => !trimmedQuery || searchKey(entry.item.name).includes(trimmedQuery));
+    if (sortMode === "name") {
+      entries.sort(
+        (a, b) =>
+          a.item.name.localeCompare(b.item.name, undefined, { sensitivity: "base", numeric: true }) || a.index - b.index,
+      );
+    } else if (sortMode === "quantity") {
+      entries.sort((a, b) => b.item.quantity - a.item.quantity || a.index - b.index);
+    }
+    return entries;
+  }, [items, trimmedQuery, sortMode]);
+  const selectedViewIndex =
+    selectedIndex >= 0 ? viewEntries.findIndex((entry) => entry.index === selectedIndex) : -1;
+
+  const pageCount = Math.max(1, Math.ceil(viewEntries.length / ITEMS_PER_PAGE));
+  const safePageIndex = Math.min(pageIndex, pageCount - 1);
+  const pageStart = safePageIndex * ITEMS_PER_PAGE;
+  const pageEntries = viewEntries.slice(pageStart, pageStart + ITEMS_PER_PAGE);
+  const reorderEnabled = Boolean(onReorderItem) && !viewActive;
+
+  // Reset the draft when the selection changes to another row, even one with the same name.
+  const selectedKey = selectedInventoryItem ? (selectedInventoryItem.itemId ?? "#" + selectedIndex) : "";
+  useEffect(() => {
+    setRenameDraft(selectedInventoryItem?.name ?? "");
+  }, [selectedInventoryItem?.name, selectedKey]);
+
+  useEffect(() => {
+    setPageIndex((current) => Math.min(current, pageCount - 1));
+  }, [pageCount]);
+
+  // A new search or sort starts on the first page; the follow effect below may move to the selection.
+  useEffect(() => {
+    setPageIndex(0);
+  }, [trimmedQuery, sortMode]);
+
+  useEffect(() => {
+    if (selectedViewIndex >= 0) {
+      setPageIndex(Math.floor(selectedViewIndex / ITEMS_PER_PAGE));
+    }
+  }, [selectedViewIndex]);
+
+  const handleRename = useCallback(
+    async (item: InventoryItem) => {
+      if (!onRenameItem) return;
+
+      const nextName = renameDraft.trim().replace(/\s+/g, " ");
+      if (!nextName || nextName === item.name.trim()) return;
+
+      setRenamePending(true);
+      try {
+        const resolvedName = await onRenameItem(item, nextName);
+        if (resolvedName) {
+          // Keep the renamed row selected unless the player picked another row meanwhile.
+          setSelectedItem((prev) => (!prev || sameIdentity(prev, item) ? { ...item, name: resolvedName } : prev));
+        }
+      } finally {
+        setRenamePending(false);
+      }
+    },
+    [onRenameItem, renameDraft],
+  );
+
+  const handleAdd = useCallback(async () => {
+    if (!onAddItem) return;
+
+    setAddPending(true);
+    try {
+      const addedItemName = await onAddItem();
+      if (addedItemName) {
+        // Clear the search so the new item is visible; the page follows the selection.
+        setQuery("");
+        setSelectedItem({ name: addedItemName });
+      }
+    } finally {
+      setAddPending(false);
+    }
+  }, [onAddItem]);
+
+  const handleIncrement = useCallback(
+    async (item: InventoryItem) => {
+      if (!onIncrementItem) return;
+
+      setAmountPending("increment");
+      try {
+        await onIncrementItem(item);
+      } finally {
+        setAmountPending(null);
+      }
+    },
+    [onIncrementItem],
+  );
+
+  const handleDecrement = useCallback(
+    async (item: InventoryItem) => {
+      if (!onRemoveItem) return;
+
+      setAmountPending("decrement");
+      try {
+        await onRemoveItem(item);
+      } finally {
+        setAmountPending(null);
+      }
+    },
+    [onRemoveItem],
+  );
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      if (!onReorderItem) return;
+      const fromIndex = event.active.data.current?.index;
+      const toIndex = event.over?.data.current?.index;
+      if (typeof fromIndex !== "number" || typeof toIndex !== "number") return;
+      if (fromIndex === toIndex) return;
+      void onReorderItem(fromIndex, toIndex);
+    },
+    [onReorderItem],
+  );
+
+  if (!open) return null;
+
+  const slots: Array<{ item: InventoryItem; index: number } | null> = [];
+  for (let i = 0; i < ITEMS_PER_PAGE; i++) {
+    slots.push(pageEntries[i] ?? null);
+  }
+  const sortLabel =
+    sortMode === "name"
+      ? localizeUi("ui.game.gameinventory.sortName")
+      : sortMode === "quantity"
+        ? localizeUi("ui.game.gameinventory.sortQuantity")
+        : localizeUi("ui.game.gameinventory.sortOriginal");
+
+  return (
+    <div
+      className="fixed inset-y-0 z-[80] flex items-center justify-center bg-black/70 p-3 pb-[max(var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)),0.75rem)] pt-[max(env(safe-area-inset-top),0.75rem)] backdrop-blur-sm sm:p-4"
+      style={{
+        left: "var(--mari-chat-ui-inset-left, 0px)",
+        right: "var(--mari-chat-ui-inset-right, 0px)",
+      }}
+    >
+      <div className="relative flex max-h-[85vh] w-full max-w-md flex-col overflow-hidden rounded-lg border border-white/10 bg-black shadow-[0_0_40px_rgba(0,0,0,0.8)] supports-[height:100dvh]:max-h-[85dvh]">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-white/8 bg-white/[0.02] px-4 py-3">
+          <div className="flex items-center gap-2">
+            <Package size={15} className="text-amber-400/80" />
+            <h2 className="text-sm font-semibold tracking-wide text-white/90">
+              {localizeUi("ui.game.gamecharactersheet.inventory")}
+            </h2>
+            <span className="rounded bg-white/8 px-1.5 py-0.5 text-[0.6rem] tabular-nums text-white/80">
+              {items.length}{" "}
+              {items.length === 1
+                ? localizeUi("ui.game.gameinventory.item")
+                : localizeUi("ui.panels.importsettings.items")}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={localizeUi("ui.chat.maripromptpreviewmodal.close")}
+            title={localizeUi("ui.chat.maripromptpreviewmodal.close")}
+            className="rounded p-1 text-white/40 transition-colors hover:bg-white/10 hover:text-white/70"
+          >
+            <X size={14} />
+          </button>
+        </div>
+
+        {/* Item list */}
+        <div className="flex-1 overflow-y-auto p-3">
+          {items.length > 0 ? (
+            <>
+              {(items.length > 1 || viewActive) && (
+                <div className="mb-2 flex items-center gap-1.5">
+                  <div className="relative min-w-0 flex-1">
+                    <Search
+                      size={12}
+                      className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-white/35"
+                    />
+                    <input
+                      type="search"
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape" && query) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setQuery("");
+                        }
+                      }}
+                      placeholder={localizeUi("ui.game.gameinventory.searchItems")}
+                      aria-label={localizeUi("ui.game.gameinventory.searchItems")}
+                      className="h-7 w-full rounded border border-white/10 bg-black/40 pl-7 pr-7 text-[0.7rem] text-white/85 outline-none transition-colors placeholder:text-white/30 focus:border-amber-400/40 [&::-webkit-search-cancel-button]:hidden"
+                    />
+                    {query && (
+                      <button
+                        type="button"
+                        onClick={() => setQuery("")}
+                        aria-label={localizeUi("ui.characters.schedulemanager.clearSearch")}
+                        title={localizeUi("ui.characters.schedulemanager.clearSearch")}
+                        className="absolute right-1 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-white/40 transition-colors hover:bg-white/10 hover:text-white/75"
+                      >
+                        <X size={11} />
+                      </button>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSortMode((mode) => SORT_MODES[(SORT_MODES.indexOf(mode) + 1) % SORT_MODES.length]!)
+                    }
+                    aria-label={localizeUi("ui.game.gameinventory.sortByValue1", { value1: sortLabel })}
+                    title={localizeUi("ui.game.gameinventory.sortByValue1", { value1: sortLabel })}
+                    className={cn(
+                      "flex h-7 shrink-0 items-center gap-1 rounded border px-2 text-[0.65rem] transition-colors",
+                      sortMode === "original"
+                        ? "border-white/8 bg-white/[0.03] text-white/55 hover:bg-white/[0.06]"
+                        : "border-amber-500/25 bg-amber-500/10 text-amber-300 hover:bg-amber-500/15",
+                    )}
+                  >
+                    <ArrowUpDown size={11} />
+                    {sortLabel}
+                  </button>
+                </div>
+              )}
+              {viewEntries.length === 0 && (
+                <div className="flex min-h-24 items-center justify-center rounded border border-dashed border-white/10 bg-white/[0.02] px-4 text-center text-[0.7rem] text-white/45">
+                  {localizeUi("ui.game.gameinventory.noItemsMatchYourSearch")}
+                </div>
+              )}
+              {pageCount > 1 && (
+                <div className="mb-2 flex items-center justify-between gap-2 text-[0.625rem] text-white/45">
+                  <button
+                    type="button"
+                    onClick={() => setPageIndex(Math.max(0, safePageIndex - 1))}
+                    disabled={safePageIndex === 0}
+                    aria-label={localizeUi("ui.game.gameinventory.previousInventoryPage")}
+                    className="flex h-6 w-6 items-center justify-center rounded border border-white/8 bg-white/[0.03] transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-35"
+                    title={localizeUi("ui.game.gameinventory.previousInventoryPage")}
+                  >
+                    <ChevronLeft size={12} />
+                  </button>
+                  <span className="tabular-nums">
+                    {localizeUi("ui.game.gameinventory.page")} {safePageIndex + 1} / {pageCount}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setPageIndex(Math.min(pageCount - 1, safePageIndex + 1))}
+                    disabled={safePageIndex >= pageCount - 1}
+                    aria-label={localizeUi("ui.game.gameinventory.nextInventoryPage")}
+                    className="flex h-6 w-6 items-center justify-center rounded border border-white/8 bg-white/[0.03] transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-35"
+                    title={localizeUi("ui.game.gameinventory.nextInventoryPage")}
+                  >
+                    <ChevronRight size={12} />
+                  </button>
+                </div>
+              )}
+              {viewEntries.length > 0 && (
+                <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+                  <div
+                    className="grid grid-cols-5 gap-1.5"
+                    title={
+                      viewActive && onReorderItem
+                        ? localizeUi("ui.game.gameinventory.clearSearchAndSortToReorder")
+                        : undefined
+                    }
+                  >
+                    {slots.map((entry, i) => (
+                      <InventorySlot
+                        key={"slot-" + (pageStart + i)}
+                        item={entry?.item ?? null}
+                        globalIndex={entry ? entry.index : -1 - i}
+                        selected={Boolean(entry && entry.index === selectedIndex)}
+                        reorderEnabled={reorderEnabled}
+                        onClick={() => entry && handleItemClick(entry.item)}
+                      />
+                    ))}
+                  </div>
+                </DndContext>
+              )}
+            </>
+          ) : (
+            <div className="flex min-h-40 flex-col items-center justify-center rounded border border-dashed border-white/10 bg-white/[0.02] px-4 text-center">
+              <Package size={18} className="mb-2 text-white/25" />
+              <div className="text-[0.75rem] font-medium text-white/55">
+                {localizeUi("ui.game.gameinventory.inventoryEmpty")}
+              </div>
+              <div className="mt-1 text-[0.65rem] text-white/35">
+                {localizeUi("ui.game.gameinventory.addAnItemToStartTrackingSupplies")}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Action bar */}
+        {(selectedItem || onAddItem) && (
+          <div className="border-t border-white/8 bg-white/[0.02] px-4 py-2.5">
+            {selectedItem ? (
+              <div className="mb-2 whitespace-normal break-words text-[0.7rem] font-medium text-white/60 [overflow-wrap:anywhere]">
+                {selectedInventoryItem?.name ?? selectedItem?.name}
+              </div>
+            ) : (
+              <div className="mb-2 text-[0.7rem] font-medium text-white/45">
+                {localizeUi("ui.game.gameinventory.addANewItemThenRenameIt")}
+              </div>
+            )}
+            {onRenameItem && selectedInventoryItem && (
+              <div className="mb-2.5 flex gap-1.5">
+                <input
+                  value={renameDraft}
+                  onChange={(e) => setRenameDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      setRenameDraft(selectedInventoryItem.name);
+                    }
+                    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      void handleRename(selectedInventoryItem);
+                    }
+                  }}
+                  disabled={renamePending}
+                  className="min-w-0 flex-1 rounded border border-white/10 bg-black/40 px-2 py-1.5 text-[0.7rem] text-white/85 outline-none transition-colors focus:border-amber-400/40"
+                  placeholder={localizeUi("ui.game.gameinventory.itemName")}
+                />
+                <button
+                  onClick={() => void handleRename(selectedInventoryItem)}
+                  disabled={
+                    renamePending || !renameDraft.trim() || renameDraft.trim() === selectedInventoryItem.name.trim()
+                  }
+                  className="flex shrink-0 items-center justify-center gap-1 rounded border border-amber-500/20 bg-amber-500/10 px-2 py-1.5 text-[0.7rem] font-semibold text-amber-300 transition-colors hover:bg-amber-500/15 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Check size={12} />
+                  {localizeUi("ui.noodle.noodlehome.save")}
+                </button>
+              </div>
+            )}
+            <div className="flex gap-1.5">
+              {onAddItem && (
+                <button
+                  onClick={() => void handleAdd()}
+                  disabled={addPending}
+                  className="flex flex-1 items-center justify-center gap-1 rounded border border-white/8 bg-white/[0.03] py-1.5 text-[0.7rem] text-white/70 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Plus size={12} />
+                  {localizeUi("ui.characters.metadatatab.add")}
+                </button>
+              )}
+              {selectedInventoryItem && (onRemoveItem || onIncrementItem) && (
+                <div
+                  className="flex h-7 shrink-0 items-center overflow-hidden rounded border border-white/8 bg-white/[0.03]"
+                  aria-label={localizeUi("ui.game.gameinventory.value1AmountControls", {
+                    value1: selectedInventoryItem.name,
+                  })}
+                >
+                  {onRemoveItem && (
+                    <button
+                      type="button"
+                      onClick={() => void handleDecrement(selectedInventoryItem)}
+                      disabled={amountPending !== null}
+                      className="flex h-full w-7 items-center justify-center text-white/65 transition-colors hover:bg-white/[0.07] hover:text-white/90 disabled:cursor-not-allowed disabled:opacity-40"
+                      aria-label={
+                        selectedInventoryItem.quantity > 1
+                          ? localizeUi("ui.game.gameinventory.decreaseValue1Amount", {
+                              value1: selectedInventoryItem.name,
+                            })
+                          : localizeUi("ui.game.gameinventory.deleteValue1", { value1: selectedInventoryItem.name })
+                      }
+                      title={
+                        selectedInventoryItem.quantity > 1
+                          ? localizeUi("ui.game.gameinventory.decreaseAmount")
+                          : localizeUi("ui.game.gameinventory.deleteItem")
+                      }
+                    >
+                      <Minus size={12} />
+                    </button>
+                  )}
+                  <span className="min-w-8 border-x border-white/8 px-2 text-center text-[0.7rem] font-semibold tabular-nums text-white/80">
+                    {selectedInventoryItem.quantity}
+                  </span>
+                  {onIncrementItem && (
+                    <button
+                      type="button"
+                      onClick={() => void handleIncrement(selectedInventoryItem)}
+                      disabled={amountPending !== null}
+                      className="flex h-full w-7 items-center justify-center text-white/65 transition-colors hover:bg-white/[0.07] hover:text-white/90 disabled:cursor-not-allowed disabled:opacity-40"
+                      aria-label={localizeUi("ui.game.gameinventory.increaseValue1Amount", {
+                        value1: selectedInventoryItem.name,
+                      })}
+                      title={localizeUi("ui.game.gameinventory.increaseAmount")}
+                    >
+                      <Plus size={12} />
+                    </button>
+                  )}
+                </div>
+              )}
+              {selectedItem && canInteract && onUseItem && (
+                <button
+                  onClick={() => selectedInventoryItem && handleUse(selectedInventoryItem)}
+                  className="flex flex-1 items-center justify-center gap-1 rounded border border-amber-500/20 bg-amber-500/10 py-1.5 text-[0.7rem] font-semibold text-amber-400 transition-colors hover:bg-amber-500/15"
+                >
+                  <Wand2 size={12} />
+                  {localizeUi("ui.agents.agenteditor.use")}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+interface InventorySlotProps {
+  item: InventoryItem | null;
+  globalIndex: number;
+  selected: boolean;
+  reorderEnabled: boolean;
+  onClick: () => void;
+}
+
+function InventorySlot({ item, globalIndex, selected, reorderEnabled, onClick }: InventorySlotProps) {
+  const { t: localizeUi } = useUiTranslation();
+  const enabled = reorderEnabled && Boolean(item);
+  const slotData = { index: globalIndex };
+  const {
+    setNodeRef: setDragRef,
+    attributes,
+    listeners,
+    isDragging,
+  } = useDraggable({ id: `slot-drag-${globalIndex}`, data: slotData, disabled: !enabled });
+  const { setNodeRef: setDropRef, isOver } = useDroppable({
+    id: `slot-drop-${globalIndex}`,
+    data: slotData,
+    disabled: !enabled,
+  });
+  const setRefs = useCallback(
+    (node: HTMLButtonElement | null) => {
+      setDragRef(node);
+      setDropRef(node);
+    },
+    [setDragRef, setDropRef],
+  );
+
+  return (
+    <button
+      ref={setRefs}
+      {...attributes}
+      {...listeners}
+      onClick={onClick}
+      disabled={!item}
+      title={
+        item
+          ? item.quantity > 1
+            ? localizeUi("ui.game.inventoryslot.value1Value2", { value1: item.name, value2: item.quantity })
+            : item.name
+          : undefined
+      }
+      aria-label={
+        item
+          ? item.quantity > 1
+            ? localizeUi("ui.game.inventoryslot.value1XValue2", { value1: item.name, value2: item.quantity })
+            : item.name
+          : undefined
+      }
+      aria-pressed={item ? selected : undefined}
+      className={cn(
+        "group relative flex aspect-square flex-col items-center justify-center overflow-hidden rounded border transition-all",
+        // touch-action: none lets the TouchSensor activate without browser scroll-gestures stealing the touch.
+        // Scrolling the inventory panel is still possible by touching the modal background / pagination row.
+        enabled && "touch-none select-none [-webkit-touch-callout:none]",
+        item
+          ? selected
+            ? "border-amber-500/50 bg-amber-500/10 shadow-[inset_0_0_12px_rgba(245,158,11,0.08)]"
+            : "border-white/8 bg-white/[0.03] hover:border-white/15 hover:bg-white/[0.06]"
+          : "cursor-default border-white/5 bg-white/[0.015]",
+        enabled && "cursor-grab active:cursor-grabbing",
+        isDragging && "opacity-40",
+        isOver && !isDragging && "border-amber-400/70 ring-2 ring-amber-400/60",
+      )}
+    >
+      {item && (
+        <>
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-gradient-to-b from-white/8 to-white/[0.02] text-sm font-bold text-amber-400/80 ring-1 ring-white/8">
+            {item.name.charAt(0).toUpperCase()}
+          </div>
+          <div className="mt-1 flex min-h-0 w-full min-w-0 flex-1 flex-col items-center justify-center px-1">
+            <div className="flex max-h-full min-h-0 w-full min-w-0 flex-col items-center gap-0.5 overflow-hidden max-md:overflow-y-auto max-md:overscroll-contain max-md:touch-pan-y">
+              <span className="block w-full whitespace-normal break-words text-center text-[0.58rem] font-medium leading-tight text-white/80 [overflow-wrap:anywhere]">
+                {item.name}
+              </span>
+              {item.quantity > 1 && (
+                <span className="shrink-0 rounded bg-white/15 px-1.5 py-0.5 text-[0.55rem] font-semibold tabular-nums text-white">
+                  {localizeUi("ui.panels.imagedimensionrow.x")}
+                  {item.quantity}
+                </span>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </button>
+  );
+}

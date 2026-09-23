@@ -1,0 +1,550 @@
+// ──────────────────────────────────────────────
+// Routes: Browser — JannyAI provider
+// ──────────────────────────────────────────────
+import type { FastifyInstance } from "fastify";
+import { logger } from "../lib/logger.js";
+import { fetchJannyCharacterCard } from "../services/bot-browser/janny-character-card.js";
+import { resolveValidatedImage, safeFetch } from "../utils/security.js";
+
+const JANNY_SEARCH_URL = "https://search.jannyai.com/multi-search";
+const JANNY_IMAGE_BASE = "https://image.jannyai.com/bot-avatars/";
+const JANNY_SITE_BASE = "https://jannyai.com";
+const JANNY_API_SITE_BASE = "https://api.jannyai.com";
+const JANNY_FALLBACK_TOKEN = "88a6463b66e04fb07ba87ee3db06af337f492ce511d93df6e2d2968cb2ff2b30";
+
+const BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+const AVATAR_PROXY_MAX_BYTES = 10 * 1024 * 1024;
+
+async function fetchAvatarImage(url: string, signal: AbortSignal) {
+  const res = await safeFetch(url, {
+    signal,
+    policy: { allowedProtocols: ["https:"] },
+    maxResponseBytes: AVATAR_PROXY_MAX_BYTES,
+  });
+  if (!res.ok) return null;
+  const buf = Buffer.from(await res.arrayBuffer());
+  const image = resolveValidatedImage(buf);
+  if (!image) throw new Error("Unsupported avatar image content");
+  return { buf, mimeType: image.mimeType };
+}
+
+function jannySearchHeaders(token: string): Record<string, string> {
+  return {
+    Accept: "*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${token}`,
+    Origin: JANNY_SITE_BASE,
+    Referer: `${JANNY_SITE_BASE}/`,
+    "User-Agent": BROWSER_UA,
+    "x-meilisearch-client": "Meilisearch instant-meilisearch (v0.19.0) ; Meilisearch JavaScript (v0.41.0)",
+    "Sec-Fetch-Site": "same-site",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Dest": "empty",
+    "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24", "Google Chrome";v="131"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+  };
+}
+
+let cachedToken: string = "";
+// Fresh scraped tokens get a 5-minute TTL; fallback tokens get 1 minute. Both
+// expire so that if Janny rotates the MeiliSearch token (or our scrape was a
+// transient miss), the next request re-scrapes. The client can also force-busts
+// via `GET /janny/token?force=1` after seeing a 401/403 from MeiliSearch.
+let cachedTokenIsFallback = false;
+let cachedTokenAt = 0;
+const FALLBACK_TOKEN_TTL_MS = 60_000;
+const SCRAPED_TOKEN_TTL_MS = 5 * 60_000;
+const CHARACTER_PAGE_MAX_BYTES = 8 * 1024 * 1024;
+let inFlightTokenFetch: Promise<string> | null = null;
+
+async function fetchJannyPage(path: string): Promise<string | null> {
+  // Direct fetch first; fall back to corsproxy.io when Cloudflare blocks our IP.
+  // Each fetch gets its own 15s kill-switch so a hung upstream can't pin a request open.
+  // Note: `return await` (not bare `return`) so the abort timeout stays armed
+  // until body consumption finishes — otherwise an upstream that sends headers
+  // then stalls the body would slip past the kill-switch.
+  const directController = new AbortController();
+  const directTimeout = setTimeout(() => directController.abort(), 15_000);
+  try {
+    const direct = await fetch(`${JANNY_SITE_BASE}${path}`, {
+      headers: { "User-Agent": BROWSER_UA, Accept: "text/html,application/xhtml+xml,*/*" },
+      signal: directController.signal,
+    });
+    if (direct.ok) return await direct.text();
+  } catch {
+    /* fall through */
+  } finally {
+    clearTimeout(directTimeout);
+  }
+
+  const proxyController = new AbortController();
+  const proxyTimeout = setTimeout(() => proxyController.abort(), 15_000);
+  try {
+    const proxied = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(`${JANNY_SITE_BASE}${path}`)}`, {
+      headers: { Accept: "text/html,application/xhtml+xml,*/*" },
+      signal: proxyController.signal,
+    });
+    if (proxied.ok) return await proxied.text();
+  } catch {
+    /* fall through */
+  } finally {
+    clearTimeout(proxyTimeout);
+  }
+  return null;
+}
+
+async function scrapeToken(): Promise<{ token: string; isFallback: boolean }> {
+  try {
+    const html = await fetchJannyPage("/characters/search");
+    if (!html) return { token: JANNY_FALLBACK_TOKEN, isFallback: true };
+
+    // Resolve client-config bundle path: either inlined directly in the page,
+    // or imported by the SearchPage chunk (Janny's bundler split changed in 2026).
+    let configPath: string | null = null;
+    const directMatch = html.match(/client-config\.[a-zA-Z0-9_-]+\.js/);
+    if (directMatch) {
+      configPath = `/_astro/${directMatch[0]}`;
+    } else {
+      const spMatch = html.match(/SearchPage\.[a-zA-Z0-9_-]+\.js/);
+      if (spMatch) {
+        const spJs = await fetchJannyPage(`/_astro/${spMatch[0]}`);
+        if (spJs) {
+          const impMatch = spJs.match(/client-config\.[a-zA-Z0-9_-]+\.js/);
+          if (impMatch) configPath = `/_astro/${impMatch[0]}`;
+        }
+      }
+    }
+
+    if (configPath) {
+      const cfgJs = await fetchJannyPage(configPath);
+      if (cfgJs) {
+        const tokenMatch = cfgJs.match(/"([a-f0-9]{64})"/);
+        if (tokenMatch?.[1]) return { token: tokenMatch[1], isFallback: false };
+      }
+    }
+  } catch {
+    // fall through to fallback
+  }
+  return { token: JANNY_FALLBACK_TOKEN, isFallback: true };
+}
+
+async function getSearchToken(force = false): Promise<string> {
+  // Both fresh and fallback caches get a TTL so a rotated upstream token can't
+  // pin /janny/token to a dead value forever. `force` lets the client trigger
+  // an immediate re-scrape after it sees a 401/403 from MeiliSearch.
+  if (cachedToken && !force) {
+    const ttlMs = cachedTokenIsFallback ? FALLBACK_TOKEN_TTL_MS : SCRAPED_TOKEN_TTL_MS;
+    if (Date.now() - cachedTokenAt < ttlMs) return cachedToken;
+  }
+  if (force || cachedToken) {
+    cachedToken = "";
+    cachedTokenIsFallback = false;
+    cachedTokenAt = 0;
+  }
+  if (inFlightTokenFetch) return inFlightTokenFetch;
+  inFlightTokenFetch = scrapeToken().then(({ token, isFallback }) => {
+    cachedToken = token;
+    cachedTokenIsFallback = isFallback;
+    cachedTokenAt = Date.now();
+    inFlightTokenFetch = null;
+    return token;
+  });
+  return inFlightTokenFetch;
+}
+
+interface JannyMeiliHit {
+  id?: string;
+  name?: string;
+  tagIds?: number[];
+  creatorId?: string;
+  creatorUsername?: string;
+}
+
+function readDoubleQuotedHtmlAttribute(tag: string, name: string): string | null {
+  const prefix = `${name}="`;
+  let searchIndex = 0;
+  while (searchIndex < tag.length) {
+    const start = tag.indexOf(prefix, searchIndex);
+    if (start < 0) return null;
+    if (start > 0 && !/\s/u.test(tag[start - 1]!)) {
+      searchIndex = start + prefix.length;
+      continue;
+    }
+    const valueStart = start + prefix.length;
+    const end = tag.indexOf('"', valueStart);
+    return end < 0 ? null : tag.slice(valueStart, end);
+  }
+  return null;
+}
+
+export function decodeAstroPropsAttribute(value: string): string {
+  const entities: Record<string, string> = {
+    "&quot;": '"',
+    "&amp;": "&",
+    "&lt;": "<",
+    "&gt;": ">",
+    "&#39;": "'",
+  };
+  return value.replace(/&(?:quot|amp|lt|gt|#39);/g, (entity) => entities[entity] ?? entity);
+}
+
+/** Find Astro character props without backtracking across the fetched page. */
+export function extractJannyAstroCharacterProps(html: string): string | null {
+  const openingTag = "<astro-island";
+  let searchIndex = 0;
+  let fallback: string | null = null;
+  while (searchIndex < html.length) {
+    const start = html.indexOf(openingTag, searchIndex);
+    if (start < 0) break;
+    const end = html.indexOf(">", start + openingTag.length);
+    if (end < 0) break;
+    const tag = html.slice(start, end + 1);
+    const props = readDoubleQuotedHtmlAttribute(tag, "props");
+    if (props !== null) {
+      if (readDoubleQuotedHtmlAttribute(tag, "component-export") === "CharacterButtons") return props;
+      if (fallback === null && props.includes("character")) fallback = props;
+    }
+    searchIndex = end + 1;
+  }
+  return fallback;
+}
+
+async function backfillFromSearch(name: string, charId: string): Promise<JannyMeiliHit | null> {
+  if (!name) return null;
+  const token = await getSearchToken();
+  const body = {
+    queries: [
+      {
+        indexUid: "janny-characters",
+        q: name,
+        hitsPerPage: 20,
+        page: 1,
+      },
+    ],
+  };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const res = await fetch(JANNY_SEARCH_URL, {
+      method: "POST",
+      headers: jannySearchHeaders(token),
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (res.status === 401 || res.status === 403) {
+      // Mirror the search-route behavior so the next call re-scrapes a fresh token.
+      cachedToken = "";
+      return null;
+    }
+    if (!res.ok) return null;
+    const data = (await res.json()) as { results?: Array<{ hits?: JannyMeiliHit[] }> };
+    const hits = data?.results?.[0]?.hits || [];
+    return hits.find((h) => h.id === charId) ?? null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function botBrowserJannyRoutes(app: FastifyInstance) {
+  // ── Expose the scraped MeiliSearch token so the browser can POST search directly ──
+  // (Server-side search.jannyai.com calls are blocked by Cloudflare. The upstream
+  // SillyTavern extension works because the request comes from the user's browser,
+  // which carries cf_clearance and a real TLS fingerprint. We do the same.)
+  // `?force=1` busts the cache and re-scrapes — the client uses this after a
+  // 401/403 from MeiliSearch so a rotated upstream token can be recovered.
+  app.get<{ Querystring: { force?: string } }>("/janny/token", async (req) => {
+    const force = req.query.force === "1" || req.query.force === "true";
+    const token = await getSearchToken(force);
+    return { token };
+  });
+
+  // ── Search characters on JannyAI via MeiliSearch (server-side fallback only) ──
+  app.get<{
+    Querystring: {
+      q?: string;
+      page?: string;
+      limit?: string;
+      sort?: string;
+      nsfw?: string;
+      showLowQuality?: string;
+      min_tokens?: string;
+      max_tokens?: string;
+      tagIds?: string;
+    };
+  }>("/janny/search", async (req) => {
+    const {
+      q = "",
+      page = "1",
+      limit = "80",
+      sort = "newest",
+      nsfw = "true",
+      showLowQuality = "false",
+      min_tokens = "29",
+      max_tokens = "100000",
+      tagIds,
+    } = req.query;
+
+    const filters: string[] = [];
+    filters.push(`totalToken >= ${parseInt(min_tokens) || 29}`);
+    filters.push(`totalToken <= ${parseInt(max_tokens) || 100000}`);
+    if (nsfw !== "true") filters.push("isNsfw = false");
+    if (showLowQuality !== "true") filters.push("isLowQuality = false");
+
+    if (tagIds) {
+      const ids = tagIds
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean);
+      if (ids.length > 0) {
+        const tagClauses = ids.map((id) => `tagIds = ${id}`);
+        filters.push(tagClauses.join(" AND "));
+      }
+    }
+
+    const sortMap: Record<string, string[]> = {
+      newest: ["createdAtStamp:desc"],
+      oldest: ["createdAtStamp:asc"],
+      tokens_desc: ["totalToken:desc"],
+      tokens_asc: ["totalToken:asc"],
+      relevant: [],
+    };
+    const sortArr: string[] = sortMap[sort] || sortMap.newest || [];
+
+    const body: Record<string, unknown> = {
+      queries: [
+        {
+          indexUid: "janny-characters",
+          q,
+          facets: ["isLowQuality", "isNsfw", "tagIds", "totalToken"],
+          attributesToCrop: ["description:300"],
+          cropMarker: "...",
+          filter: filters,
+          attributesToHighlight: ["name", "description"],
+          highlightPreTag: "__ais-highlight__",
+          highlightPostTag: "__/ais-highlight__",
+          hitsPerPage: parseInt(limit) || 80,
+          page: parseInt(page) || 1,
+          ...(sortArr.length > 0 ? { sort: sortArr } : {}),
+        },
+      ],
+    };
+
+    const token = await getSearchToken();
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30_000);
+    try {
+      const res = await fetch(JANNY_SEARCH_URL, {
+        method: "POST",
+        headers: jannySearchHeaders(token),
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (res.status === 401 || res.status === 403) {
+        // Token may have rotated — bust the cache so the next call re-scrapes
+        cachedToken = "";
+        const cfMitigated = res.headers.get("cf-mitigated");
+        if (cfMitigated || res.status === 403) {
+          throw new Error(
+            "JannyAI is currently blocking server-to-server requests (Cloudflare bot mitigation). Try again later or use a different provider.",
+          );
+        }
+      }
+      if (!res.ok) throw new Error(`JannyAI search error ${res.status}`);
+      return res.json();
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
+
+  // ── Download the complete PNG character card through JannyAI's supported API ──
+  app.get<{ Params: { id: string } }>("/janny/download/:id", async (req, reply) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 45_000);
+    try {
+      const card = await fetchJannyCharacterCard(req.params.id, { signal: controller.signal });
+      return reply
+        .header("Content-Type", card.mimeType)
+        .header("Content-Disposition", 'attachment; filename="character.png"')
+        .send(card.buffer);
+    } catch (err) {
+      logger.warn(err, "[bot-browser] JannyAI character-card download failed");
+      const statusCode = (err as Error).name === "AbortError" ? 504 : 502;
+      return reply.status(statusCode).send({
+        error: "JannyAI could not provide the complete character card. Please try again later.",
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
+
+  // ── Fetch full character details by scraping JannyAI page ──
+  app.get<{ Params: { id: string } }>("/janny/character/:id", async (req, reply) => {
+    const charId = req.params.id;
+    if (!charId) throw new Error("Missing character ID");
+
+    const slug = (req.query as Record<string, string>)?.slug || "character";
+    const pageUrl = `${JANNY_SITE_BASE}/characters/${charId}_${slug}`;
+    const apiPageUrl = `${JANNY_API_SITE_BASE}/characters/${charId}_${slug}`;
+
+    const isUsableCharacterHtml = (value: string) =>
+      value.length >= 1000 &&
+      !value.includes("Just a moment") &&
+      !value.includes("cf-challenge") &&
+      !value.includes("challenge-platform") &&
+      value.includes("astro-island");
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30_000);
+    try {
+      let html = "";
+
+      // Strategy 1: Direct fetch. Try JannyAI's public API mirror first because
+      // it serves the same Astro payload with fewer bot gates than the main site.
+      for (const url of [apiPageUrl, pageUrl]) {
+        try {
+          const directRes = await safeFetch(url, {
+            headers: {
+              Accept: "text/html,application/xhtml+xml,*/*",
+              "User-Agent": BROWSER_UA,
+              Referer: "https://jannyai.com/",
+            },
+            signal: controller.signal,
+            policy: { allowedProtocols: ["https:"] },
+            allowedContentTypes: ["text/html", "application/xhtml+xml"],
+            allowMissingContentType: true,
+            maxResponseBytes: CHARACTER_PAGE_MAX_BYTES,
+          });
+          if (directRes.ok) {
+            const directHtml = await directRes.text();
+            if (isUsableCharacterHtml(directHtml)) {
+              html = directHtml;
+              break;
+            }
+          }
+        } catch {
+          /* fall through */
+        }
+      }
+
+      // Strategy 2: corsproxy.io
+      if (!html) {
+        try {
+          const proxyRes = await safeFetch(`https://corsproxy.io/?url=${encodeURIComponent(pageUrl)}`, {
+            headers: {
+              Accept: "text/html,application/xhtml+xml,*/*",
+              Origin: "https://jannyai.com",
+            },
+            signal: controller.signal,
+            policy: { allowedProtocols: ["https:"] },
+            allowedContentTypes: ["text/html", "application/xhtml+xml"],
+            allowMissingContentType: true,
+            maxResponseBytes: CHARACTER_PAGE_MAX_BYTES,
+          });
+          if (proxyRes.ok) {
+            html = await proxyRes.text();
+            if (!isUsableCharacterHtml(html)) {
+              html = "";
+            }
+          }
+        } catch {
+          /* fall through */
+        }
+      }
+
+      if (!html) {
+        return reply.status(404).send({ error: "Could not fetch character page (Cloudflare blocked)" });
+      }
+
+      // Parse Astro island props containing character data
+      const astroProps = extractJannyAstroCharacterProps(html);
+      if (astroProps === null) {
+        return reply.status(404).send({ error: "Could not parse character data from page" });
+      }
+
+      const propsDecoded = decodeAstroPropsAttribute(astroProps);
+
+      const propsJson = JSON.parse(propsDecoded);
+
+      function decodeAstroValue(value: unknown): unknown {
+        if (!Array.isArray(value)) return value;
+        const [type, data] = value;
+        if (type === 0) {
+          if (typeof data === "object" && data !== null && !Array.isArray(data)) {
+            const decoded: Record<string, unknown> = {};
+            for (const [key, val] of Object.entries(data as Record<string, unknown>)) {
+              decoded[key] = decodeAstroValue(val);
+            }
+            return decoded;
+          }
+          return data;
+        } else if (type === 1) {
+          return (data as unknown[]).map((item: unknown) => decodeAstroValue(item));
+        }
+        return data;
+      }
+
+      const character = decodeAstroValue(propsJson.character) as Record<string, unknown> | null;
+
+      if (!character) {
+        return reply.status(404).send({ error: "No character data found in page" });
+      }
+
+      const creatorMatch = html.match(/Creator:\s*(?:<\/[^>]+>\s*)?<a[^>]*>@?([^<]+)<\/a>/);
+      if (creatorMatch) {
+        character.creatorUsername = creatorMatch[1]!.trim();
+      }
+
+      // Backfill missing tagIds/creatorId from MeiliSearch — page scrape often lacks these
+      const tagIds = character.tagIds as number[] | undefined;
+      if (!tagIds?.length || !character.creatorId) {
+        const hit = await backfillFromSearch(typeof character.name === "string" ? character.name : "", charId);
+        if (hit) {
+          if (!tagIds?.length && hit.tagIds?.length) character.tagIds = hit.tagIds;
+          if (!character.creatorId && hit.creatorId) character.creatorId = hit.creatorId;
+        }
+      }
+
+      return {
+        character,
+        success: true,
+      };
+    } catch (err) {
+      if ((err as Error).name === "AbortError") {
+        return reply.status(504).send({ error: "Request timed out" });
+      }
+      return reply.status(500).send({ error: (err as Error).message });
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
+
+  // ── Proxy JannyAI avatar images ──
+  app.get<{ Params: { "*": string } }>("/janny/avatar/*", async (req, reply) => {
+    const avatarPath = (req.params as Record<string, string>)["*"];
+    if (!avatarPath) throw new Error("Missing avatar path");
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    try {
+      const image = await fetchAvatarImage(`${JANNY_IMAGE_BASE}${avatarPath}`, controller.signal);
+      if (!image) return reply.status(404).send({ error: "Avatar not found" });
+      return reply
+        .header("Content-Type", image.mimeType)
+        .header("Cache-Control", "public, max-age=86400")
+        .send(image.buf);
+    } catch (err) {
+      if ((err as Error).message.includes("Unsupported avatar image content")) {
+        return reply.status(415).send({ error: "Unsupported avatar content type" });
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
+}

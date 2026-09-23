@@ -1,0 +1,796 @@
+import { MemoCardLibraryPreview } from "./CardLibraryPreview";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
+import { AvatarImage } from "./AvatarImage";
+import {
+  Fragment,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type UIEvent,
+} from "react";
+import { ArrowLeft, ArrowUpDown, Download, Hash, MessageCircle, Pencil, Plus, Search, Star, User } from "lucide-react";
+import { estimateTextTokens, type CharacterData, type Persona } from "@marinara-engine/shared";
+import type { CharacterCatalogEntry } from "@marinara-engine/shared";
+import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
+import {
+  flattenCharacterPages,
+  flattenPersonaPages,
+  useCharacterPages,
+  useCharacter,
+  usePersonaPages,
+} from "../../hooks/use-characters";
+import { getCharacterTitle } from "../../lib/character-display";
+import {
+  formatCardLibraryMeta,
+  getCardLibrarySummary,
+  matchesCardLibrarySearch,
+  parseCardLibrarySearchQuery,
+} from "../../lib/card-library-search";
+import { estimateCharacterCardTokens, formatEstimatedTokens } from "../../lib/character-token-count";
+import { applyInlineMarkdown, renderMarkdownBlocks } from "../../lib/markdown";
+import { normalizeAvatarCrop, type AvatarCrop } from "@marinara-engine/shared";
+import { cn, getAvatarCropStyle } from "../../lib/utils";
+import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
+import { CharacterCategoryFilter } from "./CharacterCategoryFilter";
+import type { CharacterLibraryCategory } from "@marinara-engine/shared";
+import {
+  useUIStore,
+  type CardLibraryKind,
+  type CharacterLibrarySort,
+  type ResourcePanelSort,
+} from "../../stores/ui.store";
+
+const libraryToolbarButtonClass =
+  "mari-chrome-control mari-chrome-control--primary h-10 min-h-10 min-w-0 px-3 text-[0.75rem]";
+const libraryToolbarFieldClass = "mari-chrome-field h-10 w-full text-[0.75rem] md:h-9";
+
+type CharacterRow = CharacterCatalogEntry;
+
+type ParsedCharacterRow = Pick<
+  CharacterRow,
+  "id" | "comment" | "avatarPath" | "createdAt" | "updatedAt" | "tokenEstimate"
+> & {
+  parsed: Partial<CharacterData> & {
+    extensions?: Record<string, unknown>;
+  };
+};
+
+type LibrarySection = { title: string; content: string };
+
+type LibraryCard = {
+  id: string;
+  name: string;
+  title: string | null;
+  meta: string | null;
+  summary: string;
+  avatarPath: string | null;
+  avatarCrop?: AvatarCrop;
+  createdAt: string;
+  updatedAt: string;
+  tags: string[];
+  tokenEstimate: number;
+  favorite: boolean;
+  creatorNotes: string;
+  hasExplicitSummary: boolean;
+  sections: LibrarySection[];
+};
+
+type LibraryCopy = {
+  singular: "character" | "persona";
+  plural: "characters" | "personas";
+  title: "Character Library" | "Persona Library";
+  heading: string;
+};
+
+const LIBRARY_COPY: Record<CardLibraryKind, LibraryCopy> = {
+  characters: {
+    singular: "character",
+    plural: "characters",
+    title: "Character Library",
+    heading: "Browse your characters",
+  },
+  personas: {
+    singular: "persona",
+    plural: "personas",
+    title: "Persona Library",
+    heading: "Browse your personas",
+  },
+};
+
+function parseCharacterRow(char: CharacterRow): ParsedCharacterRow {
+  try {
+    const parsed = {
+      name: char.name,
+      summary: char.explicitSummary,
+      description: char.description,
+      personality: char.personality,
+      scenario: char.scenario,
+      first_mes: char.firstMessage,
+      creator_notes: char.creatorNotes,
+      tags: char.tags,
+      creator: char.creator,
+      character_version: char.version,
+      extensions: { fav: char.favorite, avatarCrop: char.avatarCrop, nameColor: char.nameColor },
+    };
+    return { ...char, parsed: (parsed as unknown as ParsedCharacterRow["parsed"]) ?? {} };
+  } catch {
+    return { ...char, parsed: { name: "Unknown", description: "" } };
+  }
+}
+
+function getText(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function getCharacterTags(char: ParsedCharacterRow): string[] {
+  return (Array.isArray(char.parsed.tags) ? char.parsed.tags : []).filter(
+    (tag): tag is string => typeof tag === "string" && tag.trim().length > 0,
+  );
+}
+
+function getCharacterSummary(char: ParsedCharacterRow) {
+  return getCardLibrarySummary([
+    char.parsed.summary,
+    char.parsed.creator_notes,
+    char.parsed.description,
+    char.parsed.personality,
+  ]);
+}
+
+function getPersonaSummary(persona: Persona) {
+  return getCardLibrarySummary([persona.creatorNotes, persona.description, persona.personality, persona.backstory]);
+}
+
+function truncateText(content: string, maxLength: number) {
+  if (content.length <= maxLength) return content;
+  return `${content.slice(0, maxLength - 3).trimEnd()}...`;
+}
+
+function getCharacterSections(char: ParsedCharacterRow): LibrarySection[] {
+  return [
+    { title: "Description", content: getText(char.parsed.description) },
+    { title: "Personality", content: getText(char.parsed.personality) },
+    { title: "Scenario", content: getText(char.parsed.scenario) },
+    { title: "Opening Message", content: getText(char.parsed.first_mes) },
+  ].filter((section) => section.content);
+}
+
+function getPersonaSections(persona: Persona): LibrarySection[] {
+  return [
+    { title: "Description", content: getText(persona.description) },
+    { title: "Personality", content: getText(persona.personality) },
+    { title: "Scenario", content: getText(persona.scenario) },
+    { title: "Backstory", content: getText(persona.backstory) },
+    { title: "Appearance", content: getText(persona.appearance) },
+  ].filter((section) => section.content);
+}
+
+function estimatePersonaTokens(persona: Persona) {
+  return estimateTextTokens(
+    [persona.description, persona.personality, persona.scenario, persona.backstory, persona.appearance]
+      .map(getText)
+      .join(""),
+  );
+}
+
+function toCharacterLibraryCard(char: ParsedCharacterRow): LibraryCard {
+  const name = getText(char.parsed.name) || "Unnamed";
+  return {
+    id: char.id,
+    name,
+    title: getCharacterTitle({ name, comment: char.comment }),
+    meta: formatCardLibraryMeta(char.parsed.creator, char.parsed.character_version),
+    summary: getCharacterSummary(char),
+    avatarPath: char.avatarPath,
+    avatarCrop: normalizeAvatarCrop(char.parsed.extensions?.avatarCrop) ?? undefined,
+    createdAt: char.createdAt,
+    updatedAt: char.updatedAt,
+    tags: getCharacterTags(char),
+    tokenEstimate: char.tokenEstimate ?? estimateCharacterCardTokens(char.parsed),
+    favorite: !!char.parsed.extensions?.fav,
+    creatorNotes: getText(char.parsed.creator_notes),
+    hasExplicitSummary: Boolean(getText(char.parsed.summary)),
+    sections: getCharacterSections(char),
+  };
+}
+
+function toPersonaLibraryCard(persona: Persona): LibraryCard {
+  return {
+    id: persona.id,
+    name: getText(persona.name) || "Unnamed",
+    title: getText(persona.comment) || null,
+    meta: formatCardLibraryMeta(persona.creator, persona.personaVersion),
+    summary: getPersonaSummary(persona),
+    avatarPath: persona.avatarPath,
+    avatarCrop: persona.avatarCrop ?? undefined,
+    createdAt: persona.createdAt,
+    updatedAt: persona.updatedAt,
+    tags: persona.tags.filter((tag) => tag.trim().length > 0),
+    tokenEstimate: estimatePersonaTokens(persona),
+    favorite: false,
+    creatorNotes: getText(persona.creatorNotes),
+    hasExplicitSummary: false,
+    sections: getPersonaSections(persona),
+  };
+}
+
+function CardLibraryDetailCard({
+  card,
+  kind,
+  onEdit,
+  onChat,
+}: {
+  card: LibraryCard;
+  kind: CardLibraryKind;
+  onEdit: (id: string) => void;
+  onChat?: (card: LibraryCard) => void;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  const copy = LIBRARY_COPY[kind];
+  const placeholderClass =
+    kind === "characters" ? "mari-avatar-placeholder--character" : "mari-avatar-placeholder--persona";
+
+  return (
+    <div className="space-y-4">
+      <div className="overflow-hidden rounded-[1.5rem] border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--background)]/70 shadow-[0_24px_70px_-40px_rgba(15,23,42,0.95)] sm:rounded-[2rem]">
+        <div className={cn("mari-avatar-placeholder relative aspect-square overflow-visible", placeholderClass)}>
+          {card.avatarPath ? (
+            <CharacterPhoto
+              src={card.avatarPath}
+              name={card.name}
+              className="block h-full w-full"
+              wrapperClassName="absolute inset-0 block"
+              onUpdate={() => onEdit(card.id)}
+              updateLabel={localizeUi("ui.noodle.noodlepostcard.edit")}
+            >
+              <span className="absolute inset-0 overflow-hidden rounded-[inherit]">
+                <AvatarImage
+                  src={card.avatarPath}
+                  alt={card.name}
+                  iconSize="2.5rem"
+                  fallbackClassName="text-[var(--marinara-chat-chrome-panel-title)]"
+                  className="h-full w-full object-cover"
+                  style={getAvatarCropStyle(card.avatarCrop)}
+                />
+              </span>
+            </CharacterPhoto>
+          ) : (
+            <div className="flex h-full w-full items-center justify-center text-[var(--marinara-chat-chrome-panel-title)]">
+              <User size="2.5rem" />
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-4 p-5">
+          <div>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="truncate text-xl font-semibold text-[var(--marinara-chat-chrome-panel-title)] sm:text-2xl">
+                  {card.name}
+                </h2>
+                {card.title && (
+                  <p className="mt-1 truncate text-sm italic text-[var(--marinara-chat-chrome-panel-muted)]">
+                    {card.title}
+                  </p>
+                )}
+                {card.meta && (
+                  <p className="mt-1 text-xs font-semibold uppercase tracking-[0.22em] text-[var(--marinara-chat-chrome-panel-muted)]">
+                    {card.meta}
+                  </p>
+                )}
+              </div>
+              <div className="flex shrink-0 flex-col items-end gap-1.5">
+                <span
+                  className="mari-chrome-muted-badge gap-1 px-2.5 py-1 text-[0.6875rem]"
+                  title={localizeUi(
+                    "ui.characters.cardlibrarydetailcard.estimatedFromValue1CardTextFieldsActualTokenizerCounts",
+                    { value1: copy.singular },
+                  )}
+                >
+                  <Hash size="0.75rem" />
+                  {formatEstimatedTokens(card.tokenEstimate, localizeUi)}
+                </span>
+                {card.favorite && (
+                  <span
+                    data-character-favorite-indicator="detail"
+                    className="mari-chrome-accent-surface mari-accent-animated mari-chrome-tag inline-flex items-center gap-1 px-2.5 py-1 text-[0.6875rem] font-medium"
+                  >
+                    <Star size="0.75rem" className="fill-current" />{" "}
+                    {localizeUi("ui.characters.cardlibrarydetailcard.favorite")}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {card.hasExplicitSummary && (
+              <section className="mt-4 rounded-[1.5rem] border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-highlight-bg)] px-4 py-3">
+                <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--marinara-chat-chrome-panel-muted)]">
+                  {localizeUi("ui.characters.summary.label")}
+                </h3>
+                <div className="mari-message-content mt-3 whitespace-pre-wrap text-sm leading-6 text-[var(--marinara-chat-chrome-panel-text)]">
+                  {renderMarkdownBlocks(card.summary, applyInlineMarkdown, `summary-${card.id}`)}
+                </div>
+              </section>
+            )}
+
+            {card.creatorNotes && (
+              <div className="mari-message-content mt-4 whitespace-pre-wrap rounded-[1.5rem] border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-highlight-bg)] px-4 py-3 text-sm leading-6 text-[var(--marinara-chat-chrome-panel-text)]">
+                {renderMarkdownBlocks(card.creatorNotes, applyInlineMarkdown, `creator-notes-${card.id}`)}
+              </div>
+            )}
+
+            <div className={cn("mt-4 gap-2", onChat ? "grid grid-cols-2" : "flex flex-wrap")}>
+              <button
+                onClick={() => onEdit(card.id)}
+                className="mari-chrome-control mari-chrome-control--regular-label min-h-10 px-3 py-2 text-xs sm:px-4 sm:text-sm"
+              >
+                <Pencil size="0.875rem" />
+                {localizeUi("ui.noodle.noodlepostcard.edit")}{" "}
+                {copy.singular === "character"
+                  ? localizeUi("ui.characters.cardlibrarydetailcard.character")
+                  : localizeUi("ui.characters.cardlibrarydetailcard.persona")}
+              </button>
+              {onChat && (
+                <button
+                  type="button"
+                  onClick={() => onChat(card)}
+                  className="mari-chrome-control mari-chrome-control--regular-label min-h-10 px-3 py-2 text-xs sm:px-4 sm:text-sm"
+                >
+                  <MessageCircle size="0.875rem" />
+                  {localizeUi("ui.characters.characterlibraryview.chatNow")}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {card.sections.length > 0 && (
+        <div className="space-y-3">
+          {card.sections.map((section) => (
+            <section
+              key={section.title}
+              className="rounded-[1.5rem] border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--background)]/65 p-4"
+            >
+              <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--marinara-chat-chrome-panel-muted)]">
+                {section.title}
+              </h3>
+              <div className="mari-message-content mt-3 whitespace-pre-wrap text-sm leading-6 text-[var(--marinara-chat-chrome-panel-text)]">
+                {renderMarkdownBlocks(
+                  truncateText(section.content, section.title === "Opening Message" ? 420 : 620),
+                  applyInlineMarkdown,
+                  `card-${card.id}-${section.title}`,
+                )}
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function CharacterLibraryView() {
+  const { t: localizeUi } = useUiTranslation();
+  const { t } = useTranslation();
+  const localize = useLocalizedUiText();
+  const kind = useUIStore((s) => s.cardLibraryKind);
+  const copy = LIBRARY_COPY[kind];
+  const isPersonaLibrary = kind === "personas";
+  const closeLibrary = useUIStore((s) => s.closeCharacterLibrary);
+  const openCharacterDetail = useUIStore((s) => s.openCharacterDetail);
+  const openPersonaDetail = useUIStore((s) => s.openPersonaDetail);
+  const openModal = useUIStore((s) => s.openModal);
+  const characterSelectedId = useUIStore((s) => s.characterLibrarySelectedId);
+  const initialCharacterId = useUIStore((s) => s.characterLibraryInitialId);
+  const initialCharacter = useCharacter(isPersonaLibrary ? null : initialCharacterId);
+  const initialScrollHandled = useRef<string | null>(null);
+  const personaSelectedId = useUIStore((s) => s.personaLibrarySelectedId);
+  const setCharacterSelectedId = useUIStore((s) => s.setCharacterLibrarySelectedId);
+  const setPersonaSelectedId = useUIStore((s) => s.setPersonaLibrarySelectedId);
+  const characterSort = useUIStore((s) => s.characterLibrarySort);
+  const personaSort = useUIStore((s) => s.personaLibrarySort);
+  const setCharacterSort = useUIStore((s) => s.setCharacterLibrarySort);
+  const setPersonaSort = useUIStore((s) => s.setPersonaLibrarySort);
+  const setCharacterScrollTop = useUIStore((s) => s.setCharacterLibraryScrollTop);
+  const setPersonaScrollTop = useUIStore((s) => s.setPersonaLibraryScrollTop);
+
+  const selectedId = isPersonaLibrary ? personaSelectedId : characterSelectedId;
+  const sort = isPersonaLibrary ? personaSort : characterSort;
+  const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
+  const serverSearch = useMemo(() => parseCardLibrarySearchQuery(deferredSearch).text, [deferredSearch]);
+  const [category, setCategory] = useState<CharacterLibraryCategory | "all">("characters");
+  const characterPages = useCharacterPages({
+    enabled: !isPersonaLibrary,
+    search: serverSearch,
+    sort: characterSort,
+    category,
+  });
+  const personaPages = usePersonaPages({ enabled: isPersonaLibrary, search: serverSearch, sort: personaSort });
+  const characters = useMemo(() => flattenCharacterPages(characterPages.data), [characterPages.data]);
+  const personas = useMemo(() => flattenPersonaPages(personaPages.data), [personaPages.data]);
+  const isLoading = isPersonaLibrary ? personaPages.isLoading : characterPages.isLoading || initialCharacter.isLoading;
+  const hasNextPage = isPersonaLibrary ? personaPages.hasNextPage : characterPages.hasNextPage;
+  const isFetchingNextPage = isPersonaLibrary ? personaPages.isFetchingNextPage : characterPages.isFetchingNextPage;
+  const libraryRootScrollRef = useRef<HTMLDivElement | null>(null);
+  const libraryListScrollRef = useRef<HTMLElement | null>(null);
+  const pendingLibraryScrollTopRef = useRef(0);
+  const libraryScrollFrameRef = useRef<number | null>(null);
+
+  const cards = useMemo<LibraryCard[]>(() => {
+    if (isPersonaLibrary) return personas.map(toPersonaLibraryCard);
+    const rows = (characters as CharacterRow[]).map(parseCharacterRow).map(toCharacterLibraryCard);
+    // A home shortcut can target a card outside the loaded page. Reuse the
+    // single-card query instead of loading every library page to reach it.
+    const initial = initialCharacter.data as (Omit<ParsedCharacterRow, "parsed"> & { data: string }) | undefined;
+    if (initial && !rows.some((card) => card.id === initial.id)) {
+      try {
+        rows.push(toCharacterLibraryCard({ ...initial, parsed: JSON.parse(initial.data) }));
+      } catch {
+        // Keep the normal library usable if the target contains malformed data.
+      }
+    }
+    return rows;
+  }, [characters, initialCharacter.data, isPersonaLibrary, personas]);
+
+  const filteredCards = useMemo(() => {
+    // Filter on the deferred query so each keystroke paints the input before re-filtering the grid.
+    const query = parseCardLibrarySearchQuery(deferredSearch);
+    return cards.filter((card) => matchesCardLibrarySearch(card, query));
+  }, [cards, deferredSearch]);
+
+  const sortedCards = useMemo(() => {
+    const list = [...filteredCards];
+    switch (sort) {
+      case "name-asc":
+        return list.sort((left, right) => left.name.localeCompare(right.name));
+      case "name-desc":
+        return list.sort((left, right) => right.name.localeCompare(left.name));
+      case "newest":
+        return list.sort((left, right) => (right.createdAt ?? "").localeCompare(left.createdAt ?? ""));
+      case "oldest":
+        return list.sort((left, right) => (left.createdAt ?? "").localeCompare(right.createdAt ?? ""));
+      case "favorites":
+        return list.sort(
+          (left, right) => Number(right.favorite) - Number(left.favorite) || left.name.localeCompare(right.name),
+        );
+      default:
+        return list;
+    }
+  }, [filteredCards, sort]);
+
+  const setSelectedId = useCallback(
+    (id: string | null) => {
+      if (isPersonaLibrary) setPersonaSelectedId(id);
+      else setCharacterSelectedId(id);
+    },
+    [isPersonaLibrary, setCharacterSelectedId, setPersonaSelectedId],
+  );
+
+  useEffect(() => {
+    if (isLoading) return;
+    if (selectedId && sortedCards.some((card) => card.id === selectedId)) return;
+    setSelectedId(sortedCards[0]?.id ?? null);
+  }, [isLoading, selectedId, setSelectedId, sortedCards]);
+
+  const selectedCard = useMemo(
+    () => sortedCards.find((card) => card.id === selectedId) ?? null,
+    [selectedId, sortedCards],
+  );
+
+  const getActiveLibraryScrollNode = useCallback(() => {
+    const candidates = [libraryRootScrollRef.current, libraryListScrollRef.current];
+    return (
+      candidates.find((node) => {
+        if (!node || node.scrollHeight <= node.clientHeight) return false;
+        const overflowY = window.getComputedStyle(node).overflowY;
+        return overflowY === "auto" || overflowY === "scroll";
+      }) ??
+      libraryRootScrollRef.current ??
+      libraryListScrollRef.current
+    );
+  }, []);
+
+  const saveScrollTop = useCallback(
+    (scrollTop: number) => {
+      if (isPersonaLibrary) setPersonaScrollTop(scrollTop);
+      else setCharacterScrollTop(scrollTop);
+    },
+    [isPersonaLibrary, setCharacterScrollTop, setPersonaScrollTop],
+  );
+
+  const rememberLibraryScroll = useCallback(() => {
+    const node = getActiveLibraryScrollNode();
+    if (!node) return;
+    pendingLibraryScrollTopRef.current = node.scrollTop;
+    saveScrollTop(node.scrollTop);
+  }, [getActiveLibraryScrollNode, saveScrollTop]);
+
+  const handleLibraryScroll = useCallback(
+    (event: UIEvent<HTMLElement>) => {
+      if (event.currentTarget !== event.target) return;
+      pendingLibraryScrollTopRef.current = event.currentTarget.scrollTop;
+      if (libraryScrollFrameRef.current !== null) return;
+      libraryScrollFrameRef.current = window.requestAnimationFrame(() => {
+        libraryScrollFrameRef.current = null;
+        saveScrollTop(pendingLibraryScrollTopRef.current);
+      });
+    },
+    [saveScrollTop],
+  );
+
+  useLayoutEffect(() => {
+    if (isLoading) return;
+    const restoreScroll = () => {
+      if (!isPersonaLibrary && initialCharacterId && initialScrollHandled.current !== initialCharacterId) {
+        const target = libraryRootScrollRef.current?.querySelector<HTMLElement>(
+          `[data-card-library-card="${CSS.escape(initialCharacterId)}"]`,
+        );
+        if (target) {
+          target.scrollIntoView({ block: "start", behavior: "instant" });
+          initialScrollHandled.current = initialCharacterId;
+          rememberLibraryScroll();
+          return;
+        }
+      }
+      const state = useUIStore.getState();
+      const scrollTop = isPersonaLibrary ? state.personaLibraryScrollTop : state.characterLibraryScrollTop;
+      for (const node of [libraryRootScrollRef.current, libraryListScrollRef.current]) {
+        if (!node) continue;
+        const maxScrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
+        node.scrollTop = Math.min(scrollTop, maxScrollTop);
+      }
+    };
+    restoreScroll();
+    const frame = window.requestAnimationFrame(restoreScroll);
+    return () => window.cancelAnimationFrame(frame);
+  }, [initialCharacterId, isLoading, isPersonaLibrary, rememberLibraryScroll, sortedCards.length]);
+
+  useLayoutEffect(
+    () => () => {
+      if (libraryScrollFrameRef.current !== null) window.cancelAnimationFrame(libraryScrollFrameRef.current);
+    },
+    [],
+  );
+
+  const openDetailFromLibrary = (id: string) => {
+    rememberLibraryScroll();
+    setSelectedId(id);
+    if (isPersonaLibrary) openPersonaDetail(id, { preservePersonaLibrary: true });
+    else openCharacterDetail(id, { preserveCharacterLibrary: true });
+  };
+
+  const openCharacterChat = useCallback(
+    (card: LibraryCard) => {
+      if (isPersonaLibrary) return;
+      openModal("start-character-chat", {
+        characterId: card.id,
+        characterName: card.name,
+      });
+    },
+    [isPersonaLibrary, openModal],
+  );
+
+  const handleSortChange = (value: string) => {
+    if (isPersonaLibrary) setPersonaSort(value as ResourcePanelSort);
+    else setCharacterSort(value as CharacterLibrarySort);
+  };
+
+  const fetchNextPage = () => {
+    if (isPersonaLibrary) void personaPages.fetchNextPage();
+    else void characterPages.fetchNextPage();
+  };
+
+  const placeholderClass = isPersonaLibrary ? "mari-avatar-placeholder--persona" : "mari-avatar-placeholder--character";
+  const newCardButtonClass = cn(
+    "mari-panel-gradient-button h-10 min-h-10 min-w-0 px-3 text-[0.75rem]",
+    isPersonaLibrary ? "mari-panel-gradient--personas" : "mari-panel-gradient--characters",
+  );
+
+  return (
+    <div
+      ref={libraryRootScrollRef}
+      data-component="CharacterLibraryView"
+      onScroll={handleLibraryScroll}
+      className="mari-chrome-token-scope flex h-full min-h-0 flex-col overflow-y-auto overflow-x-hidden bg-[radial-gradient(circle_at_top_left,_color-mix(in_srgb,var(--marinara-chat-chrome-accent)_14%,transparent),_transparent_30%),radial-gradient(circle_at_top_right,_color-mix(in_srgb,var(--marinara-chat-chrome-text)_10%,transparent),_transparent_26%),var(--background)] text-[var(--marinara-chat-chrome-panel-text)] lg:overflow-hidden"
+    >
+      <div className="sticky top-0 z-10 border-b border-[var(--marinara-chat-chrome-panel-divider)] bg-[var(--card)]/85 backdrop-blur-xl">
+        {!isPersonaLibrary && <CharacterCategoryFilter value={category} onChange={setCategory} />}
+        <div className="flex flex-col gap-2 px-3 py-2 md:px-6 md:py-3 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <button
+              onClick={closeLibrary}
+              className="mari-chrome-control h-9 w-9 rounded-2xl p-0 md:h-10 md:w-10"
+              title={localizeUi("ui.characters.characterlibraryview.closeLibrary")}
+            >
+              <ArrowLeft size="0.95rem" />
+            </button>
+            <div className="min-w-0">
+              <p className="text-[0.625rem] font-semibold uppercase tracking-[0.28em] text-[var(--marinara-chat-chrome-panel-muted)]">
+                {copy.title}
+              </p>
+              <h1 className="truncate text-base font-semibold text-[var(--marinara-chat-chrome-panel-title)] md:text-2xl">
+                {copy.heading}
+              </h1>
+              <p className="text-xs text-[var(--marinara-chat-chrome-panel-muted)] md:text-sm">
+                {filteredCards.length} {localizeUi("ui.characters.characterlibraryview.outOf")} {cards.length}
+                {hasNextPage ? "+" : ""} {localizeUi("ui.characters.characterlibraryview.card")}
+                {cards.length === 1 ? "" : localizeUi("ui.noodle.stageprofileview.s")}
+              </p>
+            </div>
+          </div>
+
+          <div className="grid w-full grid-cols-2 gap-1.5 sm:ml-auto sm:w-72 lg:w-80">
+            <button
+              onClick={() => openModal(isPersonaLibrary ? "create-persona" : "create-character")}
+              className={newCardButtonClass}
+              title={localizeUi("ui.characters.characterlibraryview.newValue1", { value1: copy.singular })}
+              aria-label={localizeUi("ui.characters.characterlibraryview.newValue1", { value1: copy.singular })}
+            >
+              <Plus size="0.75rem" />
+            </button>
+            <button
+              onClick={() => openModal(isPersonaLibrary ? "import-persona" : "import-character")}
+              className={libraryToolbarButtonClass}
+              title={localizeUi("ui.characters.characterlibraryview.importValue1", { value1: copy.singular })}
+              aria-label={localizeUi("ui.characters.characterlibraryview.importValue1", { value1: copy.singular })}
+            >
+              <Download size="0.75rem" />
+            </button>
+
+            <div className="relative min-w-0">
+              <Search
+                size="0.75rem"
+                className="mari-chrome-field-icon pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2"
+              />
+              <input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder={isPersonaLibrary ? localize("Search personas") : t("search.panels.characters")}
+                className={cn(libraryToolbarFieldClass, "pl-7 pr-2.5")}
+              />
+            </div>
+
+            <div data-library-toolbar-sort className="relative min-w-0">
+              <select
+                value={sort}
+                onChange={(event) => handleSortChange(event.target.value)}
+                aria-label={localizeUi("ui.panels.agentspanel.sortOrder")}
+                className={cn(
+                  libraryToolbarFieldClass,
+                  "mari-chrome-sort-field mari-accent-animated !w-full appearance-none pl-2.5 pr-7",
+                )}
+              >
+                <option value="name-asc">{localizeUi("ui.characters.characterlibraryview.nameAZ")}</option>
+                <option value="name-desc">{localizeUi("ui.characters.characterlibraryview.nameZA")}</option>
+                <option value="newest">{localizeUi("ui.characters.characterlibraryview.newest")}</option>
+                <option value="oldest">{localizeUi("ui.characters.characterlibraryview.oldest")}</option>
+                {!isPersonaLibrary && (
+                  <option value="favorites">{localizeUi("ui.characters.characterlibraryview.favoritesFirst")}</option>
+                )}
+              </select>
+              <ArrowUpDown
+                size="0.6875rem"
+                className="mari-chrome-field-icon mari-chrome-sort-icon mari-accent-animated pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_24rem] lg:gap-0 xl:grid-cols-[minmax(0,1.1fr)_28rem]">
+        <section
+          ref={libraryListScrollRef}
+          onScroll={handleLibraryScroll}
+          className="min-h-0 overflow-visible px-4 py-4 md:px-6 lg:overflow-y-auto"
+        >
+          {isLoading && (
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {[1, 2, 3, 4, 5, 6].map((item) => (
+                <div key={item} className="shimmer aspect-square rounded-[1.75rem]" />
+              ))}
+            </div>
+          )}
+
+          {!isLoading && sortedCards.length === 0 && (
+            <div className="flex min-h-[18rem] flex-col items-center justify-center gap-3 rounded-[2rem] border border-dashed border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--card)]/50 p-6 text-center">
+              <div
+                className={cn(
+                  "mari-avatar-placeholder flex h-14 w-14 items-center justify-center rounded-3xl",
+                  placeholderClass,
+                )}
+              >
+                <User size="1.5rem" />
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
+                  {localizeUi("ui.characters.characterlibraryview.noMatching")} {copy.plural}
+                </h2>
+                <p className="mt-1 max-w-md text-sm text-[var(--marinara-chat-chrome-panel-muted)]">
+                  {localizeUi("ui.characters.characterlibraryview.tryADifferentSearchAdjustSortingOrImportA")}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {!isLoading && sortedCards.length > 0 && (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-3 xl:grid-cols-3 2xl:grid-cols-4">
+              {sortedCards.map((card) => {
+                const isSelected = selectedId === card.id;
+                return (
+                  <Fragment key={card.id}>
+                    <MemoCardLibraryPreview card={card} kind={kind} isSelected={isSelected} onSelect={setSelectedId} />
+
+                    {isSelected && (
+                      <div className="col-span-full lg:hidden">
+                        <CardLibraryDetailCard
+                          card={card}
+                          kind={kind}
+                          onEdit={openDetailFromLibrary}
+                          onChat={isPersonaLibrary ? undefined : openCharacterChat}
+                        />
+                      </div>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </div>
+          )}
+
+          {!isLoading && hasNextPage && (
+            <div className="sticky bottom-0 z-20 -mx-4 mt-4 flex justify-center border-t border-[var(--marinara-chat-chrome-panel-divider)] bg-[var(--background)]/92 px-4 py-3 backdrop-blur-md md:-mx-6 md:px-6">
+              <button
+                type="button"
+                onClick={fetchNextPage}
+                disabled={isFetchingNextPage}
+                className="mari-chrome-control mari-chrome-control--primary px-5 py-2 text-sm"
+              >
+                {isFetchingNextPage
+                  ? localizeUi("ui.characters.characterlibraryview.loading")
+                  : localizeUi("ui.characters.characterlibraryview.loadMoreValue1Loaded", { value1: cards.length })}
+              </button>
+            </div>
+          )}
+        </section>
+
+        <aside className="hidden min-h-0 overflow-visible border-t border-[var(--marinara-chat-chrome-panel-divider)] bg-[var(--card)]/65 backdrop-blur-xl lg:block lg:overflow-y-auto lg:border-l lg:border-t-0">
+          <div className="space-y-4 p-4 md:p-6">
+            {selectedCard ? (
+              <CardLibraryDetailCard
+                card={selectedCard}
+                kind={kind}
+                onEdit={openDetailFromLibrary}
+                onChat={isPersonaLibrary ? undefined : openCharacterChat}
+              />
+            ) : (
+              <div className="flex min-h-[18rem] flex-col items-center justify-center gap-3 rounded-[2rem] border border-dashed border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--background)]/65 p-6 text-center">
+                <div
+                  className={cn(
+                    "mari-avatar-placeholder flex h-14 w-14 items-center justify-center rounded-3xl",
+                    placeholderClass,
+                  )}
+                >
+                  <User size="1.5rem" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
+                    {localizeUi("ui.characters.characterlibraryview.selectACard")}
+                  </h2>
+                  <p className="mt-1 text-sm text-[var(--marinara-chat-chrome-panel-muted)]">
+                    {localizeUi("ui.characters.characterlibraryview.pickA")} {copy.singular}{" "}
+                    {localizeUi("ui.characters.characterlibraryview.fromTheGridToSeeALargerOverviewBefore")}
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}

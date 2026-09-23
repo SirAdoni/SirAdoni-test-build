@@ -1,0 +1,58 @@
+// ──────────────────────────────────────────────
+// Prompt Overrides — Public exports
+// ──────────────────────────────────────────────
+export { loadPrompt } from "./load-prompt.js";
+export { renderTemplate, validateTemplate } from "./template.js";
+export type { TemplateValidationResult } from "./template.js";
+export {
+  PROMPT_OVERRIDE_REGISTRY,
+  CHARACTERS_REFERENCE_SHEET,
+  SPRITES_ANIMATED_PORTRAIT,
+  SPRITES_EXPRESSION_SHEET,
+  SPRITES_SINGLE_PORTRAIT,
+  SPRITES_SINGLE_FULL_BODY,
+  SPRITES_FULL_BODY_SHEET,
+  GAME_NPC_PORTRAIT,
+  GAME_BACKGROUND,
+  MAPS_LOCATION_ARTWORK,
+  GAME_SCENE_ILLUSTRATION,
+  GAME_NARRATION_SUMMARIZER,
+  GAME_IMAGE_PROMPT_DIRECTOR,
+  GAME_VIDEO,
+  ROLEPLAY_GALLERY_VIDEO_DIRECTOR,
+  CONVERSATION_CALL_VIDEO_PROMPTS,
+  CONVERSATION_CALL_CUSTOM_VIDEO_PROMPT,
+  CONVERSATION_CALL_VIDEO_PROMPT_BY_KIND,
+  CONVERSATION_CALL_VIDEO_CLIP_INSTRUCTION_BY_KIND,
+  CONVERSATION_CALL_VIDEO_CLIP_LABEL_BY_KIND,
+  CONVERSATION_SELFIE,
+  NOODLE_IMAGE_POST,
+  NOODLE_TIMELINE_BASE,
+  NOODLE_TIMELINE_VOICE,
+  getPromptOverrideDef,
+  listPromptOverrideKeys,
+} from "./registry.js";
+export type {
+  PromptOverrideKeyDef,
+  PromptVariable,
+  CharactersReferenceSheetCtx,
+  SpritesExpressionSheetCtx,
+  SpritesSinglePortraitCtx,
+  SpritesAnimatedPortraitCtx,
+  SpritesSingleFullBodyCtx,
+  SpritesFullBodySheetCtx,
+  GameNpcPortraitCtx,
+  GameBackgroundCtx,
+  MapsLocationArtworkCtx,
+  GameSceneIllustrationCtx,
+  GameNarrationSummarizerCtx,
+  GameImagePromptDirectorCtx,
+  GameVideoCtx,
+  RoleplayGalleryVideoDirectorCtx,
+  ConversationCallCustomVideoClipCtx,
+  ConversationCallVideoClipCtx,
+  ConversationSelfieCtx,
+  NoodleImagePostCtx,
+  NoodleTimelineBaseCtx,
+  NoodleTimelineVoiceCtx,
+} from "./registry.js";

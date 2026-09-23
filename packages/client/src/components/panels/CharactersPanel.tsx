@@ -1,0 +1,1951 @@
+// ──────────────────────────────────────────────
+// Panel: Characters (overhauled — search, folders, avatars)
+// ──────────────────────────────────────────────
+import {
+  useState,
+  useMemo,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  type UIEvent,
+} from "react";
+import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
+import { toast } from "sonner";
+import {
+  fetchAllCharacterPages,
+  flattenCharacterPages,
+  useCharacterCatalogByIds,
+  useCharacterPages,
+  useDeleteCharacter,
+  useCharacterGroups,
+  useCreateGroup,
+  useUpdateGroup,
+  useDeleteGroup,
+  useBulkEditCharacterTags,
+  useDuplicateCharacter,
+} from "../../hooks/use-characters";
+import { api } from "../../lib/api-client";
+import { confirmNonEmptyFolderDelete, showConfirmDialog } from "../../lib/app-dialogs";
+import {
+  Plus,
+  Trash2,
+  Download,
+  User,
+  Check,
+  Search,
+  Folder,
+  FolderPlus,
+  ChevronDown,
+  Copy,
+  Users,
+  X,
+  UserMinus,
+  ArrowUpDown,
+  Tag,
+  Hash,
+  Star,
+  MessageCircle,
+  Bot,
+  ScanSearch,
+  Tags,
+} from "lucide-react";
+import { getCharacterTitle } from "../../lib/character-display";
+import {
+  matchesCardLibrarySearchIndex,
+  parseCardLibrarySearchQuery,
+} from "../../lib/card-library-search";
+import { buildCharacterSearchIndex } from "./library/character-search-index";
+import { useUIStore, type CharacterLibrarySort } from "../../stores/ui.store";
+import { sortPanelFolders } from "../../lib/panel-sort";
+import { useTouchFolderDrag } from "../../hooks/use-touch-folder-drag";
+import { normalizeAvatarCrop } from "@marinara-engine/shared";
+import type { CharacterCatalogEntry } from "@marinara-engine/shared";
+import { cn, getAvatarCropStyle } from "../../lib/utils";
+import { formatEstimatedTokens } from "../../lib/character-token-count";
+import { SelectionActionBar } from "../ui/SelectionActionBar";
+import { SELECTION_EXTRA_ACTION_BUTTON_CLASS, SELECTION_EXTRA_ACTION_LABEL_CLASS } from "../ui/selection-action-classes";
+import { TouchDragHandle } from "../ui/TouchDragHandle";
+import { buildLibraryFolderView, type LibraryFolderNode } from "../../lib/library-folder-view";
+import { LibrarySearchInput } from "./library/LibrarySearchInput";
+import { CAMPAIGN_FILTER_ALL, LibraryCampaignBar } from "./library/LibraryCampaignBar";
+import { LibraryCampaignBadges } from "./library/LibraryCampaignBadges";
+import { LibraryCampaignRoster } from "./library/LibraryCampaignRoster";
+import { LibraryCampaignSections } from "./library/LibraryCampaignSections";
+import { LibraryFolderTree } from "./library/LibraryFolderTree";
+import { LibrarySelectionExtraActions } from "./library/LibrarySelectionExtraActions";
+import { useAutoLoadAllPages } from "./library/use-auto-load-all-pages";
+import { useLibraryOrganizer } from "./library/use-library-organizer";
+import { PanelLoadMoreBar } from "./PanelLoadMoreBar";
+import { clearActiveChatResourceDrag, writeChatResourceDragPayload } from "../../lib/chat-resource-drag";
+import { ChatResourceActionButton } from "../chat/ChatResourceActionButton";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
+import { AvatarImage } from "../characters/AvatarImage";
+import { CharacterCategoryFilter } from "../characters/CharacterCategoryFilter";
+import { CharacterDuplicatesModal } from "../characters/CharacterDuplicatesModal";
+import { CharacterUnusedModal } from "../characters/CharacterUnusedModal";
+import { CircleSlash } from "lucide-react";
+import { CharacterBulkTagsModal } from "../characters/CharacterBulkTagsModal";
+import type { CharacterLibraryCategory } from "@marinara-engine/shared";
+
+type CharacterRow = CharacterCatalogEntry;
+type GroupRow = {
+  id: string;
+  name: string;
+  description: string;
+  characterIds: string;
+  avatarPath: string | null;
+  /** Parent group when this character folder is nested; null or absent = root. */
+  parentId?: string | null;
+  createdAt?: string;
+};
+type ParsedCharacterRow = CharacterRow & { parsed: Record<string, any> };
+type ParsedGroupRow = GroupRow & { memberIds: string[] };
+
+function getNextUnnamedFolderName(folders: Array<{ name: string }>) {
+  const names = new Set(folders.map((folder) => folder.name.toLowerCase()));
+  if (!names.has("unnamed")) return "unnamed";
+  let index = 2;
+  while (names.has(`unnamed ${index}`)) index++;
+  return `unnamed ${index}`;
+}
+
+function parseGroupMemberIds(value: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseDroppedCharacterIds(payload: string): unknown {
+  if (!payload) return undefined;
+  try {
+    return JSON.parse(payload);
+  } catch {
+    return undefined;
+  }
+}
+
+function getCharacterTags(char: ParsedCharacterRow): string[] {
+  return Array.isArray(char.parsed.tags) ? (char.parsed.tags as string[]).filter(Boolean) : [];
+}
+
+function parseCharacterRow(char: CharacterRow): ParsedCharacterRow {
+  try {
+    const parsed = {
+      name: char.name,
+      summary: char.explicitSummary,
+      description: char.description,
+      personality: char.personality,
+      scenario: char.scenario,
+      first_mes: char.firstMessage,
+      creator_notes: char.creatorNotes,
+      tags: char.tags,
+      creator: char.creator,
+      character_version: char.version,
+      extensions: { fav: char.favorite, avatarCrop: char.avatarCrop, nameColor: char.nameColor },
+    };
+    return { ...char, parsed: (parsed as unknown as ParsedCharacterRow["parsed"]) ?? {} };
+  } catch {
+    return { ...char, parsed: { name: "Unknown", description: "" } };
+  }
+}
+
+function getCharacterPreviewMetadata(char: ParsedCharacterRow): string | null {
+  const parts: string[] = [];
+  const creator = typeof char.parsed.creator === "string" ? char.parsed.creator.trim() : "";
+  const version = typeof char.parsed.character_version === "string" ? char.parsed.character_version.trim() : "";
+  const importMetadata =
+    char.parsed.extensions?.importMetadata && typeof char.parsed.extensions.importMetadata === "object"
+      ? (char.parsed.extensions.importMetadata as Record<string, unknown>)
+      : {};
+  const cardMetadata =
+    importMetadata.card && typeof importMetadata.card === "object"
+      ? (importMetadata.card as Record<string, unknown>)
+      : {};
+  const spec = typeof cardMetadata.spec === "string" ? cardMetadata.spec.trim() : "";
+  const specVersion = typeof cardMetadata.specVersion === "string" ? cardMetadata.specVersion.trim() : "";
+  const tags = getCharacterTags(char);
+
+  if (creator) parts.push(`by ${creator}`);
+  if (version) parts.push(`v${version}`);
+  if (spec) parts.push(spec);
+  if (specVersion) parts.push(`spec ${specVersion}`);
+  if (parts.length > 0) return parts.join(", ");
+  if (tags.length > 0) return tags.slice(0, 3).join(", ");
+  return null;
+}
+
+function usePanelMobileOverlay() {
+  const [isMobileOverlay, setIsMobileOverlay] = useState(() =>
+    typeof window !== "undefined" ? window.matchMedia("(max-width: 767px)").matches : false,
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const query = window.matchMedia("(max-width: 767px)");
+    const update = () => setIsMobileOverlay(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+
+  return isMobileOverlay;
+}
+
+export function CharactersPanel() {
+  const { t: localizeUi } = useUiTranslation();
+  const { t } = useTranslation();
+  const { data: groups } = useCharacterGroups();
+  const deleteCharacter = useDeleteCharacter();
+  const duplicateCharacter = useDuplicateCharacter();
+  const bulkEditTags = useBulkEditCharacterTags();
+  const createGroup = useCreateGroup();
+  const updateGroup = useUpdateGroup();
+  const deleteGroup = useDeleteGroup();
+  const openModal = useUIStore((s) => s.openModal);
+  const openCharacterDetail = useUIStore((s) => s.openCharacterDetail);
+  const openCharacterLibrary = useUIStore((s) => s.openCharacterLibrary);
+  const openBotBrowser = useUIStore((s) => s.openBotBrowser);
+  const sort = useUIStore((s) => s.characterLibrarySort);
+  const setCharacterLibrarySort = useUIStore((s) => s.setCharacterLibrarySort);
+  const search = useUIStore((s) => s.characterPanelSearch);
+  const setSearch = useUIStore((s) => s.setCharacterPanelSearch);
+  const includedTagValues = useUIStore((s) => s.characterPanelIncludedTags);
+  const setCharacterPanelIncludedTags = useUIStore((s) => s.setCharacterPanelIncludedTags);
+  const excludedTagValues = useUIStore((s) => s.characterPanelExcludedTags);
+  const setCharacterPanelExcludedTags = useUIStore((s) => s.setCharacterPanelExcludedTags);
+  const tagsExpanded = useUIStore((s) => s.characterPanelTagsExpanded);
+  const setTagsExpanded = useUIStore((s) => s.setCharacterPanelTagsExpanded);
+  const favFilter = useUIStore((s) => s.characterPanelFavoriteFilter);
+  const setFavFilter = useUIStore((s) => s.setCharacterPanelFavoriteFilter);
+  const setCharacterPanelScrollTop = useUIStore((s) => s.setCharacterPanelScrollTop);
+  const deferredSearch = useDeferredValue(search);
+  const serverSearch = useMemo(() => parseCardLibrarySearchQuery(deferredSearch).text, [deferredSearch]);
+  const serverFavoriteFilter = favFilter === "favorites" || favFilter === "non-favorites" ? favFilter : "";
+  const [category, setCategory] = useState<CharacterLibraryCategory | "all">("characters");
+  const organizer = useLibraryOrganizer("characters", "character");
+  const characterPages = useCharacterPages({
+    search: serverSearch,
+    sort,
+    favoriteFilter: serverFavoriteFilter,
+    category,
+    campaign: organizer.serverCampaignParam,
+    campaignRevision: organizer.serverCampaignRevision,
+  });
+  const pageCharacters = useMemo(() => flattenCharacterPages(characterPages.data), [characterPages.data]);
+  // Folder members can sit beyond the loaded pages; fetch just those rows (same filters) so a
+  // folder never shows a count with an empty body. Once every page is loaded nothing is missing.
+  const missingFolderMemberIds = useMemo(() => {
+    if (!groups || !characterPages.hasNextPage) return [];
+    const loaded = new Set(pageCharacters.map((row) => String(row.id)));
+    const missing = new Set<string>();
+    for (const group of groups as GroupRow[]) {
+      for (const id of parseGroupMemberIds(group.characterIds)) if (!loaded.has(id)) missing.add(id);
+    }
+    return [...missing];
+  }, [characterPages.hasNextPage, groups, pageCharacters]);
+  const folderMemberRows = useCharacterCatalogByIds({
+    ids: missingFolderMemberIds,
+    search: serverSearch,
+    sort,
+    favoriteFilter: serverFavoriteFilter,
+    category,
+    campaign: organizer.serverCampaignParam,
+    campaignRevision: organizer.serverCampaignRevision,
+  });
+  const characters = useMemo(() => {
+    const extra = folderMemberRows.data;
+    if (!extra?.length || missingFolderMemberIds.length === 0) return pageCharacters;
+    const loaded = new Set(pageCharacters.map((row) => String(row.id)));
+    return [...pageCharacters, ...extra.filter((row) => !loaded.has(row.id))];
+  }, [folderMemberRows.data, missingFolderMemberIds.length, pageCharacters]);
+  const isLoading = characterPages.isLoading;
+
+  const [draggedCharacterId, setDraggedCharacterId] = useState<string | null>(null);
+  const panelScrollRef = useRef<HTMLDivElement | null>(null);
+  const pendingPanelScrollTopRef = useRef(0);
+  const panelScrollFrameRef = useRef<number | null>(null);
+  const suppressCharacterClickRef = useRef(false);
+  const isMobileOverlay = usePanelMobileOverlay();
+  const includedTags = useMemo(() => new Set(includedTagValues), [includedTagValues]);
+  const excludedTags = useMemo(() => new Set(excludedTagValues), [excludedTagValues]);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedCharacterIds, setSelectedCharacterIds] = useState<Set<string>>(new Set());
+  const [exportingSelected, setExportingSelected] = useState(false);
+  const [duplicatesOpen, setDuplicatesOpen] = useState(false);
+  const [unusedOpen, setUnusedOpen] = useState(false);
+  const [bulkTagsOpen, setBulkTagsOpen] = useState(false);
+
+  // Parse character data and filter by search
+  const parsedCharacters = useMemo(() => {
+    if (!characters) return [];
+    return (characters as CharacterRow[]).map(parseCharacterRow);
+  }, [characters]) as ParsedCharacterRow[];
+
+  const charMap = useMemo(() => {
+    const map = new Map<
+      string,
+      { name: string; comment?: string | null; avatarPath: string | null; isFavorite: boolean }
+    >();
+    for (const c of parsedCharacters) {
+      map.set(c.id, {
+        name: c.parsed.name ?? "Unknown",
+        comment: c.comment,
+        avatarPath: c.avatarPath,
+        isFavorite: !!c.parsed.extensions?.fav,
+      });
+    }
+    return map;
+  }, [parsedCharacters]);
+
+  const parsedCharacterMap = useMemo(
+    () => new Map(parsedCharacters.map((character) => [character.id, character])),
+    [parsedCharacters],
+  );
+  // Built only while the bulk tag dialog is open, and stable between renders.
+  const bulkTagCharacters = useMemo(
+    () =>
+      bulkTagsOpen
+        ? [...selectedCharacterIds].flatMap((id) => {
+            const character = parsedCharacterMap.get(id);
+            return character ? [{ id, tags: getCharacterTags(character) }] : [];
+          })
+        : [],
+    [bulkTagsOpen, parsedCharacterMap, selectedCharacterIds],
+  );
+
+  // Search fields are normalized once per loaded list, not once per keystroke.
+  const searchIndexById = useMemo(
+    () => new Map(parsedCharacters.map((c) => [c.id, buildCharacterSearchIndex(c, getCharacterTags(c))])),
+    [parsedCharacters],
+  );
+
+  const filteredCharacters = useMemo(() => {
+    let list = parsedCharacters;
+    const query = parseCardLibrarySearchQuery(deferredSearch);
+    // Filter by favorites
+    if (favFilter === "favorites") {
+      list = list.filter((c) => c.parsed.extensions?.fav);
+    } else if (favFilter === "non-favorites") {
+      list = list.filter((c) => !c.parsed.extensions?.fav);
+    }
+    // Filter by included tags (OR logic)
+    if (includedTags.size > 0) {
+      const lowerIncludedTags = new Set([...includedTags].map((t) => t.toLowerCase()));
+      list = list.filter((c) => {
+        const tags = new Set(getCharacterTags(c).map((t) => t.toLowerCase()));
+        return [...lowerIncludedTags].some((tag) => tags.has(tag));
+      });
+    }
+    const excludedTagFilters = new Set(Array.from(excludedTags, (tag) => tag.toLowerCase()));
+    if (excludedTagFilters.size > 0) {
+      list = list.filter((c) => {
+        const tags = new Set(getCharacterTags(c).map((tag) => tag.toLowerCase()));
+        for (const tag of excludedTagFilters) {
+          if (tags.has(tag)) return false;
+        }
+        return true;
+      });
+    }
+    list = list.filter((c) => {
+      const index = searchIndexById.get(c.id);
+      return index ? matchesCardLibrarySearchIndex(index, query) : true;
+    });
+    return list;
+  }, [parsedCharacters, searchIndexById, deferredSearch, includedTags, excludedTags, favFilter]);
+
+  // Collect all unique tags across characters for the filter bar
+  const allTags = useMemo(() => {
+    const tagSet = new Set<string>();
+    for (const c of parsedCharacters) {
+      for (const t of getCharacterTags(c)) {
+        tagSet.add(t);
+      }
+    }
+    return [...tagSet].sort((a, b) => a.localeCompare(b));
+  }, [parsedCharacters]);
+
+  const handleDeleteTag = useCallback(
+    async (tag: string) => {
+      if (
+        !(await showConfirmDialog({
+          title: localizeUi("ui.panels.characterspanel.removeTag"),
+          message: localizeUi("ui.panels.characterspanel.removeTagValue1FromAllCharacters", { value1: tag }),
+          confirmLabel: localizeUi("settings.notifications.customSound.actions.remove"),
+          tone: "destructive",
+        }))
+      ) {
+        return;
+      }
+      try {
+        // Catalog rows carry the parsed tag list; raw /characters rows only hold it inside the data string.
+        const allCharacters = (await fetchAllCharacterPages({ sort })).map(parseCharacterRow);
+        const affectedIds = allCharacters.filter((c) => getCharacterTags(c).includes(tag)).map((c) => c.id);
+        // One bulk request instead of a PATCH (and a full list refetch) per character.
+        if (affectedIds.length > 0) {
+          const result = await bulkEditTags.mutateAsync({ ids: affectedIds, remove: [tag] });
+          if (result.failedIds.length > 0) throw new Error("Some characters kept the tag");
+        }
+        if (includedTags.has(tag)) {
+          const next = new Set(includedTags);
+          next.delete(tag);
+          setCharacterPanelIncludedTags([...next]);
+        }
+        if (excludedTags.has(tag)) {
+          const next = new Set(excludedTags);
+          next.delete(tag);
+          setCharacterPanelExcludedTags([...next]);
+        }
+      } catch {
+        toast.error(localizeUi("ui.panels.characterspanel.failedToRemoveTagFromSomeCharacters"));
+      }
+    },
+    [
+      sort,
+      bulkEditTags,
+      includedTags,
+      excludedTags,
+      setCharacterPanelIncludedTags,
+      setCharacterPanelExcludedTags,
+      localizeUi,
+    ],
+  );
+
+  const toggleIncludedTag = useCallback(
+    (tag: string) => {
+      const nextIncluded = new Set(includedTags);
+      if (nextIncluded.has(tag)) {
+        nextIncluded.delete(tag);
+      } else {
+        nextIncluded.add(tag);
+      }
+      setCharacterPanelIncludedTags([...nextIncluded]);
+
+      if (excludedTags.has(tag)) {
+        const nextExcluded = new Set(excludedTags);
+        nextExcluded.delete(tag);
+        setCharacterPanelExcludedTags([...nextExcluded]);
+      }
+    },
+    [excludedTags, includedTags, setCharacterPanelExcludedTags, setCharacterPanelIncludedTags],
+  );
+
+  const clearTagFilters = useCallback(() => {
+    setCharacterPanelIncludedTags([]);
+    setCharacterPanelExcludedTags([]);
+  }, [setCharacterPanelExcludedTags, setCharacterPanelIncludedTags]);
+
+  const sortedCharacters = useMemo(() => {
+    const list = [...filteredCharacters];
+    const hasIncludedTags = includedTags.size > 0;
+    const matchCounts = hasIncludedTags
+      ? new Map(
+          list.map((c) => {
+            const tags = new Set(getCharacterTags(c).map((t) => t.toLowerCase()));
+            return [c.id, [...includedTags].filter((tag) => tags.has(tag.toLowerCase())).length];
+          }),
+        )
+      : null;
+    switch (sort) {
+      case "name-asc":
+        return list.sort((a, b) => {
+          if (hasIncludedTags) {
+            const countDiff = (matchCounts!.get(b.id) ?? 0) - (matchCounts!.get(a.id) ?? 0);
+            if (countDiff !== 0) return countDiff;
+          }
+          return (a.parsed.name ?? "").localeCompare(b.parsed.name ?? "");
+        });
+      case "name-desc":
+        return list.sort((a, b) => {
+          if (hasIncludedTags) {
+            const countDiff = (matchCounts!.get(b.id) ?? 0) - (matchCounts!.get(a.id) ?? 0);
+            if (countDiff !== 0) return countDiff;
+          }
+          return (b.parsed.name ?? "").localeCompare(a.parsed.name ?? "");
+        });
+      case "newest":
+        return list.sort((a, b) => {
+          if (hasIncludedTags) {
+            const countDiff = (matchCounts!.get(b.id) ?? 0) - (matchCounts!.get(a.id) ?? 0);
+            if (countDiff !== 0) return countDiff;
+          }
+          return (b.createdAt ?? "").localeCompare(a.createdAt ?? "");
+        });
+      case "oldest":
+        return list.sort((a, b) => {
+          if (hasIncludedTags) {
+            const countDiff = (matchCounts!.get(b.id) ?? 0) - (matchCounts!.get(a.id) ?? 0);
+            if (countDiff !== 0) return countDiff;
+          }
+          return (a.createdAt ?? "").localeCompare(b.createdAt ?? "");
+        });
+      case "favorites":
+        return list.sort((a, b) => {
+          const aFav = a.parsed.extensions?.fav ? 1 : 0;
+          const bFav = b.parsed.extensions?.fav ? 1 : 0;
+          if (bFav !== aFav) return bFav - aFav;
+          if (hasIncludedTags) {
+            const countDiff = (matchCounts!.get(b.id) ?? 0) - (matchCounts!.get(a.id) ?? 0);
+            if (countDiff !== 0) return countDiff;
+          }
+          return (a.parsed.name ?? "").localeCompare(b.parsed.name ?? "");
+        });
+      default:
+        if (hasIncludedTags) {
+          return list.sort((a, b) => {
+            const countDiff = (matchCounts!.get(b.id) ?? 0) - (matchCounts!.get(a.id) ?? 0);
+            if (countDiff !== 0) return countDiff;
+            return (a.parsed.name ?? "").localeCompare(b.parsed.name ?? "");
+          });
+        }
+        return list;
+    }
+  }, [filteredCharacters, sort, includedTags]);
+
+  const parsedGroups = useMemo<ParsedGroupRow[]>(() => {
+    if (!groups) return [];
+    // The server lists groups newest-updated first, so any rename or member change would
+    // make a folder jump to the top. Folders keep their creation order, like lorebook folders.
+    return (groups as GroupRow[])
+      .map((g) => ({ ...g, memberIds: parseGroupMemberIds(g.characterIds) }))
+      .sort(
+        (a, b) =>
+          (a.createdAt ?? "").localeCompare(b.createdAt ?? "") ||
+          a.name.localeCompare(b.name) ||
+          a.id.localeCompare(b.id),
+      );
+  }, [groups]);
+
+  const sortedGroups = useMemo(() => {
+    const folders = sortPanelFolders(parsedGroups, sort === "favorites" ? "name-asc" : sort);
+    if (sort !== "favorites") return folders;
+    const favorites = new Set(
+      sortedCharacters.filter((character) => character.parsed.extensions?.fav).map((character) => character.id),
+    );
+    return folders.sort(
+      (a, b) =>
+        Number(b.memberIds.some((id) => favorites.has(id))) - Number(a.memberIds.some((id) => favorites.has(id))),
+    );
+  }, [parsedGroups, sort, sortedCharacters]);
+
+  const characterOrder = useMemo(
+    () => new Map(sortedCharacters.map((character, index) => [character.id, index])),
+    [sortedCharacters],
+  );
+  const visibleCharacterById = useMemo(
+    () => new Map(sortedCharacters.map((character) => [character.id, character])),
+    [sortedCharacters],
+  );
+  // The category is always set by default, so it only narrows folder members; it must not hide
+  // empty folders or force folders open the way an explicit search/tag/favourite/campaign filter does.
+  const userFolderFilterActive =
+    search.trim().length > 0 ||
+    includedTags.size > 0 ||
+    excludedTags.size > 0 ||
+    favFilter !== "all" ||
+    organizer.campaignFilter !== CAMPAIGN_FILTER_ALL;
+  const folderFilterActive = category !== "all" || userFolderFilterActive;
+  const folderNodes = useMemo<LibraryFolderNode[]>(
+    () =>
+      sortedGroups.map((group) => ({
+        id: group.id,
+        name: group.name,
+        parentId: group.parentId ?? null,
+        // Members follow the panel's sort; ids not in the current list keep their stored order at the end.
+        itemIds: [...group.memberIds].sort(
+          (a, b) =>
+            (characterOrder.get(a) ?? sortedCharacters.length) - (characterOrder.get(b) ?? sortedCharacters.length),
+        ),
+      })),
+    [sortedGroups, characterOrder, sortedCharacters.length],
+  );
+  const isFolderMemberShown = useCallback(
+    (id: string) => (folderFilterActive ? visibleCharacterById.has(id) : charMap.has(id)),
+    [charMap, folderFilterActive, visibleCharacterById],
+  );
+  const folderView = useMemo(
+    () => buildLibraryFolderView(folderNodes, isFolderMemberShown, userFolderFilterActive),
+    [folderNodes, isFolderMemberShown, userFolderFilterActive],
+  );
+  const folderedCharacterIds = folderView.folderedItemIds;
+  const showFolderPaths = search.trim().length > 0;
+  // Grouping by campaign and tag filtering (tags are matched in the browser, as is the full tag
+  // list) need every page of the current server results, not just the first page.
+  const tagFilterActive = includedTags.size > 0 || excludedTags.size > 0;
+  useAutoLoadAllPages(
+    characterPages,
+    (organizer.groupByCampaign || tagFilterActive || tagsExpanded) && !characterPages.isFetchNextPageError,
+  );
+
+  const visibleRootCharacters = useMemo(
+    () => sortedCharacters.filter((char) => !folderedCharacterIds.has(char.id)),
+    [sortedCharacters, folderedCharacterIds],
+  );
+
+  const rememberPanelScroll = useCallback(() => {
+    const node = panelScrollRef.current;
+    if (!node) return;
+    pendingPanelScrollTopRef.current = node.scrollTop;
+    setCharacterPanelScrollTop(node.scrollTop);
+  }, [setCharacterPanelScrollTop]);
+
+  const handlePanelScroll = useCallback(
+    (event: UIEvent<HTMLDivElement>) => {
+      if (event.currentTarget !== event.target) return;
+      pendingPanelScrollTopRef.current = event.currentTarget.scrollTop;
+      if (panelScrollFrameRef.current !== null) return;
+      panelScrollFrameRef.current = window.requestAnimationFrame(() => {
+        panelScrollFrameRef.current = null;
+        setCharacterPanelScrollTop(pendingPanelScrollTopRef.current);
+      });
+    },
+    [setCharacterPanelScrollTop],
+  );
+
+  const openCharacterDetailFromPanel = useCallback(
+    (id: string) => {
+      rememberPanelScroll();
+      openCharacterDetail(id);
+    },
+    [openCharacterDetail, rememberPanelScroll],
+  );
+
+  useLayoutEffect(() => {
+    const node = panelScrollRef.current;
+    if (!node || isLoading) return;
+    if (isMobileOverlay) return;
+    const restoreScroll = () => {
+      const maxScrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
+      node.scrollTop = Math.min(useUIStore.getState().characterPanelScrollTop, maxScrollTop);
+    };
+    restoreScroll();
+    const frame = window.requestAnimationFrame(restoreScroll);
+    return () => window.cancelAnimationFrame(frame);
+  }, [isLoading, isMobileOverlay, parsedGroups.length, sortedCharacters.length, visibleRootCharacters.length]);
+
+  useLayoutEffect(
+    () => () => {
+      if (panelScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(panelScrollFrameRef.current);
+      }
+    },
+    [],
+  );
+
+  const filteredCampaign = organizer.filteredCampaignId
+    ? organizer.campaigns.find((campaign) => campaign.id === organizer.filteredCampaignId)
+    : undefined;
+  const { setFolderExpanded, openMovePicker } = organizer;
+  const showFolderError = useCallback(
+    (error: unknown) =>
+      toast.error(error instanceof Error ? error.message : localizeUi("ui.panels.libraryorganize.couldNotMoveFolder")),
+    [localizeUi],
+  );
+
+  const handleCreateFolder = useCallback(
+    (parentId: string | null = null) => {
+      createGroup.mutate(
+        { name: getNextUnnamedFolderName(parsedGroups), characterIds: [], parentId },
+        {
+          onSuccess: (group) => {
+            if (parentId) setFolderExpanded(parentId, true);
+            const createdId = (group as { id?: unknown } | null)?.id;
+            if (typeof createdId === "string") setFolderExpanded(createdId, true);
+          },
+          onError: showFolderError,
+        },
+      );
+    },
+    [createGroup, parsedGroups, setFolderExpanded, showFolderError],
+  );
+
+  const handleRenameGroup = useCallback(
+    (groupId: string, name: string) => updateGroup.mutate({ id: groupId, name }, { onError: showFolderError }),
+    [showFolderError, updateGroup],
+  );
+
+  const handleMoveFolder = useCallback(
+    (groupId: string, parentId: string | null) =>
+      updateGroup.mutate({ id: groupId, parentId }, { onError: showFolderError }),
+    [showFolderError, updateGroup],
+  );
+
+  const handleDeleteGroup = useCallback(
+    async (folder: LibraryFolderNode) => {
+      const parent = folder.parentId ? folderNodes.find((candidate) => candidate.id === folder.parentId) : undefined;
+      const subfolderCount = folderView.tree.childrenByParent.get(folder.id)?.length ?? 0;
+      const ok = await confirmNonEmptyFolderDelete(folder.itemIds.length + subfolderCount, {
+        title: localizeUi("ui.panels.backgroundpicker.deleteFolder"),
+        // Characters are not merged into the parent: every folder is also a chat setup
+        // group preset, and deleting a subfolder must not change the parent preset.
+        message: parent
+          ? localizeUi("ui.panels.libraryorganize.deleteCharacterFolderValue1SubfoldersMoveToValue2", {
+              value1: folder.name,
+              value2: parent.name,
+            })
+          : localizeUi("ui.panels.libraryorganize.deleteFolderValue1ContentsMoveToTopLevel", { value1: folder.name }),
+        confirmLabel: localizeUi("lorebook.editor.batch.delete"),
+        tone: "destructive",
+      });
+      if (!ok) return;
+      deleteGroup.mutate(folder.id, { onError: showFolderError });
+      setFolderExpanded(folder.id, false);
+    },
+    [deleteGroup, folderNodes, folderView, localizeUi, setFolderExpanded, showFolderError],
+  );
+
+  const requestMoveFolder = useCallback(
+    (folder: LibraryFolderNode) =>
+      openMovePicker(folderNodes, folderView, {
+        title: localizeUi("ui.panels.libraryorganize.moveValue1To", { value1: folder.name }),
+        movingFolderId: folder.id,
+        currentFolderId: folder.parentId,
+        onPick: (parentId) => handleMoveFolder(folder.id, parentId),
+      }),
+    [folderNodes, folderView, handleMoveFolder, localizeUi, openMovePicker],
+  );
+
+  const getDraggedCharacterIds = useCallback(
+    (charId: string) =>
+      selectionMode && selectedCharacterIds.has(charId) ? Array.from(selectedCharacterIds) : [charId],
+    [selectedCharacterIds, selectionMode],
+  );
+
+  const moveCharactersToFolder = useCallback(
+    async (charIds: string[], folderId: string | null) => {
+      const ids = Array.from(new Set(charIds.filter(Boolean)));
+      if (ids.length === 0) return;
+      const idSet = new Set(ids);
+      const targetFolder = folderId ? parsedGroups.find((folder) => folder.id === folderId) : null;
+      const updates = parsedGroups
+        .map((folder) => {
+          const withoutCharacter = folder.memberIds.filter((id) => !idSet.has(id));
+          const nextMembers =
+            targetFolder && folder.id === targetFolder.id
+              ? [...withoutCharacter, ...ids.filter((id) => !withoutCharacter.includes(id))]
+              : withoutCharacter;
+          if (
+            nextMembers.length === folder.memberIds.length &&
+            nextMembers.every((id, index) => id === folder.memberIds[index])
+          ) {
+            return null;
+          }
+          return updateGroup.mutateAsync({ id: folder.id, characterIds: nextMembers });
+        })
+        .filter((promise): promise is Promise<unknown> => promise !== null);
+      if (updates.length > 0) await Promise.all(updates);
+    },
+    [parsedGroups, updateGroup],
+  );
+
+  const handleCharacterDrop = useCallback(
+    (folderId: string | null, charIds?: unknown) => {
+      const ids = Array.isArray(charIds)
+        ? charIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+        : draggedCharacterId
+          ? [draggedCharacterId]
+          : [];
+      if (ids.length === 0) return;
+      moveCharactersToFolder(ids, folderId).catch(showFolderError);
+      setDraggedCharacterId(null);
+    },
+    [draggedCharacterId, moveCharactersToFolder, showFolderError],
+  );
+
+  const finishCharacterTouchDrag = useCallback(
+    (characterId: string, x: number, y: number) => {
+      const target = document.elementFromPoint(x, y);
+      const folderElement = target?.closest("[data-character-folder-id]") as HTMLElement | null;
+      const rootElement = target?.closest("[data-character-folder-root]") as HTMLElement | null;
+      if (folderElement?.dataset.characterFolderId) {
+        moveCharactersToFolder(getDraggedCharacterIds(characterId), folderElement.dataset.characterFolderId).catch(
+          showFolderError,
+        );
+      } else if (rootElement) {
+        moveCharactersToFolder(getDraggedCharacterIds(characterId), null).catch(showFolderError);
+      }
+      setDraggedCharacterId(null);
+      window.setTimeout(() => {
+        suppressCharacterClickRef.current = false;
+      }, 0);
+    },
+    [getDraggedCharacterIds, moveCharactersToFolder, showFolderError],
+  );
+
+  const cancelCharacterTouchDrag = useCallback((_characterId: string, wasActive: boolean) => {
+    setDraggedCharacterId(null);
+    if (wasActive) {
+      window.setTimeout(() => {
+        suppressCharacterClickRef.current = false;
+      }, 0);
+    } else {
+      suppressCharacterClickRef.current = false;
+    }
+  }, []);
+
+  const { startTouchDrag: startCharacterTouchDrag, startMouseDrag: startCharacterMouseDrag } = useTouchFolderDrag({
+    onActivate: (characterId) => {
+      suppressCharacterClickRef.current = true;
+      setDraggedCharacterId(characterId);
+    },
+    onDrop: finishCharacterTouchDrag,
+    onCancel: cancelCharacterTouchDrag,
+  });
+
+  const exitSelectionMode = useCallback(() => {
+    setSelectionMode(false);
+    setSelectedCharacterIds(new Set());
+  }, []);
+
+  const toggleSelection = useCallback((characterId: string) => {
+    setSelectedCharacterIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(characterId)) next.delete(characterId);
+      else next.add(characterId);
+      return next;
+    });
+  }, []);
+
+  const handleExportSelected = useCallback(async () => {
+    if (selectedCharacterIds.size === 0) return;
+    setExportingSelected(true);
+    try {
+      await api.downloadPost(
+        "/characters/export-bulk",
+        { ids: [...selectedCharacterIds], format: "native" },
+        "marinara-characters.zip",
+      );
+      toast.success(
+        localizeUi("ui.panels.characterspanel.exportedValue1CharacterValue2", {
+          value1: selectedCharacterIds.size,
+          value2: selectedCharacterIds.size === 1 ? "" : localizeUi("ui.noodle.stageprofileview.s"),
+        }),
+      );
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : localizeUi("ui.panels.characterspanel.failedToExportCharacters"),
+      );
+    } finally {
+      setExportingSelected(false);
+    }
+  }, [selectedCharacterIds, localizeUi]);
+
+  const handleMoveSelected = useCallback(() => {
+    const ids = [...selectedCharacterIds];
+    if (ids.length === 0) return;
+    const holders = new Set(ids.map((id) => folderNodes.find((folder) => folder.itemIds.includes(id))?.id ?? null));
+    openMovePicker(folderNodes, folderView, {
+      title: localizeUi("ui.panels.libraryorganize.moveCharacters", { count: ids.length }),
+      movingFolderId: null,
+      currentFolderId: holders.size === 1 ? [...holders][0] : undefined,
+      onPick: (folderId) => {
+        moveCharactersToFolder(ids, folderId)
+          .then(exitSelectionMode)
+          .catch((error: unknown) =>
+            toast.error(
+              error instanceof Error ? error.message : localizeUi("ui.panels.characterspanel.failedToMoveCharacters"),
+            ),
+          );
+      },
+    });
+  }, [
+    exitSelectionMode,
+    folderNodes,
+    folderView,
+    localizeUi,
+    moveCharactersToFolder,
+    openMovePicker,
+    selectedCharacterIds,
+  ]);
+
+  const handleDeleteSelected = useCallback(async () => {
+    const ids = [...selectedCharacterIds];
+    if (ids.length === 0) return;
+
+    if (
+      !(await showConfirmDialog({
+        title: localizeUi("ui.panels.characterspanel.deleteCharacters"),
+        message: localizeUi("ui.panels.characterspanel.deleteValue1CharacterValue2", {
+          value1: ids.length,
+          value2: ids.length === 1 ? "" : localizeUi("ui.noodle.stageprofileview.s"),
+        }),
+        confirmLabel: localizeUi("lorebook.editor.batch.delete"),
+        tone: "destructive",
+      }))
+    ) {
+      return;
+    }
+
+    const results = await Promise.allSettled(ids.map((id) => deleteCharacter.mutateAsync(id)));
+    const failedIds = ids.filter((_, index) => results[index]?.status === "rejected");
+    const deletedCount = ids.length - failedIds.length;
+
+    if (deletedCount > 0) {
+      toast.success(
+        localizeUi("ui.panels.characterspanel.deletedValue1CharacterValue2", {
+          value1: deletedCount,
+          value2: deletedCount === 1 ? "" : localizeUi("ui.noodle.stageprofileview.s"),
+        }),
+      );
+    }
+
+    if (failedIds.length > 0) {
+      setSelectedCharacterIds(new Set(failedIds));
+      toast.error(
+        localizeUi("ui.panels.characterspanel.failedToDeleteValue1CharacterValue2", {
+          value1: failedIds.length,
+          value2: failedIds.length === 1 ? "" : localizeUi("ui.noodle.stageprofileview.s"),
+        }),
+      );
+      return;
+    }
+
+    exitSelectionMode();
+  }, [selectedCharacterIds, deleteCharacter, exitSelectionMode, localizeUi]);
+
+  const renderFolderMember = (memberId: string) => {
+    const member = charMap.get(memberId);
+    if (!member) return null;
+    const fullMember = parsedCharacterMap.get(memberId);
+    const isBulkSelected = selectedCharacterIds.has(memberId);
+    const memberName = fullMember?.parsed.name ?? member.name;
+    const memberTitle = fullMember
+      ? getCharacterTitle({ name: memberName, comment: fullMember.comment })
+      : getCharacterTitle(member);
+    const memberPreviewMetadata = fullMember ? getCharacterPreviewMetadata(fullMember) : null;
+    const memberTags = fullMember ? getCharacterTags(fullMember) : [];
+    const memberTokenEstimate = fullMember?.tokenEstimate ?? null;
+    const memberNameColor = (fullMember?.parsed.extensions?.nameColor as string) || undefined;
+    const memberAvatarCrop = normalizeAvatarCrop(fullMember?.parsed.extensions?.avatarCrop) ?? undefined;
+    return (
+      <div
+        key={memberId}
+        data-touch-drag-card="character"
+        onMouseDown={(event) => {
+          const ids = getDraggedCharacterIds(memberId);
+          startCharacterMouseDrag(event, memberId, {
+            chatResourcePayload: {
+              version: 1,
+              kind: "character",
+              ids,
+              label:
+                ids.length === 1
+                  ? memberName
+                  : localizeUi("ui.chat.chatresourcedropoverlay.characterCount", {
+                      count: ids.length,
+                    }),
+            },
+          });
+        }}
+        onClick={() => {
+          if (suppressCharacterClickRef.current) return;
+          if (selectionMode) {
+            toggleSelection(memberId);
+            return;
+          }
+          openCharacterDetailFromPanel(memberId);
+        }}
+        onKeyDown={(e) => {
+          if (e.target !== e.currentTarget) return;
+          if (e.key !== "Enter" && e.key !== " ") return;
+          e.preventDefault();
+          if (selectionMode) {
+            toggleSelection(memberId);
+            return;
+          }
+          openCharacterDetailFromPanel(memberId);
+        }}
+        draggable
+        onDragStart={(event) => {
+          const ids = getDraggedCharacterIds(memberId);
+          setDraggedCharacterId(memberId);
+          event.dataTransfer.effectAllowed = "copyMove";
+          event.dataTransfer.setData("application/x-marinara-character-ids", JSON.stringify(ids));
+          event.dataTransfer.setData("text/plain", memberId);
+          writeChatResourceDragPayload(event.dataTransfer, {
+            version: 1,
+            kind: "character",
+            ids,
+            label:
+              ids.length === 1
+                ? memberName
+                : localizeUi("ui.chat.chatresourcedropoverlay.characterCount", { count: ids.length }),
+          });
+        }}
+        onDragEnd={() => {
+          setDraggedCharacterId(null);
+          clearActiveChatResourceDrag();
+        }}
+        role="button"
+        tabIndex={0}
+        className={cn(
+          "group group/member relative flex touch-pan-y cursor-pointer items-center gap-2 rounded-lg p-1.5 transition-all hover:bg-[var(--sidebar-accent)]",
+          selectionMode &&
+            isBulkSelected &&
+            "bg-[var(--marinara-chat-chrome-highlight-bg)] ring-1 ring-[var(--marinara-chat-chrome-button-border-active)]",
+          draggedCharacterId === memberId && "opacity-50",
+        )}
+      >
+        {selectionMode && (
+          <button
+            type="button"
+            aria-label={
+              isBulkSelected
+                ? localizeUi("ui.panels.characterspanel.deselectCharacter")
+                : localizeUi("ui.panels.ttsconfigcard.selectCharacter")
+            }
+            className={cn(
+              "flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors",
+              isBulkSelected
+                ? "border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-button-text-active)]"
+                : "border-[var(--muted-foreground)]/40 bg-[var(--secondary)] text-transparent",
+            )}
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleSelection(memberId);
+            }}
+          >
+            {isBulkSelected && <Check size="0.75rem" />}
+          </button>
+        )}
+        <TouchDragHandle
+          label={localizeUi("ui.panels.characterspanel.dragCharacter")}
+          size="0.75rem"
+          onTouchStart={(event) => {
+            startCharacterTouchDrag(event, memberId, {
+              allowInteractiveTarget: true,
+              chatResourcePayload: {
+                version: 1,
+                kind: "character",
+                ids: getDraggedCharacterIds(memberId),
+                label:
+                  getDraggedCharacterIds(memberId).length === 1
+                    ? memberName
+                    : localizeUi("ui.chat.chatresourcedropoverlay.characterCount", {
+                        count: getDraggedCharacterIds(memberId).length,
+                      }),
+              },
+              sourceElement: event.currentTarget.closest<HTMLElement>('[data-touch-drag-card="character"]'),
+            });
+          }}
+        />
+        <div className="mari-avatar-placeholder mari-avatar-placeholder--character relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg">
+          <div className="absolute inset-0 overflow-hidden rounded-lg">
+            {member.avatarPath ? (
+              <div className="absolute inset-0" onClick={(event) => event.stopPropagation()}>
+                <CharacterPhoto
+                  src={member.avatarPath}
+                  name={memberName}
+                  className="block h-full w-full"
+                  wrapperClassName="absolute inset-0 block"
+                  onUpdate={() => openCharacterDetailFromPanel(memberId)}
+                  updateLabel={localizeUi("ui.game.npcsview.openCharacterCard")}
+                >
+                  <AvatarImage
+                    src={member.avatarPath}
+                    alt={memberName}
+                    loading="lazy"
+                    iconSize="0.75rem"
+                    className="h-full w-full object-cover"
+                    style={getAvatarCropStyle(memberAvatarCrop)}
+                  />
+                </CharacterPhoto>
+              </div>
+            ) : (
+              <div className="flex h-full w-full items-center justify-center">
+                <User size="0.75rem" />
+              </div>
+            )}
+          </div>
+          {member.isFavorite && (
+            <div
+              aria-hidden="true"
+              data-character-favorite-indicator="folder"
+              className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-md bg-[var(--background)] text-[var(--marinara-chat-chrome-accent)] shadow-sm ring-1 ring-[var(--border)]"
+            >
+              <Star size="0.5625rem" className="fill-current" />
+            </div>
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <span
+            className="block truncate text-[0.75rem] font-medium"
+            style={
+              memberNameColor
+                ? memberNameColor.startsWith("linear-gradient")
+                  ? {
+                      background: memberNameColor,
+                      backgroundRepeat: "no-repeat",
+                      backgroundSize: "100% 100%",
+                      WebkitBackgroundClip: "text",
+                      WebkitTextFillColor: "transparent",
+                      backgroundClip: "text",
+                      color: "transparent",
+                      display: "inline-block",
+                    }
+                  : { color: memberNameColor }
+                : undefined
+            }
+          >
+            {memberName}
+          </span>
+          <LibraryCampaignBadges
+            campaigns={organizer.membership.get(memberId)}
+            hideCampaignId={organizer.filteredCampaignId}
+            onSelect={organizer.setCampaignFilter}
+          />
+          {showFolderPaths && folderView.pathByItemId.get(memberId) && (
+            <span
+              data-library-folder-path
+              className="flex min-w-0 items-center gap-1 text-[0.5625rem] text-[var(--muted-foreground)]"
+            >
+              <Folder size="0.5rem" className="shrink-0" />
+              <span className="truncate">{folderView.pathByItemId.get(memberId)}</span>
+            </span>
+          )}
+          {memberTitle && (
+            <span className="block truncate text-[0.5625rem] italic text-[var(--muted-foreground)]">{memberTitle}</span>
+          )}
+          {memberPreviewMetadata && (
+            <span className="block truncate text-[0.5625rem] text-[var(--muted-foreground)]">
+              {memberPreviewMetadata}
+            </span>
+          )}
+          {memberTokenEstimate !== null && (
+            <span
+              className="mari-chrome-text-muted flex items-center gap-1 text-[0.5625rem]"
+              title={localizeUi("ui.panels.characterspanel.estimatedFromCharacterCardTextFieldsActualTokenizerCounts")}
+            >
+              <Hash size="0.5rem" />
+              {formatEstimatedTokens(memberTokenEstimate, localizeUi)}
+            </span>
+          )}
+          {memberTags.length > 0 && (
+            <span className="mt-0.5 flex flex-wrap gap-0.5">
+              {memberTags.slice(0, 3).map((tag) => (
+                <span
+                  key={tag}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleIncludedTag(tag);
+                  }}
+                  className="mari-chrome-muted-badge cursor-pointer px-1.5 py-px text-[0.5rem] transition-all hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]"
+                >
+                  {tag}
+                </span>
+              ))}
+              {memberTags.length > 3 && (
+                <span className="mari-chrome-tag bg-[var(--secondary)] px-1.5 py-px text-[0.5rem] text-[var(--muted-foreground)]">
+                  +{memberTags.length - 3}
+                </span>
+              )}
+            </span>
+          )}
+        </div>
+        {!selectionMode && (
+          <div
+            data-character-row-actions
+            className="pointer-events-none absolute right-1 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] p-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover/member:opacity-100 [@media(pointer:fine)]:group-focus-within/member:opacity-100 max-md:static max-md:translate-y-0 max-md:opacity-100 [@media(pointer:coarse)]:static [@media(pointer:coarse)]:translate-y-0 [@media(pointer:coarse)]:opacity-100 group-hover/member:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within/member:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
+          >
+            <ChatResourceActionButton
+              payload={{ version: 1, kind: "character", ids: [memberId], label: memberName }}
+              size="row"
+              className="flex h-5 min-h-5 w-5 items-center justify-center rounded-md p-0 active:scale-90"
+              iconClassName="h-2.5 w-2.5 shrink-0"
+            />
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                duplicateCharacter.mutate(memberId, {
+                  onSuccess: () => {
+                    toast.success(
+                      localizeUi("ui.panels.characterspanel.duplicatedValue1", {
+                        value1: memberName,
+                      }),
+                    );
+                  },
+                });
+              }}
+              className="mari-chrome-control flex h-5 min-h-5 w-5 items-center justify-center rounded-md p-0 active:scale-90"
+              title={localizeUi("ui.presets.sectionstab.duplicate")}
+              aria-label={localizeUi("ui.presets.sectionstab.duplicate")}
+            >
+              <Copy size="0.625rem" />
+            </button>
+            <button
+              type="button"
+              onClick={async (e) => {
+                e.stopPropagation();
+                if (
+                  !(await showConfirmDialog({
+                    title: localizeUi("ui.panels.characterspanel.deleteCharacter"),
+                    message: localizeUi("ui.panels.characterspanel.deleteValue1ThisCannotBeUndone", {
+                      value1: memberName,
+                    }),
+                    confirmLabel: localizeUi("lorebook.editor.batch.delete"),
+                    tone: "destructive",
+                  }))
+                ) {
+                  return;
+                }
+                deleteCharacter.mutate(memberId);
+              }}
+              className="mari-chrome-control flex h-5 min-h-5 w-5 items-center justify-center rounded-md p-0 text-[var(--destructive)] active:scale-90"
+              title={localizeUi("lorebook.editor.batch.delete")}
+              aria-label={localizeUi("lorebook.editor.batch.delete")}
+            >
+              <Trash2 size="0.625rem" />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                openModal("start-character-chat", {
+                  characterId: memberId,
+                  characterName: memberName,
+                });
+              }}
+              className="mari-chrome-control flex h-5 min-h-5 w-5 items-center justify-center rounded-md border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-button-bg-active)] p-0 text-[var(--marinara-chat-chrome-button-text-active)] active:scale-90"
+              title={localizeUi("ui.panels.characterspanel.startNewChatWithValue1", {
+                value1: memberName,
+              })}
+              aria-label={localizeUi("ui.panels.characterspanel.startNewChatWithValue1", {
+                value1: memberName,
+              })}
+            >
+              <MessageCircle size="0.625rem" />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                moveCharactersToFolder([memberId], null).catch(showFolderError);
+              }}
+              className="mari-chrome-control flex h-5 min-h-5 w-5 items-center justify-center rounded-md p-0 text-[var(--muted-foreground)] active:scale-90"
+              title={localizeUi("ui.panels.characterspanel.removeFromFolder")}
+              aria-label={localizeUi("ui.panels.characterspanel.removeFromFolder")}
+            >
+              <UserMinus size="0.625rem" />
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderRootCharacter = (char: ParsedCharacterRow, section?: { rowKey: string; campaignId: string }) => {
+    const charName = char.parsed.name ?? "Unnamed";
+    const charTitle = getCharacterTitle({ name: charName, comment: char.comment });
+    const charTags = getCharacterTags(char);
+    const charNameColor = (char.parsed.extensions?.nameColor as string) || undefined;
+    const isBulkSelected = selectedCharacterIds.has(char.id);
+    const isFavorite = !!char.parsed.extensions?.fav;
+    const avatarUrl = char.avatarPath;
+    const previewMetadata = getCharacterPreviewMetadata(char);
+    const tokenEstimate = char.tokenEstimate;
+
+    return (
+      <div
+        key={section?.rowKey ?? char.id}
+        data-character-id={char.id}
+        data-touch-drag-card="character"
+        onMouseDown={(event) => {
+          const ids = getDraggedCharacterIds(char.id);
+          startCharacterMouseDrag(event, char.id, {
+            chatResourcePayload: {
+              version: 1,
+              kind: "character",
+              ids,
+              label:
+                ids.length === 1
+                  ? charName
+                  : localizeUi("ui.chat.chatresourcedropoverlay.characterCount", {
+                      count: ids.length,
+                    }),
+            },
+          });
+        }}
+        onClick={() => {
+          if (suppressCharacterClickRef.current) return;
+          if (selectionMode) {
+            toggleSelection(char.id);
+          } else {
+            openCharacterDetailFromPanel(char.id);
+          }
+        }}
+        draggable
+        onDragStart={(event) => {
+          const ids = getDraggedCharacterIds(char.id);
+          setDraggedCharacterId(char.id);
+          event.dataTransfer.effectAllowed = "copyMove";
+          event.dataTransfer.setData("application/x-marinara-character-ids", JSON.stringify(ids));
+          event.dataTransfer.setData("text/plain", char.id);
+          writeChatResourceDragPayload(event.dataTransfer, {
+            version: 1,
+            kind: "character",
+            ids,
+            label:
+              ids.length === 1
+                ? charName
+                : localizeUi("ui.chat.chatresourcedropoverlay.characterCount", { count: ids.length }),
+          });
+        }}
+        onDragEnd={() => {
+          setDraggedCharacterId(null);
+          clearActiveChatResourceDrag();
+        }}
+        className={cn(
+          "group relative flex min-h-[4.5rem] shrink-0 touch-pan-y cursor-pointer items-center gap-2.5 rounded-xl p-2 transition-all hover:bg-[var(--sidebar-accent)] max-md:min-h-16",
+          selectionMode &&
+            isBulkSelected &&
+            "bg-[var(--marinara-chat-chrome-highlight-bg)] ring-1 ring-[var(--marinara-chat-chrome-button-border-active)]",
+          draggedCharacterId === char.id && "opacity-50",
+        )}
+      >
+        {selectionMode && (
+          <button
+            type="button"
+            aria-label={
+              isBulkSelected
+                ? localizeUi("ui.panels.characterspanel.deselectCharacter")
+                : localizeUi("ui.panels.ttsconfigcard.selectCharacter")
+            }
+            className={cn(
+              "flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors",
+              isBulkSelected
+                ? "border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-button-text-active)]"
+                : "border-[var(--muted-foreground)]/40 bg-[var(--secondary)] text-transparent",
+            )}
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleSelection(char.id);
+            }}
+          >
+            {isBulkSelected && <Check size="0.75rem" />}
+          </button>
+        )}
+        <TouchDragHandle
+          label={localizeUi("ui.panels.characterspanel.dragCharacter")}
+          onTouchStart={(event) => {
+            startCharacterTouchDrag(event, char.id, {
+              allowInteractiveTarget: true,
+              chatResourcePayload: {
+                version: 1,
+                kind: "character",
+                ids: getDraggedCharacterIds(char.id),
+                label:
+                  getDraggedCharacterIds(char.id).length === 1
+                    ? charName
+                    : localizeUi("ui.chat.chatresourcedropoverlay.characterCount", {
+                        count: getDraggedCharacterIds(char.id).length,
+                      }),
+              },
+              sourceElement: event.currentTarget.closest<HTMLElement>('[data-touch-drag-card="character"]'),
+            });
+          }}
+        />
+        {/* Avatar */}
+        <div className="mari-avatar-placeholder mari-avatar-placeholder--character relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm">
+          {avatarUrl ? (
+            <div className="absolute inset-0 overflow-hidden rounded-xl">
+              <div className="absolute inset-0" onClick={(event) => event.stopPropagation()}>
+                <CharacterPhoto
+                  src={avatarUrl}
+                  name={charName}
+                  className="block h-full w-full"
+                  wrapperClassName="absolute inset-0 block"
+                  onUpdate={() => openCharacterDetailFromPanel(char.id)}
+                  updateLabel={localizeUi("ui.game.npcsview.openCharacterCard")}
+                >
+                  <AvatarImage
+                    src={avatarUrl}
+                    alt={charName}
+                    className="h-full w-full object-cover"
+                    style={getAvatarCropStyle(normalizeAvatarCrop(char.parsed.extensions?.avatarCrop))}
+                  />
+                </CharacterPhoto>
+              </div>
+            </div>
+          ) : (
+            <User size="1rem" />
+          )}
+          {isFavorite && (
+            <div
+              aria-hidden="true"
+              data-character-favorite-indicator="panel"
+              className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-md bg-[var(--background)] text-[var(--marinara-chat-chrome-accent)] shadow-sm ring-1 ring-[var(--border)]"
+            >
+              <Star size="0.625rem" className="fill-current" />
+            </div>
+          )}
+        </div>
+
+        {/* Info */}
+        <div className={cn("min-w-0 flex-1", !selectionMode && "pr-0 max-md:pr-32 [@media(pointer:coarse)]:pr-32")}>
+          <div
+            data-character-row-name
+            className="w-fit max-w-full truncate text-sm font-medium"
+            style={
+              charNameColor
+                ? charNameColor.startsWith("linear-gradient")
+                  ? {
+                      background: charNameColor,
+                      backgroundRepeat: "no-repeat",
+                      backgroundSize: "100% 100%",
+                      WebkitBackgroundClip: "text",
+                      WebkitTextFillColor: "transparent",
+                      backgroundClip: "text",
+                      color: "transparent",
+                      display: "inline-block",
+                    }
+                  : { color: charNameColor }
+                : undefined
+            }
+          >
+            {charName}
+          </div>
+          <LibraryCampaignBadges
+            campaigns={organizer.membership.get(char.id)}
+            hideCampaignId={section?.campaignId ?? organizer.filteredCampaignId}
+            onSelect={organizer.setCampaignFilter}
+          />
+          {charTitle && (
+            <div className="truncate text-[0.625rem] italic text-[var(--muted-foreground)]">{charTitle}</div>
+          )}
+          {previewMetadata && (
+            <div className="truncate text-[0.625rem] text-[var(--muted-foreground)]">{previewMetadata}</div>
+          )}
+          <div
+            className="mari-chrome-text-muted flex items-center gap-1 text-[0.625rem]"
+            title={localizeUi("ui.panels.characterspanel.estimatedFromCharacterCardTextFieldsActualTokenizerCounts")}
+          >
+            <Hash size="0.5625rem" />
+            {formatEstimatedTokens(tokenEstimate, localizeUi)}
+          </div>
+          {charTags.length > 0 && (
+            <div data-character-row-tags className="mt-0.5 flex flex-wrap gap-0.5">
+              {charTags.slice(0, 3).map((tag) => (
+                <span
+                  key={tag}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleIncludedTag(tag);
+                  }}
+                  className="mari-chrome-muted-badge cursor-pointer px-1.5 py-px text-[0.5rem] transition-all hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]"
+                >
+                  {tag}
+                </span>
+              ))}
+              {charTags.length > 3 && (
+                <span className="mari-chrome-tag bg-[var(--secondary)] px-1.5 py-px text-[0.5rem] text-[var(--muted-foreground)]">
+                  +{charTags.length - 3}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Actions */}
+        {!selectionMode && (
+          <div
+            data-character-row-actions
+            className="pointer-events-none absolute right-2 top-1/2 z-10 flex w-auto -translate-y-1/2 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] p-1 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
+          >
+            <ChatResourceActionButton
+              payload={{ version: 1, kind: "character", ids: [char.id], label: charName }}
+              size="row"
+              className="mari-character-row-action flex w-7 items-center justify-center max-md:w-6"
+              iconClassName="h-4 w-4 shrink-0 max-md:h-3.5 max-md:w-3.5"
+            />
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                duplicateCharacter.mutate(char.id, {
+                  onSuccess: () => {
+                    toast.success(
+                      localizeUi("ui.panels.characterspanel.duplicatedValue1", {
+                        value1: char.parsed?.name ?? localizeUi("ui.noodle.noodlehome.character"),
+                      }),
+                    );
+                  },
+                });
+              }}
+              className="mari-chrome-control mari-character-row-action flex w-7 items-center justify-center max-md:w-6"
+              title={localizeUi("ui.presets.sectionstab.duplicate")}
+              aria-label={localizeUi("ui.presets.sectionstab.duplicate")}
+            >
+              <Copy className="h-4 w-4 shrink-0 max-md:h-3.5 max-md:w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={async (e) => {
+                e.stopPropagation();
+                if (
+                  !(await showConfirmDialog({
+                    title: localizeUi("ui.panels.characterspanel.deleteCharacter"),
+                    message: localizeUi("ui.panels.characterspanel.deleteValue1ThisCannotBeUndone", {
+                      value1: char.parsed?.name ?? localizeUi("ui.panels.characterspanel.thisCharacter"),
+                    }),
+                    confirmLabel: localizeUi("lorebook.editor.batch.delete"),
+                    tone: "destructive",
+                  }))
+                ) {
+                  return;
+                }
+                deleteCharacter.mutate(char.id);
+              }}
+              className="mari-chrome-control mari-character-row-action flex w-7 items-center justify-center max-md:w-6"
+              title={localizeUi("lorebook.editor.batch.delete")}
+              aria-label={localizeUi("lorebook.editor.batch.delete")}
+            >
+              <Trash2 className="h-4 w-4 shrink-0 max-md:h-3.5 max-md:w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                openModal("start-character-chat", {
+                  characterId: char.id,
+                  characterName: charName,
+                });
+              }}
+              className="mari-chrome-control mari-character-row-action flex w-7 items-center justify-center border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-button-bg-active)] text-[var(--marinara-chat-chrome-button-text-active)] max-md:w-6"
+              title={localizeUi("ui.panels.characterspanel.startNewChatWithValue1", {
+                value1: charName,
+              })}
+              aria-label={localizeUi("ui.panels.characterspanel.startNewChatWithValue1", {
+                value1: charName,
+              })}
+            >
+              <MessageCircle className="h-3.5 w-3.5 shrink-0 max-md:h-3 max-md:w-3" />
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div
+      ref={panelScrollRef}
+      onScroll={handlePanelScroll}
+      data-component="CharactersPanelScroll"
+      className="flex h-full min-h-0 flex-col gap-2 overflow-y-auto p-3 [scrollbar-gutter:stable]"
+    >
+      <div
+        className="mari-chrome-segmented mari-chrome-segmented--two"
+        data-component="CharacterLibraryActions"
+        style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}
+      >
+        <button
+          type="button"
+          onClick={openBotBrowser}
+          className="mari-chrome-segmented__button min-w-0 justify-center gap-1 overflow-hidden px-1.5 py-2 text-[0.625rem] leading-normal"
+          title={localizeUi("ui.panels.resourceLibraryLauncher.downloadCards")}
+        >
+          <span className="shrink-0 leading-none">
+            <Bot size="0.875rem" />
+          </span>
+          <span className="inline-flex min-h-4 min-w-0 items-center justify-center truncate whitespace-nowrap pb-px leading-normal">
+            {localizeUi("ui.panels.resourceLibraryLauncher.download")}
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={() => openCharacterLibrary()}
+          className="mari-chrome-segmented__button min-w-0 justify-center gap-1 overflow-hidden px-1.5 py-2 text-[0.625rem] leading-normal"
+          title={localizeUi("ui.panels.characterspanel.openCharactersLibrary")}
+        >
+          <span className="shrink-0 leading-none">
+            <Users size="0.875rem" />
+          </span>
+          <span className="inline-flex min-h-4 min-w-0 items-center justify-center truncate whitespace-nowrap pb-px leading-normal">
+            {localizeUi("ui.panels.resourceLibraryLauncher.openLibrary")}
+          </span>
+        </button>
+      </div>
+
+      {/* Actions */}
+      <CharacterCategoryFilter
+        value={category}
+        onChange={(next) => {
+          setCategory(next);
+          exitSelectionMode();
+        }}
+      />
+      <div className="flex gap-2">
+        <button
+          onClick={() => openModal("create-character")}
+          className="mari-panel-gradient-button mari-panel-gradient--characters flex-1 text-xs"
+          title={localizeUi("ui.lorebooks.lorebookassignmentsection.new")}
+        >
+          <Plus size="0.8125rem" />
+        </button>
+        <button
+          onClick={() => openModal("import-character")}
+          className="mari-chrome-control mari-chrome-control--primary flex-1 text-xs"
+          title={localizeUi("ui.chat.chatbranchselector.import")}
+        >
+          <Download size="0.8125rem" />
+        </button>
+        <button
+          onClick={() => {
+            if (selectionMode) {
+              exitSelectionMode();
+            } else {
+              setSelectionMode(true);
+            }
+          }}
+          className={cn(
+            "mari-chrome-control mari-chrome-control--primary flex-1 text-xs",
+            selectionMode && "mari-chrome-control--selected",
+          )}
+          title={localizeUi("settings.common.select")}
+        >
+          <Check size="0.8125rem" />
+        </button>
+      </div>
+
+      {/* Search + Sort */}
+      <div className="flex gap-1.5">
+        <div className="relative flex-1">
+          <Search size="0.8125rem" className="mari-chrome-field-icon absolute left-3 top-1/2 -translate-y-1/2" />
+          <LibrarySearchInput
+            value={search}
+            onValueChange={setSearch}
+            placeholder={t("search.panels.characters")}
+            className="mari-chrome-field h-10 w-full py-0 pl-8 pr-3 text-xs md:h-9"
+          />
+        </div>
+        <div className="relative">
+          <select
+            value={sort}
+            onChange={(e) => setCharacterLibrarySort(e.target.value as CharacterLibrarySort)}
+            className="mari-chrome-field mari-chrome-sort-field mari-accent-animated h-10 appearance-none py-0 pl-2.5 pr-7 text-[0.6875rem] md:h-9"
+            title={localizeUi("ui.panels.agentspanel.sortOrder")}
+          >
+            <option value="name-asc">{localizeUi("ui.panels.backgroundpicker.aZ")}</option>
+            <option value="name-desc">{localizeUi("ui.panels.backgroundpicker.zA")}</option>
+            <option value="newest">{localizeUi("ui.panels.backgroundpicker.newest")}</option>
+            <option value="oldest">{localizeUi("ui.panels.backgroundpicker.oldest")}</option>
+            <option value="favorites">{localizeUi("ui.panels.characterspanel.favorites")}</option>
+          </select>
+          <ArrowUpDown
+            size="0.625rem"
+            className="mari-chrome-field-icon mari-chrome-sort-icon mari-accent-animated pointer-events-none absolute right-2 top-1/2 -translate-y-1/2"
+          />
+        </div>
+      </div>
+
+      <LibraryCampaignBar
+        campaigns={organizer.campaigns}
+        value={organizer.campaignFilter}
+        onChange={organizer.setCampaignFilter}
+        groupByCampaign={organizer.groupByCampaign}
+        onGroupByCampaignChange={organizer.setGroupByCampaign}
+      />
+      {filteredCampaign && (
+        <LibraryCampaignRoster
+          campaign={filteredCampaign}
+          open={!organizer.collapsedCampaignIds.has(`roster:${filteredCampaign.id}`)}
+          onOpenChange={(open) => organizer.setCampaignSectionCollapsed(`roster:${filteredCampaign.id}`, !open)}
+          onOpenCharacter={openCharacterDetailFromPanel}
+        />
+      )}
+
+      <div className="flex flex-col gap-0.5">
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => handleCreateFolder()}
+            className="mari-chrome-control mari-chrome-control--small flex-1 justify-start text-[0.6875rem]"
+          >
+            <FolderPlus size="0.75rem" />
+            {localizeUi("ui.panels.backgroundpicker.newFolder")}
+          </button>
+          <button
+            type="button"
+            onClick={() => setDuplicatesOpen(true)}
+            className="mari-chrome-control mari-chrome-control--small shrink-0 text-[0.6875rem]"
+            title={localizeUi("characters.duplicates.action")}
+          >
+            <ScanSearch size="0.75rem" />
+            {localizeUi("characters.duplicates.actionShort")}
+          </button>
+          <button
+            type="button"
+            onClick={() => setUnusedOpen(true)}
+            className="mari-chrome-control mari-chrome-control--small shrink-0 text-[0.6875rem]"
+            title={localizeUi("characters.unused.action")}
+          >
+            <CircleSlash size="0.75rem" />
+            {localizeUi("characters.unused.actionShort")}
+          </button>
+        </div>
+        {parsedGroups.length > 0 && (
+          <p className="mari-folder-helper">
+            {localizeUi("ui.panels.characterspanel.dragAndDropCharactersToFoldersDoubleClickOr")}
+          </p>
+        )}
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap gap-1">
+        {(["all", "favorites", "non-favorites"] as const).map((opt) => (
+          <button
+            key={opt}
+            onClick={() => setFavFilter(opt)}
+            className={cn(
+              "mari-chrome-control mari-chrome-control--compact",
+              favFilter === opt && "mari-chrome-control--selected",
+            )}
+          >
+            {opt === "all"
+              ? localizeUi("ui.noodle.stageprofilesourcepicker.all")
+              : opt === "favorites"
+                ? localizeUi("ui.panels.characterspanel.favs")
+                : localizeUi("ui.panels.characterspanel.nonFavs")}
+          </button>
+        ))}
+        {allTags.length > 0 && (
+          <button
+            onClick={() => setTagsExpanded(!tagsExpanded)}
+            className={cn(
+              "mari-chrome-control mari-chrome-control--compact",
+              (includedTags.size > 0 || excludedTags.size > 0) && "mari-chrome-control--selected",
+            )}
+          >
+            <Tag size="0.625rem" />
+            {localizeUi("ui.panels.backgroundpicker.tagsValue1", { value1: allTags.length })}
+            <ChevronDown size="0.625rem" className={cn("transition-transform", tagsExpanded && "rotate-180")} />
+          </button>
+        )}
+      </div>
+
+      {allTags.length > 0 && tagsExpanded && (
+        <div className="flex flex-wrap gap-1">
+          {(includedTags.size > 0 || excludedTags.size > 0) && (
+            <button
+              onClick={clearTagFilters}
+              className="mari-chrome-control mari-chrome-control--compact mari-chrome-control--danger"
+            >
+              <X size="0.5rem" /> {localizeUi("lorebook.editor.batch.clear")}
+            </button>
+          )}
+          {allTags.map((tag) => {
+            const included = includedTags.has(tag);
+            const excluded = excludedTags.has(tag);
+            return (
+              <div
+                key={tag}
+                role="button"
+                tabIndex={0}
+                onClick={() => toggleIncludedTag(tag)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    toggleIncludedTag(tag);
+                  }
+                }}
+                className={cn(
+                  "mari-chrome-control mari-chrome-control--compact group/tag cursor-pointer",
+                  included ? "mari-chrome-control--selected" : excluded ? "mari-chrome-control--danger" : "",
+                )}
+              >
+                {tag}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDeleteTag(tag);
+                  }}
+                  className="rounded-full p-0.5 transition-colors hover:bg-[var(--destructive)]/20 hover:text-[var(--destructive)]"
+                  title={localizeUi("ui.panels.characterspanel.deleteTagValue1", { value1: tag })}
+                >
+                  <X size="0.5rem" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {!organizer.groupByCampaign && (
+        <LibraryFolderTree
+          folders={folderNodes}
+          view={folderView}
+          filterActive={userFolderFilterActive}
+          expandedIds={organizer.expandedFolderIds}
+          onExpandedChange={organizer.setFolderExpanded}
+          isItemShown={isFolderMemberShown}
+          renderItem={(memberId) => renderFolderMember(memberId)}
+          folderIdAttribute="data-character-folder-id"
+          folderDragType="application/x-marinara-character-folder"
+          itemDragActive={draggedCharacterId !== null}
+          allowFolderDrag={!isMobileOverlay}
+          onItemDrop={(folderId, event) => {
+            const payload = event.dataTransfer.getData("application/x-marinara-character-ids");
+            handleCharacterDrop(folderId, parseDroppedCharacterIds(payload));
+          }}
+          onRename={handleRenameGroup}
+          onDelete={(folder) => void handleDeleteGroup(folder)}
+          onCreateSubfolder={(parentId) => handleCreateFolder(parentId)}
+          onMoveFolder={handleMoveFolder}
+          onRequestMoveFolder={requestMoveFolder}
+          emptyFolderText={localizeUi("ui.panels.characterspanel.dropCharactersHere")}
+        />
+      )}
+
+      {/* Characters Section Header */}
+      <div className="flex items-center gap-1.5 px-1 pt-1 text-[0.6875rem] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
+        <User size="0.6875rem" />
+        {t(`characters.organization.${category}`)} ({filteredCharacters.length}
+        {characterPages.hasNextPage ? "+" : ""})
+        {selectionMode && (
+          <span className="text-[0.625rem] font-normal normal-case">
+            · {selectedCharacterIds.size} {localizeUi("ui.panels.npcdefaultvoicepool.selected")}
+          </span>
+        )}
+      </div>
+
+      {/* Character list */}
+      {isLoading && (
+        <div className="flex flex-col gap-2 py-2">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="shimmer h-14 rounded-xl" />
+          ))}
+        </div>
+      )}
+
+      {!isLoading && filteredCharacters.length === 0 && (
+        <div className="flex flex-col items-center gap-2 py-8 text-center">
+          <div className="mari-chrome-accent-soft-tile mari-accent-animated animate-float flex h-12 w-12 items-center justify-center rounded-2xl">
+            <User size="1.25rem" />
+          </div>
+          <p className="mari-chrome-text-muted text-xs">
+            {userFolderFilterActive
+              ? localizeUi("ui.panels.characterspanel.noMatchesFound")
+              : localizeUi("ui.panels.characterspanel.noCharactersYet")}
+          </p>
+        </div>
+      )}
+
+      {draggedCharacterId && !organizer.groupByCampaign && (
+        <div
+          data-character-folder-root
+          onDragOver={(event) => {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            const payload = event.dataTransfer.getData("application/x-marinara-character-ids");
+            handleCharacterDrop(null, parseDroppedCharacterIds(payload));
+          }}
+          className="rounded-xl border border-dashed border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-highlight-bg)] px-3 py-2 text-[0.625rem] text-[var(--marinara-chat-chrome-button-text-active)]"
+        >
+          {localizeUi("ui.panels.agentspanel.dropHereToMoveOutOfFolder")}
+        </div>
+      )}
+
+      <div className="flex min-h-8 shrink-0 flex-col gap-1 rounded-xl transition-colors">
+        {organizer.groupByCampaign ? (
+          <LibraryCampaignSections
+            campaigns={
+              organizer.filteredCampaignId
+                ? organizer.campaigns.filter((campaign) => campaign.id === organizer.filteredCampaignId)
+                : organizer.campaigns
+            }
+            items={sortedCharacters}
+            membership={organizer.membership}
+            collapsedIds={organizer.collapsedCampaignIds}
+            onToggle={organizer.setCampaignSectionCollapsed}
+            renderItem={(char, sectionId) =>
+              renderRootCharacter(char, { rowKey: `${sectionId}:${char.id}`, campaignId: sectionId })
+            }
+            showUnassigned={organizer.filteredCampaignId === null}
+          />
+        ) : (
+          visibleRootCharacters.map((char) => renderRootCharacter(char))
+        )}
+      </div>
+
+      {characterPages.hasNextPage && (
+        <PanelLoadMoreBar
+          onLoadMore={() => void characterPages.fetchNextPage()}
+          disabled={characterPages.isFetchingNextPage}
+        >
+          {characterPages.isFetchingNextPage
+            ? localizeUi("ui.characters.characterlibraryview.loading")
+            : localizeUi("ui.panels.characterspanel.loadMoreValue1Loaded", { value1: pageCharacters.length })}
+        </PanelLoadMoreBar>
+      )}
+
+      {selectionMode && (
+        <SelectionActionBar
+          placement="panel"
+          selectedCount={selectedCharacterIds.size}
+          extraAction={
+            <>
+              <LibrarySelectionExtraActions
+                disabled={selectedCharacterIds.size === 0}
+                onMove={parsedGroups.length > 0 ? handleMoveSelected : undefined}
+                onCampaigns={
+                  organizer.campaignsAvailable
+                    ? () => organizer.openCampaignPicker([...selectedCharacterIds])
+                    : undefined
+                }
+              />
+              <button
+                type="button"
+                onClick={() => setBulkTagsOpen(true)}
+                disabled={selectedCharacterIds.size === 0}
+                className={SELECTION_EXTRA_ACTION_BUTTON_CLASS}
+                title={localizeUi("characters.bulkTags.action")}
+                aria-label={localizeUi("characters.bulkTags.action")}
+              >
+                <Tags size="0.75rem" className="shrink-0" />
+                <span className={SELECTION_EXTRA_ACTION_LABEL_CLASS}>{localizeUi("characters.bulkTags.actionShort")}</span>
+              </button>
+            </>
+          }
+          onExport={() => void handleExportSelected()}
+          onDelete={handleDeleteSelected}
+          exporting={exportingSelected}
+        />
+      )}
+
+      <CharacterDuplicatesModal
+        open={duplicatesOpen}
+        onClose={() => setDuplicatesOpen(false)}
+        onOpenCharacter={(id) => {
+          setDuplicatesOpen(false);
+          openCharacterDetailFromPanel(id);
+        }}
+      />
+      <CharacterUnusedModal
+        open={unusedOpen}
+        onClose={() => setUnusedOpen(false)}
+        onOpenCharacter={(id) => {
+          setUnusedOpen(false);
+          openCharacterDetailFromPanel(id);
+        }}
+      />
+      <CharacterBulkTagsModal
+        open={bulkTagsOpen}
+        onClose={() => setBulkTagsOpen(false)}
+        characters={bulkTagCharacters}
+        onApplied={() => {
+          setBulkTagsOpen(false);
+          exitSelectionMode();
+        }}
+      />
+      {organizer.modals}
+    </div>
+  );
+}

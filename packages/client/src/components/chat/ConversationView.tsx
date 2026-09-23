@@ -1,0 +1,1745 @@
+// ──────────────────────────────────────────────
+// Chat: Conversation View — Discord-style composite
+// ──────────────────────────────────────────────
+import {
+  Fragment,
+  Suspense,
+  lazy,
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  useCallback,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
+import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
+import { Loader2, ChevronUp, Settings2, Image as ImageIcon, ArrowRightLeft } from "lucide-react";
+import { ConversationMessage } from "./ConversationMessage";
+import { ChapterDivider } from "./MessageChapters";
+import { ConversationInput } from "./ConversationInput";
+import { ConversationGamesPicker } from "./ConversationGamesPicker";
+import { SceneBanner, EndSceneBar } from "./SceneBanner";
+import { ChatBranchSelector } from "./ChatBranchSelector";
+import { ChatMessageSearch } from "./ChatMessageSearch";
+import { ActiveLorebookEntriesButton } from "./ActiveLorebookEntriesButton";
+import {
+  CHAT_TOOLBAR_OVERFLOW_BUTTON_SIZE_CLASS,
+  ChatToolbarButton,
+  ChatToolbarMenu,
+  getChatToolbarButtonClass,
+} from "./ChatToolbarControls";
+import { ChatHelpButton } from "./ChatHelpButton";
+import { PrivateNotebookToolbarButton } from "./PrivateNotebookPanel";
+import { ConversationPresenceCard } from "./ConversationPresenceCard";
+import { PendingTypingDots } from "./PendingTypingDots";
+import { TranscriptWindowControls } from "./TranscriptWindowControls";
+import { PinnedImageOverlay } from "./PinnedImageOverlay";
+import { useChatStore } from "../../stores/chat.store";
+import { hasActiveTextSelection } from "../../lib/text-selection";
+import { useConversationGamesStore } from "../../stores/conversation-games.store";
+import { useUIStore } from "../../stores/ui.store";
+import { playConfiguredNotificationPing } from "../../lib/notification-sound";
+import { rememberBoundedSetValue } from "../../lib/bounded-set";
+import { useRenderTimer } from "../../lib/perf-diagnostics";
+import { messageHasPendingPostProcessing } from "../../lib/chat-message-extra";
+import {
+  getTranscriptRenderWindow,
+  resolveTranscriptRenderWindowSize,
+  TRANSCRIPT_RENDER_WINDOW_STEP,
+} from "../../lib/transcript-render-window";
+import { useThrottledStreamBuffer } from "../../hooks/use-throttled-stream-buffer";
+import { useConversationCustomEmojis } from "../../hooks/use-conversation-custom-emojis";
+import { useConversationCustomStickers } from "../../hooks/use-conversation-custom-stickers";
+import { useReducedAmbientEffects } from "../../hooks/use-reduced-ambient-effects";
+import type { CharacterMap, MessageSelectionToggle, PersonaInfo } from "./chat-area.types";
+import {
+  normalizeTextForMatch,
+  parseGroupedSpeakerSegments,
+  stripLeadingMessageTimestamps,
+  type Message,
+  readMessageChapter,
+} from "@marinara-engine/shared";
+import { useInstalledCapabilityPackages } from "../../hooks/use-capability-packages";
+import { CapabilityElement } from "../capabilities/CapabilityElement";
+import { TURN_GAME_BOT_REQUEST_EVENT } from "../../lib/capability-turn-game-events";
+import { useGenerate } from "../../hooks/use-generate";
+import { useChatOpeningScroll } from "../../hooks/use-chat-opening-scroll";
+import {
+  useChatComposerFocused,
+  useChatKeyboardOpen,
+  useKeepLatestChatMessageVisible,
+} from "../../hooks/use-visual-viewport-chat-bottom";
+
+const ConversationAutonomousEffects = lazy(async () => {
+  const module = await import("./ConversationAutonomousEffects");
+  return { default: module.ConversationAutonomousEffects };
+});
+
+interface ConversationViewProps {
+  chatId: string;
+  messages: Message[] | undefined;
+  isLoading: boolean;
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
+  fetchNextPage: () => void;
+  pageCount: number;
+  totalMessageCount: number;
+  characterMap: CharacterMap;
+  characterNames: string[];
+  personaInfo?: PersonaInfo;
+  chatMeta: Record<string, any>;
+  chatName?: string;
+  chatGroupId?: string | null;
+  chatCharIds: string[];
+  onDelete: (messageId: string) => void;
+  onRegenerate: (messageId: string) => void;
+  onEdit: (messageId: string, content: string) => void;
+  onSetActiveSwipe: (messageId: string, index: number) => void;
+  onToggleHiddenFromAI: (messageId: string, current: boolean) => void;
+  onPeekPrompt: (messageId?: string) => void;
+  onIllustrate?: (prompt?: string) => void | Promise<void>;
+  onGenerateSelfie?: (characterId?: string) => void | Promise<void>;
+  lastAssistantMessageId: string | null;
+  onOpenSettings: (event?: ReactMouseEvent<HTMLElement>, options?: { initialSection?: "autonomous" | null }) => void;
+  privateNotebookOpen: boolean;
+  onOpenPrivateNotebook: (event?: ReactMouseEvent<HTMLElement>) => void;
+  onOpenScheduleEditor?: (characterId: string, options?: { initialDay?: string | null }) => void;
+  onOpenGallery: (event?: ReactMouseEvent<HTMLElement>) => void;
+  onBranch?: (messageId: string) => void;
+  multiSelectMode?: boolean;
+  selectedMessageIds?: Set<string>;
+  onToggleSelectMessage?: (toggle: MessageSelectionToggle) => void;
+  connectedChatName?: string;
+  onSwitchChat?: () => void;
+  sceneInfo?: {
+    variant: "origin" | "scene";
+    sceneChatId?: string;
+    sceneChatName?: string;
+    originChatId?: string;
+    description?: string;
+  };
+  onConcludeScene?: (sceneChatId: string) => void;
+  onAbandonScene?: (sceneChatId: string) => void;
+}
+
+/** Return a display label for a day separator */
+function formatDaySeparator(dateStr: string): string {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const msgDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const diffDays = Math.floor((today.getTime() - msgDay.getTime()) / 86400000);
+
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  return date.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+}
+
+/** Group messages by day for day separators */
+function getDayKey(dateStr: string): string {
+  const d = new Date(dateStr);
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+/** Check if a message's content uses "Name: text" format with known chat-member character names */
+function getKnownChatMemberNames(characterMap: CharacterMap, chatCharacterIds: string[]): Set<string> {
+  const names = new Set<string>();
+  for (const id of chatCharacterIds) {
+    const character = characterMap.get(id);
+    for (const candidate of [character?.name, character?.convoDisplayName]) {
+      if (candidate?.trim()) names.add(normalizeTextForMatch(candidate));
+    }
+  }
+  return names;
+}
+
+function hasNamePrefixFormat(content: string, knownNames: Set<string>): boolean {
+  if (!content) return false;
+  if (!knownNames.size) return false;
+  const lines = content.split("\n");
+  for (const line of lines) {
+    const colonIdx = line.indexOf(": ");
+    if (colonIdx > 0) {
+      const name = line.slice(0, colonIdx).trim();
+      if (knownNames.has(normalizeTextForMatch(name))) return true;
+    }
+  }
+  return false;
+}
+
+function getGroupedSegmentCount(content: string, knownNames: Set<string>): number {
+  return parseGroupedSpeakerSegments(content, knownNames)?.length ?? 0;
+}
+
+function isHiddenFromUser(message: Message) {
+  const extra = getMessageExtraRecord(message);
+  return extra.hiddenFromUser === true;
+}
+
+function getMessageExtraRecord(message: Message): Record<string, unknown> {
+  try {
+    const extra = typeof message.extra === "string" ? JSON.parse(message.extra) : (message.extra ?? {});
+    return extra && typeof extra === "object" && !Array.isArray(extra) ? (extra as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+const LIST_LINE_RE = /^\s*(?:[-*+]|\d+\.)\s/;
+const TASK_LIST_LINE_RE = /^\s*[-*+] \[[ xX]\]\s/;
+const LIST_CONTINUATION_LINE_RE = /^\s{2,}\S/;
+const TABLE_ROW_RE = /^\s*\|.+\|\s*$/;
+const BLOCKQUOTE_LINE_RE = /^\s*>/;
+const CODE_FENCE_LINE_RE = /^\s*`{3,}/;
+
+function isListLine(line: string) {
+  return LIST_LINE_RE.test(line) || TASK_LIST_LINE_RE.test(line);
+}
+
+function isListBlockLine(line: string) {
+  return isListLine(line) || LIST_CONTINUATION_LINE_RE.test(line);
+}
+
+function chunkAssistantMarkdownBlocks(lines: string[]): string[][] {
+  const blocks: string[][] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index]!;
+
+    if (CODE_FENCE_LINE_RE.test(line)) {
+      const block = [line];
+      index++;
+      while (index < lines.length) {
+        const nextLine = lines[index]!;
+        block.push(nextLine);
+        index++;
+        if (CODE_FENCE_LINE_RE.test(nextLine)) break;
+      }
+      blocks.push(block);
+      continue;
+    }
+
+    if (TABLE_ROW_RE.test(line.trim())) {
+      const block = [line];
+      index++;
+      while (index < lines.length && TABLE_ROW_RE.test(lines[index]!.trim())) {
+        block.push(lines[index]!);
+        index++;
+      }
+      blocks.push(block);
+      continue;
+    }
+
+    if (isListLine(line)) {
+      const block = [line];
+      index++;
+      while (index < lines.length && isListBlockLine(lines[index]!)) {
+        block.push(lines[index]!);
+        index++;
+      }
+      blocks.push(block);
+      continue;
+    }
+
+    if (BLOCKQUOTE_LINE_RE.test(line)) {
+      const block = [line];
+      index++;
+      while (index < lines.length && BLOCKQUOTE_LINE_RE.test(lines[index]!)) {
+        block.push(lines[index]!);
+        index++;
+      }
+      blocks.push(block);
+      continue;
+    }
+
+    blocks.push([line]);
+    index++;
+  }
+
+  return blocks;
+}
+
+function splitAssistantContentLines(content: string, charName?: string | null): string[] {
+  const lines: string[] = [];
+  let inCodeBlock = false;
+
+  for (const line of content.split("\n")) {
+    const t = line.trim();
+    const isCodeFence = CODE_FENCE_LINE_RE.test(line);
+
+    if (!inCodeBlock && !t) continue;
+    if (!inCodeBlock && charName && (t === charName || t === `${charName}:`)) continue;
+
+    lines.push(line);
+
+    if (isCodeFence) {
+      inCodeBlock = !inCodeBlock;
+    }
+  }
+
+  return lines;
+}
+
+// Module-level set that remembers which message keys have been "seen" across
+// component remounts. This prevents stagger animations and notification sounds
+// from replaying when the user navigates away from a chat and comes back.
+const globalSeenKeys = new Set<string>();
+const MAX_GLOBAL_SEEN_KEYS = 5_000;
+
+function getBackgroundBlurStyle(blurPx: number): Pick<CSSProperties, "filter" | "transform"> {
+  if (blurPx <= 0) return {};
+  return {
+    filter: `blur(${blurPx}px)`,
+    transform: `scale(${Math.min(1.08, 1 + blurPx * 0.0025)})`,
+  };
+}
+
+function CrossfadeBackground({
+  url,
+  blurPx,
+  opacity,
+  reduceMotion,
+}: {
+  url: string | null;
+  blurPx: number;
+  opacity: number;
+  reduceMotion: boolean;
+}) {
+  const [bgA, setBgA] = useState<string | null>(url);
+  const [bgB, setBgB] = useState<string | null>(null);
+  const [aActive, setAActive] = useState(true);
+  const activeSlot = useRef<"a" | "b">("a");
+  const backgroundBlurStyle = getBackgroundBlurStyle(blurPx);
+  const transition = reduceMotion
+    ? "none"
+    : "opacity 700ms ease-in-out, filter 180ms ease-out, transform 180ms ease-out";
+
+  useEffect(() => {
+    const currentUrl = activeSlot.current === "a" ? bgA : bgB;
+    if (url === currentUrl) return;
+
+    if (!url) {
+      applyUrl(null);
+      return;
+    }
+
+    let cancelled = false;
+    const image = document.createElement("img");
+    image.onload = () => {
+      if (!cancelled) applyUrl(url);
+    };
+    image.onerror = () => {
+      if (cancelled || useUIStore.getState().chatBackground !== url) return;
+      console.warn(`[Background] "${url}" could not be loaded — clearing`);
+      useUIStore.getState().setChatBackground(null);
+    };
+    image.src = url;
+    return () => {
+      cancelled = true;
+      image.onload = null;
+      image.onerror = null;
+    };
+
+    function applyUrl(nextUrl: string | null) {
+      if (activeSlot.current === "a") {
+        setBgB(nextUrl);
+        setAActive(false);
+        activeSlot.current = "b";
+      } else {
+        setBgA(nextUrl);
+        setAActive(true);
+        activeSlot.current = "a";
+      }
+    }
+  }, [bgA, bgB, url]);
+
+  return (
+    <>
+      <img
+        src={bgA ?? undefined}
+        alt=""
+        draggable={false}
+        className="mari-background pointer-events-none absolute inset-0 h-full w-full select-none object-cover object-center"
+        style={{
+          opacity: aActive && bgA ? opacity : 0,
+          transition,
+          ...backgroundBlurStyle,
+        }}
+      />
+      <img
+        src={bgB ?? undefined}
+        alt=""
+        draggable={false}
+        className="mari-background pointer-events-none absolute inset-0 h-full w-full select-none object-cover object-center"
+        style={{
+          opacity: !aActive && bgB ? opacity : 0,
+          transition,
+          ...backgroundBlurStyle,
+        }}
+      />
+    </>
+  );
+}
+
+export function ConversationView({
+  chatId,
+  messages,
+  isLoading,
+  hasNextPage,
+  isFetchingNextPage,
+  fetchNextPage,
+  pageCount,
+  totalMessageCount,
+  characterMap,
+  characterNames,
+  personaInfo,
+  chatMeta,
+  chatName,
+  chatGroupId,
+  chatCharIds,
+  onDelete,
+  onRegenerate,
+  onEdit,
+  onSetActiveSwipe,
+  onToggleHiddenFromAI,
+  onPeekPrompt,
+  onIllustrate,
+  onGenerateSelfie,
+  lastAssistantMessageId,
+  onOpenSettings,
+  privateNotebookOpen,
+  onOpenPrivateNotebook,
+  onOpenScheduleEditor,
+  onOpenGallery,
+  onBranch,
+  multiSelectMode,
+  selectedMessageIds,
+  onToggleSelectMessage,
+  connectedChatName,
+  onSwitchChat,
+  sceneInfo,
+  onConcludeScene,
+  onAbandonScene,
+}: ConversationViewProps) {
+  const { t: localizeUi } = useUiTranslation();
+  const { t } = useTranslation();
+  useRenderTimer("convo-messages"); // [#3104 diagnostic]
+  const streamingChatId = useChatStore((s) => s.streamingChatId);
+  const isStreaming = useChatStore((s) => s.isStreaming) && streamingChatId === chatId;
+  const { generate: generateTurnGameBots } = useGenerate();
+  useEffect(() => {
+    const handleBotRequest = (event: Event) => {
+      const requestedChatId = (event as CustomEvent<{ chatId?: string }>).detail?.chatId;
+      if (requestedChatId !== chatId) return;
+      const activeChat = useChatStore.getState().activeChat;
+      generateTurnGameBots({
+        chatId,
+        connectionId: activeChat?.id === chatId ? (activeChat.connectionId ?? null) : null,
+        turnGameBots: true,
+      });
+    };
+    window.addEventListener(TURN_GAME_BOT_REQUEST_EVENT, handleBotRequest);
+    return () => window.removeEventListener(TURN_GAME_BOT_REQUEST_EVENT, handleBotRequest);
+  }, [chatId, generateTurnGameBots]);
+  const gamesPickerOpen = useConversationGamesStore((s) => s.pickerChatId === chatId);
+  const closeGamesPicker = useConversationGamesStore((s) => s.closePicker);
+  const gameSetup = useConversationGamesStore((s) => (s.setup?.chatId === chatId ? s.setup : null));
+  const closeGameSetup = useConversationGamesStore((s) => s.closeSetup);
+  const { data: installedCapabilities = [] } = useInstalledCapabilityPackages();
+  const turnGamePackages = installedCapabilities.filter(
+    (item) => item.status === "active" && item.manifest.kind.includes("turn-game") && item.manifest.entrypoints.client,
+  );
+  const hasLiveStream = isStreaming;
+  const streamBuffer = useThrottledStreamBuffer();
+  const thinkingBuffer = useChatStore((s) => s.thinkingBuffer);
+  const regenerateMessageId = useChatStore((s) => s.regenerateMessageId);
+  const streamingCharacterId = useChatStore((s) => s.streamingCharacterId);
+  const typingCharacterName = useChatStore((s) => s.typingCharacterName);
+  const delayedCharacterInfo = useChatStore((s) => s.delayedCharacterInfo);
+  const conversationMessageStyle = useUIStore((s) => s.conversationMessageStyle);
+  const hasDraftInput = useChatStore((s) => s.hasCurrentInput);
+  const isGroupConversation = chatCharIds.length > 1;
+  const liveTypingName = useMemo(() => {
+    if (isGroupConversation) return "Multiple people";
+    if (typingCharacterName) return typingCharacterName;
+    if (streamingCharacterId) return characterMap.get(streamingCharacterId)?.name ?? "Character";
+    if (chatCharIds.length === 1) return characterMap.get(chatCharIds[0]!)?.name ?? "Character";
+    if (characterNames.length > 0) return characterNames.join(", ");
+    return "Character";
+  }, [characterMap, characterNames, chatCharIds, isGroupConversation, streamingCharacterId, typingCharacterName]);
+  const liveTypingVerb =
+    isGroupConversation || liveTypingName.includes(",") || liveTypingName.includes(" & ") ? "are" : "is";
+  const liveTypingLabel = `${liveTypingName} ${liveTypingVerb} typing`;
+  const liveTypingText = `${liveTypingName} ${liveTypingVerb} typing...`;
+  const delayedDisplayName = useMemo(() => {
+    if (!delayedCharacterInfo) return "";
+    const ids = delayedCharacterInfo.characterIds ?? [];
+    const namesFromIds = ids
+      .map((id) => characterMap.get(id)?.name)
+      .filter((name): name is string => typeof name === "string" && name.trim().length > 0);
+    if (namesFromIds.length > 0 && namesFromIds.length === ids.length) return namesFromIds.join(", ");
+
+    const namesFromEvent = (delayedCharacterInfo.characterNames ?? []).filter(
+      (name): name is string => typeof name === "string" && name.trim().length > 0,
+    );
+    const usefulEventNames = namesFromEvent.filter((name) => {
+      const normalized = normalizeTextForMatch(name);
+      return normalized !== "character" && normalized !== "characters";
+    });
+    if (usefulEventNames.length > 0) return usefulEventNames.join(", ");
+    if (namesFromIds.length > 0) return namesFromIds.join(", ");
+    const fallbackName = delayedCharacterInfo.name?.trim() ?? "";
+    const normalizedFallbackName = normalizeTextForMatch(fallbackName);
+    if (fallbackName && normalizedFallbackName !== "character" && normalizedFallbackName !== "characters") {
+      return fallbackName;
+    }
+    return "Character";
+  }, [characterMap, delayedCharacterInfo]);
+  const delayedDisplayVerb = delayedDisplayName.includes(",") || delayedDisplayName.includes(" & ") ? "are" : "is";
+  // Single typer → tag the typing row so exclusive-mode card CSS can target it via
+  // `[data-card-css="<id>"] .mari-typing-*`. Multiple/unknown typers stay untagged.
+  const typingCardCssId = isGroupConversation
+    ? undefined
+    : (streamingCharacterId ?? (chatCharIds.length === 1 ? chatCharIds[0] : undefined));
+
+  // Track whether the current generation has produced any content. When the stream
+  // buffer clears (stream finished) but isStreaming hasn't cleared yet, this ref lets
+  // us hide draft rows immediately so the real updated message shows without a flash.
+  const streamHadContentRef = useRef(false);
+  useEffect(() => {
+    if (!hasLiveStream) {
+      streamHadContentRef.current = false;
+      return;
+    }
+    if (streamBuffer || thinkingBuffer) streamHadContentRef.current = true;
+  }, [hasLiveStream, streamBuffer, thinkingBuffer]);
+  const isStreamWindingDown =
+    hasLiveStream &&
+    conversationMessageStyle === "bubble" &&
+    !streamBuffer &&
+    !thinkingBuffer &&
+    streamHadContentRef.current;
+
+  const shouldRenderLiveStreamMessage =
+    hasLiveStream &&
+    !delayedCharacterInfo &&
+    !regenerateMessageId &&
+    !isStreamWindingDown &&
+    (conversationMessageStyle === "bubble" || !!streamBuffer || !!thinkingBuffer);
+  const showTypingIndicator =
+    hasLiveStream && !delayedCharacterInfo && !streamBuffer && !thinkingBuffer && conversationMessageStyle !== "bubble";
+
+  // Per-scheme conversation gradient from settings. When a scheme's values are
+  // still the defaults, use CSS variables so visual themes can override the
+  // default stops without collapsing Marinara's two-color background.
+  const convoGradient = useUIStore((s) => s.convoGradient);
+  const theme = useUIStore((s) => s.theme);
+  const chatBackground = useUIStore((s) => s.chatBackground);
+  const chatBackgroundBlur = useUIStore((s) => s.chatBackgroundBlur);
+  const conversationBackgroundImageOpacity = useUIStore((s) => s.conversationBackgroundImageOpacity);
+  const reduceAmbientEffects = useReducedAmbientEffects();
+  const gradientStyle = useMemo(() => {
+    const g = convoGradient[theme];
+    const defaults = theme === "dark" ? { from: "#0a0a0e", to: "#1c2133" } : { from: "#f2eff7", to: "#eae6f0" };
+    if (g.from === defaults.from && g.to === defaults.to) {
+      return {
+        background: `linear-gradient(135deg, var(--marinara-conversation-gradient-from, ${g.from}), var(--marinara-conversation-gradient-to, ${g.to}))`,
+      };
+    }
+    return { background: `linear-gradient(135deg, ${g.from}, ${g.to})` };
+  }, [convoGradient, theme]);
+  const hasAutonomousMessaging = !!chatMeta.autonomousMessages || !!chatMeta.characterExchanges;
+  const callsPackage = installedCapabilities.find(
+    (item) =>
+      item.status === "active" && item.manifest.kind.includes("conversation-calls") && item.manifest.entrypoints.client,
+  );
+  const callCapabilityProps = {
+    chatId,
+    metadata: chatMeta,
+    characterMap,
+    chatCharIds,
+    personaInfo,
+    toolbarButtonClass: getChatToolbarButtonClass({ sizeClassName: CHAT_TOOLBAR_OVERFLOW_BUTTON_SIZE_CLASS }),
+  };
+  const activeAgentIds = chatMeta.activeAgentIds;
+  const enabledConversationCapabilities =
+    chatMeta.enableAgents === true
+      ? installedCapabilities.filter((item) => {
+          if (item.status !== "active" || !item.manifest.entrypoints.client) return false;
+          if (item.manifest.kind.includes("conversation-calls")) return false;
+          const contributedAgentIds = item.manifest.contributions?.agentDetail?.agentIds ?? [];
+          return activeAgentIds.includes(item.id) || contributedAgentIds.some((id) => activeAgentIds.includes(id));
+        })
+      : [];
+  const conversationToolbarPackages = enabledConversationCapabilities.filter((item) =>
+    item.manifest.contributions?.slots?.includes("conversation-toolbar"),
+  );
+  const conversationSurfacePackages = enabledConversationCapabilities.filter((item) =>
+    item.manifest.contributions?.slots?.includes("conversation-surface"),
+  );
+  const conversationCapabilityProps = { chatId, metadata: chatMeta, characterMap, chatCharIds, personaInfo };
+  const renderToolbarActions = (compact = false) => (
+    <>
+      <ChatHelpButton mode="conversation" compact={compact} />
+      <ChatBranchSelector
+        activeChatId={chatId}
+        activeChatName={chatName}
+        groupId={chatGroupId}
+        variant="roleplay"
+        compact={compact}
+      />
+      <ActiveLorebookEntriesButton chatId={chatId} />
+      <PrivateNotebookToolbarButton open={privateNotebookOpen} compact={compact} onClick={onOpenPrivateNotebook} />
+      <ChatToolbarButton
+        icon={<ImageIcon size="0.875rem" />}
+        title={t("chat.toolbar.gallery")}
+        panelAction="gallery"
+        onClick={onOpenGallery}
+      />
+      {onSwitchChat && (
+        <ChatToolbarButton
+          icon={<ArrowRightLeft size="0.875rem" />}
+          helpTarget="connected-chat"
+          title={
+            connectedChatName
+              ? t("chat.toolbar.switchTo", { name: connectedChatName })
+              : t("chat.toolbar.switchToConnected")
+          }
+          onClick={onSwitchChat}
+        />
+      )}
+      <ChatMessageSearch chatId={chatId} />
+      <ChatToolbarButton
+        icon={<Settings2 size="0.875rem" />}
+        title={t("chat.toolbar.settings")}
+        panelAction="settings"
+        onClick={onOpenSettings}
+      />
+    </>
+  );
+  const renderHeader = () => (
+    <div className="sticky top-0 z-30 flex items-center justify-between px-4 py-2">
+      <div data-conversation-header-identity className="flex min-w-0 items-center gap-1.5">
+        <ConversationPresenceCard
+          chatId={chatId}
+          chatMeta={chatMeta}
+          chatCharIds={chatCharIds}
+          characterMap={characterMap}
+          messages={messages}
+          onOpenSettings={onOpenSettings}
+          onOpenScheduleEditor={onOpenScheduleEditor}
+        />
+        {callsPackage && (
+          <span data-chat-help="call" className="contents">
+            <CapabilityElement
+              packageId={callsPackage.id}
+              view="toolbar"
+              capabilityProps={callCapabilityProps}
+              // ponytail: This direct-child size bridge supports Calls <=1.0.11; remove it once 1.0.12 is the minimum.
+              className="contents [&>button]:h-8! [&>button]:w-8! max-md:[&>button]:h-9! max-md:[&>button]:w-9!"
+            />
+          </span>
+        )}
+      </div>
+
+      <div className="ml-2 flex min-w-0 flex-1 items-center justify-end gap-2">
+        <ChatToolbarMenu
+          className="flex-1"
+          desktopChildren={renderToolbarActions()}
+          mobileChildren={renderToolbarActions(true)}
+        />
+        {conversationToolbarPackages.map((item) => (
+          <span key={`${item.id}-toolbar`} data-chat-help="agent-controls" className="contents">
+            <CapabilityElement
+              packageId={item.id}
+              view="toolbar"
+              capabilityProps={{
+                ...conversationCapabilityProps,
+                toolbarButtonClass: getChatToolbarButtonClass(),
+              }}
+              className="contents"
+            />
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [mobileHistoryComposerCollapsed, setMobileHistoryComposerCollapsed] = useState(false);
+  const { map: conversationEmojiMap } = useConversationCustomEmojis();
+  const { map: conversationStickerMap } = useConversationCustomStickers();
+  const prevScrollHeightRef = useRef(0);
+  const isLoadingMoreRef = useRef(false);
+  const isNearBottomRef = useRef(true);
+  const userScrolledAwayRef = useRef(false);
+  const lastScrollTopRef = useRef(0);
+  const composerScrollTopRef = useRef(0);
+  const userScrolledAtRef = useRef(0);
+  const openedAtBottomChatIdRef = useRef<string | null>(null);
+  const gotoRequest = useChatStore((state) => state.gotoRequest);
+  const streamScrollFrameRef = useRef(0);
+  const keyboardOpen = useChatKeyboardOpen();
+  const composerFocused = useChatComposerFocused();
+  const shouldKeepMobileComposerOpen =
+    keyboardOpen || composerFocused || hasLiveStream || hasDraftInput || isFetchingNextPage;
+
+  const scrollToMessagesBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+    if (hasActiveTextSelection()) return;
+    const el = scrollRef.current;
+    if (el) {
+      el.scrollTo({ top: el.scrollHeight, behavior });
+      return;
+    }
+    messagesEndRef.current?.scrollIntoView({ behavior });
+  }, []);
+  const scheduleStreamScrollToBottom = useCallback(() => {
+    if (streamScrollFrameRef.current) return;
+    streamScrollFrameRef.current = requestAnimationFrame(() => {
+      streamScrollFrameRef.current = 0;
+      if (isLoadingMoreRef.current || !isNearBottomRef.current || userScrolledAwayRef.current) return;
+      scrollToMessagesBottom("auto");
+    });
+  }, [scrollToMessagesBottom]);
+  useEffect(
+    () => () => {
+      if (streamScrollFrameRef.current) cancelAnimationFrame(streamScrollFrameRef.current);
+    },
+    [],
+  );
+
+  useKeepLatestChatMessageVisible(scrollRef, scrollToMessagesBottom);
+  const followOpeningScroll = useChatOpeningScroll(
+    gotoRequest?.chatId === chatId ? null : chatId,
+    scrollRef,
+    scrollToMessagesBottom,
+  );
+
+  useEffect(() => {
+    if (shouldKeepMobileComposerOpen) setMobileHistoryComposerCollapsed(false);
+  }, [shouldKeepMobileComposerOpen]);
+
+  // ── Scroll tracking ──
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      const nearBottom = distFromBottom < 150;
+      const currentTop = el.scrollTop;
+      const previousComposerTop = composerScrollTopRef.current;
+      const isMobile = typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches;
+      const composerHasFocus = document.activeElement?.matches("[data-chat-composer]") === true;
+      if (!isMobile || shouldKeepMobileComposerOpen || composerHasFocus || nearBottom) {
+        setMobileHistoryComposerCollapsed(false);
+      } else if (currentTop > previousComposerTop + 18) {
+        setMobileHistoryComposerCollapsed(false);
+      } else if (currentTop < previousComposerTop - 12 && distFromBottom > 180) {
+        setMobileHistoryComposerCollapsed(true);
+      }
+      composerScrollTopRef.current = currentTop;
+      if (hasLiveStream && el.scrollTop < lastScrollTopRef.current - 10) {
+        userScrolledAwayRef.current = true;
+      }
+      // Re-engage auto-scroll when the user returns to the bottom,
+      // but only if enough time has passed since their last wheel/touch
+      // input. Without this cooldown, in-flight smooth-scroll animations
+      // fire scroll events that immediately re-engage auto-scroll.
+      if (nearBottom && Date.now() - userScrolledAtRef.current > 300) {
+        userScrolledAwayRef.current = false;
+      }
+      lastScrollTopRef.current = el.scrollTop;
+      isNearBottomRef.current = nearBottom;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    const onUserScroll = () => {
+      if (hasLiveStream) {
+        userScrolledAwayRef.current = true;
+        userScrolledAtRef.current = Date.now();
+      }
+    };
+    el.addEventListener("wheel", onUserScroll, { passive: true });
+    el.addEventListener("touchmove", onUserScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("wheel", onUserScroll);
+      el.removeEventListener("touchmove", onUserScroll);
+    };
+  }, [hasLiveStream, shouldKeepMobileComposerOpen]);
+
+  useEffect(() => {
+    if (!hasLiveStream) userScrolledAwayRef.current = false;
+  }, [hasLiveStream]);
+
+  // Auto-scroll on new messages / streaming / staggered reveals
+  const newestMsgId = messages?.[messages.length - 1]?.id;
+  const isOptimistic = newestMsgId?.startsWith("__optimistic_");
+  useEffect(() => {
+    if (isLoadingMoreRef.current) return;
+    // Always scroll when the user just sent a message (optimistic msg)
+    if (isOptimistic) {
+      scrollToMessagesBottom("smooth");
+    } else if (isNearBottomRef.current && !userScrolledAwayRef.current) {
+      if (hasLiveStream) scheduleStreamScrollToBottom();
+      else scrollToMessagesBottom("smooth");
+    }
+  }, [
+    newestMsgId,
+    streamBuffer,
+    thinkingBuffer,
+    hasLiveStream,
+    delayedCharacterInfo,
+    typingCharacterName,
+    isOptimistic,
+    scheduleStreamScrollToBottom,
+    scrollToMessagesBottom,
+  ]);
+
+  // Preserve scroll on load-more
+  useLayoutEffect(() => {
+    if (isLoadingMoreRef.current && scrollRef.current && !isFetchingNextPage) {
+      const newScrollHeight = scrollRef.current.scrollHeight;
+      scrollRef.current.scrollTop += newScrollHeight - prevScrollHeightRef.current;
+      isLoadingMoreRef.current = false;
+    }
+  }, [pageCount, isFetchingNextPage]);
+
+  const handleLoadMore = useCallback(() => {
+    if (!scrollRef.current || !hasNextPage || isFetchingNextPage) return;
+    prevScrollHeightRef.current = scrollRef.current.scrollHeight;
+    isLoadingMoreRef.current = true;
+    fetchNextPage();
+  }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
+
+  const [transcriptWindowStart, setTranscriptWindowStart] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    setTranscriptWindowStart(null);
+    openedAtBottomChatIdRef.current = null;
+  }, [chatId]);
+
+  const messagesPerPage = useUIStore((s) => s.messagesPerPage);
+  const maxMountedMessages = resolveTranscriptRenderWindowSize(messagesPerPage);
+  // The window size follows the "Messages per page" setting, which can change while
+  // this chat stays mounted. A pinned start index is relative to the old size, so
+  // re-anchor to the latest messages the same way a chat switch does.
+  useLayoutEffect(() => {
+    setTranscriptWindowStart(null);
+  }, [maxMountedMessages]);
+  const transcriptWindow = useMemo(
+    () => getTranscriptRenderWindow(messages, { maxMountedMessages, startIndex: transcriptWindowStart }),
+    [maxMountedMessages, messages, transcriptWindowStart],
+  );
+  // ChatArea clears the request after scrolling; only reveal its transcript window once.
+  const handledTranscriptGotoRef = useRef<typeof gotoRequest>(null);
+
+  useLayoutEffect(() => {
+    handledTranscriptGotoRef.current = null;
+  }, [chatId]);
+
+  useLayoutEffect(() => {
+    if (
+      !gotoRequest ||
+      gotoRequest.chatId !== chatId ||
+      !messages ||
+      handledTranscriptGotoRef.current === gotoRequest
+    ) {
+      return;
+    }
+    const loadedMessageOffset = totalMessageCount - messages.length;
+    const localIndex = gotoRequest.messageNumber - 1 - loadedMessageOffset;
+    if (localIndex >= 0 && localIndex < messages.length) {
+      handledTranscriptGotoRef.current = gotoRequest;
+      setTranscriptWindowStart(localIndex);
+    }
+  }, [chatId, gotoRequest, messages, totalMessageCount]);
+
+  const showOlderTranscriptMessages = useCallback(() => {
+    setTranscriptWindowStart((current) => {
+      const start = current ?? transcriptWindow.startIndex;
+      return Math.max(0, start - TRANSCRIPT_RENDER_WINDOW_STEP);
+    });
+  }, [transcriptWindow.startIndex]);
+
+  const showNewerTranscriptMessages = useCallback(() => {
+    setTranscriptWindowStart((current) => {
+      const start = current ?? transcriptWindow.startIndex;
+      return Math.min(transcriptWindow.latestStartIndex, start + TRANSCRIPT_RENDER_WINDOW_STEP);
+    });
+  }, [transcriptWindow.latestStartIndex, transcriptWindow.startIndex]);
+
+  const jumpToLatestTranscriptMessages = useCallback(() => {
+    setTranscriptWindowStart(null);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!chatId || isFetchingNextPage || isLoadingMoreRef.current) return;
+    if (openedAtBottomChatIdRef.current === chatId) return;
+    if (!messages || (isLoading && messages.length === 0)) return;
+    if (transcriptWindow.hiddenAfterCount > 0) return;
+    // A pending jump-to-message owns the initial scroll position. With an
+    // unbounded render window nothing is ever hidden after the target, so the
+    // hidden-after guard alone no longer defers to the jump. Only treat the chat
+    // as opened once the target is loaded (ChatArea scrolls to it in that same
+    // commit); a target that is still being paged in, out of range, or
+    // unreachable leaves this effect retryable so the chat still opens at the
+    // bottom once the request clears.
+    if (gotoRequest && gotoRequest.chatId === chatId) {
+      const loadedMessageOffset = totalMessageCount - (messages?.length ?? 0);
+      const localIndex = gotoRequest.messageNumber - 1 - loadedMessageOffset;
+      if (messages && localIndex >= 0 && localIndex < messages.length) {
+        openedAtBottomChatIdRef.current = chatId;
+      }
+      return;
+    }
+
+    const openAtBottom = () => {
+      if (hasActiveTextSelection()) return;
+      document.removeEventListener("selectionchange", openAtBottom);
+      openedAtBottomChatIdRef.current = chatId;
+      userScrolledAwayRef.current = false;
+      isNearBottomRef.current = true;
+      followOpeningScroll();
+    };
+    document.addEventListener("selectionchange", openAtBottom);
+    openAtBottom();
+    return () => document.removeEventListener("selectionchange", openAtBottom);
+  }, [
+    chatId,
+    gotoRequest,
+    isFetchingNextPage,
+    isLoading,
+    messages,
+    followOpeningScroll,
+    totalMessageCount,
+    transcriptWindow.hiddenAfterCount,
+  ]);
+
+  // ── Build message list with day separators ──
+  // Assistant multi-line reveal is presentation-only: a real message can carry
+  // display parts, but actions/edit/delete/regenerate still target one message.
+  // Strip leaked timestamps like [16:08] or [18.03.2026] from assistant content.
+  // Shared with the server (reaction segment-index resolution segments the same
+  // stripped shape) — don't reintroduce a local variant.
+  const stripTimestamps = stripLeadingMessageTimestamps;
+
+  const renderedItems = useMemo(() => {
+    const visibleMessages = transcriptWindow.messages;
+    if (!messages || !visibleMessages) return [];
+    // Offset so message numbers reflect absolute position in the full chat history,
+    // not just the position within the paginated and mounted render windows.
+    const messageOffset = totalMessageCount - messages.length + transcriptWindow.startIndex;
+    const items: Array<
+      | { type: "separator"; key: string; label: string }
+      | {
+          type: "message";
+          key: string;
+          msg: Message;
+          isGrouped: boolean;
+          index: number;
+          contentParts?: string[];
+          groupSegmentCount?: number;
+          rawContent?: string;
+          bubbleGroupPosition: "single" | "first" | "middle" | "last";
+        }
+    > = [];
+    let lastDay = "";
+    for (let i = 0; i < visibleMessages.length; i++) {
+      const msg = visibleMessages[i]!;
+      if (isHiddenFromUser(msg)) continue;
+      const day = getDayKey(msg.createdAt);
+      if (day !== lastDay) {
+        items.push({ type: "separator", key: `sep-${day}`, label: formatDaySeparator(msg.createdAt) });
+        lastDay = day;
+      }
+      const prev = i > 0 ? visibleMessages[i - 1]! : null;
+      const next = i < visibleMessages.length - 1 ? visibleMessages[i + 1]! : null;
+      // Break grouping if >5 minutes apart (like Discord)
+      const TIME_GAP_MS = 5 * 60 * 1000;
+      const isGroupedWith = (current: Message, other: Message | null, currentIsAfterOther: boolean) => {
+        if (!other || isHiddenFromUser(other)) return false;
+        // A chapter divider sits between the two, so the later message starts a fresh group.
+        if (readMessageChapter(currentIsAfterOther ? current.extra : other.extra)) return false;
+        const currentTime = new Date(current.createdAt).getTime();
+        const otherTime = new Date(other.createdAt).getTime();
+        const timeGap = currentIsAfterOther ? currentTime - otherTime : otherTime - currentTime;
+        if (timeGap > TIME_GAP_MS) return false;
+        if (
+          current.role !== other.role ||
+          current.characterId !== other.characterId ||
+          getDayKey(other.createdAt) !== day
+        ) {
+          return false;
+        }
+        const currentHiddenFromAI = getMessageExtraRecord(current).hiddenFromAI === true;
+        const otherHiddenFromAI = getMessageExtraRecord(other).hiddenFromAI === true;
+        if (currentHiddenFromAI !== otherHiddenFromAI) return false;
+        if (current.role === "user" && other.role === "user") {
+          const currentExtra = getMessageExtraRecord(current);
+          const otherExtra = getMessageExtraRecord(other);
+          const currentId = (currentExtra.personaSnapshot as { personaId?: unknown } | undefined)?.personaId;
+          const otherId = (otherExtra.personaSnapshot as { personaId?: unknown } | undefined)?.personaId;
+          if (currentId && otherId && currentId !== otherId) return false;
+        }
+        return true;
+      };
+      const grouped = isGroupedWith(msg, prev, true);
+      const nextGrouped = isGroupedWith(msg, next, false);
+      const bubbleGroupPosition = grouped ? (nextGrouped ? "middle" : "last") : nextGrouped ? "first" : "single";
+
+      const knownNames = getKnownChatMemberNames(characterMap, chatCharIds);
+      const groupingContent = msg.role === "assistant" && msg.content ? stripTimestamps(msg.content) : msg.content;
+      const groupSegmentCount =
+        msg.role === "assistant" && groupingContent ? getGroupedSegmentCount(groupingContent, knownNames) : 0;
+      const hasGroupFormat =
+        groupingContent.includes("<speaker=") ||
+        groupSegmentCount > 0 ||
+        hasNamePrefixFormat(groupingContent, knownNames);
+      let contentParts: string[] | undefined;
+      if (conversationMessageStyle === "classic" && msg.role === "assistant" && msg.content && !hasGroupFormat) {
+        const cleaned = stripTimestamps(msg.content);
+        // Strip lines that are just the character's name (LLM prefixing in group individual mode)
+        const charName = msg.characterId ? characterMap.get(msg.characterId)?.name : null;
+        const lines = splitAssistantContentLines(cleaned, charName);
+        if (lines.length > 1) {
+          contentParts = chunkAssistantMarkdownBlocks(lines).map((block) => block.join("\n"));
+        }
+      }
+
+      // For assistant messages, also strip timestamps and character name prefix
+      let displayContent = msg.role === "assistant" && msg.content ? stripTimestamps(msg.content) : msg.content;
+      if (msg.role === "assistant" && msg.characterId) {
+        const cName = characterMap.get(msg.characterId)?.name;
+        if (cName) {
+          // Strip leading "CharacterName\n" or "CharacterName:\n" prefix
+          const nameRe = new RegExp(`^\\s*${cName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*:?\\s*\\n`, "i");
+          displayContent = displayContent.replace(nameRe, "");
+        }
+      }
+      const displayMsg = displayContent !== msg.content ? { ...msg, content: displayContent } : msg;
+      items.push({
+        type: "message",
+        key: msg.id,
+        msg: displayMsg,
+        isGrouped: grouped,
+        index: messageOffset + i,
+        contentParts,
+        groupSegmentCount,
+        rawContent: displayContent !== msg.content ? msg.content : undefined,
+        bubbleGroupPosition,
+      });
+    }
+    return items;
+  }, [
+    messages,
+    transcriptWindow.messages,
+    transcriptWindow.startIndex,
+    characterMap,
+    chatCharIds,
+    totalMessageCount,
+    conversationMessageStyle,
+    stripTimestamps,
+  ]);
+
+  const liveStreamCharacterId = streamingCharacterId ?? (chatCharIds.length === 1 ? chatCharIds[0]! : null);
+  const liveStreamMessage = useMemo<Message | null>(() => {
+    if (!shouldRenderLiveStreamMessage) return null;
+    return {
+      id: "__conversation_live_stream__",
+      chatId,
+      role: "assistant",
+      characterId: liveStreamCharacterId,
+      content: conversationMessageStyle === "bubble" ? "" : streamBuffer,
+      activeSwipeIndex: 0,
+      swipeCount: 0,
+      createdAt: new Date().toISOString(),
+      extra: {
+        displayText: null,
+        isGenerated: true,
+        tokenCount: null,
+        generationInfo: null,
+        thinking: thinkingBuffer || null,
+      },
+    };
+  }, [
+    chatId,
+    conversationMessageStyle,
+    liveStreamCharacterId,
+    shouldRenderLiveStreamMessage,
+    streamBuffer,
+    thinkingBuffer,
+  ]);
+
+  const buildStreamingBubblePreview = useCallback(
+    (content: string, characterId: string | null) => {
+      if (conversationMessageStyle !== "bubble" || !content.trim()) return "";
+      const cleaned = content
+        .replace(/^(\s*\[\d{1,2}[:.]\d{2}\]\s*)+/gm, "")
+        .replace(/^(\s*\[\d{1,2}\.\d{1,2}\.\d{4}\]\s*)+/gm, "")
+        .trimStart();
+      const cutoffs: number[] = [];
+
+      const blankLineMatches = cleaned.matchAll(/\n\s*\n/g);
+      for (const match of blankLineMatches) {
+        if (typeof match.index === "number") cutoffs.push(match.index + match[0].length);
+      }
+
+      const lastNewlineIndex = cleaned.lastIndexOf("\n");
+      if (lastNewlineIndex >= 0) cutoffs.push(lastNewlineIndex + 1);
+
+      const sentenceMatches = cleaned.matchAll(/[.!?…]["')\]]?(?=\s|$)/g);
+      for (const match of sentenceMatches) {
+        if (typeof match.index === "number") cutoffs.push(match.index + match[0].length);
+      }
+
+      const cutoff = Math.max(0, ...cutoffs);
+      if (cutoff <= 0) return "";
+      const charName = characterId ? characterMap.get(characterId)?.name : null;
+      const lines = splitAssistantContentLines(cleaned.slice(0, cutoff).trim(), charName);
+      return lines.join("\n").trim();
+    },
+    [characterMap, conversationMessageStyle],
+  );
+
+  const streamingDraftKey =
+    hasLiveStream && conversationMessageStyle === "bubble" && !delayedCharacterInfo
+      ? `${chatId}:${regenerateMessageId ?? "new"}:${liveStreamCharacterId ?? "assistant"}`
+      : null;
+  const [streamingBubbleDraft, setStreamingBubbleDraft] = useState<{ key: string; text: string }>({
+    key: "",
+    text: "",
+  });
+
+  useEffect(() => {
+    if (!streamingDraftKey) {
+      setStreamingBubbleDraft((current) => (current.key || current.text ? { key: "", text: "" } : current));
+      return;
+    }
+
+    const nextPreview = buildStreamingBubblePreview(streamBuffer, liveStreamCharacterId);
+    setStreamingBubbleDraft((current) => {
+      if (current.key !== streamingDraftKey) return { key: streamingDraftKey, text: nextPreview };
+      if (nextPreview.length > current.text.length) return { key: streamingDraftKey, text: nextPreview };
+      return current;
+    });
+  }, [buildStreamingBubblePreview, liveStreamCharacterId, streamBuffer, streamingDraftKey]);
+
+  const streamingBubblePreview =
+    streamingDraftKey && streamingBubbleDraft.key === streamingDraftKey ? streamingBubbleDraft.text : "";
+  const liveStreamContentParts = streamingBubblePreview ? [streamingBubblePreview] : undefined;
+
+  // ── Staggered reveal for assistant display parts ──
+  // Reveal chunks inside one real message so Classic gets cadence without fake rows.
+  const [visiblePartCounts, setVisiblePartCounts] = useState<Record<string, number>>({});
+  const [visibleSegmentCounts, setVisibleSegmentCounts] = useState<Record<string, number>>({});
+  const renderedMessageKeysRef = useRef<Set<string>>(new Set());
+  const prevRenderedKeysRef = useRef<Set<string>>(new Set());
+  // Track whether the initial data load has settled. Until it has, we treat
+  // all arriving keys as "already seen" so re-mounting the component (or the
+  // first async page of messages landing) never replays stagger/sounds.
+  const initialLoadSettledRef = useRef(false);
+  // Keep a persistent set of message keys we've already processed across
+  // component remounts. This prevents sounds/stagger replaying when the user
+  // navigates away and comes back to the same chat.
+  const globalSeenKeysRef = useRef(globalSeenKeys);
+  const pendingPostProcessingKeysRef = useRef<Set<string>>(new Set());
+  // Persist stagger timers in a ref so they survive effect re-runs caused by
+  // query refetches arriving shortly after the initial message_saved upsert.
+  const staggerTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>[]>>({});
+
+  // Reset stagger state when the active chat changes so no cross-chat leakage
+  const prevChatIdRef = useRef(chatId);
+  if (prevChatIdRef.current !== chatId) {
+    prevChatIdRef.current = chatId;
+    initialLoadSettledRef.current = false;
+    prevRenderedKeysRef.current = new Set();
+    renderedMessageKeysRef.current = new Set();
+    pendingPostProcessingKeysRef.current = new Set();
+    Object.values(staggerTimersRef.current).forEach((timers) => timers.forEach(clearTimeout));
+    staggerTimersRef.current = {};
+    setVisiblePartCounts({});
+    setVisibleSegmentCounts({});
+  }
+
+  useLayoutEffect(() => {
+    const messageItems = renderedItems.filter((item) => item.type === "message");
+    const currentKeys = new Set(messageItems.map((item) => item.key));
+    const pendingPostProcessingKeys = new Set(
+      messageItems.filter((item) => messageHasPendingPostProcessing(item.msg)).map((item) => item.key),
+    );
+    renderedMessageKeysRef.current = currentKeys;
+    for (const key of Object.keys(staggerTimersRef.current)) {
+      if (!currentKeys.has(key)) {
+        staggerTimersRef.current[key]?.forEach(clearTimeout);
+        delete staggerTimersRef.current[key];
+      }
+    }
+    setVisiblePartCounts((prev) => {
+      let changed = false;
+      const next: Record<string, number> = {};
+      for (const [key, count] of Object.entries(prev)) {
+        if (currentKeys.has(key)) next[key] = count;
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+    setVisibleSegmentCounts((prev) => {
+      let changed = false;
+      const next: Record<string, number> = {};
+      for (const [key, count] of Object.entries(prev)) {
+        if (currentKeys.has(key)) next[key] = count;
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+
+    // On the very first render that has messages, just snapshot the keys and
+    // mark the initial load as settled — don't stagger or play sounds.
+    if (!initialLoadSettledRef.current) {
+      if (currentKeys.size > 0) {
+        prevRenderedKeysRef.current = currentKeys;
+        // Mark all current keys as globally seen so remount won't replay them
+        for (const item of messageItems) {
+          if (!pendingPostProcessingKeys.has(item.key)) {
+            rememberBoundedSetValue(globalSeenKeysRef.current, item.key, MAX_GLOBAL_SEEN_KEYS);
+          }
+        }
+        pendingPostProcessingKeysRef.current = pendingPostProcessingKeys;
+        initialLoadSettledRef.current = true;
+      }
+      return;
+    }
+
+    const prevKeys = prevRenderedKeysRef.current;
+    const seenGlobal = globalSeenKeysRef.current;
+    const now = Date.now();
+
+    // Build a key → createdAt map for freshness checks.
+    // Only messages created within the last 15 seconds are considered "live" —
+    // older ones arrived via a cache refetch and should not trigger animation/sound.
+    const FRESHNESS_MS = 15_000;
+    const keyTimestampMap = new Map<string, number>();
+    for (const item of renderedItems) {
+      if (item.type === "message") {
+        keyTimestampMap.set(item.key, new Date(item.msg.createdAt).getTime());
+      }
+    }
+
+    const newPartMessages: Array<{ key: string; count: number }> = [];
+    const newSegmentMessages: Array<{ key: string; count: number }> = [];
+    let hasNewAssistantMessage = false;
+
+    for (const item of messageItems) {
+      const key = item.key;
+      const isPendingPostProcessing = pendingPostProcessingKeys.has(key);
+      if (isPendingPostProcessing) continue;
+      const wasPendingPostProcessing = pendingPostProcessingKeysRef.current.has(key);
+      if ((prevKeys.has(key) || seenGlobal.has(key)) && !wasPendingPostProcessing) continue;
+
+      // Check if this message is fresh (created recently, meaning it was
+      // generated while the user is actively in this chat)
+      const ts = keyTimestampMap.get(key) ?? 0;
+      const isFresh = wasPendingPostProcessing || now - ts < FRESHNESS_MS;
+
+      if (!isFresh) {
+        // Stale message from cache refetch — silently mark as seen, skip animation
+        continue;
+      }
+
+      if (item.msg.role === "assistant") {
+        hasNewAssistantMessage = true;
+        const partCount = item.contentParts?.length ?? 0;
+        if (partCount > 1) newPartMessages.push({ key, count: partCount });
+        if (partCount <= 1 && item.groupSegmentCount && item.groupSegmentCount > 1) {
+          newSegmentMessages.push({ key, count: item.groupSegmentCount });
+        }
+      }
+    }
+
+    // Mark all current keys as globally seen
+    for (const item of messageItems) {
+      if (!pendingPostProcessingKeys.has(item.key)) {
+        rememberBoundedSetValue(seenGlobal, item.key, MAX_GLOBAL_SEEN_KEYS);
+      }
+    }
+    prevRenderedKeysRef.current = currentKeys;
+    pendingPostProcessingKeysRef.current = pendingPostProcessingKeys;
+
+    // Play notification for the first new message appearance
+    if (hasNewAssistantMessage) {
+      const uiState = useUIStore.getState();
+      playConfiguredNotificationPing(uiState.convoNotificationSound, uiState.notificationSoundsOnlyWhenUnfocused);
+    }
+
+    if (newPartMessages.length === 0 && newSegmentMessages.length === 0) return;
+
+    for (const { key } of [...newPartMessages, ...newSegmentMessages]) {
+      staggerTimersRef.current[key]?.forEach(clearTimeout);
+      delete staggerTimersRef.current[key];
+    }
+
+    setVisiblePartCounts((prev) => {
+      const next = { ...prev };
+      for (const item of newPartMessages) next[item.key] = 1;
+      return next;
+    });
+    setVisibleSegmentCounts((prev) => {
+      const next = { ...prev };
+      for (const item of newSegmentMessages) next[item.key] = 1;
+      return next;
+    });
+
+    newPartMessages.forEach(({ key, count }) => {
+      for (let partIndex = 2; partIndex <= count; partIndex++) {
+        const delay = (partIndex - 1) * 1500;
+        const timer = setTimeout(() => {
+          if (!renderedMessageKeysRef.current.has(key)) {
+            staggerTimersRef.current[key]?.forEach(clearTimeout);
+            delete staggerTimersRef.current[key];
+            // Reveal fully so an interrupted stagger never leaves the message
+            // permanently truncated at a part boundary (#4039).
+            setVisiblePartCounts((prev) => ({ ...prev, [key]: count }));
+            return;
+          }
+          setVisiblePartCounts((prev) => ({ ...prev, [key]: partIndex }));
+          const uiState = useUIStore.getState();
+          playConfiguredNotificationPing(uiState.convoNotificationSound, uiState.notificationSoundsOnlyWhenUnfocused);
+          staggerTimersRef.current[key] = (staggerTimersRef.current[key] ?? []).filter(
+            (activeTimer) => activeTimer !== timer,
+          );
+          if (partIndex === count) {
+            staggerTimersRef.current[key]?.forEach(clearTimeout);
+            delete staggerTimersRef.current[key];
+          }
+        }, delay);
+        (staggerTimersRef.current[key] ??= []).push(timer);
+      }
+    });
+    newSegmentMessages.forEach(({ key, count }) => {
+      for (let segmentIndex = 2; segmentIndex <= count; segmentIndex++) {
+        const delay = (segmentIndex - 1) * 1500;
+        const timer = setTimeout(() => {
+          if (!renderedMessageKeysRef.current.has(key)) {
+            staggerTimersRef.current[key]?.forEach(clearTimeout);
+            delete staggerTimersRef.current[key];
+            // Reveal fully so an interrupted stagger never leaves the message
+            // permanently truncated at a speaker-segment boundary (#4039).
+            setVisibleSegmentCounts((prev) => ({ ...prev, [key]: count }));
+            return;
+          }
+          setVisibleSegmentCounts((prev) => ({ ...prev, [key]: segmentIndex }));
+          const uiState = useUIStore.getState();
+          playConfiguredNotificationPing(uiState.convoNotificationSound, uiState.notificationSoundsOnlyWhenUnfocused);
+          staggerTimersRef.current[key] = (staggerTimersRef.current[key] ?? []).filter(
+            (activeTimer) => activeTimer !== timer,
+          );
+          if (segmentIndex === count) {
+            staggerTimersRef.current[key]?.forEach(clearTimeout);
+            delete staggerTimersRef.current[key];
+          }
+        }, delay);
+        (staggerTimersRef.current[key] ??= []).push(timer);
+      }
+    });
+    // No cleanup return here — timers are managed via staggerTimersRef and
+    // must survive effect re-runs caused by query refetches. Cleanup on
+    // unmount is handled by a separate effect below.
+  }, [renderedItems]);
+
+  // Clean up stagger timers on unmount only (empty deps = unmount cleanup)
+  useEffect(() => {
+    return () => {
+      Object.values(staggerTimersRef.current).forEach((timers) => timers.forEach(clearTimeout));
+      staggerTimersRef.current = {};
+    };
+  }, []);
+
+  // Auto-scroll when staggered parts are revealed
+  useEffect(() => {
+    if (!isLoadingMoreRef.current && isNearBottomRef.current && !userScrolledAwayRef.current) {
+      scrollToMessagesBottom("smooth");
+    }
+  }, [scrollToMessagesBottom, visiblePartCounts, visibleSegmentCounts]);
+
+  return (
+    <div
+      className="mari-chat-area mari-card-css relative flex flex-1 flex-col overflow-hidden"
+      data-chat-mode="conversation"
+      style={{ isolation: "isolate" }}
+    >
+      <div
+        className="pointer-events-none absolute inset-0 -z-10 overflow-hidden"
+        style={gradientStyle}
+        aria-hidden="true"
+      >
+        <CrossfadeBackground
+          url={chatBackground}
+          blurPx={chatBackgroundBlur}
+          opacity={conversationBackgroundImageOpacity / 100}
+          reduceMotion={reduceAmbientEffects}
+        />
+        {chatBackground ? (
+          <div
+            data-conversation-background-gradient-veil
+            className="pointer-events-none absolute inset-0"
+            style={{ ...gradientStyle, opacity: 0.35 }}
+          />
+        ) : null}
+      </div>
+      {/* ── Messages scroll area ── */}
+      <div
+        ref={scrollRef}
+        data-chat-scroll
+        data-chat-resource-drop-surface
+        className="mari-messages-scroll flex-1 overflow-y-auto overflow-x-hidden"
+      >
+        {/* Floating header — character info + action buttons */}
+        {renderHeader()}
+
+        {/* Load More */}
+        {hasNextPage && (
+          <div className="mari-chat-load-more flex justify-center py-3">
+            <button
+              onClick={handleLoadMore}
+              disabled={isFetchingNextPage}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--secondary)] px-3 py-1.5 text-xs font-medium text-[var(--muted-foreground)] transition-all hover:bg-[var(--accent)] disabled:opacity-50"
+            >
+              {isFetchingNextPage ? <Loader2 size="0.75rem" className="animate-spin" /> : <ChevronUp size="0.75rem" />}
+              {localizeUi("ui.chat.chatroleplaysurface.loadMore")}
+            </button>
+          </div>
+        )}
+
+        <TranscriptWindowControls
+          hiddenBeforeCount={transcriptWindow.hiddenBeforeCount}
+          hiddenAfterCount={transcriptWindow.hiddenAfterCount}
+          onShowOlder={transcriptWindow.hiddenBeforeCount > 0 ? showOlderTranscriptMessages : undefined}
+        />
+
+        {isLoading && (
+          <div className="flex flex-col items-center gap-3 py-12">
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-[var(--muted-foreground)]/20 border-t-[var(--muted-foreground)]/60" />
+          </div>
+        )}
+
+        {/* Welcome message at the start of a conversation */}
+        {!isLoading && !hasNextPage && messages && messages.length === 0 && (
+          <div className="px-4 pt-2">
+            <p className="text-xs text-[var(--marinara-chat-chrome-panel-muted)]">
+              {localizeUi("ui.chat.conversationview.thisIsTheStartOfYourConversationWith")}{" "}
+              <span className="font-medium text-[var(--marinara-chat-chrome-panel-title)]">
+                {(() => {
+                  const names = chatCharIds.map((id) => characterMap.get(id)?.name).filter(Boolean) as string[];
+                  if (names.length === 0) return "this group";
+                  if (names.length === 1) return names[0];
+                  return names.slice(0, -1).join(", ") + " & " + names[names.length - 1];
+                })()}
+              </span>
+              {localizeUi("ui.chat.conversationview.sayHi")}
+            </p>
+          </div>
+        )}
+
+        {/* Messages with day separators */}
+        {renderedItems.map((item) => {
+          if (item.type === "separator") {
+            return (
+              <div key={item.key} className="relative my-4 flex items-center px-4">
+                <div className="flex-1 border-t border-[var(--border)]/40" />
+                <span className="mari-conversation-transcript-chrome-text mx-4 text-[0.6875rem] font-semibold">
+                  {item.label}
+                </span>
+                <div className="flex-1 border-t border-[var(--border)]/40" />
+              </div>
+            );
+          }
+
+          const { msg, isGrouped } = item;
+          const isRegenerating = hasLiveStream && regenerateMessageId === msg.id;
+          const isBubbleRegenerating = isRegenerating && conversationMessageStyle === "bubble";
+          const hasStreamContent = isRegenerating && !isBubbleRegenerating && (!!streamBuffer || !!thinkingBuffer);
+          // Strip old-swipe attachments during classic regeneration so a previous
+          // illustration doesn't linger while new text is streaming in. Bubble
+          // regeneration keeps the real message stable and renders a separate
+          // presentation-only draft row below it.
+          const displayMsg =
+            isRegenerating && !isBubbleRegenerating
+              ? (() => {
+                  const parsed = typeof msg.extra === "string" ? JSON.parse(msg.extra) : (msg.extra ?? {});
+                  return {
+                    ...msg,
+                    content: streamBuffer || (thinkingBuffer ? t("chat.message.thinking") : msg.content),
+                    // Only the live buffer belongs here: falling back to the
+                    // previous swipe's thinking would show stale thoughts in
+                    // the viewer while the replacement is still streaming.
+                    extra: { ...parsed, attachments: null, thinking: thinkingBuffer || null },
+                  };
+                })()
+              : msg;
+          const contentParts = isRegenerating ? undefined : item.contentParts;
+          const visiblePartCount = contentParts ? (visiblePartCounts[item.key] ?? contentParts.length) : undefined;
+          const visibleSegmentCount =
+            !contentParts && item.groupSegmentCount && item.groupSegmentCount > 1
+              ? (visibleSegmentCounts[item.key] ?? item.groupSegmentCount)
+              : undefined;
+          const messageDepth = Math.max(0, totalMessageCount - 1 - item.index);
+          const originalContent = item.rawContent ?? (displayMsg.content !== msg.content ? msg.content : undefined);
+          const regenerationDraftMessage =
+            isBubbleRegenerating && !isStreamWindingDown
+              ? ({
+                  ...msg,
+                  id: `__conversation_regeneration_stream__${msg.id}`,
+                  content: "",
+                  activeSwipeIndex: 0,
+                  swipeCount: 0,
+                  extra: {
+                    ...(typeof msg.extra === "string" ? JSON.parse(msg.extra) : (msg.extra ?? {})),
+                    attachments: null,
+                    displayText: null,
+                    thinking: thinkingBuffer || null,
+                  },
+                } as Message)
+              : null;
+
+          return (
+            <Fragment key={item.key}>
+              <ChapterDivider extra={msg.extra} className="px-4" />
+              <ConversationMessage
+                key={msg.id}
+                message={displayMsg as any}
+                isStreaming={hasStreamContent}
+                isGrouped={isGrouped}
+                onDelete={onDelete}
+                onRegenerate={onRegenerate}
+                onEdit={onEdit}
+                onSetActiveSwipe={onSetActiveSwipe}
+                onToggleHiddenFromAI={onToggleHiddenFromAI}
+                onPeekPrompt={() => onPeekPrompt(msg.id)}
+                isLastAssistantMessage={msg.id === lastAssistantMessageId}
+                characterMap={characterMap}
+                personaInfo={personaInfo as any}
+                emojiMap={conversationEmojiMap}
+                stickerMap={conversationStickerMap}
+                chatCharacterIds={chatCharIds}
+                messageIndex={item.index + 1}
+                messageOrderIndex={item.index}
+                messageDepth={messageDepth}
+                multiSelectMode={multiSelectMode}
+                isSelected={selectedMessageIds?.has(msg.id)}
+                onToggleSelect={onToggleSelectMessage}
+                hasDraftInput={hasDraftInput}
+                onBranch={onBranch}
+                messageStyle={conversationMessageStyle}
+                contentParts={contentParts}
+                visiblePartCount={visiblePartCount}
+                visibleSegmentCount={visibleSegmentCount}
+                bubbleGroupPosition={item.bubbleGroupPosition}
+                originalContent={originalContent}
+                translationDisplayOnly={chatMeta.translationDisplayOnly === true}
+              />
+              {regenerationDraftMessage && (
+                <ConversationMessage
+                  key={regenerationDraftMessage.id}
+                  message={regenerationDraftMessage as any}
+                  isStreaming
+                  isGrouped={false}
+                  hideActions
+                  onDelete={onDelete}
+                  onRegenerate={onRegenerate}
+                  onEdit={onEdit}
+                  onSetActiveSwipe={onSetActiveSwipe}
+                  onToggleHiddenFromAI={onToggleHiddenFromAI}
+                  onPeekPrompt={() => onPeekPrompt(regenerationDraftMessage.id)}
+                  isLastAssistantMessage={false}
+                  characterMap={characterMap}
+                  personaInfo={personaInfo as any}
+                  emojiMap={conversationEmojiMap}
+                  stickerMap={conversationStickerMap}
+                  chatCharacterIds={chatCharIds}
+                  messageDepth={messageDepth}
+                  hasDraftInput={hasDraftInput}
+                  messageStyle={conversationMessageStyle}
+                  contentParts={liveStreamContentParts}
+                  visiblePartCount={liveStreamContentParts?.length}
+                  bubbleGroupPosition="single"
+                  translationDisplayOnly={chatMeta.translationDisplayOnly === true}
+                />
+              )}
+            </Fragment>
+          );
+        })}
+
+        {liveStreamMessage && (
+          <ConversationMessage
+            key={liveStreamMessage.id}
+            message={liveStreamMessage as any}
+            isStreaming
+            isGrouped={false}
+            hideActions
+            onDelete={onDelete}
+            onRegenerate={onRegenerate}
+            onEdit={onEdit}
+            onSetActiveSwipe={onSetActiveSwipe}
+            onToggleHiddenFromAI={onToggleHiddenFromAI}
+            onPeekPrompt={() => onPeekPrompt(liveStreamMessage.id)}
+            isLastAssistantMessage={false}
+            characterMap={characterMap}
+            personaInfo={personaInfo as any}
+            emojiMap={conversationEmojiMap}
+            stickerMap={conversationStickerMap}
+            chatCharacterIds={chatCharIds}
+            messageDepth={0}
+            hasDraftInput={hasDraftInput}
+            messageStyle={conversationMessageStyle}
+            contentParts={liveStreamContentParts}
+            visiblePartCount={liveStreamContentParts?.length}
+            bubbleGroupPosition="single"
+            translationDisplayOnly={chatMeta.translationDisplayOnly === true}
+          />
+        )}
+
+        <TranscriptWindowControls
+          hiddenBeforeCount={transcriptWindow.hiddenBeforeCount}
+          hiddenAfterCount={transcriptWindow.hiddenAfterCount}
+          onShowNewer={transcriptWindow.hiddenAfterCount > 0 ? showNewerTranscriptMessages : undefined}
+          onJumpToLatest={transcriptWindow.hiddenAfterCount > 0 ? jumpToLatestTranscriptMessages : undefined}
+        />
+
+        {/* Delayed indicator (DND/idle — waiting for character to become available) */}
+        {delayedCharacterInfo && hasLiveStream && !streamBuffer && !thinkingBuffer && (
+          <div className="flex items-center gap-2 px-4 py-1.5 text-[0.8125rem] text-[var(--text-secondary)]">
+            <span className="italic">
+              {delayedCharacterInfo.status === "dnd"
+                ? localizeUi("ui.chat.conversationview.value1Value2BusyTheyLlRespondWhenTheyRe", {
+                    value1: delayedDisplayName,
+                    value2: delayedDisplayVerb,
+                  })
+                : localizeUi("ui.chat.conversationview.value1Value2AwayTheyLlRespondInAMoment", {
+                    value1: delayedDisplayName,
+                    value2: delayedDisplayVerb,
+                  })}
+            </span>
+          </div>
+        )}
+
+        {/* Typing indicator — classic mode only; bubble regen uses the draft row instead */}
+        {showTypingIndicator && (
+          <div
+            className="mari-typing-indicator flex items-center gap-2 px-4 py-1.5 text-[0.8125rem] text-[var(--text-secondary)]"
+            data-typing-name={liveTypingName}
+            data-card-css={typingCardCssId}
+          >
+            <PendingTypingDots
+              className="mari-typing-dots gap-0.5"
+              dotClassName="bg-[var(--text-secondary)]"
+              label={liveTypingLabel}
+              small
+            />
+            <span className="mari-typing-text italic">{liveTypingText}</span>
+          </div>
+        )}
+
+        {/* Scene banner — inline at bottom of messages (origin variant only); hidden during a turn-game */}
+        {sceneInfo?.variant === "origin" && (
+          <SceneBanner variant="origin" sceneChatId={sceneInfo.sceneChatId} sceneChatName={sceneInfo.sceneChatName} />
+        )}
+
+        <div ref={messagesEndRef} className="h-1" />
+      </div>
+      <PinnedImageOverlay activeChatId={chatId} />
+
+      {/* ── Autonomous message toast notification ── */}
+      {hasAutonomousMessaging && (
+        <Suspense fallback={null}>
+          <ConversationAutonomousEffects
+            key={chatId}
+            chatId={chatId}
+            messages={messages}
+            characterMap={characterMap}
+            chatMeta={chatMeta}
+          />
+        </Suspense>
+      )}
+
+      {/* ── End Scene bar (above input) ── */}
+      {sceneInfo?.variant === "scene" && sceneInfo.sceneChatId && onConcludeScene && (
+        <EndSceneBar
+          sceneChatId={sceneInfo.sceneChatId}
+          originChatId={sceneInfo.originChatId}
+          onConclude={onConcludeScene}
+          onAbandon={onAbandonScene}
+        />
+      )}
+
+      {/* Downloaded games own their board and setup UI. The base client only provides stable slots. */}
+      {turnGamePackages.map((game) => (
+        <CapabilityElement key={`${game.id}-surface`} packageId={game.id} view="surface" capabilityProps={{ chatId }} />
+      ))}
+      {callsPackage && (
+        <CapabilityElement
+          packageId={callsPackage.id}
+          view="surface"
+          capabilityProps={callCapabilityProps}
+          className="contents"
+        />
+      )}
+      {conversationSurfacePackages.map((item) => (
+        <CapabilityElement
+          key={`${item.id}-conversation-surface`}
+          packageId={item.id}
+          view="surface"
+          capabilityProps={conversationCapabilityProps}
+          className="contents"
+        />
+      ))}
+      {/* Setup modals mounted once here (stable position) so they never double-render.
+          Keyed by chatId so their internal selection state resets on a chat switch
+          (matches ConversationInput below) — otherwise stale selected ids would
+          inflate botCount and could deal an empty botCharacterIds list. */}
+      {/* Keys must be unique across this whole children list — ConversationInput
+          below is also keyed by chatId, and duplicate sibling keys make React
+          duplicate/orphan the setup modals (stuck un-closable "Start UNO"). */}
+      <ConversationGamesPicker
+        key={`games-${chatId}`}
+        chatId={chatId}
+        open={gamesPickerOpen}
+        onClose={closeGamesPicker}
+      />
+      {gameSetup && turnGamePackages.some((game) => game.id === gameSetup.packageId) && (
+        <CapabilityElement
+          key={`${gameSetup.packageId}-setup-${chatId}`}
+          packageId={gameSetup.packageId}
+          view="setup"
+          capabilityProps={{ chatId, open: true, onClose: closeGameSetup }}
+        />
+      )}
+
+      {/* ── Input area ── */}
+      <ConversationInput
+        key={chatId}
+        mobileHistoryCollapsed={mobileHistoryComposerCollapsed}
+        onMobileHistoryCollapsedChange={setMobileHistoryComposerCollapsed}
+        characterNames={characterNames}
+        chatCharacters={chatCharIds
+          .filter((id) => characterMap.has(id))
+          .map((id) => {
+            const info = characterMap.get(id)!;
+            return {
+              id,
+              name: info.name,
+              avatarUrl: info.avatarUrl ?? null,
+              avatarCrop: info.avatarCrop ?? null,
+              conversationStatus: info.conversationStatus,
+              conversationActivity: info.conversationActivity,
+            };
+          })}
+        onPeekPrompt={onPeekPrompt}
+        onIllustrate={onIllustrate}
+        onGenerateSelfie={onGenerateSelfie}
+      />
+    </div>
+  );
+}

@@ -1,0 +1,502 @@
+@echo off
+setlocal enabledelayedexpansion
+cd /d "%~dp0"
+title Marinara Engine
+color 0A
+echo.
+echo  +==========================================+
+echo  ^|       Marinara Engine  -  Launcher        ^|
+echo  +==========================================+
+echo.
+
+set "SKIP_UPDATE="
+if /I "%~1"=="--skip-update" set "SKIP_UPDATE=1"
+if /I "%~1"=="--no-update" set "SKIP_UPDATE=1"
+
+:: Load launcher settings before the update decision. Server settings are reused below.
+if not exist .env goto :early_env_done
+for /f "usebackq eol=# tokens=1,* delims==" %%A in (".env") do (
+    if not "%%A"=="" if not "%%B"=="" set "%%A=%%~B"
+)
+:early_env_done
+
+set "AUTO_UPDATE_DISABLED="
+if /I "%AUTO_UPDATE_ENABLED%"=="0" set "AUTO_UPDATE_DISABLED=1"
+if /I "%AUTO_UPDATE_ENABLED%"=="false" set "AUTO_UPDATE_DISABLED=1"
+if /I "%AUTO_UPDATE_ENABLED%"=="no" set "AUTO_UPDATE_DISABLED=1"
+if /I "%AUTO_UPDATE_ENABLED%"=="off" set "AUTO_UPDATE_DISABLED=1"
+
+:: Check for Node.js
+node --version >nul 2>&1
+if errorlevel 1 (
+    echo  [ERROR] Node.js is not installed or not in PATH.
+    echo  Please install Node.js 24 LTS or newer from https://nodejs.org
+    echo.
+    pause
+    exit /b 1
+)
+
+for /f "tokens=1 delims=." %%a in ('node -v') do set "NODE_RAW=%%a"
+set "NODE_MAJOR=!NODE_RAW:v=!"
+if not defined NODE_MAJOR (
+    echo  [ERROR] Could not determine Node.js version.
+    pause
+    exit /b 1
+)
+if !NODE_MAJOR! LSS 24 (
+    echo  [ERROR] Node.js 24 LTS or newer is required. You have v!NODE_MAJOR!.
+    echo  Please update Node.js from https://nodejs.org
+    echo.
+    pause
+    exit /b 1
+)
+
+:: Resolve the browser URL before update/install work so repeat shortcut launches
+:: can reopen a healthy server immediately.
+set NODE_ENV=production
+if not defined PORT set PORT=7860
+if not defined HOST set HOST=0.0.0.0
+if not defined SIDECAR_RUNTIME_INSTALL_ENABLED set SIDECAR_RUNTIME_INSTALL_ENABLED=true
+
+set PROTOCOL=http
+if defined SSL_CERT if defined SSL_KEY set PROTOCOL=https
+set "BROWSER_HOST=%HOST%"
+if "%BROWSER_HOST%"=="" set "BROWSER_HOST=127.0.0.1"
+if "%BROWSER_HOST%"=="0.0.0.0" set "BROWSER_HOST=127.0.0.1"
+if "%BROWSER_HOST%"=="::" set "BROWSER_HOST=127.0.0.1"
+
+set "AUTO_OPEN_BROWSER_ENABLED=1"
+if defined AUTO_OPEN_BROWSER (
+    if /I "%AUTO_OPEN_BROWSER%"=="0" set "AUTO_OPEN_BROWSER_ENABLED="
+    if /I "%AUTO_OPEN_BROWSER%"=="false" set "AUTO_OPEN_BROWSER_ENABLED="
+    if /I "%AUTO_OPEN_BROWSER%"=="no" set "AUTO_OPEN_BROWSER_ENABLED="
+    if /I "%AUTO_OPEN_BROWSER%"=="off" set "AUTO_OPEN_BROWSER_ENABLED="
+)
+
+call :check_launch_port
+if errorlevel 2 goto :existing_server
+if errorlevel 1 (
+    pause
+    exit /b 1
+)
+
+:: Resolve the exact repo-pinned pnpm before any install path uses it.
+call :resolve_pnpm_runner
+if errorlevel 1 (
+    pause
+    exit /b 1
+)
+
+goto :after_restore_helper
+
+:check_launch_port
+node scripts\check-port-available.mjs
+exit /b !errorlevel!
+
+:restore_stashed_changes
+if not "!STASHED!"=="1" goto :eof
+if "!STASH_REF!"=="" goto :eof
+git stash apply -q "!STASH_REF!" >nul 2>&1
+if errorlevel 1 (
+    echo  [WARN] Auto-update could not reapply your local changes cleanly.
+    echo         Your changes are preserved in !STASH_REF!.
+    echo         Review them with: git stash show -p !STASH_REF!
+    echo         Reapply them manually with: git stash pop !STASH_REF!
+    git reset --hard HEAD >nul 2>&1
+    goto :eof
+)
+git stash drop -q "!STASH_REF!" >nul 2>&1
+goto :eof
+
+:after_restore_helper
+set "INSTALL_REQUIRED=0"
+set "BUILD_REQUIRED=0"
+set "DATA_SNAPSHOT_READY=0"
+set "PNPM_RESOLUTION_FAILED=0"
+
+:: Drop untracked leftovers in the source trees (e.g. files a failed Windows
+:: checkout could not delete after a channel switch); they break tsc. This is
+:: working-tree repair, not an update, so it runs even when auto-update is
+:: disabled -- and before "stash push -u", which would otherwise capture the
+:: stale file and restore it again after every update.
+:: Not quiet: git prints "Removing <path>" only when it actually deletes
+:: something, so a stray file of your own does not vanish without a trace.
+set "CLEAN_FAILED=0"
+if exist ".git" (
+    node scripts\preserve-untracked-src.mjs
+    git clean -fd -- packages/shared/src packages/server/src packages/client/src 2>nul
+    if errorlevel 1 set "CLEAN_FAILED=1"
+)
+
+:: Auto-update from Git
+if defined SKIP_UPDATE (
+    echo  [OK] Skipping update check; starting the current local install.
+    goto :skip_update
+)
+if defined AUTO_UPDATE_DISABLED (
+    echo  [OK] Automatic Engine updates disabled by AUTO_UPDATE_ENABLED=false.
+    node scripts\check-launcher-update.mjs
+    goto :skip_update
+)
+if not exist ".git" (
+    echo  [OK] Not a Git checkout; automatic updates and commit-based stale-build checks are unavailable. Version checks will still run.
+    goto :skip_update
+)
+echo  [..] Checking for updates...
+for /f "tokens=*" %%i in ('git rev-parse HEAD 2^>nul') do set "OLD_HEAD=%%i"
+set "CURRENT_BRANCH="
+for /f "tokens=*" %%i in ('git branch --show-current 2^>nul') do set "CURRENT_BRANCH=%%i"
+set "TARGET_BRANCH=main"
+if /I "!CURRENT_BRANCH!"=="staging" set "TARGET_BRANCH=staging"
+if "!CURRENT_BRANCH!"=="" (
+    git fetch origin "+refs/heads/main:refs/remotes/origin/main" "+refs/heads/staging:refs/remotes/origin/staging" --quiet >nul 2>&1
+    git merge-base --is-ancestor HEAD origin/staging >nul 2>&1
+    if not errorlevel 1 (
+        git merge-base --is-ancestor HEAD origin/main >nul 2>&1
+        if errorlevel 1 set "TARGET_BRANCH=staging"
+    )
+)
+set "TARGET_REF=origin/!TARGET_BRANCH!"
+git fetch origin "+refs/heads/!TARGET_BRANCH!:refs/remotes/origin/!TARGET_BRANCH!" --quiet >nul 2>&1
+if errorlevel 1 (
+    echo  [WARN] Could not check for updates. Continuing with current version.
+    goto :skip_update
+)
+for /f "tokens=*" %%i in ('git rev-parse !TARGET_REF! 2^>nul') do set "TARGET_HEAD=%%i"
+if /I "!OLD_HEAD!"=="!TARGET_HEAD!" (
+    echo  [OK] Already up to date
+    goto :skip_update
+)
+:: Never auto-move onto a build whose storage format predates the data on
+:: disk - it would silently show empty chat history (#4708). Checked BEFORE
+:: the snapshot: a blocked target stays blocked on every launch, and
+:: re-copying the whole data directory each time serves nothing. Exit 2 is a
+:: real format block; any other failure means the check itself could not run.
+:: Both skip the update (fail-safe) with distinguishable messages.
+node scripts\protect-launcher-data.mjs check-target "!TARGET_HEAD!"
+if errorlevel 2 (
+    echo  [WARN] Skipping auto-update: the target version is older than your data format.
+    goto :skip_update
+)
+if errorlevel 1 (
+    echo  [WARN] Skipping auto-update: could not verify the target's storage format.
+    goto :skip_update
+)
+node scripts\protect-launcher-data.mjs snapshot
+if errorlevel 1 (
+    echo  [WARN] Could not create an update snapshot. Skipping auto-update to protect your data.
+    goto :skip_update
+)
+set "DATA_SNAPSHOT_READY=1"
+:: Drop known-safe untracked files that older installer versions placed in
+:: $INSTDIR but are now also tracked in the repo. Without this, git merge
+:: --ff-only refuses to overwrite them and the auto-update silently fails.
+:: The repo copies are byte-identical to what the installer wrote, so this
+:: is non-destructive — git restores them as tracked files after the merge.
+if exist "app-icon.ico" (
+    git ls-files --error-unmatch "app-icon.ico" >nul 2>&1
+    if errorlevel 1 del /q "app-icon.ico" >nul 2>&1
+)
+
+:: Stash local changes, including untracked non-ignored files, so the update doesn't fail
+set "STASHED=0"
+set "STASH_REF="
+set "DIRTY=0"
+set "STASH_FAILED=0"
+git diff --quiet >nul 2>&1
+if errorlevel 1 set "DIRTY=1"
+git diff --cached --quiet >nul 2>&1
+if errorlevel 1 set "DIRTY=1"
+set "UNTRACKED="
+for /f "tokens=*" %%i in ('git ls-files --others --exclude-standard 2^>nul') do if not defined UNTRACKED set "UNTRACKED=1"
+if defined UNTRACKED set "DIRTY=1"
+:: A leftover we could not delete would be captured by "stash push -u" and
+:: restored afterwards, making the broken tree permanent -- so a failed cleanup
+:: blocks the stash and, with it, the update.
+if "!CLEAN_FAILED!"=="1" (
+    echo  [WARN] Could not clear stale files under packages\*\src.
+    set "STASH_FAILED=1"
+) else if "!DIRTY!"=="1" (
+    git stash push -u -q -m "auto-stash before update" >nul 2>&1 && set "STASHED=1"
+    if not "!STASHED!"=="1" set "STASH_FAILED=1"
+    if "!STASHED!"=="1" for /f "tokens=*" %%i in ('git stash list -1 --format^=%%gd 2^>nul') do set "STASH_REF=%%i"
+)
+set "UPDATED_TO_TARGET=0"
+set "ALLOW_DETACHED_FALLBACK=0"
+if /I "!CURRENT_BRANCH!"=="main" set "ALLOW_DETACHED_FALLBACK=1"
+if /I "!CURRENT_BRANCH!"=="master" set "ALLOW_DETACHED_FALLBACK=1"
+if /I "!CURRENT_BRANCH!"=="staging" set "ALLOW_DETACHED_FALLBACK=1"
+set "UPDATE_LOG=%TEMP%\marinara-update-!RANDOM!-!RANDOM!.log"
+if exist "!UPDATE_LOG!" del /q "!UPDATE_LOG!" >nul 2>&1
+if "!STASH_FAILED!"=="1" (
+    echo  [WARN] Could not stash local changes. Skipping auto-update to avoid overwriting them.
+) else (
+    if "!CURRENT_BRANCH!"=="" (
+        git checkout --detach "!TARGET_HEAD!" >"!UPDATE_LOG!" 2>&1 && set "UPDATED_TO_TARGET=1"
+        if not "!UPDATED_TO_TARGET!"=="1" git reset --hard "!TARGET_HEAD!" >"!UPDATE_LOG!" 2>&1 && set "UPDATED_TO_TARGET=1"
+    ) else (
+        git merge --ff-only "!TARGET_REF!" >"!UPDATE_LOG!" 2>&1 && set "UPDATED_TO_TARGET=1"
+        if not "!UPDATED_TO_TARGET!"=="1" if "!ALLOW_DETACHED_FALLBACK!"=="1" (
+            echo  [..] Fast-forward failed; resetting the installed checkout to the latest !TARGET_BRANCH! commit...
+            git reset --hard "!TARGET_HEAD!" >"!UPDATE_LOG!" 2>&1 && set "UPDATED_TO_TARGET=1"
+        )
+    )
+)
+if not "!UPDATED_TO_TARGET!"=="1" (
+    if "!STASH_FAILED!"=="1" (
+        if exist "!UPDATE_LOG!" del /q "!UPDATE_LOG!" >nul 2>&1
+        goto :skip_update
+    )
+    if "!STASHED!"=="1" call :restore_stashed_changes
+    echo  [WARN] Could not update to !TARGET_REF!. Continuing with current version.
+    if exist "!UPDATE_LOG!" (
+        for %%A in ("!UPDATE_LOG!") do if %%~zA GTR 0 (
+            echo         Git reported:
+            for /f "usebackq delims=" %%i in ("!UPDATE_LOG!") do echo         %%i
+        )
+        del /q "!UPDATE_LOG!" >nul 2>&1
+    )
+    goto :skip_update
+)
+for /f "tokens=*" %%i in ('git rev-parse HEAD 2^>nul') do set "NEW_HEAD=%%i"
+if /I not "!NEW_HEAD!"=="!TARGET_HEAD!" (
+    if "!STASHED!"=="1" call :restore_stashed_changes
+    echo  [WARN] Update did not land on !TARGET_REF!. Continuing with current version.
+    if exist "!UPDATE_LOG!" del /q "!UPDATE_LOG!" >nul 2>&1
+    goto :skip_update
+)
+if "!STASHED!"=="1" call :restore_stashed_changes
+if exist "!UPDATE_LOG!" del /q "!UPDATE_LOG!" >nul 2>&1
+echo  [OK] Updated to latest version
+echo  [..] Dependencies and build will be refreshed before startup.
+call :resolve_pnpm_runner
+if errorlevel 1 (
+    set "PNPM_RESOLUTION_FAILED=1"
+) else (
+    set "INSTALL_REQUIRED=1"
+    set "BUILD_REQUIRED=1"
+)
+
+:skip_update
+if "!DATA_SNAPSHOT_READY!"=="1" (
+    node scripts\protect-launcher-data.mjs restore-if-missing
+    if errorlevel 1 (
+        echo  [ERROR] User data verification failed after the update attempt.
+        echo          Startup stopped to avoid creating empty data.
+        pause
+        exit /b 1
+    )
+)
+if "!PNPM_RESOLUTION_FAILED!"=="1" (
+    pause
+    exit /b 1
+)
+echo  [OK] Node.js found:
+node -v
+echo  [OK] pnpm !CURRENT_PNPM_VERSION! ready
+
+:: Detect stale dist (source updated but dist not rebuilt)
+if not exist "packages\shared\dist\constants\defaults.js" goto :skip_version_check
+for /f "usebackq delims=" %%i in (`node -p "require('./package.json').version" 2^>nul`) do set "SOURCE_VER=%%i"
+for /f "usebackq delims=" %%i in (`node -e "try{const m=require('./packages/shared/dist/constants/defaults.js');console.log(m.APP_VERSION)}catch{}" 2^>nul`) do set "DIST_VER=%%i"
+for /f "usebackq delims=" %%i in (`git rev-parse --short=12 HEAD 2^>nul`) do set "SOURCE_COMMIT=%%i"
+for /f "usebackq delims=" %%i in (`node -e "try{const m=require('./packages/server/dist/config/build-meta.json');console.log(m.commit || '')}catch{}" 2^>nul`) do set "DIST_COMMIT=%%i"
+if not "!SOURCE_VER!"=="" if not "!DIST_VER!"=="" if not "!SOURCE_VER!"=="!DIST_VER!" (
+    echo  [WARN] Version mismatch: source v!SOURCE_VER! but dist has v!DIST_VER!
+    echo  [..] Dependencies and build will be refreshed before startup.
+    set "INSTALL_REQUIRED=1"
+    set "BUILD_REQUIRED=1"
+)
+if not "!SOURCE_COMMIT!"=="" if /I not "!SOURCE_COMMIT!"=="!DIST_COMMIT!" (
+    echo  [WARN] Build commit mismatch: source !SOURCE_COMMIT! but dist has !DIST_COMMIT!
+    echo  [..] Dependencies and build will be refreshed before startup.
+    set "INSTALL_REQUIRED=1"
+    set "BUILD_REQUIRED=1"
+)
+:skip_version_check
+
+:: Install dependencies if needed
+if not exist "node_modules" set "INSTALL_REQUIRED=1"
+node scripts\check-workspace-install.mjs >nul 2>&1
+if errorlevel 1 set "INSTALL_REQUIRED=1"
+if not "!INSTALL_REQUIRED!"=="1" goto :skip_install
+echo.
+echo  [..] Installing dependencies...
+echo      This may take a few minutes.
+echo.
+call :run_pnpm install --frozen-lockfile --prefer-offline
+if errorlevel 1 echo  [ERROR] Failed to install dependencies. & pause & exit /b 1
+
+:skip_install
+
+:skip_env
+:: Optional AI sprite background remover
+if defined BACKGROUNDREMOVER_AUTO_INSTALL (
+    if /I "%BACKGROUNDREMOVER_AUTO_INSTALL%"=="1" goto install_bgremover
+    if /I "%BACKGROUNDREMOVER_AUTO_INSTALL%"=="true" goto install_bgremover
+    if /I "%BACKGROUNDREMOVER_AUTO_INSTALL%"=="yes" goto install_bgremover
+    if /I "%BACKGROUNDREMOVER_AUTO_INSTALL%"=="on" goto install_bgremover
+)
+goto skip_bgremover
+:install_bgremover
+echo  [..] Ensuring optional AI background remover runtime...
+call :run_pnpm backgroundremover:install -- --if-missing
+if errorlevel 1 echo  [WARN] Optional background remover install failed; built-in cleanup will still work.
+:skip_bgremover
+
+:: Build if needed
+if not exist "packages\shared\dist\constants\defaults.js" set "BUILD_REQUIRED=1"
+if not exist "packages\server\dist\index.js" set "BUILD_REQUIRED=1"
+node scripts\check-client-build.mjs
+if errorlevel 1 set "BUILD_REQUIRED=1"
+if "!BUILD_REQUIRED!"=="1" (
+    echo  [..] Cleaning stale build artifacts...
+    call :run_pnpm clean:stale-client
+    if errorlevel 1 echo  [ERROR] Failed to clean stale client artifacts. & pause & exit /b 1
+    call :run_pnpm --filter @marinara-engine/shared run clean
+    if errorlevel 1 echo  [ERROR] Failed to clean shared build artifacts. & pause & exit /b 1
+    call :run_pnpm --filter @marinara-engine/server run clean
+    if errorlevel 1 echo  [ERROR] Failed to clean server build artifacts. & pause & exit /b 1
+    call :run_pnpm --filter @marinara-engine/client run clean
+    if errorlevel 1 echo  [ERROR] Failed to clean client build artifacts. & pause & exit /b 1
+    echo  [..] Building Marinara Engine...
+    call :run_pnpm --filter @marinara-engine/shared build
+    if errorlevel 1 echo  [ERROR] Failed to build shared package. & pause & exit /b 1
+    call :run_pnpm --filter @marinara-engine/server --filter @marinara-engine/client --parallel run build
+    if errorlevel 1 echo  [ERROR] Failed to build server or client package. & pause & exit /b 1
+)
+
+node scripts\check-client-build.mjs
+if errorlevel 1 (
+    echo  [ERROR] Client assets are still incomplete after building. Startup stopped.
+    pause
+    exit /b 1
+)
+
+:: Database migrations are handled automatically at server startup by runMigrations()
+
+call :check_launch_port
+if errorlevel 2 goto :existing_server
+if errorlevel 1 (
+    pause
+    exit /b 1
+)
+
+goto :start_server
+
+:existing_server
+if defined AUTO_OPEN_BROWSER_ENABLED (
+    echo  [OK] Reopening the running Marinara Engine instance...
+    start "" "%PROTOCOL%://%BROWSER_HOST%:%PORT%" || explorer "%PROTOCOL%://%BROWSER_HOST%:%PORT%"
+) else (
+    echo  [OK] Marinara Engine is already running. Auto-open is disabled ^(AUTO_OPEN_BROWSER=%AUTO_OPEN_BROWSER%^)
+)
+exit /b 0
+
+:start_server
+
+echo.
+echo  ==========================================
+echo    Starting Marinara Engine on %PROTOCOL%://%HOST%:%PORT%
+if not "%BROWSER_HOST%"=="%HOST%" echo    Local browser URL: %PROTOCOL%://%BROWSER_HOST%:%PORT%
+echo    Press Ctrl+C to stop
+echo  ==========================================
+echo.
+
+:: Open the browser only once the server answers /api/health (scripts\open-when-ready.cmd polls it).
+if defined AUTO_OPEN_BROWSER_ENABLED (
+    start "" /min cmd /c ""%~dp0scripts\open-when-ready.cmd" "%PROTOCOL%://%BROWSER_HOST%:%PORT%""
+) else (
+    echo  [OK] Auto-open disabled ^(AUTO_OPEN_BROWSER=%AUTO_OPEN_BROWSER%^)
+)
+
+:: Start server
+cd packages\server
+node ../../scripts/run-server.mjs dist/index.js
+if errorlevel 1 (
+    echo.
+    echo  [ERROR] Server exited unexpectedly. See the error above.
+    echo.
+    pause
+)
+goto :eof
+
+:run_pnpm
+if /I "%PNPM_RUNNER%"=="corepack" (
+    call corepack pnpm@%PNPM_DESCRIPTOR% --config.trustPolicy=off --config.confirmModulesPurge=false %*
+) else (
+    if /I "%PNPM_RUNNER%"=="npx" (
+        call npx --yes pnpm@%PNPM_VERSION% --config.trustPolicy=off --config.confirmModulesPurge=false %*
+    ) else (
+        call pnpm --config.trustPolicy=off --config.confirmModulesPurge=false %*
+    )
+)
+exit /b %errorlevel%
+
+:resolve_pnpm_runner
+set "PNPM_DESCRIPTOR="
+for /f "usebackq delims=" %%i in (`node -p "JSON.parse(require('fs').readFileSync('package.json','utf8')).packageManager?.replace(/^^pnpm@/, '') || ''"`) do set "PNPM_DESCRIPTOR=%%i"
+if not defined PNPM_DESCRIPTOR (
+    echo  [ERROR] Could not read the pinned pnpm descriptor from package.json.
+    exit /b 1
+)
+set "PNPM_VERSION="
+for /f "tokens=1 delims=+" %%i in ("!PNPM_DESCRIPTOR!") do set "PNPM_VERSION=%%i"
+if not defined PNPM_VERSION (
+    echo  [ERROR] The pinned pnpm descriptor in package.json has no version.
+    exit /b 1
+)
+set "PNPM_RUNNER=pnpm"
+set "CURRENT_PNPM_VERSION="
+
+where corepack >nul 2>&1
+if not errorlevel 1 (
+    echo  [..] Aligning pnpm to !PNPM_VERSION! via Corepack...
+    for /f "usebackq delims=" %%i in (`corepack pnpm@!PNPM_DESCRIPTOR! --version 2^>nul`) do set "CURRENT_PNPM_VERSION=%%i"
+    if /I "!CURRENT_PNPM_VERSION!"=="!PNPM_VERSION!" (
+        set "PNPM_RUNNER=corepack"
+    ) else (
+        set "CURRENT_PNPM_VERSION="
+    )
+)
+
+if not defined CURRENT_PNPM_VERSION (
+    where pnpm >nul 2>&1
+    if not errorlevel 1 (
+        for /f "usebackq delims=" %%i in (`pnpm --version 2^>nul`) do set "CURRENT_PNPM_VERSION=%%i"
+        if /I "!CURRENT_PNPM_VERSION!"=="!PNPM_VERSION!" (
+            echo  [..] Using installed pnpm !CURRENT_PNPM_VERSION!
+        ) else (
+            if defined CURRENT_PNPM_VERSION echo  [..] Installed pnpm !CURRENT_PNPM_VERSION! does not match required !PNPM_VERSION!; trying a pinned temporary runner...
+            set "CURRENT_PNPM_VERSION="
+        )
+    )
+)
+
+if not defined CURRENT_PNPM_VERSION (
+    echo  [..] Using temporary pnpm !PNPM_VERSION! via npx...
+    for /f "usebackq delims=" %%i in (`npx --yes pnpm@!PNPM_VERSION! --version 2^>nul`) do set "CURRENT_PNPM_VERSION=%%i"
+    if /I "!CURRENT_PNPM_VERSION!"=="!PNPM_VERSION!" (
+        set "PNPM_RUNNER=npx"
+    ) else (
+        set "CURRENT_PNPM_VERSION="
+    )
+)
+
+if /I "!PNPM_RUNNER!"=="corepack" if not defined PNPM_NESTED_SHIM_READY (
+    set "PATH=%~dp0scripts;!PATH!"
+    set "PNPM_NESTED_SHIM_READY=1"
+)
+if /I "!PNPM_RUNNER!"=="npx" if not defined PNPM_NESTED_SHIM_READY (
+    set "PATH=%~dp0scripts;!PATH!"
+    set "PNPM_NESTED_SHIM_READY=1"
+)
+
+if not defined CURRENT_PNPM_VERSION (
+    echo  [ERROR] Failed to make pnpm !PNPM_VERSION! available.
+    echo          Marinara can run without a global pnpm install, but Node.js must provide Corepack or npx/npm.
+    echo          Reinstall Node.js 24 LTS with npm enabled, or run: npm install -g pnpm@!PNPM_VERSION!
+    exit /b 1
+)
+echo  [OK] pnpm !CURRENT_PNPM_VERSION! ready
+exit /b 0

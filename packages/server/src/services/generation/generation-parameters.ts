@@ -1,0 +1,255 @@
+import {
+  DEFAULT_AGENT_MAX_TOKENS,
+  MIN_AGENT_MAX_TOKENS,
+  generationParametersSchema,
+  resolveProviderReasoningEffort,
+} from "@marinara-engine/shared";
+import type { BaseLLMProvider, ChatOptions } from "../llm/base-provider.js";
+import { parseExtra } from "./prompt-attachments.js";
+
+export function normalizeMaxContext(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
+  return Math.floor(value);
+}
+
+export function normalizeAgentMaxTokens(value: unknown, fallback = DEFAULT_AGENT_MAX_TOKENS): number {
+  const parsed = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(MIN_AGENT_MAX_TOKENS, Math.trunc(parsed));
+}
+
+export function applyProviderMaxTokensOverride(provider: BaseLLMProvider, maxTokens: number): number {
+  return provider.maxTokensOverrideValue !== null ? Math.min(maxTokens, provider.maxTokensOverrideValue) : maxTokens;
+}
+
+export function resolveStoredMaxTokens(defaultParameters: unknown, calculatedMaxTokens: number): number {
+  let parsed = defaultParameters;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return calculatedMaxTokens;
+    }
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return calculatedMaxTokens;
+  const source = parsed as Record<string, unknown>;
+  const enabledParameters = generationParametersSchema.shape.enabledParameters.safeParse(source.enabledParameters);
+  if (enabledParameters.success && enabledParameters.data?.maxTokens === false) return calculatedMaxTokens;
+  if (!Object.prototype.hasOwnProperty.call(source, "maxTokens") || source.maxTokens === undefined) {
+    return calculatedMaxTokens;
+  }
+  const maxTokens = generationParametersSchema.shape.maxTokens.safeParse(source.maxTokens);
+  return maxTokens.success ? maxTokens.data : calculatedMaxTokens;
+}
+
+/** Resolve the connection's standard generation defaults for non-preset generation paths. */
+export function resolveStoredChatOptions(
+  defaultParameters: unknown,
+  provider: string,
+  model: string,
+): Partial<ChatOptions> {
+  let parsed = defaultParameters;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return {};
+    }
+  }
+  const result = generationParametersSchema.partial().safeParse(parsed);
+  if (!result.success) return {};
+  const parameters = result.data;
+  const reasoningEffort = resolveProviderReasoningEffort({
+    provider,
+    model,
+    reasoningEffort: parameters.reasoningEffort,
+  });
+  return {
+    temperature: parameters.temperature,
+    topP: parameters.topP,
+    topK: parameters.topK,
+    minP: parameters.minP,
+    frequencyPenalty: parameters.frequencyPenalty,
+    presencePenalty: parameters.presencePenalty,
+    reasoningEffort:
+      parameters.enabledParameters?.reasoningEffort === false
+        ? undefined
+        : parameters.reasoningEffort === null
+          ? "none"
+          : (reasoningEffort ?? undefined),
+    verbosity: parameters.verbosity ?? undefined,
+    serviceTier: parameters.serviceTier,
+    stop: parameters.stopSequences,
+    customParameters: parameters.customParameters,
+    enabledParameters: parameters.enabledParameters,
+  };
+}
+
+export function minContextLimit(...limits: Array<number | undefined>): number | undefined {
+  let resolved: number | undefined;
+  for (const limit of limits) {
+    if (limit === undefined) continue;
+    resolved = resolved === undefined ? limit : Math.min(resolved, limit);
+  }
+  return resolved;
+}
+
+export function normalizeChatTopP(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  if (value < 0) return undefined;
+  return Math.min(value, 1);
+}
+
+export function readChatCompletionsReasoningMetadata(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const source = value as Record<string, unknown>;
+  const metadata: Record<string, unknown> = {};
+  if (typeof source.reasoning_content === "string" && source.reasoning_content) {
+    metadata.reasoning_content = source.reasoning_content;
+  }
+  if (typeof source.reasoning === "string" && source.reasoning) {
+    metadata.reasoning = source.reasoning;
+  }
+  if (Array.isArray(source.reasoning_details) && source.reasoning_details.length) {
+    metadata.reasoning_details = source.reasoning_details;
+  }
+  return Object.keys(metadata).length ? metadata : undefined;
+}
+
+export function shouldReplayStoredChatCompletionsReasoning(provider: string, model: string): boolean {
+  if (provider !== "openrouter") return true;
+  const normalizedModel = model.toLowerCase();
+  return !normalizedModel.startsWith("google/gemini") && !normalizedModel.includes("/gemini-");
+}
+
+type PastReasoningSettings = { excludePastReasoning?: unknown; pastReasoningLimit?: unknown };
+const PAST_REASONING_KEYS = new Set([
+  "geminiParts",
+  "reasoning_content",
+  "reasoning",
+  "reasoning_details",
+  "encryptedReasoning",
+]);
+
+function resolvePastReasoningLimit(settings: PastReasoningSettings): number {
+  const value = settings.pastReasoningLimit;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 1;
+}
+
+/** Apply the allowance after target/audience filtering, before context fitting. */
+export function limitPastReasoningMetadata<
+  T extends {
+    role: string;
+    contextKind?: string;
+    providerMetadata?: Record<string, unknown>;
+  },
+>(messages: T[], settings: PastReasoningSettings): T[] {
+  const limit = resolvePastReasoningLimit(settings);
+  let kept = 0;
+  const limited = [...messages];
+  for (let index = limited.length - 1; index >= 0; index--) {
+    const message = limited[index]!;
+    const metadata = message.providerMetadata;
+    if (
+      message.role !== "assistant" ||
+      message.contextKind !== "history" ||
+      !metadata ||
+      metadata.partial === true ||
+      !Object.keys(metadata).some((key) => PAST_REASONING_KEYS.has(key))
+    )
+      continue;
+    if (settings.excludePastReasoning === false && (limit === 0 || kept++ < limit)) continue;
+    const remaining = Object.fromEntries(Object.entries(metadata).filter(([key]) => !PAST_REASONING_KEYS.has(key)));
+    const withoutReasoning = { ...message };
+    if (Object.keys(remaining).length) withoutReasoning.providerMetadata = remaining;
+    else delete withoutReasoning.providerMetadata;
+    limited[index] = withoutReasoning;
+  }
+  return limited;
+}
+
+/** Keep provider-native reasoning on its original message; plain assistant turns do not consume the limit. */
+export function collectPastReasoningMetadata(
+  messages: Array<{ id: string; role: string; extra?: unknown }>,
+  settings: PastReasoningSettings,
+  provider: string,
+  model: string,
+): Map<string, Record<string, unknown>> {
+  const selected = new Map<string, Record<string, unknown>>();
+  if (settings.excludePastReasoning !== false) return selected;
+  const limit = resolvePastReasoningLimit(settings);
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (message.role !== "assistant") continue;
+    const extra = parseExtra(message.extra);
+    if (extra.hiddenFromAI === true || extra.roleplayPrivateContext === true) continue;
+    const metadata: Record<string, unknown> = {};
+    if (
+      (provider === "google" || provider === "google_vertex") &&
+      Array.isArray(extra.geminiParts) &&
+      extra.geminiParts.some(
+        (part) =>
+          part &&
+          typeof part === "object" &&
+          (part.thought === true || (typeof part.thoughtSignature === "string" && part.thoughtSignature)),
+      )
+    ) {
+      metadata.geminiParts = extra.geminiParts;
+    }
+    if (supportsAssistantReasoningPrefill(provider) && shouldReplayStoredChatCompletionsReasoning(provider, model)) {
+      Object.assign(metadata, readChatCompletionsReasoningMetadata(extra.chatCompletionsReasoning));
+      // Local templates can consume thinking extracted from custom tags even without native reasoning deltas.
+      if (
+        provider === "custom" &&
+        !Object.keys(metadata).length &&
+        typeof extra.thinking === "string" &&
+        extra.thinking
+      ) {
+        metadata.reasoning_content = extra.thinking;
+      }
+    }
+    if (
+      ["openai", "xai", "custom"].includes(provider) &&
+      Array.isArray(extra.encryptedReasoning) &&
+      extra.encryptedReasoning.length
+    ) {
+      metadata.encryptedReasoning = extra.encryptedReasoning;
+    }
+    if (!Object.keys(metadata).length) continue;
+    selected.set(message.id, metadata);
+    if (limit > 0 && selected.size >= limit) break;
+  }
+  return selected;
+}
+
+function isGeminiFunctionCallPart(part: unknown): boolean {
+  return !!part && typeof part === "object" && (part as { functionCall?: unknown }).functionCall != null;
+}
+
+/**
+ * Fold one tool round's Gemini parts into the parts saved on the finished message.
+ *
+ * A tool turn is several rounds but one saved message: its content is every round's text
+ * joined together, so its parts have to be every round's parts. Keeping a single slot would
+ * save the last round only, and `formatGoogleContents` replays stored parts *instead of* the
+ * content — so the turn would read back to the model as half of what the player saw, with
+ * nothing in the transcript to show for it.
+ *
+ * functionCall parts are dropped. The tool exchange is not saved as messages, so a replayed
+ * call would arrive with no matching functionResponse, which Gemini rejects outright.
+ */
+export function appendRoundGeminiParts(
+  saved: unknown[] | null,
+  providerMetadata: Record<string, unknown> | undefined,
+): unknown[] | null {
+  const roundParts = providerMetadata?.geminiParts;
+  if (!Array.isArray(roundParts)) return saved;
+  const replayable = roundParts.filter((part) => !isGeminiFunctionCallPart(part));
+  if (!replayable.length) return saved;
+  return saved ? [...saved, ...replayable] : replayable;
+}
+
+/** Whether the connection uses the OpenAI-style message shape that can carry a partial reasoning prefill. */
+export function supportsAssistantReasoningPrefill(provider: string): boolean {
+  return ["openai", "openrouter", "nanogpt", "xai", "mistral", "cohere", "arli", "zai", "custom"].includes(provider);
+}

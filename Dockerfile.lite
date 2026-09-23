@@ -1,0 +1,160 @@
+# ──────────────────────────────────────────────
+# Marinara Engine — Wolfi Lite Docker Build
+# ──────────────────────────────────────────────
+# Three-stage build using Chainguard Wolfi images:
+#   1. Builder  — full dev toolchain, compiles TS and bundles client
+#   2. Deps     — production-only node_modules (stripped of heavy native deps)
+#   3. Runtime  — minimal Wolfi base + Node.js 24 binary only
+#
+# Disabled features (MARINARA_LITE):
+#   • Local sidecar model (llama-server / Gemma)
+#   • Local embedding model (onnxruntime + all-MiniLM-L6-v2)
+#   • Memory recall (semantic search)
+#   • Local Whisper voice input (Conversation call speech-to-text)
+# ──────────────────────────────────────────────
+
+# ── Stage 1: Build ──
+# Uses wolfi-base + nodejs-24 + npm so Node ABI matches across all stages.
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:3754b6da0e1ccdab0fe46abfdd7bbbba994b593c28149f6659fa6597f2261aeb AS builder
+ARG BUILD_COMMIT
+ARG BUILD_BRANCH
+WORKDIR /app
+
+RUN apk add --no-cache nodejs-24 npm && \
+    npm install -g pnpm@10.34.5
+
+ENV MARINARA_LITE=true
+ENV VITE_MARINARA_LITE=true
+
+# Copy workspace config first (layer cache for deps)
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY patches/ patches/
+COPY packages/shared/package.json packages/shared/
+COPY packages/server/package.json packages/server/
+COPY packages/client/package.json packages/client/
+COPY scripts/clean-stale-client-artifacts.mjs scripts/clean-stale-client-artifacts.mjs
+
+# Install all build dependencies. --ignore-scripts is what prevents
+# onnxruntime-node's GPU postinstall (the Lite-mode requirement); optional
+# deps are kept so Rollup and esbuild's platform-native binaries land in
+# node_modules. We then rebuild native packages used in Lite mode to register
+# their bindings, which --ignore-scripts skipped at install time.
+RUN --mount=type=cache,target=/app/.pnpm-store \
+    pnpm install --frozen-lockfile --ignore-scripts && \
+    pnpm rebuild esbuild rollup sharp
+
+# Copy source code
+COPY tsconfig.base.json ./
+COPY packages/shared/ packages/shared/
+COPY packages/server/ packages/server/
+COPY packages/client/ packages/client/
+
+# Build everything: shared → server + client in parallel
+ENV NODE_OPTIONS="--max-old-space-size=4096"
+RUN pnpm build
+
+# Bake the git ref into build-meta.json because the runtime image has no .git directory.
+RUN BUILD_COMMIT="$BUILD_COMMIT" BUILD_BRANCH="$BUILD_BRANCH" node -e 'const fs = require("node:fs"); const meta = {}; if (process.env.BUILD_COMMIT) meta.commit = process.env.BUILD_COMMIT; if (process.env.BUILD_BRANCH) meta.branch = process.env.BUILD_BRANCH; if (Object.keys(meta).length > 0) fs.writeFileSync("packages/server/dist/config/build-meta.json", JSON.stringify(meta));'
+
+# ── Stage 2: Production dependencies ──
+# Separate stage keeps builder cache warm while allowing aggressive dep stripping.
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:3754b6da0e1ccdab0fe46abfdd7bbbba994b593c28149f6659fa6597f2261aeb AS deps
+WORKDIR /app
+
+RUN apk add --no-cache nodejs-24 npm && \
+    npm install -g pnpm@10.34.5
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY patches/ patches/
+COPY packages/shared/package.json packages/shared/
+COPY packages/server/package.json packages/server/
+COPY packages/client/package.json packages/client/
+
+# Install production deps. We can't pass --no-optional here because sharp's
+# native binary ships through transitive optional packages (@img/sharp-*),
+# which --no-optional would drop alongside the truly-optional onnxruntime
+# packages. Instead, install everything, rebuild sharp so its native binding
+# is registered (--ignore-scripts skipped it at install time), and then
+# explicitly prune onnxruntime to keep the lite image small.
+RUN --mount=type=cache,target=/app/.pnpm-store \
+    pnpm install --frozen-lockfile --prod --ignore-scripts && \
+    pnpm rebuild sharp && \
+    rm -rf .pnpm/onnxruntime-node@* \
+           .pnpm/onnxruntime-web@* \
+           node_modules/.pnpm/onnxruntime-node@* \
+           node_modules/.pnpm/onnxruntime-web@* \
+           packages/server/node_modules/onnxruntime-node \
+           packages/server/node_modules/onnxruntime-web
+
+# Archive node_modules preserving pnpm symlinks — Docker COPY
+# dereferences them which would break module resolution.
+RUN tar cf /tmp/node_modules.tar \
+    .pnpm \
+    node_modules \
+    packages/shared/node_modules \
+    packages/server/node_modules 2>/dev/null; true
+
+# ── Stage 3: Minimal Wolfi runtime ──
+# Only the Node.js 24 binary — no npm, no build tools, no shell bloat.
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:3754b6da0e1ccdab0fe46abfdd7bbbba994b593c28149f6659fa6597f2261aeb AS production
+WORKDIR /app
+
+RUN apk add --no-cache nodejs-24-minimal && \
+    # Drop the package manager cache to save space
+    rm -rf /var/cache/apk/*
+
+# Extract prod node_modules (preserves pnpm symlinks).
+# Use a bind mount from the deps stage to avoid copying the tar into the image
+RUN --mount=type=bind,from=deps,source=/tmp/node_modules.tar,target=/tmp/node_modules.tar \
+    tar xf /tmp/node_modules.tar -C /app
+
+# Copy workspace manifests (pnpm resolution needs them)
+COPY package.json pnpm-workspace.yaml ./
+COPY packages/shared/package.json packages/shared/
+COPY packages/server/package.json packages/server/
+COPY packages/client/package.json packages/client/
+
+# Fail the image build if pnpm's symlinked virtual store is incomplete.
+RUN node -e "for (const dep of ['fastify', '@fastify/cors', 'sharp']) require.resolve(dep, { paths: ['/app/packages/server'] })"
+
+# Copy built artifacts from builder
+COPY --from=builder /app/packages/shared/dist packages/shared/dist
+COPY --from=builder /app/packages/server/dist packages/server/dist
+COPY --from=builder /app/packages/client/dist packages/client/dist
+COPY scripts/docker-entrypoint.mjs /usr/local/bin/marinara-docker-entrypoint.mjs
+COPY scripts/install-backgroundremover.mjs scripts/install-backgroundremover.mjs
+# The storage downgrade escape hatch (#4708) — docs/TROUBLESHOOTING.md tells
+# Docker users to run it in a one-off container, so it must ship in the image.
+COPY scripts/protect-launcher-data.mjs scripts/protect-launcher-data.mjs
+
+# User guides served by the in-app documentation viewer (/api/docs)
+COPY README.md README.md
+COPY docs/ docs/
+
+# Ensure data directory exists
+RUN mkdir -p /app/data && \
+    chown nonroot:nonroot /app/data
+
+# Runtime feature flag
+ENV MARINARA_LITE=true
+ENV DATA_DIR=/app/data
+ENV FILE_STORAGE_DIR=/app/data/storage
+# Pin the Claude Agent SDK + synthetic-session writer to a path under the
+# already-chowned data volume. Avoids the post-setuid HOME=/root trap and
+# makes the future "mount your host ~/.claude here" workflow a single
+# -v flag for the user.
+ENV CLAUDE_CONFIG_DIR=/app/data/claude-config
+ENV PORT=7860
+ENV HOST=0.0.0.0
+ENV NODE_ENV=production
+ENV MARINARA_DOCKER=true
+ENV MARINARA_DOCKER_USER=nonroot
+ENV MARINARA_DOCKER_GROUP=nonroot
+
+VOLUME /app/data
+EXPOSE 7860
+
+USER root
+
+ENTRYPOINT ["node", "/usr/local/bin/marinara-docker-entrypoint.mjs"]
+CMD ["node", "packages/server/dist/index.js"]

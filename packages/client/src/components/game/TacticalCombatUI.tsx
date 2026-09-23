@@ -1,0 +1,2393 @@
+import { CombatWeatherSummary } from "./CombatWeatherSummary";
+import { CombatAiControls } from "./CombatAiControls";
+// ──────────────────────────────────────────────
+// Game: Tactical (grid) Combat UI
+//
+// A Fire Emblem / Final Fantasy Tactics style grid battle that runs entirely
+// off the shared pure engine (`packages/shared/src/features/tactical-combat`).
+// The client renders + animates; the SERVER resolves actions (start + action
+// endpoints) so the seeded RNG stays authoritative. Client-side we only use the
+// engine's PURE read helpers (movement/target/forecast/summary) for highlights
+// and previews — never to mutate battle state.
+//
+// Visual language mirrors GameCombatUI where practical: HP/MP bars, floating
+// damage numbers, crit flashes, sprite/emoji/initial tokens, SFX hooks, and the
+// same `onCombatEnd(outcome, CombatSummary)` contract that drives GM narration.
+//
+// The root is TRANSLUCENT over GameSurface's crossfaded scene background (like
+// classic GameCombatUI): a dark scrim + radial vignette let the scene art show
+// through while the grid stays readable. Terrain palettes are themed by the
+// authoritative `state.environment` so restored snapshots keep their look.
+// ──────────────────────────────────────────────
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
+import { AnimatePresence, motion, useMotionValue } from "framer-motion";
+import {
+  Sword,
+  Sparkles,
+  Shield,
+  Backpack,
+  Hourglass,
+  Wind,
+  Footprints,
+  ScrollText,
+  Crown,
+  Skull,
+  X,
+  Trophy,
+  SkullIcon,
+  Flag,
+  Eye,
+  EyeOff,
+  Heart,
+  Droplets,
+  Crosshair,
+  GripVertical,
+  RotateCcw,
+} from "lucide-react";
+import { toast } from "sonner";
+import { cn } from "../../lib/utils";
+import { audioManager } from "../../lib/game-audio";
+import { useGameAssetManifest } from "../../hooks/use-game-assets";
+import { useTacticalCombatStart, useTacticalCombatAction } from "../../hooks/use-game";
+import { useUpdateChatMetadata } from "../../hooks/use-chats";
+import {
+  TERRAIN_DATA,
+  CLASS_PROFILES,
+  getMovementRange,
+  getTargetsInRange,
+  forecastAttack,
+  buildTacticalSummary,
+  type CombatWeather,
+  type Combatant,
+  type CombatSummary,
+  type CombatSkill,
+  type CombatItemEffect,
+  type TacticalCombatState,
+  type TacticalUnit,
+  type TacticalAction,
+  type TacticalEvent,
+  type TacticalCoord,
+  type TacticalBattlefieldBrief,
+  type TacticalClass,
+} from "@marinara-engine/shared";
+import { useTranslation as useUiTranslation } from "react-i18next";
+import {
+  TACTICAL_BOARD_KEYFRAMES,
+  TERRAIN_PALETTES,
+  TILE_ALPHA,
+  TILE_TEXTURES,
+  TILE_TINT_ALPHA,
+  TILE_TINT_ALPHA_THEMED,
+  initialsOf,
+  resolveSprite,
+  resolveTerrainIcon,
+  ringColorFor,
+  tileShadow,
+} from "../../lib/tactical-board-look";
+
+// ── Props ──
+
+interface TacticalCombatUIProps {
+  directed?: {
+    state: TacticalCombatState;
+    actorId?: string;
+    items: Array<{ name: string; quantity: number; effect: CombatItemEffect }>;
+    canAct: boolean;
+    busy: boolean;
+    onAction: (action: TacticalAction) => void;
+  };
+  chatId: string;
+  /** Player party combatants (same array classic GameCombatUI receives). */
+  party: Combatant[];
+  /** Enemy combatants. */
+  enemies: Combatant[];
+  /** Difficulty label from the game setup (engine normalizes unknowns to "normal"). */
+  difficulty?: string;
+  /**
+   * Scene-derived battlefield environment (e.g. "forest", "snow", "spaceship").
+   * Drives the initial terrain theming; the authoritative palette source once
+   * the battle starts is `state.environment` (so restored snapshots keep theme).
+   */
+  environment?: string | null;
+  /** Scene-derived starting formation (e.g. "ambush", "surrounded"). Passed to the start endpoint. */
+  formation?: string | null;
+  /** GM-proposed terrain brief for generated tactical battlefields. */
+  battlefield?: TacticalBattlefieldBrief | null;
+  /** Recoverable GM terrain-brief validation error; lets the user retry with generated terrain. */
+  battlefieldError?: string | null;
+  /** Keep the pending encounter setup aligned with the accepted terrain after fallback. */
+  onBattlefieldReady?: (state: TacticalCombatState) => void;
+  /** Restore an in-progress battle after a refresh (from chat metadata snapshot). */
+  initialState?: TacticalCombatState | null;
+  /** The party combatant that is the player's own persona (gets the crown marker). */
+  playerCombatantId?: string | null;
+  /** Called when combat ends. Same contract as classic GameCombatUI → drives GM narration. */
+  onCombatEnd: (outcome: "victory" | "defeat" | "flee", summary: CombatSummary) => void;
+  /** Lets the GM adjudicate a freeform maneuver (parity with classic, currently unused UI-side). */
+  onCustomInstruction?: (instruction: string) => void;
+}
+
+// ── SFX (reuse classic combat sound tags) ──
+
+const SFX = {
+  start: "sfx:combat:sword-unsheathe",
+  select: "sfx:ui:menu-confirm",
+  hover: "sfx:ui:menu-hover",
+  attack: "sfx:combat:sword-swing",
+  crit: "sfx:combat:sword-swing-2",
+  miss: "sfx:combat:sword-swing-3",
+  hit: "sfx:combat:spell-hit",
+  magic: "sfx:combat:magic-cast",
+  defend: "sfx:combat:chainmail",
+  item: "sfx:ui:potion",
+  victory: "sfx:ui:coin-pickup",
+  defeat: "sfx:ui:menu-cancel",
+} as const;
+
+// ── Animation timing (per event kind) ──
+
+const EVENT_DELAY: Record<string, number> = {
+  move: 340,
+  phase: 950,
+  damage: 640,
+  crit: 820,
+  counter: 640,
+  heal: 640,
+  miss: 560,
+  skill: 500,
+  item: 560,
+  status: 480,
+  terrain: 400,
+  defeat: 620,
+  victory: 700,
+  "defeat-end": 700,
+  flee: 700,
+};
+
+// Read the authoritative environment off state without depending on the shared
+// type having the field yet (the engine agent adds `environment?: TacticalEnvironment`).
+function environmentOf(state: TacticalCombatState | null): string | undefined {
+  return (state as { environment?: string } | null)?.environment ?? undefined;
+}
+
+// ── Class helpers ──
+//
+// R3-A adds `TacticalClass`, `CLASS_PROFILES`, and `TacticalUnit.unitClass?`. Old
+// snapshots predate `unitClass`, so every read goes through `unitClassOf`, which
+// falls back to "fighter" for absent/invalid values.
+
+const CLASS_ICONS: Record<TacticalClass, typeof Sword> = {
+  fighter: Sword,
+  knight: Shield,
+  rogue: Wind,
+  archer: Crosshair,
+  mage: Sparkles,
+  healer: Heart,
+};
+
+function unitClassOf(unit: TacticalUnit): TacticalClass {
+  const uc = (unit as { unitClass?: string }).unitClass;
+  return uc && Object.prototype.hasOwnProperty.call(CLASS_PROFILES, uc) ? (uc as TacticalClass) : "fighter";
+}
+
+// "Rng 1" for melee, "Rng 2-3" for spread ranges (min===max collapses to one number).
+function rangeText(range: { min: number; max: number }): string {
+  return range.min === range.max ? `Rng ${range.min}` : `Rng ${range.min}-${range.max}`;
+}
+
+function movementLabelKey(mode: TacticalUnit["movementMode"]): string {
+  if (mode === "fly") return "ui.game.tacticalcombatui.movementFlying";
+  if (mode === "teleport") return "ui.game.tacticalcombatui.movementTeleporting";
+  return "ui.game.tacticalcombatui.movementWalking";
+}
+
+function battlefieldSizeLabelKey(size: string): string {
+  if (size === "small") return "ui.game.tacticalcombatui.sizeSmall";
+  if (size === "large") return "ui.game.tacticalcombatui.sizeLarge";
+  return "ui.game.tacticalcombatui.sizeMedium";
+}
+
+// ── Transient render state (positions + hp during animation) ──
+
+interface RenderUnit {
+  id: string;
+  x: number;
+  y: number;
+  hp: number;
+  maxHp: number;
+}
+
+function renderMapFromState(state: TacticalCombatState): Map<string, RenderUnit> {
+  const m = new Map<string, RenderUnit>();
+  for (const u of state.units) m.set(u.id, { id: u.id, x: u.x, y: u.y, hp: u.hp, maxHp: u.maxHp });
+  return m;
+}
+
+interface FloatingPopup {
+  id: number;
+  // Grid coords captured at spawn time — a killing blow removes the target's
+  // token from the board mid-playback, so popups must not depend on it.
+  x: number;
+  y: number;
+  text: string;
+  tone: "damage" | "crit" | "heal" | "miss" | "status";
+}
+
+interface PhaseBanner {
+  text: string;
+  tone: "player" | "enemy";
+}
+
+// A staged clone: the selected unit teleported to `to` so pure helpers
+// (forecast/targets) reflect the post-move position without mutating real state.
+function withStagedMove(state: TacticalCombatState, unitId: string, to: TacticalCoord | null): TacticalCombatState {
+  if (!to) return state;
+  const units = state.units.map((u) => (u.id === unitId ? { ...u, x: to.x, y: to.y } : u));
+  return { ...state, units };
+}
+
+type UiMode =
+  | { kind: "idle" }
+  | { kind: "unit"; unitId: string }
+  | { kind: "skills"; unitId: string }
+  | { kind: "items"; unitId: string }
+  | {
+      kind: "target";
+      unitId: string;
+      action: "attack" | "skill" | "item";
+      skill?: CombatSkill;
+      itemName?: string;
+      itemEffect?: CombatItemEffect;
+    };
+
+const DEFAULT_ITEM_NAME = "Potion";
+
+export function TacticalCombatUI({
+  directed,
+  chatId,
+  party,
+  enemies,
+  environment,
+  formation,
+  battlefield,
+  battlefieldError,
+  onBattlefieldReady,
+  initialState,
+  playerCombatantId,
+  onCombatEnd,
+}: TacticalCombatUIProps) {
+  const { t: localizeUi } = useUiTranslation();
+  const { data: manifest } = useGameAssetManifest();
+  const assets = manifest?.assets ?? null;
+  const startMut = useTacticalCombatStart();
+  const actionMut = useTacticalCombatAction();
+  const updateMeta = useUpdateChatMetadata();
+
+  const [localState, setState] = useState<TacticalCombatState | null>(initialState ?? null);
+  const state = directed?.state ?? localState;
+  const [starting, setStarting] = useState(!initialState);
+  const [startError, setStartError] = useState<string | null>(null);
+  const [terrainFallbackAvailable, setTerrainFallbackAvailable] = useState(false);
+
+  const [ui, setUi] = useState<UiMode>({ kind: "idle" });
+  const [stagedMove, setStagedMove] = useState<TacticalCoord | null>(null);
+  // Optimistic move: keeps the mover's token at its committed destination through
+  // network flight + event playback (sendAction clears stagedMove immediately, and
+  // playEvents' baseline is the pre-action state — without this the token snaps
+  // back to its origin and re-walks the move). State drives rendering; the ref
+  // mirrors it so playEvents reads the current value without stale closures.
+  const [optimisticMove, setOptimisticMove] = useState<{ unitId: string; to: TacticalCoord } | null>(null);
+  const optimisticMoveRef = useRef<{ unitId: string; to: TacticalCoord } | null>(null);
+  const [inspectTile, setInspectTile] = useState<TacticalCoord | null>(null);
+  const [showThreat, setShowThreat] = useState(false);
+  const [logOpen, setLogOpen] = useState(false);
+  const [fleeConfirm, setFleeConfirm] = useState(false);
+  const [restartConfirm, setRestartConfirm] = useState(false);
+
+  // Root element — the drag constraints boundary for the draggable inspect card.
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // Action-menu drag offset lives at component level so the card keeps its
+  // position across unit selections (the card unmounts on deselect).
+  const actionMenuX = useMotionValue(0);
+  const actionMenuY = useMotionValue(0);
+
+  // Animation state.
+  const [animUnits, setAnimUnits] = useState<Map<string, RenderUnit> | null>(null);
+  const [popups, setPopups] = useState<FloatingPopup[]>([]);
+  const [banner, setBanner] = useState<PhaseBanner | null>(null);
+  const [critFlash, setCritFlash] = useState(false);
+  const animatingRef = useRef(false);
+  const [localAnimating, setAnimating] = useState(false);
+  const animating = directed?.busy ?? localAnimating;
+  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const popupIdRef = useRef(0);
+  const endedRef = useRef(false);
+  const launchGenerationRef = useRef(0);
+  // Bumped on unmount / chat switch so a late action response is dropped instead
+  // of scheduling playback timers (persist + onCombatEnd) nobody will clear.
+  const actionGenerationRef = useRef(0);
+  // One GM handoff per battle: guards double clicks on Continue / Finish / Retreat.
+  const handedOffRef = useRef(false);
+  // Hovered token (mouse only) for the idle movement/attack range preview.
+  const [hoverUnitId, setHoverUnitId] = useState<string | null>(null);
+
+  const playSfx = useCallback((tag: string) => audioManager.playSfx(tag, assets), [assets]);
+
+  const clearTimers = useCallback(() => {
+    for (const t of timersRef.current) clearTimeout(t);
+    timersRef.current = [];
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      launchGenerationRef.current += 1;
+      actionGenerationRef.current += 1;
+      clearTimers();
+    };
+  }, [chatId, clearTimers]);
+
+  // ── Persist snapshot to chat metadata after every authoritative state change ──
+  const persistSnapshot = useCallback(
+    (snap: TacticalCombatState | null) => {
+      if (!directed) updateMeta.mutate({ id: chatId, gameTacticalCombatSnapshot: snap });
+    },
+    [chatId, updateMeta, directed],
+  );
+
+  // ── Launch a fresh battle (payload build + player marking + setState/persist/SFX) ──
+  // Mount, restart, and terrain fallback all discard responses superseded by a
+  // newer launch, a chat switch, or an unmount.
+  const launchBattle = useCallback(
+    (options?: {
+      omitBattlefield?: boolean;
+      weather?: CombatWeather | null;
+      seed?: number;
+      battlefieldOverride?: TacticalBattlefieldBrief | null;
+      environmentOverride?: string | null;
+      formationOverride?: string | null;
+    }) => {
+      const generation = ++launchGenerationRef.current;
+      const isCancelled = () => generation !== launchGenerationRef.current;
+      setStarting(true);
+      setStartError(null);
+      setTerrainFallbackAvailable(false);
+      const hasBattlefieldOverride = options
+        ? Object.prototype.hasOwnProperty.call(options, "battlefieldOverride")
+        : false;
+      const requestedBattlefield = hasBattlefieldOverride
+        ? (options?.battlefieldOverride ?? null)
+        : (battlefield ?? null);
+      const requestBattlefield = options?.omitBattlefield ? null : requestedBattlefield;
+      const requestEnvironment = options?.environmentOverride ?? environment;
+      const requestFormation = options?.formationOverride ?? formation;
+      // Typed intermediate (not a fresh literal) so environment/formation reach the
+      // POST body even though the hook's mutationFn type predates these fields.
+      const startPayload: {
+        chatId: string;
+        party: Combatant[];
+        enemies: Combatant[];
+        weather?: CombatWeather | null;
+        seed?: number;
+        environment?: string;
+        formation?: string;
+        battlefield?: TacticalBattlefieldBrief;
+      } = { chatId, party, enemies };
+      if (options?.weather !== undefined) startPayload.weather = options.weather;
+      if (options?.seed !== undefined) startPayload.seed = options.seed;
+      if (requestEnvironment) startPayload.environment = requestEnvironment;
+      if (requestFormation) startPayload.formation = requestFormation;
+      if (requestBattlefield) startPayload.battlefield = requestBattlefield;
+      startMut
+        .mutateAsync(startPayload)
+        .then((res) => {
+          if (isCancelled()) return;
+          // Engine does NOT set isPlayer — the client marks the persona's combatant.
+          const playerId = playerCombatantId ?? party[0]?.id ?? null;
+          const marked: TacticalCombatState = {
+            ...res.state,
+            units: res.state.units.map((u) =>
+              u.side === "party" && (playerId ? u.id === playerId : false) ? { ...u, isPlayer: true } : u,
+            ),
+          };
+          setState(marked);
+          setStarting(false);
+          persistSnapshot(marked);
+          playSfx(SFX.start);
+          onBattlefieldReady?.(marked);
+        })
+        .catch((err: unknown) => {
+          if (isCancelled()) return;
+          setStarting(false);
+          setTerrainFallbackAvailable(Boolean(requestedBattlefield && !options?.omitBattlefield));
+          setStartError(err instanceof Error ? err.message : "Failed to start the tactical battle.");
+        });
+    },
+    [
+      battlefield,
+      chatId,
+      party,
+      enemies,
+      environment,
+      formation,
+      playerCombatantId,
+      startMut,
+      persistSnapshot,
+      playSfx,
+      onBattlefieldReady,
+    ],
+  );
+
+  // ── Start a fresh battle (unless restoring) ──
+  useEffect(() => {
+    if (directed || initialState) return; // restored — do not re-create
+    if (battlefieldError) {
+      setStarting(false);
+      setStartError(battlefieldError);
+      setTerrainFallbackAvailable(true);
+      return;
+    }
+    launchBattle();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatId]);
+
+  // ── Derived: units currently rendered (anim positions during playback) ──
+  const liveState = state;
+
+  // Authoritative environment → terrain palette (restored snapshots keep theme).
+  const activeEnvironment = useMemo(
+    () => environmentOf(liveState) ?? environment ?? undefined,
+    [liveState, environment],
+  );
+  const palette = useMemo(
+    () => TERRAIN_PALETTES[activeEnvironment ?? "default"] ?? TERRAIN_PALETTES.default,
+    [activeEnvironment],
+  );
+  // Stronger palette tint over the painted textures when a themed environment applies.
+  const tileTintAlpha =
+    activeEnvironment && TERRAIN_PALETTES[activeEnvironment] ? TILE_TINT_ALPHA_THEMED : TILE_TINT_ALPHA;
+  const battlefieldSummary = useMemo(() => {
+    const seed = liveState?.seed;
+    const size = liveState?.battlefield?.size;
+    const landmarks = liveState?.battlefield?.brief?.features?.length ?? 0;
+    const parts = [
+      typeof seed === "number" ? localizeUi("ui.game.tacticalcombatui.seedValue1", { value1: seed }) : null,
+      size
+        ? localizeUi("ui.game.tacticalcombatui.sizeValue1", {
+            value1: localizeUi(battlefieldSizeLabelKey(size)),
+          })
+        : null,
+      localizeUi("ui.game.tacticalcombatui.landmarks", { count: landmarks }),
+    ].filter((value): value is string => Boolean(value));
+    return parts.join(" · ");
+  }, [liveState?.battlefield?.brief?.features?.length, liveState?.battlefield?.size, liveState?.seed, localizeUi]);
+
+  const selectedUnitId = ui.kind === "idle" ? null : ui.unitId;
+  const selectedUnit = useMemo(
+    () => (liveState && selectedUnitId ? (liveState.units.find((u) => u.id === selectedUnitId) ?? null) : null),
+    [liveState, selectedUnitId],
+  );
+
+  // Movement range for the selected (un-acted, un-moved) party unit.
+  const movementTiles = useMemo(() => {
+    if (!liveState || !selectedUnit || animating) return [];
+    if (selectedUnit.hasMoved || selectedUnit.hasActed) return [];
+    return getMovementRange(liveState, selectedUnit.id);
+  }, [liveState, selectedUnit, animating]);
+
+  const movementKeys = useMemo(() => new Set(movementTiles.map((t) => `${t.x},${t.y}`)), [movementTiles]);
+
+  // Threat overlay: union of tiles any living enemy can attack (reachable + attack range).
+  const threatKeys = useMemo(() => {
+    if (!liveState || !showThreat) return new Set<string>();
+    const keys = new Set<string>();
+    for (const e of liveState.units) {
+      if (e.side !== "enemy" || e.hp <= 0) continue;
+      const reach = [{ x: e.x, y: e.y }, ...getMovementRange(liveState, e.id)];
+      for (const tile of reach) {
+        for (let dy = -e.attackRange.max; dy <= e.attackRange.max; dy++) {
+          for (let dx = -e.attackRange.max; dx <= e.attackRange.max; dx++) {
+            const d = Math.abs(dx) + Math.abs(dy);
+            if (d < e.attackRange.min || d > e.attackRange.max) continue;
+            const tx = tile.x + dx;
+            const ty = tile.y + dy;
+            if (tx < 0 || ty < 0 || tx >= liveState.grid.width || ty >= liveState.grid.height) continue;
+            keys.add(`${tx},${ty}`);
+          }
+        }
+      }
+    }
+    return keys;
+  }, [liveState, showThreat]);
+
+  // Hover preview (mouse only, nothing selected): the hovered unit's reachable
+  // tiles plus the extra tiles it could strike from them. Pure read helpers only.
+  const hoverRange = useMemo(() => {
+    const empty = { move: new Set<string>(), attack: new Set<string>(), side: "party" as TacticalUnit["side"] };
+    if (!liveState || !hoverUnitId || ui.kind !== "idle" || animating || liveState.outcome) return empty;
+    const unit = liveState.units.find((u) => u.id === hoverUnitId);
+    if (!unit || unit.hp <= 0) return empty;
+    const reach =
+      unit.side === "party" && (unit.hasMoved || unit.hasActed)
+        ? [{ x: unit.x, y: unit.y }]
+        : [{ x: unit.x, y: unit.y }, ...getMovementRange(liveState, unit.id)];
+    const move = new Set(reach.map((t) => `${t.x},${t.y}`));
+    const attack = new Set<string>();
+    if (!(unit.side === "party" && unit.hasActed)) {
+      for (const tile of reach) {
+        for (let dy = -unit.attackRange.max; dy <= unit.attackRange.max; dy++) {
+          for (let dx = -unit.attackRange.max; dx <= unit.attackRange.max; dx++) {
+            const d = Math.abs(dx) + Math.abs(dy);
+            if (d < unit.attackRange.min || d > unit.attackRange.max) continue;
+            const tx = tile.x + dx;
+            const ty = tile.y + dy;
+            if (tx < 0 || ty < 0 || tx >= liveState.grid.width || ty >= liveState.grid.height) continue;
+            const k = `${tx},${ty}`;
+            if (!move.has(k)) attack.add(k);
+          }
+        }
+      }
+    }
+    return { move, attack, side: unit.side };
+  }, [liveState, hoverUnitId, ui.kind, animating]);
+
+  // Staged post-move state, used for target highlighting + forecast.
+  const stagedState = useMemo(
+    () => (liveState && selectedUnit ? withStagedMove(liveState, selectedUnit.id, stagedMove) : liveState),
+    [liveState, selectedUnit, stagedMove],
+  );
+
+  // Valid targets for the current target-selection mode.
+  const targetIds = useMemo(() => {
+    if (!stagedState || ui.kind !== "target" || !selectedUnit) return new Set<string>();
+    const from = stagedMove ?? { x: selectedUnit.x, y: selectedUnit.y };
+    if (ui.action === "attack") {
+      return new Set(getTargetsInRange(stagedState, selectedUnit.id, from));
+    }
+    if (ui.action === "skill" && ui.skill) {
+      const skill = ui.skill;
+      if (skill.type === "attack") {
+        // Attack skills reach at least range 2.
+        const ids: string[] = [];
+        for (const u of stagedState.units) {
+          if (u.side === selectedUnit.side || u.hp <= 0) continue;
+          const d = Math.abs(u.x - from.x) + Math.abs(u.y - from.y);
+          const max = skill.range ?? Math.max(selectedUnit.attackRange.max, 2);
+          if (d >= 1 && d <= max) ids.push(u.id);
+        }
+        return new Set(ids);
+      }
+      // heal/buff → allies within support range 2; debuff → enemies within 2.
+      const wantAlly = skill.type !== "debuff";
+      const ids: string[] = [];
+      for (const u of stagedState.units) {
+        if (u.hp <= 0) continue;
+        const isAlly = u.side === selectedUnit.side;
+        if (wantAlly !== isAlly) continue;
+        const d = Math.abs(u.x - from.x) + Math.abs(u.y - from.y);
+        if (d <= (skill.range ?? 2)) ids.push(u.id);
+      }
+      return new Set(ids);
+    }
+    if (ui.action === "item") {
+      const scope = ui.itemEffect?.target ?? "ally";
+      const ids: string[] = [];
+      for (const u of stagedState.units) {
+        if (
+          u.hp <= 0 ||
+          (scope === "self" && u.id !== selectedUnit.id) ||
+          (scope === "ally" && u.side !== selectedUnit.side) ||
+          (scope === "enemy" && u.side === selectedUnit.side)
+        )
+          continue;
+        const d = Math.abs(u.x - from.x) + Math.abs(u.y - from.y);
+        if (d <= 2) ids.push(u.id);
+      }
+      return new Set(ids);
+    }
+    return new Set<string>();
+  }, [stagedState, ui, selectedUnit, stagedMove]);
+
+  const itemScope = ui.kind === "target" && ui.action === "item" ? (ui.itemEffect?.target ?? "ally") : null;
+
+  // Forecast for a hovered/selected target (attack + attack-skills only).
+  const [forecastTargetId, setForecastTargetId] = useState<string | null>(null);
+  const forecast = useMemo(() => {
+    if (!stagedState || !selectedUnit || !forecastTargetId) return null;
+    if (ui.kind !== "target") return null;
+    if (ui.action === "item") return null;
+    if (ui.action === "skill" && ui.skill && ui.skill.type !== "attack") return null;
+    return forecastAttack(stagedState, selectedUnit.id, forecastTargetId);
+  }, [stagedState, selectedUnit, forecastTargetId, ui]);
+
+  const spawnPopup = useCallback(
+    (at: { x: number; y: number } | undefined, text: string, tone: FloatingPopup["tone"]) => {
+      if (!at) return;
+      const id = ++popupIdRef.current;
+      setPopups((prev) => [...prev, { id, x: at.x, y: at.y, text, tone }]);
+      const t = setTimeout(() => setPopups((prev) => prev.filter((p) => p.id !== id)), 1200);
+      timersRef.current.push(t);
+    },
+    [],
+  );
+
+  // Applies one event's visual effect to the working render map + fires popups/sfx/banner.
+  const applyEventVisual = useCallback(
+    (ev: TacticalEvent, working: Map<string, RenderUnit>) => {
+      switch (ev.kind) {
+        case "move": {
+          if (ev.actorId && ev.to) {
+            const u = working.get(ev.actorId);
+            if (u) {
+              u.x = ev.to.x;
+              u.y = ev.to.y;
+            }
+          }
+          break;
+        }
+        case "phase": {
+          const tone: PhaseBanner["tone"] = ev.phase === "enemy" || /enemy/i.test(ev.text) ? "enemy" : "player";
+          setBanner({ text: ev.text, tone });
+          break;
+        }
+        case "damage":
+        case "counter": {
+          if (ev.targetId && typeof ev.amount === "number") {
+            const u = working.get(ev.targetId);
+            if (u) u.hp = Math.max(0, u.hp - ev.amount);
+            spawnPopup(u, `-${ev.amount}`, "damage");
+          }
+          playSfx(SFX.hit);
+          break;
+        }
+        case "crit": {
+          if (ev.targetId && typeof ev.amount === "number") {
+            const u = working.get(ev.targetId);
+            if (u) u.hp = Math.max(0, u.hp - ev.amount);
+            spawnPopup(u, `-${ev.amount}!`, "crit");
+          }
+          setCritFlash(true);
+          const t = setTimeout(() => setCritFlash(false), 220);
+          timersRef.current.push(t);
+          playSfx(SFX.crit);
+          break;
+        }
+        case "heal": {
+          if (ev.targetId && typeof ev.amount === "number") {
+            const u = working.get(ev.targetId);
+            if (u) u.hp = Math.min(u.maxHp, u.hp + ev.amount);
+            spawnPopup(u, `+${ev.amount}`, "heal");
+          }
+          playSfx(SFX.item);
+          break;
+        }
+        case "miss": {
+          if (ev.targetId) spawnPopup(working.get(ev.targetId), "Miss", "miss");
+          playSfx(SFX.miss);
+          break;
+        }
+        case "status": {
+          if (ev.targetId && ev.statusName) spawnPopup(working.get(ev.targetId), ev.statusName, "status");
+          break;
+        }
+        case "skill": {
+          playSfx(SFX.magic);
+          break;
+        }
+        case "defeat": {
+          if (ev.targetId) {
+            const u = working.get(ev.targetId);
+            if (u) u.hp = 0;
+          }
+          break;
+        }
+        case "victory":
+          playSfx(SFX.victory);
+          break;
+        case "defeat-end":
+          playSfx(SFX.defeat);
+          break;
+        default:
+          break;
+      }
+    },
+    [playSfx, spawnPopup],
+  );
+
+  // ── End-of-battle handoff ──
+  const maybeEnd = useCallback(
+    (s: TacticalCombatState) => {
+      if (!s.outcome || endedRef.current) return;
+      endedRef.current = true;
+      // Terminal snapshots stay persisted (not cleared here) so a refresh mid-flight
+      // restores the outcome screen instead of soft-locking or re-launching a fresh
+      // battle. The snapshot is only cleared atomically with the handoff moment
+      // (inside the setTimeout below, or on the defeat screen's Continue button).
+      // Defeat: do NOT auto-hand off. The defeat outcome screen offers Retry / Continue
+      // so the player can restart the fight instead of being dropped back to the story.
+      if (s.outcome === "defeat") return;
+      const summary = buildTacticalSummary(s);
+      // buildTacticalSummary already maps to classic outcome values ("victory"|"defeat"|"flee").
+      const t = setTimeout(() => {
+        if (handedOffRef.current) return;
+        handedOffRef.current = true;
+        persistSnapshot(null);
+        onCombatEnd(summary.outcome, summary);
+      }, 1400);
+      timersRef.current.push(t);
+    },
+    [onCombatEnd, persistSnapshot],
+  );
+
+  // ── Restored-terminal-mount handoff ──
+  // A snapshot restored with an outcome already set (victory/fled/defeat) never
+  // went through playEvents' maybeEnd call on this mount. Without this, a
+  // restored victory/fled battle would soft-lock (outcome screen shows, but
+  // onCombatEnd/handoff never fires); a restored defeat just needs endedRef set
+  // so its Retry / Continue buttons work normally. Runs once per mount.
+  const restoredEndCheckedRef = useRef(false);
+  // Mount-time snapshot only. The prop is re-read from chat metadata on every
+  // render, so after persistSnapshot(terminal) + a quick Retry it would hand the
+  // OLD outcome to maybeEnd, set endedRef, and soft-lock the restarted battle.
+  const mountInitialStateRef = useRef(initialState);
+  useEffect(() => {
+    const restored = mountInitialStateRef.current;
+    if (directed || restoredEndCheckedRef.current) return;
+    restoredEndCheckedRef.current = true;
+    if (!restored?.outcome) return;
+    maybeEnd(restored);
+  }, [maybeEnd, directed]);
+
+  // ── Event animation player ──
+  // Plays the server-returned events sequentially over a working copy of the
+  // pre-action render map, then reconciles to the authoritative final state.
+  // `onSettled` fires once, after the final state is committed (used to re-select
+  // a unit that only moved so the player can immediately pick its action).
+  const playEvents = useCallback(
+    (
+      events: TacticalEvent[],
+      finalState: TacticalCombatState,
+      preState: TacticalCombatState,
+      onSettled?: (final: TacticalCombatState) => void,
+    ) => {
+      clearTimers();
+      if (events.length === 0) {
+        // No events to animate — release the lock sendAction set before flight.
+        animatingRef.current = false;
+        setAnimating(false);
+        optimisticMoveRef.current = null;
+        setOptimisticMove(null);
+        setState(finalState);
+        persistSnapshot(finalState);
+        maybeEnd(finalState);
+        onSettled?.(finalState);
+        return;
+      }
+      // Already locked by sendAction; keep it set through the animation + finalize.
+      animatingRef.current = true;
+      setAnimating(true);
+      const working = renderMapFromState(preState);
+      // Pre-apply the optimistic move so the animation baseline already has the
+      // mover at its destination; the server's "move" event then re-sets the same
+      // coords, which is a visual no-op.
+      const opt = optimisticMoveRef.current;
+      if (opt) {
+        const mover = working.get(opt.unitId);
+        if (mover) {
+          mover.x = opt.to.x;
+          mover.y = opt.to.y;
+        }
+      }
+      setAnimUnits(new Map(working));
+
+      let elapsed = 0;
+      events.forEach((ev, i) => {
+        elapsed += i === 0 ? 0 : (EVENT_DELAY[events[i - 1].kind] ?? 500);
+        const t = setTimeout(() => {
+          applyEventVisual(ev, working);
+          setAnimUnits(new Map(working));
+        }, elapsed);
+        timersRef.current.push(t);
+      });
+
+      // Finalize after the last event's dwell time.
+      const finishAt = elapsed + (EVENT_DELAY[events[events.length - 1].kind] ?? 500);
+      const done = setTimeout(() => {
+        animatingRef.current = false;
+        setAnimating(false);
+        optimisticMoveRef.current = null;
+        setOptimisticMove(null);
+        setAnimUnits(null);
+        setBanner(null);
+        setState(finalState);
+        persistSnapshot(finalState);
+        maybeEnd(finalState);
+        onSettled?.(finalState);
+      }, finishAt);
+      timersRef.current.push(done);
+    },
+    [clearTimers, persistSnapshot, applyEventVisual, maybeEnd],
+  );
+
+  // ── Reset transient UI selection ──
+  const resetSelection = useCallback(() => {
+    setUi({ kind: "idle" });
+    setStagedMove(null);
+    setForecastTargetId(null);
+  }, []);
+
+  // ── Restart the whole battle with the accepted seed and terrain ──
+  // Tears down all transient animation/selection/dialog state, clears the current
+  // battle, then re-launches with the same props. Works for snapshot-restored
+  // battles too (it drives launchBattle directly, independent of `initialState`).
+  const restartBattle = useCallback(() => {
+    if (directed) return;
+    clearTimers();
+    animatingRef.current = false;
+    setAnimating(false);
+    optimisticMoveRef.current = null;
+    setOptimisticMove(null);
+    setAnimUnits(null);
+    setPopups([]);
+    setBanner(null);
+    setCritFlash(false);
+    resetSelection();
+    setInspectTile(null);
+    setFleeConfirm(false);
+    actionMenuX.set(0);
+    actionMenuY.set(0);
+    endedRef.current = false;
+    handedOffRef.current = false;
+    const restartSeed = state?.seed;
+    const restartBattlefield = state ? (state.battlefield?.brief ?? null) : (battlefield ?? null);
+    const restartEnvironment = state?.environment ?? environment ?? null;
+    const restartFormation = state?.formation ?? formation ?? null;
+    setState(null);
+    launchBattle({
+      seed: restartSeed,
+      weather: state?.weather ?? null,
+      battlefieldOverride: restartBattlefield,
+      environmentOverride: restartEnvironment,
+      formationOverride: restartFormation,
+    });
+  }, [
+    directed,
+    actionMenuX,
+    actionMenuY,
+    battlefield,
+    clearTimers,
+    environment,
+    formation,
+    launchBattle,
+    resetSelection,
+    state,
+  ]);
+
+  // ── Send one action to the server ──
+  const sendAction = useCallback(
+    (action: TacticalAction, onSettled?: (final: TacticalCombatState) => void) => {
+      if (directed) {
+        if (!directed.busy) {
+          directed.onAction(action);
+          if (action.type !== "move") resetSelection();
+          else setStagedMove(null);
+        }
+        return;
+      }
+      if (!liveState || animatingRef.current) return;
+      const preState = liveState;
+      // Lock SYNCHRONOUSLY — before the request leaves — so the network-flight
+      // window is guarded too. Without this, a second click during flight posts
+      // the STALE pre-action state, whose response cancels this animation and
+      // commits a pre-kill state (enemy revived, unit teleported back). The lock
+      // now covers request flight + animation + commit; playEvents / the catch
+      // below own its release.
+      animatingRef.current = true;
+      setAnimating(true);
+      // Derive the optimistic move (if any) from the action before resetSelection
+      // clears stagedMove, so the mover's token holds at its destination through
+      // network flight instead of snapping back to its origin.
+      const dest = action.type === "move" ? action.to : "to" in action ? action.to : undefined;
+      const moverId = "unitId" in action ? action.unitId : undefined;
+      const opt = dest && moverId ? { unitId: moverId, to: dest } : null;
+      optimisticMoveRef.current = opt;
+      setOptimisticMove(opt);
+      resetSelection();
+      const actionGeneration = actionGenerationRef.current;
+      const isStale = () => actionGeneration !== actionGenerationRef.current;
+      actionMut
+        .mutateAsync({ chatId, state: preState, action })
+        .then((res) => {
+          // Unmounted or switched chats mid-flight: drop the response so no
+          // uncleared timers persist this battle or hand off onto another chat.
+          if (isStale()) return;
+          playEvents(res.events, res.state, preState, onSettled);
+        })
+        .catch((err: unknown) => {
+          if (isStale()) return;
+          // Release the lock so a rejected action doesn't wedge the grid. The move
+          // never happened, so the token must return home.
+          animatingRef.current = false;
+          setAnimating(false);
+          optimisticMoveRef.current = null;
+          setOptimisticMove(null);
+          const msg = err instanceof Error ? err.message : "That action was rejected.";
+          toast.error(msg);
+        });
+    },
+    [directed, liveState, chatId, actionMut, playEvents, resetSelection],
+  );
+
+  const directedActorId = directed?.actorId,
+    directedCanAct = directed?.canAct,
+    hasDirector = !!directed;
+  useEffect(() => {
+    if (directedActorId === undefined && !hasDirector) return;
+    setStagedMove(null);
+    setUi(directedCanAct && directedActorId ? { kind: "unit", unitId: directedActorId } : { kind: "idle" });
+  }, [directedActorId, directedCanAct, hasDirector]);
+
+  // ── Interaction handlers ──
+
+  const onTileClick = useCallback(
+    (x: number, y: number) => {
+      if (!liveState || animating) return;
+      setInspectTile({ x, y });
+      const key = `${x},${y}`;
+
+      // Target selection: tap a valid target token handled by onTokenClick; tapping a
+      // tile in target mode is a no-op except to inspect.
+      if (ui.kind === "target") return;
+
+      // If a party unit is selected and this tile is in movement range → stage move.
+      if ((ui.kind === "unit" || ui.kind === "skills") && selectedUnit && movementKeys.has(key)) {
+        if (selectedUnit.hasMoved) return;
+        playSfx(SFX.hover);
+        setStagedMove(x === selectedUnit.x && y === selectedUnit.y ? null : { x, y });
+        setUi({ kind: "unit", unitId: selectedUnit.id });
+        return;
+      }
+    },
+    [liveState, animating, ui, selectedUnit, movementKeys, playSfx],
+  );
+
+  const onTokenClick = useCallback(
+    (unit: TacticalUnit) => {
+      if (!liveState || animating) return;
+      setInspectTile({ x: unit.x, y: unit.y });
+
+      // Target selection mode — confirm target if valid.
+      if (ui.kind === "target") {
+        if (!targetIds.has(unit.id)) return;
+        setForecastTargetId(unit.id);
+        return;
+      }
+
+      // Select a controllable party unit (alive, un-acted).
+      if (
+        unit.side === "party" &&
+        unit.hp > 0 &&
+        !unit.hasActed &&
+        liveState.phase === "player" &&
+        (!directed || (directed.canAct && directed.actorId === unit.id))
+      ) {
+        playSfx(SFX.select);
+        setStagedMove(null);
+        setForecastTargetId(null);
+        setUi({ kind: "unit", unitId: unit.id });
+        return;
+      }
+
+      // Otherwise just inspect (enemy or acted unit).
+      resetSelection();
+    },
+    [directed, liveState, animating, ui, targetIds, playSfx, resetSelection],
+  );
+
+  // ── Commit a pure move, then re-select the same unit so it can still act. ──
+  const commitMove = useCallback(() => {
+    if (!selectedUnit || !stagedMove || selectedUnit.hasMoved) return;
+    const unitId = selectedUnit.id;
+    playSfx(SFX.select);
+    sendAction({ type: "move", unitId, to: stagedMove }, (final) => {
+      // Only re-open the action menu if the battle continues and the mover can still act.
+      if (final.outcome || final.phase !== "player") return;
+      const u = final.units.find((x) => x.id === unitId);
+      if (!u || u.hp <= 0 || u.hasActed) return;
+      setUi({ kind: "unit", unitId });
+    });
+  }, [selectedUnit, stagedMove, playSfx, sendAction]);
+
+  const chooseAction = useCallback(
+    (actionId: "attack" | "skills" | "item" | "defend" | "wait") => {
+      if (!selectedUnit || !liveState) return;
+      playSfx(SFX.select);
+      const to = stagedMove ?? undefined;
+      switch (actionId) {
+        case "attack":
+          setUi({ kind: "target", unitId: selectedUnit.id, action: "attack" });
+          setForecastTargetId(null);
+          break;
+        case "skills":
+          setUi({ kind: "skills", unitId: selectedUnit.id });
+          break;
+        case "item":
+          setUi(
+            directed
+              ? { kind: "items", unitId: selectedUnit.id }
+              : { kind: "target", unitId: selectedUnit.id, action: "item", itemName: DEFAULT_ITEM_NAME },
+          );
+          setForecastTargetId(null);
+          break;
+        case "defend":
+          sendAction({ type: "defend", unitId: selectedUnit.id, to });
+          break;
+        case "wait":
+          sendAction({ type: "wait", unitId: selectedUnit.id, to });
+          break;
+      }
+    },
+    [directed, selectedUnit, liveState, stagedMove, playSfx, sendAction],
+  );
+
+  const chooseSkill = useCallback(
+    (skill: CombatSkill) => {
+      if (!selectedUnit) return;
+      playSfx(SFX.select);
+      setUi({ kind: "target", unitId: selectedUnit.id, action: "skill", skill });
+      setForecastTargetId(null);
+    },
+    [selectedUnit, playSfx],
+  );
+
+  const confirmTarget = useCallback(() => {
+    if (!selectedUnit || ui.kind !== "target" || !forecastTargetId) return;
+    const to = stagedMove ?? undefined;
+    if (ui.action === "attack") {
+      sendAction({ type: "attack", unitId: selectedUnit.id, targetId: forecastTargetId, to });
+    } else if (ui.action === "skill" && ui.skill) {
+      sendAction({ type: "skill", unitId: selectedUnit.id, skillName: ui.skill.name, targetId: forecastTargetId, to });
+    } else if (ui.action === "item") {
+      sendAction({
+        type: "item",
+        unitId: selectedUnit.id,
+        itemName: ui.itemName ?? DEFAULT_ITEM_NAME,
+        targetId: forecastTargetId,
+        to,
+      });
+    }
+  }, [selectedUnit, ui, forecastTargetId, stagedMove, sendAction]);
+
+  // Support-skill (heal/buff/debuff) targets have no forecast — tapping confirms directly.
+  const onSupportTarget = useCallback(
+    (targetId: string) => {
+      if (!selectedUnit || ui.kind !== "target") return;
+      const to = stagedMove ?? undefined;
+      if (ui.action === "skill" && ui.skill) {
+        sendAction({ type: "skill", unitId: selectedUnit.id, skillName: ui.skill.name, targetId, to });
+      } else if (ui.action === "item") {
+        sendAction({ type: "item", unitId: selectedUnit.id, itemName: ui.itemName ?? DEFAULT_ITEM_NAME, targetId, to });
+      }
+    },
+    [selectedUnit, ui, stagedMove, sendAction],
+  );
+
+  const endTurn = useCallback(() => {
+    resetSelection();
+    sendAction({ type: "endTurn" });
+  }, [resetSelection, sendAction]);
+
+  const confirmFlee = useCallback(() => {
+    setFleeConfirm(false);
+    resetSelection();
+    sendAction({ type: "flee" });
+  }, [resetSelection, sendAction]);
+
+  // ── Render helpers ──
+
+  const gridW = liveState?.grid.width ?? 0;
+  const gridH = liveState?.grid.height ?? 0;
+  const isPlayerPhaseNow = liveState?.phase === "player" && !animating;
+
+  const renderUnits = useMemo(() => {
+    if (!liveState) return [];
+    return (
+      liveState.units
+        .map((u) => {
+          const anim = animUnits?.get(u.id);
+          let x = anim?.x ?? u.x;
+          let y = anim?.y ?? u.y;
+          // Staged-move preview: while nothing is animating, render the selected unit's
+          // token at its staged destination so the move reads as INSTANT feedback. The
+          // token tweens there via UnitToken's framer-motion animate on left/top.
+          if (!animUnits && stagedMove && selectedUnitId === u.id) {
+            x = stagedMove.x;
+            y = stagedMove.y;
+          }
+          // Committed move in flight: hold the mover at its destination until playEvents
+          // takes over (its baseline is pre-applied with this same position).
+          if (!animUnits && optimisticMove && optimisticMove.unitId === u.id) {
+            x = optimisticMove.to.x;
+            y = optimisticMove.to.y;
+          }
+          return {
+            unit: u,
+            x,
+            y,
+            hp: anim?.hp ?? u.hp,
+            // Uncommitted move preview — the token needs distinct "not real yet" styling.
+            staged: !animUnits && !!stagedMove && selectedUnitId === u.id,
+          };
+        })
+        // KO'd units leave the battlefield (FE-style). The defeat event zeroes hp
+        // in the anim map, so the token exits mid-playback via AnimatePresence;
+        // they stay in `state.units` for the summary/outcome screens.
+        .filter((r) => r.hp > 0)
+    );
+  }, [liveState, animUnits, stagedMove, selectedUnitId, optimisticMove]);
+
+  // ── Loading / error states (translucent so the scene shows through) ──
+  if (starting) {
+    return (
+      <div
+        data-component="TacticalCombatUI"
+        className="flex h-full flex-col items-center justify-center gap-3 bg-slate-950/60 text-white/80 backdrop-blur-sm"
+      >
+        <Sword className="h-8 w-8 animate-pulse text-amber-300" />
+        <p className="text-sm">{localizeUi("ui.game.tacticalcombatui.deployingTheTacticalBattlefield")}</p>
+      </div>
+    );
+  }
+
+  if (startError || !liveState) {
+    return (
+      <div
+        data-component="TacticalCombatUI"
+        className="flex h-full flex-col items-center justify-center gap-3 bg-slate-950/70 p-6 text-center text-white/80 backdrop-blur-sm"
+      >
+        <SkullIcon className="h-8 w-8 text-red-400" />
+        <p className="text-sm">{startError ?? "The battlefield failed to load."}</p>
+        {terrainFallbackAvailable && (
+          <button
+            type="button"
+            onClick={() => {
+              launchBattle({ omitBattlefield: true });
+            }}
+            className="rounded-lg border border-amber-300/40 bg-amber-300/15 px-4 py-2 text-sm font-semibold text-amber-100 hover:bg-amber-300/25"
+          >
+            {localizeUi("ui.game.tacticalcombatui.useGeneratedTerrain")}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            // Clear any stale snapshot (e.g. the old terminal state after a failed
+            // restart) so the next battle can't restore — and auto-hand-off — it.
+            if (handedOffRef.current) return;
+            handedOffRef.current = true;
+            persistSnapshot(null);
+            onCombatEnd("flee", { outcome: "flee", rounds: 0, party: [], enemies: [] });
+          }}
+          className="rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/20"
+        >
+          {localizeUi("ui.game.tacticalcombatui.retreatToStory")}
+        </button>
+      </div>
+    );
+  }
+
+  const outcome = liveState.outcome;
+  const isPlayerPhase = isPlayerPhaseNow;
+  // Raw player-phase flag (ignores `animating`) so the End Turn / Flee controls
+  // stay visible-but-disabled during resolution instead of vanishing — dropped
+  // clicks then read as "greyed out", not "the button disappeared".
+  const playerPhase = liveState.phase === "player";
+
+  return (
+    <div
+      ref={rootRef}
+      data-component="TacticalCombatUI"
+      className="relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-slate-950/60 text-white select-none"
+      onKeyDown={(event) => {
+        // Escape backs out one step (dialog, target, sub-menu, staged move, selection)
+        // while focus is inside the battle (tiles and tokens are focusable).
+        if (event.key !== "Escape" || outcome) return;
+        if (fleeConfirm) setFleeConfirm(false);
+        else if (restartConfirm) setRestartConfirm(false);
+        else if (logOpen) setLogOpen(false);
+        else if (animating || ui.kind === "idle") return;
+        else if (ui.kind !== "unit") {
+          setForecastTargetId(null);
+          setUi({ kind: "unit", unitId: ui.unitId });
+        } else if (stagedMove) setStagedMove(null);
+        else resetSelection();
+        event.stopPropagation();
+      }}
+    >
+      {/* One-off keyframes for shimmer / range pulse / ready glow (self-contained).
+          Ready glow uses the app's --primary accent (theme-aware) via color-mix. */}
+      <style>{TACTICAL_BOARD_KEYFRAMES}</style>
+
+      {/* Radial vignette so the grid reads against the scene art without an opaque fill. */}
+      <div
+        className="pointer-events-none absolute inset-0 z-0"
+        style={{
+          background:
+            "radial-gradient(120% 90% at 50% 40%, rgba(2,6,23,0.15) 0%, rgba(2,6,23,0.45) 60%, rgba(2,6,23,0.78) 100%)",
+        }}
+      />
+
+      {/* Crit flash overlay */}
+      {critFlash && <div className="pointer-events-none absolute inset-0 z-30 animate-pulse bg-white/25" />}
+
+      {/* Top bar: round/phase + controls */}
+      <div className="z-20 flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-[var(--border)] bg-black/40 px-3 py-2 backdrop-blur">
+        <div className="flex items-center gap-2">
+          <span
+            className={cn(
+              "rounded-md px-2.5 py-1 text-xs font-bold uppercase tracking-wide",
+              liveState.phase === "player"
+                ? "bg-[var(--primary)]/25 text-[var(--primary)]"
+                : "bg-[var(--destructive)]/25 text-[var(--destructive)]",
+            )}
+          >
+            {liveState.phase === "player"
+              ? localizeUi("ui.game.tacticalcombatui.playerPhase")
+              : localizeUi("ui.game.tacticalcombatui.enemyPhase")}
+          </span>
+          <span className="text-xs font-semibold text-white/60">
+            {localizeUi("ui.game.gamecombatui.round")} {liveState.round}
+          </span>
+          <span className="hidden text-[0.65rem] font-medium uppercase tracking-wider text-white/40 sm:inline">
+            {liveState.difficulty}
+          </span>
+          <span
+            aria-label={localizeUi("ui.game.tacticalcombatui.battlefieldSummary", {
+              value1: battlefieldSummary,
+            })}
+            className="hidden text-[0.65rem] font-medium text-white/45 md:inline"
+          >
+            {battlefieldSummary}
+          </span>
+          {animating && (
+            <span className="flex items-center gap-1.5 rounded-md bg-white/10 px-2 py-1 text-[0.65rem] font-semibold text-white/70">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-300 shadow-[0_0_6px_1px_rgba(252,211,77,0.7)]" />
+              {localizeUi("ui.game.tacticalcombatui.resolving")}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setShowThreat((v) => !v)}
+            className={cn(
+              "flex items-center gap-1 rounded-lg border px-2 py-1 text-xs font-semibold transition-colors",
+              showThreat
+                ? "border-[var(--destructive)]/40 bg-[var(--destructive)]/20 text-[var(--destructive)]"
+                : "border-white/15 bg-white/5 text-white/70 hover:bg-white/10",
+            )}
+            title={localizeUi("ui.game.tacticalcombatui.toggleEnemyThreatRange")}
+          >
+            {showThreat ? <Eye size={13} /> : <EyeOff size={13} />}
+            <span className="hidden sm:inline">{localizeUi("ui.game.tacticalcombatui.threat")}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setLogOpen((v) => !v)}
+            className="flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs font-semibold text-white/70 transition-colors hover:bg-white/10"
+            title={localizeUi("ui.game.tacticalcombatui.combatLog")}
+          >
+            <ScrollText size={13} />
+            <span className="hidden sm:inline">{localizeUi("ui.game.gamecombatui.log")}</span>
+          </button>
+          {!directed && (
+            <button
+              type="button"
+              onClick={() => setRestartConfirm(true)}
+              disabled={animating}
+              className={cn(
+                "flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs font-semibold text-white/70 transition-colors hover:bg-white/10",
+                animating && "cursor-not-allowed opacity-40 hover:bg-white/5",
+              )}
+              title={localizeUi("ui.game.tacticalcombatui.restartTheBattle")}
+            >
+              <RotateCcw size={13} />
+              <span className="hidden sm:inline">{localizeUi("ui.game.tacticalcombatui.restart")}</span>
+            </button>
+          )}
+          {playerPhase && (
+            <>
+              <button
+                type="button"
+                onClick={endTurn}
+                disabled={animating}
+                className={cn(
+                  "rounded-lg border border-[var(--primary)]/40 bg-[var(--primary)]/20 px-2.5 py-1 text-xs font-semibold text-[var(--primary)] transition-colors hover:bg-[var(--primary)]/30",
+                  animating && "cursor-not-allowed opacity-40 hover:bg-[var(--primary)]/20",
+                )}
+              >
+                {localizeUi("ui.game.tacticalcombatui.endTurn")}
+              </button>
+              <button
+                type="button"
+                onClick={() => setFleeConfirm(true)}
+                disabled={animating}
+                className={cn(
+                  "flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs font-semibold text-white/60 transition-colors hover:bg-white/10",
+                  animating && "cursor-not-allowed opacity-40 hover:bg-white/5",
+                )}
+                title={localizeUi("ui.game.tacticalcombatui.fleeTheBattle")}
+              >
+                <Flag size={13} />
+                <span className="hidden sm:inline">{localizeUi("ui.game.tacticalcombatui.flee")}</span>
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Battlefield */}
+      <div className="relative z-10 flex min-h-0 flex-1 items-center justify-center overflow-auto p-2 sm:p-4">
+        <div
+          className="relative"
+          style={{
+            aspectRatio: `${gridW} / ${gridH}`,
+            width: "min(100%, calc((100vh - 14rem) * " + gridW + " / " + gridH + "))",
+            maxWidth: "100%",
+          }}
+        >
+          {/* Tile grid */}
+          <div
+            className="absolute inset-0 grid gap-[2px]"
+            style={{
+              gridTemplateColumns: `repeat(${gridW}, 1fr)`,
+              gridTemplateRows: `repeat(${gridH}, 1fr)`,
+            }}
+          >
+            {liveState.grid.tiles.flatMap((row, y) =>
+              row.map((terrain, x) => {
+                const key = `${x},${y}`;
+                const inMove = movementKeys.has(key);
+                const inThreat = threatKeys.has(key);
+                const isStaged = stagedMove?.x === x && stagedMove?.y === y;
+                // While a move is staged, mark the unit's REAL tile so the preview
+                // reads as "came from here, not committed yet".
+                const isMoveOrigin = !!stagedMove && !!selectedUnit && selectedUnit.x === x && selectedUnit.y === y;
+                const isInspected = inspectTile?.x === x && inspectTile?.y === y;
+                const icon = resolveTerrainIcon(activeEnvironment, terrain);
+                return (
+                  <button
+                    type="button"
+                    key={key}
+                    onClick={() => onTileClick(x, y)}
+                    className={cn(
+                      "group relative overflow-hidden rounded-[3px] transition-all duration-150",
+                      isInspected && "ring-1 ring-white/70",
+                    )}
+                    style={{ backgroundColor: palette[terrain] + TILE_ALPHA, boxShadow: tileShadow(terrain) }}
+                    title={localizeUi(`ui.game.tacticalcombatui.terrain.${terrain}`)}
+                    aria-label={localizeUi("ui.game.tacticalcombatui.tileLabel", {
+                      terrain: localizeUi(`ui.game.tacticalcombatui.terrain.${terrain}`),
+                      row: y + 1,
+                      column: x + 1,
+                    })}
+                  >
+                    {/* Painted terrain texture (rotated per-tile for variety) */}
+                    <span
+                      className="pointer-events-none absolute inset-0"
+                      style={{
+                        backgroundImage: `url(${TILE_TEXTURES[terrain]})`,
+                        backgroundSize: "cover",
+                        backgroundPosition: "center",
+                        transform: `rotate(${((x * 7 + y * 13) % 4) * 90}deg) scale(1.03)`,
+                      }}
+                    />
+                    {/* Environment palette tint over the texture */}
+                    <span
+                      className="pointer-events-none absolute inset-0"
+                      style={{ backgroundColor: palette[terrain] + tileTintAlpha }}
+                    />
+                    {/* Top-light depth gradient */}
+                    <span className="pointer-events-none absolute inset-0 bg-gradient-to-b from-white/10 via-transparent to-black/25" />
+                    {/* Water shimmer (CSS only) */}
+                    {terrain === "water" && (
+                      <span
+                        className="pointer-events-none absolute inset-0"
+                        style={{
+                          background:
+                            "linear-gradient(115deg, transparent 30%, rgba(125,211,252,0.35) 50%, transparent 70%)",
+                          backgroundSize: "200% 200%",
+                          animation: "tc-shimmer 3.5s linear infinite",
+                        }}
+                      />
+                    )}
+                    {icon && (
+                      <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-[0.7em] opacity-45">
+                        {icon}
+                      </span>
+                    )}
+                    {inMove && !isStaged && (
+                      <span
+                        className="pointer-events-none absolute inset-0 bg-[var(--primary)]/40 ring-1 ring-inset ring-[var(--primary)]/60"
+                        style={{ animation: "tc-move-range 1.5s ease-in-out infinite" }}
+                      />
+                    )}
+                    {inThreat && (
+                      <span className="pointer-events-none absolute inset-0 bg-[var(--destructive)]/20 ring-1 ring-inset ring-[var(--destructive)]/30" />
+                    )}
+                    {hoverRange.move.has(key) && (
+                      <span
+                        className={cn(
+                          "pointer-events-none absolute inset-0 ring-1 ring-inset",
+                          hoverRange.side === "party"
+                            ? "bg-[var(--primary)]/20 ring-[var(--primary)]/40"
+                            : "bg-[var(--destructive)]/15 ring-[var(--destructive)]/35",
+                        )}
+                      />
+                    )}
+                    {hoverRange.attack.has(key) && (
+                      <span className="pointer-events-none absolute inset-0 bg-amber-400/15 ring-1 ring-inset ring-amber-300/35" />
+                    )}
+                    {isStaged && (
+                      <span className="pointer-events-none absolute inset-0 animate-pulse bg-[var(--primary)]/50 ring-2 ring-inset ring-[var(--primary)]" />
+                    )}
+                    {isMoveOrigin && (
+                      <span className="pointer-events-none absolute inset-0 rounded-[3px] border-2 border-dashed border-[var(--primary)]/80" />
+                    )}
+                  </button>
+                );
+              }),
+            )}
+          </div>
+
+          {/* Unit tokens (KO'd units exit-fade off the board) */}
+          <AnimatePresence>
+            {renderUnits.map(({ unit, x, y, hp, staged }) => {
+              const isSel = selectedUnitId === unit.id;
+              const isTarget = ui.kind === "target" && targetIds.has(unit.id);
+              const isForecastTarget = forecastTargetId === unit.id;
+              const ready = !isSel && isPlayerPhase && unit.side === "party" && !unit.hasActed && !unit.hasMoved;
+              return (
+                <UnitToken
+                  key={unit.id}
+                  unit={unit}
+                  hp={hp}
+                  gridW={gridW}
+                  gridH={gridH}
+                  x={x}
+                  y={y}
+                  selected={isSel}
+                  targetable={isTarget}
+                  forecastTarget={isForecastTarget}
+                  preview={staged}
+                  ready={ready}
+                  onHoverChange={(hovering) =>
+                    setHoverUnitId((prev) => (hovering ? unit.id : prev === unit.id ? null : prev))
+                  }
+                  ariaLabel={localizeUi("ui.game.tacticalcombatui.unitLabel", {
+                    name: unit.name,
+                    movement: localizeUi(movementLabelKey(unit.movementMode)),
+                    hp,
+                    maxHp: unit.maxHp,
+                    row: y + 1,
+                    column: x + 1,
+                  })}
+                  onClick={() => {
+                    if (isTarget && ui.kind === "target" && ui.action !== "attack") {
+                      const isSupport = ui.action === "item" || (ui.action === "skill" && ui.skill?.type !== "attack");
+                      if (isSupport) {
+                        onSupportTarget(unit.id);
+                        return;
+                      }
+                    }
+                    onTokenClick(unit);
+                  }}
+                />
+              );
+            })}
+          </AnimatePresence>
+
+          {/* Floating damage popups */}
+          <AnimatePresence>
+            {popups.map((p) => {
+              const left = ((p.x + 0.5) / gridW) * 100;
+              const top = ((p.y + 0.5) / gridH) * 100;
+              return (
+                <motion.div
+                  key={p.id}
+                  initial={{ opacity: 0, y: 0, scale: 0.7 }}
+                  animate={{ opacity: 1, y: -24, scale: p.tone === "crit" ? 1.35 : 1 }}
+                  exit={{ opacity: 0, y: -38 }}
+                  transition={{ duration: 0.5 }}
+                  className={cn(
+                    "pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-sm font-black drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]",
+                    p.tone === "damage" && "text-red-300",
+                    p.tone === "crit" && "text-amber-300",
+                    p.tone === "heal" && "text-emerald-300",
+                    p.tone === "miss" && "text-white/70 italic",
+                    p.tone === "status" && "text-violet-300 text-xs",
+                  )}
+                  style={{ left: `${left}%`, top: `${top}%` }}
+                >
+                  {p.text}
+                </motion.div>
+              );
+            })}
+          </AnimatePresence>
+        </div>
+
+        {/* Phase banner sweep (FE-style, tinted by side) */}
+        <AnimatePresence>
+          {banner && (
+            <motion.div
+              key={banner.text}
+              initial={{ x: "-100%", opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: "100%", opacity: 0 }}
+              transition={{ duration: 0.45 }}
+              className={cn(
+                "pointer-events-none absolute left-0 right-0 top-1/2 z-30 -translate-y-1/2 py-4 text-center text-2xl font-black uppercase tracking-widest text-white drop-shadow-lg",
+                banner.tone === "enemy"
+                  ? "bg-gradient-to-r from-[var(--destructive)]/0 via-[var(--destructive)]/70 to-[var(--destructive)]/0"
+                  : "bg-gradient-to-r from-[var(--primary)]/0 via-[var(--primary)]/70 to-[var(--primary)]/0",
+              )}
+            >
+              {banner.text}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {!directed && (
+        <div className="relative z-10">
+          <CombatWeatherSummary weather={liveState.weather} tactical />
+        </div>
+      )}
+
+      {ui.kind === "idle" && (
+        <CombatAiControls
+          party={liveState.units.filter((u) => u.side === "party")}
+          enemies={liveState.units.filter((u) => u.side === "enemy")}
+          defaultController="manual"
+          locked={!playerPhase || animating}
+          onChange={(unitId, controller) => sendAction({ type: "control", unitId, controller })}
+        />
+      )}
+
+      {/* Inspect card (terrain + unit) — draggable within the battle surface. */}
+      {inspectTile && !outcome && (
+        <TileInspect
+          state={liveState}
+          tile={inspectTile}
+          onClose={() => setInspectTile(null)}
+          constraintsRef={rootRef}
+        />
+      )}
+
+      {/* Action menu / target forecast (bottom sheet on mobile, side card on desktop) */}
+      {isPlayerPhase && selectedUnit && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-center p-2 sm:justify-end sm:p-4">
+          <motion.div
+            drag
+            dragMomentum={false}
+            dragElastic={0}
+            dragConstraints={rootRef}
+            style={{ x: actionMenuX, y: actionMenuY }}
+            className="pointer-events-auto w-full max-w-md rounded-2xl border border-[var(--border)] bg-slate-900/85 p-3 shadow-2xl backdrop-blur-md sm:w-72"
+          >
+            <div className="mb-2 flex cursor-grab items-center justify-between active:cursor-grabbing">
+              <span className="flex min-w-0 items-center text-sm font-bold text-white">
+                <GripVertical className="mr-1 h-3 w-3 shrink-0 text-white/40" />
+                {selectedUnit.isPlayer && <Crown className="mr-1 inline h-3.5 w-3.5 shrink-0 text-amber-300" />}
+                <span className="truncate">{selectedUnit.name}</span>
+              </span>
+              <button type="button" onClick={resetSelection} className="text-white/50 hover:text-white">
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Action menu */}
+            {ui.kind === "unit" && (
+              <>
+                {selectedUnit.hasMoved && !selectedUnit.hasActed && (
+                  <p className="mb-2 flex items-center gap-1.5 rounded-lg bg-white/5 px-2 py-1.5 text-[0.7rem] italic text-white/60">
+                    <Footprints className="h-3.5 w-3.5 text-[var(--primary)]" />
+                    {localizeUi("ui.game.tacticalcombatui.alreadyMovedChooseAnAction")}
+                  </p>
+                )}
+                <div className="grid grid-cols-3 gap-1.5">
+                  {stagedMove && !selectedUnit.hasMoved && (
+                    <ActionButton
+                      icon={Footprints}
+                      label={localizeUi("ui.game.tacticalcombatui.confirmMove")}
+                      color="text-[var(--primary)]"
+                      onClick={commitMove}
+                      disabled={animating}
+                    />
+                  )}
+                  {getTargetsInRange(stagedState ?? liveState, selectedUnit.id, stagedMove ?? undefined).length > 0 && (
+                    <ActionButton
+                      icon={Sword}
+                      label={localizeUi("ui.game.tacticalcombatui.attack")}
+                      color="text-[var(--destructive)]"
+                      onClick={() => chooseAction("attack")}
+                      disabled={animating}
+                    />
+                  )}
+                  {selectedUnit.skills.some((skill) => !skill.reaction) && (
+                    <ActionButton
+                      icon={Sparkles}
+                      label={localizeUi("ui.game.gamecharactersheet.skills")}
+                      color="text-[var(--primary)]"
+                      onClick={() => chooseAction("skills")}
+                      disabled={animating}
+                    />
+                  )}
+                  <ActionButton
+                    icon={Backpack}
+                    label={localizeUi("ui.game.tacticalcombatui.item")}
+                    color="text-emerald-300"
+                    onClick={() => chooseAction("item")}
+                    disabled={animating || (directed && directed.items.length === 0)}
+                  />
+                  <ActionButton
+                    icon={Shield}
+                    label={localizeUi("ui.game.tacticalcombatui.defend")}
+                    color="text-amber-300"
+                    onClick={() => chooseAction("defend")}
+                    disabled={animating}
+                  />
+                  <ActionButton
+                    icon={Hourglass}
+                    label={localizeUi("ui.game.tacticalcombatui.wait")}
+                    color="text-white/70"
+                    onClick={() => chooseAction("wait")}
+                    disabled={animating}
+                  />
+                  {stagedMove && (
+                    <ActionButton
+                      icon={Wind}
+                      label={localizeUi("ui.game.tacticalcombatui.resetMove")}
+                      color="text-white/60"
+                      onClick={() => setStagedMove(null)}
+                      disabled={animating}
+                    />
+                  )}
+                </div>
+              </>
+            )}
+
+            {ui.kind === "items" && directed && (
+              <div className="flex flex-col gap-2">
+                {directed.items.map((item) => (
+                  <button
+                    key={item.name}
+                    className="min-h-11 rounded-lg border border-white/20 px-3 text-left text-sm text-white"
+                    onClick={() =>
+                      setUi({
+                        kind: "target",
+                        unitId: selectedUnit.id,
+                        action: "item",
+                        itemName: item.name,
+                        itemEffect: item.effect,
+                      })
+                    }
+                  >
+                    {item.name} ×{item.quantity}
+                  </button>
+                ))}
+                <button
+                  className="min-h-11 text-sm text-white/70"
+                  onClick={() => setUi({ kind: "unit", unitId: selectedUnit.id })}
+                >
+                  {localizeUi("ui.game.tacticalcombatui.back")}
+                </button>
+              </div>
+            )}
+            {/* Skill list */}
+            {ui.kind === "skills" && (
+              <div className="flex flex-col gap-1.5">
+                {selectedUnit.skills
+                  .filter((s) => !s.reaction)
+                  .map((skill) => {
+                    const cd = selectedUnit.skillCooldowns[skill.name] ?? 0;
+                    const ready =
+                      cd <= 0 &&
+                      (skill.slotLevel
+                        ? (selectedUnit.spellSlots?.[String(skill.slotLevel)] ?? 0) > 0
+                        : selectedUnit.mp >= skill.mpCost) &&
+                      !animating;
+                    return (
+                      <button
+                        type="button"
+                        key={skill.id ?? skill.name}
+                        disabled={!ready}
+                        onClick={() => chooseSkill(skill)}
+                        className={cn(
+                          "flex items-center justify-between rounded-lg border px-2.5 py-2 text-left text-xs transition-colors",
+                          ready
+                            ? "border-[var(--primary)]/30 bg-[var(--primary)]/10 text-white hover:bg-[var(--primary)]/20"
+                            : "border-white/10 bg-white/5 text-white/40",
+                        )}
+                      >
+                        <span className="font-semibold">{skill.name}</span>
+                        <span className="flex items-center gap-1.5 text-[0.65rem] text-white/60">
+                          <span className="uppercase">{skill.type}</span>
+                          {(skill.slotLevel || skill.mpCost > 0) && (
+                            <span className="text-sky-300">
+                              {skill.slotLevel
+                                ? localizeUi("game.combat.director.slotCost", { level: skill.slotLevel })
+                                : localizeUi("game.combat.director.mpCost", { amount: skill.mpCost })}
+                            </span>
+                          )}
+                          {cd > 0 && (
+                            <span className="text-amber-300">
+                              {localizeUi("ui.game.tacticalcombatui.cd")} {cd}
+                            </span>
+                          )}
+                        </span>
+                      </button>
+                    );
+                  })}
+                <button
+                  type="button"
+                  onClick={() => setUi({ kind: "unit", unitId: selectedUnit.id })}
+                  className="mt-1 text-center text-xs text-white/50 hover:text-white"
+                >
+                  {localizeUi("ui.game.tacticalcombatui.back")}
+                </button>
+              </div>
+            )}
+
+            {/* Target / forecast */}
+            {ui.kind === "target" && (
+              <div className="flex flex-col gap-2">
+                <p className="text-xs font-semibold text-white/70">
+                  {ui.action === "attack"
+                    ? localizeUi("ui.game.tacticalcombatui.selectATarget")
+                    : ui.action === "item"
+                      ? itemScope === "enemy"
+                        ? localizeUi("ui.game.tacticalcombatui.selectAnEnemy")
+                        : itemScope === "self"
+                          ? localizeUi("game.combat.target.selectSelf")
+                          : itemScope === "any"
+                            ? localizeUi("ui.game.tacticalcombatui.selectATarget")
+                            : localizeUi("ui.game.tacticalcombatui.selectAnAlly")
+                      : ui.skill?.type === "attack"
+                        ? localizeUi("ui.game.tacticalcombatui.selectATarget")
+                        : ui.skill?.type === "debuff"
+                          ? localizeUi("ui.game.tacticalcombatui.selectAnEnemy")
+                          : localizeUi("ui.game.tacticalcombatui.selectAnAlly")}
+                </p>
+                {targetIds.size === 0 && (
+                  <p className="text-xs italic text-white/50">
+                    {(() => {
+                      if (ui.action === "item") {
+                        if (itemScope === "enemy") return localizeUi("game.combat.target.noEnemies");
+                        if (itemScope === "self") return localizeUi("game.combat.target.selfUnavailable");
+                        if (itemScope === "any") return localizeUi("game.combat.target.noTargets");
+                        return localizeUi("game.combat.target.noAllies");
+                      }
+                      const isAttack = ui.action === "attack" || (ui.action === "skill" && ui.skill?.type === "attack");
+                      if (isAttack) {
+                        const range = selectedUnit.attackRange;
+                        const rng = range.min === range.max ? `${range.min}` : `${range.min}-${range.max}`;
+                        if (range.min > 1) {
+                          const cls = unitClassOf(selectedUnit);
+                          const plural = `${CLASS_PROFILES[cls].label.toLowerCase()}s`;
+                          return `No targets in range ${rng} — ${plural} can't strike adjacent foes.`;
+                        }
+                        return `No targets in range ${rng}.`;
+                      }
+                      if (ui.action === "skill" && ui.skill?.type === "debuff") return "No enemies in range.";
+                      return "No allies in range.";
+                    })()}
+                  </p>
+                )}
+
+                {forecast && forecastTargetId && (
+                  <ForecastPanel
+                    forecast={forecast}
+                    attacker={selectedUnit}
+                    defender={liveState.units.find((u) => u.id === forecastTargetId) ?? null}
+                  />
+                )}
+
+                <div className="flex gap-2">
+                  {forecast && forecastTargetId && (
+                    <button
+                      type="button"
+                      onClick={confirmTarget}
+                      disabled={animating}
+                      className={cn(
+                        "flex-1 rounded-lg border border-[var(--destructive)]/50 bg-[var(--destructive)]/80 px-3 py-2 text-sm font-bold text-white transition-colors hover:bg-[var(--destructive)]",
+                        animating && "cursor-not-allowed opacity-40 hover:bg-[var(--destructive)]/80",
+                      )}
+                    >
+                      {localizeUi("ui.game.tacticalcombatui.confirm")}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setForecastTargetId(null);
+                      setUi({ kind: "unit", unitId: selectedUnit.id });
+                    }}
+                    className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm font-semibold text-white/70 hover:bg-white/10"
+                  >
+                    {localizeUi("ui.noodle.noodlerframe.back")}
+                  </button>
+                </div>
+              </div>
+            )}
+          </motion.div>
+        </div>
+      )}
+
+      {/* Combat log drawer */}
+      {logOpen && (
+        <div className="absolute inset-0 z-40 flex" onClick={() => setLogOpen(false)}>
+          <div
+            className="ml-auto h-full w-full max-w-sm border-l border-[var(--border)] bg-slate-950/95 backdrop-blur"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
+              <span className="text-sm font-bold">{localizeUi("ui.game.gamecombatui.combatLog")}</span>
+              <button type="button" onClick={() => setLogOpen(false)} className="text-white/50 hover:text-white">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="h-[calc(100%-3.25rem)] overflow-y-auto px-4 py-3 text-xs leading-relaxed">
+              {liveState.log.map((ev, i) => (
+                <p
+                  key={i}
+                  className={cn(
+                    "border-b border-white/5 py-1",
+                    ev.kind === "phase" && "font-bold text-amber-200",
+                    ev.kind === "crit" && "font-semibold text-amber-300",
+                    ev.kind === "defeat" && "text-red-300",
+                    ev.kind === "heal" && "text-emerald-300",
+                    ev.kind === "miss" && "italic text-white/50",
+                  )}
+                >
+                  {ev.message ? localizeUi(ev.message.key, { ...ev.message.params, defaultValue: ev.text }) : ev.text}
+                  {ev.message?.suffixKey && ` ${localizeUi(ev.message.suffixKey)}`}
+                </p>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Flee confirm */}
+      {fleeConfirm && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-xs rounded-2xl border border-[var(--border)] bg-slate-900 p-5 text-center">
+            <Flag className="mx-auto mb-2 h-6 w-6 text-amber-300" />
+            <p className="mb-4 text-sm text-white/90">
+              {localizeUi("ui.game.tacticalcombatui.retreatFromThisBattleTheGmWillNarrateYour")}
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={confirmFlee}
+                className="flex-1 rounded-lg border border-[var(--primary)]/40 bg-[var(--primary)]/20 px-3 py-2 text-sm font-bold text-[var(--primary)] transition-colors hover:bg-[var(--primary)]/30"
+              >
+                {localizeUi("ui.game.tacticalcombatui.flee")}
+              </button>
+              <button
+                type="button"
+                onClick={() => setFleeConfirm(false)}
+                className="flex-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm font-semibold text-white/70 hover:bg-white/10"
+              >
+                {localizeUi("ui.game.tacticalcombatui.stay")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Restart confirm (patterned after the flee confirm) */}
+      {restartConfirm && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-xs rounded-2xl border border-[var(--border)] bg-slate-900 p-5 text-center">
+            <RotateCcw className="mx-auto mb-2 h-6 w-6 text-[var(--primary)]" />
+            <p className="mb-4 text-sm text-white/90">
+              {localizeUi("ui.game.tacticalcombatui.restartCurrentBattlefield")}
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setRestartConfirm(false);
+                  restartBattle();
+                }}
+                className="flex-1 rounded-lg border border-[var(--destructive)]/40 bg-[var(--destructive)]/20 px-3 py-2 text-sm font-bold text-[var(--destructive)] transition-colors hover:bg-[var(--destructive)]/30"
+              >
+                {localizeUi("ui.game.tacticalcombatui.restart")}
+              </button>
+              <button
+                type="button"
+                onClick={() => setRestartConfirm(false)}
+                className="flex-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm font-semibold text-white/70 hover:bg-white/10"
+              >
+                {localizeUi("ui.game.tacticalcombatui.keepFighting")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Outcome screen */}
+      {outcome && (
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-black/80 p-6 text-center backdrop-blur">
+          {outcome === "victory" && <Trophy className="h-14 w-14 text-amber-300" />}
+          {outcome === "defeat" && <SkullIcon className="h-14 w-14 text-[var(--destructive)]" />}
+          {outcome === "fled" && <Wind className="h-14 w-14 text-[var(--primary)]" />}
+          <h2
+            className={cn(
+              "text-3xl font-black uppercase tracking-widest",
+              outcome === "victory" && "text-amber-300",
+              outcome === "defeat" && "text-[var(--destructive)]",
+              outcome === "fled" && "text-[var(--primary)]",
+            )}
+          >
+            {outcome === "victory"
+              ? localizeUi("ui.game.tacticalcombatui.victory")
+              : outcome === "defeat"
+                ? localizeUi("ui.game.tacticalcombatui.defeat")
+                : localizeUi("ui.game.tacticalcombatui.retreated")}
+          </h2>
+          {outcome === "defeat" ? (
+            // Defeat doesn't auto-hand off (see maybeEnd) — let the player retry or bow out.
+            <div className="flex gap-2">
+              {!directed && (
+                <button
+                  type="button"
+                  onClick={restartBattle}
+                  className="rounded-lg border border-[var(--primary)]/40 bg-[var(--primary)]/20 px-4 py-2 text-sm font-bold text-[var(--primary)] transition-colors hover:bg-[var(--primary)]/30"
+                >
+                  {localizeUi("ui.game.tacticalcombatui.retryBattle")}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  if (handedOffRef.current) return;
+                  handedOffRef.current = true;
+                  const summary = buildTacticalSummary(liveState);
+                  persistSnapshot(null);
+                  onCombatEnd(summary.outcome, summary);
+                }}
+                className="rounded-lg border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white/80 transition-colors hover:bg-white/10"
+              >
+                {localizeUi("ui.noodle.wizardfooter.continue")}
+              </button>
+            </div>
+          ) : directed ? (
+            <button
+              className="min-h-11 rounded-lg bg-[var(--primary)] px-4"
+              onClick={() => {
+                if (handedOffRef.current) return;
+                handedOffRef.current = true;
+                const summary = buildTacticalSummary(liveState);
+                onCombatEnd(summary.outcome, summary);
+              }}
+            >
+              {localizeUi("game.combat.director.finish")}
+            </button>
+          ) : (
+            <p className="text-sm text-white/60">{localizeUi("ui.game.tacticalcombatui.returningToTheStory")}</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Sub-components ──
+
+interface UnitTokenProps {
+  unit: TacticalUnit;
+  hp: number;
+  gridW: number;
+  gridH: number;
+  x: number;
+  y: number;
+  selected: boolean;
+  targetable: boolean;
+  forecastTarget: boolean;
+  /** Uncommitted staged-move position — rendered translucent + dashed. */
+  preview: boolean;
+  ready: boolean;
+  ariaLabel: string;
+  onClick: () => void;
+  /** Mouse hover only (touch taps would leave a stale preview behind). */
+  onHoverChange?: (hovering: boolean) => void;
+}
+
+function UnitToken({
+  unit,
+  hp,
+  gridW,
+  gridH,
+  x,
+  y,
+  selected,
+  targetable,
+  forecastTarget,
+  preview,
+  ready,
+  ariaLabel,
+  onClick,
+  onHoverChange,
+}: UnitTokenProps) {
+  const left = ((x + 0.5) / gridW) * 100;
+  const top = ((y + 0.5) / gridH) * 100;
+  const cellW = 100 / gridW;
+  const sprite = resolveSprite(unit.sprite);
+  const ring = ringColorFor(unit.id, unit.side);
+  const ClassIcon = CLASS_ICONS[unitClassOf(unit)];
+  const hpPct = unit.maxHp > 0 ? Math.max(0, (hp / unit.maxHp) * 100) : 0;
+  const hpColor = hpPct > 60 ? "bg-emerald-500" : hpPct > 25 ? "bg-amber-500" : "bg-red-500";
+  const mpPct = unit.maxMp > 0 ? Math.max(0, (unit.mp / unit.maxMp) * 100) : 0;
+
+  const style: CSSProperties = {
+    left: `${left}%`,
+    top: `${top}%`,
+    width: `${cellW * 0.9}%`,
+  };
+
+  return (
+    <motion.div
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      aria-label={ariaLabel}
+      onPointerEnter={(event) => {
+        if (event.pointerType === "mouse") onHoverChange?.(true);
+      }}
+      onPointerLeave={(event) => {
+        if (event.pointerType === "mouse") onHoverChange?.(false);
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onClick();
+      }}
+      initial={false}
+      // Opacity lives HERE (inline) — framer would override a Tailwind opacity
+      // class anyway. Exit is opacity-only: a scale would drop the centering
+      // translate the className provides.
+      animate={{
+        left: `${left}%`,
+        top: `${top}%`,
+        opacity: preview ? 0.75 : unit.hasActed && unit.side === "party" ? 0.6 : 1,
+      }}
+      exit={{ opacity: 0 }}
+      whileHover={{ scale: 1.09 }}
+      transition={{ type: "tween", duration: unit.movementMode === "teleport" && !preview ? 0.08 : 0.25 }}
+      style={style}
+      className={cn(
+        "absolute z-10 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center",
+        unit.hasActed && unit.side === "party" && "grayscale",
+      )}
+    >
+      <div
+        className={cn(
+          "relative flex aspect-square w-full items-center justify-center rounded-full border-2 shadow-lg drop-shadow-[0_2px_3px_rgba(0,0,0,0.6)]",
+          selected && "ring-2 ring-[var(--primary)] ring-offset-1 ring-offset-slate-900",
+          targetable && "ring-2 ring-[var(--destructive)] animate-pulse",
+          forecastTarget && "ring-2 ring-[var(--destructive)] ring-offset-1 ring-offset-slate-900",
+          preview && "outline-dashed outline-2 outline-offset-2 outline-[var(--primary)]",
+        )}
+        style={{
+          borderColor: ring,
+          backgroundColor: unit.side === "party" ? "rgba(30,58,90,0.9)" : "rgba(90,30,40,0.9)",
+          animation: ready ? "tc-ready-glow 1.8s ease-in-out infinite" : undefined,
+        }}
+      >
+        {sprite.kind === "url" ? (
+          <img src={sprite.value} alt={unit.name} className="h-full w-full rounded-full object-cover" />
+        ) : sprite.kind === "emoji" ? (
+          <span className="text-[min(4vw,1.5rem)] leading-none">{sprite.value}</span>
+        ) : (
+          <span className="text-[min(3vw,0.9rem)] font-black text-white/90">{initialsOf(unit.name)}</span>
+        )}
+        {unit.isPlayer && (
+          <Crown className="absolute -top-2 left-1/2 h-3 w-3 -translate-x-1/2 text-amber-300 drop-shadow" />
+        )}
+        {unit.isBoss && (
+          <Skull className="absolute -top-2 left-1/2 h-3 w-3 -translate-x-1/2 text-[var(--destructive)] drop-shadow" />
+        )}
+        {/* Class badge (corner, side-tinted) */}
+        <span
+          className="absolute -bottom-0.5 -right-0.5 flex h-[13px] w-[13px] items-center justify-center rounded-full border shadow-sm"
+          style={{
+            backgroundColor: unit.side === "party" ? "rgba(30,58,90,0.95)" : "rgba(90,30,40,0.95)",
+            borderColor: ring,
+          }}
+        >
+          <ClassIcon className="h-2 w-2 text-white/90" />
+        </span>
+      </div>
+      {/* HP bar */}
+      <div className="mt-0.5 h-1 w-full overflow-hidden rounded-full bg-black/60">
+        <div className={cn("h-full transition-all duration-300", hpColor)} style={{ width: `${hpPct}%` }} />
+      </div>
+      {unit.maxMp > 0 && (
+        <div className="mt-[1px] h-[2px] w-full overflow-hidden rounded-full bg-black/60">
+          <div className="h-full bg-sky-400 transition-all duration-300" style={{ width: `${mpPct}%` }} />
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+function ActionButton({
+  icon: Icon,
+  label,
+  color,
+  onClick,
+  disabled,
+}: {
+  icon: typeof Sword;
+  label: string;
+  color: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "flex flex-col items-center gap-1 rounded-xl border border-white/10 bg-white/5 px-1 py-2.5 text-[0.68rem] font-semibold text-white/85 transition-colors hover:bg-white/15 active:scale-95",
+        disabled && "cursor-not-allowed opacity-40 hover:bg-white/5 active:scale-100",
+      )}
+    >
+      <Icon className={cn("h-5 w-5", color)} />
+      {label}
+    </button>
+  );
+}
+
+function ForecastPanel({
+  forecast,
+  attacker,
+  defender,
+}: {
+  forecast: ReturnType<typeof forecastAttack>;
+  attacker: TacticalUnit;
+  defender: TacticalUnit | null;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="grid grid-cols-2 gap-2 rounded-xl border border-white/10 bg-black/40 p-2 text-xs"
+    >
+      <ForecastSide
+        unit={attacker}
+        tone="text-[var(--primary)]"
+        headerBg="bg-[var(--primary)]/20"
+        damage={forecast.damage}
+        hit={forecast.hitChance}
+        crit={forecast.critChance}
+      />
+      {forecast.counter && defender ? (
+        <ForecastSide
+          unit={defender}
+          tone="text-[var(--destructive)]"
+          headerBg="bg-[var(--destructive)]/20"
+          label={localizeUi("ui.game.forecastpanel.counters")}
+          damage={forecast.counter.damage}
+          hit={forecast.counter.hitChance}
+          crit={forecast.counter.critChance}
+        />
+      ) : (
+        <div className="flex flex-col items-center justify-center gap-1 rounded-lg bg-white/5 text-center text-[0.65rem] text-white/40">
+          <span className="font-semibold">{defender?.name ?? "Target"}</span>
+          {defender && <ClassChip unit={defender} muted />}
+          <span>{localizeUi("ui.game.forecastpanel.noCounter")}</span>
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+function ForecastSide({
+  unit,
+  tone,
+  headerBg,
+  label,
+  damage,
+  hit,
+  crit,
+}: {
+  unit: TacticalUnit;
+  tone: string;
+  headerBg: string;
+  label?: string;
+  damage: number;
+  hit: number;
+  crit: number;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  return (
+    <div className="overflow-hidden rounded-lg bg-white/5">
+      <div className={cn("truncate px-1.5 py-1 text-[0.65rem] font-bold", headerBg, tone)}>
+        {unit.name}
+        {label && <span className="font-normal text-white/50"> {label}</span>}
+      </div>
+      <div className="px-1.5 pb-1.5 pt-1">
+        <div className="mb-1">
+          <ClassChip unit={unit} />
+        </div>
+        <div className="flex items-baseline gap-1">
+          <Sword className="h-3 w-3 text-white/50" />
+          <span className="text-base font-black text-white">{damage}</span>
+        </div>
+        <div className="flex justify-between text-[0.6rem] text-white/60">
+          <span>
+            {localizeUi("ui.game.forecastside.hit")} {Math.round(hit)}%
+          </span>
+          <span className="text-amber-300/80">
+            {localizeUi("ui.game.forecastside.crit")} {Math.round(crit)}%
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Class chip: lucide icon + label + attack-range text ──
+function ClassChip({ unit, muted }: { unit: TacticalUnit; muted?: boolean }) {
+  const cls = unitClassOf(unit);
+  const profile = CLASS_PROFILES[cls];
+  const Icon = CLASS_ICONS[cls];
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded bg-white/10 px-1.5 py-0.5 text-[0.6rem] font-semibold",
+        muted ? "text-white/50" : "text-white/80",
+      )}
+    >
+      <Icon className={cn("h-3 w-3", muted ? "text-white/50" : "text-[var(--primary)]")} />
+      <span>{profile.label}</span>
+      <span className="text-white/45">· {rangeText(unit.attackRange)}</span>
+    </span>
+  );
+}
+
+function TileInspect({
+  state,
+  tile,
+  onClose,
+  constraintsRef,
+}: {
+  state: TacticalCombatState;
+  tile: TacticalCoord;
+  onClose: () => void;
+  /** Battle-surface root — bounds the card so it can't be dragged off-screen. */
+  constraintsRef: RefObject<HTMLDivElement | null>;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  const terrain = state.grid.tiles[tile.y]?.[tile.x];
+  if (!terrain) return null;
+  const info = TERRAIN_DATA[terrain];
+  const unit = state.units.find((u) => u.x === tile.x && u.y === tile.y && u.hp > 0);
+  return (
+    // Draggable within the battle surface. framer-motion distinguishes a click from
+    // a drag, so the X close button keeps working. The card is NOT re-keyed when the
+    // inspected tile changes, so its dragged position persists while mounted.
+    <motion.div
+      drag
+      dragMomentum={false}
+      dragElastic={0}
+      dragConstraints={constraintsRef}
+      className="pointer-events-auto absolute left-2 top-24 z-20 w-44 rounded-xl border border-[var(--border)] bg-slate-900/95 p-2.5 text-xs shadow-xl backdrop-blur sm:left-4 sm:top-16"
+    >
+      <div className="mb-1 flex cursor-grab items-center justify-between active:cursor-grabbing">
+        <span className="flex items-center gap-1 font-bold text-white">
+          <GripVertical className="h-3 w-3 text-white/40" />
+          {info.label}
+        </span>
+        <button type="button" onClick={onClose} className="text-white/40 hover:text-white">
+          <X size={13} />
+        </button>
+      </div>
+      <div className="flex gap-2 text-[0.65rem] text-white/60">
+        {info.impassable ? (
+          <span className="font-semibold text-red-300/80">{localizeUi("ui.game.tileinspect.blocksWalking")}</span>
+        ) : (
+          <>
+            <span>
+              {localizeUi("ui.game.tileinspect.def")}
+              {info.defenseBonus}
+            </span>
+            <span>
+              {localizeUi("ui.game.tileinspect.avoid")}
+              {info.avoidBonus}%
+            </span>
+          </>
+        )}
+      </div>
+      {unit && (
+        <div className="mt-2 border-t border-white/10 pt-2">
+          <div className="flex items-center gap-1 font-semibold text-white">
+            {unit.isPlayer && <Crown className="h-3 w-3 text-amber-300" />}
+            {unit.isBoss && <Skull className="h-3 w-3 text-[var(--destructive)]" />}
+            <span className="truncate">{unit.name}</span>
+            <span className="ml-auto text-[0.6rem] text-white/40">
+              {localizeUi("ui.game.tileinspect.lv")} {unit.level}
+            </span>
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-1">
+            <ClassChip unit={unit} />
+            <span className="rounded bg-white/10 px-1.5 py-0.5 text-[0.6rem] font-semibold text-white/70">
+              {localizeUi(movementLabelKey(unit.movementMode))}
+            </span>
+          </div>
+          <div className="mt-1 flex items-center gap-1 text-[0.65rem] text-white/70">
+            <Heart className="h-3 w-3 text-red-400" />
+            {unit.hp}/{unit.maxHp}
+            {unit.maxMp > 0 && (
+              <>
+                <Droplets className="ml-1 h-3 w-3 text-sky-400" />
+                {unit.mp}/{unit.maxMp}
+              </>
+            )}
+          </div>
+          <div className="mt-1 flex flex-wrap gap-x-2 text-[0.6rem] text-white/50">
+            <span>
+              {localizeUi("ui.game.tileinspect.atk")} {unit.attack}
+            </span>
+            <span>
+              {localizeUi("ui.game.tileinspect.def_6dae29c")} {unit.defense}
+            </span>
+            <span>
+              {localizeUi("ui.game.tileinspect.spd")} {unit.speed}
+            </span>
+            <span>
+              {localizeUi("ui.game.tileinspect.mov")} {unit.movement}
+            </span>
+          </div>
+          {unit.statusEffects.length > 0 && (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {unit.statusEffects.map((e, i) => (
+                <span key={i} className="rounded bg-violet-500/20 px-1 text-[0.55rem] text-violet-200">
+                  {e.name} ({e.turnsLeft})
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+export default TacticalCombatUI;

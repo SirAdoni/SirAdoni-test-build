@@ -1,0 +1,765 @@
+// ──────────────────────────────────────────────
+// Shared Markdown rendering utilities
+// ──────────────────────────────────────────────
+import { isValidElement, type ReactNode } from "react";
+import { normalizeCardAssetImageSyntax, resolveCardAssetUrl } from "./card-asset-links";
+import { convertBasicLatexSymbols, convertBasicLatexSymbolsInHtml } from "./latex-symbols";
+import { useUIStore } from "../stores/ui.store";
+import { DISCORD_SUBTEXT_RE, INLINE_MD_RE, MD_LINK_TARGET_SOURCE } from "./inline-markdown-regex";
+
+// ─── Inline Markdown ────────────────────────────────────────────────────────
+
+/**
+ * Comprehensive inline markdown regex.
+ *
+ * Match order (first match wins at each position):
+ *   1     Backslash escape  \X
+ *   2–4   Image/Link        ![alt](url)  or  [text](url)
+ *   5     Inline code       `code`
+ *   6     Highlight         ==text==
+ *   7     Strikethrough     ~~text~~
+ *   8     Bold-italic       ***text***   (must precede bold)
+ *   9     Bold              **text**
+ *   10    Underline         __text__
+ *   11    Italic (*)        *text*
+ *   12    Italic (_)        _text_   (not inside a word)
+ */
+/** Maximum recursion depth for nested inline markdown. */
+const MAX_INLINE_DEPTH = 6;
+const CHAT_TEXT_HTML_ENTITY_RE = /&(amp|lt|gt|quot|apos|#\d{1,7}|#x[0-9a-f]{1,6});/gi;
+
+function shouldConvertLatexSymbols(): boolean {
+  return useUIStore.getState().convertLatexSymbols !== false;
+}
+
+function decodeChatTextHtmlEntities(text: string): string {
+  return text.replace(CHAT_TEXT_HTML_ENTITY_RE, (match, entity: string) => {
+    const normalized = entity.toLowerCase();
+    switch (normalized) {
+      case "amp":
+        return "&";
+      case "lt":
+        return "<";
+      case "gt":
+        return ">";
+      case "quot":
+        return '"';
+      case "apos":
+        return "'";
+      default: {
+        const isHex = normalized.startsWith("#x");
+        const rawCodePoint = isHex ? normalized.slice(2) : normalized.slice(1);
+        const codePoint = Number.parseInt(rawCodePoint, isHex ? 16 : 10);
+        return Number.isFinite(codePoint) && codePoint > 0 && codePoint <= 0x10ffff
+          ? String.fromCodePoint(codePoint)
+          : match;
+      }
+    }
+  });
+}
+
+function maybeConvertLatexSymbols(text: string, enabled = shouldConvertLatexSymbols()): string {
+  const decoded = decodeChatTextHtmlEntities(text);
+  return enabled ? convertBasicLatexSymbols(decoded) : decoded;
+}
+
+/**
+ * Apply inline markdown formatting to a text string.
+ * Returns an array of ReactNodes (plain strings + formatted elements).
+ *
+ * Supports recursive nesting — e.g. `_You **can** combine them_` renders
+ * as italic wrapping bold.  Code spans and images are never recursed into.
+ *
+ * Backslash escapes: `\*`, `\_`, `\~`, etc. output the literal character.
+ */
+export function applyInlineMarkdown(text: string, keyPrefix: string, _depth = 0): ReactNode[] {
+  // Safety: prevent runaway recursion
+  if (_depth > MAX_INLINE_DEPTH) return [maybeConvertLatexSymbols(text)];
+
+  const markdownText = normalizeCardAssetImageSyntax(text);
+  const convertLatex = shouldConvertLatexSymbols();
+  const regex = new RegExp(INLINE_MD_RE.source, INLINE_MD_RE.flags);
+  const nodes: ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let key = 0;
+
+  /** Recursively apply inline markdown to inner content. */
+  const recurse = (inner: string, tag: string): ReactNode[] =>
+    applyInlineMarkdown(inner, `${keyPrefix}${tag}${key}`, _depth + 1);
+
+  while ((match = regex.exec(markdownText)) !== null) {
+    // Push any plain text before this match
+    if (match.index > lastIndex) {
+      nodes.push(maybeConvertLatexSymbols(markdownText.slice(lastIndex, match.index), convertLatex));
+    }
+
+    if (match[1] != null) {
+      // ── Backslash escape: \X → literal character ──
+      nodes.push(match[1]);
+    } else if (match[3] != null && match[4] != null) {
+      // ── Image: ![alt](url) or Link: [text](url) ──
+      const resolvedUrl = resolveCardAssetUrl(match[4]);
+      if (match[0].startsWith("!")) {
+        nodes.push(
+          <img
+            key={`${keyPrefix}img${key++}`}
+            src={resolvedUrl}
+            alt={decodeChatTextHtmlEntities(match[3] || "")}
+            className="my-1 inline-block max-w-full rounded-lg align-bottom sm:max-w-md"
+            loading="lazy"
+            decoding="async"
+            referrerPolicy="no-referrer"
+          />,
+        );
+      } else {
+        // Plain link [text](url) — render as anchor
+        nodes.push(
+          <a
+            key={`${keyPrefix}a${key++}`}
+            href={resolvedUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-400 underline hover:text-blue-300"
+          >
+            {decodeChatTextHtmlEntities(match[3])}
+          </a>,
+        );
+      }
+    } else if (match[5] != null) {
+      // ── Inline code: `code` (no recursion — content is literal) ──
+      // dir="ltr": code is LTR syntax; inside an RTL paragraph the bidi
+      // algorithm would otherwise reorder it (`--flag value` → `flag value--`).
+      nodes.push(
+        <code key={`${keyPrefix}c${key++}`} className="mari-md-inline-code" dir="ltr">
+          {decodeChatTextHtmlEntities(match[5])}
+        </code>,
+      );
+    } else if (match[6] != null) {
+      // ── Highlight: ==text== ──
+      nodes.push(
+        <mark key={`${keyPrefix}hl${key++}`} className="mari-md-highlight">
+          {recurse(match[6], "hl")}
+        </mark>,
+      );
+    } else if (match[7] != null) {
+      // ── Strikethrough: ~~text~~ ──
+      nodes.push(
+        <del key={`${keyPrefix}s${key++}`} className="mari-md-strikethrough">
+          {recurse(match[7], "s")}
+        </del>,
+      );
+    } else if (match[8] != null) {
+      // ── Bold-italic: ***text*** ──
+      nodes.push(
+        <strong key={`${keyPrefix}bi${key++}`}>
+          <em>{recurse(match[8], "bi")}</em>
+        </strong>,
+      );
+    } else if (match[9] != null) {
+      // ── Bold: **text** ──
+      nodes.push(<strong key={`${keyPrefix}b${key++}`}>{recurse(match[9], "b")}</strong>);
+    } else if (match[10] != null) {
+      // ── Underline: __text__ ──
+      nodes.push(
+        <u key={`${keyPrefix}u${key++}`} className="mari-md-underline">
+          {recurse(match[10], "u")}
+        </u>,
+      );
+    } else if (match[11] != null) {
+      // ── Italic: *text* ──
+      nodes.push(<em key={`${keyPrefix}i${key++}`}>{recurse(match[11], "i")}</em>);
+    } else if (match[12] != null) {
+      // ── Italic: _text_ ──
+      nodes.push(<em key={`${keyPrefix}ui${key++}`}>{recurse(match[12], "ui")}</em>);
+    }
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Remaining plain text
+  if (lastIndex < markdownText.length) {
+    nodes.push(maybeConvertLatexSymbols(markdownText.slice(lastIndex), convertLatex));
+  }
+
+  return nodes.length > 0 ? nodes : [maybeConvertLatexSymbols(markdownText, convertLatex)];
+}
+
+// ─── Block-level Markdown ───────────────────────────────────────────────────
+
+/** Regex to match markdown headings at the start of a line. */
+const HEADING_RE = /^(#{1,6})\s+(.+)$/;
+
+/** Regex to match horizontal rules: *** / --- (3+ chars, standalone line). */
+const HR_LINE_RE = /^(?:\*{3,}|-{3,})$/;
+
+/** Regex to match a standalone image line (entire line is just one image). */
+const MD_IMAGE_LINE_RE = new RegExp(String.raw`^!\[([^\]]*)\]\((${MD_LINK_TARGET_SOURCE})\)$`);
+
+/** Regex to match a task list item: - [ ] or - [x]. */
+const TASK_ITEM_RE = /^(\s*)[-*+] \[([ xX])\]\s+(.+)/;
+
+/** Regex to match an unordered list item (-, *, +). */
+const UL_ITEM_RE = /^(\s*)[*+-]\s+(.+)/;
+
+/** Padded times such as "0600. Wake up" are prose, not ordered list markers. */
+const OL_ITEM_RE = /^(\s*)(0|[1-9]\d*)\.\s+(.+)/;
+
+/** Regex to match a table row: starts and ends with |. */
+const TABLE_ROW_RE = /^\|(.+)\|$/;
+
+/** Regex to match a blockquote line. */
+const BLOCKQUOTE_RE = /^\s*>(?: (.*)| *$)/;
+
+/** Regex for the opening of a fenced code block. */
+const CODE_FENCE_OPEN_RE = /^`{3,}(.*)$/;
+
+/** Regex for the closing of a fenced code block. */
+const CODE_FENCE_CLOSE_RE = /^`{3,}\s*$/;
+
+/** Regex to detect a line starting with an escaped block marker. */
+const ESCAPED_BLOCK_RE = /^\s*\\[#>*+\-|`]/;
+
+// ── List item with indent tracking ──
+
+interface ListItem {
+  content: string;
+  indent: number;
+  /** undefined = regular item, false = unchecked task, true = checked task */
+  task?: boolean;
+  /** For ordered lists: the number written in markdown (used for the start attribute) */
+  start?: number;
+}
+
+// ── Table helpers ──
+
+/** Parse alignment from separator cells (e.g. :---, :---:, ---:). Logical
+ * values so `:---` means "reading start" in RTL content too. */
+function parseTableAlign(sep: string): "start" | "center" | "end" | undefined {
+  const trimmed = sep.trim();
+  const left = trimmed.startsWith(":");
+  const right = trimmed.endsWith(":");
+  if (left && right) return "center";
+  if (right) return "end";
+  if (left) return "start";
+  return undefined;
+}
+
+// ── Render helpers for each block type ──
+
+function renderCodeBlock(lines: string[], lang: string, blockKey: string): ReactNode {
+  const code = lines.join("\n");
+  return (
+    <pre key={blockKey} className="mari-md-codeblock" dir="ltr">
+      {lang && <span className="mari-md-codeblock-lang">{lang}</span>}
+      <code>{code}</code>
+    </pre>
+  );
+}
+
+function renderBlockquote(
+  lines: string[],
+  renderInline: (text: string, kp: string) => ReactNode[],
+  blockKey: string,
+): ReactNode {
+  const content = lines.join("\n");
+  return (
+    <blockquote key={blockKey} className="mari-md-blockquote">
+      {renderInline(content, `${blockKey}bq`)}
+    </blockquote>
+  );
+}
+
+function renderList(
+  items: ListItem[],
+  ordered: boolean,
+  renderInline: (text: string, kp: string) => ReactNode[],
+  blockKey: string,
+): ReactNode {
+  // Determine if this list contains any task items
+  const hasTaskItems = items.some((item) => item.task !== undefined);
+
+  const elements: ReactNode[] = [];
+  let i = 0;
+  let itemKey = 0;
+
+  while (i < items.length) {
+    const item = items[i]!;
+    const children: ListItem[] = [];
+    i++;
+    // Collect nested items (indent >= 2 means nested under the previous item)
+    while (i < items.length && items[i]!.indent >= 2) {
+      children.push({
+        content: items[i]!.content,
+        indent: Math.max(0, items[i]!.indent - 2),
+        task: items[i]!.task,
+      });
+      i++;
+    }
+
+    const isTask = item.task !== undefined;
+    const ik = itemKey++;
+
+    elements.push(
+      <li key={`${blockKey}li${ik}`} className={isTask ? "mari-md-task-item" : undefined}>
+        {isTask ? (
+          <>
+            <input type="checkbox" checked={item.task} disabled readOnly className="mari-md-checkbox" />
+            <span>{renderInline(item.content, `${blockKey}li${ik}`)}</span>
+          </>
+        ) : (
+          renderInline(item.content, `${blockKey}li${ik}`)
+        )}
+        {children.length > 0 && renderList(children, ordered, renderInline, `${blockKey}n${ik}`)}
+      </li>,
+    );
+  }
+
+  const Tag = ordered ? "ol" : "ul";
+  let className: string;
+  if (hasTaskItems && !ordered) {
+    className = "mari-md-task-list";
+  } else if (ordered) {
+    className = "mari-md-ol";
+  } else {
+    className = "mari-md-ul";
+  }
+
+  // Use the start number from the first item so "3. foo" renders starting at 3
+  const startAttr = ordered && items[0]?.start != null && items[0].start !== 1 ? items[0].start : undefined;
+
+  return (
+    <Tag key={blockKey} className={className} {...(startAttr != null ? { start: startAttr } : {})}>
+      {elements}
+    </Tag>
+  );
+}
+
+function renderTable(
+  rows: string[][],
+  renderInline: (text: string, kp: string) => ReactNode[],
+  blockKey: string,
+): ReactNode {
+  if (rows.length < 2) {
+    // Not enough rows for header + separator — render as plain text
+    return null;
+  }
+
+  // Check if second row is a separator
+  const sepRow = rows[1]!;
+  const isSep = sepRow.every((cell) => /^\s*:?-+:?\s*$/.test(cell));
+
+  if (!isSep) {
+    // No separator — not a valid table
+    return null;
+  }
+
+  const headers = rows[0]!;
+  const aligns = sepRow.map(parseTableAlign);
+  const bodyRows = rows.slice(2);
+
+  return (
+    <div key={blockKey} className="mari-md-table-wrapper">
+      <table className="mari-md-table">
+        <thead>
+          <tr>
+            {headers.map((cell, ci) => (
+              <th key={ci} style={aligns[ci] ? { textAlign: aligns[ci] } : undefined}>
+                {renderInline(cell, `${blockKey}th${ci}`)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {bodyRows.map((row, ri) => (
+            <tr key={ri}>
+              {headers.map((_, ci) => (
+                <td key={ci} style={aligns[ci] ? { textAlign: aligns[ci] } : undefined}>
+                  {renderInline(row[ci] ?? "", `${blockKey}td${ri}_${ci}`)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Main block-level renderer ──
+
+/**
+ * Render a markdown text string into React nodes, handling both block-level
+ * and inline syntax.
+ *
+ * Block-level features: fenced code blocks, blockquotes, unordered lists,
+ * ordered lists, task lists, tables, headings, horizontal rules,
+ * and standalone images.
+ *
+ * Inline rendering is delegated to the provided `renderInline` callback,
+ * which defaults to `applyInlineMarkdown`.
+ */
+export function renderMarkdownBlocks(
+  text: string,
+  renderInline: (text: string, keyPrefix: string) => ReactNode[] = applyInlineMarkdown,
+  keyBase = "md",
+): ReactNode {
+  // Split on CRLF or LF — CRLF input (e.g. .md files written on Windows) must
+  // not leave a trailing \r on lines, or line-anchored patterns like
+  // HEADING_RE fail to match.
+  const lines = normalizeCardAssetImageSyntax(text).split(/\r?\n/);
+  const segments: ReactNode[] = [];
+  let key = 0;
+
+  // ── Accumulation buffers ──
+  let textBuffer: string[] = [];
+  let inCodeBlock = false;
+  let codeBuffer: string[] = [];
+  let codeLang = "";
+  let codeFenceIndent = 0;
+  let quoteBuffer: string[] = [];
+  let listItems: ListItem[] = [];
+  let listOrdered = false;
+  let tableRows: string[][] = [];
+
+  // ── Flush helpers ──
+
+  const flushText = () => {
+    if (textBuffer.length === 0) return;
+    const previous = segments.at(-1);
+    if (
+      isValidElement(previous) &&
+      (previous.type === "blockquote" || previous.type === "hr") &&
+      textBuffer[0]?.trim() === ""
+    ) {
+      // The block already starts a new line. Keep extra blank lines, but do
+      // not render its boundary newline as an additional lower line box.
+      textBuffer.shift();
+    }
+    const joined = textBuffer.join("\n");
+    if (joined.trim()) {
+      segments.push(<span key={`${keyBase}t${key++}`}>{renderInline(joined, `${keyBase}t${key}`)}</span>);
+    } else {
+      // Preserve blank-line spacing
+      segments.push(<span key={`${keyBase}t${key++}`}>{joined}</span>);
+    }
+    textBuffer = [];
+  };
+
+  const flushQuote = () => {
+    if (quoteBuffer.length === 0) return;
+    segments.push(renderBlockquote(quoteBuffer, renderInline, `${keyBase}bq${key++}`));
+    quoteBuffer = [];
+  };
+
+  const flushList = () => {
+    if (listItems.length === 0) return;
+    segments.push(renderList(listItems, listOrdered, renderInline, `${keyBase}l${key++}`));
+    listItems = [];
+  };
+
+  const flushTable = () => {
+    if (tableRows.length === 0) return;
+    const rendered = renderTable(tableRows, renderInline, `${keyBase}tbl${key++}`);
+    if (rendered) {
+      segments.push(rendered);
+    } else {
+      // Not a valid table — render rows as plain text
+      for (const row of tableRows) {
+        textBuffer.push(`| ${row.join(" | ")} |`);
+      }
+      flushText();
+    }
+    tableRows = [];
+  };
+
+  const flushAll = () => {
+    flushText();
+    flushQuote();
+    flushList();
+    flushTable();
+  };
+
+  // ── Main loop ──
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+
+    // ── Inside fenced code block ──
+    if (inCodeBlock) {
+      // The close fence may be indented like its opener (fence inside a list
+      // item), so trim both ends before matching.
+      if (CODE_FENCE_CLOSE_RE.test(line.trim())) {
+        segments.push(renderCodeBlock(codeBuffer, codeLang, `${keyBase}cb${key++}`));
+        codeBuffer = [];
+        codeLang = "";
+        inCodeBlock = false;
+      } else {
+        // CommonMark: strip up to the opening fence's indent from each content
+        // line so list-nested code blocks don't render with phantom leading
+        // spaces (and the Copy button doesn't copy them).
+        let stripped = 0;
+        while (stripped < codeFenceIndent && line[stripped] === " ") stripped++;
+        codeBuffer.push(stripped > 0 ? line.slice(stripped) : line);
+      }
+      continue;
+    }
+
+    // ── Opening of fenced code block ──
+    const codeFenceMatch = CODE_FENCE_OPEN_RE.exec(line.trimStart());
+    if (codeFenceMatch && !line.trimStart().slice(3).includes("`")) {
+      flushAll();
+      inCodeBlock = true;
+      codeLang = codeFenceMatch[1]?.trim() ?? "";
+      codeFenceIndent = line.length - line.trimStart().length;
+      continue;
+    }
+
+    // ── Backslash-escaped block marker ──
+    // If the line starts with \# \> \- \* \+ \| \` etc., skip block-level
+    // detection and let the inline parser handle the escape.
+    if (ESCAPED_BLOCK_RE.test(line)) {
+      if (quoteBuffer.length > 0) flushQuote();
+      if (tableRows.length > 0) flushTable();
+      if (listItems.length > 0) flushList();
+      textBuffer.push(line);
+      continue;
+    }
+
+    // ── Heading ──
+    const hMatch = HEADING_RE.exec(line);
+    if (hMatch) {
+      flushAll();
+      const level = hMatch[1]!.length as 1 | 2 | 3 | 4 | 5 | 6;
+      const Tag = `h${level}` as const;
+      segments.push(
+        <Tag key={`${keyBase}h${key++}`} className="mari-md-heading">
+          {renderInline(hMatch[2]!, `${keyBase}h${key}`)}
+        </Tag>,
+      );
+      continue;
+    }
+
+    // ── Horizontal rule ──
+    if (HR_LINE_RE.test(line.trim())) {
+      flushAll();
+      segments.push(<hr key={`${keyBase}hr${key++}`} className="mari-md-rule" />);
+      continue;
+    }
+
+    // ── Standalone image line ──
+    const imgMatch = MD_IMAGE_LINE_RE.exec(line.trim());
+    if (imgMatch) {
+      flushAll();
+      segments.push(
+        <img
+          key={`${keyBase}img${key++}`}
+          src={resolveCardAssetUrl(imgMatch[2]!)}
+          alt={imgMatch[1] || ""}
+          className="my-1 max-w-full rounded-lg sm:max-w-md"
+          loading="lazy"
+          decoding="async"
+          referrerPolicy="no-referrer"
+        />,
+      );
+      continue;
+    }
+
+    // ── Blockquote ──
+    const bqMatch = BLOCKQUOTE_RE.exec(line);
+    if (bqMatch) {
+      if (quoteBuffer.length === 0) {
+        flushText();
+        flushList();
+        flushTable();
+      }
+      quoteBuffer.push(bqMatch[1] ?? "");
+      continue;
+    }
+
+    // If we were in a blockquote and this line doesn't continue it, flush
+    if (quoteBuffer.length > 0) {
+      flushQuote();
+    }
+
+    // ── Table row ──
+    const trimmed = line.trim();
+    if (TABLE_ROW_RE.test(trimmed)) {
+      // Check if this could be a table continuation
+      if (tableRows.length === 0) {
+        flushText();
+        flushList();
+      }
+      const cells = trimmed
+        .slice(1, -1)
+        .split("|")
+        .map((c) => c.trim());
+      tableRows.push(cells);
+      continue;
+    }
+
+    // If we were in a table and this line doesn't continue it, flush
+    if (tableRows.length > 0) {
+      flushTable();
+    }
+
+    // ── Discord-style subtext (must be checked before regular UL) ──
+    const subtextMatch = DISCORD_SUBTEXT_RE.exec(line);
+    if (subtextMatch) {
+      flushText();
+      flushList();
+      segments.push(
+        <small key={`${keyBase}sub${key++}`} className="mari-md-subtext">
+          {renderInline(subtextMatch[1] ?? "", `${keyBase}sub${key}`)}
+        </small>,
+      );
+      continue;
+    }
+
+    // ── Task list item (must be checked before regular UL) ──
+    const taskMatch = TASK_ITEM_RE.exec(line);
+    if (taskMatch) {
+      if (listItems.length === 0) {
+        flushText();
+        listOrdered = false;
+      } else if (listOrdered) {
+        flushList();
+        listOrdered = false;
+      }
+      const checked = taskMatch[2] !== " ";
+      listItems.push({ content: taskMatch[3]!, indent: taskMatch[1]!.length, task: checked });
+      continue;
+    }
+
+    // ── Unordered list item ──
+    const ulMatch = UL_ITEM_RE.exec(line);
+    if (ulMatch) {
+      if (listItems.length === 0) {
+        flushText();
+        listOrdered = false;
+      } else if (listOrdered) {
+        // Switching from ordered to unordered — flush old list
+        flushList();
+        listOrdered = false;
+      }
+      listItems.push({ content: ulMatch[2]!, indent: ulMatch[1]!.length });
+      continue;
+    }
+
+    // ── Ordered list item ──
+    const olMatch = OL_ITEM_RE.exec(line);
+    if (olMatch) {
+      if (listItems.length === 0) {
+        flushText();
+        listOrdered = true;
+      } else if (!listOrdered) {
+        // Switching from unordered to ordered — flush old list
+        flushList();
+        listOrdered = true;
+      }
+      listItems.push({ content: olMatch[3]!, indent: olMatch[1]!.length, start: parseInt(olMatch[2]!, 10) });
+      continue;
+    }
+
+    // If we were in a list and this line doesn't continue it, flush
+    if (listItems.length > 0) {
+      flushList();
+    }
+
+    // ── Regular text ──
+    textBuffer.push(line);
+  }
+
+  // ── Handle unclosed code block ──
+  if (inCodeBlock) {
+    // Render the unclosed fence as regular text
+    textBuffer.push("```" + codeLang);
+    textBuffer.push(...codeBuffer);
+  }
+
+  // ── Flush remaining buffers ──
+  flushAll();
+
+  return segments.length === 1 ? segments[0] : <>{segments}</>;
+}
+
+// ─── HTML-path inline markdown (string → string) ───────────────────────────
+
+/**
+ * Apply inline markdown to an HTML string (for the HTML rendering path).
+ * Returns the string with markdown replaced by HTML tags.
+ *
+ * This is intentionally separate from the React-node version because in the
+ * HTML path the content is already a sanitised HTML string that will be set
+ * via dangerouslySetInnerHTML.
+ */
+export function applyInlineMarkdownHTML(html: string): string {
+  let next = html
+    // Pre-process: replace backslash-escaped markdown chars with HTML entities
+    // so they are not matched by subsequent regex patterns.
+    .replace(/\\([-\\*_~`#|>!=[\]{}])/g, (_m, char: string) => `&#${char.charCodeAt(0)};`)
+    // Fenced code blocks (``` … ```) — must run before inline code
+    .replace(
+      /(?:^|(?<=<br[^>]*>))\s*`{3,}([^\n<]*?)(?:<br[^>]*>)([\s\S]*?)(?:<br[^>]*>)\s*`{3,}\s*(?:$|(?=<br[^>]*>))/g,
+      (_m, lang: string, code: string) => {
+        const langTrimmed = lang.trim();
+        const langLabel = langTrimmed ? `<span class="mari-md-codeblock-lang">${langTrimmed}</span>` : "";
+        return `<pre class="mari-md-codeblock">${langLabel}<code>${code}</code></pre>`;
+      },
+    )
+    // Inline code: `code`. No dir attribute here — this path is re-sanitized by
+    // sanitizeChatHtml, whose attribute allowlist strips `dir`; the LTR forcing
+    // for this path comes from the .mari-md-codeblock/.mari-md-inline-code CSS.
+    .replace(/`([^`\n]+)`/g, '<code class="mari-md-inline-code">$1</code>');
+
+  // Preserve literal code through every inline substitution, including markers
+  // in separate code regions that could otherwise pair across their HTML tags.
+  let codeMarker = "\u0000";
+  while (next.includes(codeMarker)) codeMarker += "\u0000";
+  const codeRegions: string[] = [];
+  next = next.replace(/<pre\b[^>]*>[\s\S]*?<\/pre>|<code\b[^>]*>[\s\S]*?<\/code>/gi, (code) => {
+    const index = codeRegions.push(code) - 1;
+    return `${codeMarker}${index}${codeMarker}`;
+  });
+
+  if (shouldConvertLatexSymbols()) {
+    next = convertBasicLatexSymbolsInHtml(next);
+  }
+
+  const formatted = next
+    // Headings: # through ######
+    .replace(/(?:^|(?<=<br[^>]*>))\s*(#{1,6})\s+(.+?)(?=<br|$)/g, (_m, hashes: string, content: string) => {
+      const level = hashes.length;
+      return `<h${level} class="mari-md-heading">${content.trim()}</h${level}>`;
+    })
+    // Discord-style subtext: -# text
+    .replace(/(?:^|(?<=<br[^>]*>))[ \t]*-#(?:[ \t]+(.*?))?(?=<br|$)/g, '<small class="mari-md-subtext">$1</small>')
+    // The block supplies its ending line break. Convert both kinds together
+    // so adjacent blocks still see their original line boundaries.
+    .replace(
+      /(?:^|(?<=<br[^>]*>))\s*(?:(?:\*{3,}|-{3,})\s*|&gt;\s?(.*?))(?:<br[^>]*>|$)/g,
+      (_match, quote: string | undefined) =>
+        quote === undefined
+          ? '<hr class="mari-md-rule">'
+          : `<blockquote class="mari-md-blockquote">${quote}</blockquote>`,
+    )
+    // Highlight: ==text==
+    .replace(/==(.+?)==/g, '<mark class="mari-md-highlight">$1</mark>')
+    // Strikethrough: ~~text~~
+    .replace(/~~(.+?)~~/g, '<del class="mari-md-strikethrough">$1</del>')
+    // Bold-italic: ***text*** (must precede bold)
+    .replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>")
+    // Bold: **text**
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    // Underline: __text__
+    .replace(/__(.+?)__/g, '<u class="mari-md-underline">$1</u>')
+    // Italic: *text* (single asterisk, not part of **)
+    .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, "<em>$1</em>")
+    // Italic: _text_ (not inside a word)
+    .replace(/(?<![_\w])_([^_]+?)_(?![_\w])/g, "<em>$1</em>");
+
+  return formatted.replace(
+    new RegExp(`${codeMarker}(\\d+)${codeMarker}`, "g"),
+    (_match, index: string) => codeRegions[Number(index)]!,
+  );
+}

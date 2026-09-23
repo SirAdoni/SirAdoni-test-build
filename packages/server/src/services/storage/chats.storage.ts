@@ -1,0 +1,3490 @@
+// ──────────────────────────────────────────────
+// Storage: Chats
+// ──────────────────────────────────────────────
+import {
+  eq,
+  ne,
+  desc,
+  and,
+  gt,
+  lt,
+  or,
+  inArray,
+  isNull,
+  isNotNull,
+  jsonFlagsNotTrue,
+  stringIsNonBlank,
+} from "../../db/file-query.js";
+import type { DB } from "../../db/connection.js";
+import {
+  characters,
+  chats,
+  messages,
+  messageSwipes,
+  gameStateSnapshots,
+  spatialContextSnapshots,
+  gameCheckpoints,
+  gameEngineState,
+  chatImages,
+  gameSceneVideos,
+  gameDicePools,
+  gameTurnStoryboardKeyframes,
+  gameTurnStoryboards,
+  oocInfluences,
+  conversationNotes,
+  agentRuns,
+  agentMemory,
+  memoryChunks,
+  conversationCallSessions,
+  conversationCallMessages,
+  lorebookEntries,
+} from "../../db/schema/index.js";
+import { newId, newTimeSortableId, now } from "../../utils/id-generator.js";
+import { parseSourceMessageRefs } from "./lorebook-provenance.js";
+import { existsSync, rmSync } from "fs";
+import { join } from "path";
+import { DATA_DIR } from "../../utils/data-dir.js";
+import {
+  getRoleplayCommandActivity,
+  TRANSLATOR_DEFAULTS_SETTINGS_KEY,
+  normalizeTranslatorSettings,
+  type CreateChatInput,
+  type CreateMessageInput,
+  type RoleplayCommandActivity,
+} from "@marinara-engine/shared";
+import { prepareRoleplayInterruption } from "../generation/roleplay-interrupt.js";
+import {
+  ensureTimestampAfter,
+  latestTrustedTimestamp,
+  normalizeTimestampOverrides,
+  type TimestampOverrides,
+} from "../import/import-timestamps.js";
+import { type CharacterSchedules, type WeekSchedule } from "../conversation/schedule.service.js";
+import type { ConversationStatusOverride } from "@marinara-engine/shared";
+import { MESSAGE_MARK_EXTRA_KEYS } from "@marinara-engine/shared";
+import { resolveConversationTimeZone } from "../conversation/timezone.js";
+import { logger } from "../../lib/logger.js";
+import { withDiagnosticContext } from "../../lib/diagnostics.js";
+import { parseStoredJson, type StoredJsonLocation } from "./stored-json.js";
+import {
+  compactLorebookScanInExtra,
+  lorebookScanHasContent,
+  serializedExtraMayHoldFullLorebookScan,
+} from "../lorebook/lorebook-scan-compaction.js";
+import { galleryFileHasReferences, unlinkGalleryFileIfUnreferenced } from "../image/gallery-file-lifecycle.js";
+import { deletePrivateNotebookRowsForChat } from "../private-notebook.service.js";
+
+import { createAppSettingsStorage } from "./app-settings.storage.js";
+
+const GALLERY_DIR = join(DATA_DIR, "gallery");
+const GAME_SCENE_VIDEOS_DIR = join(DATA_DIR, "game-scene-videos");
+
+/** Total character budget for durable conversation notes per roleplay chat. Oldest pruned on insert. */
+export const CONVERSATION_NOTES_BUDGET_CHARS = 4000;
+
+export type MetadataPatch = Record<string, unknown>;
+export type MetadataUpdater = (current: MetadataPatch) => MetadataPatch | Promise<MetadataPatch>;
+export type ChatDeleteGuardResult = { allowed: true } | { allowed: false; reason: string };
+
+function lorebookEntryStateRemovalPatch(metadata: MetadataPatch, entryIds: ReadonlySet<string>): MetadataPatch {
+  const patch: MetadataPatch = {};
+  for (const key of [
+    "entryStateOverrides",
+    "entryTimingStates",
+    "lorebookEntryStateOverrides",
+    "lorebookEntryTimingStates",
+  ]) {
+    const value = metadata[key];
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    if (!Object.keys(value).some((id) => entryIds.has(id))) continue;
+    patch[key] = Object.fromEntries(Object.entries(value).filter(([id]) => !entryIds.has(id)));
+  }
+  return patch;
+}
+
+const metadataPatchQueues = new Map<string, Promise<void>>();
+const messageExtraPatchQueues = new Map<string, Promise<void>>();
+
+/**
+ * LOCK ORDER (#5599/#5600): the message patch queue is always acquired
+ * BEFORE the store's transaction slot — updateMessageContent takes the queue
+ * and then opens db.transaction, and the delete paths hold the queue across
+ * plain writes that wait out active transactions. A db.transaction callback
+ * must therefore NEVER call a queue-taking message API (updateMessageContent,
+ * updateMessageExtra, add/remove/setActiveSwipe, removeMessage(s), ...) —
+ * that is the reverse order and deadlocks the whole store with no timeout.
+ * Same discipline as the experience-lock → metadata-queue order documented
+ * further down. The queues are not reentrant either.
+ */
+async function withPatchQueue<T>(
+  queues: Map<string, Promise<void>>,
+  key: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = queues.get(key) ?? Promise.resolve();
+  const queued = previous.catch(() => undefined).then(operation);
+  const queuedVoid = queued.then(
+    () => undefined,
+    () => undefined,
+  );
+  queues.set(key, queuedVoid);
+
+  try {
+    return await queued;
+  } finally {
+    if (queues.get(key) === queuedVoid) {
+      queues.delete(key);
+    }
+  }
+}
+
+/**
+ * Serialize one operation against MANY keys' queues at once (#5599: a bulk
+ * delete must be ordered against every affected message's in-flight edits).
+ * The shared gate is installed on every key synchronously before any await,
+ * so two concurrent multi-acquires order themselves strictly — the second
+ * finds the first's gate among its predecessors — and a cycle cannot form.
+ */
+async function withPatchQueues<T>(
+  queues: Map<string, Promise<void>>,
+  keys: string[],
+  operation: () => Promise<T>,
+): Promise<T> {
+  const uniqueKeys = [...new Set(keys)];
+  const previous = uniqueKeys.map((key) => queues.get(key) ?? Promise.resolve());
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  for (const key of uniqueKeys) queues.set(key, gate);
+
+  try {
+    await Promise.all(previous.map((tail) => tail.catch(() => undefined)));
+    return await operation();
+  } finally {
+    release();
+    for (const key of uniqueKeys) {
+      if (queues.get(key) === gate) queues.delete(key);
+    }
+  }
+}
+
+export async function withChatMetadataPatchQueue<T>(chatId: string, operation: () => Promise<T>): Promise<T> {
+  return withPatchQueue(metadataPatchQueues, chatId, operation);
+}
+
+export async function withMessageExtraPatchQueue<T>(messageId: string, operation: () => Promise<T>): Promise<T> {
+  return withPatchQueue(messageExtraPatchQueues, messageId, operation);
+}
+
+function parseMetadata(raw: unknown, chatId = "unknown"): MetadataPatch {
+  if (!raw) return {};
+  const parsed = parseStoredJson<unknown>(raw, {}, { table: "chats", rowId: chatId, field: "metadata" });
+  return parsed && typeof parsed === "object" ? (parsed as MetadataPatch) : {};
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function mergeConversationStatusOverrides(current: unknown, incoming: unknown): unknown {
+  if (incoming === null) return null;
+  if (incoming === undefined) return current;
+  if (isPlainRecord(current) && isPlainRecord(incoming)) {
+    const merged = { ...current, ...incoming };
+    // Strip null tombstones (explicit deletion signals from the client)
+    for (const key of Object.keys(merged)) {
+      if (merged[key] === null) delete merged[key];
+    }
+    return merged;
+  }
+  return incoming;
+}
+
+function mergeMetadataPatch(current: MetadataPatch, patch: MetadataPatch): MetadataPatch {
+  const merged = { ...current, ...patch };
+  if (Object.prototype.hasOwnProperty.call(patch, "conversationStatusOverrides")) {
+    merged.conversationStatusOverrides = mergeConversationStatusOverrides(
+      current.conversationStatusOverrides,
+      patch.conversationStatusOverrides,
+    );
+  }
+  return merged;
+}
+
+// ── Per-chat write ordering (#5406) ──────────────────────────────────────────
+// A game-surface Experience keeps its save in two stores: the per-anchor
+// game_engine_state row (the authority, rewinds with the story) and a top-level chat-metadata
+// key it maintains as a boot cache (chat-global, never rewinds). Nothing let a client tell
+// "metadata is ahead because the last session degraded to metadata-only writes" from "the row
+// is behind because the player swiped back", so a degraded session's play was simply lost.
+//
+// The fix is one counter both paths draw from: `chats.writeOrdinalCounter`. Every allocation
+// is a read-and-bump of that column performed INSIDE the per-chat metadata patch queue
+// (`withChatMetadataPatchQueue`), which is what makes the sequence monotonic even though the
+// two writers hold different locks — the experience-state route holds its own per-chat write
+// lock and then calls `allocateWriteOrdinal`, which takes the metadata queue on top. The lock
+// order is always experience-lock -> metadata-queue and never the reverse, so there is no
+// deadlock, and because every allocation funnels through the one queue no two writes can read
+// the same counter value. Crashing between an allocation and the write it stamps burns an
+// ordinal; the contract is strict ordering, not density, so gaps are fine.
+//
+// The counter is not trusted on its own, because a metadata blob (mirror included) can be MOVED
+// into a chat that never allocated those ordinals — branching, a game "Next Session" carry, a
+// restored backup. Every allocation therefore floors the counter by the ordinals the chat's own
+// mirror already carries (`writeOrdinalFloor`), and the branch seam additionally raises the
+// counter above every engine-row ordinal it copied.
+
+/** Engine-owned metadata key holding `{ "<top-level metadata key>": <write ordinal> }` (#5406). */
+export const METADATA_WRITE_ORDINALS_KEY = "metadataWriteOrdinals";
+
+/** Read a stored mirror defensively — it can predate #5406 or have been clobbered by a
+ *  whole-blob `updateMetadata`, and only positive safe integers are usable ordinals. */
+function readOrdinalMirror(value: unknown): Map<string, number> {
+  const entries = new Map<string, number>();
+  if (!isPlainRecord(value)) return entries;
+  for (const [key, ordinal] of Object.entries(value)) {
+    if (key === METADATA_WRITE_ORDINALS_KEY) continue;
+    if (typeof ordinal === "number" && Number.isSafeInteger(ordinal) && ordinal > 0) entries.set(key, ordinal);
+  }
+  return entries;
+}
+
+/**
+ * The value this chat's next ordinal must beat: its counter, floored by every ordinal its
+ * metadata mirror already carries.
+ *
+ * The mirror can legitimately sit ABOVE the counter, because a metadata blob can be *moved* into
+ * a chat whose counter never handed those values out — a chat branch copying the source blob, a
+ * game "Next Session" carrying the previous session's metadata, an imported or restored backup.
+ * Allocating below a live stamp would make a brand-new write compare as older than a stale one
+ * for the rest of that key's life, so BOTH allocators floor here rather than trusting the counter
+ * alone.
+ */
+function writeOrdinalFloor(counter: unknown, metadata: MetadataPatch | null | undefined): number {
+  let floor = typeof counter === "number" && Number.isSafeInteger(counter) && counter > 0 ? counter : 0;
+  for (const ordinal of readOrdinalMirror(metadata?.[METADATA_WRITE_ORDINALS_KEY]).values()) {
+    if (ordinal > floor) floor = ordinal;
+  }
+  return floor;
+}
+
+/** The chat's next write ordinal: one past {@link writeOrdinalFloor}. */
+function nextWriteOrdinal(counter: unknown, metadata?: MetadataPatch | null): number {
+  return writeOrdinalFloor(counter, metadata) + 1;
+}
+
+/**
+ * Cap on how much of one metadata value is serialized for change detection. Past it the
+ * comparison degrades to reference identity: a multi-megabyte `gameMap` would otherwise be
+ * stringified twice on every patch (once for the pre-updater snapshot, once for the merged
+ * value) purely to decide whether to move an ordinal.
+ *
+ * The trade that buys: an oversize value re-sent as a fresh but equal object is counted as a
+ * write (harmless over-stamping), and an oversize value mutated in place is NOT seen (the same
+ * blind spot the pre-fingerprint code had for every value). Ordering by metadata is a boot cache
+ * for packages that keep their save small; a package that wants a multi-megabyte value ordered
+ * should split the ordered part out.
+ */
+const ORDINAL_DIFF_MAX_CHARS = 32_768;
+
+/** Bail-out token thrown from the bounded serializer's replacer. */
+const ORDINAL_DIFF_TOO_LARGE = Symbol("ordinal-diff-too-large");
+
+/** Fingerprint standing for "this key is absent", distinct from every JSON serialization. */
+const ORDINAL_DIFF_ABSENT = "\u0000absent";
+
+/**
+ * Fingerprint one metadata value for change detection, or null when it cannot be compared by
+ * value — too large (see {@link ORDINAL_DIFF_MAX_CHARS}) or unserializable (cyclic). The replacer
+ * charges every visited node against the budget and bails out, so an oversize value costs a
+ * partial walk rather than a full stringify.
+ */
+function fingerprintMetadataValue(value: unknown): string | null {
+  if (value === undefined) return ORDINAL_DIFF_ABSENT;
+  let budget = ORDINAL_DIFF_MAX_CHARS;
+  try {
+    return (
+      JSON.stringify(value, (_key, nested: unknown) => {
+        budget -= typeof nested === "string" ? nested.length + 2 : 8;
+        if (budget < 0) throw ORDINAL_DIFF_TOO_LARGE;
+        return nested;
+      }) ?? ORDINAL_DIFF_ABSENT
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fingerprint the top-level metadata values an updater could mutate IN PLACE, for the "before"
+ * side of {@link metadataValueChanged}. Only object-valued keys need it: a primitive cannot be
+ * mutated through the shallow copy the updater receives, so `current[key]` still holds its
+ * pre-updater value afterwards and can be fingerprinted lazily.
+ */
+function fingerprintMetadata(current: MetadataPatch): Map<string, string | null> {
+  const fingerprints = new Map<string, string | null>();
+  for (const key of Object.keys(current)) {
+    const value = current[key];
+    if (value !== null && typeof value === "object") fingerprints.set(key, fingerprintMetadataValue(value));
+  }
+  return fingerprints;
+}
+
+/**
+ * Did this patch actually write a new value for the key? Stamping a key whose value did not move
+ * would falsely advance the ordinal of a package's untouched key — precisely the bogus "metadata
+ * is newer" reading that clobbers a good save — so the `{ ...current, changedKey }` updater shape
+ * used throughout this file must leave every other key alone.
+ *
+ * `beforeFingerprint` is captured BEFORE a function updater runs. Comparing against the live
+ * `current[key]` afterwards is blind to an updater that mutates a nested value IN PLACE (the tool
+ * runtime hands a shallow copy of the live metadata to package-supplied code, so `current[key]`
+ * and `merged[key]` are then the same, already-mutated object and every value comparison agrees
+ * they match).
+ *
+ * When either side is un-fingerprintable (oversize, or cyclic) the test degrades to reference
+ * identity — the same answer the old `Object.is` fast path gave for those values, in-place blind
+ * spot included. See {@link ORDINAL_DIFF_MAX_CHARS} for why that is the right trade.
+ */
+function metadataValueChanged(beforeFingerprint: string | null, beforeValue: unknown, after: unknown): boolean {
+  const afterFingerprint = fingerprintMetadataValue(after);
+  if (beforeFingerprint !== null && afterFingerprint !== null) return beforeFingerprint !== afterFingerprint;
+  return !Object.is(beforeValue, after);
+}
+
+/**
+ * Strip the engine-owned mirror out of an incoming patch, so a caller on the metadata PATCH path
+ * cannot forge or freeze the ordering: on that path ordinals are only ever server-assigned, and
+ * function updaters that spread `current` would otherwise write the mirror back verbatim.
+ *
+ * This is a property of the queued patch path only. Whole-blob writers (`updateMetadata`, the
+ * capability persistence host) rewrite the mirror as part of the blob they carry — see the
+ * `updateMetadata` doc comment for why that is in scope.
+ */
+function stripOrdinalMirrorKey(patch: MetadataPatch): MetadataPatch {
+  if (!Object.prototype.hasOwnProperty.call(patch, METADATA_WRITE_ORDINALS_KEY)) return patch;
+  const { [METADATA_WRITE_ORDINALS_KEY]: _discarded, ...rest } = patch;
+  return rest;
+}
+
+type OrdinalStamp = { ordinal: number; mirror: Record<string, number> };
+
+/**
+ * Allocate one ordinal for this patch and stamp it onto every top-level key the patch actually
+ * changed. All keys in one patch share the ordinal because they were written in the same atomic
+ * row update — there is no meaningful order among them. Returns null when nothing changed, so a
+ * no-op patch neither burns an ordinal nor rewrites the mirror.
+ *
+ * `before` is the fingerprint snapshot taken before a function updater ran, or null for a literal
+ * patch object (which cannot have mutated `current`, so its live values are still trustworthy).
+ */
+function stampMetadataWriteOrdinals(
+  counter: unknown,
+  current: MetadataPatch,
+  merged: MetadataPatch,
+  patch: MetadataPatch,
+  before: Map<string, string | null> | null,
+): OrdinalStamp | null {
+  const fingerprintBefore = (key: string): string | null =>
+    // Not in the snapshot means either "no updater ran" or "a primitive an updater cannot have
+    // mutated in place" — in both cases the live value is still the pre-updater one.
+    before?.has(key) ? (before.get(key) as string | null) : fingerprintMetadataValue(current[key]);
+  const changed = Object.keys(patch).filter(
+    (key) =>
+      key !== METADATA_WRITE_ORDINALS_KEY && metadataValueChanged(fingerprintBefore(key), current[key], merged[key]),
+  );
+  if (changed.length === 0) return null;
+
+  const ordinal = nextWriteOrdinal(counter, current);
+  const mirror = readOrdinalMirror(current[METADATA_WRITE_ORDINALS_KEY]);
+  for (const key of changed) mirror.set(key, ordinal);
+  // Drop ordinals for keys the merged metadata no longer carries (a patch value of `undefined`
+  // is how callers delete): there is nothing left to order, and this keeps the mirror bounded
+  // by the live key set instead of growing with every key the chat has ever held.
+  for (const key of [...mirror.keys()]) if (merged[key] === undefined) mirror.delete(key);
+  // fromEntries, not literal assignment: a metadata key of "__proto__" must land as an own
+  // data property rather than reaching the prototype setter.
+  return { ordinal, mirror: Object.fromEntries(mirror) };
+}
+
+/** Apply a stamp to the merged metadata in place. */
+function applyOrdinalStamp(merged: MetadataPatch, stamp: OrdinalStamp | null): void {
+  if (!stamp) return;
+  if (Object.keys(stamp.mirror).length > 0) merged[METADATA_WRITE_ORDINALS_KEY] = stamp.mirror;
+  else delete merged[METADATA_WRITE_ORDINALS_KEY];
+}
+
+function readUnreadCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
+function readCharacterIds(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((id): id is string => typeof id === "string" && id.trim().length > 0) : [];
+}
+
+function hasConversationSchedules(value: unknown): value is CharacterSchedules {
+  return !!value && typeof value === "object" && Object.keys(value as Record<string, unknown>).length > 0;
+}
+
+/** Reuse character-owned routines unless this chat explicitly disables them. */
+function areConversationSchedulesEnabled(meta: MetadataPatch): boolean {
+  return meta.conversationSchedulesEnabled !== false;
+}
+
+/** Resolved presence state for one chat, read from the character cards it uses. */
+export type ConversationPresenceState = {
+  schedules: CharacterSchedules;
+  statusOverrides: Record<string, ConversationStatusOverride>;
+};
+
+/** Cheap structural compare, so a resolve that changes nothing skips the metadata write. */
+function sameOverrides(current: unknown, next: Record<string, ConversationStatusOverride>): boolean {
+  const currentMap = isPlainRecord(current) ? current : {};
+  const keys = Object.keys(next);
+  if (keys.length !== Object.keys(currentMap).length) return false;
+  return keys.every((key) => JSON.stringify(currentMap[key]) === JSON.stringify(next[key]));
+}
+
+function sameSchedules(a: CharacterSchedules, b: CharacterSchedules): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((key) => b[key] !== undefined && JSON.stringify(a[key]) === JSON.stringify(b[key]));
+}
+
+/** Read one `extensions` field off a serialized character card. */
+function readCardExtension(rawData: unknown, key: string): unknown {
+  if (typeof rawData !== "string") return undefined;
+  try {
+    const parsed = JSON.parse(rawData) as { extensions?: Record<string, unknown> };
+    return parsed?.extensions?.[key];
+  } catch {
+    return undefined;
+  }
+}
+
+/** Serialize a character card with one `extensions` field replaced. */
+function writeCardExtension(rawData: unknown, key: string, value: unknown): string | null {
+  if (typeof rawData !== "string") return null;
+  try {
+    const parsed: unknown = JSON.parse(rawData);
+    if (!isPlainRecord(parsed)) return null;
+    const rawExtensions = parsed.extensions;
+    if (rawExtensions !== undefined && rawExtensions !== null && !isPlainRecord(rawExtensions)) return null;
+    const extensions = isPlainRecord(rawExtensions) ? rawExtensions : {};
+    return JSON.stringify({ ...parsed, extensions: { ...extensions, [key]: value } });
+  } catch {
+    return null;
+  }
+}
+
+function readCharacterSchedule(rawData: unknown): WeekSchedule | null {
+  const schedule = readCardExtension(rawData, "conversationSchedule");
+  return isValidLegacySchedule(schedule) ? schedule : null;
+}
+
+/**
+ * A manual presence override belongs to the character, so it applies in every
+ * Conversation chat. `null` on the card means the user cleared it.
+ */
+function readCharacterStatusOverride(rawData: unknown): ConversationStatusOverride | null {
+  const override = readCardExtension(rawData, "conversationStatusOverride");
+  if (!override || typeof override !== "object" || Array.isArray(override)) return null;
+  const typed = override as Record<string, unknown>;
+  const validStatus =
+    typed.status === "online" || typed.status === "idle" || typed.status === "dnd" || typed.status === "offline";
+  if (!validStatus || typeof typed.createdAt !== "string" || typed.createdAt.length === 0) return null;
+  return override as ConversationStatusOverride;
+}
+
+function isValidLegacyStatusOverride(value: unknown): value is ConversationStatusOverride {
+  if (!isPlainRecord(value)) return false;
+  const status = value.status;
+  return (
+    (status === "online" || status === "idle" || status === "dnd" || status === "offline") &&
+    typeof value.createdAt === "string" &&
+    value.createdAt.length > 0
+  );
+}
+
+function isValidLegacySchedule(value: unknown): value is WeekSchedule {
+  if (!isPlainRecord(value) || typeof value.weekStart !== "string" || !isPlainRecord(value.days)) return false;
+  if (
+    typeof value.inactivityThresholdMinutes !== "number" ||
+    !Number.isFinite(value.inactivityThresholdMinutes) ||
+    value.inactivityThresholdMinutes < 0 ||
+    typeof value.talkativeness !== "number" ||
+    !Number.isFinite(value.talkativeness) ||
+    value.talkativeness < 0 ||
+    value.talkativeness > 100
+  ) {
+    return false;
+  }
+  return Object.values(value.days).every(
+    (day) =>
+      Array.isArray(day) &&
+      day.every(
+        (block) =>
+          isPlainRecord(block) &&
+          typeof block.time === "string" &&
+          typeof block.activity === "string" &&
+          (block.status === "online" ||
+            block.status === "idle" ||
+            block.status === "dnd" ||
+            block.status === "offline"),
+      ),
+  );
+}
+
+function parseCharacterIds(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.filter((id): id is string => typeof id === "string" && id.length > 0);
+  if (typeof raw !== "string") return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string" && id.length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+function firstScheduleWeekStart(schedules: CharacterSchedules): string | undefined {
+  return Object.values(schedules).find((schedule): schedule is WeekSchedule => !!schedule)?.weekStart;
+}
+
+function resolveTimestamps(overrides?: TimestampOverrides | null) {
+  const normalized = normalizeTimestampOverrides(overrides);
+  const createdAt = normalized?.createdAt ?? now();
+  return {
+    createdAt,
+    updatedAt: normalized?.updatedAt ?? createdAt,
+  };
+}
+
+/** Serialize optional JSON columns while preserving already-encoded metadata. */
+function serializeJsonField(value: unknown, fallback: Record<string, unknown>) {
+  if (value === undefined || value === null) return JSON.stringify(fallback);
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function parseExtraRecord(
+  value: unknown,
+  where: StoredJsonLocation = { table: "messages", rowId: "unknown", field: "extra" },
+): Record<string, unknown> {
+  if (!value) return {};
+  const parsed = parseStoredJson<unknown>(value, {}, where);
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+}
+
+const messageExtraAt = (rowId: string): StoredJsonLocation => ({ table: "messages", rowId, field: "extra" });
+const swipeExtraAt = (rowId: string): StoredJsonLocation => ({ table: "message_swipes", rowId, field: "extra" });
+
+function freshSwipeMessageExtra(value: unknown): Record<string, unknown> {
+  const current = parseExtraRecord(value);
+  const next: Record<string, unknown> = {
+    displayText: null,
+    isGenerated: typeof current.isGenerated === "boolean" ? current.isGenerated : true,
+    tokenCount: null,
+    generationInfo: null,
+  };
+
+  for (const key of [
+    "hiddenFromAI",
+    "hiddenFromAICharacterIds",
+    "hiddenFromUser",
+    "isConversationStart",
+    "conversationStartForCharacterIds",
+    "reactions",
+    "personaSnapshot",
+    ...MESSAGE_MARK_EXTRA_KEYS,
+  ]) {
+    if (current.commandOnly === true && (key === "hiddenFromAI" || key === "hiddenFromUser")) continue;
+    if (Object.prototype.hasOwnProperty.call(current, key)) {
+      next[key] = current[key];
+    }
+  }
+
+  return next;
+}
+
+function isUsableTimestamp(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && !Number.isNaN(Date.parse(value));
+}
+
+export function parseMessageCursor(before?: string): { createdAt: string; id: string } | null {
+  if (!before) return null;
+  const separatorIndex = before.indexOf("|");
+  if (separatorIndex <= 0 || separatorIndex === before.length - 1) return null;
+  const createdAt = before.slice(0, separatorIndex);
+  if (!isUsableTimestamp(createdAt)) return null;
+  let id: string;
+  try {
+    id = decodeURIComponent(before.slice(separatorIndex + 1));
+  } catch {
+    return null;
+  }
+  if (!id.trim() || id.length > 512) return null;
+  return {
+    createdAt,
+    id,
+  };
+}
+
+export class InvalidMessageCursorError extends Error {
+  constructor() {
+    super("Invalid message cursor");
+    this.name = "InvalidMessageCursorError";
+  }
+}
+
+type Interruption = NonNullable<RoleplayCommandActivity["interruption"]>;
+
+export class RoleplayInterruptionConflictError extends Error {}
+
+/** Receipts are imported message data; never trust an unchecked target or snapshot. */
+export function readRoleplayInterruption(value: unknown): Interruption | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as Interruption;
+  return typeof item.targetMessageId === "string" &&
+    Number.isSafeInteger(item.targetSwipeIndex) &&
+    item.targetSwipeIndex >= 0 &&
+    (item.targetSwipeId === undefined || typeof item.targetSwipeId === "string") &&
+    typeof item.originalContent === "string" &&
+    typeof item.interruptedContent === "string" &&
+    item.originalContent !== item.interruptedContent
+    ? item
+    : null;
+}
+
+async function invalidateMemoryChunksFrom(db: DB, chatId: string, createdAt: string) {
+  await db
+    .delete(memoryChunks)
+    .where(
+      and(
+        eq(memoryChunks.chatId, chatId),
+        isNull(memoryChunks.sourceChatId),
+        gt(memoryChunks.lastMessageAt, createdAt),
+      ),
+    );
+  await db
+    .delete(memoryChunks)
+    .where(
+      and(
+        eq(memoryChunks.chatId, chatId),
+        isNull(memoryChunks.sourceChatId),
+        eq(memoryChunks.lastMessageAt, createdAt),
+      ),
+    );
+}
+
+/**
+ * Count swipes per message id, scoped to the requested messages. The WHERE-less
+ * scan this replaces existed because `inArray` used to cost O(ids) plus an array
+ * allocation per scanned row (#3402); the store now resolves membership sets
+ * once per condition, so the scoped form is O(totalSwipes + ids) — the store
+ * still walks every swipe row, but nonmatching rows are no longer materialized
+ * or handed back for JS-side filtering (#5592 Phase 0).
+ */
+async function countSwipesByMessageId(db: DB, ids: string[]): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  if (ids.length === 0) return counts;
+  const rows = await db
+    .select({ messageId: messageSwipes.messageId })
+    .from(messageSwipes)
+    .where(inArray(messageSwipes.messageId, ids));
+  for (const row of rows) {
+    counts.set(row.messageId, (counts.get(row.messageId) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/** Create the chat storage facade used by routes and importers. */
+export function createChatsStorage(db: DB) {
+  let chatLastMessageAtBackfilled = false;
+  let chatLastMessageAtBackfillPromise: Promise<void> | null = null;
+
+  type MessageRow = typeof messages.$inferSelect;
+  const readMessage = async (id: string) => (await db.select().from(messages).where(eq(messages.id, id)))[0] ?? null;
+  const readSwipes = (id: string) =>
+    db.select().from(messageSwipes).where(eq(messageSwipes.messageId, id)).orderBy(messageSwipes.index);
+
+  /** Swipes store the lorebook scan without entry text; only the newest message row keeps it (see lorebook-scan-compaction). */
+  const swipeExtraPatch = (partial: Record<string, unknown>) => compactLorebookScanInExtra(partial) ?? partial;
+
+  /**
+   * After a new scan is saved on `keepMessageId`, strip entry text from every other stored scan in the chat. Runs
+   * outside the caller's queue and takes one message queue at a time, so it never nests queues. Failures only log:
+   * a scan that keeps its text is harmless and is compacted on the next generation.
+   */
+  async function compactStaleLorebookScans(chatId: string, keepMessageId: string) {
+    try {
+      const rows = await db.select({ id: messages.id, extra: messages.extra }).from(messages).where(eq(messages.chatId, chatId));
+      const ids = rows.map((row) => row.id);
+      if (ids.length === 0) return;
+      const swipeRows = await db
+        .select({ messageId: messageSwipes.messageId, extra: messageSwipes.extra })
+        .from(messageSwipes)
+        .where(inArray(messageSwipes.messageId, ids));
+      const targets = new Set<string>();
+      for (const row of rows)
+        if (row.id !== keepMessageId && serializedExtraMayHoldFullLorebookScan(row.extra)) targets.add(row.id);
+      for (const row of swipeRows) if (serializedExtraMayHoldFullLorebookScan(row.extra)) targets.add(row.messageId);
+      for (const messageId of targets) {
+        await withPatchQueue(messageExtraPatchQueues, messageId, async () => {
+          if (messageId !== keepMessageId) {
+            const message = await readMessage(messageId);
+            const compacted = message
+              ? compactLorebookScanInExtra(parseExtraRecord(message.extra, messageExtraAt(message.id)))
+              : null;
+            if (compacted)
+              await db.update(messages).set({ extra: JSON.stringify(compacted) }).where(eq(messages.id, messageId));
+          }
+          for (const swipe of await readSwipes(messageId)) {
+            const compacted = compactLorebookScanInExtra(parseExtraRecord(swipe.extra, swipeExtraAt(swipe.id)));
+            if (compacted)
+              await db.update(messageSwipes).set({ extra: JSON.stringify(compacted) }).where(eq(messageSwipes.id, swipe.id));
+          }
+        });
+      }
+    } catch (error) {
+      logger.warn(
+        { err: error, chatId, event: "chat.lorebook.compact", stage: "compact" },
+        "[chats] Could not compact older lorebook scans",
+      );
+    }
+  }
+  const receipts = (extra: unknown) =>
+    getRoleplayCommandActivity(parseExtraRecord(extra)).flatMap((activity) => {
+      const receipt = readRoleplayInterruption(activity.interruption);
+      return activity.command.type === "interrupt" && receipt && !activity.deleted && !activity.error ? [receipt] : [];
+    });
+
+  // Use the existing multi-key queue before the transaction, never nest queue-taking APIs.
+  // All swipe targets are locked because selecting another swipe can change the predecessor.
+  async function withInterruptionQueue<T>(
+    ids: string[],
+    operation: (locked: Set<string>) => Promise<T>,
+    targets: string[] = [],
+  ): Promise<T> {
+    const keys = new Set([...ids, ...targets]);
+    // Keep bulk deletion bounded to two scoped reads per pass, including chats with no commands.
+    const readTargetIds = async () => {
+      const [owners, swipes] = await Promise.all([
+        db.select({ extra: messages.extra }).from(messages).where(inArray(messages.id, ids)),
+        db.select({ extra: messageSwipes.extra }).from(messageSwipes).where(inArray(messageSwipes.messageId, ids)),
+      ]);
+      return [...owners, ...swipes].flatMap((row) => receipts(row.extra).map((receipt) => receipt.targetMessageId));
+    };
+    for (const targetId of await readTargetIds()) keys.add(targetId);
+    let retry = false;
+    const result = await withPatchQueues(messageExtraPatchQueues, [...keys], async () => {
+      for (const targetId of await readTargetIds()) {
+        if (!keys.has(targetId)) {
+          keys.add(targetId);
+          retry = true;
+        }
+      }
+      return retry ? undefined : db.transaction(() => operation(keys));
+    });
+    // A queued commit may have added a receipt after the first read. Reacquire all keys together.
+    return retry ? withInterruptionQueue(ids, operation, [...keys]) : (result as T);
+  }
+
+  async function precedingActualMessage(owner: MessageRow) {
+    const rows = await db
+      .select()
+      .from(messages)
+      .where(eq(messages.chatId, owner.chatId))
+      .orderBy(messages.createdAt, messages.id);
+    const index = rows.findIndex((row) => row.id === owner.id);
+    return (
+      rows
+        .slice(0, index)
+        .reverse()
+        .find((row) => {
+          const extra = parseExtraRecord(row.extra);
+          return (
+            (row.role === "user" || row.role === "assistant") &&
+            extra.commandOnly !== true &&
+            extra.roleplayPrivateOnly !== true
+          );
+        }) ?? null
+    );
+  }
+
+  async function writeOwnerExtra(owner: MessageRow, swipeIndex: number, extra: Record<string, unknown>) {
+    const swipe = (await readSwipes(owner.id)).find((row) => row.index === swipeIndex);
+    if (!swipe) throw new RoleplayInterruptionConflictError("The response swipe no longer exists.");
+    await db
+      .update(messageSwipes)
+      .set({
+        extra: JSON.stringify({ ...parseExtraRecord(swipe.extra, swipeExtraAt(swipe.id)), ...swipeExtraPatch(extra) }),
+      })
+      .where(eq(messageSwipes.id, swipe.id));
+    if (owner.activeSwipeIndex === swipeIndex)
+      await db
+        .update(messages)
+        .set({ extra: JSON.stringify({ ...parseExtraRecord(owner.extra, messageExtraAt(owner.id)), ...extra }) })
+        .where(eq(messages.id, owner.id));
+  }
+
+  async function changeInterruptionTarget(
+    owner: MessageRow,
+    receipt: Interruption,
+    restore: boolean,
+    locked: Set<string>,
+    signal?: AbortSignal,
+  ) {
+    if (!locked.has(receipt.targetMessageId))
+      throw new RoleplayInterruptionConflictError("The interrupted message changed. Try again.");
+    const target = await readMessage(receipt.targetMessageId);
+    if (!target || target.chatId !== owner.chatId || target.id === owner.id)
+      throw new RoleplayInterruptionConflictError("The interrupted message no longer exists in this chat.");
+    const swipe = (await readSwipes(target.id)).find((row) =>
+      receipt.targetSwipeId ? row.id === receipt.targetSwipeId : row.index === receipt.targetSwipeIndex,
+    );
+    if (!swipe) throw new RoleplayInterruptionConflictError("The interrupted swipe no longer exists.");
+    const active = target.activeSwipeIndex === swipe.index;
+    if (!restore && (!active || (await precedingActualMessage(owner))?.id !== target.id))
+      throw new RoleplayInterruptionConflictError("The preceding message or its selected swipe changed.");
+    const current = active ? target.content : swipe.content;
+    const expected = restore ? receipt.interruptedContent : receipt.originalContent;
+    const content = restore ? receipt.originalContent : receipt.interruptedContent;
+    if (current === content) return null;
+    if (current !== expected || swipe.content !== expected)
+      throw new RoleplayInterruptionConflictError("The interrupted message was edited; its changes were preserved.");
+    if (signal?.aborted)
+      throw new RoleplayInterruptionConflictError("Interruption was not applied because generation was cancelled.");
+    await db.update(messageSwipes).set({ content }).where(eq(messageSwipes.id, swipe.id));
+    if (active) await db.update(messages).set({ content }).where(eq(messages.id, target.id));
+    await invalidateMemoryChunksFrom(db, target.chatId, target.createdAt);
+    return active ? readMessage(target.id) : null;
+  }
+
+  async function reconcileEffects(owner: MessageRow | null, restore: boolean, locked: Set<string>) {
+    const changed: MessageRow[] = [];
+    if (!owner) return changed;
+    for (const receipt of receipts(owner.extra)) {
+      if (receipt.restored) continue;
+      try {
+        const target = await changeInterruptionTarget(owner, receipt, restore, locked);
+        if (target) changed.push(target);
+      } catch (error) {
+        if (!(error instanceof RoleplayInterruptionConflictError)) throw error;
+        logger.debug(
+          { messageId: owner.id, targetMessageId: receipt.targetMessageId },
+          "[interrupt] Preserved a changed interruption target",
+        );
+      }
+    }
+    return changed;
+  }
+
+  async function hasGameDeletePayload(chatId: string): Promise<boolean> {
+    const existingMessage = await db
+      .select({ id: messages.id })
+      .from(messages)
+      .where(eq(messages.chatId, chatId))
+      .limit(1);
+    if (existingMessage.length > 0) return true;
+    const existingSnapshot = await db
+      .select({ id: gameStateSnapshots.id })
+      .from(gameStateSnapshots)
+      .where(eq(gameStateSnapshots.chatId, chatId))
+      .limit(1);
+    if (existingSnapshot.length > 0) return true;
+    const existingCheckpoint = await db
+      .select({ id: gameCheckpoints.id })
+      .from(gameCheckpoints)
+      .where(eq(gameCheckpoints.chatId, chatId))
+      .limit(1);
+    if (existingCheckpoint.length > 0) return true;
+    const existingImage = await db
+      .select({ id: chatImages.id })
+      .from(chatImages)
+      .where(eq(chatImages.chatId, chatId))
+      .limit(1);
+    if (existingImage.length > 0) return true;
+    const existingVideo = await db
+      .select({ id: gameSceneVideos.id })
+      .from(gameSceneVideos)
+      .where(eq(gameSceneVideos.chatId, chatId))
+      .limit(1);
+    if (existingVideo.length > 0) return true;
+    const existingStoryboard = await db
+      .select({ id: gameTurnStoryboards.id })
+      .from(gameTurnStoryboards)
+      .where(eq(gameTurnStoryboards.chatId, chatId))
+      .limit(1);
+    return existingStoryboard.length > 0;
+  }
+
+  async function isProtectedGameDeleteTarget(chat: {
+    id: string;
+    mode: string | null;
+    metadata: unknown;
+  }): Promise<boolean> {
+    if (chat.mode !== "game") return false;
+    const meta = parseMetadata(chat.metadata, chat.id);
+    const hasGameId = typeof meta.gameId === "string" && meta.gameId.trim().length > 0;
+    return hasGameId || (await hasGameDeletePayload(chat.id));
+  }
+
+  async function checkDeleteTargets(
+    rows: Array<{ id: string; mode: string | null; metadata: unknown }>,
+    options: { force?: boolean },
+    reason: string,
+  ): Promise<ChatDeleteGuardResult> {
+    if (options.force) return { allowed: true };
+    for (const chat of rows) {
+      if (await isProtectedGameDeleteTarget(chat)) {
+        return { allowed: false, reason };
+      }
+    }
+    return { allowed: true };
+  }
+
+  /**
+   * `chatIds` scopes every messageId-keyed condition to the owning chats so
+   * the lazy store (#5592 Phase 2) loads only those chat units instead of
+   * leasing each game table whole. Callers pass the chatIds of the messages
+   * being removed (they read the rows first); omitting it keeps the old
+   * unscoped behavior.
+   */
+  async function deleteGameStateForMessages(messageIds: string[], chatIds?: string[]) {
+    const ids = Array.from(new Set(messageIds.filter(Boolean)));
+    if (ids.length === 0) return;
+    const ownerChatIds = Array.from(new Set((chatIds ?? []).filter(Boolean)));
+    // A game row whose chatId disagrees with its message's chat (corrupt
+    // cross-chat ref) is skipped by the scoped form; the store-level cascade
+    // accepts the same corner and such rows are cleaned when their unit loads.
+    const chatScoped = (chatColumn: Parameters<typeof inArray>[0], condition: ReturnType<typeof inArray>) =>
+      ownerChatIds.length > 0 ? and(condition, inArray(chatColumn, ownerChatIds)) : condition;
+
+    const CHUNK = 500;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      const snapshots = await db
+        .select({ id: gameStateSnapshots.id })
+        .from(gameStateSnapshots)
+        .where(chatScoped(gameStateSnapshots.chatId, inArray(gameStateSnapshots.messageId, chunk)));
+      const snapshotIds = snapshots.map((row) => row.id).filter(Boolean);
+
+      for (let j = 0; j < snapshotIds.length; j += CHUNK) {
+        const snapshotChunk = snapshotIds.slice(j, j + CHUNK);
+        await db
+          .delete(gameCheckpoints)
+          .where(chatScoped(gameCheckpoints.chatId, inArray(gameCheckpoints.snapshotId, snapshotChunk)));
+      }
+      await db
+        .delete(gameCheckpoints)
+        .where(chatScoped(gameCheckpoints.chatId, inArray(gameCheckpoints.messageId, chunk)));
+      await db
+        .delete(gameStateSnapshots)
+        .where(chatScoped(gameStateSnapshots.chatId, inArray(gameStateSnapshots.messageId, chunk)));
+      await db
+        .delete(spatialContextSnapshots)
+        .where(chatScoped(spatialContextSnapshots.chatId, inArray(spatialContextSnapshots.messageId, chunk)));
+      await db
+        .delete(gameEngineState)
+        .where(chatScoped(gameEngineState.chatId, inArray(gameEngineState.messageId, chunk)));
+      // A dice-pool row is the record of what one turn was dealt. Left behind after a
+      // rewind it becomes the "latest" row the next turn refills from, so the chat would
+      // resume from a queue belonging to a turn that no longer exists.
+      await db.delete(gameDicePools).where(chatScoped(gameDicePools.chatId, inArray(gameDicePools.messageId, chunk)));
+    }
+  }
+
+  /**
+   * Cascade message deletions into agent-authored lorebook entries (deleted
+   * chat messages used to leave agent-written lore live, still steering later
+   * generations — the deleted-turn "facts" kept being injected and the model
+   * argued with the user's corrections).
+   *
+   * Entries carry sourceMessageRefs ({ id, swipeIndex } of the turn their
+   * CURRENT content was extracted from) and a depth-1 pre-write snapshot
+   * (previousContent/previousSourceMessageRefs, taken on every agent rewrite).
+   * For each agent-authored entry whose current refs mention a removed
+   * message:
+   *   - a snapshot whose own refs survive the batch → revert to it (an
+   *     in-place rewrite is undone, like addSwipe's outgoing-swipe backfill);
+   *   - otherwise → remove the entry: a keeper create has nothing to revert
+   *     to, and lore whose source turn is gone must not steer prompts.
+   * A snapshot whose refs are in the SAME batch is discarded first, so the
+   * entry deletes instead of reverting to lore whose source is also gone.
+   * Entries that never mention a removed message — and manual entries
+   * (sourceAgentId NULL; a human edit takes ownership) — are untouched.
+   *
+   * Return removed IDs so callers can prune metadata after releasing the transaction.
+   */
+  async function cascadeAgentLorebookEntriesForMessages(messageIds: string[]): Promise<string[]> {
+    const deletedIds = new Set(messageIds.filter(Boolean));
+    if (deletedIds.size === 0) return [];
+    const candidates = await db
+      .select({
+        id: lorebookEntries.id,
+        content: lorebookEntries.content,
+        sourceMessageRefs: lorebookEntries.sourceMessageRefs,
+        previousContent: lorebookEntries.previousContent,
+        previousSourceMessageRefs: lorebookEntries.previousSourceMessageRefs,
+        previousSourceAgentId: lorebookEntries.previousSourceAgentId,
+      })
+      .from(lorebookEntries)
+      .where(isNotNull(lorebookEntries.sourceAgentId));
+
+    const removed: string[] = [];
+    for (const entry of candidates) {
+      const currentRefs = parseSourceMessageRefs(entry.sourceMessageRefs);
+      const previousRefs = parseSourceMessageRefs(entry.previousSourceMessageRefs);
+      const currentHit = currentRefs.some((ref) => deletedIds.has(ref.id));
+      const snapshotPoisoned = previousRefs.some((ref) => deletedIds.has(ref.id));
+      if (!currentHit && !snapshotPoisoned) continue;
+
+      if (snapshotPoisoned) {
+        await db
+          .update(lorebookEntries)
+          .set({ previousContent: null, previousSourceMessageRefs: null, previousSourceAgentId: null })
+          .where(eq(lorebookEntries.id, entry.id));
+      }
+
+      if (currentHit) {
+        const canRevert = !snapshotPoisoned && typeof entry.previousContent === "string";
+        if (canRevert) {
+          await db
+            .update(lorebookEntries)
+            .set({
+              content: entry.previousContent as string,
+              embedding: null,
+              embeddingSpaceId: null,
+              sourceMessageRefs: entry.previousSourceAgentId ? (entry.previousSourceMessageRefs ?? "[]") : "[]",
+              sourceAgentId: entry.previousSourceAgentId ?? null,
+              previousSourceAgentId: null,
+              previousContent: null,
+              previousSourceMessageRefs: null,
+              updatedAt: now(),
+            })
+            .where(eq(lorebookEntries.id, entry.id));
+        } else {
+          await db.delete(lorebookEntries).where(eq(lorebookEntries.id, entry.id));
+          removed.push(entry.id);
+        }
+      }
+    }
+    return removed;
+  }
+
+  async function readLatestMessageAt(chatId: string): Promise<string | null> {
+    const rows = await db
+      .select({ createdAt: messages.createdAt })
+      .from(messages)
+      .where(eq(messages.chatId, chatId))
+      .orderBy(desc(messages.createdAt))
+      .limit(1);
+    return rows[0]?.createdAt ?? null;
+  }
+
+  async function refreshChatLastMessageAt(chatId: string): Promise<string | null> {
+    const lastMessageAt = await readLatestMessageAt(chatId);
+    await db.update(chats).set({ lastMessageAt }).where(eq(chats.id, chatId));
+    return lastMessageAt;
+  }
+
+  async function ensureChatLastMessageAtBackfilled() {
+    if (chatLastMessageAtBackfilled) return;
+    chatLastMessageAtBackfillPromise ??= (async () => {
+      const chatRows = await db.select({ id: chats.id, lastMessageAt: chats.lastMessageAt }).from(chats);
+      const missingChatIds = new Set(
+        chatRows
+          .filter((chat) => !isUsableTimestamp(chat.lastMessageAt))
+          .map((chat) => chat.id)
+          .filter((id): id is string => typeof id === "string" && id.length > 0),
+      );
+      if (missingChatIds.size === 0) {
+        chatLastMessageAtBackfilled = true;
+        return;
+      }
+
+      // Per-chat lookups instead of one global messages sweep: under lazy
+      // chat units (#5592 Phase 2) the sweep would make every chat's messages
+      // resident just to backfill the few legacy rows missing lastMessageAt,
+      // while eq(chatId) loads only the chats that actually need it.
+      for (const chatId of missingChatIds) {
+        const lastMessageAt = await readLatestMessageAt(chatId);
+        if (lastMessageAt === null) continue;
+        await db.update(chats).set({ lastMessageAt }).where(eq(chats.id, chatId));
+      }
+      chatLastMessageAtBackfilled = true;
+    })().finally(() => {
+      chatLastMessageAtBackfillPromise = null;
+    });
+    await chatLastMessageAtBackfillPromise;
+  }
+
+  /**
+   * Read the character-owned schedules for `characterIds`. The character card is
+   * the single source of truth; chats only cache a resolved copy in
+   * `metadata.characterSchedules`.
+   *
+   * Last week's schedule is returned as-is. Days are keyed by weekday, so it
+   * still yields a usable routine, and dropping it here would both blank the
+   * panel and hide the staleness from the `needsRefresh` signal that drives
+   * regeneration — the schedule would then stay empty forever.
+   */
+  async function collectConversationSchedules(characterIds: string[]): Promise<CharacterSchedules> {
+    const wanted = Array.from(new Set(characterIds));
+    const collected: CharacterSchedules = {};
+    if (wanted.length === 0) return collected;
+
+    const rows = await db.select().from(characters).where(inArray(characters.id, wanted));
+    for (const row of rows) {
+      const schedule = readCharacterSchedule(row.data);
+      if (schedule) collected[row.id] = schedule;
+    }
+
+    return collected;
+  }
+
+  /**
+   * Legacy hoist: chats used to own `characterSchedules`. Copy any chat-cached
+   * schedule up to a character that has none yet, so pre-existing routines
+   * survive the move to character-owned storage. One-way and idempotent.
+   */
+  async function hoistLegacyChatSchedules(
+    cachedSchedules: CharacterSchedules,
+    activeCharacterIds: readonly string[],
+  ): Promise<boolean> {
+    const activeIds = new Set(activeCharacterIds);
+    const characterIds = Object.keys(cachedSchedules).filter((characterId) => activeIds.has(characterId));
+    if (characterIds.length === 0) return false;
+
+    let hoisted = false;
+    for (const characterId of characterIds) {
+      const schedule = cachedSchedules[characterId];
+      if (!isValidLegacySchedule(schedule)) continue;
+      const didHoist = await db.transaction(async (tx) => {
+        const rows = await tx.select().from(characters).where(eq(characters.id, characterId));
+        const row = rows[0];
+        if (!row || readCardExtension(row.data, "conversationSchedule") !== undefined) return false;
+        const nextData = writeCardExtension(row.data, "conversationSchedule", schedule);
+        if (!nextData) return false;
+        await tx.update(characters).set({ data: nextData }).where(eq(characters.id, characterId));
+        return true;
+      });
+      hoisted ||= didHoist;
+    }
+    return hoisted;
+  }
+
+  /**
+   * Legacy hoist for manual presence overrides, which used to be chat-scoped.
+   * Only fills a card that has never carried an override, so a cleared override
+   * (`null` on the card) is not resurrected by a stale chat cache.
+   */
+  async function hoistLegacyChatOverrides(
+    cachedOverrides: unknown,
+    activeCharacterIds: readonly string[],
+  ): Promise<void> {
+    if (!isPlainRecord(cachedOverrides)) return;
+    const activeIds = new Set(activeCharacterIds);
+    const characterIds = Object.keys(cachedOverrides).filter((characterId) => activeIds.has(characterId));
+    if (characterIds.length === 0) return;
+
+    for (const characterId of characterIds) {
+      const override = cachedOverrides[characterId];
+      if (!isValidLegacyStatusOverride(override)) continue;
+      await db.transaction(async (tx) => {
+        const rows = await tx.select().from(characters).where(eq(characters.id, characterId));
+        const row = rows[0];
+        if (!row || readCardExtension(row.data, "conversationStatusOverride") !== undefined) return;
+        const nextData = writeCardExtension(row.data, "conversationStatusOverride", override);
+        if (!nextData) return;
+        await tx.update(characters).set({ data: nextData }).where(eq(characters.id, characterId));
+      });
+    }
+  }
+
+  async function collectConversationPresence(
+    characterIds: string[],
+  ): Promise<{ schedules: CharacterSchedules; overrides: Record<string, ConversationStatusOverride | null> }> {
+    const wanted = Array.from(new Set(characterIds));
+    const schedules: CharacterSchedules = {};
+    const overrides: Record<string, ConversationStatusOverride | null> = {};
+    if (wanted.length === 0) return { schedules, overrides };
+    const rows = await db.select().from(characters).where(inArray(characters.id, wanted));
+    for (const row of rows) {
+      const schedule = readCharacterSchedule(row.data);
+      if (schedule) schedules[row.id] = schedule;
+      overrides[row.id] = readCharacterStatusOverride(row.data);
+    }
+    return { schedules, overrides };
+  }
+
+  async function removeChatDatabaseRecords(database: DB, chatId: string): Promise<string[]> {
+    await deletePrivateNotebookRowsForChat(database, chatId);
+    await database.delete(agentRuns).where(eq(agentRuns.chatId, chatId));
+    await database.delete(agentMemory).where(eq(agentMemory.chatId, chatId));
+    await database.delete(gameCheckpoints).where(eq(gameCheckpoints.chatId, chatId));
+    await database.delete(gameStateSnapshots).where(eq(gameStateSnapshots.chatId, chatId));
+    await database.delete(spatialContextSnapshots).where(eq(spatialContextSnapshots.chatId, chatId));
+    await database.delete(gameEngineState).where(eq(gameEngineState.chatId, chatId));
+    await database.delete(conversationCallMessages).where(eq(conversationCallMessages.chatId, chatId));
+    await database.delete(conversationCallSessions).where(eq(conversationCallSessions.chatId, chatId));
+    const storyboards = await database
+      .select({ id: gameTurnStoryboards.id })
+      .from(gameTurnStoryboards)
+      .where(eq(gameTurnStoryboards.chatId, chatId));
+    for (const storyboard of storyboards) {
+      await database
+        .delete(gameTurnStoryboardKeyframes)
+        .where(eq(gameTurnStoryboardKeyframes.storyboardId, storyboard.id));
+    }
+    await database.delete(gameTurnStoryboards).where(eq(gameTurnStoryboards.chatId, chatId));
+    await database.delete(gameSceneVideos).where(eq(gameSceneVideos.chatId, chatId));
+    await database.delete(gameDicePools).where(eq(gameDicePools.chatId, chatId));
+    const galleryFiles = await database
+      .select({ filePath: chatImages.filePath })
+      .from(chatImages)
+      .where(eq(chatImages.chatId, chatId));
+    await database.delete(chatImages).where(eq(chatImages.chatId, chatId));
+    await database.delete(chats).where(eq(chats.id, chatId));
+    return galleryFiles.map((image) => image.filePath);
+  }
+
+  async function cleanupDeletedChatFiles(chatId: string, galleryFilePaths: string[]): Promise<void> {
+    for (const filePath of galleryFilePaths) {
+      try {
+        await unlinkGalleryFileIfUnreferenced({ db, filePath });
+      } catch (error) {
+        logger.warn(
+          { err: error, chatId, event: "chat.delete.cleanup", stage: "gallery" },
+          "[chats] Failed to remove gallery file after deleting chat",
+        );
+      }
+    }
+
+    const localPathPrefix = `${chatId}/`;
+    const hasSharedLocalFile = (
+      await Promise.all(
+        galleryFilePaths
+          .filter((filePath) => filePath.replace(/\\/g, "/").startsWith(localPathPrefix))
+          .map(async (filePath) => {
+            try {
+              return await galleryFileHasReferences(db, filePath);
+            } catch (error) {
+              logger.warn(
+                { err: error, chatId, event: "chat.delete.cleanup", stage: "gallery_references" },
+                "[chats] Failed to check gallery references after deleting chat",
+              );
+              return true;
+            }
+          }),
+      )
+    ).some(Boolean);
+    const directories = [
+      ...(hasSharedLocalFile ? [] : [join(GALLERY_DIR, chatId)]),
+      join(GAME_SCENE_VIDEOS_DIR, chatId),
+    ];
+    for (const directory of directories) {
+      if (!existsSync(directory)) continue;
+      try {
+        rmSync(directory, { recursive: true, force: true });
+      } catch (error) {
+        logger.warn(
+          { err: error, chatId, event: "chat.delete.cleanup", stage: "directories" },
+          "[chats] Failed to remove files after deleting chat",
+        );
+      }
+    }
+  }
+
+  return {
+    async list() {
+      await ensureChatLastMessageAtBackfilled();
+      return db.select().from(chats).orderBy(desc(chats.updatedAt));
+    },
+
+    async listRecent(limit: number, offset = 0) {
+      return db
+        .select()
+        .from(chats)
+        .orderBy(desc(chats.updatedAt), desc(chats.id))
+        .offset(Math.max(0, Math.floor(offset)))
+        .limit(Math.max(1, Math.min(100, Math.floor(limit))));
+    },
+
+    async getById(id: string) {
+      const rows = await db.select().from(chats).where(eq(chats.id, id));
+      return rows[0] ?? null;
+    },
+
+    async create(
+      input: Omit<CreateChatInput, "personaCharacterId"> & { personaCharacterId?: string | null },
+      timestampOverrides?: TimestampOverrides | null,
+    ) {
+      const id = newId();
+      const timestamp = resolveTimestamps(timestampOverrides);
+      const recentConversation =
+        input.mode === "conversation"
+          ? (
+              await db
+                .select({ id: chats.id, metadata: chats.metadata })
+                .from(chats)
+                .where(eq(chats.mode, "conversation"))
+                .orderBy(desc(chats.updatedAt))
+                .limit(1)
+            )[0]
+          : undefined;
+      const conversationTimeZone = recentConversation
+        ? resolveConversationTimeZone(parseMetadata(recentConversation.metadata, recentConversation.id))
+        : undefined;
+      const inheritedSchedules =
+        input.mode === "conversation" ? await collectConversationSchedules(input.characterIds) : {};
+      const metadata: MetadataPatch = {
+        ...normalizeTranslatorSettings(await createAppSettingsStorage(db).get(TRANSLATOR_DEFAULTS_SETTINGS_KEY)),
+        summary: null,
+        tags: [],
+        enableAgents: true,
+        agentOverrides: {},
+        activeAgentIds: [],
+        activeToolIds: [],
+      };
+      if (hasConversationSchedules(inheritedSchedules)) {
+        metadata.conversationSchedulesEnabled = true;
+        metadata.characterSchedules = inheritedSchedules;
+        const scheduleWeekStart = firstScheduleWeekStart(inheritedSchedules);
+        if (scheduleWeekStart) metadata.scheduleWeekStart = scheduleWeekStart;
+      }
+      if (conversationTimeZone) metadata.conversationTimeZone = conversationTimeZone;
+      await db.insert(chats).values({
+        id,
+        name: input.name,
+        mode: input.mode,
+        characterIds: JSON.stringify(input.characterIds),
+        groupId: input.groupId ?? null,
+        personaId: input.personaCharacterId ? null : (input.personaId ?? null),
+        personaCharacterId: input.personaCharacterId ?? null,
+        promptPresetId: input.promptPresetId,
+        connectionId: input.connectionId,
+        metadata: JSON.stringify(metadata),
+        lastMessageAt: null,
+        createdAt: timestamp.createdAt,
+        updatedAt: timestamp.updatedAt,
+      });
+      return this.getById(id);
+    },
+
+    /**
+     * Resolve this chat's presence state from the character cards, which own
+     * both the schedule and the manual status override, and refresh the chat's
+     * cached copies. Overrides resolve even when this chat has schedules
+     * switched off — the opt-out is about routines, not manual availability.
+     */
+    async resolveConversationPresenceState(id: string): Promise<ConversationPresenceState> {
+      const chat = await this.getById(id);
+      if (!chat || chat.mode !== "conversation") return { schedules: {}, statusOverrides: {} };
+
+      const meta = parseMetadata(chat.metadata, chat.id);
+      const characterIds = parseCharacterIds(chat.characterIds);
+
+      // Hoist before the opt-in gate, so a chat that is switched off does not
+      // strand the only copy of a pre-existing schedule in its metadata.
+      if (hasConversationSchedules(meta.characterSchedules)) {
+        await hoistLegacyChatSchedules(meta.characterSchedules, characterIds);
+      }
+      if (isPlainRecord(meta.conversationStatusOverrides) && Object.keys(meta.conversationStatusOverrides).length > 0) {
+        await hoistLegacyChatOverrides(meta.conversationStatusOverrides, characterIds);
+      }
+
+      const presence = await collectConversationPresence(characterIds);
+      const cardOverrides = presence.overrides;
+      const statusOverrides: Record<string, ConversationStatusOverride> = {};
+      for (const [characterId, override] of Object.entries(cardOverrides)) {
+        if (override) statusOverrides[characterId] = override;
+      }
+      const cachedOverrides = isPlainRecord(meta.conversationStatusOverrides)
+        ? Object.fromEntries(Object.entries(meta.conversationStatusOverrides).filter(([, value]) => value != null))
+        : {};
+      if (!sameOverrides(cachedOverrides, statusOverrides)) {
+        const staleKeys = isPlainRecord(meta.conversationStatusOverrides)
+          ? Object.keys(meta.conversationStatusOverrides).filter((key) => !(key in cardOverrides))
+          : [];
+        await this.patchMetadata(
+          id,
+          {
+            conversationStatusOverrides: {
+              ...cardOverrides,
+              ...Object.fromEntries(staleKeys.map((key) => [key, null])),
+            },
+          },
+          { touchUpdatedAt: false },
+        );
+      }
+
+      const schedules = await this.resolveConversationSchedules(id);
+      return { schedules, statusOverrides };
+    },
+
+    /** Schedule half of {@link resolveConversationPresenceState}. */
+    async resolveConversationSchedules(id: string): Promise<CharacterSchedules> {
+      const chat = await this.getById(id);
+      if (!chat || chat.mode !== "conversation") return {};
+
+      const meta = parseMetadata(chat.metadata, chat.id);
+      if (!areConversationSchedulesEnabled(meta)) return {};
+
+      const characterIds = parseCharacterIds(chat.characterIds);
+      const currentSchedules = hasConversationSchedules(meta.characterSchedules) ? meta.characterSchedules : {};
+
+      // The character card is the source of truth; the chat map is a cache that
+      // can be stale or hold a schedule the character has since replaced.
+      const freshSchedules = await collectConversationSchedules(characterIds);
+      const nextSchedules: CharacterSchedules = {};
+      for (const characterId of characterIds) {
+        const schedule = freshSchedules[characterId];
+        if (schedule) nextSchedules[characterId] = schedule;
+      }
+      if (sameSchedules(currentSchedules, nextSchedules)) return currentSchedules;
+      if (!hasConversationSchedules(nextSchedules)) {
+        await this.patchMetadata(id, { characterSchedules: {}, scheduleWeekStart: null }, { touchUpdatedAt: false });
+        return {};
+      }
+      const scheduleWeekStart = firstScheduleWeekStart(nextSchedules);
+      await this.patchMetadata(
+        id,
+        {
+          characterSchedules: nextSchedules,
+          ...(scheduleWeekStart ? { scheduleWeekStart } : {}),
+        },
+        { touchUpdatedAt: false },
+      );
+
+      return nextSchedules;
+    },
+
+    async update(
+      id: string,
+      data: Partial<CreateChatInput> & { folderId?: string | null; sortOrder?: number },
+      opts?: { tx?: Pick<DB, "select" | "update"> },
+    ) {
+      const conn = opts?.tx ?? db;
+      const identityUpdate =
+        data.personaId === undefined && data.personaCharacterId === undefined
+          ? {}
+          : data.personaCharacterId
+            ? { personaId: null, personaCharacterId: data.personaCharacterId }
+            : { personaId: data.personaId ?? null, personaCharacterId: null };
+      await conn
+        .update(chats)
+        .set({
+          ...(data.name !== undefined && { name: data.name }),
+          ...(data.mode !== undefined && { mode: data.mode }),
+          ...(data.characterIds !== undefined && { characterIds: JSON.stringify(data.characterIds) }),
+          ...(data.groupId !== undefined && { groupId: data.groupId }),
+          ...identityUpdate,
+          ...(data.promptPresetId !== undefined && { promptPresetId: data.promptPresetId }),
+          ...(data.connectionId !== undefined && { connectionId: data.connectionId }),
+          ...(data.folderId !== undefined && { folderId: data.folderId }),
+          ...(data.sortOrder !== undefined && { sortOrder: data.sortOrder }),
+          updatedAt: now(),
+        })
+        .where(eq(chats.id, id));
+      // Caller-level read; uses outer db so it reads committed state when no
+      // tx is in flight, or the in-flight tx state when one is provided.
+      const rows = await conn.select().from(chats).where(eq(chats.id, id));
+      return rows[0] ?? null;
+    },
+
+    async touch(id: string, opts?: { tx?: Pick<DB, "select" | "update"> }) {
+      const conn = opts?.tx ?? db;
+      await conn.update(chats).set({ updatedAt: now() }).where(eq(chats.id, id));
+      const rows = await conn.select().from(chats).where(eq(chats.id, id));
+      return rows[0] ?? null;
+    },
+
+    /**
+     * Set the folder assignment for a chat, propagating to every branch that
+     * shares its groupId. The sidebar collapses each group to a single visible
+     * row whose folder is read from whichever branch is currently the
+     * representative — so when one branch is created or deleted and the rep
+     * shifts, every branch must already carry the same folderId or the whole
+     * tree falls back to Uncategorized.
+     *
+     * Sibling branches are updated without bumping updatedAt so categorizing
+     * a chat doesn't silently reorder its branch history.
+     */
+    async setFolderForChat(chatId: string, folderId: string | null, opts?: { tx?: Pick<DB, "select" | "update"> }) {
+      const conn = opts?.tx ?? db;
+      const rows = await conn.select().from(chats).where(eq(chats.id, chatId));
+      const chat = rows[0];
+      if (!chat) return null;
+      if (chat.groupId) {
+        await conn.update(chats).set({ folderId }).where(eq(chats.groupId, chat.groupId));
+        await conn.update(chats).set({ updatedAt: now() }).where(eq(chats.id, chatId));
+      } else {
+        await conn.update(chats).set({ folderId, updatedAt: now() }).where(eq(chats.id, chatId));
+      }
+      const updated = await conn.select().from(chats).where(eq(chats.id, chatId));
+      return updated[0] ?? null;
+    },
+
+    /** List all chats belonging to a group. */
+    async listByGroup(groupId: string) {
+      await ensureChatLastMessageAtBackfilled();
+      return db.select().from(chats).where(eq(chats.groupId, groupId)).orderBy(desc(chats.updatedAt));
+    },
+
+    async canDeleteChat(id: string, options: { force?: boolean } = {}): Promise<ChatDeleteGuardResult> {
+      const rows = await db
+        .select({ id: chats.id, mode: chats.mode, metadata: chats.metadata })
+        .from(chats)
+        .where(eq(chats.id, id))
+        .limit(1);
+      return checkDeleteTargets(
+        rows,
+        options,
+        "Refusing to hard-delete a game campaign without explicit confirmation.",
+      );
+    },
+
+    async canDeleteGroup(groupId: string, options: { force?: boolean } = {}): Promise<ChatDeleteGuardResult> {
+      const rows = await db
+        .select({ id: chats.id, mode: chats.mode, metadata: chats.metadata })
+        .from(chats)
+        .where(eq(chats.groupId, groupId));
+      return checkDeleteTargets(
+        rows,
+        options,
+        "Refusing to hard-delete a game campaign group without explicit confirmation.",
+      );
+    },
+
+    /**
+     * Whole-blob metadata replace, outside the patch queue and NOT write-ordinal stamped (#5406).
+     *
+     * What makes that safe is scope, not innocence: most live callers pass
+     * `{ ...freshMeta, changedKey }` and genuinely do change a key, so "a verbatim rewrite is not
+     * a new value" is simply false here. A key written through this path keeps whatever ordinal
+     * it already had and therefore reads as OLDER than it is. That is tolerable only because
+     * every key a capability package can order against is reachable solely through the chat
+     * metadata PATCH route, which goes through `patchMetadata`.
+     *
+     * The rule that follows: a key that becomes package-ordered must never be written here. Move
+     * the write to `patchMetadata` rather than adding a caller on this path.
+     *
+     * The capability persistence host (`updateChatMetadata` / `updateChatActivity` in
+     * capability-persistence.service.ts) writes whole metadata blobs the same unstamped way and
+     * is in the same category — it carries the mirror through untouched rather than restamping.
+     */
+    async updateMetadata(id: string, metadata: Record<string, unknown>) {
+      await db
+        .update(chats)
+        .set({ metadata: JSON.stringify(metadata), updatedAt: now() })
+        .where(eq(chats.id, id));
+      return this.getById(id);
+    },
+
+    /**
+     * Allocate the chat's next write ordinal (#5406) — the shared sequence behind both
+     * `game_engine_state.writeOrdinal` and `metadata.metadataWriteOrdinals`. Returns null only
+     * when the chat no longer exists.
+     *
+     * The read-and-bump runs inside the per-chat metadata patch queue so it serializes against
+     * every other allocation, including the ones `patchMetadata` performs inline. Callers that
+     * already hold that queue MUST pass `metadataQueueHeld` — the queue is not reentrant.
+     * Callers holding a different per-chat lock (the experience-state write lock) may call this
+     * directly: the lock order is always their-lock -> metadata-queue, never the reverse.
+     *
+     * The counter alone is not the floor: the metadata mirror can carry ordinals the counter
+     * never handed out (a blob moved in by a branch, a session carry, a restore), so this reads
+     * both and allocates above whichever is higher — see {@link writeOrdinalFloor}.
+     */
+    async allocateWriteOrdinal(id: string, opts: { metadataQueueHeld?: boolean } = {}): Promise<number | null> {
+      const allocate = async () => {
+        const [row] = await db
+          .select({ writeOrdinalCounter: chats.writeOrdinalCounter, metadata: chats.metadata })
+          .from(chats)
+          .where(eq(chats.id, id));
+        if (!row) return null;
+        const ordinal = nextWriteOrdinal(row.writeOrdinalCounter, parseMetadata(row.metadata, id));
+        // Counter only — allocating an ordinal is not a user-visible chat edit, so it must not
+        // reorder the chat list the way a touched updatedAt would.
+        await db.update(chats).set({ writeOrdinalCounter: ordinal }).where(eq(chats.id, id));
+        return ordinal;
+      };
+      return opts.metadataQueueHeld ? allocate() : withChatMetadataPatchQueue(id, allocate);
+    },
+
+    /**
+     * Raise a chat's write-ordinal counter to at least `floor`, never lowering it (#5406).
+     * Chat branching copies the source chat's metadata verbatim — mirror included — and its
+     * engine rows with their ordinals, so the branch must also inherit a counter above all of
+     * them, or its first allocation would sit below the values it just copied and invert the
+     * ordering for the branch's whole life. Idempotent.
+     *
+     * Like its siblings this runs inside the per-chat metadata patch queue, so a caller that
+     * already holds the queue MUST pass `metadataQueueHeld` — the queue is not reentrant and
+     * would otherwise deadlock silently.
+     */
+    async raiseWriteOrdinalFloor(
+      id: string,
+      floor: number | null | undefined,
+      opts: { metadataQueueHeld?: boolean } = {},
+    ): Promise<void> {
+      if (typeof floor !== "number" || !Number.isSafeInteger(floor) || floor <= 0) return;
+      const raise = async () => {
+        const [row] = await db
+          .select({ writeOrdinalCounter: chats.writeOrdinalCounter })
+          .from(chats)
+          .where(eq(chats.id, id));
+        if (!row) return;
+        const current = row.writeOrdinalCounter;
+        if (typeof current === "number" && current >= floor) return;
+        await db.update(chats).set({ writeOrdinalCounter: floor }).where(eq(chats.id, id));
+      };
+      if (opts.metadataQueueHeld) await raise();
+      else await withChatMetadataPatchQueue(id, raise);
+    },
+
+    async patchMetadata(
+      id: string,
+      patchOrUpdater: MetadataPatch | MetadataUpdater,
+      opts: { touchUpdatedAt?: boolean; metadataQueueHeld?: boolean } = {},
+    ) {
+      const applyPatch = async () => {
+        const existing = await this.getById(id);
+        if (!existing) return null;
+
+        const current = parseMetadata(existing.metadata, existing.id);
+        // #5406: fingerprint BEFORE the updater runs. `{ ...current }` is a shallow copy, so an
+        // updater that mutates a nested value in place mutates `current`'s value too and the
+        // post-hoc comparison would see two identical objects and skip the stamp.
+        const before = typeof patchOrUpdater === "function" ? fingerprintMetadata(current) : null;
+        const raw = typeof patchOrUpdater === "function" ? await patchOrUpdater({ ...current }) : patchOrUpdater;
+        const patch = stripOrdinalMirrorKey(raw);
+        const merged = mergeMetadataPatch(current, patch);
+        // Explicitly detaching a pinned book resets its chat-local entry state.
+        // Temporary exclusions retain it so disabling/re-enabling a book is reversible.
+        if (Array.isArray(patch.activeLorebookIds) && Array.isArray(current.activeLorebookIds)) {
+          const attachedBookIds = patch.activeLorebookIds;
+          const removedBookIds = current.activeLorebookIds.filter((bookId) => !attachedBookIds.includes(bookId));
+          if (removedBookIds.length > 0) {
+            const entries = await db
+              .select({ id: lorebookEntries.id })
+              .from(lorebookEntries)
+              .where(inArray(lorebookEntries.lorebookId, removedBookIds));
+            const cleanup = lorebookEntryStateRemovalPatch(merged, new Set(entries.map((entry) => entry.id)));
+            Object.assign(patch, cleanup);
+            Object.assign(merged, cleanup);
+          }
+        }
+        // #5406: allocate inline rather than through allocateWriteOrdinal — the queue is
+        // already held here, and folding the counter into the same row update makes the stamp
+        // and the counter bump one atomic write, so a crash can never leave a mirror entry
+        // whose ordinal the counter never advanced past.
+        const stamp = stampMetadataWriteOrdinals(existing.writeOrdinalCounter, current, merged, patch, before);
+        applyOrdinalStamp(merged, stamp);
+
+        await db
+          .update(chats)
+          .set({
+            metadata: JSON.stringify(merged),
+            ...(stamp && { writeOrdinalCounter: stamp.ordinal }),
+            ...(opts.touchUpdatedAt !== false && { updatedAt: now() }),
+          })
+          .where(eq(chats.id, id));
+        return this.getById(id);
+      };
+      return opts.metadataQueueHeld ? applyPatch() : withChatMetadataPatchQueue(id, applyPatch);
+    },
+
+    /**
+     * Patch metadata and the denormalized `characterIds` column together inside a single per-chat
+     * critical section. Both columns are written in one row update under the same metadata patch queue
+     * as `patchMetadata`, so a concurrent metadata-queued writer can neither interleave between the two
+     * writes nor leave `characterIds` reflecting an older party than the queued-final metadata. The
+     * updater receives the fresh metadata and returns the metadata patch plus the `characterIds` array
+     * to mirror; the reloaded chat returned reflects both writes. Used by the game party handlers.
+     */
+    async patchMetadataWithCharacterIds(
+      id: string,
+      updater: (
+        current: MetadataPatch,
+      ) =>
+        | { metadata: MetadataPatch; characterIds: string[] }
+        | Promise<{ metadata: MetadataPatch; characterIds: string[] }>,
+      opts: { touchUpdatedAt?: boolean } = {},
+    ) {
+      return withChatMetadataPatchQueue(id, async () => {
+        const existing = await this.getById(id);
+        if (!existing) return null;
+
+        const current = parseMetadata(existing.metadata, existing.id);
+        const before = fingerprintMetadata(current);
+        const { metadata: raw, characterIds } = await updater({ ...current });
+        const patch = stripOrdinalMirrorKey(raw);
+        const merged = mergeMetadataPatch(current, patch);
+        const stamp = stampMetadataWriteOrdinals(existing.writeOrdinalCounter, current, merged, patch, before);
+        applyOrdinalStamp(merged, stamp);
+
+        await db
+          .update(chats)
+          .set({
+            metadata: JSON.stringify(merged),
+            characterIds: JSON.stringify(characterIds),
+            ...(stamp && { writeOrdinalCounter: stamp.ordinal }),
+            ...(opts.touchUpdatedAt !== false && { updatedAt: now() }),
+          })
+          .where(eq(chats.id, id));
+        return this.getById(id);
+      });
+    },
+
+    async markAutonomousUnread(id: string, input?: { characterId?: string | null; count?: number }) {
+      const timestamp = now();
+      return this.patchMetadata(id, (current) => {
+        const increment = Math.max(1, Math.floor(input?.count ?? 1));
+        const currentCount = readUnreadCount(current.autonomousUnreadCount);
+        const characterIds = new Set(readCharacterIds(current.autonomousUnreadCharacterIds));
+        if (input?.characterId) characterIds.add(input.characterId);
+
+        return {
+          ...current,
+          autonomousUnreadCount: currentCount + increment,
+          autonomousUnreadCharacterIds: Array.from(characterIds),
+          autonomousUnreadAt: timestamp,
+        };
+      });
+    },
+
+    async clearAutonomousUnread(id: string) {
+      return this.patchMetadata(
+        id,
+        (current) => {
+          if (
+            current.autonomousUnreadCount === undefined &&
+            current.autonomousUnreadCharacterIds === undefined &&
+            current.autonomousUnreadAt === undefined
+          ) {
+            return current;
+          }
+
+          return {
+            autonomousUnreadCount: undefined,
+            autonomousUnreadCharacterIds: undefined,
+            autonomousUnreadAt: undefined,
+          };
+        },
+        { touchUpdatedAt: false },
+      );
+    },
+
+    async pruneLorebookChatMetadata(remove: () => Promise<string[]>, lorebookId?: string) {
+      // Match the existing queue-before-transaction order. Deletion and metadata cleanup roll back together.
+      for (;;) {
+        const lockedIds = new Set((await db.select({ id: chats.id }).from(chats)).map((chat) => chat.id));
+        const complete = await withPatchQueues(metadataPatchQueues, [...lockedIds], () =>
+          db.transaction(async () => {
+            const allChats = await db.select().from(chats);
+            // A chat created while waiting may also reference this book; reacquire all queues before deleting.
+            if (allChats.some((chat) => !lockedIds.has(chat.id))) return false;
+            const removedEntryIds = new Set(await remove());
+            for (const chat of allChats) {
+              const metadata = parseMetadata(chat.metadata, chat.id);
+              const hasBook =
+                lorebookId &&
+                ["activeLorebookIds", "excludedLorebookIds"].some(
+                  (key) => Array.isArray(metadata[key]) && metadata[key].includes(lorebookId),
+                );
+              if (!hasBook && Object.keys(lorebookEntryStateRemovalPatch(metadata, removedEntryIds)).length === 0)
+                continue;
+
+              await this.patchMetadata(
+                chat.id,
+                (current) => {
+                  const patch = lorebookEntryStateRemovalPatch(current, removedEntryIds);
+                  if (lorebookId) {
+                    for (const key of ["activeLorebookIds", "excludedLorebookIds"]) {
+                      if (Array.isArray(current[key])) patch[key] = current[key].filter((id) => id !== lorebookId);
+                    }
+                  }
+                  return patch;
+                },
+                { metadataQueueHeld: true },
+              );
+            }
+            return true;
+          }),
+        );
+        if (complete) return;
+      }
+    },
+
+    async remove(id: string) {
+      return withDiagnosticContext({ chatId: id, operation: "chat.delete" }, async () => {
+        const galleryFilePaths = await db.transaction((tx) => removeChatDatabaseRecords(tx, id));
+        await cleanupDeletedChatFiles(id, galleryFilePaths);
+      });
+    },
+
+    /** Atomically remove a marked Roleplay DM thread only while it is still empty. */
+    async removeEmptyRoleplayDmChat(id: string): Promise<boolean> {
+      return withDiagnosticContext({ chatId: id, operation: "chat.delete" }, async () => {
+        const galleryFilePaths = await db.transaction(async (tx) => {
+          const rows = await tx.select().from(chats).where(eq(chats.id, id)).limit(1);
+          const chat = rows[0];
+          if (!chat) return null;
+          const metadata = parseMetadata(chat.metadata, chat.id);
+          if (metadata.roleplayDmThread !== true && typeof metadata.dmOriginChatId !== "string") return null;
+          const existingMessages = await tx
+            .select({ id: messages.id })
+            .from(messages)
+            .where(eq(messages.chatId, id))
+            .limit(1);
+          if (existingMessages.length > 0) return null;
+          return removeChatDatabaseRecords(tx, id);
+        });
+        if (!galleryFilePaths) return false;
+        await cleanupDeletedChatFiles(id, galleryFilePaths);
+        return true;
+      });
+    },
+
+    /** Delete all chats in a group (all branches). */
+    async removeGroup(groupId: string) {
+      const deletedChats = await db.transaction(async (tx) => {
+        const groupChats = await tx.select({ id: chats.id }).from(chats).where(eq(chats.groupId, groupId));
+        const removed: Array<{ id: string; galleryFilePaths: string[] }> = [];
+        for (const chat of groupChats) {
+          removed.push({ id: chat.id, galleryFilePaths: await removeChatDatabaseRecords(tx, chat.id) });
+        }
+        return removed;
+      });
+
+      for (const chat of deletedChats) {
+        await withDiagnosticContext({ chatId: chat.id, operation: "chat.delete" }, () =>
+          cleanupDeletedChatFiles(chat.id, chat.galleryFilePaths),
+        );
+      }
+    },
+
+    // ── Messages ──
+
+    async lastContactByCharacter(chatId: string): Promise<Record<string, string>> {
+      // Aggregate in JS because the file-native query builder intentionally
+      // exposes only row selection, filtering, ordering, and pagination.
+      // created_at is a TEXT (ISO) column, so lexicographic `>` is chronological.
+      const rows = await db
+        .select({
+          characterId: messages.characterId,
+          createdAt: messages.createdAt,
+        })
+        .from(messages)
+        .where(and(eq(messages.chatId, chatId), isNotNull(messages.characterId)));
+      const result: Record<string, string> = {};
+      for (const row of rows) {
+        const characterId = row.characterId;
+        const createdAt = row.createdAt;
+        if (!characterId || !createdAt) continue;
+        if (!result[characterId] || createdAt > result[characterId]) {
+          result[characterId] = createdAt;
+        }
+      }
+      return result;
+    },
+
+    async countMessages(chatId: string): Promise<number> {
+      return db.count(messages, eq(messages.chatId, chatId));
+    },
+
+    async hasGameDeletePayload(chatId: string): Promise<boolean> {
+      return hasGameDeletePayload(chatId);
+    },
+
+    async listMessages(chatId: string) {
+      const rows = await db
+        .select()
+        .from(messages)
+        .where(eq(messages.chatId, chatId))
+        .orderBy(messages.createdAt, messages.id);
+      const decorated = rows.map((m, index) => ({ ...m, rowid: index + 1 }));
+      const countMap = await countSwipesByMessageId(
+        db,
+        decorated.map((m) => m.id),
+      );
+      return decorated.map((m) => ({ ...m, swipeCount: countMap.get(m.id) ?? 0 }));
+    },
+
+    /** Paginated: returns the latest `limit` messages (optionally before a cursor). */
+    async listMessagesPaginated(chatId: string, limit: number, before?: string) {
+      const cursor = parseMessageCursor(before);
+      if (before && !cursor) throw new InvalidMessageCursorError();
+      return db.transaction(async (tx) => {
+        const chatCondition = eq(messages.chatId, chatId);
+        const cursorBoundary = cursor
+          ? or(
+              lt(messages.createdAt, cursor.createdAt),
+              and(eq(messages.createdAt, cursor.createdAt), lt(messages.id, cursor.id)),
+            )
+          : undefined;
+        if (
+          cursor &&
+          tx.count(
+            messages,
+            and(chatCondition, eq(messages.createdAt, cursor.createdAt), eq(messages.id, cursor.id)),
+          ) !== 1
+        ) {
+          throw new InvalidMessageCursorError();
+        }
+        const pageCondition = cursorBoundary ? and(chatCondition, cursorBoundary) : chatCondition;
+        const upperRowid = cursorBoundary ? tx.count(messages, pageCondition) : tx.count(messages, chatCondition);
+        const rowsDescending = await tx
+          .select()
+          .from(messages)
+          .where(pageCondition)
+          .orderBy(desc(messages.createdAt), desc(messages.id))
+          .limit(Math.max(1, Math.floor(limit)));
+        const reversed = rowsDescending.reverse().map((message, index) => ({
+          ...message,
+          rowid: upperRowid - rowsDescending.length + index + 1,
+        }));
+        const countMap = await countSwipesByMessageId(
+          tx,
+          reversed.map((m) => m.id),
+        );
+        return reversed.map((m) => ({ ...m, swipeCount: countMap.get(m.id) ?? 0 }));
+      });
+    },
+
+    /** Bounded message snapshots for surfaces that do not need cursors or swipe metadata. */
+    async listMessagePreviews(chatId: string, limit: number) {
+      const rows = await db
+        .select()
+        .from(messages)
+        .where(
+          and(
+            eq(messages.chatId, chatId),
+            ne(messages.role, "system"),
+            stringIsNonBlank(messages.content),
+            jsonFlagsNotTrue(messages.extra, ["hiddenFromUser", "commandOnly"]),
+          ),
+        )
+        .orderBy(desc(messages.createdAt), desc(messages.id))
+        .limit(Math.max(1, Math.floor(limit)));
+      return rows.reverse();
+    },
+
+    async getMessage(id: string) {
+      const rows = await db.select().from(messages).where(eq(messages.id, id));
+      return rows[0] ?? null;
+    },
+
+    async createMessage(input: CreateMessageInput, timestampOverrides?: TimestampOverrides | null) {
+      const id = newId();
+      const resolvedTimestamp = resolveTimestamps(timestampOverrides).createdAt;
+      const explicitTimestamp = normalizeTimestampOverrides(timestampOverrides)?.createdAt;
+      const chatRows = await db
+        .select({ lastMessageAt: chats.lastMessageAt })
+        .from(chats)
+        .where(eq(chats.id, input.chatId))
+        .limit(1);
+      const timestamp = explicitTimestamp
+        ? resolvedTimestamp
+        : ensureTimestampAfter(resolvedTimestamp, chatRows[0]?.lastMessageAt);
+      await db.insert(messages).values({
+        id,
+        chatId: input.chatId,
+        role: input.role,
+        characterId: input.characterId,
+        content: input.content,
+        activeSwipeIndex: 0,
+        extra: JSON.stringify({
+          ...parseExtraRecord(input.extra),
+          displayText: null,
+          isGenerated: input.role !== "user",
+          tokenCount: null,
+          generationInfo: null,
+        }),
+        createdAt: timestamp,
+      });
+      // Create the initial swipe (index 0)
+      await db.insert(messageSwipes).values({
+        id: newId(),
+        messageId: id,
+        index: 0,
+        content: input.content,
+        extra: JSON.stringify(parseExtraRecord(input.extra)),
+        createdAt: timestamp,
+      });
+      await db.update(chats).set({ lastMessageAt: timestamp, updatedAt: timestamp }).where(eq(chats.id, input.chatId));
+      return this.getMessage(id);
+    },
+
+    /**
+     * Bulk-insert messages in a single transaction. Much faster than one-by-one
+     * createMessage calls (especially on Windows/NTFS where each transaction fsync is expensive).
+     *
+     * Callers may pass `createdAt`, message `extra`, `activeSwipeIndex`,
+     * and either the first swipe's `swipeExtra` or the full `swipes` list
+     * when cloning/importing existing transcripts so attachments, persona
+     * snapshots, hidden context flags, alternate swipes, and original
+     * timestamps survive the copy.
+     *
+     * Returns the created message IDs in input order and updates chat.updatedAt once after the batch.
+     */
+    async createMessagesBatch(
+      chatId: string,
+      inputs: Array<
+        Omit<CreateMessageInput, "chatId"> & {
+          createdAt?: string | null;
+          extra?: unknown;
+          activeSwipeIndex?: number;
+          swipeExtra?: unknown;
+          swipes?: Array<{
+            index: number;
+            content: string;
+            extra?: unknown;
+            createdAt?: string | null;
+          }>;
+        }
+      >,
+      timestampOverrides?: TimestampOverrides | null,
+    ) {
+      if (inputs.length === 0) return [];
+      const msgRows: (typeof messages.$inferInsert)[] = [];
+      const swipeRows: (typeof messageSwipes.$inferInsert)[] = [];
+      const createdIds: string[] = [];
+      const batchTimestamps = resolveTimestamps(timestampOverrides);
+      const baseTime = Date.parse(batchTimestamps.createdAt);
+      const safeBaseTime = Number.isNaN(baseTime) ? Date.now() : baseTime;
+      const createdTimestamps: string[] = [];
+
+      for (let idx = 0; idx < inputs.length; idx++) {
+        const input = inputs[idx]!;
+        const id = newId();
+        createdIds.push(id);
+        const explicitTimestamp = normalizeTimestampOverrides({
+          createdAt: input.createdAt,
+          updatedAt: input.createdAt,
+        })?.createdAt;
+        const timestamp = explicitTimestamp ?? new Date(safeBaseTime + idx).toISOString();
+        createdTimestamps.push(timestamp);
+        msgRows.push({
+          id,
+          chatId,
+          role: input.role,
+          characterId: input.characterId,
+          content: input.content,
+          activeSwipeIndex: input.activeSwipeIndex ?? 0,
+          extra: serializeJsonField(input.extra, {
+            displayText: null,
+            isGenerated: input.role !== "user",
+            tokenCount: null,
+            generationInfo: null,
+          }),
+          createdAt: timestamp,
+        });
+        const inputSwipes = input.swipes?.length
+          ? [...input.swipes].sort((a, b) => a.index - b.index)
+          : [
+              {
+                index: 0,
+                content: input.content,
+                extra: input.swipeExtra,
+                createdAt: timestamp,
+              },
+            ];
+        for (const swipe of inputSwipes) {
+          swipeRows.push({
+            id: newId(),
+            messageId: id,
+            index: swipe.index,
+            content: swipe.content,
+            extra: serializeJsonField(swipe.extra, {}),
+            createdAt: normalizeTimestampOverrides({ createdAt: swipe.createdAt })?.createdAt ?? timestamp,
+          });
+        }
+      }
+
+      const lastTimestamp = latestTrustedTimestamp(createdTimestamps) ?? batchTimestamps.updatedAt;
+
+      // Batch large imports to bound the amount of work performed per write.
+      const CHUNK = 500;
+      for (let i = 0; i < msgRows.length; i += CHUNK) {
+        await db.insert(messages).values(msgRows.slice(i, i + CHUNK));
+      }
+      for (let i = 0; i < swipeRows.length; i += CHUNK) {
+        await db.insert(messageSwipes).values(swipeRows.slice(i, i + CHUNK));
+      }
+      await db
+        .update(chats)
+        .set({ lastMessageAt: lastTimestamp, updatedAt: lastTimestamp })
+        .where(eq(chats.id, chatId));
+      return createdIds;
+    },
+
+    /** Save the response receipt and its reversible predecessor edit as one durable write. */
+    async commitRoleplayInterruption(args: {
+      messageId: string;
+      swipeIndex: number;
+      extraUpdate: Record<string, unknown>;
+      target: { id: string; activeSwipeIndex: number; content: string } | null;
+      signal?: AbortSignal;
+    }) {
+      const committed = await withInterruptionQueue(
+        [args.messageId],
+        async (locked) => {
+          const owner = await readMessage(args.messageId);
+          if (!owner || owner.activeSwipeIndex !== args.swipeIndex)
+            throw new RoleplayInterruptionConflictError("The response changed before its interruption could be saved.");
+          const chat = await db.select().from(chats).where(eq(chats.id, owner.chatId)).limit(1);
+          const activity = getRoleplayCommandActivity(args.extraUpdate).map((item) => ({ ...item }));
+          let interruptedMessage: MessageRow | null = null;
+          let attempted = false;
+          for (const item of activity) {
+            if (item.command.type !== "interrupt" || item.error || item.deleted || item.interruption) continue;
+            try {
+              if (args.signal?.aborted)
+                throw new RoleplayInterruptionConflictError(
+                  "Interruption was not applied because generation was cancelled.",
+                );
+              if (attempted)
+                throw new RoleplayInterruptionConflictError("Only one interruption is allowed per response.");
+              attempted = true;
+              if (chat[0]?.mode !== "roleplay" || owner.role !== "assistant")
+                throw new RoleplayInterruptionConflictError(
+                  "Interruptions are only available for Roleplay character responses.",
+                );
+              const target = await precedingActualMessage(owner);
+              if (
+                !args.target ||
+                !target ||
+                target.id !== args.target.id ||
+                target.activeSwipeIndex !== args.target.activeSwipeIndex ||
+                target.content !== args.target.content
+              )
+                throw new RoleplayInterruptionConflictError(
+                  "The preceding message changed before the interruption was saved.",
+                );
+              const targetExtra = parseExtraRecord(target.extra);
+              if (
+                targetExtra.hiddenFromAI === true ||
+                (Array.isArray(targetExtra.hiddenFromAICharacterIds) &&
+                  (owner.characterId
+                    ? targetExtra.hiddenFromAICharacterIds.includes(owner.characterId)
+                    : targetExtra.hiddenFromAICharacterIds.length > 0))
+              )
+                throw new RoleplayInterruptionConflictError("The preceding message is hidden from this character.");
+              const prepared = prepareRoleplayInterruption(target.content, item.command.part);
+              if (!prepared.ok) throw new RoleplayInterruptionConflictError(prepared.error);
+              const swipe = (await readSwipes(target.id)).find((row) => row.index === target.activeSwipeIndex);
+              if (!swipe || swipe.content !== target.content)
+                throw new RoleplayInterruptionConflictError("The preceding message's swipe changed.");
+              const receipt: Interruption = {
+                targetMessageId: target.id,
+                targetSwipeIndex: target.activeSwipeIndex,
+                targetSwipeId: swipe.id,
+                originalContent: target.content,
+                interruptedContent: prepared.content,
+              };
+              interruptedMessage = await changeInterruptionTarget(owner, receipt, false, locked, args.signal);
+              item.interruption = receipt;
+            } catch (error) {
+              if (!(error instanceof RoleplayInterruptionConflictError)) throw error;
+              item.error = error.message;
+            }
+          }
+          await writeOwnerExtra(owner, args.swipeIndex, { ...args.extraUpdate, roleplayCommandActivity: activity });
+          return { message: await readMessage(owner.id), interruptedMessage };
+        },
+        args.target ? [args.target.id] : [],
+      );
+      if (committed.message && lorebookScanHasContent(args.extraUpdate.lorebookScan))
+        await compactStaleLorebookScans(committed.message.chatId, committed.message.id);
+      return committed;
+    },
+
+    async restoreRoleplayInterruption(
+      messageId: string,
+      options: { swipeIndex?: number; activityIndex?: number; permanent?: boolean } = {},
+    ) {
+      return withInterruptionQueue([messageId], async (locked) => {
+        const owner = await readMessage(messageId);
+        if (!owner) return { message: null, restoredMessages: [] };
+        if (options.swipeIndex !== undefined && options.swipeIndex !== owner.activeSwipeIndex)
+          throw new RoleplayInterruptionConflictError("The selected response swipe changed.");
+        const activity = getRoleplayCommandActivity(parseExtraRecord(owner.extra, messageExtraAt(owner.id))).map(
+          (item) => ({ ...item }),
+        );
+        const restoredMessages: MessageRow[] = [];
+        for (let index = 0; index < activity.length; index++) {
+          if (options.activityIndex !== undefined && options.activityIndex !== index) continue;
+          const item = activity[index]!;
+          const receipt = readRoleplayInterruption(item.interruption);
+          if (item.command.type !== "interrupt" || !receipt || item.error || item.deleted || receipt.restored) continue;
+          const restored = await changeInterruptionTarget(owner, receipt, true, locked);
+          if (restored) restoredMessages.push(restored);
+          if (options.permanent) {
+            const swipe = (await readSwipes(receipt.targetMessageId)).find((row) =>
+              receipt.targetSwipeId ? row.id === receipt.targetSwipeId : row.index === receipt.targetSwipeIndex,
+            );
+            item.interruption = {
+              ...receipt,
+              targetSwipeIndex: swipe?.index ?? receipt.targetSwipeIndex,
+              restored: true,
+            };
+          }
+        }
+        if (options.permanent) {
+          const selected = options.activityIndex === undefined ? null : activity[options.activityIndex];
+          if (!selected || selected.command.type !== "interrupt" || !readRoleplayInterruption(selected.interruption))
+            throw new RoleplayInterruptionConflictError("The interruption record no longer exists.");
+          await writeOwnerExtra(owner, owner.activeSwipeIndex, { roleplayCommandActivity: activity });
+        }
+        return { message: await readMessage(messageId), restoredMessages };
+      });
+    },
+
+    /** Reapply only the still-selected receipt after a cancelled or failed reroll. */
+    async reconcileRoleplayInterruption(messageId: string) {
+      return withInterruptionQueue([messageId], async (locked) => {
+        const changed = await reconcileEffects(await readMessage(messageId), false, locked);
+        return { message: await readMessage(messageId), interruptedMessage: changed.at(-1) ?? null };
+      });
+    },
+
+    /** Normalize stable swipe IDs before a copy assigns new IDs or resolves exported macros. */
+    async prepareRoleplayInterruptionExtraForCopy(
+      extra: Record<string, unknown>,
+      resolveContent?: (content: string, target: MessageRow) => string,
+    ) {
+      const activity = getRoleplayCommandActivity(extra);
+      if (!activity.some((item) => readRoleplayInterruption(item.interruption))) return extra;
+      return {
+        ...extra,
+        roleplayCommandActivity: await Promise.all(
+          activity.map(async (item) => {
+            const receipt = readRoleplayInterruption(item.interruption);
+            if (!receipt) return item;
+            const target = await readMessage(receipt.targetMessageId);
+            const swipe = target
+              ? (await readSwipes(target.id)).find((row) =>
+                  receipt.targetSwipeId ? row.id === receipt.targetSwipeId : row.index === receipt.targetSwipeIndex,
+                )
+              : null;
+            if (!target || !swipe)
+              return {
+                ...item,
+                error: "The original interrupted swipe no longer exists.",
+                interruption: { ...receipt, restored: true },
+              };
+            return {
+              ...item,
+              interruption: {
+                ...receipt,
+                targetSwipeIndex: swipe.index,
+                originalContent: resolveContent
+                  ? resolveContent(receipt.originalContent, target)
+                  : receipt.originalContent,
+                interruptedContent: resolveContent
+                  ? resolveContent(receipt.interruptedContent, target)
+                  : receipt.interruptedContent,
+              },
+            };
+          }),
+        ),
+      };
+    },
+
+    /** Branch/JSONL copies retain receipts while replacing chat-local message/swipe identities. */
+    async remapRoleplayInterruptionTargets(chatId: string, messageIdMap: ReadonlyMap<string, string>) {
+      const rows = await this.listMessages(chatId);
+      for (const owner of rows) {
+        for (const swipe of await readSwipes(owner.id)) {
+          const extra = {
+            ...parseExtraRecord(swipe.extra, swipeExtraAt(swipe.id)),
+            ...(swipe.index === owner.activeSwipeIndex ? parseExtraRecord(owner.extra, messageExtraAt(owner.id)) : {}),
+          };
+          const activity = getRoleplayCommandActivity(extra).map((item) => ({ ...item }));
+          let changed = false;
+          for (const item of activity) {
+            const receipt = readRoleplayInterruption(item.interruption);
+            if (!receipt) continue;
+            changed = true;
+            const targetId = messageIdMap.get(receipt.targetMessageId);
+            const targetSwipe = targetId
+              ? (await readSwipes(targetId)).find((row) => row.index === receipt.targetSwipeIndex)
+              : null;
+            item.interruption = {
+              ...receipt,
+              targetMessageId: targetId ?? receipt.targetMessageId,
+              targetSwipeId: targetSwipe?.id,
+            };
+            if (!targetId || !targetSwipe) {
+              item.interruption.restored = true;
+              item.error = "The original interrupted message was not included in this copy.";
+            }
+          }
+          if (changed)
+            await this.updateMessageExtraForSwipe(owner.id, swipe.index, { roleplayCommandActivity: activity });
+        }
+      }
+    },
+
+    async updateMessageContent(id: string, content: string) {
+      return withPatchQueue(messageExtraPatchQueues, id, async () => {
+        const existing = await this.getMessage(id);
+
+        // Conversation-mode prompt history prefers `conversationCommandContent` (the raw
+        // reply before command stripping) over `content`, so a rewrite of the visible text
+        // must also drop the stale raw copy or the edit never reaches the model. Command-only
+        // anchors keep theirs: their `content` is empty by design and the raw copy is the
+        // message's only text. Written directly rather than via updateMessageExtra, which
+        // shares this queue key and would deadlock.
+        const existingExtra = parseExtraRecord(existing?.extra);
+        const clearCommandContent =
+          typeof existingExtra.conversationCommandContent === "string" &&
+          existingExtra.conversationCommandContent.trim() !== "" &&
+          existingExtra.commandOnly !== true &&
+          content !== (existing?.content ?? "");
+        // Stored Gemini parts are replayed in place of `content` on later turns, so
+        // an edit must drop them too or Gemini keeps reading the pre-edit text.
+        const contentChanged = content !== (existing?.content ?? "");
+        const clearGeminiParts = contentChanged && existingExtra.geminiParts != null;
+
+        const messagePatch: Record<string, unknown> = { content };
+        if (clearCommandContent || clearGeminiParts) {
+          messagePatch.extra = JSON.stringify({
+            ...existingExtra,
+            ...(clearCommandContent ? { conversationCommandContent: null } : {}),
+            ...(clearGeminiParts ? { geminiParts: null } : {}),
+          });
+        }
+        // One transaction around the messages row and its swipe mirror
+        // (#5600): the store defers flushes while a transaction is active, so
+        // a crash or badly timed flush can no longer persist the edit on the
+        // message while the active swipe still holds the pre-edit text — the
+        // tear that used to surface only in exports and branched chats.
+        return db.transaction(async () => {
+          await db.update(messages).set(messagePatch).where(eq(messages.id, id));
+          if (existing) {
+            await invalidateMemoryChunksFrom(db, existing.chatId, existing.createdAt);
+          }
+          // Also sync the edit to the active swipe row so it persists across swipe switches.
+          const msg = await this.getMessage(id);
+          if (msg) {
+            const swipes = await this.getSwipes(id);
+            const activeSwipe = swipes.find((s: any) => s.index === msg.activeSwipeIndex);
+            if (activeSwipe) {
+              const swipePatch: Record<string, unknown> = { content };
+              const swipeExtra = parseExtraRecord(activeSwipe.extra, swipeExtraAt(activeSwipe.id));
+              // Clear only a raw copy this swipe itself carries, and never a
+              // command-only carrier's.
+              const clearSwipeCommandContent =
+                clearCommandContent &&
+                typeof swipeExtra.conversationCommandContent === "string" &&
+                swipeExtra.conversationCommandContent.trim() !== "" &&
+                swipeExtra.commandOnly !== true;
+              const clearSwipeGeminiParts = contentChanged && swipeExtra.geminiParts != null;
+              if (clearSwipeCommandContent || clearSwipeGeminiParts) {
+                swipePatch.extra = JSON.stringify({
+                  ...swipeExtra,
+                  ...(clearSwipeCommandContent ? { conversationCommandContent: null } : {}),
+                  ...(clearSwipeGeminiParts ? { geminiParts: null } : {}),
+                });
+              }
+              await db
+                .update(messageSwipes)
+                .set(swipePatch)
+                .where(and(eq(messageSwipes.messageId, id), eq(messageSwipes.id, activeSwipe.id)));
+            }
+          }
+          return msg;
+        });
+      });
+    },
+
+    /** Save a context flag, every swipe mirror and its automatic cutoff in one transaction. */
+    async updateMessageExtraWithContextStart(
+      id: string,
+      partial: Record<string, unknown>,
+      sharedExtra: Record<string, unknown>,
+      swipeIndex?: number,
+    ) {
+      const owner = await readMessage(id);
+      if (!owner) return null;
+      // Summary hiding already takes metadata before message queues. Acquire both
+      // before the transaction, and never call a queue-taking writer inside it.
+      return withChatMetadataPatchQueue(owner.chatId, () =>
+        withMessageExtraPatchQueue(id, () =>
+          db.transaction(async () => {
+            const msg = await readMessage(id);
+            if (!msg || msg.chatId !== owner.chatId) return null;
+            const swipes = await readSwipes(id);
+            if (swipeIndex !== undefined && !swipes.some((swipe) => swipe.index === swipeIndex)) return null;
+            const previousExtra = parseExtraRecord(msg.extra);
+            await db
+              .update(messages)
+              .set({
+                extra: JSON.stringify({
+                  ...previousExtra,
+                  ...(swipeIndex === undefined || swipeIndex === msg.activeSwipeIndex ? partial : {}),
+                  ...sharedExtra,
+                }),
+              })
+              .where(eq(messages.id, id));
+            for (const swipe of swipes) {
+              await db
+                .update(messageSwipes)
+                .set({
+                  extra: JSON.stringify({
+                    ...parseExtraRecord(swipe.extra),
+                    ...(swipe.index === (swipeIndex ?? msg.activeSwipeIndex) ? partial : {}),
+                    ...sharedExtra,
+                  }),
+                })
+                .where(eq(messageSwipes.id, swipe.id));
+            }
+            await this.patchMetadata(
+              msg.chatId,
+              (metadata) => {
+                if (!Object.prototype.hasOwnProperty.call(partial, "isConversationStart")) return {};
+                const state = parseExtraRecord(metadata.advancedMemoryState);
+                if (!Array.isArray(state.contextStarts) || !state.contextStarts.length) return {};
+                // A new manual shared flag replaces the automatic window. Unchecking
+                // the automatic flag itself clears it through this same control.
+                const contextStarts =
+                  partial.isConversationStart === true && previousExtra.isConversationStart !== true
+                    ? []
+                    : state.contextStarts.filter((raw) => {
+                        const start = parseExtraRecord(raw);
+                        return start.messageId !== id && start.sceneStartMessageId !== id;
+                      });
+                if (contextStarts.length === state.contextStarts.length) return {};
+                return {
+                  advancedMemoryState: {
+                    ...state,
+                    contextStarts,
+                    contextStartRevision:
+                      (typeof state.contextStartRevision === "number" && Number.isFinite(state.contextStartRevision)
+                        ? state.contextStartRevision
+                        : 0) + 1,
+                  },
+                };
+              },
+              { touchUpdatedAt: false, metadataQueueHeld: true },
+            );
+            return this.getMessage(id);
+          }),
+        ),
+      );
+    },
+
+    /** Merge partial data into a message's extra JSON field. */
+    async updateMessageExtra(id: string, partial: Record<string, unknown>) {
+      const updated = await withPatchQueue(messageExtraPatchQueues, id, async () => {
+        const msg = await this.getMessage(id);
+        if (!msg) return null;
+        const existing = parseExtraRecord(msg.extra, messageExtraAt(msg.id));
+        const merged = { ...existing, ...partial };
+        await db
+          .update(messages)
+          .set({ extra: JSON.stringify(merged) })
+          .where(eq(messages.id, id));
+
+        const swipes = await this.getSwipes(id);
+        const activeSwipe = swipes.find((s: any) => s.index === msg.activeSwipeIndex);
+        if (activeSwipe) {
+          const swipeExtra = parseExtraRecord(activeSwipe.extra, swipeExtraAt(activeSwipe.id));
+          await db
+            .update(messageSwipes)
+            .set({ extra: JSON.stringify({ ...swipeExtra, ...swipeExtraPatch(partial) }) })
+            .where(and(eq(messageSwipes.messageId, id), eq(messageSwipes.id, activeSwipe.id)));
+        }
+
+        return this.getMessage(id);
+      });
+      if (updated && lorebookScanHasContent(partial.lorebookScan)) await compactStaleLorebookScans(updated.chatId, id);
+      return updated;
+    },
+
+    /** Merge partial data into a specific swipe and mirror it to the message only if that swipe is active. */
+    async updateMessageExtraForSwipe(
+      id: string,
+      swipeIndex: number,
+      partial: Record<string, unknown>,
+      expectedContent?: string,
+    ) {
+      const updated = await withPatchQueue(messageExtraPatchQueues, id, async () => {
+        const msg = await this.getMessage(id);
+        if (!msg) return null;
+        const swipes = await this.getSwipes(id);
+        const targetSwipe = swipes.find((s: any) => s.index === swipeIndex);
+        if (!targetSwipe) return null;
+
+        const swipeExtra = parseExtraRecord(targetSwipe.extra, swipeExtraAt(targetSwipe.id));
+        // A delayed automatic translation must not replace an edit or a translation the user hid.
+        if (
+          expectedContent !== undefined &&
+          (targetSwipe.content !== expectedContent || swipeExtra.translationHidden === true)
+        )
+          return null;
+        await db
+          .update(messageSwipes)
+          .set({ extra: JSON.stringify({ ...swipeExtra, ...swipeExtraPatch(partial) }) })
+          .where(and(eq(messageSwipes.messageId, id), eq(messageSwipes.id, targetSwipe.id)));
+
+        if (msg.activeSwipeIndex === swipeIndex) {
+          const msgExtra = parseExtraRecord(msg.extra, messageExtraAt(msg.id));
+          await db
+            .update(messages)
+            .set({ extra: JSON.stringify({ ...msgExtra, ...partial }) })
+            .where(eq(messages.id, id));
+        }
+
+        return this.getMessage(id);
+      });
+      if (updated && lorebookScanHasContent(partial.lorebookScan)) await compactStaleLorebookScans(updated.chatId, id);
+      return updated;
+    },
+    /** Atomically claim a marker in one swipe's extra data. */
+    async claimMessageExtraForSwipe(id: string, swipeIndex: number, key: string, value: unknown) {
+      return withMessageExtraPatchQueue(id, async () => {
+        const msg = await this.getMessage(id);
+        if (!msg) return false;
+        const swipes = await this.getSwipes(id);
+        const targetSwipe = swipes.find((swipe: any) => swipe.index === swipeIndex);
+        if (!targetSwipe) return false;
+        const swipeExtra = parseExtraRecord(targetSwipe.extra, swipeExtraAt(targetSwipe.id));
+        if (swipeExtra[key] && typeof swipeExtra[key] === "object") return false;
+        await db
+          .update(messageSwipes)
+          .set({ extra: JSON.stringify({ ...swipeExtra, [key]: value }) })
+          .where(and(eq(messageSwipes.messageId, id), eq(messageSwipes.id, targetSwipe.id)));
+        if (msg.activeSwipeIndex === swipeIndex) {
+          const messageExtra = parseExtraRecord(msg.extra, messageExtraAt(msg.id));
+          await db
+            .update(messages)
+            .set({ extra: JSON.stringify({ ...messageExtra, [key]: value }) })
+            .where(eq(messages.id, id));
+        }
+        return true;
+      });
+    },
+
+    /**
+     * Bulk-set hiddenFromAI on many messages at once.
+     * Reuses updateMessageExtra() for each message (read-parse-merge-write) and
+     * syncs the flag to every swipe row so it survives setActiveSwipe() overwrites.
+     *
+     * Returns the ids this call actually flipped INTO the target state — the
+     * messages whose hidden flag, read immediately before the write (no provider
+     * or network call in between), differed from `hidden`. Callers that record
+     * ownership of a hide (e.g. a summary entry's `hiddenMessageIds`) use this
+     * return so ownership is sourced from the mutation itself, never from a stale
+     * pre-mutation snapshot. The request is scoped to this chat; use `.length` for
+     * a count of changed messages.
+     */
+    async bulkSetHiddenFromAI(chatId: string, messageIds: string[], hidden: boolean): Promise<string[]> {
+      if (messageIds.length === 0) return [];
+      return withDiagnosticContext({ chatId, operation: "chat.messages.hide" }, async () => {
+        const uniqueIds = Array.from(new Set(messageIds));
+        const scopedRows: { id: string; extra: string | null }[] = [];
+        const CHUNK = 500;
+        for (let i = 0; i < uniqueIds.length; i += CHUNK) {
+          const batch = uniqueIds.slice(i, i + CHUNK);
+          const batchRows = await db
+            .select({ id: messages.id, extra: messages.extra })
+            .from(messages)
+            .where(and(eq(messages.chatId, chatId), inArray(messages.id, batch)));
+          scopedRows.push(...batchRows);
+        }
+
+        const seen = new Set<string>();
+        const flipped: string[] = [];
+        try {
+          for (const row of scopedRows) {
+            if (seen.has(row.id)) continue;
+            seen.add(row.id);
+            // State read immediately before the write — the moment-of-mutation truth
+            // that decides whether THIS call flips the message into the target state.
+            let wasHidden = false;
+            try {
+              const parsed = typeof row.extra === "string" ? JSON.parse(row.extra) : (row.extra ?? {});
+              wasHidden = (parsed as { hiddenFromAI?: unknown } | null)?.hiddenFromAI === true;
+            } catch {
+              wasHidden = false;
+            }
+            await this.updateMessageExtra(row.id, { hiddenFromAI: hidden });
+            // Mirror what the single-message /extra route does: propagate the flag to
+            // all swipe rows so setActiveSwipe() cannot clobber it. Done for every
+            // scoped row (idempotent when already in the target state) so swipe
+            // consistency never depends on whether the main row happened to flip.
+            const swipes = await this.getSwipes(row.id);
+            for (const swipe of swipes) {
+              await this.updateSwipeExtra(row.id, swipe.index, { hiddenFromAI: hidden });
+            }
+            if (wasHidden !== hidden) flipped.push(row.id);
+          }
+        } catch (err) {
+          // A write failed partway through. The rows we did not reach are untouched,
+          // and rows already in the target state were never flipped, so the only
+          // partial state is the `flipped` set. Undo exactly those so the call is
+          // all-or-nothing and a caller never records ownership of a half-applied
+          // batch. (db.transaction() is intentionally avoided in this store — see the
+          // bounded bulk-insert path above — so this
+          // compensating undo is the atomicity mechanism.) A clean undo preserves
+          // the original error. A failed undo is surfaced as a compound failure so
+          // callers never mistake a partially restored batch for a clean rollback.
+          const undoErrors: unknown[] = [];
+          for (const id of flipped) {
+            try {
+              await this.updateMessageExtra(id, { hiddenFromAI: !hidden });
+              const swipes = await this.getSwipes(id);
+              for (const swipe of swipes) {
+                await this.updateSwipeExtra(id, swipe.index, { hiddenFromAI: !hidden });
+              }
+            } catch (undoErr) {
+              undoErrors.push(undoErr);
+              logger.error(
+                { err: undoErr, chatId, messageId: id, event: "chat.messages.hide", stage: "rollback" },
+                "[chats] bulkSetHiddenFromAI: failed to undo partial hide for message",
+              );
+            }
+          }
+          if (undoErrors.length > 0) {
+            throw new AggregateError(
+              [err, ...undoErrors],
+              `bulkSetHiddenFromAI failed and rollback failed for ${undoErrors.length} of ${flipped.length} flipped messages`,
+            );
+          }
+          throw err;
+        }
+        return flipped;
+      });
+    },
+
+    /**
+     * Aggregate historical persona attribution summaries for all user messages in a chat.
+     */
+    async getPersonaAttributionsSummary(chatId: string) {
+      const userRows = await db
+        .select({ id: messages.id, extra: messages.extra })
+        .from(messages)
+        .where(and(eq(messages.chatId, chatId), eq(messages.role, "user")));
+
+      let unassignedCount = 0;
+      const identityMap = new Map<
+        string,
+        {
+          personaId: string;
+          source: "persona" | "character";
+          name: string;
+          avatarUrl?: string | null;
+          count: number;
+        }
+      >();
+
+      for (const row of userRows) {
+        const extra = parseExtraRecord(row.extra);
+        const snapshot = extra.personaSnapshot as
+          | {
+              personaId?: unknown;
+              source?: unknown;
+              name?: unknown;
+              avatarUrl?: unknown;
+            }
+          | null
+          | undefined;
+
+        const personaId = typeof snapshot?.personaId === "string" ? snapshot.personaId.trim() : "";
+        if (!personaId) {
+          unassignedCount++;
+          continue;
+        }
+
+        const source = snapshot?.source === "character" ? ("character" as const) : ("persona" as const);
+        const name = typeof snapshot?.name === "string" && snapshot.name.trim() ? snapshot.name.trim() : "You";
+        const avatarUrl = typeof snapshot?.avatarUrl === "string" ? snapshot.avatarUrl : null;
+        const key = `${source}:${personaId}`;
+
+        const existing = identityMap.get(key);
+        if (existing) {
+          existing.count++;
+          if (!existing.avatarUrl && avatarUrl) existing.avatarUrl = avatarUrl;
+        } else {
+          identityMap.set(key, {
+            personaId,
+            source,
+            name,
+            avatarUrl,
+            count: 1,
+          });
+        }
+      }
+
+      return {
+        unassignedCount,
+        allUserMessageCount: userRows.length,
+        identities: Array.from(identityMap.values()),
+      };
+    },
+
+    /**
+     * Bulk-reassign or clear historical persona snapshots on user messages and their swipes.
+     */
+    async reassignMessagePersonaSnapshots(
+      chatId: string,
+      filter: {
+        scope: "unassigned" | "persona" | "all";
+        sourcePersonaId?: string;
+        sourcePersonaSource?: "persona" | "character";
+      },
+      targetSnapshot: Record<string, unknown> | null,
+    ): Promise<{ updatedCount: number; messageIds: string[] }> {
+      const userRows = await db
+        .select({ id: messages.id, extra: messages.extra })
+        .from(messages)
+        .where(and(eq(messages.chatId, chatId), eq(messages.role, "user")));
+
+      const matchesScope = (row: { extra: unknown }) => {
+        const extra = parseExtraRecord(row.extra);
+        const snapshot = extra.personaSnapshot as
+          | {
+              personaId?: unknown;
+              source?: unknown;
+            }
+          | null
+          | undefined;
+        const personaId = typeof snapshot?.personaId === "string" ? snapshot.personaId.trim() : "";
+        const source = snapshot?.source === "character" ? "character" : "persona";
+
+        if (filter.scope === "unassigned") return !personaId;
+        if (filter.scope === "persona") {
+          return personaId === filter.sourcePersonaId && source === (filter.sourcePersonaSource ?? "persona");
+        }
+        return filter.scope === "all";
+      };
+      const matchingIds: string[] = [];
+
+      for (const row of userRows) {
+        if (matchesScope(row)) matchingIds.push(row.id);
+      }
+
+      if (matchingIds.length === 0) {
+        return { updatedCount: 0, messageIds: [] };
+      }
+
+      return withPatchQueues(messageExtraPatchQueues, matchingIds, async () => {
+        const freshRows = await db
+          .select({ id: messages.id, extra: messages.extra })
+          .from(messages)
+          .where(inArray(messages.id, matchingIds));
+        const inScopeIds = freshRows.filter(matchesScope).map((row) => row.id);
+        if (inScopeIds.length === 0) {
+          return { updatedCount: 0, messageIds: [] };
+        }
+        const userRowsById = new Map(freshRows.map((row) => [row.id, row]));
+        const swipes = await this.listSwipesByMessageIds(inScopeIds);
+        const swipesByMessageId = new Map<string, typeof swipes>();
+        for (const swipe of swipes) {
+          parseExtraRecord(swipe.extra, swipeExtraAt(swipe.id));
+          const messageSwipesForId = swipesByMessageId.get(swipe.messageId) ?? [];
+          messageSwipesForId.push(swipe);
+          swipesByMessageId.set(swipe.messageId, messageSwipesForId);
+        }
+        const backups = new Map(
+          inScopeIds.map((id) => {
+            const row = userRowsById.get(id)!;
+            const messageExtra = parseExtraRecord(row.extra);
+            return [
+              id,
+              {
+                messagePersonaSnapshot: messageExtra.personaSnapshot,
+                swipes: (swipesByMessageId.get(id) ?? []).map((swipe) => ({
+                  index: swipe.index,
+                  personaSnapshot: parseExtraRecord(swipe.extra, swipeExtraAt(swipe.id)).personaSnapshot,
+                })),
+              },
+            ] as const;
+          }),
+        );
+        const updateMessageSnapshot = async (id: string, personaSnapshot: unknown) => {
+          const row = await db.select({ extra: messages.extra }).from(messages).where(eq(messages.id, id)).limit(1);
+          const existing = parseExtraRecord(row[0]?.extra);
+          await db
+            .update(messages)
+            .set({ extra: JSON.stringify({ ...existing, personaSnapshot }) })
+            .where(eq(messages.id, id));
+        };
+        const updateSwipeSnapshot = async (messageId: string, index: number, personaSnapshot: unknown) => {
+          const rows = await db
+            .select({ id: messageSwipes.id, extra: messageSwipes.extra })
+            .from(messageSwipes)
+            .where(and(eq(messageSwipes.messageId, messageId), eq(messageSwipes.index, index)))
+            .limit(1);
+          const row = rows[0];
+          if (!row) return;
+          const existing = parseExtraRecord(row.extra);
+          await db
+            .update(messageSwipes)
+            .set({ extra: JSON.stringify({ ...existing, personaSnapshot }) })
+            .where(and(eq(messageSwipes.messageId, messageId), eq(messageSwipes.id, row.id)));
+        };
+        const touchedIds = new Set<string>();
+
+        try {
+          for (const id of inScopeIds) {
+            touchedIds.add(id);
+            await updateMessageSnapshot(id, targetSnapshot);
+            for (const swipe of swipesByMessageId.get(id) ?? []) {
+              await updateSwipeSnapshot(id, swipe.index, targetSnapshot);
+            }
+          }
+        } catch (err) {
+          const rollbackErrors: unknown[] = [];
+          for (const id of touchedIds) {
+            const backup = backups.get(id);
+            if (!backup) continue;
+            try {
+              await updateMessageSnapshot(id, backup.messagePersonaSnapshot);
+            } catch (rollbackError) {
+              rollbackErrors.push(rollbackError);
+              logger.error(
+                { err: rollbackError, messageId: id, event: "chat.persona.reassign", stage: "rollback" },
+                "[chats] reassignMessagePersonaSnapshots: failed to restore message",
+              );
+            }
+            for (const swipe of backup.swipes) {
+              try {
+                await updateSwipeSnapshot(id, swipe.index, swipe.personaSnapshot);
+              } catch (rollbackError) {
+                rollbackErrors.push(rollbackError);
+                logger.error(
+                  {
+                    err: rollbackError,
+                    messageId: id,
+                    swipeIndex: swipe.index,
+                    event: "chat.persona.reassign",
+                    stage: "rollback",
+                  },
+                  "[chats] reassignMessagePersonaSnapshots: failed to restore swipe",
+                );
+              }
+            }
+          }
+          if (rollbackErrors.length > 0) {
+            throw new AggregateError(
+              [err, ...rollbackErrors],
+              `reassignMessagePersonaSnapshots failed and rollback failed for ${rollbackErrors.length} writes`,
+            );
+          }
+          throw err;
+        }
+
+        return {
+          updatedCount: inScopeIds.length,
+          messageIds: inScopeIds,
+        };
+      });
+    },
+
+    /** Atomically append an attachment to a message's extra JSON field. */
+    async appendMessageAttachment(id: string, attachment: Record<string, unknown>) {
+      return withPatchQueue(messageExtraPatchQueues, id, async () => {
+        const msg = await this.getMessage(id);
+        if (!msg) return null;
+        const existing = parseExtraRecord(msg.extra, messageExtraAt(msg.id));
+        const attachments = Array.isArray(existing.attachments) ? existing.attachments : [];
+        const merged = { ...existing, attachments: [...attachments, attachment] };
+        await db
+          .update(messages)
+          .set({ extra: JSON.stringify(merged) })
+          .where(eq(messages.id, id));
+        return this.getMessage(id);
+      });
+    },
+
+    /** Append an attachment to the message mirror only when the expected swipe is still active. */
+    async appendMessageAttachmentForActiveSwipe(id: string, swipeIndex: number, attachment: Record<string, unknown>) {
+      return withPatchQueue(messageExtraPatchQueues, id, async () => {
+        const msg = await this.getMessage(id);
+        if (!msg || (msg.activeSwipeIndex ?? 0) !== swipeIndex) return null;
+        const existing = parseExtraRecord(msg.extra, messageExtraAt(msg.id));
+        const attachments = Array.isArray(existing.attachments) ? existing.attachments : [];
+        const merged = { ...existing, attachments: [...attachments, attachment] };
+        await db
+          .update(messages)
+          .set({ extra: JSON.stringify(merged) })
+          .where(and(eq(messages.id, id), eq(messages.activeSwipeIndex, swipeIndex)));
+        const next = await this.getMessage(id);
+        return next && (next.activeSwipeIndex ?? 0) === swipeIndex ? next : null;
+      });
+    },
+
+    async removeMessage(id: string) {
+      // Serialized on the same per-message queue as every other message
+      // mutation (#5599): an in-flight edit either completes before the
+      // delete or starts after it and sees a consistent world, instead of
+      // having its writes silently vanish mid-flight into a 404.
+      const removedEntries = await withInterruptionQueue([id], async (locked) => {
+        const existing = await this.getMessage(id);
+        await reconcileEffects(existing, true, locked);
+        if (existing) await deleteGameStateForMessages([id], [existing.chatId]);
+        await db.delete(messages).where(eq(messages.id, id));
+        if (existing) {
+          const removed = await cascadeAgentLorebookEntriesForMessages([id]);
+          await invalidateMemoryChunksFrom(db, existing.chatId, existing.createdAt);
+          await refreshChatLastMessageAt(existing.chatId);
+          return removed;
+        }
+        return [];
+      });
+      if (removedEntries.length > 0) await this.pruneLorebookChatMetadata(async () => removedEntries);
+    },
+
+    async removeMessages(ids: string[], chatId?: string) {
+      if (ids.length === 0) return;
+      return withDiagnosticContext({ ...(chatId ? { chatId } : {}), operation: "chat.messages.delete" }, async () => {
+        const earliestByChat = new Map<string, string>();
+        const removedEntryIds: string[] = [];
+        const finishDeletion = async () => {
+          if (removedEntryIds.length > 0) await this.pruneLorebookChatMetadata(async () => removedEntryIds);
+          for (const [affectedChatId, createdAt] of earliestByChat) {
+            await invalidateMemoryChunksFrom(db, affectedChatId, createdAt);
+            await refreshChatLastMessageAt(affectedChatId);
+          }
+        };
+        const CHUNK = 500;
+        try {
+          for (let i = 0; i < ids.length; i += CHUNK) {
+            const chunk = ids.slice(i, i + CHUNK);
+            // Per-chunk queue acquisition (#5599): each message's delete is
+            // ordered against its in-flight edits; cross-chunk atomicity was
+            // never promised by this bulk path.
+            const removed = await withInterruptionQueue(chunk, async (locked) => {
+              const condition = chatId
+                ? and(inArray(messages.id, chunk), eq(messages.chatId, chatId))
+                : inArray(messages.id, chunk);
+              const existingRows = await db
+                .select({
+                  id: messages.id,
+                  chatId: messages.chatId,
+                  createdAt: messages.createdAt,
+                  extra: messages.extra,
+                })
+                .from(messages)
+                .where(condition);
+              // Undo newest effects first when a whole interrupted exchange is removed.
+              for (const row of existingRows
+                .filter((row) => receipts(row.extra).some((receipt) => !receipt.restored))
+                .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)))
+                await reconcileEffects(await readMessage(row.id), true, locked);
+              await deleteGameStateForMessages(
+                existingRows.map((row) => row.id),
+                existingRows.map((row) => row.chatId),
+              );
+              await db.delete(messages).where(condition);
+              // Cascade only the ids this scoped deletion actually removed — a
+              // requested id excluded by the chatId filter (or nonexistent) keeps
+              // its message, so its lore must keep its anchors too.
+              return {
+                rows: existingRows,
+                // ponytail: one lore scan per 500-message chunk keeps deletion atomic;
+                // index source refs if large history deletions outgrow this path.
+                entryIds: await cascadeAgentLorebookEntriesForMessages(existingRows.map((row) => row.id)),
+              };
+            });
+            removedEntryIds.push(...removed.entryIds);
+            for (const row of removed.rows) {
+              const current = earliestByChat.get(row.chatId);
+              if (!current || row.createdAt < current) earliestByChat.set(row.chatId, row.createdAt);
+            }
+          }
+        } catch (error) {
+          await finishDeletion().catch((cleanupError) => {
+            logger.error(
+              { err: cleanupError, event: "chat.messages.delete", stage: "lore_cleanup" },
+              "[chats] Failed to clean up lore after partial message deletion",
+            );
+          });
+          throw error;
+        }
+        await finishDeletion();
+      });
+    },
+
+    async getSwipes(messageId: string) {
+      return db.select().from(messageSwipes).where(eq(messageSwipes.messageId, messageId)).orderBy(messageSwipes.index);
+    },
+
+    /**
+     * Read swipe rows for a message set. Scoped via `inArray`, which the store
+     * now evaluates against a per-condition Set (#3402's cost is gone), so only
+     * the matching rows are cloned instead of every swipe in the install
+     * (#5592 Phase 0).
+     */
+    async listSwipesByMessageIds(messageIds: string[]) {
+      if (messageIds.length === 0) return [];
+      return db.select().from(messageSwipes).where(inArray(messageSwipes.messageId, messageIds));
+    },
+
+    async addSwipe(messageId: string, content: string, silent?: boolean) {
+      return withInterruptionQueue([messageId], async (locked) => {
+        if (!silent) await reconcileEffects(await readMessage(messageId), true, locked);
+        const existing = await this.getSwipes(messageId);
+        const nextIndex = existing.length;
+        const msg = await this.getMessage(messageId);
+        const retainedExtra = msg ? freshSwipeMessageExtra(msg.extra) : {};
+
+        // Backfill: save current message extra onto the currently-active swipe
+        // so its thinking/generationInfo isn't lost when we switch away
+        // (skip when silent — greeting swipes don't need backfill)
+        if (!silent && msg) {
+          const msgExtra = parseExtraRecord(msg.extra, messageExtraAt(msg.id));
+          const activeSwipe = existing.find((s: any) => s.index === msg.activeSwipeIndex);
+          if (activeSwipe) {
+            await db
+              .update(messageSwipes)
+              .set({ extra: JSON.stringify(msgExtra) })
+              .where(and(eq(messageSwipes.messageId, messageId), eq(messageSwipes.id, activeSwipe.id)));
+          }
+        }
+
+        const id = newId();
+        await db.insert(messageSwipes).values({
+          id,
+          messageId,
+          index: nextIndex,
+          content,
+          extra: JSON.stringify(retainedExtra),
+          createdAt: now(),
+        });
+
+        // When silent, only insert the swipe row without switching the active index.
+        if (!silent) {
+          // Set active swipe to the new one and reset message extra for the fresh swipe.
+          await db
+            .update(messages)
+            .set({ activeSwipeIndex: nextIndex, content, extra: JSON.stringify(retainedExtra) })
+            .where(eq(messages.id, messageId));
+          if (msg) {
+            await invalidateMemoryChunksFrom(db, msg.chatId, msg.createdAt);
+          }
+        }
+        return { id, index: nextIndex };
+      });
+    },
+
+    async setActiveSwipe(messageId: string, index: number) {
+      return withInterruptionQueue([messageId], async (locked) => {
+        const swipes = await this.getSwipes(messageId);
+        const target = swipes.find((s: any) => s.index === index);
+        if (!target) return null;
+        // Selecting the swipe that is already active is a no-op. Running the backfill and then
+        // restoring the pre-read target snapshot would drop message-only data such as attachments.
+        const current = await this.getMessage(messageId);
+        if (current && (current.activeSwipeIndex ?? 0) === index) return current;
+        await reconcileEffects(await readMessage(messageId), true, locked);
+
+        // Before switching, save current message content and extra onto the outgoing swipe.
+        const msg = await this.getMessage(messageId);
+        if (msg) {
+          const msgExtra = parseExtraRecord(msg.extra, messageExtraAt(msg.id));
+          const outgoingSwipe = swipes.find((s: any) => s.index === msg.activeSwipeIndex);
+          if (outgoingSwipe) {
+            await db
+              .update(messageSwipes)
+              .set({ content: msg.content, extra: JSON.stringify(msgExtra) })
+              .where(and(eq(messageSwipes.messageId, messageId), eq(messageSwipes.id, outgoingSwipe.id)));
+          }
+        }
+
+        // Sync the target swipe's extra onto the message.
+        const swipeExtra = parseExtraRecord(target.extra);
+        await db
+          .update(messages)
+          .set({
+            activeSwipeIndex: index,
+            content: target.content,
+            extra: JSON.stringify(swipeExtra),
+          })
+          .where(eq(messages.id, messageId));
+        if (msg) {
+          await invalidateMemoryChunksFrom(db, msg.chatId, msg.createdAt);
+        }
+        await reconcileEffects(await readMessage(messageId), false, locked);
+        return this.getMessage(messageId);
+      });
+    },
+
+    async removeSwipe(messageId: string, index: number) {
+      return withInterruptionQueue([messageId], async (locked) => {
+        const msg = await this.getMessage(messageId);
+        if (!msg) return null;
+
+        const swipes = await this.getSwipes(messageId);
+        const target = swipes.find((s: any) => s.index === index);
+        if (!target || swipes.length <= 1) return null;
+
+        const remaining = swipes.filter((s: any) => s.index !== index);
+        const currentExtra = parseExtraRecord(msg.extra, messageExtraAt(msg.id));
+
+        const activeSwipeRemoved = msg.activeSwipeIndex === index;
+        if (activeSwipeRemoved) await reconcileEffects(msg, true, locked);
+        let nextActiveSwipeIndex = msg.activeSwipeIndex;
+        let nextContent = msg.content;
+        let nextExtra = currentExtra;
+
+        if (msg.activeSwipeIndex > index) {
+          nextActiveSwipeIndex = msg.activeSwipeIndex - 1;
+        } else if (msg.activeSwipeIndex === index) {
+          nextActiveSwipeIndex = Math.min(index, remaining.length - 1);
+          const replacement = remaining[index] ?? remaining[remaining.length - 1];
+          if (replacement) {
+            nextContent = replacement.content;
+            nextExtra = parseExtraRecord(replacement.extra);
+          }
+        }
+
+        await db
+          .delete(messageSwipes)
+          .where(and(eq(messageSwipes.messageId, messageId), eq(messageSwipes.id, target.id)));
+        await db
+          .delete(gameStateSnapshots)
+          .where(
+            and(
+              eq(gameStateSnapshots.chatId, msg.chatId),
+              eq(gameStateSnapshots.messageId, messageId),
+              eq(gameStateSnapshots.swipeIndex, index),
+            ),
+          );
+        await db
+          .delete(spatialContextSnapshots)
+          .where(
+            and(
+              eq(spatialContextSnapshots.chatId, msg.chatId),
+              eq(spatialContextSnapshots.messageId, messageId),
+              eq(spatialContextSnapshots.swipeIndex, index),
+            ),
+          );
+
+        const swipesToShift = await db
+          .select()
+          .from(messageSwipes)
+          .where(and(eq(messageSwipes.messageId, messageId), gt(messageSwipes.index, index)));
+        for (const swipe of swipesToShift) {
+          await db
+            .update(messageSwipes)
+            .set({ index: swipe.index - 1 })
+            .where(and(eq(messageSwipes.messageId, messageId), eq(messageSwipes.id, swipe.id)));
+        }
+
+        const snapshotsToShift = await db
+          .select()
+          .from(gameStateSnapshots)
+          .where(
+            and(
+              eq(gameStateSnapshots.chatId, msg.chatId),
+              eq(gameStateSnapshots.messageId, messageId),
+              gt(gameStateSnapshots.swipeIndex, index),
+            ),
+          );
+        for (const snapshot of snapshotsToShift) {
+          await db
+            .update(gameStateSnapshots)
+            .set({ swipeIndex: snapshot.swipeIndex - 1 })
+            .where(and(eq(gameStateSnapshots.chatId, msg.chatId), eq(gameStateSnapshots.id, snapshot.id)));
+        }
+
+        const spatialSnapshotsToShift = await db
+          .select()
+          .from(spatialContextSnapshots)
+          .where(
+            and(
+              eq(spatialContextSnapshots.chatId, msg.chatId),
+              eq(spatialContextSnapshots.messageId, messageId),
+              gt(spatialContextSnapshots.swipeIndex, index),
+            ),
+          );
+        for (const snapshot of spatialSnapshotsToShift) {
+          await db
+            .update(spatialContextSnapshots)
+            .set({ swipeIndex: snapshot.swipeIndex - 1 })
+            .where(and(eq(spatialContextSnapshots.chatId, msg.chatId), eq(spatialContextSnapshots.id, snapshot.id)));
+        }
+
+        // Mirror the prune for turn-game (UNO) snapshots so anchors stay aligned
+        // with the message's swipes after one is removed.
+        await db
+          .delete(gameEngineState)
+          .where(
+            and(
+              eq(gameEngineState.chatId, msg.chatId),
+              eq(gameEngineState.messageId, messageId),
+              eq(gameEngineState.swipeIndex, index),
+            ),
+          );
+        const engineSnapshotsToShift = await db
+          .select()
+          .from(gameEngineState)
+          .where(
+            and(
+              eq(gameEngineState.chatId, msg.chatId),
+              eq(gameEngineState.messageId, messageId),
+              gt(gameEngineState.swipeIndex, index),
+            ),
+          );
+        for (const snapshot of engineSnapshotsToShift) {
+          await db
+            .update(gameEngineState)
+            .set({ swipeIndex: snapshot.swipeIndex - 1 })
+            .where(and(eq(gameEngineState.chatId, msg.chatId), eq(gameEngineState.id, snapshot.id)));
+        }
+        // The dice-pool row is keyed by swipe too. Left behind, the removed swipe's row would
+        // answer the next regenerate of this message, and a later swipe's row would sit one
+        // index off from the swipe it was dealt for.
+        await db
+          .delete(gameDicePools)
+          .where(
+            and(
+              eq(gameDicePools.chatId, msg.chatId),
+              eq(gameDicePools.messageId, messageId),
+              eq(gameDicePools.swipeIndex, index),
+            ),
+          );
+        const dicePoolsToShift = await db
+          .select()
+          .from(gameDicePools)
+          .where(
+            and(
+              eq(gameDicePools.chatId, msg.chatId),
+              eq(gameDicePools.messageId, messageId),
+              gt(gameDicePools.swipeIndex, index),
+            ),
+          );
+        for (const poolRow of dicePoolsToShift) {
+          await db
+            .update(gameDicePools)
+            .set({ swipeIndex: poolRow.swipeIndex - 1 })
+            .where(and(eq(gameDicePools.chatId, msg.chatId), eq(gameDicePools.id, poolRow.id)));
+        }
+
+        await db
+          .update(messages)
+          .set({
+            activeSwipeIndex: nextActiveSwipeIndex,
+            content: nextContent,
+            extra: JSON.stringify(nextExtra),
+          })
+          .where(eq(messages.id, messageId));
+        if (activeSwipeRemoved) {
+          await invalidateMemoryChunksFrom(db, msg.chatId, msg.createdAt);
+          await reconcileEffects(await readMessage(messageId), false, locked);
+        }
+
+        return this.getMessage(messageId);
+      });
+    },
+
+    /** Merge partial data into a swipe's extra JSON field. */
+    async updateSwipeExtra(messageId: string, swipeIndex: number, partial: Record<string, unknown>) {
+      return withPatchQueue(messageExtraPatchQueues, messageId, async () => {
+        const swipes = await this.getSwipes(messageId);
+        const target = swipes.find((s: any) => s.index === swipeIndex);
+        if (!target) return;
+        const existing = parseExtraRecord(target.extra);
+        await db
+          .update(messageSwipes)
+          .set({ extra: JSON.stringify({ ...existing, ...partial }) })
+          .where(and(eq(messageSwipes.messageId, messageId), eq(messageSwipes.id, target.id)));
+      });
+    },
+
+    /** Atomically append an attachment to a swipe's extra JSON field. */
+    async appendSwipeAttachment(messageId: string, swipeIndex: number, attachment: Record<string, unknown>) {
+      return withPatchQueue(messageExtraPatchQueues, messageId, async () => {
+        const swipes = await this.getSwipes(messageId);
+        const target = swipes.find((s: any) => s.index === swipeIndex);
+        if (!target) return;
+        const existing = typeof target.extra === "string" ? JSON.parse(target.extra) : (target.extra ?? {});
+        const attachments = Array.isArray(existing.attachments) ? existing.attachments : [];
+        const merged = { ...existing, attachments: [...attachments, attachment] };
+        await db
+          .update(messageSwipes)
+          .set({ extra: JSON.stringify(merged) })
+          .where(and(eq(messageSwipes.messageId, messageId), eq(messageSwipes.id, target.id)));
+      });
+    },
+
+    /**
+     * Append an attachment to a swipe row and, when that swipe is still active, to the message mirror,
+     * in one critical section. Doing the two writes as separate queued calls lets a swipe switch run in
+     * between: it copies the mirror (without the attachment) over the swipe row, erasing it, or makes
+     * the mirror belong to another swipe. Returns the updated message when the mirror was written.
+     */
+    async appendSwipeAttachmentAndActiveMirror(
+      messageId: string,
+      swipeIndex: number,
+      attachment: Record<string, unknown>,
+    ) {
+      return withPatchQueue(messageExtraPatchQueues, messageId, async () => {
+        const swipes = await this.getSwipes(messageId);
+        const target = swipes.find((s: any) => s.index === swipeIndex);
+        // A message can have no swipe rows (for example after a trash restore of a
+        // snapshot without swipes). Skip only the swipe write then; the active-message
+        // mirror below still keeps the attachment.
+        if (target) {
+          const swipeExtra = parseExtraRecord(target.extra, swipeExtraAt(target.id));
+          const swipeAttachments = Array.isArray(swipeExtra.attachments) ? swipeExtra.attachments : [];
+          await db
+            .update(messageSwipes)
+            .set({ extra: JSON.stringify({ ...swipeExtra, attachments: [...swipeAttachments, attachment] }) })
+            .where(and(eq(messageSwipes.messageId, messageId), eq(messageSwipes.id, target.id)));
+        }
+        const msg = await this.getMessage(messageId);
+        if (!msg || (msg.activeSwipeIndex ?? 0) !== swipeIndex) return null;
+        const msgExtra = parseExtraRecord(msg.extra, messageExtraAt(msg.id));
+        const msgAttachments = Array.isArray(msgExtra.attachments) ? msgExtra.attachments : [];
+        await db
+          .update(messages)
+          .set({ extra: JSON.stringify({ ...msgExtra, attachments: [...msgAttachments, attachment] }) })
+          .where(and(eq(messages.id, messageId), eq(messages.activeSwipeIndex, swipeIndex)));
+        const next = await this.getMessage(messageId);
+        return next && (next.activeSwipeIndex ?? 0) === swipeIndex ? next : null;
+      });
+    },
+
+    // ── Chat Connections ──
+
+    /** Bidirectionally link two chats. */
+    async connectChats(chatIdA: string, chatIdB: string) {
+      const timestamp = now();
+      await db.update(chats).set({ connectedChatId: chatIdB, updatedAt: timestamp }).where(eq(chats.id, chatIdA));
+      await db.update(chats).set({ connectedChatId: chatIdA, updatedAt: timestamp }).where(eq(chats.id, chatIdB));
+    },
+
+    /** Remove the bidirectional link for a chat (and its partner). */
+    async disconnectChat(chatId: string) {
+      const chat = await this.getById(chatId);
+      if (!chat) return;
+      const parsed = typeof chat.connectedChatId === "string" ? chat.connectedChatId : null;
+      const timestamp = now();
+      await db.update(chats).set({ connectedChatId: null, updatedAt: timestamp }).where(eq(chats.id, chatId));
+      if (parsed) {
+        await db.update(chats).set({ connectedChatId: null, updatedAt: timestamp }).where(eq(chats.id, parsed));
+      }
+    },
+
+    // ── OOC Influences ──
+
+    /** Create a queued influence from a conversation → its connected roleplay. */
+    async createInfluence(sourceChatId: string, targetChatId: string, content: string, anchorMessageId?: string) {
+      const id = newId();
+      await db.insert(oocInfluences).values({
+        id,
+        sourceChatId,
+        targetChatId,
+        content,
+        anchorMessageId: anchorMessageId ?? null,
+        consumed: "false",
+        createdAt: now(),
+      });
+      return id;
+    },
+
+    /** Get all unconsumed influences targeting a chat. */
+    async listPendingInfluences(targetChatId: string) {
+      return db
+        .select()
+        .from(oocInfluences)
+        .where(and(eq(oocInfluences.targetChatId, targetChatId), eq(oocInfluences.consumed, "false")))
+        .orderBy(oocInfluences.createdAt);
+    },
+
+    /**
+     * Mark an influence as consumed after it's been injected. The
+     * targetChatId keeps the write's unit scope resolvable when the row's
+     * unit is not resident (#5592 PR-B) — the caller always has it.
+     */
+    async markInfluenceConsumed(id: string, targetChatId?: string) {
+      const condition = targetChatId
+        ? and(eq(oocInfluences.targetChatId, targetChatId), eq(oocInfluences.id, id))
+        : eq(oocInfluences.id, id);
+      await db.update(oocInfluences).set({ consumed: "true" }).where(condition);
+    },
+
+    /** Delete all influences associated with a chat (as source or target). */
+    async deleteInfluencesForChat(chatId: string) {
+      await db.delete(oocInfluences).where(eq(oocInfluences.sourceChatId, chatId));
+      await db.delete(oocInfluences).where(eq(oocInfluences.targetChatId, chatId));
+    },
+
+    // ── Conversation Notes ──
+
+    /** Create a durable note from a conversation → its connected roleplay, then prune oldest past the char budget. */
+    async createNote(sourceChatId: string, targetChatId: string, content: string, anchorMessageId?: string) {
+      // Time-sortable so the id tie-break below follows creation order when createdAt ties.
+      const id = newTimeSortableId();
+      await db.insert(conversationNotes).values({
+        id,
+        sourceChatId,
+        targetChatId,
+        content,
+        anchorMessageId: anchorMessageId ?? null,
+        createdAt: now(),
+      });
+
+      const all = await db
+        .select()
+        .from(conversationNotes)
+        .where(eq(conversationNotes.targetChatId, targetChatId))
+        .orderBy(desc(conversationNotes.createdAt), desc(conversationNotes.id));
+
+      const toDelete: string[] = [];
+      // Always keep the note just created even if it alone exceeds the budget.
+      let total = content.length;
+      for (let i = 0; i < all.length; i++) {
+        if (all[i]!.id === id) continue;
+        total += all[i]!.content.length;
+        if (total > CONVERSATION_NOTES_BUDGET_CHARS) {
+          toDelete.push(all[i]!.id);
+        }
+      }
+      if (toDelete.length > 0) {
+        await db
+          .delete(conversationNotes)
+          .where(and(eq(conversationNotes.targetChatId, targetChatId), inArray(conversationNotes.id, toDelete)));
+      }
+
+      return id;
+    },
+
+    /** List all durable notes targeting a chat, oldest first (for stable prompt ordering).
+     *  `id` secondary sort gives deterministic ordering when timestamps tie (e.g. multiple
+     *  `<note>` tags emitted in a single character response within one millisecond). */
+    async listNotes(targetChatId: string) {
+      return db
+        .select()
+        .from(conversationNotes)
+        .where(eq(conversationNotes.targetChatId, targetChatId))
+        .orderBy(conversationNotes.createdAt, conversationNotes.id);
+    },
+
+    /** Delete a single note by id, scoped to its target chat. */
+    async deleteNoteForChat(targetChatId: string, id: string) {
+      await db
+        .delete(conversationNotes)
+        .where(and(eq(conversationNotes.targetChatId, targetChatId), eq(conversationNotes.id, id)));
+    },
+
+    /** Clear every note targeting a chat. */
+    async clearNotes(targetChatId: string) {
+      await db.delete(conversationNotes).where(eq(conversationNotes.targetChatId, targetChatId));
+    },
+
+    /** Delete all notes associated with a chat (as source or target). */
+    async deleteNotesForChat(chatId: string) {
+      await db.delete(conversationNotes).where(eq(conversationNotes.sourceChatId, chatId));
+      await db.delete(conversationNotes).where(eq(conversationNotes.targetChatId, chatId));
+    },
+  };
+}

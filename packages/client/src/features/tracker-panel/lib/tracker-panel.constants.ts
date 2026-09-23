@@ -1,0 +1,52 @@
+import type { TrackerPanelSection, TrackerStatDensity } from "../tracker-panel.types";
+export {
+  DEFAULT_TRACKER_CARD_PORTRAIT_FOCUS_X as TRACKER_PORTRAIT_DEFAULT_FOCUS_X,
+  DEFAULT_TRACKER_CARD_PORTRAIT_FOCUS_Y as TRACKER_PORTRAIT_DEFAULT_FOCUS_Y,
+  MAX_TRACKER_CARD_PORTRAIT_FOCUS_Y as TRACKER_PORTRAIT_EXPRESSION_FOCUS_Y_MAX,
+  DEFAULT_TRACKER_CARD_PORTRAIT_ZOOM as TRACKER_PORTRAIT_DEFAULT_ZOOM,
+  MIN_TRACKER_CARD_PORTRAIT_ZOOM as TRACKER_PORTRAIT_MIN_ZOOM,
+  MAX_TRACKER_CARD_PORTRAIT_ZOOM as TRACKER_PORTRAIT_MAX_ZOOM,
+} from "../../../lib/tracker-card-colors";
+
+export const TRACKER_SECTION_AGENT_TYPES: Partial<Record<TrackerPanelSection, string>> = {
+  world: "world-state",
+  persona: "persona-stats",
+  characters: "character-tracker",
+  inventory: "inventory-tracker",
+  quests: "quest",
+  custom: "custom-tracker",
+};
+
+export const TRACKER_SECTION_RERUN_TITLES: Partial<Record<TrackerPanelSection, string>> = {
+  world: "Re-run world state tracker",
+  persona: "Re-run persona tracker",
+  characters: "Re-run character tracker",
+  inventory: "Re-run inventory tracker",
+  quests: "Re-run quest tracker",
+  custom: "Re-run custom tracker",
+};
+
+export const TRACKER_FEATURED_CHARACTER_META_KEY = "trackerFeaturedCharacterKeys";
+export const TRACKER_TEXT_ROW = "text-[0.6875rem] leading-[0.875rem]";
+export const TRACKER_TEXT_MICRO = "text-[0.625rem] leading-[0.75rem]";
+export const TRACKER_BAR = "h-[3px] rounded-[1px]";
+export const TRACKER_PROFILE_PORTRAIT_FRAME_STAGE_CLASS =
+  "h-[9rem] min-h-[9rem] @min-[380px]:h-[10.5rem] @min-[380px]:min-h-[10.5rem]";
+export const TRACKER_PROFILE_PORTRAIT_FRAME_STAGE_MAX_CLASS =
+  "h-[9rem] max-h-[9rem] @min-[380px]:h-[10.5rem] @min-[380px]:max-h-[10.5rem]";
+export const TRACKER_PROFILE_PORTRAIT_MEDIA_STAGE_REM = 7.75;
+export const TRACKER_PROFILE_PORTRAIT_ROOMY_MEDIA_STAGE_REM = 9.25;
+
+export const TRACKER_PORTRAIT_EXPRESSION_DEFAULT_FOCUS_Y = 88;
+export const TRACKER_PORTRAIT_ZOOM_STEP = 0.12;
+
+export const PERSONA_STAT_DENSITY_HEIGHT_REM: Record<TrackerStatDensity, number> = {
+  normal: 1.25,
+  compact: 0.95,
+  tight: 0.72,
+};
+export const PERSONA_ADD_STAT_DENSITY_HEIGHT_REM: Record<TrackerStatDensity, number> = {
+  normal: 1.25,
+  compact: 1,
+  tight: 0.82,
+};

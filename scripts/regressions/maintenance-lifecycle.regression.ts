@@ -1,0 +1,44 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { rememberBoundedSetValue } from "../../packages/client/src/lib/bounded-set.js";
+import playwrightConfig from "../../playwright.config.js";
+
+const boundedValues = new Set(["first", "second"]);
+rememberBoundedSetValue(boundedValues, "third", 2);
+assert.deepEqual([...boundedValues], ["second", "third"]);
+
+rememberBoundedSetValue(boundedValues, "second", 2);
+assert.deepEqual([...boundedValues], ["third", "second"]);
+
+const playwrightWebServer = Array.isArray(playwrightConfig.webServer)
+  ? playwrightConfig.webServer[0]
+  : playwrightConfig.webServer;
+assert.deepEqual(playwrightWebServer?.gracefulShutdown, { signal: "SIGTERM", timeout: 10_000 });
+
+const generateRouteSource = readFileSync(
+  new URL("../../packages/server/src/routes/generate.routes.ts", import.meta.url),
+  "utf8",
+);
+assert.doesNotMatch(generateRouteSource, /encryptedReasoningCache/u);
+
+const reasoningRecoveryIndex = generateRouteSource.indexOf("const pastReasoning = collectPastReasoningMetadata(");
+// The branch is keyed on the responder's attached tools, not enableChatTools: Game Mode attaches the dice tool
+// without the chat's tool toggle being on.
+const toolBranchIndex =
+  /if\s*\(\s*!isolatedGameResult\s*&&\s*responderToolsAttached\s*&&[^{}]*provider\.chatComplete/u.exec(generateRouteSource)?.index ?? -1;
+assert.ok(reasoningRecoveryIndex >= 0 && reasoningRecoveryIndex < toolBranchIndex);
+assert.match(
+  generateRouteSource.slice(reasoningRecoveryIndex, toolBranchIndex),
+  /collectPastReasoningMetadata\(\s*chatMessages,[\s\S]*scopedMessages[\s\S]*extra\.commandOnly === true/u,
+);
+
+const hiddenAnchorStart = generateRouteSource.indexOf("let anchoredMsg = savedMsg;");
+const hiddenAnchorEnd = generateRouteSource.indexOf(
+  "\n              if (\n                anchoredMsg?.id",
+  hiddenAnchorStart,
+);
+assert.ok(hiddenAnchorStart >= 0 && hiddenAnchorEnd > hiddenAnchorStart);
+const hiddenAnchorSource = generateRouteSource.slice(hiddenAnchorStart, hiddenAnchorEnd);
+assert.match(hiddenAnchorSource, /updateMessageExtra\(savedMsg\.id/u);
+assert.match(hiddenAnchorSource, /commandOnly: true/u);
+assert.match(hiddenAnchorSource, /encryptedReasoning: encryptedReasoningItems\?\.length/u);

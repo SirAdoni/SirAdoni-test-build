@@ -1,0 +1,50 @@
+client:
+  - changed-files:
+      - any-glob-to-any-file:
+          - packages/client/**
+
+server:
+  - changed-files:
+      - any-glob-to-any-file:
+          - packages/server/**
+
+shared:
+  - changed-files:
+      - any-glob-to-any-file:
+          - packages/shared/**
+
+android:
+  - changed-files:
+      - any-glob-to-any-file:
+          - android/**
+
+windows:
+  - changed-files:
+      - any-glob-to-any-file:
+          - win/**
+          - MarinaraLauncher.exe
+          - start.bat
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.md"
+          - docs/**
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/**
+
+container:
+  - changed-files:
+      - any-glob-to-any-file:
+          - docker-compose.yml
+          - Dockerfile
+          - Dockerfile.lite
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - pnpm-lock.yaml
+          - "**/package.json"

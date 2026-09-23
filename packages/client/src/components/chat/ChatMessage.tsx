@@ -1,0 +1,4750 @@
+import { useMessagePresetVariables } from "../../hooks/use-message-preset-variables";
+// ──────────────────────────────────────────────
+// Chat: Message — mode-aware rendering
+// ──────────────────────────────────────────────
+import { AvatarImage } from "../characters/AvatarImage";
+import { createPortal } from "react-dom";
+import { cn, copyToClipboard, getAvatarCropStyle, isLegacyAvatarCrop } from "../../lib/utils";
+import { normalizeAvatarCrop, type AvatarCrop } from "@marinara-engine/shared";
+import { applyInlineMarkdown, renderMarkdownBlocks, applyInlineMarkdownHTML } from "../../lib/markdown";
+import { MessageReplyPreview, ReplyToMessageButton } from "./MessageReplyPreview";
+import { RoleplayCommandResults, RoleplayDiceRoll, replaceRoleplayDiceMarkers } from "./RoleplayCommandResults";
+import { splitRoleplayParagraphs } from "../../lib/roleplay-vn-paragraphs";
+import { CharacterLinkedContent } from "../characters/CharacterReferences";
+import {
+  notifyRoleplayTTSParagraph,
+  withRoleplayTTSParagraphs,
+  type RoleplayTTSParagraphDetail,
+} from "../../lib/roleplay-vn-tts";
+import {
+  normalizeCardAssetImageSyntax,
+  resolveCardAssetUrl,
+  resolveSelfCardAssets,
+  type ChatGalleryIndex,
+} from "../../lib/card-asset-links";
+import { useChatGalleryFilenameIndex } from "../../hooks/use-characters";
+import { useReducedAmbientEffects } from "../../hooks/use-reduced-ambient-effects";
+import { PendingTypingDots } from "./PendingTypingDots";
+import { ChatImagePreview } from "./ChatImagePreview";
+import { recordClientRuntimeEvent } from "../../lib/client-runtime-diagnostics";
+import { isDiceRollResult, readRoleplayDiceRolls } from "../../lib/dice-roll-result";
+import { DiceMessageContent, diceRollReplacesMessageContent } from "./ConversationMessageShared";
+import {
+  User,
+  Bot,
+  Copy,
+  RefreshCw,
+  Trash2,
+  GitBranch,
+  Pencil,
+  Check,
+  X,
+  Flag,
+  Headphones,
+  Eye,
+  Search,
+  ScrollText,
+  Brain,
+  Languages,
+  Volume2,
+  VolumeX,
+  Mic,
+  MicOff,
+  Eraser,
+  Loader2,
+  Pause,
+  Play,
+  ChevronRight,
+  EyeOff,
+  Shield,
+} from "lucide-react";
+import { decodeEncodedSpeakerTags, formatTextQuotes, type Message, type QuoteFormat } from "@marinara-engine/shared";
+import type { GameTurnStoryboard, GameTurnStoryboardKeyframe } from "@marinara-engine/shared";
+import {
+  memo,
+  useState,
+  useMemo,
+  useRef,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useCallback,
+  cloneElement,
+  type ReactNode,
+} from "react";
+import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
+import { useQueryClient, type InfiniteData } from "@tanstack/react-query";
+import { chatKeys, rememberRecentMessageContentEdit } from "../../hooks/use-chats";
+import { useShallow } from "zustand/react/shallow";
+import { createMessageMacroResolver } from "../../lib/chat-macros";
+import { useApplyRegex } from "../../hooks/use-apply-regex";
+import { getDefaultChatTextColor, useUIStore } from "../../stores/ui.store";
+import { useChatStore } from "../../stores/chat.store";
+import { hasActiveTextSelection } from "../../lib/text-selection";
+import { parseChatMetadata } from "../../lib/chat-display";
+import { useTranslate } from "../../hooks/use-translate";
+import { api } from "../../lib/api-client";
+import { ttsService } from "../../lib/tts-service";
+import { useTTSConfig } from "../../hooks/use-tts";
+import { buildTTSVoiceRequests, normalizeTTSCharacterName, withTTSVoiceRequestCacheKeys } from "../../lib/tts-dialogue";
+import { DIALOGUE_QUOTE_PATTERN_SOURCE, HTML_SAFE_DIALOGUE_QUOTE_PATTERN_SOURCE } from "../../lib/dialogue-quotes";
+import { resolveMessageRewriteVersions } from "../../lib/message-rewrite-versions";
+import { convertChatHtmlNewlines } from "../../lib/chat-html-newlines";
+import { scopeChatMessageCss } from "../../lib/chat-message-css";
+import {
+  HTML_TAG_RE,
+  containsChatHtml,
+  decodeEncodedChatHtmlTags,
+  extractChatStyleBlocks,
+  sanitizeChatHtml,
+} from "../../lib/chat-html";
+import { resolveMessageReasoningDisplay } from "../../lib/message-reasoning";
+import type { CharacterMap, ExpressionAvatarResolver, MessageSelectionToggle, PersonaInfo } from "./chat-area.types";
+import {
+  MESSAGE_SELECTION_CHECKBOX_CLASS,
+  MESSAGE_SELECTION_CHECKBOX_SELECTED_CLASS,
+  MESSAGE_SELECTION_SURFACE_CLASS,
+} from "./message-selection-styles";
+import { GenerationReplayDetailsModal, hasGenerationReplayDetails } from "./GenerationReplayDetailsModal";
+import type { ChatImage } from "../../hooks/use-gallery";
+import { ChatImageLightbox } from "./ChatImageLightbox";
+import { SwipeJumpControl } from "./SwipeJumpControl";
+import { toast } from "sonner";
+import { MessageThinkingModal } from "./MessageThinkingModal";
+import { MESSAGE_ACTION_ICON_SIZE, MessageActionButton, useMessageActionMenu } from "./MessageActionButton";
+import { MessageMarkIndicators, MessageMarksAction, readMessageMarks } from "./MessageMarks";
+import { RoleplayStoryboardMessageMedia } from "./RoleplayStoryboardMessageMedia";
+import { MessageEditTextarea } from "./MessageEditTextarea";
+import { GenerationTokenUsage } from "./GenerationTokenUsage";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
+
+const MESSAGE_DOUBLE_TAP_MS = 320;
+const MESSAGE_DOUBLE_TAP_DISTANCE_PX = 26;
+const MESSAGE_CHROME_ACTIVE_ICON_CLASS =
+  "text-[var(--marinara-chat-chrome-button-text-active)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]";
+const MESSAGE_CHROME_MARKER_LINE_CLASS = "bg-[var(--marinara-chat-chrome-button-border-active)]";
+const MESSAGE_CHROME_MARKER_TEXT_CLASS = "text-[var(--marinara-chat-chrome-highlight-text)]";
+const MESSAGE_CHROME_RING_CLASS = "ring-[var(--marinara-chat-chrome-focus-ring)]";
+const ROLEPLAY_USER_BUBBLE_PANEL_STRENGTH = 100;
+const ROLEPLAY_ASSISTANT_BUBBLE_PANEL_STRENGTH = 96;
+
+type MessageImageAttachmentLike = {
+  data?: unknown;
+  filename?: unknown;
+  filePath?: unknown;
+  galleryId?: unknown;
+  height?: unknown;
+  model?: unknown;
+  name?: unknown;
+  prompt?: unknown;
+  provider?: unknown;
+  url?: unknown;
+  width?: unknown;
+};
+
+interface ChatMessageImageLightboxState {
+  image: ChatImage;
+  alt: string;
+  pinEnabled: boolean;
+  downloadEnabled: boolean;
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function readPositiveNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function filenameFromUrl(url: string): string | null {
+  if (url.startsWith("data:")) return null;
+  const filename = url.split("?")[0]?.split("/").filter(Boolean).pop();
+  if (!filename) return null;
+  try {
+    return decodeURIComponent(filename);
+  } catch {
+    return filename;
+  }
+}
+
+function buildChatMessageImage({
+  id,
+  chatId,
+  url,
+  prompt,
+  filePath,
+  provider,
+  model,
+  width,
+  height,
+  createdAt,
+}: {
+  id: string;
+  chatId: string;
+  url: string;
+  prompt?: string | null;
+  filePath?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  width?: number | null;
+  height?: number | null;
+  createdAt: string;
+}): ChatImage {
+  return {
+    id,
+    chatId,
+    filePath: filePath || filenameFromUrl(url) || `${id}.png`,
+    prompt: prompt ?? "",
+    provider: provider ?? "",
+    model: model ?? "",
+    width: width ?? null,
+    height: height ?? null,
+    createdAt,
+    url,
+  };
+}
+
+function buildAttachmentChatImage(
+  attachment: MessageImageAttachmentLike,
+  index: number,
+  message: Pick<Message, "chatId" | "createdAt" | "id">,
+): ChatImage | null {
+  const url = readString(attachment.url) ?? readString(attachment.data);
+  if (!url) return null;
+
+  const id = readString(attachment.galleryId) ?? `${message.id}:attachment:${index}`;
+  const filename = readString(attachment.filename) ?? readString(attachment.name);
+  return buildChatMessageImage({
+    id,
+    chatId: message.chatId,
+    url,
+    prompt: readString(attachment.prompt),
+    filePath: readString(attachment.filePath) ?? filename,
+    provider: readString(attachment.provider),
+    model: readString(attachment.model),
+    width: readPositiveNumber(attachment.width),
+    height: readPositiveNumber(attachment.height),
+    createdAt: message.createdAt,
+  });
+}
+
+function getRoleplayPanelBubbleBackground(opacity: number, maxPanelStrength: number) {
+  const panelStrength = Math.max(0, Math.min(100, opacity * maxPanelStrength));
+  if (panelStrength <= 0) return "transparent";
+  return `color-mix(in srgb, var(--marinara-chat-chrome-panel-bg) ${panelStrength.toFixed(2)}%, transparent)`;
+}
+
+function isMessageQuickEditIgnoredTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return Boolean(
+    target.closest(
+      'button, a, input, textarea, select, option, [contenteditable="true"], [role="button"], [data-no-message-quick-edit]',
+    ),
+  );
+}
+
+type AIVisibilityCharacter = {
+  id: string;
+  name: string;
+  avatarUrl: string | null;
+  avatarCrop: AvatarCrop | null | undefined;
+  nameColor?: string;
+};
+
+type ToggleConversationStart = (
+  messageId: string,
+  sharedStart: boolean,
+  conversationStartForCharacterIds: string[],
+) => void;
+type ToggleHiddenFromAI = (messageId: string, hiddenFromAll: boolean, hiddenFromAICharacterIds?: string[]) => void;
+
+function AIVisibilityAvatar({ character, className }: { character: AIVisibilityCharacter; className: string }) {
+  return character.avatarUrl ? (
+    <span
+      className={cn(
+        "relative isolate block overflow-hidden rounded-full bg-[var(--marinara-chat-chrome-panel-bg)]",
+        className,
+      )}
+    >
+      <img
+        src={character.avatarUrl}
+        alt=""
+        aria-hidden="true"
+        className="h-full w-full object-cover"
+        style={getAvatarCropStyle(character.avatarCrop)}
+      />
+    </span>
+  ) : (
+    <span
+      aria-hidden="true"
+      className={cn(
+        "flex items-center justify-center rounded-full bg-[var(--marinara-chat-chrome-highlight-bg)] font-semibold text-[var(--marinara-chat-chrome-highlight-text)]",
+        className,
+      )}
+    >
+      {character.name.trim().charAt(0).toUpperCase() || "?"}
+    </span>
+  );
+}
+
+function AIVisibilityGroupAvatar({
+  characters,
+  className = "h-7 w-7",
+}: {
+  characters: AIVisibilityCharacter[];
+  className?: string;
+}) {
+  const visible = characters.slice(0, 2);
+  if (visible.length <= 1) {
+    const character = visible[0];
+    return character ? (
+      <AIVisibilityAvatar character={character} className={className} />
+    ) : (
+      <span
+        aria-hidden="true"
+        className={cn(
+          "flex items-center justify-center rounded-full bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-highlight-text)]",
+          className,
+        )}
+      >
+        <User size="55%" />
+      </span>
+    );
+  }
+
+  return (
+    <span aria-hidden="true" className={cn("relative block", className)}>
+      {visible.map((character, index) => (
+        <span
+          key={character.id}
+          className={cn(
+            "absolute h-[72%] w-[72%] rounded-full ring-1 ring-[var(--marinara-chat-chrome-panel-bg)]",
+            index === 0 ? "left-0 top-0 z-10" : "bottom-0 right-0",
+          )}
+        >
+          <AIVisibilityAvatar character={character} className="h-full w-full" />
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function AIVisibilityRecipientAvatars({
+  characters,
+  hiddenFromAll,
+  hiddenCharacterIds,
+}: {
+  characters: AIVisibilityCharacter[];
+  hiddenFromAll: boolean;
+  hiddenCharacterIds: string[];
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  if (hiddenFromAll) {
+    return (
+      <span
+        className="ml-0.5 inline-flex"
+        title={localizeUi("ui.chat.aivisibilityrecipientavatars.hiddenFromAllCharacters")}
+      >
+        <AIVisibilityGroupAvatar characters={characters} className="h-4 w-4" />
+      </span>
+    );
+  }
+
+  const recipients = hiddenCharacterIds
+    .map((id) => characters.find((character) => character.id === id))
+    .filter((character): character is AIVisibilityCharacter => Boolean(character));
+  if (recipients.length === 0) return null;
+
+  return (
+    <span
+      className="ml-0.5 inline-flex -space-x-1"
+      title={localizeUi("ui.chat.aivisibilityrecipientavatars.hiddenFromValue1", {
+        value1: recipients.map((item) => item.name).join(", "),
+      })}
+    >
+      {recipients.map((character) => (
+        <span key={character.id} className="rounded-full ring-1 ring-[var(--marinara-chat-chrome-panel-bg)]">
+          <AIVisibilityAvatar character={character} className="h-4 w-4 text-[0.45rem]" />
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function HideFromAIAction({
+  messageId,
+  hiddenFromAll,
+  hiddenCharacterIds,
+  characters,
+  onToggle,
+  align = "left",
+}: {
+  messageId: string;
+  hiddenFromAll: boolean;
+  hiddenCharacterIds: string[];
+  characters: AIVisibilityCharacter[];
+  onToggle: ToggleHiddenFromAI;
+  align?: "left" | "right";
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  const { open, setOpen, buttonRef, menuRef, position } = useMessageActionMenu(align);
+  const isGroupChat = characters.length > 1;
+  const hasRestriction = hiddenFromAll || hiddenCharacterIds.length > 0;
+
+  const toggleCharacter = (characterId: string) => {
+    const next = hiddenFromAll
+      ? [characterId]
+      : hiddenCharacterIds.includes(characterId)
+        ? hiddenCharacterIds.filter((id) => id !== characterId)
+        : [...hiddenCharacterIds, characterId];
+    onToggle(messageId, false, next);
+  };
+
+  return (
+    <>
+      <ActionBtn
+        buttonRef={buttonRef}
+        icon={hasRestriction ? <Eye size={MESSAGE_ACTION_ICON_SIZE} /> : <EyeOff size={MESSAGE_ACTION_ICON_SIZE} />}
+        onClick={() => {
+          if (isGroupChat) {
+            setOpen((value) => !value);
+          } else if (hiddenCharacterIds.length > 0 && !hiddenFromAll) {
+            onToggle(messageId, false, []);
+          } else {
+            onToggle(messageId, hiddenFromAll);
+          }
+        }}
+        title={
+          isGroupChat
+            ? hasRestriction
+              ? localizeUi("ui.chat.hidefromaiaction.changeWhoThisIsHiddenFrom")
+              : localizeUi("ui.chat.hidefromaiaction.chooseWhoToHideThisFrom")
+            : hasRestriction
+              ? localizeUi("ui.chat.conversationmessageactions.unhideFromAi")
+              : localizeUi("ui.chat.conversationmessageactions.hideFromAi")
+        }
+        className={cn(
+          "[-webkit-tap-highlight-color:transparent]",
+          hasRestriction && MESSAGE_CHROME_ACTIVE_ICON_CLASS,
+          hasRestriction && "mari-accent-animated",
+        )}
+        ariaPressed={hasRestriction}
+      />
+
+      {open &&
+        isGroupChat &&
+        createPortal(
+          <div
+            ref={menuRef}
+            style={position}
+            role="menu"
+            aria-label={localizeUi("ui.chat.hidefromaiaction.chooseWhichCharactersCannotSeeThisMessage")}
+            className={cn(
+              "marinara-chat-popover fixed z-[9999] flex max-h-36 w-max max-w-[min(22rem,calc(100vw-1rem))] flex-wrap items-center gap-1.5 overflow-x-hidden overflow-y-auto rounded-xl border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-panel-bg)] p-2 shadow-xl",
+            )}
+          >
+            <button
+              type="button"
+              role="menuitemcheckbox"
+              aria-checked={hiddenFromAll}
+              aria-label={localizeUi("ui.chat.hidefromaiaction.hideFromAllCharacters")}
+              title={localizeUi("ui.chat.hidefromaiaction.allCharacters")}
+              onClick={() => onToggle(messageId, hiddenFromAll)}
+              className={cn(
+                "flex aspect-square w-[clamp(1.5rem,8vw,2.25rem)] shrink-0 items-center justify-center rounded-full transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)]",
+                hiddenFromAll
+                  ? "bg-[var(--marinara-chat-chrome-highlight-bg)] opacity-100 ring-2 ring-[var(--marinara-chat-chrome-button-border-active)]"
+                  : "opacity-55 hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:opacity-100",
+              )}
+            >
+              <AIVisibilityGroupAvatar characters={characters} className="h-[72%] w-[72%]" />
+            </button>
+
+            <span aria-hidden="true" className="h-7 w-px bg-[var(--marinara-chat-chrome-panel-divider)]" />
+
+            {characters.map((character) => {
+              const selected = !hiddenFromAll && hiddenCharacterIds.includes(character.id);
+              return (
+                <button
+                  key={character.id}
+                  type="button"
+                  role="menuitemcheckbox"
+                  aria-checked={selected}
+                  aria-label={localizeUi("ui.chat.hidefromaiaction.hideFromValue1", { value1: character.name })}
+                  title={character.name}
+                  onClick={() => toggleCharacter(character.id)}
+                  className={cn(
+                    "flex aspect-square w-[clamp(1.5rem,8vw,2.25rem)] shrink-0 items-center justify-center rounded-full transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)]",
+                    selected
+                      ? "bg-[var(--marinara-chat-chrome-highlight-bg)] opacity-100 ring-2 ring-[var(--marinara-chat-chrome-button-border-active)] brightness-110"
+                      : hiddenFromAll
+                        ? "opacity-35 hover:opacity-80"
+                        : "opacity-55 hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:opacity-100",
+                  )}
+                >
+                  <AIVisibilityAvatar character={character} className="h-[72%] w-[72%] text-[0.625rem]" />
+                </button>
+              );
+            })}
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
+function ConversationStartAction({
+  messageId,
+  sharedStart,
+  characterIds,
+  characters,
+  onToggle,
+  align = "left",
+}: {
+  messageId: string;
+  sharedStart: boolean;
+  characterIds: string[];
+  characters: AIVisibilityCharacter[];
+  onToggle: ToggleConversationStart;
+  align?: "left" | "right";
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  const { open, setOpen, buttonRef, menuRef, position } = useMessageActionMenu(align);
+  const isGroupChat = characters.length > 1;
+  const hasStart = sharedStart || characterIds.length > 0;
+
+  const toggleCharacter = (characterId: string) => {
+    const next = characterIds.includes(characterId)
+      ? characterIds.filter((id) => id !== characterId)
+      : [...characterIds, characterId];
+    onToggle(messageId, sharedStart, next);
+  };
+
+  return (
+    <>
+      <ActionBtn
+        buttonRef={buttonRef}
+        icon={<Flag size={MESSAGE_ACTION_ICON_SIZE} />}
+        onClick={() => {
+          if (isGroupChat) setOpen((value) => !value);
+          else onToggle(messageId, !sharedStart, characterIds);
+        }}
+        title={
+          isGroupChat
+            ? hasStart
+              ? localizeUi("ui.chat.conversationstartaction.changeWhoStartsHere")
+              : localizeUi("ui.chat.chatmessage.markAsNewStart")
+            : sharedStart
+              ? localizeUi("ui.chat.chatmessage.removeConversationStart")
+              : localizeUi("ui.chat.chatmessage.markAsNewStart")
+        }
+        className={cn(
+          "[-webkit-tap-highlight-color:transparent]",
+          hasStart && MESSAGE_CHROME_ACTIVE_ICON_CLASS,
+          hasStart && "mari-accent-animated",
+        )}
+        ariaPressed={hasStart}
+      />
+
+      {open &&
+        isGroupChat &&
+        createPortal(
+          <div
+            ref={menuRef}
+            style={position}
+            role="menu"
+            aria-label={localizeUi("ui.chat.conversationstartaction.chooseWhoStartsHere")}
+            className={cn(
+              "marinara-chat-popover fixed z-[9999] flex max-h-36 w-max max-w-[min(22rem,calc(100vw-1rem))] flex-wrap items-center gap-1.5 overflow-x-hidden overflow-y-auto rounded-xl border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-panel-bg)] p-2 shadow-xl",
+            )}
+          >
+            <button
+              type="button"
+              role="menuitemcheckbox"
+              aria-checked={sharedStart}
+              aria-label={localizeUi("ui.chat.conversationstartaction.newStartForAllCharacters")}
+              title={localizeUi("ui.chat.hidefromaiaction.allCharacters")}
+              onClick={() => onToggle(messageId, !sharedStart, characterIds)}
+              className={cn(
+                "flex aspect-square w-[clamp(1.5rem,8vw,2.25rem)] shrink-0 items-center justify-center rounded-full transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)]",
+                sharedStart
+                  ? "bg-[var(--marinara-chat-chrome-highlight-bg)] opacity-100 ring-2 ring-[var(--marinara-chat-chrome-button-border-active)]"
+                  : "opacity-55 hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:opacity-100",
+              )}
+            >
+              <AIVisibilityGroupAvatar characters={characters} className="h-[72%] w-[72%]" />
+            </button>
+
+            <span aria-hidden="true" className="h-7 w-px bg-[var(--marinara-chat-chrome-panel-divider)]" />
+
+            {characters.map((character) => {
+              const selected = characterIds.includes(character.id);
+              return (
+                <button
+                  key={character.id}
+                  type="button"
+                  role="menuitemcheckbox"
+                  aria-checked={selected}
+                  aria-label={localizeUi("ui.chat.conversationstartaction.newStartForValue1", {
+                    value1: character.name,
+                  })}
+                  title={character.name}
+                  onClick={() => toggleCharacter(character.id)}
+                  className={cn(
+                    "flex aspect-square w-[clamp(1.5rem,8vw,2.25rem)] shrink-0 items-center justify-center rounded-full transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)]",
+                    selected
+                      ? "bg-[var(--marinara-chat-chrome-highlight-bg)] opacity-100 ring-2 ring-[var(--marinara-chat-chrome-button-border-active)] brightness-110"
+                      : "opacity-55 hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:opacity-100",
+                  )}
+                >
+                  <AIVisibilityAvatar character={character} className="h-[72%] w-[72%] text-[0.625rem]" />
+                </button>
+              );
+            })}
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
+function ConversationStartMarkers({
+  sharedStart,
+  characterIds,
+  characters,
+  panel,
+  memoryStartCharacterIds,
+}: {
+  sharedStart: boolean;
+  characterIds: string[];
+  characters: AIVisibilityCharacter[];
+  panel?: boolean;
+  memoryStartCharacterIds?: string[];
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  sharedStart ||= memoryStartCharacterIds?.length === 0;
+  const targetedCharacters = [...new Set([...characterIds, ...(memoryStartCharacterIds ?? [])])]
+    .map((id) => characters.find((character) => character.id === id))
+    .filter((character): character is AIVisibilityCharacter => Boolean(character));
+  if (!sharedStart && targetedCharacters.length === 0) return null;
+
+  const markers: Array<{ key: string; label: string; color?: string }> = [
+    ...(sharedStart
+      ? [
+          {
+            key: "all",
+            label: localizeUi("ui.chat.conversationstartaction.newStartForAll"),
+          },
+        ]
+      : []),
+    ...targetedCharacters.map((character) => ({
+      key: character.id,
+      label: localizeUi("ui.chat.conversationstartaction.newStartForValue1", { value1: character.name }),
+      color: character.nameColor,
+    })),
+  ];
+
+  return (
+    <div
+      className={cn("w-full", panel ? "mb-1 px-1" : "mb-0.5 px-2")}
+      data-advanced-memory-start={memoryStartCharacterIds ? "true" : undefined}
+      title={memoryStartCharacterIds ? localizeUi("chat.advancedMemory.contextStartHelp") : undefined}
+    >
+      {sharedStart && panel && (
+        <div
+          aria-hidden="true"
+          className="mari-chrome-accent-progress mari-accent-animated mb-1.5 h-0.5 w-full rounded-full"
+        />
+      )}
+      <div className="flex flex-col gap-0.5">
+        {markers.map((marker) => {
+          const markerStyle = marker.color ? solidNameColorStyle(marker.color) : undefined;
+          const markerColor = typeof markerStyle?.color === "string" ? markerStyle.color : undefined;
+          return (
+            <div key={marker.key} className="flex items-center gap-1.5">
+              <span
+                aria-hidden="true"
+                className={cn("h-px flex-1", !markerColor && MESSAGE_CHROME_MARKER_LINE_CLASS)}
+                style={markerColor ? { backgroundColor: markerColor } : undefined}
+              />
+              <span
+                className={cn(
+                  "text-[0.5625rem] font-semibold uppercase tracking-widest",
+                  !markerColor && MESSAGE_CHROME_MARKER_TEXT_CLASS,
+                )}
+                style={markerStyle}
+              >
+                {marker.label}
+              </span>
+              <span
+                aria-hidden="true"
+                className={cn("h-px flex-1", !markerColor && MESSAGE_CHROME_MARKER_LINE_CLASS)}
+                style={markerColor ? { backgroundColor: markerColor } : undefined}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function HiddenFromAIMessageButton({
+  roleplay,
+  canCollapse,
+  onExpand,
+  isHiddenExpanded,
+  recipientAvatars,
+  statusLabel = "Hidden from AI",
+}: {
+  roleplay?: boolean;
+  canCollapse: boolean;
+  onExpand: () => void;
+  isHiddenExpanded: boolean;
+  recipientAvatars?: ReactNode;
+  statusLabel?: string;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  const statusClassName = cn(
+    "inline-flex items-center gap-1 rounded px-1 py-0.5 text-[0.625rem] font-medium text-[var(--marinara-chat-chrome-highlight-text)]",
+    roleplay && "opacity-80",
+  );
+
+  if (!canCollapse) {
+    return (
+      <span className={cn(statusClassName, "align-middle")} title={statusLabel}>
+        <EyeOff size="0.7rem" className="shrink-0" />
+        {recipientAvatars}
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1 align-middle">
+      <button
+        type="button"
+        onClick={onExpand}
+        className={cn(
+          "inline-flex items-center gap-1 rounded px-1 py-0.5 text-[0.625rem] font-medium text-[var(--marinara-chat-chrome-highlight-text)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)]",
+          roleplay && "opacity-80 hover:opacity-100",
+        )}
+        aria-label={localizeUi("ui.chat.hiddenfromaimessagebutton.value1MessageValue2", {
+          value1: isHiddenExpanded
+            ? localizeUi("ui.panels.ttsconfigcard.collapse")
+            : localizeUi("ui.panels.ttsconfigcard.expand"),
+          value2: statusLabel,
+        })}
+        title={localizeUi("ui.chat.hiddenfromaimessagebutton.value1Value2", {
+          value1: statusLabel,
+          value2: isHiddenExpanded
+            ? localizeUi("ui.chat.hiddenfromaimessagebutton.collapseMessage")
+            : localizeUi("ui.chat.hiddenfromaimessagebutton.expandMessage"),
+        })}
+      >
+        <ChevronRight size="0.7rem" className={cn("shrink-0 transition-transform", isHiddenExpanded && "rotate-90")} />
+        <EyeOff size="0.7rem" className="shrink-0" />
+        {recipientAvatars}
+      </button>
+    </span>
+  );
+}
+
+function HiddenFromAIMessageSummary({
+  roleplay,
+  onExpand,
+  recipientAvatars,
+  statusLabel = "Hidden from AI",
+}: {
+  roleplay?: boolean;
+  onExpand: () => void;
+  recipientAvatars?: ReactNode;
+  statusLabel?: string;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation();
+        onExpand();
+      }}
+      className={cn(
+        "flex w-full items-center gap-2 rounded-lg border border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-highlight-bg)] px-3 py-2 text-left text-[0.75rem] text-[var(--marinara-chat-chrome-highlight-text)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)]",
+        roleplay && "opacity-85 hover:opacity-100",
+      )}
+      title={localizeUi("ui.chat.hiddenfromaimessagesummary.expandHiddenFromAiMessage")}
+      aria-label={localizeUi("ui.chat.hiddenfromaimessagesummary.expandHiddenFromAiMessage")}
+    >
+      <EyeOff size="0.8rem" className="shrink-0" />
+      {recipientAvatars}
+      <span className="min-w-0 flex-1 truncate">{statusLabel}</span>
+      <span className="shrink-0 text-[0.625rem] opacity-70">
+        {localizeUi("ui.chat.hiddenfromaimessagesummary.show")}
+      </span>
+    </button>
+  );
+}
+
+/** Props for a single rendered chat message, including optional scene fork actions. */
+interface ChatMessageProps {
+  message: Message & { swipes?: Array<{ id: string; content: string }> };
+  isStreaming?: boolean;
+  /** Compact paragraph presentation; full message actions stay in the history. */
+  visualNovel?: boolean;
+  followSpeechParagraphs?: boolean;
+  visualNovelSpeech?: RoleplayTTSParagraphDetail | null;
+  onVisualNovelSpeechParagraph?: (index: number) => void;
+  /** Explicit VN paragraph index to render instead of automatically picking the latest paragraph. */
+  visualNovelParagraphIndex?: number;
+  /** Callback notifying the total number of paragraphs available in this message for VN rendering. */
+  onVisualNovelParagraphCount?: (count: number) => void;
+  visualNovelMediaTarget?: HTMLElement | null;
+  /** Whether the live Roleplay response has begun emitting visible output. */
+  streamingOutputStarted?: boolean;
+  /** Frame-throttled live content that receives the same formatter as committed messages. */
+  streamingContent?: (renderText: (text: string) => ReactNode) => ReactNode;
+  onDelete?: (messageId: string) => void;
+  onRegenerate?: (messageId: string) => void;
+  onEdit?: (messageId: string, content: string) => void | Promise<void>;
+  onSetActiveSwipe?: (messageId: string, index: number) => void;
+  onToggleConversationStart?: ToggleConversationStart;
+  memoryStartCharacterIds?: string[];
+  onToggleHiddenFromAI?: ToggleHiddenFromAI;
+  onPeekPrompt?: () => void;
+  onBranch?: (messageId: string) => void;
+  onCloneSceneFromHere?: (messageId: string) => void;
+  isCloneSceneFromHereDisabled?: boolean;
+  isLastAssistantMessage?: boolean;
+  characterMap?: CharacterMap;
+  chatMode?: string;
+  isGrouped?: boolean;
+  personaInfo?: PersonaInfo;
+  groupChatMode?: string;
+  chatCharacterIds?: string[];
+  /** Active character IDs used for merged Narrator avatar presentation. */
+  mergedGroupCharacterIds?: string[];
+  expressionAvatarResolver?: ExpressionAvatarResolver;
+  /** Distance from the latest message (0 = newest). Used for depth-range regex filtering. */
+  messageDepth?: number;
+  /** 1-based ordinal position in the message list. Shown under avatar when actions visible. */
+  messageIndex?: number;
+  messageOrderIndex?: number;
+  multiSelectMode?: boolean;
+  isSelected?: boolean;
+  onToggleSelect?: (toggle: MessageSelectionToggle) => void;
+  storyboard?: GameTurnStoryboard | null;
+  storyboardGenerating?: boolean;
+}
+
+/** Regex to match a plain image URL as the entire content. */
+const IMAGE_URL_RE = /^https?:\/\/\S+\.(?:gif|png|jpe?g|webp)(?:\?[^\s]*)?$/i;
+
+/** Regex to match <speaker="name">dialogue</speaker> tags. */
+const SPEAKER_TAG_RE = /<speaker="([^"]*)">([\s\S]*?)<\/speaker>/g;
+const INLINE_MARKDOWN_CONTAINER_RE =
+  /\*\*\*[\s\S]+?\*\*\*|\*\*[\s\S]+?\*\*|__[\s\S]+?__|(?<!\*)\*(?!\*)[\s\S]+?(?<!\*)\*(?!\*)|==[\s\S]+?==|~~[\s\S]+?~~|(?<![_\w])_[^_]+?_(?![_\w])/g;
+
+function RoleplayThinkingDisclosure({
+  thinking,
+  summaryUnavailable,
+  isStreaming,
+  outputStarted,
+  keepExpanded,
+  durationMs,
+}: {
+  thinking: string | null;
+  summaryUnavailable: boolean;
+  isStreaming: boolean;
+  outputStarted: boolean;
+  keepExpanded: boolean;
+  durationMs: number | null;
+}) {
+  const { t } = useTranslation();
+  const contentId = useId();
+  const startedAtRef = useRef(Date.now());
+  const [expanded, setExpanded] = useState(isStreaming || keepExpanded);
+  const [liveDurationMs, setLiveDurationMs] = useState(0);
+  const [capturedReasoningDurationMs, setCapturedReasoningDurationMs] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!isStreaming || outputStarted) return;
+    startedAtRef.current = Date.now();
+    setCapturedReasoningDurationMs(null);
+    const updateDuration = () => setLiveDurationMs(Date.now() - startedAtRef.current);
+    updateDuration();
+    const interval = window.setInterval(updateDuration, 1_000);
+    return () => window.clearInterval(interval);
+  }, [isStreaming, outputStarted]);
+
+  useLayoutEffect(() => {
+    if (!isStreaming || !outputStarted) return;
+    const elapsedMs = Date.now() - startedAtRef.current;
+    setLiveDurationMs(elapsedMs);
+    setCapturedReasoningDurationMs((current) => current ?? elapsedMs);
+    if (!keepExpanded) setExpanded(false);
+  }, [isStreaming, keepExpanded, outputStarted]);
+
+  const displayedDurationMs = capturedReasoningDurationMs ?? (isStreaming ? liveDurationMs : durationMs);
+  const durationLabel =
+    displayedDurationMs === null
+      ? t("chat.message.thoughts.durationUnknown")
+      : t("chat.message.thoughts.duration", {
+          count: Math.max(1, Math.round(displayedDurationMs / 1_000)),
+        });
+
+  return (
+    <div
+      data-message-thinking-inline
+      className="mb-2 overflow-hidden rounded-md border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-panel-text)]"
+    >
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={expanded ? contentId : undefined}
+        title={t(expanded ? "chat.message.thoughts.collapse" : "chat.message.thoughts.expand")}
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-full items-center gap-2 px-2.5 py-2 text-left text-[0.75rem] font-medium text-[var(--marinara-chat-chrome-text)] transition-colors hover:bg-[var(--marinara-chat-chrome-button-bg-hover)]"
+      >
+        <Brain
+          size="0.875rem"
+          aria-hidden="true"
+          className={cn("shrink-0", isStreaming && !outputStarted && "animate-pulse")}
+        />
+        <span className="min-w-0 flex-1">{durationLabel}</span>
+        <ChevronRight
+          size="0.875rem"
+          aria-hidden="true"
+          className={cn("shrink-0 transition-transform", expanded && "rotate-90")}
+        />
+      </button>
+      {expanded && (
+        <div
+          id={contentId}
+          className="max-h-64 overflow-y-auto border-t border-[var(--marinara-chat-chrome-panel-border)] px-2.5 py-2 text-[0.75rem] leading-relaxed"
+        >
+          {summaryUnavailable ? (
+            <div>
+              <p className="font-medium text-[var(--marinara-chat-chrome-panel-title)]">
+                {t("chat.message.thoughts.unavailable.title")}
+              </p>
+              <p className="mt-1 text-[var(--marinara-chat-chrome-panel-muted)]">
+                {t("chat.message.thoughts.unavailable.description")}
+              </p>
+            </div>
+          ) : (
+            <pre className="whitespace-pre-wrap break-words font-[inherit]">{thinking}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Process speaker tags into ReactNodes with per-character dialogue coloring.
+ * Non-speaker text gets the default dialogueColor.
+ */
+function renderWithSpeakerTags(
+  text: string,
+  defaultDialogueColor: string | undefined,
+  speakerColorMap: Map<string, string> | undefined,
+  boldDialogue = true,
+): ReactNode[] {
+  const renderLine = (line: string, color = defaultDialogueColor) => highlightDialogue(line, color, boldDialogue);
+
+  if (!SPEAKER_TAG_RE.test(text)) {
+    return renderLine(text, defaultDialogueColor);
+  }
+  SPEAKER_TAG_RE.lastIndex = 0;
+
+  const nodes: ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let key = 0;
+
+  while ((match = SPEAKER_TAG_RE.exec(text)) !== null) {
+    // Text before the speaker tag — use default color
+    if (match.index > lastIndex) {
+      nodes.push(...renderLine(text.slice(lastIndex, match.index), defaultDialogueColor));
+    }
+    const speakerName = match[1]!;
+    const dialogue = match[2]!;
+    const speakerColor = speakerColorMap?.get(speakerName) ?? defaultDialogueColor;
+    // Render the dialogue content (without the tags) using the speaker's color
+    nodes.push(<span key={`s${key++}`}>{renderLine(dialogue, speakerColor)}</span>);
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Remaining text after last speaker tag
+  if (lastIndex < text.length) {
+    nodes.push(...renderLine(text.slice(lastIndex), defaultDialogueColor));
+  }
+
+  return nodes;
+}
+
+function collectInlineMarkdownRanges(text: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  const regex = new RegExp(INLINE_MARKDOWN_CONTAINER_RE.source, INLINE_MARKDOWN_CONTAINER_RE.flags);
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    ranges.push([match.index, match.index + match[0].length]);
+  }
+  return ranges;
+}
+
+/**
+ * Highlight quoted dialogue — text in supported dialogue quote pairs
+ * like "", «», 「」, and 『』 gets bold + colored.
+ *
+ * Single quotes ('') are intentionally excluded because after curly-quote
+ * normalization (' → ') they are indistinguishable from apostrophes,
+ * causing false positives like "it's nice, isn't it" being partially bolded.
+ *
+ * Detects quote pairs on the RAW text first, then applies inline markdown
+ * within each segment. This ensures that markdown syntax inside dialogue
+ * (e.g. "A *long* day") doesn't split the quote across multiple nodes
+ * and prevent dialogue bolding.
+ *
+ * Code spans (`…`), images (![…](…)), and links ([…](…)) are treated as
+ * protected zones — quotes inside them are not matched as dialogue.
+ */
+function highlightDialogue(text: string, dialogueColor?: string, boldDialogue = true): ReactNode[] {
+  // Step 1: Find protected zones where quotes should NOT trigger dialogue detection.
+  // Code spans, images, and links may legitimately contain quotation marks.
+  const protectedRanges: Array<[number, number]> = [];
+  const protectedRe = /`[^`\n]+`|!?\[[^\]]*\]\([^)]+\)/g;
+  let pm: RegExpExecArray | null;
+  while ((pm = protectedRe.exec(text)) !== null) {
+    protectedRanges.push([pm.index, pm.index + pm[0].length]);
+  }
+  const isProtected = (pos: number) => protectedRanges.some(([s, e]) => pos >= s && pos < e);
+  const markdownRanges = collectInlineMarkdownRanges(text);
+  const isInsideInlineMarkdown = (start: number, end: number) => markdownRanges.some(([s, e]) => start > s && end < e);
+
+  // Step 2: Find quote pairs, skipping protected zones and quotes already enclosed by inline markdown.
+  const quoteRe = new RegExp(`(?:${DIALOGUE_QUOTE_PATTERN_SOURCE})`, "g");
+  const quotePairs: Array<{ start: number; end: number }> = [];
+  let qm: RegExpExecArray | null;
+  while ((qm = quoteRe.exec(text)) !== null) {
+    const start = qm.index;
+    const end = qm.index + qm[0].length;
+    if (!isProtected(start) && !isInsideInlineMarkdown(start, end)) {
+      quotePairs.push({ start, end });
+    }
+  }
+
+  // No dialogue quotes found — just apply markdown and return.
+  if (quotePairs.length === 0) {
+    return applyInlineMarkdown(text, "m");
+  }
+
+  // Step 3: Split text into quoted / non-quoted segments and render.
+  const result: ReactNode[] = [];
+  let lastIndex = 0;
+  let key = 0;
+
+  for (const q of quotePairs) {
+    // Non-quoted text before this pair — apply markdown only
+    if (q.start > lastIndex) {
+      result.push(...applyInlineMarkdown(text.slice(lastIndex, q.start), `m${key}`));
+    }
+
+    const raw = text.slice(q.start, q.end);
+    const openQuote = raw[0];
+    const closeQuote = raw[raw.length - 1];
+    const inner = raw.slice(1, -1);
+    const DialogueTag = boldDialogue ? "strong" : "span";
+
+    // Apply markdown inside the quoted text, then wrap in a dialogue span/strong.
+    const innerNodes = applyInlineMarkdown(inner, `mq${key}`);
+    result.push(
+      <DialogueTag
+        key={`d${key++}`}
+        style={dialogueColor ? { color: dialogueColor } : undefined}
+        className={!dialogueColor ? "text-black dark:text-white" : undefined}
+      >
+        {openQuote}
+        {innerNodes}
+        {closeQuote}
+      </DialogueTag>,
+    );
+
+    lastIndex = q.end;
+  }
+
+  // Remaining text after the last quote pair
+  if (lastIndex < text.length) {
+    result.push(...applyInlineMarkdown(text.slice(lastIndex), `mt${key}`));
+  }
+
+  return result;
+}
+
+const MD_IMAGE_HTML_RE = /!\[([^\]]*)\]\(((?:https?:\/\/[^)\s]+|card:\/\/[^)\s]+|\/api\/[^)\s]+))\)/g;
+
+function escapeHtmlAttr(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Extract the brightest solid color from a gradient string.
+ * Handles formats like: gradient(linear-gradient(90deg, #ff6b6b, #4ecdc4))
+ * Parses all color stops, converts to RGB, and picks the one with highest
+ * perceived luminance (0.299*R + 0.587*G + 0.114*B).
+ * Falls back to a sensible default if extraction fails.
+ */
+function extractSolidColorFromGradient(gradientStr: string): string {
+  // Extract the inner gradient content
+  const inner = gradientStr.replace(/^gradient\(\s*/i, "").replace(/\s*\)$/i, "");
+
+  // Collect ALL color values from the gradient string
+  const colors: string[] = [];
+
+  // Hex colors (#rgb, #rrggbb, #rrggbbaa)
+  const hexMatches = inner.match(/#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b/g);
+  if (hexMatches) colors.push(...hexMatches);
+
+  // rgb/rgba colors
+  const rgbMatches = inner.match(/rgba?\([^)]+\)/gi);
+  if (rgbMatches) colors.push(...rgbMatches);
+
+  // hsl/hsla colors
+  const hslMatches = inner.match(/hsla?\([^)]+\)/gi);
+  if (hslMatches) colors.push(...hslMatches);
+
+  // Named CSS colors (extended list)
+  const namedMatches = inner.match(
+    /\b(red|blue|green|yellow|purple|orange|pink|cyan|magenta|white|black|gray|grey|brown|navy|teal|lime|gold|crimson|salmon|coral|turquoise|indigo|violet|silver|maroon|olive|aqua|fuchsia|azure|beige|chocolate|lavender|plum|orchid|tan|wheat|ivory|seashell|snow|linen|khaki|goldenrod|darkred|darkblue|darkgreen|lightblue|lightgreen|lightcoral|lightpink|lightsalmon|lightseagreen|skyblue|steelblue|royalblue|midnightblue|dodgerblue|deepskyblue|cornflowerblue|mediumslateblue|slateblue|darkslateblue|mediumpurple|rebeccapurple|darkorchid|darkviolet|mediumorchid|thistle|orchid|violet|indigo|darkmagenta|mediumvioletred|palevioletred|hotpink|deeppink|lightpink|pink|palegoldenrod|lemonchiffon|lightyellow|lightgoldenrodyellow)\b/gi,
+  );
+  if (namedMatches) colors.push(...namedMatches);
+
+  // No parseable stop (for example `var(--x)` or `color-mix()`): keep the original value.
+  if (colors.length === 0) return gradientStr;
+
+  // Convert any color string to {r, g, b}
+  const toRgb = (color: string): { r: number; g: number; b: number } | null => {
+    // Hex
+    if (color.startsWith("#")) {
+      let hex = color.slice(1);
+      if (hex.length === 3)
+        hex = hex
+          .split("")
+          .map((c) => c + c)
+          .join("");
+      if (hex.length === 4)
+        hex = hex
+          .slice(0, 3)
+          .split("")
+          .map((c) => c + c)
+          .join("");
+      if (hex.length >= 6) {
+        return {
+          r: parseInt(hex.slice(0, 2), 16),
+          g: parseInt(hex.slice(2, 4), 16),
+          b: parseInt(hex.slice(4, 6), 16),
+        };
+      }
+      return null;
+    }
+
+    // rgb/rgba
+    const rgbMatch = color.match(/rgba?\(([^)]+)\)/i);
+    if (rgbMatch) {
+      const parts = rgbMatch[1].split(",").map((p) => parseFloat(p.trim()));
+      if (parts.length >= 3) {
+        return { r: parts[0], g: parts[1], b: parts[2] };
+      }
+      return null;
+    }
+
+    // hsl/hsla
+    const hslMatch = color.match(/hsla?\(([^)]+)\)/i);
+    if (hslMatch) {
+      const parts = hslMatch[1].split(",").map((p) => parseFloat(p.trim().replace("%", "")));
+      if (parts.length >= 3) {
+        const h = parts[0] / 360;
+        const s = parts[1] / 100;
+        const l = parts[2] / 100;
+        const hue2rgb = (p: number, q: number, t: number) => {
+          if (t < 0) t += 1;
+          if (t > 1) t -= 1;
+          if (t < 1 / 6) return p + (q - p) * 6 * t;
+          if (t < 1 / 2) return q;
+          if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+          return p;
+        };
+        const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+        const p = 2 * l - q;
+        return {
+          r: Math.round(hue2rgb(p, q, h + 1 / 3) * 255),
+          g: Math.round(hue2rgb(p, q, h) * 255),
+          b: Math.round(hue2rgb(p, q, h - 1 / 3) * 255),
+        };
+      }
+      return null;
+    }
+
+    // Named colors — use a canvas or a lookup table
+    // For simplicity, use the browser's color parser via a temporary element
+    if (typeof document !== "undefined") {
+      const ctx = document.createElement("canvas").getContext("2d");
+      if (ctx) {
+        ctx.fillStyle = color;
+        const computed = ctx.fillStyle;
+        if (computed.startsWith("#")) {
+          return toRgb(computed);
+        }
+        if (computed.startsWith("rgb")) {
+          return toRgb(computed);
+        }
+      }
+    }
+
+    return null;
+  };
+
+  // Calculate perceived luminance: 0.299*R + 0.587*G + 0.114*B
+  const luminance = (rgb: { r: number; g: number; b: number }) => 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b;
+
+  // Find the brightest color
+  let bestColor = colors[0];
+  let bestLuminance = -1;
+
+  for (const color of colors) {
+    const rgb = toRgb(color);
+    if (!rgb) continue;
+    const lum = luminance(rgb);
+    if (lum > bestLuminance) {
+      bestLuminance = lum;
+      bestColor = color;
+    }
+  }
+
+  // Return the brightest color, normalized to hex if it was rgb/hsl
+  const bestRgb = toRgb(bestColor);
+  if (bestRgb) {
+    return `#${bestRgb.r.toString(16).padStart(2, "0")}${bestRgb.g.toString(16).padStart(2, "0")}${bestRgb.b.toString(16).padStart(2, "0")}`;
+  }
+
+  return bestColor;
+}
+/**
+ * Color character names in text, skipping any name that appears inside
+ * quotation marks (dialogue). Works on raw text before dialogue highlighting.
+ * Supports gradient colors via background-clip and bold weight.
+ */
+function colorNamesSkippingQuotes(text: string, nameColorMap: Map<string, string>, textShadow?: string): string {
+  if (!text || nameColorMap.size === 0) return text;
+  const names = Array.from(nameColorMap.keys());
+  if (names.length === 0) return text;
+  const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).sort((a, b) => b.length - a.length);
+  const nameRegex = new RegExp(`\\b(${escaped.join("|")})\\b`, "gi");
+
+  // Quote pairs to track: straight, curly, guillemet, Japanese corner brackets
+  const openQuotes = ['"', "\u201C", "\u00AB", "\u300C", "\u300E"];
+  const closeQuotes = ['"', "\u201D", "\u00BB", "\u300D", "\u300F"];
+
+  const result: string[] = [];
+  let lastIndex = 0;
+  let inQuotes = false;
+  let activeQuoteIdx = -1;
+  let quoteStartPos = -1;
+  let i = 0;
+  // Cache the next match so the regex is not re-run for every character.
+  nameRegex.lastIndex = 0;
+  let nextMatch: RegExpExecArray | null = nameRegex.exec(text);
+
+  while (i < text.length) {
+    // Check for quote characters
+    const char = text[i];
+    if (!inQuotes) {
+      const openIdx = openQuotes.indexOf(char);
+      if (openIdx >= 0) {
+        inQuotes = true;
+        activeQuoteIdx = openIdx;
+        quoteStartPos = i;
+        i++;
+        continue;
+      }
+    } else {
+      // Check for the matching close quote (or any close quote for straight quotes)
+      const closeIdx =
+        activeQuoteIdx === 0
+          ? closeQuotes.indexOf(char, 0) // straight quotes — either direction matches
+          : closeQuotes.indexOf(char, activeQuoteIdx);
+      if (closeIdx >= 0 && (activeQuoteIdx === 0 || closeIdx === activeQuoteIdx)) {
+        inQuotes = false;
+        activeQuoteIdx = -1;
+        quoteStartPos = -1;
+        i++;
+        continue;
+      }
+    }
+    // Safety valve: unmatched quote — reset after 500 chars of "dialogue"
+    if (inQuotes && quoteStartPos >= 0 && i - quoteStartPos > 500) {
+      inQuotes = false;
+      activeQuoteIdx = -1;
+      quoteStartPos = -1;
+    }
+    // If not in quotes, try to match a name at this position
+    if (!inQuotes) {
+      while (nextMatch && nextMatch.index < i) {
+        nameRegex.lastIndex = i;
+        nextMatch = nameRegex.exec(text);
+      }
+      const match = nextMatch;
+      if (match && match.index === i && match[0].length > 0) {
+        // Push any text before this match
+        if (i > lastIndex) {
+          result.push(text.slice(lastIndex, i));
+        }
+        const matchedName = match[0];
+        const color = nameColorMap.get(matchedName.toLowerCase());
+        if (color) {
+          if (isGradientNameColor(color)) {
+            const style = gradientNameColorStyle(color);
+            const styleStr = Object.entries(style)
+              .map(([k, v]) => `${k.replace(/[A-Z]/g, (m) => "-" + m.toLowerCase())}:${v}`)
+              .join(";");
+            const dropShadow = textShadow ? `;text-shadow:none;filter:drop-shadow(${textShadow})` : ";text-shadow:none";
+            result.push(
+              `<span style="${styleStr};font-weight:700;-webkit-text-stroke:0px;paint-order:fill${dropShadow}">${matchedName}</span>`,
+            );
+          } else {
+            result.push(
+              `<span style="color:${color};-webkit-text-fill-color:${color};font-weight:700">${matchedName}</span>`,
+            );
+          }
+        } else {
+          result.push(matchedName);
+        }
+        i += matchedName.length;
+        lastIndex = i;
+        continue;
+      }
+    }
+
+    i++;
+  }
+
+  if (lastIndex < text.length) {
+    result.push(text.slice(lastIndex));
+  }
+
+  return result.length > 0 ? result.join("") : text;
+}
+
+/**
+ * Color character names in React nodes, skipping any name inside a
+ * dialogue-colored span (which represents quoted text in the markdown path).
+ * Creates proper React <span> elements with style objects.
+ */
+function colorNamesInNodes(
+  nodes: ReactNode | ReactNode[],
+  nameColorMap: Map<string, string>,
+  textShadow?: string,
+): ReactNode | ReactNode[] {
+  if (!nodes || nameColorMap.size === 0) return nodes;
+  const names = Array.from(nameColorMap.keys());
+  if (names.length === 0) return nodes;
+  const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).sort((a, b) => b.length - a.length);
+  const nameRegex = new RegExp(`\\b(${escaped.join("|")})\\b`, "gi");
+
+  const isCodeNode = (node: ReactNode): boolean => {
+    if (node && typeof node === "object" && "props" in node) {
+      const tagName = (node as React.ReactElement).type;
+      return tagName === "code" || tagName === "pre";
+    }
+    return false;
+  };
+
+  // Check if a node is a dialogue-colored context (skip names inside it)
+  const isColoredContext = (node: ReactNode): boolean => {
+    if (!node || typeof node !== "object" || !("props" in node)) return false;
+    const element = node as React.ReactElement;
+    const props = element.props as Record<string, unknown>;
+    if ("data-spk" in props) return true;
+    if (props.style && typeof props.style === "object") {
+      const style = props.style as Record<string, unknown>;
+      if ("color" in style || "WebkitTextFillColor" in style) return true;
+    }
+    if (element.type === "font") return true;
+    return false;
+  };
+
+  const processString = (str: string, nodeIdx: number): ReactNode => {
+    if (!str || str.length === 0) return str;
+    const parts: ReactNode[] = [];
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+    let k = 0;
+    nameRegex.lastIndex = 0;
+    while ((match = nameRegex.exec(str)) !== null) {
+      if (match[0].length === 0) {
+        nameRegex.lastIndex += 1;
+        continue;
+      }
+      if (match.index > lastIndex) parts.push(str.slice(lastIndex, match.index));
+      const matchedName = match[0];
+      const color = nameColorMap.get(matchedName.toLowerCase());
+      if (color) {
+        if (isGradientNameColor(color)) {
+          const style: React.CSSProperties = {
+            ...gradientNameColorStyle(color),
+            display: "inline",
+            fontWeight: 700,
+            WebkitTextStroke: "0px",
+            paintOrder: "fill",
+            textShadow: "none",
+            ...(textShadow ? { filter: `drop-shadow(${textShadow})` } : {}),
+          };
+          parts.push(
+            <span key={`name-color-${nodeIdx}-${k++}`} style={style}>
+              {matchedName}
+            </span>,
+          );
+        } else {
+          const style: React.CSSProperties = {
+            color,
+            WebkitTextFillColor: color,
+            fontWeight: 700,
+          };
+          parts.push(
+            <span key={`name-color-${nodeIdx}-${k++}`} style={style}>
+              {matchedName}
+            </span>,
+          );
+        }
+      } else {
+        parts.push(matchedName);
+      }
+      lastIndex = match.index + matchedName.length;
+    }
+    if (parts.length === 0) return str;
+    if (lastIndex < str.length) parts.push(str.slice(lastIndex));
+    return parts;
+  };
+
+  const processNode = (node: ReactNode, idx: number): ReactNode => {
+    if (node === null || node === undefined || typeof node === "boolean") return node;
+    if (typeof node === "string") return processString(node, idx);
+    if (typeof node === "number") return node;
+    if (isCodeNode(node) || isColoredContext(node)) return node;
+
+    if (typeof node === "object" && "props" in node) {
+      const element = node as React.ReactElement;
+      const props = element.props as Record<string, unknown>;
+      if (props.children !== undefined) {
+        const children = Array.isArray(props.children)
+          ? props.children.map((c: ReactNode, i: number) => processNode(c, i))
+          : processNode(props.children as ReactNode, 0);
+        // Spread arrays back into positional children: passing the array as one
+        // child makes React demand keys for static siblings (e.g. thead/tbody).
+        return Array.isArray(children) ? cloneElement(element, {}, ...children) : cloneElement(element, {}, children);
+      }
+    }
+    return node;
+  };
+
+  if (Array.isArray(nodes)) {
+    return nodes.map((n, i) => processNode(n, i));
+  }
+  return processNode(nodes, 0);
+}
+
+/**
+ * Render message content, handling both plain text with dialogue highlighting
+ * and HTML blocks that should be rendered as actual HTML.
+ */
+function renderContent(...args: Parameters<typeof renderContentUnlinked>): ReactNode {
+  return <CharacterLinkedContent>{renderContentUnlinked(...args)}</CharacterLinkedContent>;
+}
+function renderContentUnlinked(
+  text: string,
+  dialogueColor?: string,
+  speakerColorMap?: Map<string, string>,
+  boldDialogue = true,
+  htmlScopeClass = "mari-html-message-content",
+  quoteFormat: QuoteFormat = "straight",
+  selfCharacterId?: string | null,
+  galleryIndex?: ChatGalleryIndex | null,
+  nameColorMap?: Map<string, string> | null,
+  textShadow?: string,
+): ReactNode {
+  // Portable card://self/gallery refs resolve to the speaking character before
+  // any rendering, covering both the markdown branch and the embedded-HTML
+  // branch (whose resolveCardAssetUrl then sees an absolute card URL). The
+  // chat-wide index lets merged group replies fall back to whichever chat
+  // character owns the file when the speaker does not.
+  const selfResolved = resolveSelfCardAssets(text, selfCharacterId, galleryIndex);
+  const normalized = decodeEncodedSpeakerTags(decodeEncodedChatHtmlTags(formatTextQuotes(selfResolved, quoteFormat)));
+
+  // Strip speaker tags before HTML detection (they aren't real HTML)
+  const withoutSpeakerTags = normalized.replace(/<\/?speaker(?:="[^"]*")?>/g, "");
+
+  const isHtmlPath = HTML_TAG_RE.test(withoutSpeakerTags);
+
+  // Markdown path — renderWithHeadings handles headings, *** and --- horizontal rules,
+  // and delegates the rest to speaker-tag / dialogue rendering.
+  // Name coloring runs AFTER on the React tree so injected spans don't
+  // interfere with paragraph splitting or trigger the HTML path.
+  if (!isHtmlPath) {
+    const markdownResult = renderMarkdownBlocks(normalized, (seg, _kp) =>
+      renderWithSpeakerTags(seg, dialogueColor, speakerColorMap, boldDialogue),
+    );
+    if (nameColorMap && nameColorMap.size > 0) {
+      return colorNamesInNodes(markdownResult, nameColorMap, textShadow);
+    }
+    return markdownResult;
+  }
+
+  const withNameColors =
+    nameColorMap && nameColorMap.size > 0 ? colorNamesSkippingQuotes(normalized, nameColorMap, textShadow) : normalized;
+
+  // For HTML content, replace speaker tags with color-annotated spans (preserves per-character colors)
+  const stripped = speakerColorMap
+    ? withNameColors.replace(SPEAKER_TAG_RE, (_, name, dialogue) => {
+        const color = speakerColorMap.get(name as string);
+        return color ? `<span data-spk="${color}">${dialogue as string}</span>` : (dialogue as string);
+      })
+    : withNameColors.replace(SPEAKER_TAG_RE, "$2");
+
+  const { html: strippedWithoutStyleBlocks, css: rawStyleBlocks } = extractChatStyleBlocks(stripped);
+
+  const withBreaks = convertChatHtmlNewlines(strippedWithoutStyleBlocks);
+
+  // Convert markdown images to <img> before sanitization so DOMPurify validates them.
+  // Keep tags minimal (no class, only loading/decoding attrs) — styling is via .mari-message-content img in CSS
+  // to avoid the dialogue-bolding regex mangling attribute quotes.
+  const withImages = normalizeCardAssetImageSyntax(withBreaks).replace(
+    MD_IMAGE_HTML_RE,
+    (_m, alt: string, url: string) => {
+      const src = escapeHtmlAttr(resolveCardAssetUrl(url));
+      const safeAlt = escapeHtmlAttr(alt || "image");
+      return `<img src="${src}" alt="${safeAlt}" loading="lazy" decoding="async">`;
+    },
+  );
+
+  const clean = sanitizeChatHtml(withImages, { allowStyle: true });
+
+  // Apply dialogue bolding inside sanitised HTML with per-speaker color support.
+  const withDialogue = (() => {
+    // Sanitize a CSS color value — only allow safe color formats
+    const safeColor = (c: string) =>
+      /^(#[0-9a-fA-F]{3,8}|[a-zA-Z]+|rgba?\([\d,.\s%]+\)|hsla?\([\d,.\s%]+\))$/.test(c) ? c : "inherit";
+    // Helper: check if an offset is inside an HTML tag (attribute context)
+    const insideTag = (text: string, offset: number) => {
+      const before = text.slice(0, offset);
+      return before.lastIndexOf("<") > before.lastIndexOf(">");
+    };
+    const dialogueTag = boldDialogue ? "strong" : "span";
+    // Pass 1: color quotes inside speaker-annotated spans with their specific colors
+    const afterSpeaker = clean.replace(
+      /<span[^>]*\bdata-spk="([^"]*)"[^>]*>([\s\S]*?)<\/span>/g,
+      (_m: string, color: string, content: string) => {
+        const validColor = safeColor(color);
+        const speakerQuoteRe = new RegExp(`(?<![=\\w])(?:${HTML_SAFE_DIALOGUE_QUOTE_PATTERN_SOURCE})`, "g");
+        return content.replace(speakerQuoteRe, (match: string, offset: number) => {
+          if (insideTag(content, offset)) return match;
+          return `<${dialogueTag} style="color:${validColor}">${match}</${dialogueTag}>`;
+        });
+      },
+    );
+    // Pass 2: color remaining quotes with default dialogue color, skipping already-wrapped text
+    const remainingQuoteRe = new RegExp(`(?<![=\\w])(?:${HTML_SAFE_DIALOGUE_QUOTE_PATTERN_SOURCE})`, "g");
+    return afterSpeaker.replace(remainingQuoteRe, (match, offset) => {
+      if (insideTag(afterSpeaker, offset)) return match;
+      const before = afterSpeaker.slice(0, offset);
+      if (/<(?:strong|span)[^>]*>\s*$/.test(before.slice(Math.max(0, before.length - 300)))) return match;
+      // Skip if inside a <font> tag (author-specified colors take priority)
+      const lastFontOpen = before.lastIndexOf("<font ");
+      if (lastFontOpen !== -1) {
+        const lastFontClose = before.lastIndexOf("</font>");
+        if (lastFontClose < lastFontOpen) return match;
+      }
+      const highlightColor = safeColor(dialogueColor ?? "white");
+      return `<${dialogueTag} style="color:${highlightColor}">${match}</${dialogueTag}>`;
+    });
+  })();
+
+  // Apply markdown-style bold/italic in HTML path
+  const withMarkdown = applyInlineMarkdownHTML(withDialogue);
+  const finalHtml = sanitizeChatHtml(withMarkdown, { allowStyle: true });
+  const scopedCss = scopeChatMessageCss(rawStyleBlocks, `.${htmlScopeClass}`);
+  const html = scopedCss ? `<style>${scopedCss}</style>${finalHtml}` : finalHtml;
+
+  return (
+    <div
+      className={cn("relative !overflow-hidden !contain-paint", htmlScopeClass)}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+}
+
+export function RoleplayMessagePreview({
+  content,
+  dialogueColor,
+  className,
+  selfCharacterId,
+}: {
+  content: string;
+  dialogueColor?: string;
+  className?: string;
+  /** Character the previewed greeting belongs to — resolves card://self refs. */
+  selfCharacterId?: string | null;
+}) {
+  const previewId = useId();
+  const { chatFontColor, defaultDialogueColor, theme, textStrokeWidth, textStrokeColor, boldDialogue, quoteFormat } =
+    useUIStore(
+      useShallow((state) => ({
+        chatFontColor: state.chatFontColor,
+        defaultDialogueColor: state.defaultDialogueColor,
+        theme: state.theme,
+        textStrokeWidth: state.textStrokeWidth,
+        textStrokeColor: state.textStrokeColor,
+        boldDialogue: state.boldDialogue ?? true,
+        quoteFormat: state.quoteFormat,
+      })),
+    );
+  const resolvedDialogueColor = dialogueColor || defaultDialogueColor || getDefaultChatTextColor(theme);
+  const htmlScopeClass = `mari-html-greeting-${previewId.replace(/[^a-zA-Z0-9_-]/g, "") || "preview"}`;
+  const isHtmlContent = containsChatHtml(content);
+  const previewStyle = useMemo<React.CSSProperties>(
+    () => ({
+      ...(chatFontColor ? { color: chatFontColor } : {}),
+      ...(textStrokeWidth > 0
+        ? { WebkitTextStroke: `${textStrokeWidth}px ${textStrokeColor}`, paintOrder: "stroke fill" }
+        : {}),
+    }),
+    [chatFontColor, textStrokeColor, textStrokeWidth],
+  );
+  const renderedContent = useMemo(
+    () =>
+      renderContent(
+        content,
+        resolvedDialogueColor,
+        undefined,
+        boldDialogue,
+        htmlScopeClass,
+        quoteFormat,
+        selfCharacterId,
+        undefined, // nameColorMap
+        undefined, // textShadowStr
+      ),
+    [boldDialogue, content, htmlScopeClass, quoteFormat, resolvedDialogueColor, selfCharacterId],
+  );
+
+  return (
+    <div
+      className={cn("mari-message-content block break-words", !isHtmlContent && "whitespace-pre-wrap", className)}
+      style={previewStyle}
+    >
+      {renderedContent}
+    </div>
+  );
+}
+
+function isGradientNameColor(color?: string): color is string {
+  return typeof color === "string" && /gradient\(/i.test(color.trim());
+}
+
+function solidNameColorStyle(color?: string): React.CSSProperties | undefined {
+  const value = color?.trim();
+  if (!value || isGradientNameColor(value)) return undefined;
+  return { color: value, WebkitTextFillColor: value };
+}
+
+function gradientNameColorStyle(color: string): React.CSSProperties {
+  return {
+    backgroundImage: color.trim(),
+    backgroundRepeat: "no-repeat",
+    backgroundSize: "100% 100%",
+    WebkitBackgroundClip: "text",
+    WebkitTextFillColor: "transparent",
+    backgroundClip: "text",
+    color: "transparent",
+    display: "inline-block",
+  };
+}
+
+function NameColorText({ color, children }: { color?: string; children: ReactNode }) {
+  return isGradientNameColor(color) ? <span style={gradientNameColorStyle(color)}>{children}</span> : <>{children}</>;
+}
+
+export const ChatMessage = memo(function ChatMessage({
+  message,
+  isStreaming,
+  visualNovel = false,
+  followSpeechParagraphs = false,
+  visualNovelSpeech,
+  onVisualNovelSpeechParagraph,
+  visualNovelParagraphIndex,
+  onVisualNovelParagraphCount,
+  visualNovelMediaTarget,
+  streamingOutputStarted = false,
+  streamingContent,
+  onDelete,
+  onRegenerate,
+  onEdit,
+  onSetActiveSwipe,
+  onToggleConversationStart,
+  memoryStartCharacterIds,
+  onToggleHiddenFromAI,
+  onPeekPrompt,
+  onBranch,
+  onCloneSceneFromHere,
+  isCloneSceneFromHereDisabled,
+  isLastAssistantMessage,
+  characterMap,
+  chatMode,
+  isGrouped,
+  personaInfo,
+  groupChatMode,
+  chatCharacterIds,
+  mergedGroupCharacterIds,
+  expressionAvatarResolver,
+  messageDepth,
+  messageIndex,
+  messageOrderIndex,
+  multiSelectMode,
+  isSelected,
+  onToggleSelect,
+  storyboard,
+  storyboardGenerating,
+}: ChatMessageProps) {
+  const { t: localizeUi } = useUiTranslation();
+  const { t } = useTranslation();
+  const isUser = message.role === "user";
+  const isSystem = message.role === "system";
+  const isNarrator = message.role === "narrator";
+  const isRoleplay = chatMode === "roleplay";
+  const vnPortraitScale = useUIStore((state) => (visualNovel ? state.roleplayVnPortraitScale : 1));
+  const alwaysDisplaySwipeMenu = useUIStore((state) =>
+    isRoleplay
+      ? state.alwaysDisplayRoleplaySwipeMenu
+      : chatMode === "conversation" && state.alwaysDisplayConversationSwipeMenu,
+  );
+  const {
+    chatFontSize,
+    chatFontColor,
+    defaultDialogueColor,
+    theme,
+    chatFontOpacity,
+    roleplayAvatarStyle,
+    roleplayAvatarScale,
+    roleplayAvatarsScrollable,
+    roleplayNarratorAvatarCycling,
+    showRoleplayThinkingInMessages,
+    keepRoleplayThinkingExpanded,
+    textStrokeWidth,
+    textStrokeColor,
+    showModelName,
+    showTokenUsage,
+    showMessageNumbers,
+    boldDialogue,
+    colorInlineNames,
+    disableInlineNameGradients,
+    editMessageOnDoubleClick,
+    quoteFormat,
+    ttsLineVolume,
+    setTTSLineVolume,
+  } = useUIStore(
+    useShallow((s) => ({
+      chatFontSize: s.chatFontSize,
+      chatFontColor: s.chatFontColor,
+      defaultDialogueColor: s.defaultDialogueColor,
+      theme: s.theme,
+      chatFontOpacity: s.chatFontOpacity,
+      roleplayAvatarStyle: s.roleplayAvatarStyle,
+      roleplayAvatarScale: s.roleplayAvatarScale,
+      roleplayAvatarsScrollable: s.roleplayAvatarsScrollable,
+      roleplayNarratorAvatarCycling: s.roleplayNarratorAvatarCycling,
+      showRoleplayThinkingInMessages: s.showRoleplayThinkingInMessages,
+      keepRoleplayThinkingExpanded: s.keepRoleplayThinkingExpanded,
+      textStrokeWidth: s.textStrokeWidth,
+      textStrokeColor: s.textStrokeColor,
+      showModelName: s.showModelName,
+      showTokenUsage: s.showTokenUsage,
+      showMessageNumbers: s.showMessageNumbers,
+      boldDialogue: s.boldDialogue ?? true,
+      colorInlineNames: s.colorInlineNames,
+      disableInlineNameGradients: s.disableInlineNameGradients,
+      editMessageOnDoubleClick: s.editMessageOnDoubleClick,
+      quoteFormat: s.quoteFormat,
+      ttsLineVolume: s.ttsLineVolume,
+      setTTSLineVolume: s.setTTSLineVolume,
+    })),
+  );
+  // Build reusable text style objects (memoized to avoid unnecessary DOM updates)
+  const textStrokeStyle = useMemo<React.CSSProperties>(
+    () =>
+      textStrokeWidth > 0
+        ? { WebkitTextStroke: `${textStrokeWidth}px ${textStrokeColor}`, paintOrder: "stroke fill" }
+        : {},
+    [textStrokeWidth, textStrokeColor],
+  );
+  const textShadowStr = textStrokeWidth > 0 ? `0px 0px ${textStrokeWidth}px ${textStrokeColor}` : "";
+  const messageTextStyle = useMemo<React.CSSProperties>(
+    () => ({
+      fontSize: chatFontSize,
+      lineHeight: 1.5,
+      ...(chatFontColor ? { color: chatFontColor } : {}),
+      ...textStrokeStyle,
+    }),
+    [chatFontSize, chatFontColor, textStrokeStyle],
+  );
+  const roleplayAvatarScaleStyle = useMemo<React.CSSProperties>(
+    () => ({ "--roleplay-avatar-scale": roleplayAvatarScale }) as React.CSSProperties,
+    [roleplayAvatarScale],
+  );
+
+  // Keep the top of the slider near the Chat Settings popover surface:
+  // solid enough to read, but still faintly translucent through the panel token.
+  const { userBubbleBg, assistantBubbleBg } = useMemo(() => {
+    const o = chatFontOpacity / 100;
+    return {
+      userBubbleBg: getRoleplayPanelBubbleBackground(o, ROLEPLAY_USER_BUBBLE_PANEL_STRENGTH),
+      assistantBubbleBg: getRoleplayPanelBubbleBackground(o, ROLEPLAY_ASSISTANT_BUBBLE_PANEL_STRENGTH),
+    };
+  }, [chatFontOpacity]);
+
+  const [copied, setCopied] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editSavePending, setEditSavePending] = useState(false);
+  const [showThinking, setShowThinking] = useState(false);
+  const [showGenerationReplay, setShowGenerationReplay] = useState(false);
+  const [showActions, setShowActions] = useState(false);
+  const [manuallyExpandedHidden, setManuallyExpandedHidden] = useState(false);
+  const [switchingRewriteVersion, setSwitchingRewriteVersion] = useState(false);
+  const collapseHiddenMessages = useUIStore((s) => s.summaryPopoverSettings.collapseHiddenMessages);
+  const [imageLightbox, setImageLightbox] = useState<ChatMessageImageLightboxState | null>(null);
+  const scrollRestoreRef = useRef<{ el: HTMLElement; top: number } | null>(null);
+  const msgRef = useRef<HTMLDivElement>(null);
+  const thinkingButtonRef = useRef<HTMLButtonElement>(null);
+  const editSwipeIndexRef = useRef<number | null>(null);
+  const editSavePendingRef = useRef(false);
+  const lastQuickTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
+  const openImageLightbox = useCallback(
+    (url: string, prompt?: unknown) => {
+      if (!url) return;
+      setImageLightbox({
+        image: buildChatMessageImage({
+          id: `${message.id}:image:${url}`,
+          chatId: message.chatId,
+          url,
+          prompt: readString(prompt),
+          createdAt: message.createdAt,
+        }),
+        alt: "Image",
+        pinEnabled: false,
+        downloadEnabled: false,
+      });
+    },
+    [message.chatId, message.createdAt, message.id],
+  );
+  const openAttachmentImageLightbox = useCallback(
+    (attachment: MessageImageAttachmentLike, index: number) => {
+      const image = buildAttachmentChatImage(attachment, index, message);
+      if (!image) return;
+      const alt = (readString(attachment.filename) ?? readString(attachment.name) ?? image.prompt) || "Gallery image";
+      setImageLightbox({
+        image,
+        alt,
+        pinEnabled: true,
+        downloadEnabled: true,
+      });
+    },
+    [message],
+  );
+  const openStoryboardImageLightbox = useCallback(
+    (frame: GameTurnStoryboardKeyframe) => {
+      if (!frame.image) return;
+      setImageLightbox({
+        image: buildChatMessageImage({
+          id: frame.image.id,
+          chatId: message.chatId,
+          url: frame.image.url,
+          prompt: frame.image.prompt,
+          provider: frame.image.provider,
+          model: frame.image.model,
+          createdAt: frame.image.createdAt,
+        }),
+        alt:
+          frame.title ||
+          localizeUi("game.storyboard.keyframeAlt", {
+            index: frame.index + 1,
+          }),
+        pinEnabled: true,
+        downloadEnabled: true,
+      });
+    },
+    [localizeUi, message.chatId],
+  );
+  const closeImageLightbox = useCallback(() => {
+    setImageLightbox(null);
+  }, []);
+
+  // Translation
+  const { translate, translations, translationSources, translating } = useTranslate();
+  const translatedText = translations[message.id];
+  const translationSource = translationSources[message.id];
+  const isTranslating = !!translating[message.id];
+
+  // TTS
+  const { data: ttsConfig } = useTTSConfig();
+  const ttsEnabled = ttsConfig?.enabled ?? false;
+  const ttsSpeakerName =
+    message.role === "narrator"
+      ? "Narrator"
+      : message.characterId
+        ? characterMap?.get(message.characterId)?.name
+        : undefined;
+  const resolveTTSCharacterId = useCallback(
+    (speaker?: string | null) => {
+      const normalizedSpeaker = normalizeTTSCharacterName(speaker);
+      if (!normalizedSpeaker || !characterMap) return null;
+      for (const [characterId, character] of characterMap) {
+        if (normalizeTTSCharacterName(character.name) === normalizedSpeaker) return characterId;
+      }
+      return null;
+    },
+    [characterMap],
+  );
+  const ttsVoiceRequests = useMemo(() => {
+    if (!ttsConfig) return [];
+    const requests = buildTTSVoiceRequests(
+      message.content,
+      ttsConfig,
+      ttsSpeakerName,
+      message.characterId,
+      resolveTTSCharacterId,
+    );
+    return withTTSVoiceRequestCacheKeys(
+      visualNovel || followSpeechParagraphs
+        ? withRoleplayTTSParagraphs(requests, message.content, ttsConfig)
+        : requests,
+      ttsConfig,
+      message.id,
+    );
+  }, [
+    message.characterId,
+    message.content,
+    message.id,
+    resolveTTSCharacterId,
+    ttsConfig,
+    ttsSpeakerName,
+    visualNovel,
+    followSpeechParagraphs,
+  ]);
+  const hasTTSContent = ttsVoiceRequests.length > 0;
+  const [ttsState, setTTSState] = useState(ttsService.getState());
+  const [ttsActiveId, setTTSActiveId] = useState<string | null>(ttsService.getActiveId());
+  const [clearingTTS, setClearingTTS] = useState(false);
+  useEffect(
+    () =>
+      ttsService.subscribe((state, id) => {
+        setTTSState(state);
+        setTTSActiveId(id);
+      }),
+    [],
+  );
+  const ttsBusy = ttsState === "loading" || ttsState === "playing" || ttsState === "paused" || ttsState === "blocked";
+  const isSpeakingThis = ttsActiveId === message.id;
+  const isLoadingThis = isSpeakingThis && ttsState === "loading";
+  const isPausedThis = isSpeakingThis && ttsState === "paused";
+  const ttsLinePlaybackVolume = ttsLineVolume / 100;
+
+  useEffect(() => {
+    if (ttsActiveId !== message.id) return;
+    ttsService.setCurrentPlaybackVolume(ttsLinePlaybackVolume);
+  }, [message.id, ttsActiveId, ttsLinePlaybackVolume, ttsState]);
+
+  const handleTTSLineVolumeChange = useCallback(
+    (volume: number) => {
+      setTTSLineVolume(volume);
+      ttsService.setCurrentPlaybackVolume(volume / 100);
+    },
+    [setTTSLineVolume],
+  );
+
+  const handleSpeak = useCallback(() => {
+    // Read directly from the singleton so we never act on stale React state
+    const liveState = ttsService.getState();
+    const liveActiveId = ttsService.getActiveId();
+    const liveBusy =
+      liveState === "loading" || liveState === "playing" || liveState === "paused" || liveState === "blocked";
+    const liveIsThis = liveActiveId === message.id;
+    if (liveBusy && !liveIsThis) return;
+    if (liveIsThis) {
+      ttsService.stop();
+    } else {
+      if (!hasTTSContent) return;
+      void ttsService.speakSequence(ttsVoiceRequests, message.id, {
+        progressive: ttsConfig?.progressivePlayback,
+        volume: ttsLinePlaybackVolume,
+        onChunkStart: (_request, index) =>
+          notifyRoleplayTTSParagraph(message.chatId, message.id, ttsVoiceRequests, index),
+      });
+    }
+  }, [
+    hasTTSContent,
+    message.chatId,
+    message.id,
+    ttsConfig?.progressivePlayback,
+    ttsLinePlaybackVolume,
+    ttsVoiceRequests,
+  ]);
+
+  const handlePauseResumeTTS = useCallback(() => {
+    if (ttsService.getActiveId() !== message.id) return;
+    if (ttsService.getState() === "paused") {
+      ttsService.resume();
+    } else {
+      ttsService.pause();
+    }
+  }, [message.id]);
+
+  const handleRestartTTS = useCallback(() => {
+    if (ttsService.getActiveId() === message.id) {
+      ttsService.restart();
+    }
+  }, [message.id]);
+
+  // Drop this message's cached clips (primary keys and text aliases) so the
+  // next Speak regenerates them instead of replaying audio synthesized by an
+  // older provider or configuration. Deliberately does NOT re-speak: awaiting
+  // a full speakSequence parked the spinner until the reply finished playing,
+  // and auto-playing audio the user never asked for.
+  const handleClearCachedVoice = useCallback(() => {
+    if (!hasTTSContent || clearingTTS) return;
+    const liveState = ttsService.getState();
+    const liveActiveId = ttsService.getActiveId();
+    const liveBusy =
+      liveState === "loading" || liveState === "playing" || liveState === "paused" || liveState === "blocked";
+    if (liveBusy && liveActiveId !== message.id) return;
+
+    ttsService.stop();
+    setClearingTTS(true);
+    void (async () => {
+      try {
+        await ttsService.clearCachedAudio(ttsVoiceRequests);
+      } catch (err) {
+        console.warn("[TTS] Clearing the cached voice failed:", err);
+        toast.error(localizeUi("ui.chat.chatmessage.clearCachedVoiceFailed"));
+      } finally {
+        setClearingTTS(false);
+      }
+    })();
+  }, [clearingTTS, hasTTSContent, localizeUi, message.id, ttsVoiceRequests]);
+
+  const startEditing = useCallback(() => {
+    if (!onEdit || isStreaming) return;
+    const sp = msgRef.current?.closest("[class*='overflow-y']") as HTMLElement | null;
+    if (sp) scrollRestoreRef.current = { el: sp, top: sp.scrollTop };
+    editSwipeIndexRef.current = message.activeSwipeIndex;
+    setEditing(true);
+  }, [isStreaming, message.activeSwipeIndex, onEdit]);
+
+  const startQuickEdit = useCallback(
+    (target: EventTarget | null) => {
+      if (!editMessageOnDoubleClick || !isRoleplay || !onEdit || editing || isStreaming || multiSelectMode) {
+        return false;
+      }
+      if (isMessageQuickEditIgnoredTarget(target)) return false;
+      if (matchMedia("(pointer: coarse)").matches && hasActiveTextSelection()) return false;
+      window.getSelection()?.removeAllRanges();
+      setShowActions(false);
+      startEditing();
+      return true;
+    },
+    [editMessageOnDoubleClick, editing, isRoleplay, isStreaming, multiSelectMode, onEdit, startEditing],
+  );
+
+  const handleRoleplayDoubleClick = useCallback(
+    (e: React.MouseEvent) => {
+      if (!startQuickEdit(e.target)) return;
+      e.preventDefault();
+      e.stopPropagation();
+    },
+    [startQuickEdit],
+  );
+
+  // Dismiss actions when tapping outside on mobile
+  useEffect(() => {
+    if (!showActions) return;
+    const handleTouch = (e: TouchEvent) => {
+      if (
+        e.target instanceof Element &&
+        e.target.closest('[role="dialog"], [role="alertdialog"], [role="menu"], [data-chat-floating-panel]')
+      )
+        return;
+      if (msgRef.current && !msgRef.current.contains(e.target as Node)) {
+        setShowActions(false);
+      }
+    };
+    document.addEventListener("touchstart", handleTouch);
+    return () => document.removeEventListener("touchstart", handleTouch);
+  }, [showActions]);
+
+  const handleMobileTap = useCallback(
+    (e: React.MouseEvent) => {
+      if (matchMedia("(pointer: coarse)").matches && hasActiveTextSelection()) {
+        lastQuickTapRef.current = null;
+        return;
+      }
+      // In multi-select mode, clicking toggles selection on any device
+      if (multiSelectMode) {
+        onToggleSelect?.({
+          messageId: message.id,
+          orderIndex: messageOrderIndex ?? 0,
+          checked: !isSelected,
+          shiftKey: e.shiftKey,
+        });
+        return;
+      }
+      // Only toggle on touch devices
+      if (!matchMedia("(pointer: coarse)").matches) return;
+      // Don't toggle when tapping buttons, links, or the edit textarea
+      const target = e.target as HTMLElement;
+      if (
+        target.closest(
+          'button, a, textarea, [role="dialog"], [role="alertdialog"], [role="menu"], [data-chat-floating-panel]',
+        )
+      )
+        return;
+      if (isRoleplay) {
+        const now = Date.now();
+        const lastTap = lastQuickTapRef.current;
+        const dx = lastTap ? Math.abs(e.clientX - lastTap.x) : Number.POSITIVE_INFINITY;
+        const dy = lastTap ? Math.abs(e.clientY - lastTap.y) : Number.POSITIVE_INFINITY;
+        const isDoubleTap =
+          !!lastTap &&
+          now - lastTap.time <= MESSAGE_DOUBLE_TAP_MS &&
+          dx <= MESSAGE_DOUBLE_TAP_DISTANCE_PX &&
+          dy <= MESSAGE_DOUBLE_TAP_DISTANCE_PX;
+        lastQuickTapRef.current = isDoubleTap ? null : { time: now, x: e.clientX, y: e.clientY };
+        if (isDoubleTap && startQuickEdit(e.target)) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+      }
+      setShowActions((v) => !v);
+    },
+    [isRoleplay, isSelected, message.id, messageOrderIndex, multiSelectMode, onToggleSelect, startQuickEdit],
+  );
+
+  // Parse message extra for conversation start flag
+  const extra = useMemo(() => {
+    if (!message.extra) return {};
+    return typeof message.extra === "string" ? JSON.parse(message.extra) : message.extra;
+  }, [message.extra]);
+  const isConversationStart = !!extra.isConversationStart || memoryStartCharacterIds?.length === 0;
+  const conversationStartForCharacterIds: string[] = extra.conversationStartForCharacterIds ?? [];
+  const isHiddenFromAllAI = extra.hiddenFromAI === true;
+  const hiddenFromAICharacterIds: string[] = Array.isArray(extra.hiddenFromAICharacterIds)
+    ? Array.from(
+        new Set<string>(
+          (extra.hiddenFromAICharacterIds as unknown[])
+            .filter((characterId): characterId is string => typeof characterId === "string" && !!characterId.trim())
+            .map((characterId) => characterId.trim()),
+        ),
+      )
+    : [];
+  const isHiddenFromAI = isHiddenFromAllAI || hiddenFromAICharacterIds.length > 0;
+  const {
+    summary: thinking,
+    summaryUnavailable: reasoningSummaryUnavailable,
+    hasReasoning,
+  } = resolveMessageReasoningDisplay(extra);
+  const showInlineThinking = isRoleplay && showRoleplayThinkingInMessages && hasReasoning && !isUser;
+  const showThinkingAction = hasReasoning && !isUser && !showInlineThinking;
+  const showStreamingThinkingAction = !!isStreaming && showThinkingAction;
+  const reasoningDurationMs = readPositiveNumber(extra.generationInfo?.reasoningDurationMs);
+  const generationReplay = hasGenerationReplayDetails(extra.generationReplay) ? extra.generationReplay : null;
+  const diceRollResult = isDiceRollResult(extra.diceRollResult) ? extra.diceRollResult : null;
+  const diceReplacesContent = diceRollReplacesMessageContent(message.role, diceRollResult);
+  const canCreateNextSwipe = Boolean(onRegenerate && !isUser);
+  const rewriteVersions = resolveMessageRewriteVersions(message.content, extra, isUser);
+  const proseGuardianOriginalText = rewriteVersions.originalText;
+  const proseGuardianRewrittenText = rewriteVersions.rewrittenText;
+  const hasRewriteVersions = rewriteVersions.hasVersions;
+  const showingProseGuardianOriginal = rewriteVersions.showingOriginal;
+
+  useEffect(() => {
+    setManuallyExpandedHidden(false);
+  }, [message.id]);
+
+  useEffect(() => {
+    if (!isHiddenFromAI || !collapseHiddenMessages) setManuallyExpandedHidden(false);
+  }, [collapseHiddenMessages, isHiddenFromAI]);
+
+  useEffect(() => {
+    if (!generationReplay) setShowGenerationReplay(false);
+  }, [generationReplay]);
+
+  // Remove an attachment from this message (keeps it in gallery)
+  const qc = useQueryClient();
+  const handleToggleProseGuardianVersion = useCallback(async () => {
+    if (!hasRewriteVersions || !proseGuardianOriginalText || !proseGuardianRewrittenText || switchingRewriteVersion)
+      return;
+    setSwitchingRewriteVersion(true);
+
+    const msgKey = chatKeys.messages(message.chatId);
+    const targetContent = rewriteVersions.alternateText;
+    if (!targetContent) {
+      setSwitchingRewriteVersion(false);
+      return;
+    }
+    const rewriteVersionExtra = {
+      proseGuardianOriginalText,
+      proseGuardianRewrittenText,
+    };
+
+    qc.setQueryData<InfiniteData<Message[]>>(msgKey, (old) => {
+      if (!old) return old;
+      return {
+        ...old,
+        pages: old.pages.map((page) =>
+          page.map((m) => {
+            if (m.id !== message.id) return m;
+            const ex = typeof m.extra === "string" ? JSON.parse(m.extra) : (m.extra ?? {});
+            return {
+              ...m,
+              content: targetContent,
+              extra: { ...ex, ...rewriteVersionExtra },
+            } as Message;
+          }),
+        ),
+      };
+    });
+
+    try {
+      // Save the alternate version before changing content. This also upgrades
+      // older one-way restore metadata without risking loss of the rewrite.
+      await api.patch(`/chats/${message.chatId}/messages/${message.id}/extra`, rewriteVersionExtra);
+      const updated = await api.patch<Message>(`/chats/${message.chatId}/messages/${message.id}`, {
+        content: targetContent,
+      });
+      rememberRecentMessageContentEdit(
+        message.chatId,
+        message.id,
+        updated?.content ?? targetContent,
+        updated?.activeSwipeIndex ?? message.activeSwipeIndex ?? null,
+      );
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : localizeUi("ui.chat.chatmessage.couldNotSwitchMessageVersions"),
+      );
+    } finally {
+      setSwitchingRewriteVersion(false);
+      qc.invalidateQueries({ queryKey: msgKey });
+    }
+  }, [
+    hasRewriteVersions,
+    message.activeSwipeIndex,
+    message.chatId,
+    message.id,
+    proseGuardianOriginalText,
+    proseGuardianRewrittenText,
+    qc,
+    rewriteVersions.alternateText,
+    switchingRewriteVersion,
+    localizeUi,
+  ]);
+
+  const handleRemoveAttachment = useCallback(
+    async (index: number) => {
+      const current = (extra.attachments as any[]) ?? [];
+      const updated = current.filter((_: any, i: number) => i !== index);
+      // Optimistic: update the infinite query cache immediately so the image disappears
+      const msgKey = chatKeys.messages(message.chatId);
+      qc.setQueryData<InfiniteData<Message[]>>(msgKey, (old) => {
+        if (!old) return old;
+        return {
+          ...old,
+          pages: old.pages.map((page) =>
+            page.map((m) => {
+              if (m.id !== message.id) return m;
+              const ex = typeof m.extra === "string" ? JSON.parse(m.extra) : (m.extra ?? {});
+              return { ...m, extra: { ...ex, attachments: updated } } as Message;
+            }),
+          ),
+        };
+      });
+      await api.patch(`/chats/${message.chatId}/messages/${message.id}/extra`, { attachments: updated });
+      qc.invalidateQueries({ queryKey: msgKey });
+    },
+    [extra.attachments, message.chatId, message.id, qc],
+  );
+
+  // Model name display
+  const genInfo = !isUser && (showModelName || showTokenUsage) ? extra.generationInfo : null;
+  const genLabel = useMemo(() => {
+    if (!genInfo) return null;
+    const parts: string[] = [];
+    if (showModelName && genInfo.model) parts.push(genInfo.model);
+    if (showTokenUsage) {
+      // Per-token detail lives in <GenerationTokenUsage>. Only flag turns whose
+      // usage was summed across several provider requests (tool rounds).
+      if ((genInfo.requestCount ?? 0) > 1 && (genInfo.tokensPrompt != null || genInfo.tokensCompletion != null)) {
+        const p = genInfo.tokensPrompt != null ? genInfo.tokensPrompt : null;
+        const c = genInfo.tokensCompletion ?? "?";
+        const tokenUsage = p != null ? `${p}→${c} tok` : `${c} tok`;
+        parts.push(
+          localizeUi("ui.chat.chatmessage.usageAcrossRequests", {
+            count: genInfo.requestCount,
+            usage: tokenUsage,
+          }),
+        );
+      }
+      if (genInfo.durationMs != null) parts.push(`${(genInfo.durationMs / 1000).toFixed(1)}s`);
+    }
+    return parts.length > 0 ? parts.join(" · ") : null;
+  }, [genInfo, showModelName, showTokenUsage, localizeUi]);
+  // useLayoutEffect runs after DOM mutation but before browser paint — prevents visible scroll jump
+  useLayoutEffect(() => {
+    // Restore scroll position saved before the state change
+    if (scrollRestoreRef.current) {
+      const { el, top } = scrollRestoreRef.current;
+      el.scrollTop = top;
+      if (editing && window.matchMedia("(max-width: 767px)").matches) {
+        const editor = msgRef.current?.querySelector<HTMLTextAreaElement>("[data-chat-message-editor]");
+        if (editor) {
+          editor.scrollTop = 0;
+          // The action row can be far below a long message's first line.
+          // Align only the transcript, never scroll the mobile app shell.
+          el.scrollTop += editor.getBoundingClientRect().top - el.getBoundingClientRect().top - 8;
+        }
+      }
+      scrollRestoreRef.current = null;
+    }
+  }, [editing]);
+
+  useEffect(() => {
+    if (!onEdit) return;
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ messageId?: string }>).detail;
+      if (detail?.messageId === message.id) startEditing();
+    };
+    window.addEventListener("marinara:start-edit-message", handler);
+    return () => window.removeEventListener("marinara:start-edit-message", handler);
+  }, [message.id, onEdit, startEditing]);
+
+  const handleSaveEdit = useCallback(
+    async (content: string) => {
+      if (editSavePendingRef.current) return;
+      if (!isUser && editSwipeIndexRef.current !== null && editSwipeIndexRef.current !== message.activeSwipeIndex) {
+        editSwipeIndexRef.current = null;
+        setEditing(false);
+        return;
+      }
+      const formattedSource = formatTextQuotes(message.content, quoteFormat);
+      if (content.trim().length > 0 && content !== formattedSource) {
+        editSavePendingRef.current = true;
+        setEditSavePending(true);
+        try {
+          await onEdit?.(message.id, content);
+          recordClientRuntimeEvent("message-edited");
+        } catch {
+          toast.error(localizeUi("ui.chat.chatmessage.couldNotSaveThatEdit"));
+          return;
+        } finally {
+          editSavePendingRef.current = false;
+          setEditSavePending(false);
+        }
+      }
+      editSwipeIndexRef.current = null;
+      setEditing(false);
+    },
+    [isUser, localizeUi, message.activeSwipeIndex, message.content, message.id, onEdit, quoteFormat],
+  );
+
+  const handleCancelEdit = useCallback(() => {
+    if (editSavePendingRef.current) return;
+    editSwipeIndexRef.current = null;
+    setEditing(false);
+  }, []);
+
+  const handleSetActiveSwipe = useCallback(
+    (index: number) => {
+      if (editSavePendingRef.current) return;
+      if (index === message.activeSwipeIndex) return;
+      editSwipeIndexRef.current = null;
+      setEditing(false);
+      onSetActiveSwipe?.(message.id, index);
+    },
+    [message.activeSwipeIndex, message.id, onSetActiveSwipe],
+  );
+
+  useEffect(() => {
+    if (!editing) return;
+    if (editSavePending) return;
+    if (isUser || editSwipeIndexRef.current === null) return;
+    if (editSwipeIndexRef.current !== message.activeSwipeIndex) {
+      editSwipeIndexRef.current = null;
+      setEditing(false);
+    }
+  }, [editSavePending, editing, isUser, message.activeSwipeIndex]);
+
+  // Apply regex scripts to AI output (assistant/narrator roles)
+  const { applyToAIOutput } = useApplyRegex();
+  // Per-chat scoped-regex mode — gates character-scoped scripts at display time.
+  // Select the raw metadata (stable while tokens stream) and parse it in a memo so
+  // we don't JSON-parse the whole chat metadata on every store tick during streaming.
+  const activeChatMetadata = useChatStore((s) => s.activeChat?.metadata);
+  const presetVariables = useMessagePresetVariables(`${message.id}:${message.activeSwipeIndex ?? 0}`);
+  const scopedRegexMode = useMemo(() => parseChatMetadata(activeChatMetadata).scopedRegexMode, [activeChatMetadata]);
+
+  const scopedCharacterMap = useMemo(() => {
+    if (!characterMap) return null;
+    if (!chatCharacterIds) return characterMap;
+    const allowedIds = new Set(chatCharacterIds);
+    if (message.characterId) allowedIds.add(message.characterId);
+    return new Map(Array.from(characterMap).filter(([id]) => allowedIds.has(id)));
+  }, [characterMap, chatCharacterIds, message.characterId]);
+  const aiVisibilityCharacters = useMemo<AIVisibilityCharacter[]>(() => {
+    const result: AIVisibilityCharacter[] = [];
+    for (const id of chatCharacterIds ?? []) {
+      const character = characterMap?.get(id);
+      if (!character) continue;
+      result.push({
+        id,
+        name: character.name,
+        avatarUrl: character.avatarUrl,
+        avatarCrop: character.avatarCrop,
+        nameColor: character.nameColor,
+      });
+    }
+    return result;
+  }, [characterMap, chatCharacterIds]);
+
+  // Resolve character info from characters that actually belong to this chat.
+  const charInfo = message.characterId && scopedCharacterMap ? scopedCharacterMap.get(message.characterId) : null;
+  const fallbackChatCharacterEntry = useMemo(() => {
+    if (!scopedCharacterMap) return null;
+    const orderedIds = chatCharacterIds?.length ? chatCharacterIds : Array.from(scopedCharacterMap.keys());
+    for (const id of orderedIds) {
+      const info = scopedCharacterMap.get(id);
+      if (info) return { id, info };
+    }
+    return null;
+  }, [chatCharacterIds, scopedCharacterMap]);
+  const resolvedCharacterInfo = charInfo ?? fallbackChatCharacterEntry?.info ?? null;
+  const resolvedCharacterId = charInfo ? message.characterId : (fallbackChatCharacterEntry?.id ?? message.characterId);
+  // Speaker for portable card://self/gallery refs. The isUser/isSystem gate is
+  // load-bearing: resolvedCharacterId is non-null even on user messages in a
+  // single-character chat, and self must never resolve in a user message.
+  const selfCharacterId = isUser || isSystem ? null : (resolvedCharacterId ?? null);
+  // Chat-wide filename index (group chats only) for card://self fallback in
+  // merged group replies where the speaker's gallery lacks the file.
+  const galleryIndex = useChatGalleryFilenameIndex(chatCharacterIds);
+  const primaryCharInfo =
+    resolvedCharacterInfo ??
+    (scopedCharacterMap
+      ? (Array.from(scopedCharacterMap.values()).find(
+          (candidate): candidate is NonNullable<typeof candidate> => !!candidate,
+        ) ?? null)
+      : null);
+
+  // For user messages, prefer per-message persona snapshot (stored when message was sent)
+  // to preserve the correct persona name/avatar even after switching personas.
+  // Fall back to the current personaInfo prop for older messages without snapshots.
+  const msgPersona = isUser && extra.personaSnapshot ? extra.personaSnapshot : null;
+  const userName = msgPersona ? (msgPersona.name ?? "You") : (personaInfo?.name ?? "You");
+  const charName = primaryCharInfo?.name ?? "Assistant";
+  const personaDescription = msgPersona ? msgPersona.description : personaInfo?.description;
+  const personaPersonality = msgPersona ? msgPersona.personality : personaInfo?.personality;
+  const personaBackstory = msgPersona ? msgPersona.backstory : personaInfo?.backstory;
+  const personaAppearance = msgPersona ? msgPersona.appearance : personaInfo?.appearance;
+  const personaScenario = msgPersona ? msgPersona.scenario : personaInfo?.scenario;
+  const macroCharacters = useMemo(() => {
+    if (scopedCharacterMap?.size) {
+      const candidates = Array.from(scopedCharacterMap.values()).filter(
+        (candidate): candidate is NonNullable<typeof candidate> => !!candidate,
+      );
+      if (candidates.length > 0) return candidates;
+    }
+    return charName ? [{ name: charName }] : [];
+  }, [charName, scopedCharacterMap]);
+
+  const formatDisplayContent = useCallback(
+    (content: string) => {
+      const macroContext = {
+        variables: presetVariables,
+        userName,
+        persona: {
+          name: userName,
+          description: personaDescription,
+          personality: personaPersonality,
+          backstory: personaBackstory,
+          appearance: personaAppearance,
+          scenario: personaScenario,
+        },
+        primaryCharacter: primaryCharInfo ?? { name: charName },
+        characters: macroCharacters,
+      };
+      // #3164: seed display randomness by message identity, not content — a
+      // content-based seed re-rolls every {{random}}/{{roll}} on each streamed
+      // chunk (visible churn) and on every edit. Swipes keep distinct picks.
+      const macroRandomSeed = `${message.id}:${message.activeSwipeIndex ?? 0}`;
+      const resolveDisplayMacros = createMessageMacroResolver(macroContext, { randomSeed: macroRandomSeed });
+      const text =
+        isUser || isSystem
+          ? content
+          : applyToAIOutput(content, {
+              depth: messageDepth,
+              resolveMacros: resolveDisplayMacros,
+              scopedMode: scopedRegexMode,
+              characterId: message.characterId,
+            });
+      return resolveDisplayMacros(text);
+    },
+    [
+      applyToAIOutput,
+      scopedRegexMode,
+      presetVariables,
+      message.characterId,
+      charName,
+      isSystem,
+      isUser,
+      macroCharacters,
+      message.activeSwipeIndex,
+      messageDepth,
+      message.id,
+      personaAppearance,
+      personaBackstory,
+      personaDescription,
+      personaPersonality,
+      personaScenario,
+      primaryCharInfo,
+      userName,
+    ],
+  );
+  const displayContent = useMemo(() => formatDisplayContent(message.content), [formatDisplayContent, message.content]);
+
+  useEffect(() => {
+    if (!visualNovel || !ttsConfig || visualNovelSpeech?.messageId !== message.id || !onVisualNovelSpeechParagraph)
+      return;
+    // Display regexes/macros can remove or merge source paragraphs. Match the
+    // speech against the very same text that the VN renderer splits below.
+    const mapped = withRoleplayTTSParagraphs(visualNovelSpeech.requests, displayContent, ttsConfig, false);
+    const index = mapped[visualNovelSpeech.chunkIndex]?.paragraphIndex;
+    if (index !== undefined) onVisualNovelSpeechParagraph(index);
+  }, [displayContent, message.id, onVisualNovelSpeechParagraph, ttsConfig, visualNovel, visualNovelSpeech]);
+
+  const displayName = isUser ? userName : charName;
+  const avatarUrl = isUser
+    ? msgPersona
+      ? (msgPersona.avatarUrl ?? null)
+      : (personaInfo?.avatarUrl ?? null)
+    : (resolvedCharacterInfo?.avatarUrl ?? null);
+  const personaExpressionId =
+    isUser && typeof msgPersona?.personaId === "string" ? msgPersona.personaId : personaInfo?.id;
+  const expressionAvatarUrl =
+    isUser && personaExpressionId
+      ? (expressionAvatarResolver?.(message, personaExpressionId) ?? null)
+      : !isUser && resolvedCharacterId
+        ? (expressionAvatarResolver?.(message, resolvedCharacterId) ?? null)
+        : null;
+  const displayAvatarUrl = expressionAvatarUrl ?? avatarUrl;
+  const onUpdateCharacter =
+    !isUser && resolvedCharacterId ? () => useUIStore.getState().openCharacterDetail(resolvedCharacterId) : undefined;
+  const personaAvatarCrop = isUser
+    ? msgPersona
+      ? (normalizeAvatarCrop(msgPersona.avatarCrop) ?? null)
+      : (personaInfo?.avatarCrop ?? null)
+    : null;
+  const avatarCropStyle = expressionAvatarUrl
+    ? {}
+    : isUser
+      ? getAvatarCropStyle(personaAvatarCrop)
+      : getAvatarCropStyle(resolvedCharacterInfo?.avatarCrop);
+  const isMergedGroup = groupChatMode === "merged" && !isUser && (chatCharacterIds?.length ?? 0) > 1;
+
+  // Resolve colors: character colors for assistant, persona colors for user
+  // Prefer per-message persona snapshot colors over current persona
+  const msgColors = isUser
+    ? msgPersona
+      ? {
+          nameColor: msgPersona.nameColor,
+          dialogueColor: msgPersona.dialogueColor,
+          boxColor: msgPersona.boxColor,
+        }
+      : personaInfo
+    : resolvedCharacterInfo;
+  const fallbackDialogueColor = defaultDialogueColor || getDefaultChatTextColor(theme);
+  const dialogueColor = isMergedGroup ? fallbackDialogueColor : msgColors?.dialogueColor || fallbackDialogueColor;
+  const boxBgColor = msgColors?.boxColor;
+  const msgNameColor = msgColors?.nameColor;
+  const roleplayBubbleBg = boxBgColor ? boxBgColor : isUser ? userBubbleBg : assistantBubbleBg;
+  const nameColorMap = useMemo(() => {
+    if (!colorInlineNames || !scopedCharacterMap) return null;
+    const map = new Map<string, string>();
+    const addName = (name: string | undefined | null, color: string) => {
+      const key = name?.trim().toLowerCase();
+      if (key) map.set(key, color);
+    };
+    scopedCharacterMap.forEach((char) => {
+      const color = char.nameColor;
+      if (!color) return;
+      // If gradients are disabled, extract the first solid color from gradient strings
+      const effectiveColor =
+        disableInlineNameGradients && isGradientNameColor(color) ? extractSolidColorFromGradient(color) : color;
+      addName(char.name, effectiveColor);
+      addName(char.convoDisplayName, effectiveColor);
+      for (const alias of char.nameAliases ?? []) addName(alias, effectiveColor);
+    });
+    return map.size > 0 ? map : null;
+  }, [colorInlineNames, scopedCharacterMap, disableInlineNameGradients]);
+
+  // Build speaker → dialogueColor map for group chat speaker tag coloring
+  const speakerColorMap = useMemo(() => {
+    if (!scopedCharacterMap || scopedCharacterMap.size <= 1) return undefined;
+    const map = new Map<string, string>();
+    for (const [, info] of scopedCharacterMap) {
+      if (info.name && info.dialogueColor) {
+        map.set(info.name, info.dialogueColor);
+      }
+    }
+    if (personaInfo?.name && personaInfo.dialogueColor) {
+      map.set(personaInfo.name, personaInfo.dialogueColor);
+    }
+    return map.size > 0 ? map : undefined;
+  }, [personaInfo?.dialogueColor, personaInfo?.name, scopedCharacterMap]);
+
+  // Merged group chat: cycling avatars + cycling name color
+  const mergedCharacterIds = useMemo(
+    () => mergedGroupCharacterIds ?? chatCharacterIds ?? [],
+    [chatCharacterIds, mergedGroupCharacterIds],
+  );
+  const mergedCycleKey = JSON.stringify(mergedCharacterIds);
+  const reduceAmbientEffects = useReducedAmbientEffects();
+  const cycleMergedNarratorAvatars = (!isRoleplay || roleplayNarratorAvatarCycling) && !reduceAmbientEffects;
+  const mergedAvatars = useMemo(() => {
+    if (!isMergedGroup || !characterMap) return [];
+    const fallbackPalette = [
+      "var(--marinara-chat-chrome-text)",
+      "var(--marinara-chat-chrome-accent)",
+      "#fb923c",
+      "#4ade80",
+      "#60a5fa",
+      "#facc15",
+    ];
+    return mergedCharacterIds
+      .map((id, index) => {
+        const info = characterMap.get(id);
+        const expressionUrl = expressionAvatarResolver?.(message, id) ?? null;
+        const url = expressionUrl ?? info?.avatarUrl;
+        if (!url) return null;
+        return {
+          id,
+          url,
+          crop: expressionUrl ? null : info?.avatarCrop,
+          nameColor: info?.nameColor || fallbackPalette[index % fallbackPalette.length]!,
+        };
+      })
+      .filter(Boolean) as {
+      id: string;
+      url: string;
+      crop?: AvatarCrop | null;
+      nameColor: string;
+    }[];
+  }, [isMergedGroup, characterMap, mergedCharacterIds, expressionAvatarResolver, message]);
+  const mergedNameColors = useMemo(() => mergedAvatars.map((avatar) => avatar.nameColor), [mergedAvatars]);
+  // Cycle index for merged group avatars/names — driven by a ref + 2s setInterval to avoid re-renders
+  const cycleIndexRef = useRef(0);
+  const cycleTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const mergedNameRef = useRef<HTMLSpanElement>(null);
+  const mergedAvatarRefs = useRef<(HTMLImageElement | null)[]>([]);
+  const mergedAvatarTailRefs = useRef<(HTMLImageElement | null)[]>([]);
+
+  useEffect(() => {
+    cycleIndexRef.current = 0;
+    if (!isMergedGroup || !cycleMergedNarratorAvatars) return;
+    const applyMergedCycleIndex = (index: number) => {
+      // Update avatar opacity via DOM directly (no re-render)
+      mergedAvatarRefs.current.forEach((img, i) => {
+        if (img) img.style.opacity = i === index ? "1" : "0";
+      });
+      mergedAvatarTailRefs.current.forEach((img, i) => {
+        if (img) img.style.opacity = i === index ? "1" : "0";
+      });
+      // Update name color opacity via DOM directly
+      const nameEl = mergedNameRef.current;
+      if (nameEl) {
+        const spans = nameEl.querySelectorAll<HTMLSpanElement>("[data-cycle-name]");
+        spans.forEach((span, i) => {
+          span.style.opacity = i === index % mergedNameColors.length ? "1" : "0";
+        });
+      }
+    };
+    applyMergedCycleIndex(0);
+    const total = Math.max(mergedAvatars.length, mergedNameColors.length);
+    if (total <= 1) return;
+    cycleTimerRef.current = setInterval(() => {
+      cycleIndexRef.current = (cycleIndexRef.current + 1) % total;
+      applyMergedCycleIndex(cycleIndexRef.current);
+    }, 2000);
+    return () => {
+      if (cycleTimerRef.current) clearInterval(cycleTimerRef.current);
+    };
+  }, [cycleMergedNarratorAvatars, isMergedGroup, mergedCycleKey, mergedAvatars.length, mergedNameColors.length]);
+
+  /** Render a stack of absolutely-positioned "Narrator" labels that crossfade via opacity. */
+  const mergedNameElement = !isMergedGroup ? null : mergedNameColors.length === 0 ? (
+    <NameColorText color={msgNameColor}>{localizeUi("ui.chat.chatmessage.narrator")}</NameColorText>
+  ) : cycleMergedNarratorAvatars ? (
+    <span ref={mergedNameRef} className="relative inline-block">
+      {/* Invisible sizer so the parent reserves the right width */}
+      <span className="invisible">{localizeUi("ui.chat.chatmessage.narrator")}</span>
+      {mergedNameColors.map((c, i) => (
+        <span
+          key={i}
+          data-cycle-name
+          className="absolute inset-0"
+          style={{
+            ...solidNameColorStyle(c),
+            opacity: i === 0 ? 1 : 0,
+            transition: "opacity 1s ease",
+          }}
+        >
+          <NameColorText color={c}>{localizeUi("ui.chat.chatmessage.narrator")}</NameColorText>
+        </span>
+      ))}
+    </span>
+  ) : (
+    <NameColorText color={mergedNameColors[0]}>{localizeUi("ui.chat.chatmessage.narrator")}</NameColorText>
+  );
+
+  // Render content with dialogue highlighting (or HTML rendering)
+  const fullText = typeof displayContent === "string" ? displayContent : message.content;
+  const vnParagraphs = useMemo(
+    () => (visualNovel ? splitRoleplayParagraphs(fullText, isStreaming) : []),
+    [fullText, isStreaming, visualNovel],
+  );
+
+  useEffect(() => {
+    if (visualNovel && onVisualNovelParagraphCount) {
+      onVisualNovelParagraphCount(Math.max(1, vnParagraphs.length));
+    }
+  }, [onVisualNovelParagraphCount, visualNovel, vnParagraphs.length]);
+
+  const activeVnParagraphIndex =
+    visualNovelParagraphIndex != null
+      ? Math.max(0, Math.min(vnParagraphs.length - 1, visualNovelParagraphIndex))
+      : vnParagraphs.length - 1;
+
+  const text = visualNovel ? (vnParagraphs.length > 0 ? (vnParagraphs[activeVnParagraphIndex] ?? "") : "") : fullText;
+  const isHtmlContent = containsChatHtml(text);
+  const htmlScopeClass = useMemo(() => {
+    const suffix = message.id.replace(/[^a-zA-Z0-9_-]/g, "");
+    return `mari-html-message-${suffix || "content"}`;
+  }, [message.id]);
+
+  const inlineRoleplayRolls = useMemo(() => {
+    const rolls = isRoleplay && !isUser ? readRoleplayDiceRolls(fullText, extra) : [];
+    let paragraphStart = 0;
+    if (visualNovel) {
+      for (let index = 0; index <= activeVnParagraphIndex; index++) {
+        const paragraph = vnParagraphs[index] ?? "";
+        paragraphStart = fullText.indexOf(paragraph, paragraphStart);
+        if (paragraphStart < 0) break;
+        if (index < activeVnParagraphIndex) paragraphStart += paragraph.length;
+      }
+    }
+    return rolls
+      .map((roll) => ({ ...roll, offset: roll.offset - paragraphStart }))
+      .filter((roll) => paragraphStart >= 0 && roll.offset >= 0 && roll.offset <= text.length);
+  }, [isRoleplay, isUser, fullText, extra, visualNovel, activeVnParagraphIndex, vnParagraphs, text.length]);
+
+  const renderedContent = useMemo(() => {
+    const renderPart = (part: string) =>
+      renderContent(
+        part,
+        dialogueColor,
+        speakerColorMap,
+        boldDialogue,
+        htmlScopeClass,
+        quoteFormat,
+        selfCharacterId,
+        galleryIndex,
+        nameColorMap,
+        textShadowStr,
+      );
+    let markerPrefix = "\uE000";
+    while (text.includes(markerPrefix)) markerPrefix = "\uE000" + markerPrefix;
+    const slots = new Map<string, ReactNode>();
+    let markedText = text;
+    for (const roll of inlineRoleplayRolls) {
+      const marker = `${markerPrefix}${roll.index}\uE001`;
+      slots.set(
+        marker,
+        <RoleplayDiceRoll
+          key={`roll-${message.id}-${message.activeSwipeIndex}-${roll.index}`}
+          result={roll.result}
+          createdAt={message.createdAt}
+        />,
+      );
+    }
+    for (const roll of [...inlineRoleplayRolls].reverse()) {
+      const marker = `${markerPrefix}${roll.index}\uE001`;
+      markedText = markedText.slice(0, roll.offset) + marker + markedText.slice(roll.offset);
+    }
+    const prose = replaceRoleplayDiceMarkers(renderPart(markedText), slots);
+    return (
+      <>
+        {isUser && <MessageReplyPreview reply={extra.replyTo} />}
+        {prose}
+      </>
+    );
+  }, [
+    inlineRoleplayRolls,
+    extra.replyTo,
+    message.id,
+    message.activeSwipeIndex,
+    message.createdAt,
+    isUser,
+    text,
+    dialogueColor,
+    speakerColorMap,
+    boldDialogue,
+    htmlScopeClass,
+    quoteFormat,
+    selfCharacterId,
+    galleryIndex,
+    nameColorMap,
+    textShadowStr,
+  ]);
+  const renderStreamingText = useCallback(
+    (streamText: string) =>
+      renderContent(
+        formatDisplayContent(streamText),
+        dialogueColor,
+        speakerColorMap,
+        boldDialogue,
+        htmlScopeClass,
+        quoteFormat,
+        selfCharacterId,
+        galleryIndex,
+        nameColorMap,
+        textShadowStr,
+      ),
+    [
+      formatDisplayContent,
+      boldDialogue,
+      dialogueColor,
+      galleryIndex,
+      htmlScopeClass,
+      quoteFormat,
+      selfCharacterId,
+      speakerColorMap,
+      nameColorMap,
+      textShadowStr,
+    ],
+  );
+
+  // Translated text is rendered through the same markdown pipeline as the
+  // message so bold/italics/quotes format identically.
+  const vnTranslatedParagraphs = useMemo(
+    () => (visualNovel && translatedText ? splitRoleplayParagraphs(translatedText, false) : []),
+    [translatedText, visualNovel],
+  );
+  // In VN mode, ensure translated paragraphs map one-to-one with source paragraphs.
+  // If paragraph counts diverge, disable paragraph-level translation to avoid mismatched content.
+  const hasMatchingVnTranslation =
+    visualNovel && vnTranslatedParagraphs.length > 0 && vnTranslatedParagraphs.length === vnParagraphs.length;
+
+  const translatedVnText = hasMatchingVnTranslation ? (vnTranslatedParagraphs[activeVnParagraphIndex] ?? "") : "";
+
+  const effectiveTranslationText = visualNovel ? (hasMatchingVnTranslation ? translatedVnText : null) : translatedText;
+
+  const renderedTranslation = useMemo(
+    () =>
+      effectiveTranslationText
+        ? renderContent(
+            effectiveTranslationText,
+            dialogueColor,
+            speakerColorMap,
+            boldDialogue,
+            htmlScopeClass,
+            quoteFormat,
+            selfCharacterId,
+            galleryIndex,
+            nameColorMap,
+            textShadowStr,
+          )
+        : null,
+    [
+      effectiveTranslationText,
+      dialogueColor,
+      speakerColorMap,
+      boldDialogue,
+      htmlScopeClass,
+      quoteFormat,
+      selfCharacterId,
+      galleryIndex,
+      nameColorMap,
+      textShadowStr,
+    ],
+  );
+  const translationDisplayOnly = useMemo(
+    () => parseChatMetadata(activeChatMetadata).translationDisplayOnly === true,
+    [activeChatMetadata],
+  );
+  // When enabled, the translation replaces the original in place instead of
+  // appearing below it — but only while it matches the currently visible
+  // content, so switching swipes or editing never shows a stale translation
+  // in place of the real text.
+  const showTranslationOnly =
+    translationDisplayOnly && !!effectiveTranslationText && !isTranslating && translationSource === message.content;
+  // A translation has no reliable source-text offsets. Keep its visible
+  // paragraph's rolls after the translated prose, preserving their real values.
+  const renderedTranslationOnly = (
+    <>
+      {renderedTranslation}
+      {inlineRoleplayRolls.map((roll) => (
+        <RoleplayDiceRoll
+          key={`translated-roll-${message.id}-${message.activeSwipeIndex}-${roll.index}`}
+          result={roll.result}
+          createdAt={message.createdAt}
+        />
+      ))}
+    </>
+  );
+
+  const handleCopy = () => {
+    copyToClipboard(message.content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  // ─── Swipe navigation ───
+  const swipeCount = message.swipeCount ?? 0;
+  const hasSwipes = swipeCount > 1;
+
+  const hideRoleplayAvatars = isRoleplay && roleplayAvatarStyle === "none";
+  const useCompactRectangleAvatar = isRoleplay && roleplayAvatarStyle === "rectangles";
+  const compactAvatarFrameClass = useCompactRectangleAvatar
+    ? "h-[calc(3.5rem*var(--roleplay-avatar-scale))] w-[calc(2.75rem*var(--roleplay-avatar-scale))] rounded-xl"
+    : "h-[calc(2.5rem*var(--roleplay-avatar-scale))] w-[calc(2.5rem*var(--roleplay-avatar-scale))] rounded-full";
+  // RP rectangle avatars (compact "rectangles" style and the larger glued
+  // panel) can't apply the new source-rectangle crop format directly — that
+  // format renders the <img> with position: absolute and non-aspect-preserving
+  // width/height, which stretches when forced into a rectangle whose aspect
+  // ratio differs from the (square) crop. Bypass the crop entirely for new
+  // format so the <img>'s className (object-cover [object-top]) governs.
+  // A previous attempt mapped the crop center to `object-position`, but on a
+  // short message the glued panel becomes a wide rectangle — `object-cover`
+  // against a tall source then crops the top off and 50%/50% (or any centered
+  // focal point on a top-of-source face) lands on chin/chest instead of face.
+  // Legacy {zoom, offsetX, offsetY} crops compose fine with object-cover
+  // (they're a CSS transform) so they pass through unchanged.
+  const rectangleSafeCropStyle = (
+    crop: AvatarCrop | null | undefined,
+    fallback: React.CSSProperties,
+  ): React.CSSProperties => {
+    if (!crop) return fallback;
+    if (isLegacyAvatarCrop(crop)) return fallback;
+    return {};
+  };
+  const compactAvatarCrop: AvatarCrop | null = isUser
+    ? (personaAvatarCrop ?? null)
+    : expressionAvatarUrl
+      ? null
+      : (resolvedCharacterInfo?.avatarCrop ?? null);
+  const compactAvatarCropStyle: React.CSSProperties = useCompactRectangleAvatar
+    ? rectangleSafeCropStyle(compactAvatarCrop, avatarCropStyle)
+    : avatarCropStyle;
+  const compactMergedAvatarCropStyle = (avatar: { crop?: AvatarCrop | null }): React.CSSProperties =>
+    useCompactRectangleAvatar || !cycleMergedNarratorAvatars
+      ? rectangleSafeCropStyle(avatar.crop, getAvatarCropStyle(avatar.crop))
+      : getAvatarCropStyle(avatar.crop);
+  const panelAvatarCropStyle: React.CSSProperties = rectangleSafeCropStyle(compactAvatarCrop, avatarCropStyle);
+  const panelMergedAvatarCropStyle = (avatar: { crop?: AvatarCrop | null }): React.CSSProperties =>
+    rectangleSafeCropStyle(avatar.crop, getAvatarCropStyle(avatar.crop));
+  const compactAvatarSpacerClass = useCompactRectangleAvatar
+    ? "w-[calc(2.75rem*var(--roleplay-avatar-scale))]"
+    : "w-[calc(2.5rem*var(--roleplay-avatar-scale))]";
+  const compactAvatarIconSize = useCompactRectangleAvatar
+    ? `${Math.max(1, Math.min(1.75, 1.125 * roleplayAvatarScale))}rem`
+    : `${Math.max(0.875, Math.min(1.5, roleplayAvatarScale))}rem`;
+  const showRoleplayAvatarPanel = isRoleplay && roleplayAvatarStyle === "panel" && !isGrouped;
+  const showCompactRoleplayAvatar = isRoleplay && !isGrouped && !hideRoleplayAvatars && !showRoleplayAvatarPanel;
+  const roleplayAvatarPanelTail = showRoleplayAvatarPanel ? (
+    isMergedGroup && mergedAvatars.length > 0 ? (
+      <div
+        className={cn(
+          "rpg-avatar-panel-tail absolute inset-0 pointer-events-none overflow-hidden",
+          !cycleMergedNarratorAvatars && "flex",
+        )}
+      >
+        {mergedAvatars.map((avatar, i) => (
+          <img
+            key={`tail-${avatar.id}`}
+            ref={(el) => {
+              mergedAvatarTailRefs.current[i] = el;
+            }}
+            src={avatar.url}
+            alt=""
+            aria-hidden="true"
+            loading="lazy"
+            decoding="async"
+            className={cn(
+              "rpg-avatar-panel-tail-image h-full object-cover object-top transition-opacity duration-700",
+              cycleMergedNarratorAvatars ? "absolute inset-0 w-full" : "relative w-0 min-w-0 flex-1",
+            )}
+            style={{
+              opacity: cycleMergedNarratorAvatars ? (i === 0 ? 1 : 0) : 1,
+              ...panelMergedAvatarCropStyle(avatar),
+            }}
+          />
+        ))}
+      </div>
+    ) : displayAvatarUrl ? (
+      <div className="rpg-avatar-panel-tail absolute inset-0 pointer-events-none overflow-hidden">
+        <img
+          src={displayAvatarUrl}
+          alt=""
+          aria-hidden="true"
+          loading="lazy"
+          decoding="async"
+          className="rpg-avatar-panel-tail-image absolute inset-0 h-full w-full object-cover object-top"
+          style={panelAvatarCropStyle}
+        />
+      </div>
+    ) : null
+  ) : null;
+  const isHiddenExpanded =
+    isHiddenFromAI && (!collapseHiddenMessages || manuallyExpandedHidden || editing || !!isStreaming);
+  const isHiddenCollapsed = isHiddenFromAI && collapseHiddenMessages && !isHiddenExpanded;
+  const hiddenFromAIRecipientNames = aiVisibilityCharacters
+    .filter((character) => hiddenFromAICharacterIds.includes(character.id))
+    .map((character) => character.name);
+  const hiddenFromAIStatusLabel = isHiddenFromAllAI
+    ? "Hidden from all characters"
+    : hiddenFromAIRecipientNames.length > 0
+      ? `Hidden from ${hiddenFromAIRecipientNames.join(", ")}`
+      : "Hidden from selected characters";
+  const hiddenFromAIRecipientAvatars = (
+    <AIVisibilityRecipientAvatars
+      characters={aiVisibilityCharacters}
+      hiddenFromAll={isHiddenFromAllAI}
+      hiddenCharacterIds={hiddenFromAICharacterIds}
+    />
+  );
+  const hasMessageMarks = readMessageMarks(message).any;
+  const messageMarkIndicators = <MessageMarkIndicators message={message} />;
+  const hiddenFromAIHeader = isHiddenFromAI ? (
+    <HiddenFromAIMessageButton
+      roleplay={isRoleplay}
+      canCollapse={collapseHiddenMessages}
+      isHiddenExpanded={isHiddenExpanded}
+      onExpand={() => setManuallyExpandedHidden((value) => !value)}
+      recipientAvatars={hiddenFromAIRecipientAvatars}
+      statusLabel={hiddenFromAIStatusLabel}
+    />
+  ) : null;
+  const roleplayCommandResults = (
+    <RoleplayCommandResults
+      chatId={message.chatId}
+      messageId={message.id}
+      swipeIndex={message.activeSwipeIndex}
+      characterName={charName}
+      extra={extra}
+      isStreaming={!!isStreaming}
+    />
+  );
+  const roleplayBubbleContent = isHiddenCollapsed ? (
+    <HiddenFromAIMessageSummary
+      roleplay={isRoleplay}
+      onExpand={() => setManuallyExpandedHidden(true)}
+      recipientAvatars={hiddenFromAIRecipientAvatars}
+      statusLabel={hiddenFromAIStatusLabel}
+    />
+  ) : editing ? (
+    <MessageEditTextarea
+      initialContent={message.content}
+      messageRole={message.role}
+      fontSize={chatFontSize}
+      quoteFormat={quoteFormat}
+      saving={editSavePending}
+      onSave={handleSaveEdit}
+      onCancel={handleCancelEdit}
+    />
+  ) : (
+    <>
+      {showInlineThinking && (
+        <RoleplayThinkingDisclosure
+          thinking={thinking}
+          summaryUnavailable={reasoningSummaryUnavailable}
+          isStreaming={!!isStreaming}
+          outputStarted={streamingOutputStarted}
+          keepExpanded={keepRoleplayThinkingExpanded}
+          durationMs={reasoningDurationMs}
+        />
+      )}
+      <div
+        className={cn("mari-message-content break-words", !isHtmlContent && "whitespace-pre-wrap")}
+        style={messageTextStyle}
+      >
+        {isStreaming && streamingContent && showInlineThinking && !streamingOutputStarted ? null : isStreaming &&
+          streamingContent ? (
+          <>
+            {streamingContent(renderStreamingText)}
+            <span className="ml-0.5 inline-block h-4 w-[0.125rem] animate-pulse rounded-full bg-blue-400" />
+          </>
+        ) : isStreaming && !message.content ? (
+          <PendingTypingDots className="mari-message-typing py-0.5" dotClassName="bg-blue-400/60" />
+        ) : (
+          <>
+            {diceRollResult ? (
+              <DiceMessageContent diceRollResult={diceRollResult} createdAt={message.createdAt} />
+            ) : null}
+            {diceReplacesContent ? null : showTranslationOnly ? renderedTranslationOnly : renderedContent}
+            {isStreaming && (
+              <span className="ml-0.5 inline-block h-4 w-[0.125rem] animate-pulse rounded-full bg-blue-400" />
+            )}
+          </>
+        )}
+      </div>
+      {roleplayCommandResults}
+      {(translatedText || isTranslating) && !showTranslationOnly && (
+        <div className="mt-2 border-t border-white/10 pt-2">
+          {isTranslating ? (
+            <span className="text-[0.75rem] italic text-white/40">{localizeUi("ui.chat.chatmessage.translating")}</span>
+          ) : (
+            <div className="translation-text whitespace-pre-wrap">{renderedTranslation}</div>
+          )}
+        </div>
+      )}
+    </>
+  );
+
+  const hasVnMediaTarget = visualNovel && !!visualNovelMediaTarget;
+  const renderRoleplayImage = (image: ReactNode, key: number) =>
+    hasVnMediaTarget ? createPortal(image, visualNovelMediaTarget!, `${message.id}:${key}`) : image;
+  const roleplayAttachments = isRoleplay &&
+    !editing &&
+    extra.attachments?.length > 0 &&
+    !IMAGE_URL_RE.test(message.content.trim()) && (
+      <div className={hasVnMediaTarget ? "contents" : "mt-1.5 flex flex-col items-center gap-2 px-3 pb-2"}>
+        {extra.attachments.map((att: any, i: number) =>
+          att.roleplaySound === true ? null : att.type === "image" || att.type?.startsWith("image/") ? (
+            renderRoleplayImage(
+              <div
+                key={i}
+                className={cn(
+                  "group/att relative",
+                  hasVnMediaTarget
+                    ? "pointer-events-auto flex h-full min-h-0 min-w-0 max-w-3xl flex-1 items-end justify-center"
+                    : "inline-block",
+                )}
+              >
+                <button
+                  type="button"
+                  onClick={() => openAttachmentImageLightbox(att, i)}
+                  className={hasVnMediaTarget ? "flex h-full min-h-0 w-full items-end justify-center" : "block"}
+                  title={localizeUi("ui.noodle.noodlepostcard.openImage")}
+                  aria-label={localizeUi("ui.chat.chatmessage.openValue1", {
+                    value1: att.filename || att.name || localizeUi("ui.ui.spritegenerationmodal.image"),
+                  })}
+                >
+                  <ChatImagePreview
+                    src={att.url || att.data}
+                    alt={att.filename || att.name || "image"}
+                    className={cn(
+                      "max-w-full rounded-lg object-contain",
+                      hasVnMediaTarget ? "max-h-full" : "max-h-[70vh] sm:max-h-[32rem]",
+                    )}
+                    loading="lazy"
+                    decoding="async"
+                  />
+                </button>
+                {!hasVnMediaTarget && (
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveAttachment(i)}
+                    aria-label={localizeUi("ui.chat.chatmessage.removeImageFromMessage")}
+                    title={localizeUi("ui.chat.chatmessage.removeFromMessage")}
+                    className="absolute top-1.5 right-1.5 rounded-full bg-black/60 p-1 text-white/80 transition-opacity hover:bg-black/80 hover:text-white sm:opacity-0 sm:group-hover/att:opacity-100"
+                  >
+                    <X size="0.875rem" />
+                  </button>
+                )}
+              </div>,
+              i,
+            )
+          ) : (
+            <div
+              key={i}
+              className="group/att flex max-w-full items-center gap-2 rounded-lg bg-foreground/10 px-2.5 py-1.5 text-xs text-foreground/70 ring-1 ring-foreground/10"
+            >
+              <ScrollText size="0.875rem" className="shrink-0 text-[var(--primary)]" />
+              <span className="min-w-0 max-w-[16rem] truncate">{att.filename || att.name || "attachment"}</span>
+              <button
+                type="button"
+                onClick={() => handleRemoveAttachment(i)}
+                aria-label={localizeUi("ui.chat.chatmessage.removeFileFromMessage")}
+                title={localizeUi("ui.chat.chatmessage.removeFromMessage")}
+                className="rounded-full p-0.5 text-foreground/45 transition-colors hover:bg-foreground/10 hover:text-[var(--destructive)] sm:opacity-0 sm:group-hover/att:opacity-100"
+              >
+                <X size="0.75rem" />
+              </button>
+            </div>
+          ),
+        )}
+      </div>
+    );
+
+  const roleplayTtsControls = ttsEnabled && (
+    <MessageAudioMenu align="right" dark>
+      {isSpeakingThis && (ttsState === "playing" || ttsState === "paused") && (
+        <>
+          <ActionBtn
+            icon={isPausedThis ? <Play size={MESSAGE_ACTION_ICON_SIZE} /> : <Pause size={MESSAGE_ACTION_ICON_SIZE} />}
+            onClick={handlePauseResumeTTS}
+            title={
+              isPausedThis
+                ? localizeUi("ui.chat.chatmessage.resumeSpeaking")
+                : localizeUi("ui.chat.chatmessage.pauseSpeaking")
+            }
+          />
+          <ActionBtn
+            icon={<RefreshCw size={MESSAGE_ACTION_ICON_SIZE} />}
+            onClick={handleRestartTTS}
+            title={localizeUi("ui.chat.chatmessage.restartSpeaking")}
+          />
+        </>
+      )}
+      <ActionBtn
+        icon={
+          isLoadingThis ? (
+            <Loader2 size={MESSAGE_ACTION_ICON_SIZE} className="animate-spin" />
+          ) : isSpeakingThis ? (
+            <MicOff size={MESSAGE_ACTION_ICON_SIZE} />
+          ) : (
+            <Mic size={MESSAGE_ACTION_ICON_SIZE} />
+          )
+        }
+        onClick={handleSpeak}
+        title={
+          !hasTTSContent
+            ? localizeUi("ui.chat.chatmessage.noDialogueToSpeak")
+            : isLoadingThis
+              ? localizeUi("ui.panels.ttsconfigcard.loading")
+              : isSpeakingThis
+                ? localizeUi("ui.chat.chatmessage.stopSpeaking")
+                : localizeUi("ui.chat.chatmessage.speak")
+        }
+        disabled={!hasTTSContent || clearingTTS || (ttsBusy && !isSpeakingThis)}
+      />
+      <ActionBtn
+        icon={
+          clearingTTS ? (
+            <Loader2 size={MESSAGE_ACTION_ICON_SIZE} className="animate-spin" />
+          ) : (
+            <Eraser size={MESSAGE_ACTION_ICON_SIZE} />
+          )
+        }
+        onClick={handleClearCachedVoice}
+        title={localizeUi("ui.chat.chatmessage.clearCachedVoice")}
+        disabled={!hasTTSContent || clearingTTS || (ttsBusy && !isSpeakingThis)}
+      />
+      <TTSLineVolumeSlider volume={ttsLineVolume} onVolumeChange={handleTTSLineVolumeChange} dark />
+    </MessageAudioMenu>
+  );
+
+  const vnAvatarCropStyle = expressionAvatarUrl ? {} : avatarCropStyle;
+
+  if (visualNovel) {
+    return (
+      <>
+        <div
+          className="mari-roleplay-vn-dialogue flex min-w-0 gap-3 p-3 sm:gap-4 sm:p-4"
+          data-vn-message-id={message.id}
+        >
+          <div
+            className="relative shrink-0 self-start overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--secondary)]"
+            style={{ width: `min(${5 * vnPortraitScale}rem, 26vw)`, height: `min(${5 * vnPortraitScale}rem, 26vw)` }}
+          >
+            {displayAvatarUrl ? (
+              !isUser && resolvedCharacterId ? (
+                <CharacterPhoto
+                  src={displayAvatarUrl}
+                  name={displayName}
+                  className="block h-full w-full cursor-zoom-in focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--primary)]"
+                  wrapperClassName="block h-full w-full"
+                  onUpdate={onUpdateCharacter}
+                >
+                  <AvatarImage
+                    src={displayAvatarUrl}
+                    alt=""
+                    className="h-full w-full object-cover"
+                    style={vnAvatarCropStyle}
+                  />
+                </CharacterPhoto>
+              ) : (
+                <button
+                  type="button"
+                  className="block h-full w-full cursor-zoom-in focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--primary)]"
+                  onClick={() => openImageLightbox(displayAvatarUrl)}
+                  aria-label={localizeUi("ui.chat.chatmessage.openValue1Avatar", { value1: displayName })}
+                >
+                  <AvatarImage
+                    src={displayAvatarUrl}
+                    alt=""
+                    className="h-full w-full object-cover"
+                    style={vnAvatarCropStyle}
+                  />
+                </button>
+              )
+            ) : (
+              <div
+                className="flex h-full items-center justify-center text-[var(--muted-foreground)]"
+                aria-hidden="true"
+              >
+                {isUser ? <User size="1.75rem" /> : <Bot size="1.75rem" />}
+              </div>
+            )}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="mb-2 truncate text-sm font-semibold text-[var(--marinara-chat-chrome-highlight-text)]">
+              {isMergedGroup ? (
+                mergedNameElement
+              ) : isNarrator ? (
+                localizeUi("ui.chat.chatmessage.narrator")
+              ) : (
+                <span style={solidNameColorStyle(msgNameColor)}>
+                  <NameColorText color={msgNameColor}>{displayName}</NameColorText>
+                </span>
+              )}
+            </div>
+            <div
+              className="mari-message-content max-h-[min(30dvh,18rem)] overflow-y-auto overscroll-contain whitespace-pre-wrap break-words pr-1"
+              style={messageTextStyle}
+              tabIndex={0}
+              role="region"
+              aria-label={localizeUi("chat.roleplayVn.currentParagraph")}
+              aria-live="polite"
+            >
+              {isStreaming && streamingContent ? (
+                streamingContent(renderStreamingText)
+              ) : (
+                <>
+                  {diceRollResult && (
+                    <DiceMessageContent diceRollResult={diceRollResult} createdAt={message.createdAt} />
+                  )}
+                  {diceReplacesContent ? null : showTranslationOnly ? renderedTranslationOnly : renderedContent}
+                  {roleplayAttachments}
+                  {roleplayCommandResults}
+                  {renderedTranslation && !showTranslationOnly && (
+                    <div className="translation-text mt-2 whitespace-pre-wrap border-t border-[var(--border)] pt-2">
+                      {renderedTranslation}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            {ttsEnabled && <div className="mt-2 flex flex-wrap items-center gap-2">{roleplayTtsControls}</div>}
+          </div>
+        </div>
+        {imageLightbox && (
+          <ChatImageLightbox
+            image={imageLightbox.image}
+            alt={imageLightbox.alt}
+            pinEnabled={imageLightbox.pinEnabled}
+            downloadEnabled={imageLightbox.downloadEnabled}
+            onClose={closeImageLightbox}
+          />
+        )}
+      </>
+    );
+  }
+
+  // ─── System messages (shared across modes) ───
+  if (isSystem) {
+    return (
+      <div
+        ref={msgRef}
+        className={cn(
+          "mari-system-message group flex justify-center py-2",
+          multiSelectMode && isSelected && cn("rounded-lg", MESSAGE_SELECTION_SURFACE_CLASS),
+        )}
+        onClick={handleMobileTap}
+      >
+        <div className="relative">
+          {!multiSelectMode && onDelete && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete(message.id);
+              }}
+              aria-label={localizeUi("chat.delete.dialog.title")}
+              className={cn(
+                "absolute -right-1 -top-1 rounded-md p-1 text-white/20 opacity-0 transition-all hover:bg-foreground/10 hover:text-foreground/70 group-hover:opacity-100",
+                showActions && "opacity-100",
+              )}
+              title={localizeUi("lorebook.editor.batch.delete")}
+            >
+              <Trash2 size="0.75rem" />
+            </button>
+          )}
+          <div className="mari-system-message-content rounded-full bg-[var(--secondary)] px-4 py-1.5 text-[0.6875rem] text-[var(--muted-foreground)]">
+            {message.content}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ═══════════════════════════════════════════════
+  // Roleplay Mode — immersive narrative
+  // ═══════════════════════════════════════════════
+  if (isRoleplay) {
+    // Narrator messages
+    if (isNarrator) {
+      return (
+        <>
+          <div
+            ref={msgRef}
+            className={cn(
+              "mari-message mari-message-narrator rpg-narrator-msg group mb-4 px-2",
+              multiSelectMode && isSelected && cn("rounded-lg", MESSAGE_SELECTION_SURFACE_CLASS),
+            )}
+            data-message-id={message.id}
+            data-card-css={message.characterId ?? undefined}
+            onClick={handleMobileTap}
+            onDoubleClick={handleRoleplayDoubleClick}
+          >
+            <div className="flex gap-3">
+              {multiSelectMode && (
+                <div className="flex flex-shrink-0 items-start pt-2">
+                  <button
+                    type="button"
+                    role="checkbox"
+                    aria-checked={isSelected}
+                    aria-label={
+                      isSelected
+                        ? localizeUi("ui.chat.chatmessage.deselectMessage")
+                        : localizeUi("ui.chat.chatmessage.selectMessage")
+                    }
+                    className={cn(
+                      MESSAGE_SELECTION_CHECKBOX_CLASS,
+                      "flex items-center justify-center",
+                      isSelected && MESSAGE_SELECTION_CHECKBOX_SELECTED_CLASS,
+                    )}
+                  >
+                    {isSelected && (
+                      <span className="text-xs font-bold text-[var(--marinara-chat-chrome-panel-bg)]">✓</span>
+                    )}
+                  </button>
+                </div>
+              )}
+              <div className="mari-message-bubble relative flex-1 rounded-xl border border-amber-500/10 bg-black/40 px-5 py-4">
+                {/* Delete button */}
+                {!multiSelectMode && onDelete && (
+                  <button
+                    type="button"
+                    onClick={() => onDelete(message.id)}
+                    aria-label={localizeUi("chat.delete.dialog.title")}
+                    className={cn(
+                      "absolute right-2 top-2 rounded-md p-1 text-white/20 opacity-0 transition-all hover:bg-foreground/10 hover:text-foreground/70 group-hover:opacity-100",
+                      showActions && "opacity-100",
+                    )}
+                    title={localizeUi("lorebook.editor.batch.delete")}
+                  >
+                    <Trash2 size="0.75rem" />
+                  </button>
+                )}
+                <div className="mb-1 flex items-center gap-2 text-[0.625rem] font-semibold uppercase tracking-widest text-amber-400/70">
+                  <span className="h-px flex-1 bg-amber-400/20" />
+                  {hiddenFromAIHeader}
+                  {messageMarkIndicators}
+                  {localizeUi("ui.chat.chatmessage.narrator")}
+                  <span className="h-px flex-1 bg-amber-400/20" />
+                </div>
+                {isHiddenCollapsed ? (
+                  <HiddenFromAIMessageSummary
+                    roleplay
+                    onExpand={() => setManuallyExpandedHidden(true)}
+                    recipientAvatars={hiddenFromAIRecipientAvatars}
+                    statusLabel={hiddenFromAIStatusLabel}
+                  />
+                ) : (
+                  <div
+                    className={cn("mari-message-content break-words italic", !isHtmlContent && "whitespace-pre-wrap")}
+                    style={messageTextStyle}
+                  >
+                    {diceRollResult ? (
+                      <DiceMessageContent diceRollResult={diceRollResult} createdAt={message.createdAt} />
+                    ) : null}
+                    {diceReplacesContent ? null : showTranslationOnly ? renderedTranslationOnly : renderedContent}
+                  </div>
+                )}
+              </div>
+            </div>
+            {!editing && (storyboard || storyboardGenerating) ? (
+              <div className="mx-auto mt-2 w-full max-w-3xl">
+                <RoleplayStoryboardMessageMedia
+                  storyboard={storyboard ?? null}
+                  generating={storyboardGenerating}
+                  onOpenImage={openStoryboardImageLightbox}
+                />
+              </div>
+            ) : null}
+          </div>
+          {imageLightbox && (
+            <ChatImageLightbox
+              image={imageLightbox.image}
+              alt={imageLightbox.alt}
+              pinEnabled={imageLightbox.pinEnabled}
+              downloadEnabled={imageLightbox.downloadEnabled}
+              onClose={closeImageLightbox}
+            />
+          )}
+        </>
+      );
+    }
+
+    return (
+      <>
+        <div
+          ref={msgRef}
+          className={cn(
+            "mari-message mari-roleplay-message-row group mb-4 flex justify-center gap-3 px-2",
+            isUser ? "mari-message-user flex-row-reverse" : "mari-message-assistant",
+            useCompactRectangleAvatar && "mari-roleplay-message-row--rect-avatar",
+            (hideRoleplayAvatars || showRoleplayAvatarPanel) && "mari-roleplay-message-row--wide",
+            multiSelectMode && isSelected && cn("rounded-lg", MESSAGE_SELECTION_SURFACE_CLASS),
+          )}
+          data-message-id={message.id}
+          data-message-role={message.role}
+          data-card-css={message.characterId ?? undefined}
+          onClick={handleMobileTap}
+          onDoubleClick={handleRoleplayDoubleClick}
+          style={roleplayAvatarScaleStyle}
+        >
+          {/* Multi-select checkbox */}
+          {multiSelectMode && (
+            <div className="mari-roleplay-selection-toggle flex items-start pt-2 flex-shrink-0">
+              <button
+                type="button"
+                role="checkbox"
+                aria-checked={isSelected}
+                aria-label={
+                  isSelected
+                    ? localizeUi("ui.chat.chatmessage.deselectMessage")
+                    : localizeUi("ui.chat.chatmessage.selectMessage")
+                }
+                className={cn(
+                  MESSAGE_SELECTION_CHECKBOX_CLASS,
+                  "flex items-center justify-center",
+                  isSelected && MESSAGE_SELECTION_CHECKBOX_SELECTED_CLASS,
+                )}
+              >
+                {isSelected && <span className="text-xs font-bold text-[var(--marinara-chat-chrome-panel-bg)]">✓</span>}
+              </button>
+            </div>
+          )}
+          {/* Avatar Column */}
+          {showCompactRoleplayAvatar && (
+            <div
+              className={cn(
+                "mari-message-avatar flex flex-col items-center flex-shrink-0 pt-1",
+                roleplayAvatarsScrollable && "mari-scrollable-roleplay-avatar",
+              )}
+            >
+              {isMergedGroup && mergedAvatars.length > 0 ? (
+                <button
+                  type="button"
+                  className={cn(
+                    "rpg-avatar-glow relative cursor-pointer overflow-hidden ring-2 ring-white/10",
+                    compactAvatarFrameClass,
+                    !cycleMergedNarratorAvatars && "flex",
+                  )}
+                  onClick={() => {
+                    const visible = mergedAvatars[cycleIndexRef.current];
+                    if (visible) openImageLightbox(visible.url);
+                  }}
+                  aria-label={localizeUi("ui.chat.chatmessage.openValue1Avatar", { value1: displayName })}
+                >
+                  {mergedAvatars.map((avatar, i) => (
+                    <img
+                      key={avatar.id}
+                      ref={(el) => {
+                        mergedAvatarRefs.current[i] = el;
+                      }}
+                      src={avatar.url}
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                      className={cn(
+                        "h-full object-cover transition-opacity duration-700",
+                        cycleMergedNarratorAvatars ? "absolute inset-0 w-full" : "relative w-0 min-w-0 flex-1",
+                      )}
+                      style={{
+                        opacity: cycleMergedNarratorAvatars ? (i === 0 ? 1 : 0) : 1,
+                        ...compactMergedAvatarCropStyle(avatar),
+                      }}
+                    />
+                  ))}
+                </button>
+              ) : displayAvatarUrl ? (
+                <div className={cn(!isUser && "rpg-avatar-glow")}>
+                  {!isUser && resolvedCharacterId ? (
+                    <CharacterPhoto
+                      src={displayAvatarUrl}
+                      name={displayName}
+                      className={cn(
+                        "relative cursor-pointer overflow-hidden ring-2 ring-white/10",
+                        compactAvatarFrameClass,
+                      )}
+                      wrapperClassName="relative inline-flex items-center gap-1"
+                      onUpdate={onUpdateCharacter}
+                    >
+                      <AvatarImage
+                        src={displayAvatarUrl}
+                        alt=""
+                        loading="lazy"
+                        className="h-full w-full object-cover"
+                        style={compactAvatarCropStyle}
+                      />
+                    </CharacterPhoto>
+                  ) : (
+                    <button
+                      type="button"
+                      className={cn(
+                        "relative cursor-pointer overflow-hidden ring-2 ring-white/10",
+                        compactAvatarFrameClass,
+                      )}
+                      onClick={() => openImageLightbox(displayAvatarUrl)}
+                      aria-label={localizeUi("ui.chat.chatmessage.openValue1Avatar", { value1: displayName })}
+                    >
+                      <AvatarImage
+                        src={displayAvatarUrl}
+                        alt=""
+                        loading="lazy"
+                        className="h-full w-full object-cover"
+                        style={compactAvatarCropStyle}
+                      />
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div
+                  className={cn(
+                    "flex items-center justify-center ring-2 shadow-lg",
+                    compactAvatarFrameClass,
+                    isUser
+                      ? "bg-gradient-to-br from-neutral-500 to-neutral-600 ring-white/15"
+                      : "mari-chrome-accent-tile mari-accent-animated ring-[var(--marinara-chat-chrome-button-border-active)]",
+                  )}
+                >
+                  {isUser ? (
+                    <User size={compactAvatarIconSize} className="text-white" />
+                  ) : (
+                    <Bot size={compactAvatarIconSize} className="text-current" />
+                  )}
+                </div>
+              )}
+              {(showActions || showMessageNumbers) && messageIndex != null && (
+                <span className="mt-1 text-[0.5625rem] font-medium text-[var(--marinara-chat-chrome-text)] select-none">
+                  #{messageIndex}
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Spacer if grouped (no avatar) */}
+          {isGrouped && !hideRoleplayAvatars && (
+            <div className={cn("mari-roleplay-avatar-spacer flex-shrink-0", compactAvatarSpacerClass)} />
+          )}
+
+          {/* Content */}
+          <div
+            className={cn(
+              "mari-message-body mari-roleplay-message-body flex min-w-0 flex-col gap-0.5",
+              isUser && "items-end",
+              editing && "mari-roleplay-message-body--editing",
+            )}
+          >
+            {/* Name + time (only if not grouped) */}
+            {!isGrouped && (
+              <div className={cn("flex items-baseline gap-2 px-1", isUser && "flex-row-reverse")}>
+                {hiddenFromAIHeader}
+                {messageMarkIndicators}
+                <span
+                  className={cn(
+                    "mari-message-name text-[0.75rem] font-bold tracking-tight",
+                    !msgNameColor && !isMergedGroup && (isUser ? "text-neutral-300" : "rpg-char-name"),
+                  )}
+                  style={!isMergedGroup ? solidNameColorStyle(msgNameColor) : undefined}
+                >
+                  {isMergedGroup ? (
+                    mergedNameElement
+                  ) : (
+                    <NameColorText color={msgNameColor}>{displayName}</NameColorText>
+                  )}
+                </span>
+                <span className="text-[0.625rem] text-white/30">{formatTime(message.createdAt)}</span>
+                {genLabel && (
+                  <span className="text-[0.5625rem] text-white/25 italic truncate max-w-[15.625rem]" title={genLabel}>
+                    {genLabel}
+                  </span>
+                )}
+                {showTokenUsage && genInfo && <GenerationTokenUsage generationInfo={genInfo} />}
+                {(showRoleplayAvatarPanel || hideRoleplayAvatars) &&
+                  (showActions || showMessageNumbers) &&
+                  messageIndex != null && (
+                    <span className="text-[0.5625rem] font-medium text-[var(--marinara-chat-chrome-text)] select-none">
+                      #{messageIndex}
+                    </span>
+                  )}
+              </div>
+            )}
+            {isGrouped && hasMessageMarks && (
+              <div className={cn("flex px-1", isUser && "justify-end")}>{messageMarkIndicators}</div>
+            )}
+
+            <ConversationStartMarkers
+              memoryStartCharacterIds={memoryStartCharacterIds}
+              sharedStart={isConversationStart}
+              characterIds={conversationStartForCharacterIds}
+              characters={aiVisibilityCharacters}
+              panel
+            />
+
+            {/* Message bubble */}
+            <div
+              data-roleplay-bubble-transparent={roleplayBubbleBg === "transparent" ? "true" : undefined}
+              className={cn(
+                "mari-message-bubble mari-rp-bubble relative overflow-hidden rounded-2xl shadow-lg shadow-black/20",
+                roleplayAvatarsScrollable && showRoleplayAvatarPanel && "mari-rp-bubble--scrollable-avatar-panel",
+                isUser
+                  ? "rounded-tr-sm text-neutral-100 ring-1 ring-white/10"
+                  : "rounded-tl-sm text-white/90 ring-1 ring-white/8",
+                isGrouped && (isUser ? "rounded-tr-2xl" : "rounded-tl-2xl"),
+                isStreaming && "rpg-streaming",
+                (isConversationStart || conversationStartForCharacterIds.length > 0) && MESSAGE_CHROME_RING_CLASS,
+                isHiddenFromAI && cn(MESSAGE_CHROME_RING_CLASS, "saturate-75"),
+                editing && "w-full",
+              )}
+              style={
+                {
+                  ...messageTextStyle,
+                  // Pass the per-character/default color as a var rather than
+                  // an inline `background` so card CSS can override the bubble
+                  // (inline styles beat every selector). Applied by `.mari-rp-bubble`.
+                  "--mari-rp-bubble-bg": roleplayBubbleBg,
+                } as React.CSSProperties
+              }
+            >
+              {showRoleplayAvatarPanel ? (
+                <div className={cn("flex min-h-full items-stretch", isUser && "flex-row-reverse")}>
+                  <div
+                    className={cn(
+                      "mari-roleplay-avatar-panel-rail relative flex w-[calc(5.5rem*var(--roleplay-avatar-scale))] shrink-0 items-start self-stretch overflow-hidden md:w-[calc(6rem*var(--roleplay-avatar-scale))]",
+                      isUser ? "border-l border-white/8" : "border-r border-white/8",
+                      isUser
+                        ? "bg-gradient-to-b from-neutral-500/18 via-neutral-600/10 to-transparent"
+                        : "mari-chrome-accent-rail mari-accent-animated",
+                    )}
+                  >
+                    <div
+                      className={cn(
+                        "rpg-avatar-panel-stack h-[calc(11rem*var(--roleplay-avatar-scale))] w-full overflow-hidden",
+                        roleplayAvatarsScrollable ? "mari-scrollable-roleplay-avatar" : "absolute left-0 top-0",
+                      )}
+                    >
+                      {isMergedGroup && mergedAvatars.length > 0 ? (
+                        <button
+                          type="button"
+                          className={cn(
+                            "rpg-avatar-panel-media rpg-avatar-panel absolute inset-0 h-full w-full cursor-zoom-in overflow-hidden",
+                            cycleMergedNarratorAvatars ? "block" : "flex",
+                          )}
+                          onClick={() => {
+                            const visible = mergedAvatars[cycleIndexRef.current];
+                            if (visible) openImageLightbox(visible.url);
+                          }}
+                          aria-label={localizeUi("ui.chat.chatmessage.openValue1Avatar", { value1: displayName })}
+                        >
+                          {mergedAvatars.map((avatar, i) => (
+                            <img
+                              key={avatar.id}
+                              ref={(el) => {
+                                mergedAvatarRefs.current[i] = el;
+                              }}
+                              src={avatar.url}
+                              alt=""
+                              loading="lazy"
+                              decoding="async"
+                              className={cn(
+                                "h-full object-cover object-top transition-opacity duration-700",
+                                cycleMergedNarratorAvatars ? "absolute inset-0 w-full" : "relative w-0 min-w-0 flex-1",
+                              )}
+                              style={{
+                                opacity: cycleMergedNarratorAvatars ? (i === 0 ? 1 : 0) : 1,
+                                ...panelMergedAvatarCropStyle(avatar),
+                              }}
+                            />
+                          ))}
+                        </button>
+                      ) : displayAvatarUrl ? (
+                        !isUser && resolvedCharacterId ? (
+                          <CharacterPhoto
+                            src={displayAvatarUrl}
+                            name={displayName}
+                            className={cn(
+                              "rpg-avatar-panel-media absolute inset-0 block h-full w-full cursor-zoom-in overflow-hidden",
+                              "rpg-avatar-panel",
+                            )}
+                            wrapperClassName="absolute inset-0 block"
+                            onUpdate={onUpdateCharacter}
+                          >
+                            <AvatarImage
+                              src={displayAvatarUrl}
+                              alt=""
+                              loading="lazy"
+                              className="h-full w-full object-cover object-top"
+                              style={panelAvatarCropStyle}
+                            />
+                          </CharacterPhoto>
+                        ) : (
+                          <button
+                            type="button"
+                            className={cn(
+                              "rpg-avatar-panel-media absolute inset-0 block h-full w-full cursor-zoom-in overflow-hidden",
+                              !isUser && "rpg-avatar-panel",
+                            )}
+                            onClick={() => openImageLightbox(displayAvatarUrl)}
+                            aria-label={localizeUi("ui.chat.chatmessage.openValue1Avatar", { value1: displayName })}
+                          >
+                            <AvatarImage
+                              src={displayAvatarUrl}
+                              alt=""
+                              loading="lazy"
+                              className="h-full w-full object-cover object-top"
+                              style={panelAvatarCropStyle}
+                            />
+                          </button>
+                        )
+                      ) : (
+                        <div
+                          className={cn(
+                            "flex h-full w-full items-start justify-center pt-4",
+                            isUser
+                              ? "bg-gradient-to-b from-neutral-500/90 via-neutral-600/65 to-transparent"
+                              : "mari-chrome-accent-rail-strong mari-accent-animated",
+                          )}
+                        >
+                          {isUser ? (
+                            <User size="1.25rem" className="text-white" />
+                          ) : (
+                            <Bot size="1.25rem" className="text-[var(--primary-foreground)]" />
+                          )}
+                        </div>
+                      )}
+                      {roleplayAvatarPanelTail}
+                      <div
+                        className="pointer-events-none absolute inset-x-0 bottom-0 h-[34%]"
+                        style={{
+                          background: `linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, ${roleplayBubbleBg} 100%)`,
+                          opacity: 0.92,
+                          maskImage:
+                            "linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.12) 22%, rgba(0, 0, 0, 0.66) 72%, rgba(0, 0, 0, 1) 100%)",
+                          WebkitMaskImage:
+                            "linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.12) 22%, rgba(0, 0, 0, 0.66) 72%, rgba(0, 0, 0, 1) 100%)",
+                        }}
+                      />
+                      <div
+                        className="pointer-events-none absolute inset-0"
+                        style={{
+                          background: `linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0) 74%, ${roleplayBubbleBg} 90%, ${roleplayBubbleBg} 100%)`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                  {roleplayBubbleContent && <div className="min-w-0 flex-1 px-3 py-3">{roleplayBubbleContent}</div>}
+                </div>
+              ) : roleplayBubbleContent ? (
+                <div className="px-4 py-3">{roleplayBubbleContent}</div>
+              ) : null}
+            </div>
+
+            {roleplayAttachments}
+
+            {!editing && !isUser && (storyboard || storyboardGenerating) ? (
+              <RoleplayStoryboardMessageMedia
+                storyboard={storyboard ?? null}
+                generating={storyboardGenerating}
+                onOpenImage={openStoryboardImageLightbox}
+              />
+            ) : null}
+
+            {/* Swipes */}
+            {(hasSwipes || canCreateNextSwipe) && (
+              <SwipeJumpControl
+                alwaysShow={alwaysDisplaySwipeMenu && !isUser}
+                messageId={message.id}
+                activeSwipeIndex={message.activeSwipeIndex}
+                swipeCount={swipeCount}
+                onSetActiveSwipe={handleSetActiveSwipe}
+                onCreateNextSwipe={canCreateNextSwipe ? () => onRegenerate?.(message.id) : undefined}
+              />
+            )}
+
+            {/* Hover actions (tap to toggle on mobile) */}
+            <div
+              onClickCapture={(event) => {
+                if (!matchMedia("(pointer: coarse)").matches) return;
+                // A tap on the still-invisible row only reveals it; it must not fire the
+                // hidden Regenerate/Delete/etc. button underneath the finger.
+                const wasHidden = Number.parseFloat(getComputedStyle(event.currentTarget).opacity) < 0.5;
+                setShowActions(true);
+                if (wasHidden) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }
+              }}
+              className={cn(
+                "mari-message-actions flex w-full min-w-0 flex-wrap items-center justify-between gap-1 px-1 opacity-0 transition-all [@media(pointer:fine)]:focus-within:opacity-100 group-hover:opacity-100 md:justify-start md:gap-x-2",
+                (showActions || editing) && "opacity-100",
+                showStreamingThinkingAction &&
+                  "opacity-100 [&>button:not([data-message-thinking-action])]:hidden [&>div]:hidden",
+              )}
+            >
+              <ActionBtn
+                icon={copied ? <Check size={MESSAGE_ACTION_ICON_SIZE} /> : <Copy size={MESSAGE_ACTION_ICON_SIZE} />}
+                onClick={handleCopy}
+                title={localizeUi("lorebook.editor.batch.copy")}
+              />
+              <ActionBtn
+                icon={<Languages size={MESSAGE_ACTION_ICON_SIZE} />}
+                onClick={() => translate(message.id, message.content, message.chatId)}
+                title={
+                  translatedText
+                    ? localizeUi("ui.chat.chatmessage.hideTranslation")
+                    : localizeUi("ui.chat.chatmessage.translate")
+                }
+              />
+              <ActionBtn
+                icon={<Pencil size={MESSAGE_ACTION_ICON_SIZE} />}
+                onClick={startEditing}
+                title={localizeUi("ui.noodle.noodlepostcard.edit")}
+              />
+              {hasRewriteVersions && (
+                <ActionBtn
+                  icon={
+                    switchingRewriteVersion ? (
+                      <Loader2 size={MESSAGE_ACTION_ICON_SIZE} className="animate-spin" />
+                    ) : (
+                      <Shield size={MESSAGE_ACTION_ICON_SIZE} />
+                    )
+                  }
+                  onClick={handleToggleProseGuardianVersion}
+                  title={
+                    showingProseGuardianOriginal
+                      ? localizeUi("ui.chat.chatmessage.showRewrittenVersion")
+                      : localizeUi("ui.chat.chatmessage.showOriginalBeforeRewrite")
+                  }
+                  className={showingProseGuardianOriginal ? MESSAGE_CHROME_ACTIVE_ICON_CLASS : undefined}
+                  disabled={switchingRewriteVersion}
+                />
+              )}
+              <GuidedRegenerateActionBtn onClick={() => onRegenerate?.(message.id)} />
+              <MessageMarksAction message={message} align={isUser ? "right" : "left"} />
+              {onToggleConversationStart && (
+                <ConversationStartAction
+                  messageId={message.id}
+                  sharedStart={isConversationStart}
+                  characterIds={conversationStartForCharacterIds}
+                  characters={aiVisibilityCharacters}
+                  onToggle={onToggleConversationStart}
+                  align={isUser ? "right" : "left"}
+                />
+              )}
+              {onToggleHiddenFromAI && (
+                <HideFromAIAction
+                  messageId={message.id}
+                  hiddenFromAll={isHiddenFromAllAI}
+                  hiddenCharacterIds={hiddenFromAICharacterIds}
+                  characters={isRoleplay ? aiVisibilityCharacters : []}
+                  onToggle={onToggleHiddenFromAI}
+                  align={isUser ? "right" : "left"}
+                />
+              )}
+              {isLastAssistantMessage && !isUser && (
+                <ActionBtn
+                  icon={<Search size={MESSAGE_ACTION_ICON_SIZE} />}
+                  onClick={() => onPeekPrompt?.()}
+                  title={localizeUi("ui.chat.chatmessage.peekPrompt")}
+                />
+              )}
+              {generationReplay && (
+                <ActionBtn
+                  icon={<ScrollText size={MESSAGE_ACTION_ICON_SIZE} />}
+                  onClick={() => setShowGenerationReplay(true)}
+                  title={localizeUi("ui.chat.chatmessage.storedGuidance")}
+                />
+              )}
+              {showThinkingAction && (
+                <ActionBtn
+                  icon={<Brain size={MESSAGE_ACTION_ICON_SIZE} />}
+                  onClick={() => setShowThinking(true)}
+                  title={t(
+                    reasoningSummaryUnavailable
+                      ? "chat.message.thoughts.unavailable.view"
+                      : "chat.message.thoughts.view",
+                  )}
+                  thinkingAction
+                  buttonRef={thinkingButtonRef}
+                />
+              )}
+              {onBranch && (
+                <ActionBtn
+                  icon={<GitBranch size={MESSAGE_ACTION_ICON_SIZE} />}
+                  onClick={() => onBranch(message.id)}
+                  title={localizeUi("ui.chat.chatmessage.branchFromHere")}
+                />
+              )}
+              {onCloneSceneFromHere && (
+                <ActionBtn
+                  icon={<GitBranch size={MESSAGE_ACTION_ICON_SIZE} />}
+                  onClick={() => onCloneSceneFromHere(message.id)}
+                  title={localizeUi("ui.chat.chatmessage.cloneFromHere")}
+                  disabled={isCloneSceneFromHereDisabled}
+                />
+              )}
+              <ActionBtn
+                icon={<Trash2 size={MESSAGE_ACTION_ICON_SIZE} />}
+                onClick={() => onDelete?.(message.id)}
+                title={localizeUi("lorebook.editor.batch.delete")}
+              />
+              {roleplayTtsControls}
+            </div>
+          </div>
+        </div>
+
+        {/* Thinking modal */}
+        {showThinking && showThinkingAction && (
+          <MessageThinkingModal
+            thinking={thinking}
+            summaryUnavailable={reasoningSummaryUnavailable}
+            onClose={() => setShowThinking(false)}
+            restoreFocusRef={thinkingButtonRef}
+          />
+        )}
+        {generationReplay && (
+          <GenerationReplayDetailsModal
+            open={showGenerationReplay}
+            replay={generationReplay}
+            onClose={() => setShowGenerationReplay(false)}
+          />
+        )}
+
+        {imageLightbox && (
+          <ChatImageLightbox
+            image={imageLightbox.image}
+            alt={imageLightbox.alt}
+            pinEnabled={imageLightbox.pinEnabled}
+            downloadEnabled={imageLightbox.downloadEnabled}
+            onClose={closeImageLightbox}
+          />
+        )}
+      </>
+    );
+  }
+
+  // ═══════════════════════════════════════════════
+  // Conversation Mode — iMessage / texting style
+  // ═══════════════════════════════════════════════
+  return (
+    <div
+      ref={msgRef}
+      className={cn(
+        "mari-message group flex",
+        isUser ? "mari-message-user justify-end" : "mari-message-assistant justify-start",
+        isGrouped ? "mb-0.5" : "mb-3",
+        multiSelectMode && isSelected && MESSAGE_SELECTION_SURFACE_CLASS,
+      )}
+      data-message-id={message.id}
+      data-message-role={message.role}
+      onClick={handleMobileTap}
+    >
+      <div
+        className={cn("flex min-w-0 max-w-[72%] gap-2", isUser && "flex-row-reverse", editing && "w-[85%] max-w-[85%]")}
+      >
+        {/* Avatar — only show for first in group */}
+        {(!isUser || displayAvatarUrl) && (
+          <div
+            className={cn(
+              "mari-message-avatar flex flex-col items-center flex-shrink-0 self-end",
+              isGrouped && "invisible",
+            )}
+          >
+            {isMergedGroup && mergedAvatars.length > 0 ? (
+              <button
+                type="button"
+                className="relative h-8 w-8 cursor-pointer overflow-hidden rounded-full"
+                onClick={() => {
+                  const visible = mergedAvatars[cycleIndexRef.current];
+                  if (visible) openImageLightbox(visible.url);
+                }}
+                aria-label={localizeUi("ui.chat.chatmessage.openValue1Avatar", { value1: displayName })}
+              >
+                {mergedAvatars.map((avatar, i) => (
+                  <img
+                    key={avatar.id}
+                    ref={(el) => {
+                      mergedAvatarRefs.current[i] = el;
+                    }}
+                    src={avatar.url}
+                    alt=""
+                    loading="lazy"
+                    decoding="async"
+                    className="absolute inset-0 h-8 w-8 object-cover transition-opacity duration-700"
+                    style={{ opacity: i === 0 ? 1 : 0, ...getAvatarCropStyle(avatar.crop) }}
+                  />
+                ))}
+              </button>
+            ) : displayAvatarUrl ? (
+              !isUser && resolvedCharacterId ? (
+                <CharacterPhoto
+                  src={displayAvatarUrl}
+                  name={displayName}
+                  className="relative h-8 w-8 cursor-pointer overflow-hidden rounded-full"
+                  wrapperClassName="relative inline-flex items-center gap-1"
+                  onUpdate={onUpdateCharacter}
+                >
+                  <AvatarImage
+                    src={displayAvatarUrl}
+                    alt=""
+                    loading="lazy"
+                    className="h-full w-full object-cover"
+                    style={avatarCropStyle}
+                  />
+                </CharacterPhoto>
+              ) : (
+                <button
+                  type="button"
+                  className="relative h-8 w-8 cursor-pointer overflow-hidden rounded-full"
+                  onClick={() => openImageLightbox(displayAvatarUrl)}
+                  aria-label={localizeUi("ui.chat.chatmessage.openValue1Avatar", { value1: displayName })}
+                >
+                  <AvatarImage
+                    src={displayAvatarUrl}
+                    alt=""
+                    loading="lazy"
+                    className="h-full w-full object-cover"
+                    style={avatarCropStyle}
+                  />
+                </button>
+              )
+            ) : (
+              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--accent)] text-[0.6875rem] font-bold text-[var(--muted-foreground)]">
+                {displayName[0]}
+              </div>
+            )}
+            {(showActions || showMessageNumbers) && messageIndex != null && (
+              <span className="mt-0.5 text-[0.5rem] font-medium text-[var(--marinara-chat-chrome-text)] select-none">
+                #{messageIndex}
+              </span>
+            )}
+          </div>
+        )}
+
+        <div
+          className={cn(
+            "mari-message-body flex min-w-0 max-w-full flex-col gap-0.5",
+            isUser ? "items-end" : "items-start",
+            editing && "w-full",
+          )}
+        >
+          {/* Name — only for first in group */}
+          {!isGrouped && !isUser && (
+            <div className="flex items-center gap-2 px-3">
+              {hiddenFromAIHeader}
+              {messageMarkIndicators}
+              <span
+                className={cn(
+                  "mari-message-name text-[0.6875rem] font-semibold",
+                  !msgNameColor && !isMergedGroup && "text-[var(--muted-foreground)]",
+                )}
+                style={!isMergedGroup ? solidNameColorStyle(msgNameColor) : undefined}
+              >
+                {isMergedGroup ? mergedNameElement : <NameColorText color={msgNameColor}>{displayName}</NameColorText>}
+              </span>
+            </div>
+          )}
+          {(isGrouped || isUser) && hasMessageMarks && (
+            <div className={cn("flex px-3", isUser && "justify-end")}>{messageMarkIndicators}</div>
+          )}
+
+          <ConversationStartMarkers
+            memoryStartCharacterIds={memoryStartCharacterIds}
+            sharedStart={isConversationStart}
+            characterIds={conversationStartForCharacterIds}
+            characters={aiVisibilityCharacters}
+          />
+
+          {/* Bubble */}
+          <div
+            className={cn(
+              "mari-message-bubble texting-bubble relative px-3.5 py-2",
+              isUser
+                ? "texting-bubble-user rounded-2xl rounded-br-md"
+                : "texting-bubble-other rounded-2xl rounded-bl-md",
+              isGrouped && isUser && "rounded-br-2xl rounded-tr-md",
+              isGrouped && !isUser && "rounded-bl-2xl rounded-tl-md",
+              isStreaming && "ring-2 ring-[var(--primary)]/20",
+              (isConversationStart || conversationStartForCharacterIds.length > 0) &&
+                cn("ring-1", MESSAGE_CHROME_RING_CLASS),
+              isHiddenFromAI && cn("ring-1 saturate-75", MESSAGE_CHROME_RING_CLASS),
+              editing && "w-full",
+            )}
+            style={{ ...messageTextStyle, ...(boxBgColor ? { backgroundColor: boxBgColor } : {}) }}
+          >
+            {isHiddenCollapsed ? (
+              <HiddenFromAIMessageSummary
+                onExpand={() => setManuallyExpandedHidden(true)}
+                recipientAvatars={hiddenFromAIRecipientAvatars}
+                statusLabel={hiddenFromAIStatusLabel}
+              />
+            ) : editing ? (
+              <MessageEditTextarea
+                initialContent={message.content}
+                messageRole={message.role}
+                fontSize={chatFontSize}
+                quoteFormat={quoteFormat}
+                saving={editSavePending}
+                onSave={handleSaveEdit}
+                onCancel={handleCancelEdit}
+              />
+            ) : (
+              <>
+                <div
+                  className={cn("mari-message-content break-words", !isHtmlContent && "whitespace-pre-wrap")}
+                  style={messageTextStyle}
+                >
+                  {isStreaming && streamingContent ? (
+                    <>
+                      {streamingContent(renderStreamingText)}
+                      <span className="ml-0.5 inline-block h-4 w-[0.125rem] animate-pulse rounded-full bg-white/70" />
+                    </>
+                  ) : isStreaming && !message.content ? (
+                    <PendingTypingDots
+                      className="mari-message-typing py-0.5"
+                      dotClassName="bg-[var(--muted-foreground)]/60"
+                    />
+                  ) : (
+                    <>
+                      {diceRollResult ? (
+                        <DiceMessageContent diceRollResult={diceRollResult} createdAt={message.createdAt} />
+                      ) : null}
+                      {diceReplacesContent ? null : showTranslationOnly ? renderedTranslationOnly : renderedContent}
+                      {isStreaming && (
+                        <span className="ml-0.5 inline-block h-4 w-[0.125rem] animate-pulse rounded-full bg-white/70" />
+                      )}
+                    </>
+                  )}
+                </div>
+                {/* Translation */}
+                {(translatedText || isTranslating) && !showTranslationOnly && (
+                  <div className="mt-2 border-t border-[var(--border)] pt-2">
+                    {isTranslating ? (
+                      <span className="text-[0.75rem] italic text-[var(--muted-foreground)]">
+                        {localizeUi("ui.chat.chatmessage.translating")}
+                      </span>
+                    ) : (
+                      <div className="translation-text whitespace-pre-wrap">{renderedTranslation}</div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Attachments (illustrations, selfies, uploaded files) */}
+          {!editing && extra.attachments?.length > 0 && !IMAGE_URL_RE.test(message.content.trim()) && (
+            <div className="mt-1.5 flex flex-col items-center gap-2 px-3 pb-2">
+              {extra.attachments.map((att: any, i: number) =>
+                att.roleplaySound === true ? null : att.type === "image" || att.type?.startsWith("image/") ? (
+                  <div key={i} className="group/att relative inline-block">
+                    <button
+                      type="button"
+                      onClick={() => openAttachmentImageLightbox(att, i)}
+                      className="block"
+                      title={localizeUi("ui.noodle.noodlepostcard.openImage")}
+                      aria-label={localizeUi("ui.chat.chatmessage.openValue1", {
+                        value1: att.filename || att.name || localizeUi("ui.ui.spritegenerationmodal.image"),
+                      })}
+                    >
+                      <ChatImagePreview
+                        src={att.url || att.data}
+                        alt={att.filename || att.name || "image"}
+                        className="max-h-[70vh] max-w-full rounded-lg object-contain sm:max-h-[32rem]"
+                        loading="lazy"
+                        decoding="async"
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveAttachment(i)}
+                      aria-label={localizeUi("ui.chat.chatmessage.removeImageFromMessage")}
+                      title={localizeUi("ui.chat.chatmessage.removeFromMessage")}
+                      className="absolute top-1.5 right-1.5 rounded-full bg-black/60 p-1 text-white/80 transition-opacity hover:bg-black/80 hover:text-white sm:opacity-0 sm:group-hover/att:opacity-100"
+                    >
+                      <X size="0.875rem" />
+                    </button>
+                  </div>
+                ) : (
+                  <div
+                    key={i}
+                    className="group/att flex max-w-full items-center gap-2 rounded-lg bg-foreground/10 px-2.5 py-1.5 text-xs text-foreground/70 ring-1 ring-foreground/10"
+                  >
+                    <ScrollText size="0.875rem" className="shrink-0 text-[var(--primary)]" />
+                    <span className="min-w-0 max-w-[16rem] truncate">{att.filename || att.name || "attachment"}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveAttachment(i)}
+                      aria-label={localizeUi("ui.chat.chatmessage.removeFileFromMessage")}
+                      title={localizeUi("ui.chat.chatmessage.removeFromMessage")}
+                      className="rounded-full p-0.5 text-foreground/45 transition-colors hover:bg-foreground/10 hover:text-[var(--destructive)] sm:opacity-0 sm:group-hover/att:opacity-100"
+                    >
+                      <X size="0.75rem" />
+                    </button>
+                  </div>
+                ),
+              )}
+            </div>
+          )}
+
+          {/* Timestamp + model — only for last in a group or standalone */}
+          {!isGrouped && (
+            <div className={cn("mari-message-meta flex items-center gap-2 px-3", isUser && "flex-row-reverse")}>
+              <span className="mari-message-timestamp text-[0.625rem] text-[var(--muted-foreground)]/50">
+                {formatTime(message.createdAt)}
+              </span>
+              {genLabel && (
+                <span
+                  className="text-[0.5625rem] text-[var(--muted-foreground)]/40 italic truncate max-w-[15.625rem]"
+                  title={genLabel}
+                >
+                  {genLabel}
+                </span>
+              )}
+              {showTokenUsage && genInfo && <GenerationTokenUsage generationInfo={genInfo} />}
+            </div>
+          )}
+
+          {/* Swipes */}
+          {(hasSwipes || canCreateNextSwipe) && (
+            <SwipeJumpControl
+              alwaysShow={alwaysDisplaySwipeMenu && !isUser}
+              messageId={message.id}
+              activeSwipeIndex={message.activeSwipeIndex}
+              swipeCount={swipeCount}
+              onSetActiveSwipe={handleSetActiveSwipe}
+              onCreateNextSwipe={canCreateNextSwipe ? () => onRegenerate?.(message.id) : undefined}
+            />
+          )}
+
+          {/* Hover actions (tap to toggle on mobile) */}
+          <div
+            onClickCapture={(event) => {
+              if (!matchMedia("(pointer: coarse)").matches) return;
+              // A tap on the still-invisible row only reveals it; it must not fire the
+              // hidden Regenerate/Delete/etc. button underneath the finger.
+              const wasHidden = Number.parseFloat(getComputedStyle(event.currentTarget).opacity) < 0.5;
+              setShowActions(true);
+              if (wasHidden) {
+                event.preventDefault();
+                event.stopPropagation();
+              }
+            }}
+            className={cn(
+              "mari-message-actions flex w-full min-w-0 flex-wrap items-center justify-between gap-1 px-1 opacity-0 transition-all [@media(pointer:fine)]:focus-within:opacity-100 group-hover:opacity-100 md:justify-start md:gap-x-2",
+              (showActions || editing) && "opacity-100",
+              showStreamingThinkingAction &&
+                "opacity-100 [&>button:not([data-message-thinking-action])]:hidden [&>div]:hidden",
+            )}
+          >
+            <ActionBtn
+              icon={copied ? <Check size={MESSAGE_ACTION_ICON_SIZE} /> : <Copy size={MESSAGE_ACTION_ICON_SIZE} />}
+              onClick={handleCopy}
+              title={localizeUi("lorebook.editor.batch.copy")}
+            />
+            {chatMode === "conversation" && !isStreaming && (
+              <ReplyToMessageButton message={message} name={displayName} />
+            )}
+            <ActionBtn
+              icon={<Languages size={MESSAGE_ACTION_ICON_SIZE} />}
+              onClick={() => translate(message.id, message.content, message.chatId)}
+              title={
+                translatedText
+                  ? localizeUi("ui.chat.chatmessage.hideTranslation")
+                  : localizeUi("ui.chat.chatmessage.translate")
+              }
+            />
+            <ActionBtn
+              icon={<Pencil size={MESSAGE_ACTION_ICON_SIZE} />}
+              onClick={startEditing}
+              title={localizeUi("ui.noodle.noodlepostcard.edit")}
+            />
+            {hasRewriteVersions && (
+              <ActionBtn
+                icon={
+                  switchingRewriteVersion ? (
+                    <Loader2 size={MESSAGE_ACTION_ICON_SIZE} className="animate-spin" />
+                  ) : (
+                    <Shield size={MESSAGE_ACTION_ICON_SIZE} />
+                  )
+                }
+                onClick={handleToggleProseGuardianVersion}
+                title={
+                  showingProseGuardianOriginal
+                    ? localizeUi("ui.chat.chatmessage.showRewrittenVersion")
+                    : localizeUi("ui.chat.chatmessage.showOriginalBeforeRewrite")
+                }
+                className={showingProseGuardianOriginal ? MESSAGE_CHROME_ACTIVE_ICON_CLASS : undefined}
+                disabled={switchingRewriteVersion}
+              />
+            )}
+            <GuidedRegenerateActionBtn onClick={() => onRegenerate?.(message.id)} />
+            {onToggleConversationStart && (
+              <ConversationStartAction
+                messageId={message.id}
+                sharedStart={isConversationStart}
+                characterIds={conversationStartForCharacterIds}
+                characters={aiVisibilityCharacters}
+                onToggle={onToggleConversationStart}
+                align={isUser ? "right" : "left"}
+              />
+            )}
+            {isLastAssistantMessage && !isUser && (
+              <ActionBtn
+                icon={<Search size={MESSAGE_ACTION_ICON_SIZE} />}
+                onClick={() => onPeekPrompt?.()}
+                title={localizeUi("ui.chat.chatmessage.peekPrompt")}
+              />
+            )}
+            {generationReplay && (
+              <ActionBtn
+                icon={<ScrollText size={MESSAGE_ACTION_ICON_SIZE} />}
+                onClick={() => setShowGenerationReplay(true)}
+                title={localizeUi("ui.chat.chatmessage.storedGuidance")}
+              />
+            )}
+            {showThinkingAction && (
+              <ActionBtn
+                icon={<Brain size={MESSAGE_ACTION_ICON_SIZE} />}
+                onClick={() => setShowThinking(true)}
+                title={t(
+                  reasoningSummaryUnavailable ? "chat.message.thoughts.unavailable.view" : "chat.message.thoughts.view",
+                )}
+                thinkingAction
+                buttonRef={thinkingButtonRef}
+              />
+            )}
+            {onBranch && (
+              <ActionBtn
+                icon={<GitBranch size={MESSAGE_ACTION_ICON_SIZE} />}
+                onClick={() => onBranch(message.id)}
+                title={localizeUi("ui.chat.chatmessage.branchFromHere")}
+              />
+            )}
+            {onCloneSceneFromHere && (
+              <ActionBtn
+                icon={<GitBranch size={MESSAGE_ACTION_ICON_SIZE} />}
+                onClick={() => onCloneSceneFromHere(message.id)}
+                title={localizeUi("ui.chat.chatmessage.cloneFromHere")}
+                disabled={isCloneSceneFromHereDisabled}
+              />
+            )}
+            <MessageMarksAction message={message} align={isUser ? "right" : "left"} />
+            {onToggleHiddenFromAI && (
+              <HideFromAIAction
+                messageId={message.id}
+                hiddenFromAll={isHiddenFromAllAI}
+                hiddenCharacterIds={hiddenFromAICharacterIds}
+                characters={isRoleplay ? aiVisibilityCharacters : []}
+                onToggle={onToggleHiddenFromAI}
+                align={isUser ? "right" : "left"}
+              />
+            )}
+            <ActionBtn
+              icon={<Trash2 size={MESSAGE_ACTION_ICON_SIZE} />}
+              onClick={() => onDelete?.(message.id)}
+              title={localizeUi("lorebook.editor.batch.delete")}
+            />
+            {ttsEnabled && (
+              <MessageAudioMenu align={isUser ? "right" : "left"}>
+                {isSpeakingThis && !isLoadingThis && (
+                  <>
+                    <ActionBtn
+                      icon={
+                        isPausedThis ? (
+                          <Play size={MESSAGE_ACTION_ICON_SIZE} />
+                        ) : (
+                          <Pause size={MESSAGE_ACTION_ICON_SIZE} />
+                        )
+                      }
+                      onClick={handlePauseResumeTTS}
+                      title={
+                        isPausedThis
+                          ? localizeUi("ui.chat.chatmessage.resumeSpeaking")
+                          : localizeUi("ui.chat.chatmessage.pauseSpeaking")
+                      }
+                    />
+                    <ActionBtn
+                      icon={<RefreshCw size={MESSAGE_ACTION_ICON_SIZE} />}
+                      onClick={handleRestartTTS}
+                      title={localizeUi("ui.chat.chatmessage.restartSpeaking")}
+                    />
+                  </>
+                )}
+                <ActionBtn
+                  icon={
+                    isLoadingThis ? (
+                      <Loader2 size={MESSAGE_ACTION_ICON_SIZE} className="animate-spin" />
+                    ) : isSpeakingThis ? (
+                      <VolumeX size={MESSAGE_ACTION_ICON_SIZE} />
+                    ) : (
+                      <Volume2 size={MESSAGE_ACTION_ICON_SIZE} />
+                    )
+                  }
+                  onClick={handleSpeak}
+                  title={
+                    !hasTTSContent
+                      ? localizeUi("ui.chat.chatmessage.noDialogueToSpeak")
+                      : isLoadingThis
+                        ? localizeUi("ui.panels.ttsconfigcard.loading")
+                        : isSpeakingThis
+                          ? localizeUi("ui.chat.chatmessage.stopSpeaking")
+                          : localizeUi("ui.chat.chatmessage.speak")
+                  }
+                  disabled={!hasTTSContent || clearingTTS || (ttsBusy && !isSpeakingThis)}
+                />
+                <ActionBtn
+                  icon={
+                    clearingTTS ? (
+                      <Loader2 size={MESSAGE_ACTION_ICON_SIZE} className="animate-spin" />
+                    ) : (
+                      <Eraser size={MESSAGE_ACTION_ICON_SIZE} />
+                    )
+                  }
+                  onClick={handleClearCachedVoice}
+                  title={localizeUi("ui.chat.chatmessage.clearCachedVoice")}
+                  disabled={!hasTTSContent || clearingTTS || (ttsBusy && !isSpeakingThis)}
+                />
+                <TTSLineVolumeSlider volume={ttsLineVolume} onVolumeChange={handleTTSLineVolumeChange} />
+              </MessageAudioMenu>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Thinking modal */}
+      {showThinking && showThinkingAction && (
+        <MessageThinkingModal
+          thinking={thinking}
+          summaryUnavailable={reasoningSummaryUnavailable}
+          onClose={() => setShowThinking(false)}
+          restoreFocusRef={thinkingButtonRef}
+        />
+      )}
+      {generationReplay && (
+        <GenerationReplayDetailsModal
+          open={showGenerationReplay}
+          replay={generationReplay}
+          onClose={() => setShowGenerationReplay(false)}
+        />
+      )}
+
+      {imageLightbox && (
+        <ChatImageLightbox
+          image={imageLightbox.image}
+          alt={imageLightbox.alt}
+          pinEnabled={imageLightbox.pinEnabled}
+          downloadEnabled={imageLightbox.downloadEnabled}
+          onClose={closeImageLightbox}
+        />
+      )}
+    </div>
+  );
+});
+
+function MessageAudioMenu({
+  children,
+  align = "left",
+  dark,
+}: {
+  children: React.ReactNode;
+  align?: "left" | "right";
+  dark?: boolean;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  const { open, setOpen, buttonRef, menuRef, position } = useMessageActionMenu(align);
+  const label = localizeUi("ui.chat.chatmessage.voiceControls");
+
+  useEffect(() => {
+    if (!open) return;
+    const frame = requestAnimationFrame(() => menuRef.current?.querySelector("button")?.focus({ preventScroll: true }));
+    return () => cancelAnimationFrame(frame);
+  }, [menuRef, open]);
+
+  return (
+    <>
+      <ActionBtn
+        buttonRef={buttonRef}
+        icon={<Headphones size={MESSAGE_ACTION_ICON_SIZE} />}
+        onClick={() => setOpen((value) => !value)}
+        title={label}
+        ariaPressed={open}
+        className={
+          open ? (dark ? MESSAGE_CHROME_ACTIVE_ICON_CLASS : "bg-[var(--accent)] text-[var(--foreground)]") : undefined
+        }
+      />
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            style={position}
+            role="dialog"
+            aria-label={label}
+            className={cn(
+              "marinara-chat-popover fixed z-[9999] flex max-w-[calc(100vw-1.5rem)] flex-row flex-wrap items-center gap-1 rounded-lg border p-1.5 shadow-xl",
+              dark
+                ? "border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-panel-bg)] text-[var(--marinara-chat-chrome-panel-title)] shadow-black/30"
+                : "border-[var(--border)] bg-[var(--popover)] text-[var(--popover-foreground)] shadow-black/20",
+            )}
+          >
+            {children}
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
+function TTSLineVolumeSlider({
+  volume,
+  onVolumeChange,
+  dark,
+  autoFocus,
+}: {
+  volume: number;
+  onVolumeChange: (volume: number) => void;
+  dark?: boolean;
+  autoFocus?: boolean;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!autoFocus) return;
+    const frame = requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
+    return () => cancelAnimationFrame(frame);
+  }, [autoFocus]);
+
+  return (
+    <div className="flex items-center gap-2">
+      <span
+        aria-hidden="true"
+        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md p-0 text-base leading-none text-[var(--marinara-chat-message-action-text)] max-md:h-8 max-md:w-7 max-md:text-sm"
+      >
+        <Volume2 size={MESSAGE_ACTION_ICON_SIZE} className="shrink-0" />
+      </span>
+      <input
+        ref={inputRef}
+        type="range"
+        min={0}
+        max={100}
+        step={1}
+        value={volume}
+        onChange={(event) => onVolumeChange(Number(event.currentTarget.value))}
+        className="mari-tts-line-volume-slider w-28"
+        aria-label={localizeUi("ui.chat.ttslinevolumecontrol.lineVolume")}
+        title={localizeUi("ui.chat.ttslinevolumecontrol.lineVolume")}
+        style={{ "--range-progress": `${volume}%` } as React.CSSProperties}
+      />
+      <span
+        className={cn(
+          "tabular-nums text-[0.6875rem]",
+          dark ? "text-[var(--marinara-chat-chrome-panel-muted)]" : "text-[var(--muted-foreground)]",
+        )}
+      >
+        {volume}%
+      </span>
+    </div>
+  );
+}
+
+// ── Action button ──
+const GuidedRegenerateActionBtn = memo(function GuidedRegenerateActionBtn({ onClick }: { onClick: () => void }) {
+  const { t: localizeUi } = useUiTranslation();
+  const guideGenerations = useUIStore((state) => state.guideGenerations);
+  const isGuided = useChatStore((state) => guideGenerations && state.hasCurrentInput);
+  return (
+    <ActionBtn
+      icon={<RefreshCw size={MESSAGE_ACTION_ICON_SIZE} />}
+      onClick={onClick}
+      title={
+        isGuided ? localizeUi("ui.chat.chatmessage.regenerateGuided") : localizeUi("ui.chat.chatmessage.regenerate")
+      }
+      className={
+        isGuided
+          ? "bg-[var(--primary)]/15 text-[var(--primary)] ring-1 ring-[var(--primary)]/30 hover:text-[var(--primary)]"
+          : undefined
+      }
+    />
+  );
+});
+
+function ActionBtn({
+  icon,
+  onClick,
+  title,
+  className,
+  disabled,
+  ariaPressed,
+  thinkingAction,
+  buttonRef,
+}: {
+  icon: React.ReactNode;
+  onClick: () => void;
+  title: string;
+  className?: string;
+  disabled?: boolean;
+  ariaPressed?: boolean;
+  thinkingAction?: boolean;
+  buttonRef?: React.Ref<HTMLButtonElement>;
+}) {
+  return (
+    <MessageActionButton
+      buttonRef={buttonRef}
+      icon={icon}
+      onClick={onClick}
+      title={title}
+      className={className}
+      disabled={disabled}
+      ariaPressed={ariaPressed}
+      thinkingAction={thinkingAction}
+    />
+  );
+}
+
+function formatTime(dateStr: string): string {
+  try {
+    const date = new Date(dateStr);
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return "";
+  }
+}

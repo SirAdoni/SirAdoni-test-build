@@ -1,0 +1,659 @@
+// ──────────────────────────────────────────────
+// Marker Expander — Resolves special marker
+// sections into actual content at assembly time.
+// ──────────────────────────────────────────────
+import type { DB } from "../../db/connection.js";
+import { logger } from "../../lib/logger.js";
+import {
+  formatRpgStatsForPrompt,
+  isExternallyImportedAgent,
+  publicAgentOutput,
+  resolveMacros,
+} from "@marinara-engine/shared";
+import type {
+  CharacterMacroProfile,
+  MarkerConfig,
+  ChatMLMessage,
+  CharacterData,
+  WrapFormat,
+  RPGStatsConfig,
+  LorebookEntryTimingState,
+  MacroContext,
+  ResolveMacroOptions,
+} from "@marinara-engine/shared";
+import { createCharactersStorage } from "../storage/characters.storage.js";
+import { createAgentsStorage } from "../storage/agents.storage.js";
+import { getCustomAgentImportPolicy } from "../agents/custom-agent-import-policy.service.js";
+import { processLorebooks, type LorebookFinalContentResolver, type LorebookScanResult } from "../lorebook/index.js";
+import { COMMITTED_TRACKER_AGENT_TYPES } from "../generation/committed-tracker-context.js";
+import { cardPromptText } from "./card-text.js";
+import { wrapContent } from "./format-engine.js";
+import { advancedMemoryMarkerContent, type AdvancedMemoryPromptParts } from "./advanced-memory-prompt.js";
+import { sanitizeExampleDialoguePromptLeaf, sanitizePromptLeaf } from "./prompt-escaping.js";
+
+/** World-info positions a lorebook marker can place: position 0 (before) and position 1 (after). */
+export type LorebookMarkerPosition = "before" | "after";
+
+/** Context required for expanding markers. */
+export interface MarkerContext {
+  db: DB;
+  chatId: string;
+  agentHistoryMessageId?: string;
+  characterIds: string[];
+  /** Character scope used only for lorebook matching. */
+  lorebookCharacterIds?: string[];
+  personaId?: string | null;
+  personaName: string;
+  personaDescription: string;
+  personaFields?: {
+    personality?: string;
+    scenario?: string;
+    backstory?: string;
+    appearance?: string;
+  };
+  /** Raw personaStats JSON (for rpgStats injection) */
+  personaStats?: any;
+  chatMessages: ChatMLMessage[];
+  /** Optional scan-only messages for lorebook matching. */
+  lorebookScanMessages?: ChatMLMessage[];
+  chatSummary: string | null;
+  advancedMemory?: AdvancedMemoryPromptParts;
+  wrapFormat: WrapFormat;
+  /** When false, agent_data markers expand to empty strings */
+  enableAgents: boolean;
+  /** Per-chat list of active agent type IDs (empty = no active agents, marker expansion suppressed) */
+  activeAgentIds: string[];
+  /** Per-chat list of manually activated lorebook IDs from chat settings */
+  activeLorebookIds: string[];
+  /** Entries attached to the exact current hierarchical location. */
+  forcedLorebookEntryIds?: string[];
+  /** Lorebook IDs that should be excluded even if otherwise scoped to the chat. */
+  excludedLorebookIds?: string[];
+  /** Source agent IDs whose generated lorebooks should be excluded from scanning. */
+  excludedLorebookSourceAgentIds?: string[];
+  /** When true, lorebook markers expand to empty content without scanning global or scoped lorebooks. */
+  disableLorebooks?: boolean;
+  fullLorebookContext?: boolean;
+  /** Pre-computed embedding of the chat context for semantic lorebook matching. */
+  chatEmbedding?: number[] | null;
+  /** Per-lorebook pre-computed embeddings for semantic lorebook matching. */
+  semanticEmbeddingsByLorebookId?: ReadonlyMap<string, number[] | null>;
+  /** Provider/model/profile identity used to create semantic query vectors. */
+  semanticEmbeddingSpaceId?: string | null;
+  /** Unrelated-text cosine floor used to calibrate clustered embedding models. */
+  semanticSimilarityBaseline?: number;
+  /** Per-chat ephemeral state overrides for lorebook entries (from chat metadata). */
+  entryStateOverrides?: Record<string, { ephemeral?: number | null; enabled?: boolean }>;
+  /** Per-chat sticky/cooldown/delay timing state for lorebook entries. */
+  entryTimingStates?: Record<string, LorebookEntryTimingState>;
+  /** Global lorebook token budget for this chat/generation. */
+  lorebookTokenBudget?: number;
+  /** Current game state for lorebook conditions and schedules. */
+  gameState?: Record<string, unknown> | null;
+  /** Generation trigger labels used by per-entry lorebook include/exclude filters. */
+  generationTriggers?: string[];
+  /** Preview/debug expansion: lorebook markers should not consume timing or ephemeral state. */
+  previewOnly?: boolean;
+  /** Resolves prompt macros for final included lorebook entries. May apply macro side effects. */
+  resolveLorebookContent?: LorebookFinalContentResolver;
+  /** Standard prompt macro context used before escaping marker leaf text. */
+  macroCtx: MacroContext;
+  /** Collector for lorebook depth entries — populated during expansion, consumed by the assembler. */
+  lorebookDepthEntries?: Array<{ content: string; role: "system" | "user" | "assistant"; depth: number }>;
+  /** Collector for updated entry state overrides after ephemeral processing — saved to chat metadata by caller. */
+  updatedEntryStateOverrides?: Record<string, { ephemeral?: number | null; enabled?: boolean }>;
+  /** Collector for updated sticky/cooldown/delay timing state — saved to chat metadata by caller. */
+  updatedEntryTimingStates?: Record<string, LorebookEntryTimingState>;
+  /** Cached lorebook scan for all lorebook marker sections in this prompt build. */
+  lorebookScanResult?: LorebookScanResult;
+  /**
+   * World-info positions already emitted by a lorebook marker in this prompt build.
+   * Each position (before / after) is inserted at most once, so a preset with several
+   * lorebook markers cannot duplicate the same entries across placeholders.
+   */
+  lorebookPositionsEmitted?: Set<LorebookMarkerPosition>;
+  /** Adds context for character-ID macros found only after lorebook activation. */
+  onLorebookScan?: (result: LorebookScanResult) => Promise<void>;
+  /** True once the activated lorebook callback has completed. */
+  lorebookScanCallbackApplied?: boolean;
+  /** True once cached lorebook state/depth side effects have been applied to this marker context. */
+  lorebookScanResultApplied?: boolean;
+  /** When set, replaces all individual character scenario fields with this shared group scenario. */
+  groupScenarioOverrideText?: string | null;
+  /** Include card example dialogue in Character Info when the preset has no dedicated marker for it. */
+  includeExampleDialogueInCharacterMarker?: boolean;
+}
+
+/** Expanded marker result. */
+export interface ExpandedMarker {
+  /** Content to be inserted as the section body */
+  content: string;
+  /** If the marker produces multiple messages (e.g. chat_history), they go here */
+  messages?: ChatMLMessage[];
+}
+
+function resolveSanitizedPromptLeaf(
+  value: string,
+  ctx: MarkerContext,
+  macroCtx: MacroContext = ctx.macroCtx,
+  macroOptions?: ResolveMacroOptions,
+): string {
+  return sanitizePromptLeaf(resolveMacros(value, macroCtx, macroOptions), ctx.wrapFormat);
+}
+
+const DEFAULT_CHARACTER_MARKER_FIELDS = [
+  "description",
+  "personality",
+  "backstory",
+  "appearance",
+  "scenario",
+  "system_prompt",
+];
+
+const CHARACTER_CARD_FIELD_ORDER = new Map(
+  ["description", "personality", "backstory", "appearance", "scenario", "mes_example", "example_dialogue"].map(
+    (field, index) => [field, index],
+  ),
+);
+
+/** Keep selected card sections in the same order as the Character editor. */
+export function orderCharacterMarkerFields(fields: readonly string[]): string[] {
+  return fields
+    .map((field, index) => ({ field, index }))
+    .sort((left, right) => {
+      const leftOrder = CHARACTER_CARD_FIELD_ORDER.get(left.field) ?? Number.POSITIVE_INFINITY;
+      const rightOrder = CHARACTER_CARD_FIELD_ORDER.get(right.field) ?? Number.POSITIVE_INFINITY;
+      return leftOrder - rightOrder || left.index - right.index;
+    })
+    .map(({ field }) => field);
+}
+
+/** Resolve only the card fields explicitly owned by the Character Info marker. */
+export function resolveCharacterMarkerFields(configuredFields: readonly string[] | undefined): string[] {
+  return orderCharacterMarkerFields(configuredFields ?? DEFAULT_CHARACTER_MARKER_FIELDS);
+}
+
+/**
+ * Expand a marker section into actual content based on its type and config.
+ */
+export async function expandMarker(
+  config: MarkerConfig,
+  ctx: MarkerContext,
+  macroOptions?: ResolveMacroOptions,
+): Promise<ExpandedMarker> {
+  switch (config.type) {
+    case "character":
+      return expandCharacter(config, ctx);
+    case "persona":
+      return expandPersona(config, ctx);
+    case "lorebook":
+    case "world_info_before":
+    case "world_info_after":
+      return expandLorebook(config, ctx);
+    case "chat_history":
+      return expandChatHistory(config, ctx);
+    case "chat_summary":
+      if (ctx.advancedMemory) return { content: advancedMemoryMarkerContent(config.type, ctx.advancedMemory) };
+      return expandChatSummary(ctx, macroOptions);
+    case "current_scene_summary":
+    case "recalled_scenes":
+    case "recalled_messages":
+      return { content: ctx.advancedMemory ? advancedMemoryMarkerContent(config.type, ctx.advancedMemory) : "" };
+    case "dialogue_examples":
+      return expandDialogueExamples(config, ctx);
+    case "agent_data":
+      return expandAgentData(config, ctx);
+    default:
+      return { content: "" };
+  }
+}
+
+// ── Character ──────────────────────────────────
+
+async function expandCharacter(config: MarkerConfig, ctx: MarkerContext): Promise<ExpandedMarker> {
+  const charStorage = createCharactersStorage(ctx.db);
+  const parts: string[] = [];
+  for (const charId of ctx.characterIds) {
+    const row = await charStorage.getById(charId);
+    if (!row) continue;
+    const data = JSON.parse(row.data) as CharacterData;
+    const profile = characterMacroProfileFromData(data);
+    const characterMacroContext = macroContextForCharacterProfile(ctx.macroCtx, profile);
+
+    let fields = resolveCharacterMarkerFields(config.characterFields);
+    if (
+      ctx.includeExampleDialogueInCharacterMarker === true &&
+      config.characterFields === undefined &&
+      !fields.includes("mes_example") &&
+      !fields.includes("example_dialogue")
+    ) {
+      fields = orderCharacterMarkerFields([...fields, "mes_example"]);
+    }
+
+    const charParts: string[] = [];
+    for (const field of fields) {
+      if (field === "name") continue; // Name is used as the parent tag, not a child field
+      if (field === "post_history_instructions") continue; // Injected after chat history by the assembler.
+      // Skip per-character scenario when a group scenario override is active
+      if (field === "scenario" && ctx.groupScenarioOverrideText) continue;
+      const value = cardPromptText(getCharacterField(data, field));
+      if (value) {
+        const resolved = resolveMacros(value, characterMacroContext);
+        charParts.push(
+          wrapContent(
+            field === "mes_example" || field === "example_dialogue"
+              ? sanitizeExampleDialoguePromptLeaf(resolved, ctx.wrapFormat)
+              : sanitizePromptLeaf(resolved, ctx.wrapFormat),
+            field,
+            ctx.wrapFormat,
+            2,
+          ),
+        );
+      }
+    }
+
+    // Auto-include RPG attributes if enabled and not already in fields
+    if (!fields.includes("stats") && !fields.includes("rpg_attributes")) {
+      const statsText = formatRpgStatsForPrompt(data.extensions?.rpgStats as RPGStatsConfig | undefined);
+      if (statsText) {
+        charParts.push(wrapContent(resolveSanitizedPromptLeaf(statsText, ctx), "rpg_attributes", ctx.wrapFormat, 2));
+      }
+    }
+
+    // Always wrap in a character-name parent tag
+    const charBlock = charParts.filter(Boolean).join("\n");
+    if (charBlock) {
+      parts.push(wrapContent(charBlock, profile.name, ctx.wrapFormat, 1));
+    }
+  }
+
+  // Append group scenario override (replaces individual character scenarios)
+  const groupScenarioOverrideText = cardPromptText(ctx.groupScenarioOverrideText);
+  if (groupScenarioOverrideText) {
+    parts.push(wrapContent(resolveSanitizedPromptLeaf(groupScenarioOverrideText, ctx), "scenario", ctx.wrapFormat, 1));
+  }
+
+  return { content: parts.join("\n") };
+}
+
+function macroContextForCharacterProfile(base: MacroContext, profile: CharacterMacroProfile): MacroContext {
+  return {
+    ...base,
+    char: profile.name,
+    charPhonetic: profile.phoneticName || profile.name,
+    characterFields: {
+      phoneticName: profile.phoneticName ?? "",
+      description: profile.description,
+      personality: profile.personality,
+      backstory: profile.backstory,
+      appearance: profile.appearance,
+      scenario: profile.scenario,
+      example: profile.example,
+      systemPrompt: profile.systemPrompt,
+      postHistoryInstructions: profile.postHistoryInstructions,
+    },
+  };
+}
+
+function characterMacroProfileFromData(data: CharacterData): CharacterMacroProfile {
+  return {
+    name: data.name || "Character",
+    phoneticName: data.extensions?.phoneticName?.trim() ?? "",
+    description: data.description ?? "",
+    personality: data.personality ?? "",
+    backstory: data.extensions?.backstory ?? "",
+    appearance: data.extensions?.appearance ?? "",
+    scenario: data.scenario ?? "",
+    example: data.mes_example ?? "",
+    systemPrompt: data.system_prompt ?? "",
+    postHistoryInstructions: data.post_history_instructions ?? "",
+  };
+}
+
+function getCharacterField(data: CharacterData, field: string): string {
+  switch (field) {
+    case "name":
+      return data.name;
+    case "description":
+      return data.description;
+    case "personality":
+      return data.personality;
+    case "scenario":
+      return data.scenario;
+    case "first_mes":
+      return data.first_mes;
+    case "system_prompt":
+      return data.system_prompt;
+    case "post_history_instructions":
+      return data.post_history_instructions;
+    case "creator_notes":
+      return data.creator_notes;
+    case "mes_example":
+    case "example_dialogue":
+      return data.mes_example;
+    case "backstory":
+      return data.extensions?.backstory ?? "";
+    case "appearance":
+      return data.extensions?.appearance ?? "";
+    case "stats":
+      return formatRpgStatsForPrompt(data.extensions?.rpgStats as RPGStatsConfig | undefined);
+    default:
+      return "";
+  }
+}
+
+// ── Persona ────────────────────────────────────
+
+async function expandPersona(_config: MarkerConfig, ctx: MarkerContext): Promise<ExpandedMarker> {
+  const parts: string[] = [];
+  const pName = ctx.personaName?.trim() || "User";
+
+  const personaDescription = cardPromptText(ctx.personaDescription);
+  const personaPersonality = cardPromptText(ctx.personaFields?.personality);
+  const personaBackstory = cardPromptText(ctx.personaFields?.backstory);
+  const personaAppearance = cardPromptText(ctx.personaFields?.appearance);
+  const personaScenario = cardPromptText(ctx.personaFields?.scenario);
+
+  if (personaDescription) {
+    parts.push(wrapContent(resolveSanitizedPromptLeaf(personaDescription, ctx), "description", ctx.wrapFormat, 2));
+  }
+  if (personaPersonality) {
+    parts.push(wrapContent(resolveSanitizedPromptLeaf(personaPersonality, ctx), "personality", ctx.wrapFormat, 2));
+  }
+  if (personaBackstory) {
+    parts.push(wrapContent(resolveSanitizedPromptLeaf(personaBackstory, ctx), "backstory", ctx.wrapFormat, 2));
+  }
+  if (personaAppearance) {
+    parts.push(wrapContent(resolveSanitizedPromptLeaf(personaAppearance, ctx), "appearance", ctx.wrapFormat, 2));
+  }
+  if (personaScenario) {
+    parts.push(wrapContent(resolveSanitizedPromptLeaf(personaScenario, ctx), "scenario", ctx.wrapFormat, 2));
+  }
+
+  // Include RPG attributes if enabled
+  if (ctx.personaStats?.rpgStats?.enabled) {
+    const rpg = ctx.personaStats.rpgStats as RPGStatsConfig;
+    const statsText = formatRpgStatsForPrompt(rpg);
+    if (statsText) {
+      parts.push(wrapContent(resolveSanitizedPromptLeaf(statsText, ctx), "rpg_attributes", ctx.wrapFormat, 2));
+    }
+  }
+
+  if (parts.length === 0) return { content: "" };
+
+  return {
+    content: wrapContent(parts.join("\n"), pName, ctx.wrapFormat, 1),
+  };
+}
+
+// ── Lorebook / World Info ──────────────────────
+
+export async function ensureLorebookScan(ctx: MarkerContext): Promise<LorebookScanResult | null> {
+  if (ctx.disableLorebooks === true) {
+    ctx.macroCtx.outlets = {};
+    return null;
+  }
+  const result =
+    ctx.lorebookScanResult ??
+    (ctx.lorebookScanResult = await processLorebooks(
+      ctx.db,
+      ctx.lorebookScanMessages ?? ctx.chatMessages,
+      ctx.gameState ?? null,
+      {
+        chatId: ctx.chatId,
+        fullContext: ctx.fullLorebookContext,
+        characterIds: ctx.lorebookCharacterIds ?? ctx.characterIds,
+        personaId: ctx.personaId ?? null,
+        activeLorebookIds: ctx.activeLorebookIds,
+        forcedEntryIds: ctx.forcedLorebookEntryIds,
+        excludedLorebookIds: ctx.excludedLorebookIds,
+        excludedSourceAgentIds: ctx.excludedLorebookSourceAgentIds,
+        tokenBudget: ctx.lorebookTokenBudget,
+        chatEmbedding: ctx.chatEmbedding ?? null,
+        semanticEmbeddingsByLorebookId: ctx.semanticEmbeddingsByLorebookId,
+        semanticEmbeddingSpaceId: ctx.semanticEmbeddingSpaceId,
+        semanticSimilarityBaseline: ctx.semanticSimilarityBaseline,
+        entryStateOverrides: ctx.entryStateOverrides,
+        entryTimingStates: ctx.entryTimingStates,
+        generationTriggers: ctx.generationTriggers ?? ["chat"],
+        previewOnly: ctx.previewOnly === true,
+        resolveContent: ctx.resolveLorebookContent,
+      },
+    ));
+
+  if (ctx.lorebookScanCallbackApplied !== true && ctx.onLorebookScan) {
+    await ctx.onLorebookScan(result);
+    ctx.lorebookScanCallbackApplied = true;
+  }
+
+  ctx.macroCtx.outlets = result.outlets;
+
+  if (ctx.lorebookScanResultApplied !== true) {
+    ctx.lorebookScanResultApplied = true;
+
+    // Collect updated per-chat entry state overrides for the caller to persist.
+    if (result.updatedEntryStateOverrides) {
+      ctx.updatedEntryStateOverrides = result.updatedEntryStateOverrides;
+      ctx.entryStateOverrides = result.updatedEntryStateOverrides;
+    }
+    if (result.updatedEntryTimingStates !== undefined) {
+      ctx.updatedEntryTimingStates = result.updatedEntryTimingStates;
+      ctx.entryTimingStates = result.updatedEntryTimingStates;
+    }
+
+    // Collect depth entries for the assembler to inject later.
+    if (result.depthEntries.length > 0) {
+      ctx.lorebookDepthEntries ??= [];
+      for (const de of result.depthEntries) {
+        ctx.lorebookDepthEntries.push({
+          content: de.content,
+          role: de.role,
+          depth: de.depth,
+        });
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Expand a lorebook marker into the activated world-info content for its position(s).
+ * A combined marker covers both positions; "before" and "after" markers cover one each.
+ */
+async function expandLorebook(config: MarkerConfig, ctx: MarkerContext): Promise<ExpandedMarker> {
+  const result = await ensureLorebookScan(ctx);
+  if (!result) return { content: "" };
+
+  // Each world-info position is owned by the first lorebook marker that asks for it,
+  // in preset section order (the assembler's resolve order, which also covers
+  // depth-injected markers). A later marker covering the same position (a second
+  // "All" marker, or an "All" marker following a "Before" marker) expands without
+  // it, so entries are never inserted twice in one prompt.
+  const emitted = (ctx.lorebookPositionsEmitted ??= new Set<LorebookMarkerPosition>());
+  const claim = (position: LorebookMarkerPosition, content: string): string => {
+    if (emitted.has(position)) return "";
+    emitted.add(position);
+    return content;
+  };
+
+  switch (config.type) {
+    case "world_info_before":
+      return { content: claim("before", result.worldInfoBefore) };
+    case "world_info_after":
+      return { content: claim("after", result.worldInfoAfter) };
+    case "lorebook":
+    default: {
+      // Combined lorebook — all world info not already placed by an earlier marker
+      const combined = [claim("before", result.worldInfoBefore), claim("after", result.worldInfoAfter)]
+        .filter(Boolean)
+        .join("\n\n");
+      return { content: combined };
+    }
+  }
+}
+
+// ── Chat History ───────────────────────────────
+
+async function expandChatHistory(config: MarkerConfig, ctx: MarkerContext): Promise<ExpandedMarker> {
+  const opts = config.chatHistoryOptions ?? {};
+  let messages = [...ctx.chatMessages];
+
+  // Filter system messages if configured
+  if (opts.includeSystemMessages === false) {
+    messages = messages.filter((m) => m.role !== "system");
+  }
+
+  // Limit messages if configured
+  if (opts.maxMessages && opts.maxMessages > 0) {
+    messages = messages.slice(-opts.maxMessages);
+  }
+
+  messages = messages.map((message) => {
+    const resolved = resolveMacros(message.content, ctx.macroCtx);
+    return {
+      ...message,
+      content: ctx.wrapFormat === "none" ? resolved : sanitizePromptLeaf(resolved, ctx.wrapFormat),
+    };
+  });
+
+  // Add chat_history / last_message wrapping based on format
+  if (messages.length > 0 && ctx.wrapFormat !== "none") {
+    // Everything before the final chat turn is "chat history"; the final turn gets
+    // "last_message" wrapping, regardless of whether it is user or assistant.
+    const lastMessageIdx = messages.length - 1;
+    const historyEnd = lastMessageIdx;
+
+    if (ctx.wrapFormat === "xml") {
+      if (historyEnd > 0) {
+        messages[0] = { ...messages[0]!, content: `<chat_history>\n${messages[0]!.content}` };
+        messages[historyEnd - 1] = {
+          ...messages[historyEnd - 1]!,
+          content: `${messages[historyEnd - 1]!.content}\n</chat_history>`,
+        };
+      }
+      messages[lastMessageIdx] = {
+        ...messages[lastMessageIdx]!,
+        content: `<last_message>\n${messages[lastMessageIdx]!.content}\n</last_message>`,
+      };
+    } else if (ctx.wrapFormat === "markdown") {
+      if (historyEnd > 0) {
+        messages[0] = { ...messages[0]!, content: `## Chat History\n${messages[0]!.content}` };
+      }
+      messages[lastMessageIdx] = {
+        ...messages[lastMessageIdx]!,
+        content: `## Last Message\n${messages[lastMessageIdx]!.content}`,
+      };
+    }
+  }
+
+  // Chat history is special — it returns multiple messages to be inserted directly,
+  // not a single content block. The assembler handles this.
+  return { content: "", messages: messages.map((message) => ({ ...message, contextKind: "history" as const })) };
+}
+
+// ── Dialogue Examples ──────────────────────────
+
+async function expandDialogueExamples(_config: MarkerConfig, ctx: MarkerContext): Promise<ExpandedMarker> {
+  const charStorage = createCharactersStorage(ctx.db);
+  const parts: string[] = [];
+
+  for (const charId of ctx.characterIds) {
+    const row = await charStorage.getById(charId);
+    if (!row) continue;
+    const data = JSON.parse(row.data) as CharacterData;
+
+    const example = cardPromptText(data.mes_example);
+    if (example) {
+      const resolved = resolveMacros(
+        example,
+        macroContextForCharacterProfile(ctx.macroCtx, characterMacroProfileFromData(data)),
+      );
+      parts.push(sanitizeExampleDialoguePromptLeaf(resolved, ctx.wrapFormat));
+    }
+  }
+
+  return { content: parts.join("\n\n") };
+}
+
+// ── Chat Summary ───────────────────────────────
+
+function expandChatSummary(ctx: MarkerContext, macroOptions?: ResolveMacroOptions): ExpandedMarker {
+  return { content: resolveSanitizedPromptLeaf(ctx.chatSummary ?? "", ctx, ctx.macroCtx, macroOptions) };
+}
+
+// ── Agent Data ─────────────────────────────────
+
+async function expandAgentData(config: MarkerConfig, ctx: MarkerContext): Promise<ExpandedMarker> {
+  if (!ctx.enableAgents) return { content: "" };
+  const agentType = config.agentType;
+  if (!agentType) return { content: "" };
+
+  // Generation supplies committed tracker state through runtimeAgentData.
+  // Never fall back to a raw agent run, which can belong to a discarded swipe.
+  if (COMMITTED_TRACKER_AGENT_TYPES.has(agentType)) return { content: "" };
+
+  // Generation only runs agents explicitly added to the chat. If none are active,
+  // prompt sections must not keep replaying the last saved output forever.
+  if (ctx.activeAgentIds.length === 0 || !ctx.activeAgentIds.includes(agentType)) {
+    return { content: "" };
+  }
+
+  // Generic: find latest successful agent run for this chat
+  const agentsStorage = createAgentsStorage(ctx.db);
+  const agentConfig = await agentsStorage.getByType(agentType);
+  if (!agentConfig) return { content: "" };
+  if (
+    isExternallyImportedAgent(agentConfig.type, agentConfig.settings) &&
+    !(await getCustomAgentImportPolicy(ctx.db)).enabled
+  ) {
+    logger.debug(
+      "[prompt] Skipping externally imported Agent data for %s because custom imports are disabled",
+      agentType,
+    );
+    return { content: "" };
+  }
+
+  const resultData = await agentsStorage.getPreviousOutput(
+    agentConfig.id,
+    ctx.chatId,
+    ctx.agentHistoryMessageId,
+    ctx.agentHistoryMessageId,
+  );
+
+  // Format result data as readable text
+  return { content: sanitizePromptLeaf(formatAgentResult(publicAgentOutput(resultData)), ctx.wrapFormat) };
+}
+
+function formatAgentResult(data: unknown): string {
+  if (typeof data === "string") return data;
+  if (data == null) return "";
+  if (typeof data === "object") {
+    const memoryNag = data as { nags_needed?: unknown; nags?: unknown };
+    if (memoryNag.nags_needed === false) return "";
+    if (Array.isArray(memoryNag.nags)) {
+      return memoryNag.nags
+        .filter((nag): nag is string => typeof nag === "string" && nag.trim().length > 0)
+        .map((nag) => `- ${nag.trim()}`)
+        .join("\n");
+    }
+    // For objects, produce a readable key-value format
+    const entries = Object.entries(data as Record<string, unknown>);
+    return entries
+      .filter(([, v]) => v != null && v !== "")
+      .map(([k, v]) => {
+        const label = k
+          .replace(/([A-Z])/g, " $1")
+          .replace(/[_-]/g, " ")
+          .trim();
+        const capitalLabel = label.charAt(0).toUpperCase() + label.slice(1);
+        if (Array.isArray(v)) {
+          return `${capitalLabel}:\n${v.map((item) => `- ${typeof item === "string" ? item : JSON.stringify(item)}`).join("\n")}`;
+        }
+        if (typeof v === "object") return `${capitalLabel}: ${JSON.stringify(v)}`;
+        return `${capitalLabel}: ${v}`;
+      })
+      .join("\n");
+  }
+  return String(data);
+}

@@ -1,0 +1,3876 @@
+// ──────────────────────────────────────────────
+// View: Browser (full-page, replaces chat area)
+// Multi-provider: ChubAI, JannyAI, CharacterTavern, Pygmalion, Wyvern, DataCat
+// With login modals for Pygmalion & CharacterTavern NSFW, PNG download for all providers
+// ──────────────────────────────────────────────
+import { useState, useCallback, useEffect, useId, useLayoutEffect, useRef, useMemo } from "react";
+import { createPortal } from "react-dom";
+import {
+  Search,
+  Star,
+  MessageSquare,
+  Hash,
+  Download,
+  Loader2,
+  ChevronDown,
+  X,
+  CheckCircle,
+  ExternalLink,
+  ArrowLeft,
+  RefreshCw,
+  SlidersHorizontal,
+  Tag,
+  Heart,
+  Eye,
+  LogIn,
+  LogOut,
+  KeyRound,
+  Cookie,
+  BookOpen,
+  Users,
+  VenetianMask,
+  Bot,
+} from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { characterKeys } from "../../hooks/use-characters";
+import { lorebookKeys } from "../../hooks/use-lorebooks";
+import { api } from "../../lib/api-client";
+import { parsePngCharacterCard } from "../../lib/png-parser";
+import { useUIStore } from "../../stores/ui.store";
+import { toast } from "sonner";
+import { cn } from "../../lib/utils";
+import { scopeChatMessageCss } from "../../lib/chat-message-css";
+import {
+  containsChatHtml,
+  decodeEncodedChatHtmlTags,
+  extractChatStyleBlocks,
+  sanitizeChatHtml,
+} from "../../lib/chat-html";
+import {
+  countLorebookEntries,
+  hasLorebookEntries,
+  readCharacterCardData,
+  readCharacterCardDetailFields,
+  readEmbeddedLorebookFromCharacterPayload,
+} from "../../lib/character-import";
+import { mergeChubDetailIntoCharacterJson } from "../../lib/chub-character-card";
+import { useTranslation as useUiTranslation } from "react-i18next";
+import { Modal } from "../ui/Modal";
+import { CharacterPhoto } from "../ui/CharacterPhoto";
+
+// ════════════════════════════════════════════════
+// Types
+// ════════════════════════════════════════════════
+
+type TagImportMode = "all" | "none" | "existing";
+
+const TAG_IMPORT_OPTIONS: Array<{ value: TagImportMode; label: string; description: string }> = [
+  { value: "all", label: "All tags", description: "Keep source tags." },
+  { value: "none", label: "No tags", description: "Skip source tags." },
+  { value: "existing", label: "Existing only", description: "Keep tags already in Marinara." },
+];
+
+const SOURCE_MENU_MIN_WIDTH = 180;
+const SOURCE_MENU_MARGIN = 8;
+const JANNY_DOWNLOAD_API = "https://api.jannyai.com/api/v1/download";
+
+async function fetchCompleteJannyCard(characterId: string, signal?: AbortSignal): Promise<Response> {
+  const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(45_000)]) : AbortSignal.timeout(45_000);
+  try {
+    // Cloudflare can reject Marinara's server while accepting the user's real
+    // browser session. Ask Janny for the signed card URL in-browser first.
+    const downloadResponse = await fetch(JANNY_DOWNLOAD_API, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ characterId }),
+      signal: requestSignal,
+    });
+    if (!downloadResponse.ok) throw new Error(`JannyAI character-card request failed (${downloadResponse.status})`);
+
+    const payload = (await downloadResponse.json()) as { status?: unknown; downloadUrl?: unknown };
+    if (payload.status !== "ok" || typeof payload.downloadUrl !== "string") {
+      throw new Error("JannyAI did not return a character-card download");
+    }
+    const downloadUrl = new URL(payload.downloadUrl);
+    if (downloadUrl.protocol !== "https:") throw new Error("JannyAI returned an insecure download URL");
+
+    const cardResponse = await fetch(downloadUrl, {
+      credentials: "include",
+      headers: { Accept: "image/png,application/octet-stream;q=0.9" },
+      signal: requestSignal,
+    });
+    if (!cardResponse.ok) throw new Error(`JannyAI character-card download failed (${cardResponse.status})`);
+    return cardResponse;
+  } catch {
+    // Retain the server proxy for browsers where Janny permits server traffic
+    // but does not expose its download endpoint through CORS.
+    return fetch(`/api/bot-browser/janny/download/${encodeURIComponent(characterId)}`, {
+      signal: requestSignal,
+    });
+  }
+}
+
+function encodeProxyPath(path: unknown): string {
+  return String(path ?? "")
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+}
+
+interface BrowseCard {
+  id: string;
+  name: string;
+  creator: string;
+  tagline: string;
+  tags: string[];
+  avatarUrl: string;
+  stat1: number;
+  stat1Label: string;
+  stat1Icon: "star" | "download" | "heart" | "eye" | "message" | "hash";
+  stat2: number;
+  stat2Label: string;
+  stat2Icon: "star" | "download" | "heart" | "eye" | "message" | "hash";
+  stat3: number;
+  stat3Label: string;
+  stat3Icon: "star" | "download" | "heart" | "eye" | "message" | "hash";
+  nsfw: boolean;
+  externalUrl: string;
+  _raw: unknown;
+}
+
+interface SortOption {
+  value: string;
+  label: string;
+  group?: string;
+}
+
+interface FilterFeature {
+  key: string;
+  label: string;
+  icon: string;
+}
+
+interface ProviderConfig {
+  id: string;
+  name: string;
+  icon: string;
+  sortOptions: SortOption[];
+  defaultSort: string;
+  /** Items per page returned by the provider's search. Used by the shared paginator. */
+  pageSize: number;
+  features: FilterFeature[];
+  hasSortDirection: boolean;
+  hasTokenFilters: boolean;
+  extraToggles: { key: string; label: string; icon: string }[];
+  nsfwAvailable: boolean;
+  /** "free" = NSFW toggle enabled; "login" = toggle enabled once logged in; "wyvern" = toggle rendered disabled (only sourceId "wyvern" pairs this with a sort-hint toast on click — other "wyvern"-mode providers, e.g. DataCat, get no toast) */
+  nsfwMode: "free" | "login" | "wyvern";
+  search: (params: SearchParams) => Promise<{ cards: BrowseCard[]; totalCount: number }>;
+  fetchDetail: (card: BrowseCard, options?: { skipCompleteCard?: boolean }) => Promise<CardDetail | null>;
+  siteName: string;
+}
+
+interface SearchParams {
+  query: string;
+  page: number;
+  sort: string;
+  nsfw: boolean;
+  includeTags: string[];
+  excludeTags: string[];
+  sortAsc: boolean;
+  minTokens: string;
+  maxTokens: string;
+  features: Record<string, boolean>;
+  extraToggles: Record<string, boolean>;
+}
+
+interface CardDetail {
+  description?: string;
+  personality?: string;
+  scenario?: string;
+  firstMessage?: string;
+  exampleDialogs?: string;
+  alternateGreetings?: string[];
+  creatorNotes?: string;
+  systemPrompt?: string;
+  postHistoryInstructions?: string;
+  characterVersion?: string;
+  hasLorebook?: boolean;
+  embeddedLorebook?: unknown;
+  extensions?: Record<string, unknown>;
+  extra?: { title: string; content: string }[];
+}
+
+type BrowserCardImportTarget = "character" | "persona";
+
+interface PreparedBrowserCardImport {
+  card: BrowseCard;
+  payload: Record<string, unknown>;
+  embeddedLorebook?: unknown;
+}
+
+interface PendingBrowserCardImport {
+  card: BrowseCard;
+  target?: BrowserCardImportTarget;
+  prepared?: PreparedBrowserCardImport;
+}
+
+function hasJannyCharacterDefinition(detail: CardDetail | null | undefined): boolean {
+  return Boolean(
+    detail?.description ||
+    detail?.personality ||
+    detail?.scenario ||
+    detail?.firstMessage ||
+    detail?.exampleDialogs ||
+    detail?.systemPrompt ||
+    detail?.postHistoryInstructions ||
+    detail?.alternateGreetings?.length,
+  );
+}
+
+// ════════════════════════════════════════════════
+// Helpers
+// ════════════════════════════════════════════════
+
+function fmtNum(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
+const STAT_ICONS = {
+  star: Star,
+  download: Download,
+  heart: Heart,
+  eye: Eye,
+  message: MessageSquare,
+  hash: Hash,
+};
+
+function attachEmbeddedLorebookToCharacterJson(raw: Record<string, unknown>, embeddedLorebook: unknown) {
+  if (!hasLorebookEntries(embeddedLorebook)) return raw;
+
+  const cloned: Record<string, unknown> = { ...raw };
+  const target =
+    (cloned.spec === "chara_card_v2" || cloned.spec === "chara_card_v3") &&
+    cloned.data &&
+    typeof cloned.data === "object"
+      ? { ...(cloned.data as Record<string, unknown>) }
+      : cloned;
+
+  if (!target.character_book) {
+    target.character_book = embeddedLorebook;
+  }
+
+  if (target !== cloned) {
+    cloned.data = target;
+  }
+
+  return cloned;
+}
+
+function readCardTags(value: unknown): string[] {
+  if (Array.isArray(value))
+    return value
+      .map(String)
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+  if (typeof value === "string")
+    return value
+      .split(",")
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+  return [];
+}
+
+function optionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function optionalStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const values = value.map((item) => String(item).trim()).filter((item) => item.length > 0);
+  return values.length > 0 ? values : undefined;
+}
+
+function optionalRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
+}
+
+async function filterPersonaImportTags(sourceTags: string[], mode: TagImportMode): Promise<string[]> {
+  if (mode === "all" || sourceTags.length === 0) return sourceTags;
+  if (mode === "none") return [];
+
+  const characters = await api.get<Array<{ data?: unknown }>>("/characters");
+  const existingTagKeys = new Set(
+    characters
+      .flatMap((character) => readCardTags(optionalRecord(character.data)?.tags))
+      .map((tag) => tag.toLocaleLowerCase()),
+  );
+  return sourceTags.filter((tag) => existingTagKeys.has(tag.toLocaleLowerCase()));
+}
+
+// ════════════════════════════════════════════════
+// LocalStorage persistence helpers
+// ════════════════════════════════════════════════
+
+const STORAGE_KEY = "marinara-bot-browser";
+
+interface BrowserPersist {
+  nsfw: Record<string, boolean>;
+  logins: Record<string, boolean>;
+  lastSource?: string;
+}
+
+function loadPersist(): BrowserPersist {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {
+    /* ignore */
+  }
+  return { nsfw: {}, logins: {} };
+}
+
+function savePersist(data: BrowserPersist) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch {
+    /* ignore */
+  }
+}
+
+function getPersistNsfw(sourceId: string): boolean {
+  return loadPersist().nsfw[sourceId] ?? false;
+}
+
+function setPersistNsfw(sourceId: string, value: boolean) {
+  const data = loadPersist();
+  data.nsfw[sourceId] = value;
+  savePersist(data);
+}
+
+function getPersistLogin(sourceId: string): boolean {
+  return loadPersist().logins[sourceId] ?? false;
+}
+
+function setPersistLogin(sourceId: string, value: boolean) {
+  const data = loadPersist();
+  data.logins[sourceId] = value;
+  savePersist(data);
+}
+
+// ════════════════════════════════════════════════
+// JannyAI tag map
+// ════════════════════════════════════════════════
+
+const JANNY_TAG_MAP: Record<number, string> = {
+  1: "Male",
+  2: "Female",
+  3: "Non-binary",
+  4: "Celebrity",
+  5: "OC",
+  6: "Fictional",
+  7: "Real",
+  8: "Game",
+  9: "Anime",
+  10: "Historical",
+  11: "Royalty",
+  12: "Detective",
+  13: "Hero",
+  14: "Villain",
+  15: "Magical",
+  16: "Non-human",
+  17: "Monster",
+  18: "Monster Girl",
+  19: "Alien",
+  20: "Robot",
+  21: "Politics",
+  22: "Vampire",
+  23: "Giant",
+  24: "OpenAI",
+  25: "Elf",
+  26: "Multiple",
+  27: "VTuber",
+  28: "Dominant",
+  29: "Submissive",
+  30: "Scenario",
+  31: "Pokemon",
+  32: "Assistant",
+  34: "Non-English",
+  36: "Philosophy",
+  38: "RPG",
+  39: "Religion",
+  41: "Books",
+  42: "AnyPOV",
+  43: "Angst",
+  44: "Demi-Human",
+  45: "Enemies to Lovers",
+  46: "Smut",
+  47: "MLM",
+  48: "WLW",
+  49: "Action",
+  50: "Romance",
+  51: "Horror",
+  52: "Slice of Life",
+  53: "Fantasy",
+  54: "Drama",
+  55: "Comedy",
+  56: "Mystery",
+  57: "Sci-Fi",
+  59: "Yandere",
+  60: "Furry",
+  61: "Movies/TV",
+};
+
+function jannyTagNames(ids: number[]): string[] {
+  return (ids || []).map((id) => JANNY_TAG_MAP[id] || `Tag ${id}`);
+}
+
+const JANNY_TAG_REVERSE: Record<string, number> = {};
+for (const [id, name] of Object.entries(JANNY_TAG_MAP)) {
+  JANNY_TAG_REVERSE[name.toLowerCase()] = Number(id);
+}
+
+function jannyTagNamesToIds(names: string[]): string[] {
+  return names
+    .map((n) => JANNY_TAG_REVERSE[n.toLowerCase()])
+    .filter((id): id is number => id !== undefined)
+    .map(String);
+}
+
+// ════════════════════════════════════════════════
+// Provider: ChubAI
+// ════════════════════════════════════════════════
+
+const CHUB_SORT_PRESETS: { value: string; sort: string; days: number; special_mode: string }[] = [
+  { value: "popular_week", sort: "download_count", days: 7, special_mode: "" },
+  { value: "popular_month", sort: "download_count", days: 30, special_mode: "" },
+  { value: "popular_all", sort: "download_count", days: 0, special_mode: "" },
+  { value: "rated_week", sort: "star_count", days: 7, special_mode: "" },
+  { value: "rated_all", sort: "star_count", days: 0, special_mode: "" },
+  { value: "newest", sort: "id", days: 30, special_mode: "" },
+  { value: "updated", sort: "last_activity_at", days: 0, special_mode: "" },
+  { value: "recent_hits", sort: "default", days: 0, special_mode: "newcomer" },
+  { value: "random", sort: "random", days: 0, special_mode: "" },
+];
+
+const chubProvider: ProviderConfig = {
+  id: "chub",
+  name: "ChubAI",
+  icon: "✦",
+  siteName: "Chub",
+  defaultSort: "popular_all",
+  pageSize: 48,
+  sortOptions: [
+    { value: "popular_all", label: "👑 Most Downloaded", group: "Popular" },
+    { value: "popular_week", label: "🔥 Hot This Week", group: "Popular" },
+    { value: "popular_month", label: "📈 Hot This Month", group: "Popular" },
+    { value: "rated_week", label: "⭐ Top Rated (Week)", group: "Quality" },
+    { value: "rated_all", label: "⭐ Top Rated (All Time)", group: "Quality" },
+    { value: "newest", label: "🆕 Newest", group: "Discovery" },
+    { value: "updated", label: "🔄 Recently Updated", group: "Discovery" },
+    { value: "recent_hits", label: "🌟 Recent Hits", group: "Discovery" },
+    { value: "random", label: "🎲 Random", group: "Discovery" },
+  ],
+  features: [
+    { key: "images", label: "Image Gallery", icon: "🖼️" },
+    { key: "lore", label: "Lorebook", icon: "📖" },
+    { key: "expressions", label: "Expressions", icon: "😊" },
+    { key: "greetings", label: "Alt Greetings", icon: "💬" },
+  ],
+  hasSortDirection: true,
+  hasTokenFilters: true,
+  extraToggles: [],
+  nsfwAvailable: true,
+  nsfwMode: "free",
+  search: async (p) => {
+    const preset = CHUB_SORT_PRESETS.find((pr) => pr.value === p.sort) ?? CHUB_SORT_PRESETS[0];
+    const isSearching = p.query.trim().length > 0;
+    const params = new URLSearchParams({ q: p.query, page: String(p.page), nsfw: String(p.nsfw) });
+    if (isSearching) {
+      if (preset.sort !== "default") params.set("sort", preset.sort);
+    } else {
+      params.set("sort", preset.sort);
+      if (preset.days > 0) params.set("max_days_ago", String(preset.days));
+      if (preset.special_mode) params.set("special_mode", preset.special_mode);
+    }
+    if (p.sortAsc) params.set("asc", "true");
+    if (p.includeTags.length > 0) params.set("tags", p.includeTags.join(","));
+    if (p.excludeTags.length > 0) params.set("excludeTags", p.excludeTags.join(","));
+    if (p.minTokens) params.set("min_tokens", p.minTokens);
+    if (p.maxTokens) params.set("max_tokens", p.maxTokens);
+    if (p.features.images) params.set("require_images", "true");
+    if (p.features.lore) params.set("require_lore", "true");
+    if (p.features.expressions) params.set("require_expressions", "true");
+    if (p.features.greetings) params.set("require_alternate_greetings", "true");
+    const res = await fetch(`/api/bot-browser/chub/search?${params}`);
+    if (!res.ok) throw new Error("Search failed");
+    const raw = await res.json();
+    const data = raw?.data ?? raw;
+    const nodes = data?.nodes ?? [];
+    // Chub now reports the filtered result total in `count`. Older deployments
+    // exposed only a page count, so keep the cursor-based estimate as a fallback.
+    const hasMore = !!data?.cursor;
+    const rawReportedCount = data?.count;
+    const reportedCount =
+      typeof rawReportedCount === "number"
+        ? rawReportedCount
+        : typeof rawReportedCount === "string" && rawReportedCount.trim().length > 0
+          ? Number(rawReportedCount)
+          : Number.NaN;
+    const chubTotal =
+      Number.isFinite(reportedCount) && reportedCount > 0
+        ? reportedCount
+        : hasMore
+          ? (p.page + 1) * 48
+          : (p.page - 1) * 48 + nodes.length;
+
+    return {
+      cards: nodes.map((n: any) => ({
+        id: n.fullPath,
+        name: n.name || "Unnamed",
+        creator: (n.fullPath || "").split("/")[0] || "",
+        tagline: n.tagline || "",
+        tags: n.topics || [],
+        avatarUrl: `/api/bot-browser/chub/avatar/${encodeProxyPath(n.fullPath)}`,
+        stat1: n.starCount || 0,
+        stat1Label: "Downloads",
+        stat1Icon: "download" as const,
+        stat2: n.nChats || 0,
+        stat2Label: "Chats",
+        stat2Icon: "message" as const,
+        stat3: n.nTokens || 0,
+        stat3Label: "Tokens",
+        stat3Icon: "hash" as const,
+        // Current Chub search rows can omit the boolean while still returning
+        // the canonical NSFW topic (including Kathrin Vaughan).
+        nsfw:
+          n.nsfw === true ||
+          (n.nsfw == null &&
+            Array.isArray(n.topics) &&
+            n.topics.some((topic: unknown) => String(topic).trim().toLowerCase() === "nsfw")),
+        externalUrl: `https://chub.ai/characters/${n.fullPath}`,
+        _raw: n,
+      })),
+      totalCount: chubTotal,
+    };
+  },
+  fetchDetail: async (card) => {
+    const res = await fetch(`/api/bot-browser/chub/character/${card.id}`);
+    if (!res.ok) return null;
+    const raw = await res.json();
+    const node = raw?.data?.node ?? raw?.node;
+    if (!node) return null;
+    const def = node.definition || {};
+    return {
+      description: optionalString(def.personality),
+      personality: optionalString(def.tavern_personality),
+      scenario: optionalString(def.scenario),
+      firstMessage: optionalString(def.first_message),
+      exampleDialogs: optionalString(def.example_dialogs),
+      alternateGreetings: optionalStringArray(def.alternate_greetings),
+      creatorNotes: optionalString(def.description),
+      systemPrompt: optionalString(def.system_prompt),
+      postHistoryInstructions: optionalString(def.post_history_instructions),
+      characterVersion: optionalString(def.character_version),
+      hasLorebook: !!def.embedded_lorebook,
+      embeddedLorebook: def.embedded_lorebook,
+      extensions: optionalRecord(def.extensions),
+    };
+  },
+};
+
+// ════════════════════════════════════════════════
+// Provider: JannyAI
+// ════════════════════════════════════════════════
+
+const jannyProvider: ProviderConfig = {
+  id: "janny",
+  name: "JannyAI",
+  icon: "🤖",
+  siteName: "JannyAI",
+  defaultSort: "newest",
+  pageSize: 80,
+  sortOptions: [
+    { value: "newest", label: "🆕 Newest", group: "Date" },
+    { value: "oldest", label: "🕐 Oldest", group: "Date" },
+    { value: "tokens_desc", label: "📊 Most Tokens", group: "Tokens" },
+    { value: "tokens_asc", label: "📊 Least Tokens", group: "Tokens" },
+    { value: "relevant", label: "🔍 Relevance", group: "Search" },
+  ],
+  features: [],
+  hasSortDirection: false,
+  hasTokenFilters: true,
+  extraToggles: [{ key: "showLowQuality", label: "Show Low Quality", icon: "🚫" }],
+  nsfwAvailable: true,
+  nsfwMode: "free",
+  search: async (p) => {
+    // Fetch a one-time search token from the server (token is scraped from JannyAI's
+    // public Astro bundle). The actual MeiliSearch POST runs from the BROWSER so that
+    // Cloudflare sees a real browser TLS fingerprint + the user's cf_clearance cookie.
+    const fetchToken = async (force = false): Promise<string> => {
+      const tokenRes = await fetch(`/api/bot-browser/janny/token${force ? "?force=1" : ""}`);
+      if (!tokenRes.ok) throw new Error("Could not obtain JannyAI token");
+      const { token: t } = await tokenRes.json();
+      if (!t) throw new Error("JannyAI token unavailable");
+      return t;
+    };
+    let token = await fetchToken();
+
+    const sortMap: Record<string, string[]> = {
+      newest: ["createdAtStamp:desc"],
+      oldest: ["createdAtStamp:asc"],
+      tokens_desc: ["totalToken:desc"],
+      tokens_asc: ["totalToken:asc"],
+      relevant: [],
+    };
+    const sortArr = sortMap[p.sort] ?? sortMap.newest!;
+
+    // Split include tags into "known" (mapped to MeiliSearch tagIds) and "custom"
+    // (free-form names that aren't in JANNY_TAG_MAP). Known tags filter server-side;
+    // custom tags filter client-side against the hit's resolved tag-name list.
+    const knownIncludeTagIds = jannyTagNamesToIds(p.includeTags);
+    const customIncludeTags = p.includeTags
+      .filter((t) => JANNY_TAG_REVERSE[t.toLowerCase()] === undefined)
+      .map((t) => t.toLowerCase());
+
+    const fetchOnePage = async (pageNum: number) => {
+      const filters: string[] = [];
+      filters.push(`totalToken >= ${parseInt(p.minTokens) || 29}`);
+      filters.push(`totalToken <= ${parseInt(p.maxTokens) || 100000}`);
+      if (!p.nsfw) filters.push("isNsfw = false");
+      if (!p.extraToggles.showLowQuality) filters.push("isLowQuality = false");
+      if (knownIncludeTagIds.length > 0) {
+        filters.push(knownIncludeTagIds.map((id) => `tagIds = ${id}`).join(" AND "));
+      }
+
+      const body = {
+        queries: [
+          {
+            indexUid: "janny-characters",
+            q: p.query,
+            facets: ["isLowQuality", "isNsfw", "tagIds", "totalToken"],
+            attributesToCrop: ["description:300"],
+            cropMarker: "...",
+            filter: filters,
+            attributesToHighlight: ["name", "description"],
+            highlightPreTag: "__ais-highlight__",
+            highlightPostTag: "__/ais-highlight__",
+            hitsPerPage: 80,
+            page: pageNum,
+            ...(sortArr.length > 0 ? { sort: sortArr } : {}),
+          },
+        ],
+      };
+
+      // NOTE: deliberately omitting credentials. JannyAI's MeiliSearch endpoint
+      // returns `Access-Control-Allow-Origin: *`, which the browser refuses to
+      // pair with `credentials: "include"` — that combination blocks the response
+      // entirely. cf_clearance won't ride along, but the upstream has historically
+      // let cross-origin requests with browser TLS + UA through anyway.
+      const doFetch = (authToken: string) =>
+        fetch("https://search.jannyai.com/multi-search", {
+          method: "POST",
+          headers: {
+            Accept: "*/*",
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${authToken}`,
+            "x-meilisearch-client": "Meilisearch instant-meilisearch (v0.19.0) ; Meilisearch JavaScript (v0.41.0)",
+          },
+          body: JSON.stringify(body),
+        });
+      let res = await doFetch(token);
+      // If the cached token has been rotated upstream, MeiliSearch returns 401/403.
+      // Force a server-side re-scrape and retry once.
+      if (res.status === 401 || res.status === 403) {
+        try {
+          token = await fetchToken(true);
+          res = await doFetch(token);
+        } catch {
+          /* fall through to error handling below */
+        }
+      }
+      if (!res.ok) {
+        if (res.status === 403) {
+          throw new Error(
+            "JannyAI is blocking the request (Cloudflare). Visit https://jannyai.com once in this browser to clear the challenge, then retry.",
+          );
+        }
+        throw new Error(`JannyAI search error ${res.status}`);
+      }
+      const raw = await res.json();
+      return raw?.results?.[0];
+    };
+
+    const lowerExclude = p.excludeTags.map((t) => t.toLowerCase());
+    const applyClientFilter = (hitsArr: any[]): any[] => {
+      if (lowerExclude.length === 0 && customIncludeTags.length === 0) return hitsArr;
+      return hitsArr.filter((h: any) => {
+        const charTagNames = jannyTagNames(h.tagIds || []).map((t) => t.toLowerCase());
+        if (lowerExclude.length > 0 && lowerExclude.some((et) => charTagNames.includes(et))) return false;
+        // Custom tags: every custom tag must appear in the hit's resolved tag names
+        if (customIncludeTags.length > 0 && !customIncludeTags.every((ct) => charTagNames.includes(ct))) return false;
+        return true;
+      });
+    };
+
+    let currentPage = p.page;
+    const result = await fetchOnePage(currentPage);
+    let hits = applyClientFilter(result?.hits || []);
+    const totalPages = result?.totalPages || 1;
+
+    // Auto-fetch up to 3 extra pages when client-side filters thin the page
+    if (lowerExclude.length > 0 || customIncludeTags.length > 0) {
+      let autoFetches = 0;
+      while (hits.length < 80 && currentPage < totalPages && autoFetches < 3) {
+        autoFetches++;
+        currentPage++;
+        const more = await fetchOnePage(currentPage);
+        hits = hits.concat(applyClientFilter(more?.hits || []));
+      }
+    }
+    return {
+      cards: hits.map((h: any) => ({
+        id: h.id || "",
+        name: h.name || "Unnamed",
+        creator: h.creatorUsername || "",
+        tagline: (h.description || "").replace(/<[^>]*>/g, "").slice(0, 200),
+        tags: jannyTagNames(h.tagIds),
+        avatarUrl: h.avatar ? `/api/bot-browser/janny/avatar/${encodeProxyPath(h.avatar)}` : "",
+        stat1: h.totalToken || 0,
+        stat1Label: "Tokens",
+        stat1Icon: "hash" as const,
+        stat2: 0,
+        stat2Label: "",
+        stat2Icon: "star" as const,
+        stat3: 0,
+        stat3Label: "",
+        stat3Icon: "star" as const,
+        nsfw: !!h.isNsfw,
+        externalUrl: `https://jannyai.com/characters/${h.id}_character-${(h.name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+        _raw: h,
+      })),
+      totalCount: result?.totalHits ?? totalPages * 80,
+    };
+  },
+  fetchDetail: async (card, options) => {
+    const raw = card._raw as any;
+    const charId = raw?.id || card.id;
+    const slug = card.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "");
+    const pageUrl = `https://jannyai.com/characters/${charId}_character-${slug}`;
+    const apiPageUrl = `https://api.jannyai.com/characters/${charId}_character-${slug}`;
+
+    // Prefer JannyAI's supported full-card download API. Search results contain
+    // only catalog metadata, while the original PNG preserves the full V2/V3
+    // definition used by imports and Start Chat.
+    if (!options?.skipCompleteCard) {
+      try {
+        const cardRes = await fetchCompleteJannyCard(charId);
+        if (cardRes.ok) {
+          const cardFile = new File([await cardRes.blob()], "character.png", { type: "image/png" });
+          const { json } = await parsePngCharacterCard(cardFile);
+          const cardDetail = readCharacterCardDetailFields(json);
+          if (hasJannyCharacterDefinition(cardDetail)) return cardDetail;
+        }
+      } catch {
+        /* fall through to legacy page extraction */
+      }
+    }
+
+    // Helper to decode Astro's [type, data] serialization
+    function decodeAstro(value: unknown): unknown {
+      if (!Array.isArray(value)) return value;
+      const [type, data] = value;
+      if (type === 0) {
+        if (typeof data === "object" && data !== null && !Array.isArray(data)) {
+          const decoded: Record<string, unknown> = {};
+          for (const [key, val] of Object.entries(data as Record<string, unknown>)) {
+            decoded[key] = decodeAstro(val);
+          }
+          return decoded;
+        }
+        return data;
+      } else if (type === 1) {
+        return (data as unknown[]).map((item: unknown) => decodeAstro(item));
+      }
+      return data;
+    }
+
+    // Helper to parse character from HTML
+    function parseCharFromHtml(html: string): Record<string, unknown> | null {
+      if (
+        !html ||
+        html.includes("Just a moment") ||
+        html.includes("cf-challenge") ||
+        html.includes("challenge-platform")
+      ) {
+        return null;
+      }
+      let astroMatch = html.match(/astro-island[^>]*component-export="CharacterButtons"[^>]*props="([^"]+)"/);
+      if (!astroMatch) astroMatch = html.match(/astro-island[^>]*props="([^"]*character[^"]*)"/);
+      if (!astroMatch?.[1]) return null;
+      try {
+        const decoded = astroMatch[1]
+          .replace(/&quot;/g, '"')
+          .replace(/&amp;/g, "&")
+          .replace(/&lt;/g, "<")
+          .replace(/&gt;/g, ">")
+          .replace(/&#39;/g, "'");
+        const propsJson = JSON.parse(decoded);
+        return decodeAstro(propsJson.character) as Record<string, unknown> | null;
+      } catch {
+        return null;
+      }
+    }
+
+    const detailFromCharacter = (char: Record<string, unknown> | null | undefined): CardDetail | null => {
+      if (!char) return null;
+      const definition =
+        char.definition && typeof char.definition === "object" && !Array.isArray(char.definition)
+          ? (char.definition as Record<string, unknown>)
+          : {};
+      const pickString = (...values: unknown[]) =>
+        values.find((value): value is string => typeof value === "string" && value.trim().length > 0)?.trim();
+      const description = pickString(
+        char.personality,
+        char.description,
+        char.definition_character_description,
+        definition.description,
+        definition.personality,
+      );
+      const personality = pickString(
+        char.tavern_personality,
+        char.definition_personality,
+        char.definition,
+        definition.tavern_personality,
+        definition.personality,
+      );
+      const scenario = pickString(char.scenario, char.definition_scenario, definition.scenario);
+      const firstMessage = pickString(
+        char.firstMessage,
+        char.first_message,
+        char.first_mes,
+        char.definition_first_message,
+        definition.firstMessage,
+        definition.first_message,
+        definition.first_mes,
+      );
+      const exampleDialogs = pickString(
+        char.exampleDialogs,
+        char.example_dialogs,
+        char.mes_example,
+        char.definition_example_messages,
+        definition.exampleDialogs,
+        definition.example_dialogs,
+        definition.mes_example,
+      );
+      const creatorNotes = pickString(char.creatorNotes, char.creator_notes, char.creatorNote, char.description_html)
+        ?.replace(/<[^>]*>/g, "")
+        .trim();
+      if (!(description || personality || scenario || firstMessage || exampleDialogs || creatorNotes)) return null;
+      return {
+        description,
+        personality: personality && personality !== description ? personality : undefined,
+        scenario,
+        firstMessage,
+        exampleDialogs,
+        alternateGreetings: optionalStringArray(
+          char.alternateGreetings ??
+            char.alternate_greetings ??
+            definition.alternateGreetings ??
+            definition.alternate_greetings,
+        ),
+        creatorNotes: creatorNotes && creatorNotes !== description ? creatorNotes : undefined,
+        systemPrompt: optionalString(
+          char.systemPrompt ?? char.system_prompt ?? definition.systemPrompt ?? definition.system_prompt,
+        ),
+        postHistoryInstructions: optionalString(
+          char.postHistoryInstructions ??
+            char.post_history_instructions ??
+            definition.postHistoryInstructions ??
+            definition.post_history_instructions,
+        ),
+        characterVersion: optionalString(
+          char.characterVersion ??
+            char.character_version ??
+            definition.characterVersion ??
+            definition.character_version,
+        ),
+      };
+    };
+
+    const fetchHtmlDetail = async (url: string): Promise<CardDetail | null> => {
+      const res = await fetch(url, { headers: { Accept: "text/html,application/xhtml+xml,*/*" } });
+      if (!res.ok) return null;
+      return detailFromCharacter(parseCharFromHtml(await res.text()));
+    };
+
+    // JannyAI's public API mirror serves the same Astro payload with permissive CORS.
+    try {
+      const apiDetail = await fetchHtmlDetail(apiPageUrl);
+      if (apiDetail) return apiDetail;
+    } catch {
+      /* fall through */
+    }
+
+    // Fall back to corsproxy.io via the user's browser TLS fingerprint and cookies.
+    try {
+      const proxyDetail = await fetchHtmlDetail(`https://corsproxy.io/?url=${encodeURIComponent(pageUrl)}`);
+      if (proxyDetail) return proxyDetail;
+    } catch {
+      /* fall through */
+    }
+
+    // Fall back to our server-side proxy (likely fails due to Cloudflare, but try anyway)
+    try {
+      const res = await fetch(`/api/bot-browser/janny/character/${charId}?slug=character-${slug}`);
+      if (res.ok) {
+        const data = await res.json();
+        const serverDetail = detailFromCharacter(data?.character);
+        if (serverDetail) return serverDetail;
+      }
+    } catch {
+      /* fall through */
+    }
+
+    // Fallback: use search result data
+    const rawDesc = raw?.description || "";
+    const plainDesc = typeof rawDesc === "string" ? rawDesc.replace(/<[^>]*>/g, "").trim() : "";
+    if (plainDesc) {
+      return { creatorNotes: plainDesc };
+    }
+    return null;
+  },
+};
+
+// ════════════════════════════════════════════════
+// Provider: CharacterTavern
+// ════════════════════════════════════════════════
+
+const chartavernProvider: ProviderConfig = {
+  id: "chartavern",
+  name: "CharacterTavern",
+  icon: "🍺",
+  siteName: "CharacterTavern",
+  defaultSort: "most_popular",
+  pageSize: 60,
+  sortOptions: [
+    { value: "most_popular", label: "🔥 Most Popular" },
+    { value: "trending", label: "📈 Trending" },
+    { value: "newest", label: "🆕 Newest" },
+    { value: "oldest", label: "🕐 Oldest" },
+    { value: "most_likes", label: "❤️ Most Liked" },
+  ],
+  features: [{ key: "lore", label: "Lorebook", icon: "📖" }],
+  hasSortDirection: false,
+  hasTokenFilters: true,
+  extraToggles: [{ key: "isOC", label: "Original Character", icon: "⭐" }],
+  nsfwAvailable: false,
+  nsfwMode: "login",
+  search: async (p) => {
+    const params = new URLSearchParams({
+      q: p.query,
+      page: String(p.page),
+      limit: "60",
+      sort: p.sort,
+      nsfw: String(p.nsfw),
+    });
+    if (p.includeTags.length > 0) params.set("tags", p.includeTags.join(","));
+    if (p.excludeTags.length > 0) params.set("excludeTags", p.excludeTags.join(","));
+    if (p.minTokens && p.minTokens !== "0") params.set("min_tokens", p.minTokens);
+    if (p.maxTokens && p.maxTokens !== "0") params.set("max_tokens", p.maxTokens);
+    if (p.features.lore) params.set("hasLorebook", "true");
+    if (p.extraToggles.isOC) params.set("isOC", "true");
+    const res = await fetch(`/api/bot-browser/chartavern/search?${params}`);
+    if (!res.ok) throw new Error("Search failed");
+    const data = await res.json();
+    const hits = data?.hits || [];
+    return {
+      cards: hits.map((h: any) => ({
+        id: h.path || "",
+        name: h.name || "Unnamed",
+        creator: h.author || (h.path || "").split("/")[0] || "",
+        tagline: h.tagline || "",
+        tags: Array.isArray(h.tags) ? h.tags : [],
+        avatarUrl: h.path ? `/api/bot-browser/chartavern/avatar/${encodeProxyPath(h.path)}` : "",
+        stat1: h.downloads || 0,
+        stat1Label: "Downloads",
+        stat1Icon: "download" as const,
+        stat2: h.likes || 0,
+        stat2Label: "Likes",
+        stat2Icon: "heart" as const,
+        stat3: h.totalTokens || 0,
+        stat3Label: "Tokens",
+        stat3Icon: "hash" as const,
+        nsfw: !!h.isNSFW,
+        externalUrl: `https://character-tavern.com/character/${h.path}`,
+        _raw: h,
+      })),
+      totalCount: (data?.totalHits ?? data?.totalPages) ? data.totalPages * 60 : hits.length,
+    };
+  },
+  fetchDetail: async (card) => {
+    const parts = card.id.split("/");
+    if (parts.length < 2) return null;
+    const res = await fetch(`/api/bot-browser/chartavern/character/${parts[0]}/${parts[1]}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const c = data?.card;
+    if (!c) return null;
+    return {
+      description: c.definition_character_description || undefined,
+      personality: c.definition_personality || undefined,
+      scenario: c.definition_scenario || undefined,
+      firstMessage: c.definition_first_message || undefined,
+      exampleDialogs: c.definition_example_messages || undefined,
+      creatorNotes: c.description || undefined,
+      hasLorebook: !!c.lorebookId,
+    };
+  },
+};
+
+// ════════════════════════════════════════════════
+// Provider: Pygmalion
+// ════════════════════════════════════════════════
+
+const pygmalionProvider: ProviderConfig = {
+  id: "pygmalion",
+  name: "Pygmalion",
+  icon: "🔥",
+  siteName: "Pygmalion",
+  defaultSort: "downloads",
+  pageSize: 48,
+  sortOptions: [
+    { value: "downloads", label: "⬇️ Downloads" },
+    { value: "stars", label: "⭐ Stars" },
+    { value: "views", label: "👁️ Views" },
+    { value: "approved_at", label: "🆕 Newest" },
+    { value: "token_count", label: "📝 Tokens" },
+    { value: "display_name", label: "🔤 Name" },
+  ],
+  features: [],
+  hasSortDirection: true,
+  hasTokenFilters: false,
+  extraToggles: [],
+  nsfwAvailable: false,
+  nsfwMode: "login",
+  search: async (p) => {
+    const params = new URLSearchParams({
+      q: p.query,
+      page: String(Math.max(0, p.page - 1)),
+      pageSize: "48",
+      orderBy: p.sort,
+      orderDescending: String(!p.sortAsc),
+    });
+    if (p.includeTags.length > 0) params.set("tagsInclude", p.includeTags.join(","));
+    if (p.excludeTags.length > 0) params.set("tagsExclude", p.excludeTags.join(","));
+    if (p.nsfw) params.set("includeSensitive", "true");
+    const res = await fetch(`/api/bot-browser/pygmalion/search?${params}`);
+    if (!res.ok) throw new Error("Search failed");
+    const data = await res.json();
+    const chars = data?.characters || [];
+    const totalItems = parseInt(data?.totalItems || "0", 10);
+    return {
+      cards: chars.map((c: any) => {
+        const owner = c.owner || {};
+        const av = c.avatarUrl;
+        let avatarProxyUrl = "";
+        if (av) {
+          avatarProxyUrl = av.startsWith("http")
+            ? `/api/bot-browser/pygmalion/avatar/${encodeURIComponent(av)}`
+            : `/api/bot-browser/pygmalion/avatar/${encodeProxyPath(av)}`;
+        }
+        return {
+          id: c.id || "",
+          name: c.displayName || "Unnamed",
+          creator: owner.username || owner.displayName || "",
+          tagline: c.description || "",
+          tags: Array.isArray(c.tags) ? c.tags : [],
+          avatarUrl: avatarProxyUrl,
+          stat1: c.downloads || 0,
+          stat1Label: "Downloads",
+          stat1Icon: "download" as const,
+          stat2: c.stars || 0,
+          stat2Label: "Stars",
+          stat2Icon: "star" as const,
+          stat3: c.chatCount || 0,
+          stat3Label: "Chats",
+          stat3Icon: "message" as const,
+          nsfw: !!c.isSensitive,
+          externalUrl: `https://pygmalion.chat/character/${c.id}`,
+          _raw: c,
+        };
+      }),
+      totalCount: totalItems,
+    };
+  },
+  fetchDetail: async (card) => {
+    const res = await fetch(`/api/bot-browser/pygmalion/character?id=${card.id}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const char = data?.character;
+    if (!char) return null;
+    const p = char.personality || {};
+    return {
+      description: p.persona || undefined,
+      firstMessage: p.greeting || undefined,
+      exampleDialogs: p.mesExample || undefined,
+      creatorNotes: p.characterNotes || undefined,
+      systemPrompt: optionalString(p.systemPrompt ?? p.system_prompt ?? char.systemPrompt ?? char.system_prompt),
+      postHistoryInstructions: optionalString(
+        p.postHistoryInstructions ??
+          p.post_history_instructions ??
+          char.postHistoryInstructions ??
+          char.post_history_instructions,
+      ),
+      characterVersion: optionalString(
+        p.characterVersion ?? p.character_version ?? char.characterVersion ?? char.character_version,
+      ),
+      alternateGreetings: Array.isArray(p.alternateGreetings) ? p.alternateGreetings.filter(Boolean) : [],
+    };
+  },
+};
+
+// ════════════════════════════════════════════════
+// Provider: Wyvern
+// ════════════════════════════════════════════════
+
+const wyvernProvider: ProviderConfig = {
+  id: "wyvern",
+  name: "Wyvern",
+  icon: "🐉",
+  siteName: "Wyvern",
+  defaultSort: "popular",
+  pageSize: 48,
+  sortOptions: [
+    { value: "popular", label: "🔥 Popular" },
+    { value: "nsfw-popular", label: "🔞 Popular NSFW" },
+    { value: "recommended", label: "⭐ Recommended" },
+    { value: "created_at", label: "🆕 New" },
+    { value: "votes", label: "❤️ Most Likes" },
+    { value: "messages", label: "💬 Most Messages" },
+  ],
+  features: [
+    { key: "lore", label: "Lorebook", icon: "📖" },
+    { key: "greetings", label: "Alt Greetings", icon: "💬" },
+  ],
+  hasSortDirection: false,
+  hasTokenFilters: true,
+  extraToggles: [],
+  nsfwAvailable: false,
+  nsfwMode: "wyvern",
+  search: async (p) => {
+    const params = new URLSearchParams({ page: String(p.page), limit: "48", sort: p.sort });
+    if (p.query) params.set("q", p.query);
+    if (p.includeTags.length > 0) params.set("tags", p.includeTags.join(","));
+    if (!p.nsfw && p.sort !== "nsfw-popular") params.set("rating", "none");
+    const res = await fetch(`/api/bot-browser/wyvern/search?${params}`);
+    if (!res.ok) throw new Error("Search failed");
+    const data = await res.json();
+    let results = data?.results || [];
+    // Client-side exclude tag filtering (Wyvern API doesn't support server-side exclude)
+    if (p.excludeTags.length > 0) {
+      const lowerExclude = p.excludeTags.map((t) => t.toLowerCase());
+      results = results.filter((c: any) => {
+        const charTags = (c.tags || []).map((t: string) => t.toLowerCase());
+        return !lowerExclude.some((et) => charTags.includes(et));
+      });
+    }
+    return {
+      cards: results.map((c: any) => {
+        const sr = c.statistics_record || c.entity_statistics || {};
+        const creatorName = c.creator?.displayName || c.creator?.username || "";
+        const src = c.avatar_url || c.avatar;
+        let avatarProxyUrl = "";
+        if (src) {
+          avatarProxyUrl = src.startsWith("http")
+            ? `/api/bot-browser/wyvern/avatar/${encodeURIComponent(src)}`
+            : `/api/bot-browser/wyvern/avatar/${encodeProxyPath(src)}/public`;
+        }
+        return {
+          id: c.id || "",
+          name: c.name || "Unnamed",
+          creator: creatorName,
+          tagline: c.tagline || "",
+          tags: Array.isArray(c.tags) ? c.tags : [],
+          avatarUrl: avatarProxyUrl,
+          stat1: sr.likes || sr.total_likes || c.likes || 0,
+          stat1Label: "Likes",
+          stat1Icon: "heart" as const,
+          stat2: sr.messages || sr.total_messages || c.messages || 0,
+          stat2Label: "Messages",
+          stat2Icon: "message" as const,
+          stat3: sr.views || sr.total_views || c.views || 0,
+          stat3Label: "Views",
+          stat3Icon: "eye" as const,
+          nsfw: !!(c.rating && c.rating !== "none"),
+          externalUrl: `https://app.wyvern.chat/characters/${c.id}`,
+          _raw: c,
+        };
+      }),
+      totalCount: data?.total ?? (data?.hasMore ? (p.page + 1) * 48 : results.length),
+    };
+  },
+  fetchDetail: async (card) => {
+    const res = await fetch(`/api/bot-browser/wyvern/character/${card.id}`);
+    if (!res.ok) return null;
+    const c = await res.json();
+    if (!c) return null;
+    const embeddedLorebook = c.embedded_lorebook ?? c.character_book;
+    return {
+      description: c.description || undefined,
+      personality: c.personality || undefined,
+      scenario: c.scenario || undefined,
+      firstMessage: c.first_mes || undefined,
+      exampleDialogs: c.mes_example || undefined,
+      creatorNotes: c.creator_notes || undefined,
+      systemPrompt: optionalString(c.systemPrompt ?? c.system_prompt),
+      postHistoryInstructions: optionalString(c.postHistoryInstructions ?? c.post_history_instructions),
+      characterVersion: optionalString(c.characterVersion ?? c.character_version),
+      alternateGreetings: Array.isArray(c.alternate_greetings) ? c.alternate_greetings.filter(Boolean) : [],
+      hasLorebook: hasLorebookEntries(embeddedLorebook) || !!(c.lorebooks?.length > 0),
+      embeddedLorebook,
+    };
+  },
+};
+
+// ════════════════════════════════════════════════
+// Provider: DataCat
+// (Aggregator surfacing JanitorAI characters via datacat.run REST API)
+// ════════════════════════════════════════════════
+
+// Cache of DataCat tags (name <-> id) populated from the faceted endpoint.
+// Names are lowercased so user input from the tag panel can match either the
+// upstream display name or any case variant.
+//
+// DataCat returns ~28k tags. Rendering all of them as buttons crashes the
+// browser, so the tag panel only shows the top N most-popular tags
+// (`datacatTopTagNames`); the full id<->name maps are still populated so
+// custom user input and card-level resolution still work for the long tail.
+const TOP_TAGS_DISPLAY_LIMIT = 150;
+const datacatTagNameToId = new Map<string, number>();
+const datacatTagIdToName = new Map<number, string>();
+let datacatTopTagNames: string[] = [];
+let datacatTagsLoaded = false;
+let datacatTagsLoading: Promise<void> | null = null;
+
+async function loadDatacatTags(): Promise<void> {
+  if (datacatTagsLoaded) return;
+  if (datacatTagsLoading) return datacatTagsLoading;
+  datacatTagsLoading = (async () => {
+    try {
+      const res = await fetch("/api/bot-browser/datacat/tags");
+      if (!res.ok) return;
+      const data = await res.json();
+      const list: any[] = data?.tags || data?.facets || data || [];
+      const sortable: { id: number; name: string; count: number }[] = [];
+      for (const t of list) {
+        const id = Number(t?.id ?? t?.tag_id ?? t?.tagId);
+        const name: string = (t?.name || t?.slug || "").toString();
+        const count = Number(t?.count ?? 0) || 0;
+        if (Number.isFinite(id) && name) {
+          datacatTagNameToId.set(name.toLowerCase(), id);
+          datacatTagIdToName.set(id, name);
+          sortable.push({ id, name, count });
+        }
+      }
+      sortable.sort((a, b) => b.count - a.count);
+      datacatTopTagNames = sortable.slice(0, TOP_TAGS_DISPLAY_LIMIT).map((t) => t.name);
+      datacatTagsLoaded = true;
+    } finally {
+      datacatTagsLoading = null;
+    }
+  })();
+  return datacatTagsLoading;
+}
+
+function datacatTagNamesToIds(names: string[]): number[] {
+  return names.map((n) => datacatTagNameToId.get(n.toLowerCase())).filter((id): id is number => typeof id === "number");
+}
+
+const datacatProvider: ProviderConfig = {
+  id: "datacat",
+  name: "DataCat",
+  icon: "🐱",
+  siteName: "DataCat",
+  defaultSort: "relevance",
+  pageSize: 80,
+  sortOptions: [
+    { value: "relevance", label: "🔍 Relevance" },
+    { value: "fresh", label: "🔥 Fresh" },
+  ],
+  features: [],
+  hasSortDirection: false,
+  hasTokenFilters: false,
+  extraToggles: [],
+  // DataCat is NSFW-only — hide the toggle since every character is NSFW-tagged
+  nsfwAvailable: false,
+  nsfwMode: "wyvern",
+  search: async (p) => {
+    await loadDatacatTags();
+    const tagIds = p.includeTags.length > 0 ? datacatTagNamesToIds(p.includeTags) : [];
+    const trimmedQuery = p.query.trim();
+
+    // Fresh = trending (24h window), Relevance = recent-public (the "Characters"
+    // tab on datacat.run — supports tag filtering, free-text search via the
+    // `search` param, and shows the full library). The /fresh endpoint has no
+    // text-search support, so any user query forces the recent-public path.
+    const useFresh = p.sort === "fresh" && tagIds.length === 0 && trimmedQuery.length === 0;
+
+    let list: any[] = [];
+    let totalCount = 0;
+
+    if (useFresh) {
+      const params = new URLSearchParams({
+        sortBy: "score",
+        limit24: "80",
+        limitWeek: "0",
+      });
+      const res = await fetch(`/api/bot-browser/datacat/fresh?${params}`);
+      if (!res.ok) throw new Error("Search failed");
+      const data = await res.json();
+      // Response shape: { success, sortBy, windows: { last24h: { count, characters: [...] }, thisWeek: {...} } }
+      const last24h = data?.windows?.last24h || data?.last24h;
+      list = Array.isArray(last24h) ? last24h : last24h?.characters || [];
+      // /fresh ignores `page` — the upstream `count` describes the full window
+      // even when the response only carries `limit24` items. Reporting that as
+      // `totalCount` would let the paginator advertise pages 2+ that just replay
+      // the same window. Clamp to the actual returned slice so pagination
+      // disables itself once the user reaches the end.
+      totalCount = list.length;
+    } else {
+      const offset = Math.max(0, (p.page - 1) * 80);
+      const params = new URLSearchParams({ limit: "80", offset: String(offset) });
+      if (tagIds.length > 0) params.set("tagIds", tagIds.join(","));
+      if (trimmedQuery) params.set("q", trimmedQuery);
+      const res = await fetch(`/api/bot-browser/datacat/recent?${params}`);
+      if (!res.ok) throw new Error("Search failed");
+      const data = await res.json();
+      list = data?.characters || [];
+      totalCount = data?.totalCount || list.length;
+    }
+
+    // DataCat is NSFW-only — every character is tagged NSFW upstream, so filtering
+    // by nsfw=false would always return an empty list. Skip the filter entirely.
+    // Client-side excludeTags filter
+    if (p.excludeTags.length > 0) {
+      const lowerExclude = p.excludeTags.map((t) => t.toLowerCase());
+      list = list.filter((c: any) => {
+        const tagNames = (Array.isArray(c.tags) ? c.tags : [])
+          .map((t: any) => (typeof t === "string" ? t : t?.name || t?.slug || ""))
+          .map((s: string) => s.toLowerCase());
+        return !lowerExclude.some((et) => tagNames.includes(et));
+      });
+    }
+
+    return {
+      cards: list.map((c: any) => {
+        // Tags can come either as objects ({id,name,slug}), as strings, or as
+        // numeric tagIds — try every shape and normalize to display names.
+        const rawTags: any[] = Array.isArray(c.tags) ? c.tags : Array.isArray(c.tagIds) ? c.tagIds : [];
+        const tagNames: string[] = rawTags
+          .map((t: any) => {
+            if (typeof t === "string") return t;
+            if (typeof t === "number") return datacatTagIdToName.get(t) || "";
+            return t?.name || t?.slug || (typeof t?.id === "number" ? datacatTagIdToName.get(t.id) || "" : "");
+          })
+          .filter(Boolean);
+        const av = c.avatar || "";
+        const avatarProxyUrl = av
+          ? av.startsWith("http")
+            ? `/api/bot-browser/datacat/avatar/${encodeURIComponent(av)}`
+            : `/api/bot-browser/datacat/avatar/${encodeProxyPath(av)}`
+          : "";
+        const charId = c.characterId || c.character_id || c.id || "";
+        return {
+          id: charId,
+          name: c.chatName || c.chat_name || c.name || "Unnamed",
+          creator: c.creatorName || c.creator_name || "",
+          tagline: (c.description || "").replace(/<[^>]*>/g, "").slice(0, 200),
+          tags: tagNames,
+          avatarUrl: avatarProxyUrl,
+          stat1: c.chatCount || c.chat_count || 0,
+          stat1Label: "Chats",
+          stat1Icon: "message" as const,
+          stat2: c.totalTokens || c.total_tokens || 0,
+          stat2Label: "Tokens",
+          stat2Icon: "hash" as const,
+          stat3: 0,
+          stat3Label: "",
+          stat3Icon: "star" as const,
+          nsfw: !!c.isNsfw,
+          externalUrl: `https://datacat.run/characters/${charId}`,
+          _raw: c,
+        };
+      }),
+      totalCount,
+    };
+  },
+  fetchDetail: async (card) => {
+    const id = (card._raw as any)?.characterId || (card._raw as any)?.character_id || card.id;
+    if (!id) return null;
+    // Prefer the download endpoint for V2-shaped data, fall back to character endpoint
+    try {
+      const dlRes = await fetch(`/api/bot-browser/datacat/download/${encodeURIComponent(id)}`);
+      if (dlRes.ok) {
+        const dl = await dlRes.json();
+        const d = dl?.data;
+        if (d) {
+          return {
+            description: d.description || d.personality || undefined,
+            personality: d.personality || undefined,
+            scenario: d.scenario || undefined,
+            firstMessage: d.first_mes || undefined,
+            exampleDialogs: d.mes_example || undefined,
+            creatorNotes: d.creator_notes || undefined,
+            systemPrompt: optionalString(d.systemPrompt ?? d.system_prompt),
+            postHistoryInstructions: optionalString(d.postHistoryInstructions ?? d.post_history_instructions),
+            characterVersion: optionalString(d.characterVersion ?? d.character_version),
+            alternateGreetings: Array.isArray(d.alternate_greetings) ? d.alternate_greetings.filter(Boolean) : [],
+          };
+        }
+      }
+    } catch {
+      /* fall through */
+    }
+    try {
+      const res = await fetch(`/api/bot-browser/datacat/character/${encodeURIComponent(id)}`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      const c = data?.character || data;
+      if (!c) return null;
+      const rawDesc = c.description || "";
+      const plainDesc = typeof rawDesc === "string" ? rawDesc.replace(/<[^>]*>/g, "").trim() : "";
+      return {
+        description: c.personality || undefined,
+        scenario: c.scenario || undefined,
+        firstMessage: c.first_message || undefined,
+        creatorNotes: plainDesc || undefined,
+        systemPrompt: optionalString(c.systemPrompt ?? c.system_prompt),
+        postHistoryInstructions: optionalString(c.postHistoryInstructions ?? c.post_history_instructions),
+        characterVersion: optionalString(c.characterVersion ?? c.character_version),
+      };
+    } catch {
+      return null;
+    }
+  },
+};
+
+// ════════════════════════════════════════════════
+// Provider Registry
+// ════════════════════════════════════════════════
+
+const ALL_PROVIDERS: ProviderConfig[] = [
+  chubProvider,
+  jannyProvider,
+  chartavernProvider,
+  pygmalionProvider,
+  wyvernProvider,
+  datacatProvider,
+];
+
+function getProvider(id: string): ProviderConfig {
+  return ALL_PROVIDERS.find((p) => p.id === id) ?? chubProvider;
+}
+
+// ════════════════════════════════════════════════
+// Main Component
+// ════════════════════════════════════════════════
+
+export function BotBrowserView() {
+  const { t: localizeUi } = useUiTranslation();
+  const qc = useQueryClient();
+  const botBrowserOpen = useUIStore((s) => s.botBrowserOpen);
+  const closeBotBrowser = useUIStore((s) => s.closeBotBrowser);
+
+  const browserRootRef = useRef<HTMLDivElement | null>(null);
+  const [sourceId, setSourceId] = useState("chub");
+  const [sourceOpen, setSourceOpen] = useState(false);
+  const sourceButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [sourceMenuPosition, setSourceMenuPosition] = useState<{
+    left: number;
+    top: number;
+    width: number;
+    maxHeight: number;
+  } | null>(null);
+  const provider = useMemo(() => getProvider(sourceId), [sourceId]);
+
+  const updateSourceMenuPosition = useCallback(() => {
+    const button = sourceButtonRef.current;
+    const browserRoot = browserRootRef.current;
+    if (!button || !browserRoot) {
+      setSourceMenuPosition(null);
+      return;
+    }
+
+    const rect = button.getBoundingClientRect();
+    const browserRect = browserRoot.getBoundingClientRect();
+    const width = Math.max(SOURCE_MENU_MIN_WIDTH, rect.width);
+    const minimumLeft = browserRect.left + SOURCE_MENU_MARGIN;
+    const maximumLeft = Math.max(minimumLeft, browserRect.right - width - SOURCE_MENU_MARGIN);
+    const left = Math.min(Math.max(minimumLeft, rect.right - width), maximumLeft);
+    const top = rect.bottom + 4;
+    const availableBottom = Math.min(window.innerHeight, browserRect.bottom);
+    setSourceMenuPosition({
+      left,
+      top,
+      width,
+      maxHeight: Math.max(96, availableBottom - top - SOURCE_MENU_MARGIN),
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!sourceOpen) {
+      setSourceMenuPosition(null);
+      return;
+    }
+
+    updateSourceMenuPosition();
+    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateSourceMenuPosition);
+    if (browserRootRef.current) resizeObserver?.observe(browserRootRef.current);
+    if (sourceButtonRef.current) resizeObserver?.observe(sourceButtonRef.current);
+    window.addEventListener("resize", updateSourceMenuPosition);
+    window.addEventListener("scroll", updateSourceMenuPosition, true);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updateSourceMenuPosition);
+      window.removeEventListener("scroll", updateSourceMenuPosition, true);
+    };
+  }, [sourceOpen, updateSourceMenuPosition]);
+
+  useEffect(() => {
+    if (!botBrowserOpen) setSourceOpen(false);
+  }, [botBrowserOpen]);
+
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState(provider.defaultSort);
+  const [sortAsc, setSortAsc] = useState(false);
+  const [page, setPage] = useState(1);
+  const [nsfw, setNsfwRaw] = useState(() => getPersistNsfw("chub"));
+  const sourceIdRef = useRef(sourceId);
+  sourceIdRef.current = sourceId;
+  const setNsfw = useCallback((val: boolean) => {
+    setNsfwRaw(val);
+    setPersistNsfw(sourceIdRef.current, val);
+  }, []);
+
+  const [tagSearch, setTagSearch] = useState("");
+  const [includeTags, setIncludeTags] = useState<string[]>([]);
+  const [excludeTags, setExcludeTags] = useState<string[]>([]);
+  const [showTagPanel, setShowTagPanel] = useState(false);
+  const [availableTags, setAvailableTags] = useState<string[]>([]);
+  useEffect(() => {
+    if (!showTagPanel) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !event.defaultPrevented) setShowTagPanel(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [showTagPanel]);
+
+  const [showFiltersPanel, setShowFiltersPanel] = useState(false);
+  const [minTokens, setMinTokens] = useState("");
+  const [maxTokens, setMaxTokens] = useState("");
+  const [features, setFeatures] = useState<Record<string, boolean>>({});
+  const [extraToggles, setExtraToggles] = useState<Record<string, boolean>>({});
+
+  const [results, setResults] = useState<BrowseCard[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [selectedCard, setSelectedCard] = useState<BrowseCard | null>(null);
+  const [detail, setDetail] = useState<CardDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [pendingImport, setPendingImport] = useState<PendingBrowserCardImport | null>(null);
+  const [tagImportMode, setTagImportMode] = useState<TagImportMode>("all");
+  const mainScrollRef = useRef<HTMLDivElement | null>(null);
+  const resultsScrollTopRef = useRef(0);
+  const restoreResultsScrollRef = useRef(false);
+  const openDetailScrollRef = useRef(false);
+
+  // ── Auth state ──
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [pygLoggedIn, setPygLoggedInRaw] = useState(() => getPersistLogin("pygmalion"));
+  const [ctLoggedIn, setCtLoggedInRaw] = useState(() => getPersistLogin("chartavern"));
+  const [loginLoading, setLoginLoading] = useState(false);
+
+  const setPygLoggedIn = useCallback((val: boolean) => {
+    setPygLoggedInRaw(val);
+    setPersistLogin("pygmalion", val);
+  }, []);
+  const setCtLoggedIn = useCallback((val: boolean) => {
+    setCtLoggedInRaw(val);
+    setPersistLogin("chartavern", val);
+  }, []);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  // ── Check auth sessions on mount — sync persisted state with server ──
+  useEffect(() => {
+    fetch("/api/bot-browser/pygmalion/session")
+      .then((r) => r.json())
+      .then((d) => {
+        if (!d?.active && pygLoggedIn) {
+          setPygLoggedIn(false);
+          toast.info(localizeUi("ui.botBrowser.botbrowserview.pygmalionSessionExpiredPleaseLogInAgain"));
+        } else if (d?.active) setPygLoggedIn(true);
+      })
+      .catch(() => {});
+    fetch("/api/bot-browser/chartavern/session")
+      .then((r) => r.json())
+      .then((d) => {
+        if (!d?.active && ctLoggedIn) {
+          setCtLoggedIn(false);
+          toast.info(localizeUi("ui.botBrowser.botbrowserview.charactertavernSessionExpiredPleaseLogInAgain"));
+        } else if (d?.active) setCtLoggedIn(true);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localizeUi]);
+
+  // ── Dynamically update nsfwAvailable based on auth ──
+  const effectiveNsfwAvailable = useMemo(() => {
+    if (provider.nsfwMode === "free") return true;
+    if (provider.nsfwMode === "wyvern") return false;
+    if (provider.nsfwMode === "login") {
+      if (sourceId === "pygmalion") return pygLoggedIn;
+      if (sourceId === "chartavern") return ctLoggedIn;
+    }
+    return provider.nsfwAvailable;
+  }, [provider, sourceId, pygLoggedIn, ctLoggedIn]);
+
+  const [datacatNsfwAcked, setDatacatNsfwAcked] = useState(false);
+  const [pendingDatacatSwitch, setPendingDatacatSwitch] = useState(false);
+
+  const performSwitch = useCallback((newId: string) => {
+    const newProv = getProvider(newId);
+    setSourceId(newId);
+    setSourceOpen(false);
+    setQuery("");
+    setSort(newProv.defaultSort);
+    setSortAsc(false);
+    setPage(1);
+    // DataCat is NSFW-only — every character is tagged NSFW upstream, force the flag on
+    setNsfwRaw(newId === "datacat" ? true : getPersistNsfw(newId));
+    setIncludeTags([]);
+    setExcludeTags([]);
+    setTagSearch("");
+    setAvailableTags([]);
+    setShowTagPanel(false);
+    setShowFiltersPanel(false);
+    setMinTokens("");
+    setMaxTokens("");
+    setFeatures({});
+    setExtraToggles({});
+    setResults([]);
+    setTotalCount(0);
+    setError(null);
+    setSelectedCard(null);
+    setDetail(null);
+    setShowLoginModal(false);
+  }, []);
+
+  const switchProvider = useCallback(
+    (newId: string) => {
+      if (newId === "datacat" && !datacatNsfwAcked) {
+        setSourceOpen(false);
+        setPendingDatacatSwitch(true);
+        return;
+      }
+      performSwitch(newId);
+    },
+    [datacatNsfwAcked, performSwitch],
+  );
+
+  useEffect(() => {
+    const allTags = new Set<string>();
+    for (const card of results) {
+      if (card.tags) for (const t of card.tags) allTags.add(t);
+    }
+    setAvailableTags((prev) => {
+      const merged = new Set([...prev, ...allTags]);
+      return Array.from(merged).sort((a, b) => a.localeCompare(b));
+    });
+  }, [results]);
+
+  // When DataCat is the active provider, eagerly populate the tag panel with
+  // only the top-N most-popular DataCat tags. (The full ~28k tag list lives in
+  // the module-level id<->name maps for resolution; rendering all of them as
+  // buttons would freeze the browser.)
+  useEffect(() => {
+    if (sourceId !== "datacat") return;
+    let cancelled = false;
+    loadDatacatTags().then(() => {
+      if (cancelled || datacatTopTagNames.length === 0) return;
+      setAvailableTags((prev) => {
+        const merged = new Set([...prev, ...datacatTopTagNames]);
+        return Array.from(merged).sort((a, b) => a.localeCompare(b));
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceId]);
+
+  const doSearch = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await provider.search({
+        query,
+        page,
+        sort,
+        nsfw,
+        includeTags,
+        excludeTags,
+        sortAsc,
+        minTokens,
+        maxTokens,
+        features,
+        extraToggles,
+      });
+
+      setResults(result.cards);
+      setTotalCount(result.totalCount);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Search failed");
+      setResults([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [
+    provider,
+    query,
+    page,
+    sort,
+    nsfw,
+    includeTags,
+    excludeTags,
+    sortAsc,
+    minTokens,
+    maxTokens,
+    features,
+    extraToggles,
+  ]);
+
+  useEffect(() => {
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(doSearch, query ? 400 : 0);
+    return () => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    };
+  }, [doSearch, query]);
+
+  useLayoutEffect(() => {
+    const scrollContainer = mainScrollRef.current;
+    if (!scrollContainer) return;
+
+    if (selectedCard && openDetailScrollRef.current) {
+      openDetailScrollRef.current = false;
+      scrollContainer.scrollTop = 0;
+      return;
+    }
+
+    if (!selectedCard && restoreResultsScrollRef.current) {
+      restoreResultsScrollRef.current = false;
+      const savedTop = resultsScrollTopRef.current;
+      scrollContainer.scrollTop = savedTop;
+      requestAnimationFrame(() => {
+        scrollContainer.scrollTop = savedTop;
+      });
+    }
+  }, [selectedCard]);
+
+  const openDetail = async (card: BrowseCard) => {
+    resultsScrollTopRef.current = mainScrollRef.current?.scrollTop ?? 0;
+    openDetailScrollRef.current = true;
+    setSelectedCard(card);
+    setDetail(null);
+    setDetailLoading(true);
+    try {
+      const d = await provider.fetchDetail(card);
+      setDetail(d);
+    } catch {
+      toast.error(localizeUi("ui.botBrowser.botbrowserview.failedToLoadCharacterDetails"));
+      restoreResultsScrollRef.current = true;
+      setSelectedCard(null);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const prepareCardImport = async (card: BrowseCard): Promise<PreparedBrowserCardImport> => {
+    let downloadUrl = "";
+    if (sourceId === "chub") downloadUrl = `/api/bot-browser/chub/download/${card.id}`;
+    else if (sourceId === "chartavern") downloadUrl = `/api/bot-browser/chartavern/download/${card.id}`;
+    else if (sourceId === "janny") downloadUrl = `/api/bot-browser/janny/download/${encodeURIComponent(card.id)}`;
+
+    let prefetchedJannyCard: Awaited<ReturnType<typeof parsePngCharacterCard>> | null = null;
+    if (sourceId === "janny") {
+      try {
+        const cardResponse = await fetchCompleteJannyCard(card.id);
+        if (!cardResponse.ok) throw new Error("JannyAI character-card download failed");
+        const cardFile = new File([await cardResponse.blob()], "character.png", { type: "image/png" });
+        const parsedCard = await parsePngCharacterCard(cardFile);
+        if (!hasJannyCharacterDefinition(readCharacterCardDetailFields(parsedCard.json))) {
+          throw new Error("JannyAI character-card definition is incomplete");
+        }
+        prefetchedJannyCard = parsedCard;
+      } catch {
+        downloadUrl = "";
+      }
+    }
+
+    if (downloadUrl) {
+      let parsedCard = prefetchedJannyCard;
+      if (sourceId !== "janny") {
+        const response = await fetch(downloadUrl);
+        if (!response.ok) throw new Error(localizeUi("ui.botBrowser.botbrowserview.importFailed"));
+        const file = new File([await response.blob()], "character.png", { type: "image/png" });
+        parsedCard = await parsePngCharacterCard(file);
+      }
+      if (!parsedCard) throw new Error(localizeUi("ui.botBrowser.botbrowserview.jannyCompleteCardUnavailable"));
+
+      const { json, imageDataUrl } = parsedCard;
+      const cardDetail = sourceId === "chub" ? (detail ?? (await provider.fetchDetail(card))) : detail;
+      const importJsonWithLorebook = attachEmbeddedLorebookToCharacterJson(
+        json as Record<string, unknown>,
+        cardDetail?.embeddedLorebook,
+      );
+      const importJson =
+        sourceId === "chub"
+          ? mergeChubDetailIntoCharacterJson(
+              importJsonWithLorebook,
+              { name: card.name, creator: card.creator, tags: card.tags },
+              cardDetail,
+            )
+          : importJsonWithLorebook;
+      const embeddedLorebook = cardDetail?.embeddedLorebook ?? readEmbeddedLorebookFromCharacterPayload(importJson);
+
+      return {
+        card,
+        embeddedLorebook,
+        payload: {
+          ...importJson,
+          _avatarDataUrl: imageDataUrl,
+          _botBrowserSource: `${sourceId}:${card.id}`,
+        },
+      };
+    }
+
+    let cardDetail = detail;
+    if (sourceId === "janny" && !hasJannyCharacterDefinition(cardDetail)) {
+      cardDetail = await provider.fetchDetail(card, { skipCompleteCard: true });
+    } else if (!cardDetail) {
+      cardDetail = await provider.fetchDetail(card);
+    }
+    if (sourceId === "janny" && !hasJannyCharacterDefinition(cardDetail)) {
+      throw new Error(localizeUi("ui.botBrowser.botbrowserview.jannyCompleteCardUnavailable"));
+    }
+
+    const descriptionText = cardDetail?.description || "";
+    const personalityText = cardDetail?.personality || "";
+    const payload: Record<string, unknown> = {
+      name: card.name,
+      description: descriptionText || personalityText,
+      personality: personalityText && descriptionText ? personalityText : "",
+      scenario: cardDetail?.scenario || "",
+      first_mes: cardDetail?.firstMessage || "",
+      mes_example: cardDetail?.exampleDialogs || "",
+      creator_notes: cardDetail?.creatorNotes || "",
+      system_prompt: cardDetail?.systemPrompt || "",
+      post_history_instructions: cardDetail?.postHistoryInstructions || "",
+      character_version: cardDetail?.characterVersion || "",
+      tags: card.tags,
+      creator: card.creator,
+      alternate_greetings: cardDetail?.alternateGreetings || [],
+      extensions: { [`${sourceId}`]: { id: card.id } },
+      _botBrowserSource: `${sourceId}:${card.id}`,
+    };
+    if (hasLorebookEntries(cardDetail?.embeddedLorebook)) payload.character_book = cardDetail?.embeddedLorebook;
+
+    if (card.avatarUrl) {
+      try {
+        const avatarResponse = await fetch(card.avatarUrl);
+        if (avatarResponse.ok) {
+          const avatarBlob = await avatarResponse.blob();
+          const reader = new FileReader();
+          payload._avatarDataUrl = await new Promise<string>((resolve, reject) => {
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = () => reject(reader.error ?? new Error("Failed to read avatar"));
+            reader.readAsDataURL(avatarBlob);
+          });
+        }
+      } catch {
+        // The card remains importable when a provider blocks its avatar URL.
+      }
+    }
+
+    return { card, payload, embeddedLorebook: cardDetail?.embeddedLorebook };
+  };
+
+  const importPreparedCard = async (
+    prepared: PreparedBrowserCardImport,
+    target: BrowserCardImportTarget,
+    importEmbeddedLorebook: boolean,
+  ) => {
+    if (target === "character") {
+      const response = await fetch("/api/import/st-character", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...prepared.payload,
+          importEmbeddedLorebook,
+          tagImportMode,
+        }),
+      });
+      const data = (await response.json()) as { success?: boolean; name?: string; error?: string; lorebook?: unknown };
+      if (!response.ok || !data.success)
+        throw new Error(data.error ?? localizeUi("ui.botBrowser.botbrowserview.importFailed"));
+
+      toast.success(
+        localizeUi("ui.botBrowser.botbrowserview.importedValue1Successfully", {
+          value1: data.name ?? prepared.card.name,
+        }),
+      );
+      void qc.invalidateQueries({ queryKey: characterKeys.list() });
+      if (data.lorebook) void qc.invalidateQueries({ queryKey: lorebookKeys.all });
+      return;
+    }
+
+    const cardData = readCharacterCardData(prepared.payload);
+    const extensions = optionalRecord(cardData.extensions) ?? {};
+    const personaName = optionalString(cardData.name) ?? prepared.card.name;
+    const sourceTags = readCardTags(cardData.tags);
+    const personaTags = await filterPersonaImportTags(sourceTags, tagImportMode);
+    const personaResponse = await fetch("/api/characters/personas", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: personaName,
+        description: optionalString(cardData.description) ?? optionalString(cardData.personality) ?? "",
+        personality: optionalString(cardData.personality) ?? "",
+        scenario: optionalString(cardData.scenario) ?? "",
+        backstory: optionalString(extensions.backstory) ?? "",
+        appearance: optionalString(extensions.appearance) ?? "",
+        creator: optionalString(cardData.creator) ?? prepared.card.creator,
+        creatorNotes: optionalString(cardData.creator_notes) ?? "",
+        personaVersion: optionalString(cardData.character_version) ?? "",
+        tags: personaTags,
+      }),
+    });
+    const persona = (await personaResponse.json()) as { id?: string; error?: string };
+    if (!personaResponse.ok || !persona.id) {
+      throw new Error(persona.error ?? localizeUi("ui.botBrowser.botbrowserview.importFailed"));
+    }
+
+    const avatarDataUrl = optionalString(prepared.payload._avatarDataUrl);
+    if (avatarDataUrl?.startsWith("data:image/")) {
+      try {
+        const avatarResponse = await fetch(`/api/characters/personas/${persona.id}/avatar`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ avatar: avatarDataUrl, filename: `persona-${persona.id}.png` }),
+        });
+        if (!avatarResponse.ok) throw new Error("Persona avatar upload failed");
+      } catch {
+        toast.warning(localizeUi("ui.botBrowser.importDialog.personaImportedWithoutAvatar"));
+      }
+    }
+
+    if (importEmbeddedLorebook && hasLorebookEntries(prepared.embeddedLorebook)) {
+      try {
+        const embedded = prepared.embeddedLorebook as Record<string, unknown>;
+        const lorebookResponse = await fetch("/api/import/st-lorebook", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...embedded,
+            name: optionalString(embedded.name) ?? `${personaName}'s Lorebook`,
+            __filename: `${personaName}'s Lorebook`,
+          }),
+        });
+        const lorebook = (await lorebookResponse.json()) as { success?: boolean; error?: string };
+        if (!lorebookResponse.ok || !lorebook.success) {
+          throw new Error(lorebook.error ?? "Lorebook import failed");
+        }
+        void qc.invalidateQueries({ queryKey: lorebookKeys.all });
+      } catch {
+        toast.warning(localizeUi("ui.botBrowser.importDialog.personaImportedWithoutLorebook"));
+      }
+    }
+
+    toast.success(localizeUi("ui.characters.charactereditor.importedValue1AsAPersona", { value1: personaName }));
+    void qc.invalidateQueries({ queryKey: characterKeys.personas });
+  };
+
+  const handleImport = (card: BrowseCard) => {
+    setSourceOpen(false);
+    setPendingImport({ card });
+  };
+
+  const chooseImportTarget = async (target: BrowserCardImportTarget) => {
+    if (!pendingImport) return;
+    const { card } = pendingImport;
+    setPendingImport({ card, target });
+    setImporting(true);
+    try {
+      const prepared = await prepareCardImport(card);
+      if (hasLorebookEntries(prepared.embeddedLorebook)) {
+        setPendingImport({ card, target, prepared });
+        return;
+      }
+      await importPreparedCard(prepared, target, false);
+      setPendingImport(null);
+    } catch (error) {
+      setPendingImport({ card });
+      toast.error(error instanceof Error ? error.message : localizeUi("ui.botBrowser.botbrowserview.importFailed"));
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const finishImport = async (importEmbeddedLorebook: boolean) => {
+    if (!pendingImport?.target || !pendingImport.prepared) return;
+    setImporting(true);
+    try {
+      await importPreparedCard(pendingImport.prepared, pendingImport.target, importEmbeddedLorebook);
+      setPendingImport(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : localizeUi("ui.botBrowser.botbrowserview.importFailed"));
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const toggleIncludeTag = (tag: string) => {
+    setIncludeTags((prev) => (prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]));
+    setExcludeTags((prev) => prev.filter((t) => t !== tag));
+    setPage(1);
+  };
+  const toggleExcludeTag = (tag: string) => {
+    setExcludeTags((prev) => (prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]));
+    setIncludeTags((prev) => prev.filter((t) => t !== tag));
+    setPage(1);
+  };
+  const clearAllTags = () => {
+    setIncludeTags([]);
+    setExcludeTags([]);
+    setPage(1);
+  };
+
+  const filteredTags = useMemo(() => {
+    if (!tagSearch.trim()) return availableTags;
+    const q = tagSearch.toLowerCase();
+    return availableTags.filter((t) => t.toLowerCase().includes(q));
+  }, [availableTags, tagSearch]);
+
+  const addCustomTag = () => {
+    const custom = tagSearch.trim().toLowerCase();
+    if (custom.length >= 2 && !includeTags.includes(custom)) {
+      setIncludeTags((prev) => [...prev, custom]);
+      setTagSearch("");
+      setPage(1);
+    }
+  };
+
+  const toggleFeature = (key: string) => {
+    setFeatures((prev) => ({ ...prev, [key]: !prev[key] }));
+    setPage(1);
+  };
+  const toggleExtra = (key: string) => {
+    setExtraToggles((prev) => ({ ...prev, [key]: !prev[key] }));
+    setPage(1);
+  };
+
+  const activeFeatureCount =
+    provider.features.filter((f) => features[f.key]).length +
+    provider.extraToggles.filter((t) => extraToggles[t.key]).length;
+  const hasActiveFeatures = activeFeatureCount > 0;
+  const canAddCustomTag = tagSearch.trim().length >= 2 && !includeTags.includes(tagSearch.trim().toLowerCase());
+  const perPage = provider.pageSize;
+  const totalPages = Math.max(1, Math.ceil(totalCount / perPage));
+
+  const sortGroups = useMemo(() => {
+    const groups: { label: string; options: SortOption[] }[] = [];
+    for (const opt of provider.sortOptions) {
+      const groupLabel = opt.group || "";
+      let group = groups.find((g) => g.label === groupLabel);
+      if (!group) {
+        group = { label: groupLabel, options: [] };
+        groups.push(group);
+      }
+      group.options.push(opt);
+    }
+    return groups;
+  }, [provider]);
+
+  // ── NSFW click handler ──
+  const handleNsfwClick = (e: React.MouseEvent) => {
+    if (effectiveNsfwAvailable) return; // Let the checkbox handle it
+    e.preventDefault();
+    if (sourceId === "wyvern") {
+      toast.info(localizeUi("ui.botBrowser.botbrowserview.useThePopularNsfwSortOptionToBrowseNsfw"));
+    } else if (provider.nsfwMode === "login") {
+      setShowLoginModal(true);
+    }
+  };
+
+  // ── Auth handlers ──
+  const handlePygmalionSetToken = async (token: string) => {
+    setLoginLoading(true);
+    try {
+      const res = await fetch("/api/bot-browser/pygmalion/set-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Failed to save token");
+
+      // Validate
+      const valRes = await fetch("/api/bot-browser/pygmalion/validate");
+      const valData = await valRes.json();
+      if (!valData.valid) throw new Error(valData.reason || "Token validation failed");
+
+      setPygLoggedIn(true);
+      setShowLoginModal(false);
+      setNsfw(true);
+      setPage(1);
+      toast.success(localizeUi("ui.botBrowser.botbrowserview.loggedInToPygmalionNsfwContentEnabled"));
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : localizeUi("ui.botBrowser.botbrowserview.tokenValidationFailed"),
+      );
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const handlePygmalionLogout = async () => {
+    await fetch("/api/bot-browser/pygmalion/logout", { method: "POST" });
+    setPygLoggedIn(false);
+    setNsfw(false);
+    setPage(1);
+    toast.info(localizeUi("ui.botBrowser.botbrowserview.loggedOutOfPygmalion"));
+  };
+
+  const handleCtSetCookie = async (cookie: string) => {
+    setLoginLoading(true);
+    try {
+      const res = await fetch("/api/bot-browser/chartavern/set-cookie", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cookie }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Failed to save cookie");
+
+      // Validate
+      const valRes = await fetch("/api/bot-browser/chartavern/validate");
+      const valData = await valRes.json();
+      if (!valData.valid) throw new Error(valData.reason || "Cookie validation failed");
+
+      setCtLoggedIn(true);
+      setShowLoginModal(false);
+      setNsfw(true);
+      setPage(1);
+      toast.success(
+        localizeUi("ui.botBrowser.botbrowserview.loggedInToCharactertavernValue1", {
+          value1: valData.hasNsfw
+            ? localizeUi("ui.botBrowser.botbrowserview.nsfwContentDetected")
+            : localizeUi("ui.botBrowser.botbrowserview.nsfwContentEnabled"),
+        }),
+      );
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : localizeUi("ui.botBrowser.botbrowserview.cookieValidationFailed"),
+      );
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const handleCtLogout = async () => {
+    await fetch("/api/bot-browser/chartavern/logout", { method: "POST" });
+    setCtLoggedIn(false);
+    setNsfw(false);
+    setPage(1);
+    toast.info(localizeUi("ui.botBrowser.botbrowserview.loggedOutOfCharactertavern"));
+  };
+
+  return (
+    <div
+      ref={browserRootRef}
+      data-component="BotBrowserView"
+      className="mari-chrome-token-scope flex h-full min-h-0 flex-col overflow-hidden bg-[radial-gradient(circle_at_top_left,_color-mix(in_srgb,var(--marinara-chat-chrome-accent)_14%,transparent),_transparent_30%),radial-gradient(circle_at_top_right,_color-mix(in_srgb,var(--marinara-chat-chrome-text)_10%,transparent),_transparent_26%),var(--background)] text-[var(--marinara-chat-chrome-panel-text)]"
+    >
+      {/* ═══ Header ═══ */}
+      <header className="relative z-10 flex shrink-0 flex-col gap-2 border-b border-[var(--marinara-chat-chrome-panel-divider)] bg-[var(--card)]/85 px-3 py-2 backdrop-blur-xl md:px-6 md:py-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
+          <button
+            type="button"
+            onClick={closeBotBrowser}
+            className="mari-chrome-control h-9 w-9 shrink-0 rounded-2xl p-0 md:h-10 md:w-10"
+            title={localizeUi("ui.characters.characterlibraryview.closeLibrary")}
+            aria-label={localizeUi("ui.characters.characterlibraryview.closeLibrary")}
+          >
+            <ArrowLeft size="0.95rem" />
+          </button>
+          <div className="min-w-0">
+            <p className="text-[0.625rem] font-semibold uppercase tracking-[0.28em] text-[var(--marinara-chat-chrome-panel-muted)]">
+              {localizeUi("ui.botBrowser.botbrowserview.cardsLibrary")}
+            </p>
+            <h1 className="truncate text-base font-semibold text-[var(--marinara-chat-chrome-panel-title)] md:text-2xl">
+              {localizeUi("ui.botBrowser.botbrowserview.browseCharacterCardsOnline")}
+            </h1>
+            <p className="truncate text-xs text-[var(--marinara-chat-chrome-panel-muted)] md:text-sm">
+              {totalCount > 0
+                ? localizeUi("ui.botBrowser.botbrowserview.value1CardsFromValue2", {
+                    value1: totalCount.toLocaleString(),
+                    value2: provider.name,
+                  })
+                : localizeUi("ui.botBrowser.botbrowserview.browsingValue1", { value1: provider.name })}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2 sm:ml-auto lg:w-auto">
+          <div className="relative">
+            <button
+              ref={sourceButtonRef}
+              onClick={() => setSourceOpen((v) => !v)}
+              className="mari-chrome-control h-9 px-3 text-xs md:h-10"
+            >
+              <span>{provider.icon}</span>
+              <span>{provider.name}</span>
+              <ChevronDown size="0.625rem" className={cn("transition-transform", sourceOpen && "rotate-180")} />
+            </button>
+          </div>
+          {sourceOpen &&
+            sourceMenuPosition &&
+            createPortal(
+              <>
+                <button
+                  type="button"
+                  aria-label={localizeUi("ui.botBrowser.botbrowserview.closeProviderMenu")}
+                  className="fixed inset-0 z-[9998] cursor-default"
+                  onClick={() => setSourceOpen(false)}
+                />
+                <div
+                  className="mari-chrome-token-scope mari-chrome-selection-bar mari-chrome-selection-bar--opaque fixed z-[9999] min-w-[180px] overflow-y-auto shadow-xl"
+                  style={{
+                    left: sourceMenuPosition.left,
+                    top: sourceMenuPosition.top,
+                    width: sourceMenuPosition.width,
+                    maxHeight: sourceMenuPosition.maxHeight,
+                  }}
+                >
+                  {ALL_PROVIDERS.map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => switchProvider(p.id)}
+                      className={cn(
+                        "flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-xs transition-colors",
+                        p.id === sourceId
+                          ? "mari-chrome-accent-surface mari-accent-animated font-semibold"
+                          : "hover:bg-[var(--accent)]",
+                      )}
+                    >
+                      <span className="text-sm">{p.icon}</span>
+                      <span>{p.name}</span>
+                      {p.id === sourceId && <span className="ml-auto text-[0.6rem]">✓</span>}
+                    </button>
+                  ))}
+                </div>
+              </>,
+              document.body,
+            )}
+          {/* Auth indicator for login providers */}
+          {sourceId === "pygmalion" && pygLoggedIn && (
+            <span className="flex items-center gap-1 text-[0.65rem] text-emerald-400">
+              <CheckCircle size="0.625rem" /> {localizeUi("ui.botBrowser.botbrowserview.loggedIn")}
+            </span>
+          )}
+          {sourceId === "chartavern" && ctLoggedIn && (
+            <span className="flex items-center gap-1 text-[0.65rem] text-emerald-400">
+              <CheckCircle size="0.625rem" /> {localizeUi("ui.botBrowser.botbrowserview.sessionActive")}
+            </span>
+          )}
+        </div>
+      </header>
+
+      <div className="relative flex flex-1 overflow-hidden">
+        {/* ═══ Tag Sidebar ═══ */}
+        {/* Phones get the tag list as an overlay drawer instead of a column that squeezes the results. */}
+        {showTagPanel && (
+          <button
+            type="button"
+            aria-label={localizeUi("navigation.common.close")}
+            onClick={() => setShowTagPanel(false)}
+            className="absolute inset-0 z-20 bg-black/50 md:hidden"
+          />
+        )}
+        {showTagPanel && (
+          <div className="flex w-[260px] flex-shrink-0 flex-col border-r border-[var(--marinara-chat-chrome-panel-divider)] bg-[var(--marinara-chat-chrome-panel-bg)]/80 max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-30 max-md:w-[min(18rem,85%)] max-md:bg-[var(--marinara-chat-chrome-panel-bg)] max-md:shadow-2xl">
+            <div className="flex items-center justify-between border-b border-[var(--marinara-chat-chrome-panel-divider)] px-3 py-2">
+              <span className="mari-chrome-text-strong flex items-center gap-1.5 text-xs font-semibold">
+                <Tag size="0.75rem" /> {localizeUi("ui.characters.metadatatab.tags")}
+              </span>
+              <div className="flex items-center gap-1">
+                {(includeTags.length > 0 || excludeTags.length > 0) && (
+                  <button
+                    onClick={clearAllTags}
+                    className="mari-chrome-control mari-chrome-control--danger min-h-0 px-1.5 py-0.5 text-[0.6rem]"
+                  >
+                    {localizeUi("lorebook.editor.batch.clear")}
+                  </button>
+                )}
+                <button
+                  onClick={() => setShowTagPanel(false)}
+                  className="mari-chrome-control mari-chrome-control--small min-h-0 p-0.5 max-md:min-h-9 max-md:min-w-9"
+                  aria-label={localizeUi("navigation.common.close")}
+                  title={localizeUi("navigation.common.close")}
+                >
+                  <X size="0.75rem" />
+                </button>
+              </div>
+            </div>
+            <div className="px-3 py-2">
+              <input
+                type="text"
+                value={tagSearch}
+                onChange={(e) => setTagSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addCustomTag();
+                  }
+                }}
+                placeholder={localizeUi("ui.botBrowser.botbrowserview.searchTags")}
+                className="mari-chrome-field mari-chrome-field--compact w-full px-2.5 py-1.5 text-xs"
+              />
+            </div>
+            {(includeTags.length > 0 || excludeTags.length > 0) && (
+              <div className="flex flex-wrap gap-1 border-b border-[var(--marinara-chat-chrome-panel-divider)] px-3 pb-2">
+                {includeTags.map((tag) => (
+                  <span
+                    key={`inc-${tag}`}
+                    onClick={() => toggleIncludeTag(tag)}
+                    className="cursor-pointer rounded-full bg-emerald-500/20 px-2 py-0.5 text-[0.6rem] font-medium text-emerald-400 ring-1 ring-emerald-500/30 transition-colors hover:bg-emerald-500/30"
+                  >
+                    + {tag}
+                  </span>
+                ))}
+                {excludeTags.map((tag) => (
+                  <span
+                    key={`exc-${tag}`}
+                    onClick={() => toggleExcludeTag(tag)}
+                    className="cursor-pointer rounded-full bg-red-500/20 px-2 py-0.5 text-[0.6rem] font-medium text-red-400 ring-1 ring-red-500/30 transition-colors hover:bg-red-500/30"
+                  >
+                    − {tag}
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="flex-1 overflow-y-auto px-1 py-1">
+              {canAddCustomTag && (
+                <div className="mx-1 mb-1 flex flex-col gap-1">
+                  <button
+                    onClick={addCustomTag}
+                    className="flex w-full items-center gap-1.5 rounded-md bg-emerald-500/10 px-2 py-1.5 text-xs font-medium text-emerald-400 transition-colors hover:bg-emerald-500/20"
+                  >
+                    {localizeUi("ui.characters.dialoguetab.add")} <strong>{tagSearch.trim().toLowerCase()}</strong>{" "}
+                    {localizeUi("ui.botBrowser.botbrowserview.asFilter")}
+                  </button>
+                  <button
+                    onClick={() => {
+                      const custom = tagSearch.trim().toLowerCase();
+                      if (custom.length >= 2 && !excludeTags.includes(custom)) {
+                        setExcludeTags((prev) => [...prev, custom]);
+                        setIncludeTags((prev) => prev.filter((t) => t !== custom));
+                        setTagSearch("");
+                        setPage(1);
+                      }
+                    }}
+                    className="flex w-full items-center gap-1.5 rounded-md bg-red-500/10 px-2 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/20"
+                  >
+                    {localizeUi("ui.botBrowser.botbrowserview.block")} <strong>{tagSearch.trim().toLowerCase()}</strong>{" "}
+                    {localizeUi("ui.botBrowser.botbrowserview.fromResults")}
+                  </button>
+                </div>
+              )}
+              {filteredTags.length === 0 && !canAddCustomTag ? (
+                <div className="px-2 py-4 text-center text-[0.65rem] italic text-[var(--muted-foreground)]">
+                  {availableTags.length === 0
+                    ? localizeUi("ui.botBrowser.botbrowserview.tagsWillAppearAfterSearching")
+                    : localizeUi("ui.botBrowser.botbrowserview.noTagsMatchFilter")}
+                </div>
+              ) : (
+                filteredTags.map((tag) => {
+                  const isIncluded = includeTags.includes(tag);
+                  const isExcluded = excludeTags.includes(tag);
+                  return (
+                    <div
+                      key={tag}
+                      className="mari-chrome-text flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors hover:bg-[var(--accent)]/50"
+                    >
+                      <button
+                        onClick={() => toggleIncludeTag(tag)}
+                        className={cn(
+                          "flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[0.5rem] transition-all",
+                          isIncluded
+                            ? "border-emerald-500 bg-emerald-500/20 text-emerald-400"
+                            : "border-[var(--border)] hover:border-emerald-500/50",
+                        )}
+                      >
+                        {isIncluded && "✓"}
+                      </button>
+                      <span className="min-w-0 flex-1 truncate">{tag}</span>
+                      <button
+                        onClick={() => toggleExcludeTag(tag)}
+                        className={cn(
+                          "flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[0.5rem] transition-all",
+                          isExcluded
+                            ? "border-red-500 bg-red-500/20 text-red-400"
+                            : "border-red-500/30 text-red-400/40 hover:border-red-500/60 hover:text-red-400 hover:bg-red-500/10",
+                        )}
+                      >
+                        −
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ═══ Main area ═══ */}
+        <div ref={mainScrollRef} className="flex-1 overflow-y-auto p-4">
+          {selectedCard ? (
+            <DetailView
+              card={selectedCard}
+              detail={detail}
+              loading={detailLoading}
+              importing={importing}
+              provider={provider}
+              onBack={() => {
+                restoreResultsScrollRef.current = true;
+                setSelectedCard(null);
+                setDetail(null);
+              }}
+              onImport={handleImport}
+              tagImportMode={tagImportMode}
+              onTagImportModeChange={setTagImportMode}
+              onDetailUpdate={setDetail}
+            />
+          ) : (
+            <div className="flex flex-col gap-4">
+              {/* ═══ Toolbar ═══ */}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative min-w-[200px] flex-1">
+                  <Search
+                    size="0.875rem"
+                    className="mari-chrome-field-icon pointer-events-none absolute left-3 top-1/2 -translate-y-1/2"
+                  />
+                  <input
+                    type="text"
+                    value={query}
+                    onChange={(e) => {
+                      setQuery(e.target.value);
+                      setPage(1);
+                    }}
+                    placeholder={localizeUi("ui.botBrowser.botbrowserview.searchCharacters")}
+                    className="mari-chrome-field h-10 w-full py-0 pl-9 pr-8 text-sm md:h-9"
+                  />
+                  {query && (
+                    <button
+                      onClick={() => setQuery("")}
+                      className="mari-chrome-control mari-chrome-control--small absolute right-1.5 top-1/2 h-7 min-h-0 w-7 -translate-y-1/2 p-0"
+                    >
+                      <X size="0.75rem" />
+                    </button>
+                  )}
+                </div>
+
+                <select
+                  value={sort}
+                  onChange={(e) => {
+                    setSort(e.target.value);
+                    setPage(1);
+                  }}
+                  className="mari-chrome-field h-10 px-3 py-0 text-xs md:h-9"
+                >
+                  {sortGroups.map((group) =>
+                    group.label ? (
+                      <optgroup key={group.label} label={group.label}>
+                        {group.options.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ) : (
+                      group.options.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))
+                    ),
+                  )}
+                </select>
+
+                <button
+                  onClick={() => setShowTagPanel((v) => !v)}
+                  className={cn(
+                    "mari-chrome-control h-10 px-3 py-0 text-xs md:h-9",
+                    showTagPanel || includeTags.length > 0 || excludeTags.length > 0
+                      ? "mari-chrome-control--selected"
+                      : "",
+                  )}
+                >
+                  <Tag size="0.75rem" /> {localizeUi("ui.characters.metadatatab.tags")}
+                  {(includeTags.length > 0 || excludeTags.length > 0) && (
+                    <span className="rounded-md bg-[var(--marinara-chat-chrome-highlight-bg)] px-1.5 text-[0.6rem] font-semibold">
+                      {includeTags.length + excludeTags.length}
+                    </span>
+                  )}
+                </button>
+
+                {(provider.features.length > 0 ||
+                  provider.hasSortDirection ||
+                  provider.hasTokenFilters ||
+                  provider.extraToggles.length > 0) && (
+                  <button
+                    onClick={() => setShowFiltersPanel((v) => !v)}
+                    className={cn(
+                      "mari-chrome-control h-10 px-3 py-0 text-xs md:h-9",
+                      (showFiltersPanel || hasActiveFeatures) && "mari-chrome-control--selected",
+                    )}
+                  >
+                    <SlidersHorizontal size="0.75rem" /> {localizeUi("ui.botBrowser.botbrowserview.filters")}
+                    {hasActiveFeatures && (
+                      <span className="rounded-md bg-[var(--marinara-chat-chrome-highlight-bg)] px-1.5 text-[0.6rem] font-semibold">
+                        {activeFeatureCount}
+                      </span>
+                    )}
+                  </button>
+                )}
+
+                {/* NSFW toggle */}
+                {(() => {
+                  const isLoginProvider = provider.nsfwMode === "login";
+                  const isLoggedInForProvider =
+                    (sourceId === "pygmalion" && pygLoggedIn) || (sourceId === "chartavern" && ctLoggedIn);
+                  const nsfwGreyedOut = isLoginProvider && isLoggedInForProvider;
+                  return (
+                    <label
+                      className={cn(
+                        "mari-chrome-control h-10 select-none px-3 py-0 text-xs md:h-9",
+                        nsfwGreyedOut
+                          ? "cursor-not-allowed opacity-40"
+                          : effectiveNsfwAvailable
+                            ? "cursor-pointer"
+                            : "cursor-pointer opacity-50",
+                      )}
+                      title={
+                        nsfwGreyedOut
+                          ? localizeUi("ui.botBrowser.botbrowserview.nsfwDependsOnYourAccountSettings")
+                          : effectiveNsfwAvailable
+                            ? localizeUi("ui.botBrowser.botbrowserview.toggleNsfwContent")
+                            : sourceId === "wyvern"
+                              ? localizeUi("ui.botBrowser.botbrowserview.useThePopularNsfwSortOption")
+                              : sourceId === "datacat"
+                                ? localizeUi("ui.botBrowser.botbrowserview.datacatIsNsfwOnly_a49a06a")
+                                : localizeUi("ui.botBrowser.botbrowserview.clickToLogInToValue1ForNsfwContent", {
+                                    value1: provider.name,
+                                  })
+                      }
+                      onClick={nsfwGreyedOut ? (e: React.MouseEvent) => e.preventDefault() : handleNsfwClick}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={nsfwGreyedOut ? true : nsfw}
+                        disabled={nsfwGreyedOut || !effectiveNsfwAvailable}
+                        onChange={(e) => {
+                          if (!nsfwGreyedOut && effectiveNsfwAvailable) {
+                            setNsfw(e.target.checked);
+                            setPage(1);
+                          }
+                        }}
+                        className="accent-[var(--primary)]"
+                      />{" "}
+                      {localizeUi("ui.botBrowser.botbrowserview.nsfw")}
+                      {nsfwGreyedOut && (
+                        <span className="ml-0.5 text-[0.55rem] text-[var(--muted-foreground)]">
+                          {localizeUi("ui.botBrowser.botbrowserview.account")}
+                        </span>
+                      )}
+                      {!nsfwGreyedOut && isLoginProvider && !effectiveNsfwAvailable && (
+                        <LogIn size="0.625rem" className="ml-0.5 opacity-70" />
+                      )}
+                    </label>
+                  );
+                })()}
+
+                {/* Login button / auth info / logout for providers requiring login */}
+                {provider.nsfwMode === "login" &&
+                  ((sourceId === "pygmalion" && pygLoggedIn) || (sourceId === "chartavern" && ctLoggedIn) ? (
+                    <div className="flex items-center gap-1.5">
+                      <span className="flex items-center gap-1.5 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-[0.65rem] text-emerald-400">
+                        <CheckCircle size="0.625rem" />{" "}
+                        {localizeUi("ui.botBrowser.botbrowserview.nsfwDependsOnYourAccountSettings")}
+                      </span>
+                      <button
+                        onClick={() => {
+                          if (sourceId === "pygmalion") handlePygmalionLogout();
+                          else if (sourceId === "chartavern") handleCtLogout();
+                        }}
+                        className="mari-chrome-control mari-chrome-control--small px-2.5 py-2 text-[0.65rem] hover:text-[var(--destructive)]"
+                        title={localizeUi("ui.botBrowser.botbrowserview.logOut")}
+                      >
+                        <LogOut size="0.625rem" /> {localizeUi("ui.botBrowser.botbrowserview.logout")}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setShowLoginModal(true)}
+                      className="mari-chrome-control h-10 px-3 py-0 text-xs md:h-9"
+                    >
+                      <LogIn size="0.75rem" /> {localizeUi("ui.botBrowser.botbrowserview.logIn")}
+                    </button>
+                  ))}
+                {sourceId === "wyvern" && (
+                  <span className="flex items-center gap-1.5 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[0.65rem] text-amber-400">
+                    {localizeUi("ui.botBrowser.botbrowserview.usePopularNsfwSortForNsfwContent")}
+                  </span>
+                )}
+
+                <button
+                  onClick={doSearch}
+                  className="mari-chrome-control h-10 w-10 p-0 text-xs md:h-9 md:w-9"
+                  title={localizeUi("ui.noodle.noodlehome.refresh")}
+                >
+                  <RefreshCw size="0.75rem" />
+                </button>
+              </div>
+
+              {/* ═══ Filters panel ═══ */}
+              {showFiltersPanel && (
+                <div className="mari-chrome-selection-bar flex flex-wrap gap-6 px-4 py-3">
+                  {(provider.features.length > 0 || provider.extraToggles.length > 0) && (
+                    <div className="flex flex-col gap-2">
+                      <span className="mari-chrome-text-muted text-[0.65rem] font-semibold uppercase tracking-wider">
+                        {localizeUi("ui.botBrowser.botbrowserview.characterMustHave")}
+                      </span>
+                      {provider.features.map((f) => (
+                        <label key={f.key} className="flex cursor-pointer items-center gap-2 text-xs">
+                          <input
+                            type="checkbox"
+                            checked={!!features[f.key]}
+                            onChange={() => toggleFeature(f.key)}
+                            className="accent-[var(--primary)]"
+                          />
+                          <span>
+                            {f.icon} {f.label}
+                          </span>
+                        </label>
+                      ))}
+                      {provider.extraToggles.map((t) => (
+                        <label key={t.key} className="flex cursor-pointer items-center gap-2 text-xs">
+                          <input
+                            type="checkbox"
+                            checked={!!extraToggles[t.key]}
+                            onChange={() => toggleExtra(t.key)}
+                            className="accent-[var(--primary)]"
+                          />
+                          <span>
+                            {t.icon} {t.label}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                  {(provider.hasSortDirection || provider.hasTokenFilters) && (
+                    <div className="flex flex-col gap-2">
+                      <span className="mari-chrome-text-muted text-[0.65rem] font-semibold uppercase tracking-wider">
+                        {localizeUi("ui.agents.regexscripteditor.advancedOptions")}
+                      </span>
+                      {provider.hasSortDirection && (
+                        <div className="flex items-center gap-2">
+                          <label className="mari-chrome-text-muted w-24 text-xs">
+                            {localizeUi("ui.botBrowser.botbrowserview.sortDirection")}
+                          </label>
+                          <select
+                            value={sortAsc ? "asc" : "desc"}
+                            onChange={(e) => {
+                              setSortAsc(e.target.value === "asc");
+                              setPage(1);
+                            }}
+                            className="mari-chrome-field mari-chrome-field--compact px-2 py-1 text-xs"
+                          >
+                            <option value="desc">{localizeUi("ui.botBrowser.botbrowserview.descending")}</option>
+                            <option value="asc">{localizeUi("ui.botBrowser.botbrowserview.ascending")}</option>
+                          </select>
+                        </div>
+                      )}
+                      {provider.hasTokenFilters && (
+                        <>
+                          <div className="flex items-center gap-2">
+                            <label className="mari-chrome-text-muted w-24 text-xs">
+                              {localizeUi("ui.botBrowser.botbrowserview.minTokens")}
+                            </label>
+                            <input
+                              type="number"
+                              value={minTokens}
+                              onChange={(e) => {
+                                setMinTokens(e.target.value);
+                                setPage(1);
+                              }}
+                              placeholder="50"
+                              className="mari-chrome-field mari-chrome-field--compact w-20 px-2 py-1 text-xs"
+                            />
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <label className="mari-chrome-text-muted w-24 text-xs">
+                              {localizeUi("ui.agents.agenteditor.maxOutputTokens")}
+                            </label>
+                            <input
+                              type="number"
+                              value={maxTokens}
+                              onChange={(e) => {
+                                setMaxTokens(e.target.value);
+                                setPage(1);
+                              }}
+                              placeholder="100000"
+                              className="mari-chrome-field mari-chrome-field--compact w-20 px-2 py-1 text-xs"
+                            />
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ═══ Results ═══ */}
+              {loading ? (
+                <div className="flex flex-1 items-center justify-center py-12">
+                  <Loader2 size="1.5rem" className="animate-spin text-[var(--muted-foreground)]" />
+                </div>
+              ) : error ? (
+                <div className="flex flex-1 flex-col items-center justify-center gap-3 py-12">
+                  <span className="text-sm font-medium text-[var(--marinara-chat-chrome-panel-title)]">{error}</span>
+                  <button
+                    onClick={doSearch}
+                    className="mari-chrome-control mari-chrome-control--selected px-4 py-2 text-xs"
+                  >
+                    <RefreshCw size="0.75rem" /> {localizeUi("ui.game.gamesurfacecomponent.retry")}
+                  </button>
+                </div>
+              ) : results.length === 0 ? (
+                <div className="mari-chrome-text-muted flex flex-1 items-center justify-center py-12 text-sm">
+                  {localizeUi("ui.botBrowser.botbrowserview.noCharactersFound")}
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+                    {results.map((card) => (
+                      <CardTile key={card.id} card={card} onClick={() => openDetail(card)} />
+                    ))}
+                  </div>
+                  {(totalPages > 1 || page > 1) && (
+                    <div className="flex items-center justify-center gap-2 pt-2 pb-4">
+                      <button
+                        disabled={page <= 1}
+                        onClick={() => setPage((p) => Math.max(1, p - 1))}
+                        className="mari-chrome-control mari-chrome-control--small px-3 py-1.5 text-xs"
+                      >
+                        {localizeUi("ui.botBrowser.botbrowserview.previous")}
+                      </button>
+                      {totalPages > 1 && totalPages < 9000 ? (
+                        <label className="flex items-center gap-1 text-xs text-[var(--muted-foreground)]">
+                          {localizeUi("ui.botBrowser.botbrowserview.page")}
+                          <select
+                            aria-label={localizeUi("ui.botBrowser.botbrowserview.page")}
+                            value={page}
+                            onChange={(event) => setPage(Number(event.target.value))}
+                            className="mari-chrome-field mari-chrome-field--compact px-2 py-1 text-xs"
+                          >
+                            {Array.from({ length: totalPages }, (_, index) => index + 1).map((pageNumber) => (
+                              <option key={pageNumber} value={pageNumber}>
+                                {pageNumber}
+                              </option>
+                            ))}
+                          </select>
+                          {localizeUi("ui.botBrowser.botbrowserview.ofValue1", { value1: totalPages })}
+                        </label>
+                      ) : (
+                        <span className="text-xs text-[var(--muted-foreground)]">
+                          {localizeUi("ui.botBrowser.botbrowserview.page")} {page}
+                        </span>
+                      )}
+                      <button
+                        disabled={page >= totalPages && totalPages > 1}
+                        onClick={() => setPage((p) => p + 1)}
+                        className="mari-chrome-control mari-chrome-control--small px-3 py-1.5 text-xs"
+                      >
+                        {localizeUi("onboarding.actions.next")}
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <Modal
+        open={pendingImport !== null}
+        onClose={() => {
+          if (!importing) setPendingImport(null);
+        }}
+        title={localizeUi("ui.botBrowser.importDialog.importCard")}
+        width="max-w-lg"
+        closeDisabled={importing}
+      >
+        {pendingImport && (
+          <div className="flex flex-col gap-4" data-component="BotBrowserImportDialog">
+            <div className="flex items-center gap-3 rounded-xl border border-[var(--marinara-chat-chrome-panel-divider)] bg-[var(--marinara-chat-chrome-panel-bg)]/70 p-3">
+              <div className="h-14 w-14 shrink-0 overflow-hidden rounded-xl border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--secondary)]">
+                {pendingImport.card.avatarUrl ? (
+                  <CharacterPhoto
+                    src={pendingImport.card.avatarUrl}
+                    name={pendingImport.card.name}
+                    wrapperClassName="relative block h-full w-full"
+                    className="block h-full w-full"
+                  >
+                    <img src={pendingImport.card.avatarUrl} alt="" className="h-full w-full object-cover" />
+                  </CharacterPhoto>
+                ) : (
+                  <div className="flex h-full items-center justify-center text-[var(--marinara-chat-chrome-panel-muted)]">
+                    <Bot size="1.25rem" />
+                  </div>
+                )}
+              </div>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
+                  {pendingImport.card.name}
+                </p>
+                <p className="truncate text-xs text-[var(--marinara-chat-chrome-panel-muted)]">
+                  {pendingImport.card.creator
+                    ? localizeUi("ui.botBrowser.importDialog.byValue1", { value1: pendingImport.card.creator })
+                    : provider.name}
+                </p>
+              </div>
+            </div>
+
+            {!pendingImport.target ? (
+              <>
+                <div>
+                  <p className="text-sm font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
+                    {localizeUi("ui.botBrowser.importDialog.chooseDestination")}
+                  </p>
+                  <p className="mt-1 text-xs leading-relaxed text-[var(--marinara-chat-chrome-panel-muted)]">
+                    {localizeUi("ui.botBrowser.importDialog.chooseDestinationDescription")}
+                  </p>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    data-import-target="character"
+                    onClick={() => void chooseImportTarget("character")}
+                    className="mari-chrome-control group min-h-24 items-start justify-start gap-3 p-4 text-left"
+                  >
+                    <span className="mari-panel-gradient-surface mari-panel-gradient--characters flex h-9 w-9 shrink-0 items-center justify-center rounded-xl">
+                      <Users size="1rem" />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-sm font-semibold">
+                        {localizeUi("ui.botBrowser.importDialog.importAsCharacter")}
+                      </span>
+                      <span className="mt-1 block text-[0.6875rem] font-normal leading-relaxed text-[var(--marinara-chat-chrome-panel-muted)]">
+                        {localizeUi("ui.botBrowser.importDialog.characterDestinationDescription")}
+                      </span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    data-import-target="persona"
+                    onClick={() => void chooseImportTarget("persona")}
+                    className="mari-chrome-control group min-h-24 items-start justify-start gap-3 p-4 text-left"
+                  >
+                    <span className="mari-panel-gradient-surface mari-panel-gradient--personas flex h-9 w-9 shrink-0 items-center justify-center rounded-xl">
+                      <VenetianMask size="1rem" />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-sm font-semibold">
+                        {localizeUi("ui.botBrowser.importDialog.importAsPersona")}
+                      </span>
+                      <span className="mt-1 block text-[0.6875rem] font-normal leading-relaxed text-[var(--marinara-chat-chrome-panel-muted)]">
+                        {localizeUi("ui.botBrowser.importDialog.personaDestinationDescription")}
+                      </span>
+                    </span>
+                  </button>
+                </div>
+              </>
+            ) : !pendingImport.prepared ? (
+              <div className="flex min-h-28 items-center justify-center gap-2 text-sm text-[var(--marinara-chat-chrome-panel-muted)]">
+                <Loader2 size="1rem" className="animate-spin text-[var(--marinara-chat-chrome-accent)]" />
+                {localizeUi("ui.botBrowser.importDialog.preparingCard")}
+              </div>
+            ) : (
+              <div className="flex flex-col gap-4">
+                <div className="rounded-xl border border-amber-500/25 bg-amber-500/10 p-4">
+                  <div className="flex items-start gap-3">
+                    <BookOpen size="1.125rem" className="mt-0.5 shrink-0 text-amber-400" />
+                    <div>
+                      <p className="text-sm font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
+                        {localizeUi("ui.modals.importcharactermodal.embeddedLorebookFound")}
+                      </p>
+                      <p className="mt-1 text-xs leading-relaxed text-[var(--marinara-chat-chrome-panel-muted)]">
+                        {localizeUi("ui.botBrowser.importDialog.embeddedLorebookDescription", {
+                          count: countLorebookEntries(pendingImport.prepared.embeddedLorebook),
+                        })}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <button
+                    type="button"
+                    disabled={importing}
+                    onClick={() => setPendingImport({ card: pendingImport.card })}
+                    className="mari-chrome-control px-3 py-2 text-xs"
+                  >
+                    <ArrowLeft size="0.75rem" />
+                    {localizeUi("ui.botBrowser.importDialog.back")}
+                  </button>
+                  <div className="flex flex-col-reverse gap-2 sm:flex-row">
+                    <button
+                      type="button"
+                      disabled={importing}
+                      onClick={() => void finishImport(false)}
+                      className="mari-chrome-control px-3 py-2 text-xs"
+                    >
+                      {localizeUi("ui.modals.importcharactermodal.noImport")}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={importing}
+                      onClick={() => void finishImport(true)}
+                      className="mari-panel-gradient-button mari-panel-gradient--lorebooks px-3 py-2 text-xs"
+                    >
+                      {importing ? <Loader2 size="0.75rem" className="animate-spin" /> : <BookOpen size="0.75rem" />}
+                      {localizeUi("ui.modals.importcharactermodal.importLorebook")}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+
+      {/* ═══ Login Modal ═══ */}
+      {showLoginModal && (
+        <LoginModal
+          sourceId={sourceId}
+          provider={provider}
+          pygLoggedIn={pygLoggedIn}
+          ctLoggedIn={ctLoggedIn}
+          loginLoading={loginLoading}
+          onClose={() => setShowLoginModal(false)}
+          onPygSetToken={handlePygmalionSetToken}
+          onPygLogout={handlePygmalionLogout}
+          onCtSetCookie={handleCtSetCookie}
+          onCtLogout={handleCtLogout}
+        />
+      )}
+
+      {/* ═══ DataCat NSFW Warning ═══ */}
+      {pendingDatacatSwitch && (
+        <div
+          className="fixed inset-0 z-[9999] flex items-center justify-center"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setPendingDatacatSwitch(false);
+          }}
+        >
+          <div className="absolute inset-0 bg-black/60" onClick={() => setPendingDatacatSwitch(false)} />
+          <div
+            className="mari-chrome-selection-bar relative w-full max-w-md shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-[var(--marinara-chat-chrome-panel-divider)] px-5 py-3">
+              <h3 className="mari-chrome-text-strong flex items-center gap-2 text-sm font-bold">
+                <span className="text-amber-400">⚠️</span>{" "}
+                {localizeUi("ui.botBrowser.botbrowserview.datacatIsNsfwOnly")}
+              </h3>
+              <button
+                onClick={() => setPendingDatacatSwitch(false)}
+                className="mari-chrome-control mari-chrome-control--small p-1"
+              >
+                <X size="1rem" />
+              </button>
+            </div>
+            <div className="mari-chrome-text flex flex-col gap-3 p-5 text-sm">
+              <p>{localizeUi("ui.botBrowser.botbrowserview.everyCharacterOnDatacatIsTaggedNsfwUpstreamSo")}</p>
+              <div className="mt-2 flex gap-2">
+                <button
+                  onClick={() => {
+                    setDatacatNsfwAcked(true);
+                    setPendingDatacatSwitch(false);
+                    performSwitch("datacat");
+                  }}
+                  className="mari-panel-gradient-button mari-panel-gradient--browser flex-1 px-4 py-2 text-xs"
+                >
+                  {localizeUi("ui.botBrowser.botbrowserview.continueToDatacat")}
+                </button>
+                <button
+                  onClick={() => setPendingDatacatSwitch(false)}
+                  className="mari-chrome-control flex-1 px-4 py-2 text-xs"
+                >
+                  {localizeUi("ui.botBrowser.botbrowserview.donTContinueToDatacat")}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════
+// Login Modal
+// ════════════════════════════════════════════════
+
+function LoginModal({
+  sourceId,
+  provider: _provider,
+  pygLoggedIn,
+  ctLoggedIn,
+  loginLoading,
+  onClose,
+  onPygSetToken,
+  onPygLogout,
+  onCtSetCookie,
+  onCtLogout,
+}: {
+  sourceId: string;
+  provider: ProviderConfig;
+  pygLoggedIn: boolean;
+  ctLoggedIn: boolean;
+  loginLoading: boolean;
+  onClose: () => void;
+  onPygSetToken: (t: string) => void;
+  onPygLogout: () => void;
+  onCtSetCookie: (c: string) => void;
+  onCtLogout: () => void;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  const [pygTokenInput, setPygTokenInput] = useState("");
+  const [cookie, setCookie] = useState("");
+  const [showHelp, setShowHelp] = useState(false);
+  const [showPygHelp, setShowPygHelp] = useState(false);
+
+  const isPyg = sourceId === "pygmalion";
+  const isCt = sourceId === "chartavern";
+  const isLoggedIn = isPyg ? pygLoggedIn : ctLoggedIn;
+
+  return (
+    <div
+      className="fixed inset-0 z-[9999] flex items-center justify-center"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div
+        className="mari-chrome-selection-bar relative w-full max-w-md shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-[var(--marinara-chat-chrome-panel-divider)] px-5 py-3">
+          <h3 className="mari-chrome-text-strong flex items-center gap-2 text-sm font-bold">
+            {isPyg ? (
+              <>
+                <KeyRound size="1rem" className="text-amber-400" />{" "}
+                {localizeUi("ui.botBrowser.loginmodal.pygmalionAuthentication")}
+              </>
+            ) : (
+              <>
+                <Cookie size="1rem" className="text-amber-400" />{" "}
+                {localizeUi("ui.botBrowser.loginmodal.charactertavernSession")}
+              </>
+            )}
+          </h3>
+          <button onClick={onClose} className="mari-chrome-control mari-chrome-control--small p-1">
+            <X size="1rem" />
+          </button>
+        </div>
+
+        <div className="flex flex-col gap-4 p-5">
+          {/* Info boxes */}
+          <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-[var(--foreground)]">
+            <span className="mr-1.5 text-emerald-400">✅</span>
+            <strong>
+              {localizeUi("ui.botBrowser.loginmodal.browsingAndDownloadingPublicCharactersWorksWithoutLoggingIn")}
+            </strong>
+          </div>
+          <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-[var(--foreground)]">
+            <span className="mr-1.5">🔑</span>
+            <strong>{localizeUi("ui.botBrowser.loginmodal.optional")}</strong>{" "}
+            {isPyg
+              ? localizeUi("ui.botBrowser.loginmodal.pasteYourAuthTokenToEnableNsfwContentAnd")
+              : localizeUi("ui.botBrowser.loginmodal.pasteYourSessionCookiesToSeeNsfwTaggedContent")}
+          </div>
+
+          {/* Login form */}
+          {isPyg ? (
+            <div className="flex flex-col gap-3">
+              <div>
+                <label className="mb-1 block text-xs text-[var(--muted-foreground)]">
+                  {localizeUi("ui.botBrowser.loginmodal.authToken")}
+                </label>
+                <textarea
+                  value={pygTokenInput}
+                  onChange={(e) => setPygTokenInput(e.target.value)}
+                  disabled={isLoggedIn || loginLoading}
+                  placeholder={localizeUi("ui.botBrowser.loginmodal.pasteYourPygmalionAuthTokenHere")}
+                  rows={3}
+                  className="mari-chrome-field w-full resize-y px-3 py-2 font-mono text-xs disabled:opacity-50"
+                />
+              </div>
+              <details open={showPygHelp} onToggle={(e) => setShowPygHelp((e.target as HTMLDetailsElement).open)}>
+                <summary className="cursor-pointer text-xs font-medium text-blue-400 hover:underline">
+                  {localizeUi("ui.botBrowser.loginmodal.howToGetYourAuthToken")}
+                </summary>
+                <div className="mt-2 flex flex-col gap-1.5 rounded-lg bg-[var(--secondary)] p-3 text-[0.7rem] leading-relaxed text-[var(--muted-foreground)]">
+                  <p>
+                    {localizeUi("ui.botBrowser.loginmodal.text1GoTo")}{" "}
+                    <a
+                      href="https://pygmalion.chat"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-400 underline"
+                    >
+                      {localizeUi("ui.botBrowser.loginmodal.pygmalionChat")}
+                    </a>{" "}
+                    {localizeUi("ui.botBrowser.loginmodal.andLogIn")}
+                  </p>
+                  <p>
+                    {localizeUi("ui.botBrowser.loginmodal.text2OpenDevtoolsF12")}{" "}
+                    <strong>{localizeUi("ui.botBrowser.loginmodal.application")}</strong>{" "}
+                    {localizeUi("ui.botBrowser.loginmodal.tab")}{" "}
+                    <strong>{localizeUi("ui.botBrowser.loginmodal.localStorage")}</strong>
+                  </p>
+                  <p>
+                    {localizeUi("ui.botBrowser.loginmodal.text3FindTheEntryNamed")}{" "}
+                    <code className="rounded bg-[var(--accent)] px-1">authn</code>
+                  </p>
+                  <p>
+                    {localizeUi("ui.botBrowser.loginmodal.text4CopyIts")}{" "}
+                    <strong>{localizeUi("ui.botBrowser.loginmodal.value")}</strong>{" "}
+                    {localizeUi("ui.botBrowser.loginmodal.aLongString705CharactersAndPasteItAbove")}
+                  </p>
+                </div>
+              </details>
+              {isLoggedIn && (
+                <div className="flex items-center gap-1.5 text-xs text-emerald-400">
+                  <CheckCircle size="0.75rem" /> {localizeUi("ui.botBrowser.loginmodal.tokenActiveNsfwContentEnabled")}
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                {!isLoggedIn ? (
+                  <button
+                    onClick={() => onPygSetToken(pygTokenInput)}
+                    disabled={loginLoading || !pygTokenInput.trim()}
+                    className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
+                  >
+                    {loginLoading ? <Loader2 size="0.75rem" className="animate-spin" /> : <KeyRound size="0.75rem" />}{" "}
+                    {localizeUi("ui.botBrowser.loginmodal.saveConnect")}
+                  </button>
+                ) : (
+                  <button onClick={onPygLogout} className="mari-chrome-control px-4 py-2 text-xs">
+                    <LogOut size="0.75rem" /> {localizeUi("ui.botBrowser.loginmodal.logOut")}
+                  </button>
+                )}
+                <a
+                  href="https://pygmalion.chat"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mari-chrome-control px-4 py-2 text-xs"
+                >
+                  <ExternalLink size="0.75rem" /> {localizeUi("ui.botBrowser.loginmodal.website")}
+                </a>
+              </div>
+            </div>
+          ) : isCt ? (
+            <div className="flex flex-col gap-3">
+              <div>
+                <label className="mb-1 block text-xs text-[var(--muted-foreground)]">
+                  {localizeUi("ui.botBrowser.loginmodal.cookieString")}
+                </label>
+                <textarea
+                  value={cookie}
+                  onChange={(e) => setCookie(e.target.value)}
+                  disabled={isLoggedIn || loginLoading}
+                  placeholder={localizeUi("ui.botBrowser.loginmodal.pasteYourSessionCookieValueHere")}
+                  rows={3}
+                  className="mari-chrome-field w-full resize-y px-3 py-2 text-sm disabled:opacity-50"
+                />
+              </div>
+              <details open={showHelp} onToggle={(e) => setShowHelp((e.target as HTMLDetailsElement).open)}>
+                <summary className="cursor-pointer text-xs font-medium text-blue-400 hover:underline">
+                  {localizeUi("ui.botBrowser.loginmodal.howToGetYourSessionCookie")}
+                </summary>
+                <div className="mt-2 flex flex-col gap-1.5 rounded-lg bg-[var(--secondary)] p-3 text-[0.7rem] leading-relaxed text-[var(--muted-foreground)]">
+                  <p>
+                    {localizeUi("ui.botBrowser.loginmodal.text1GoTo")}{" "}
+                    <a
+                      href="https://character-tavern.com"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-400 underline"
+                    >
+                      {localizeUi("ui.botBrowser.loginmodal.characterTavernCom")}
+                    </a>{" "}
+                    {localizeUi("ui.botBrowser.loginmodal.andLogIn")}
+                  </p>
+                  <p>{localizeUi("ui.botBrowser.loginmodal.text2OpenDevtoolsF12ApplicationTabCookies")}</p>
+                  <p>
+                    {localizeUi("ui.botBrowser.loginmodal.text3FindThe")}{" "}
+                    <code className="rounded bg-[var(--accent)] px-1">session</code>{" "}
+                    {localizeUi("ui.botBrowser.loginmodal.cookie")}
+                  </p>
+                  <p>
+                    {localizeUi("ui.botBrowser.loginmodal.text4CopyIts")}{" "}
+                    <strong>{localizeUi("ui.botBrowser.loginmodal.value")}</strong>{" "}
+                    {localizeUi("ui.agents.agenteditor.andPasteItAbove")}
+                  </p>
+                </div>
+              </details>
+              {isLoggedIn && (
+                <div className="flex items-center gap-1.5 text-xs text-emerald-400">
+                  <CheckCircle size="0.75rem" />{" "}
+                  {localizeUi("ui.botBrowser.loginmodal.sessionActiveNsfwContentEnabled")}
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                {!isLoggedIn ? (
+                  <button
+                    onClick={() => onCtSetCookie(cookie)}
+                    disabled={loginLoading || !cookie.trim()}
+                    className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-indigo-500 disabled:opacity-50"
+                  >
+                    {loginLoading ? <Loader2 size="0.75rem" className="animate-spin" /> : <Cookie size="0.75rem" />}{" "}
+                    {localizeUi("ui.botBrowser.loginmodal.saveConnect")}
+                  </button>
+                ) : (
+                  <button onClick={onCtLogout} className="mari-chrome-control px-4 py-2 text-xs">
+                    <LogOut size="0.75rem" /> {localizeUi("ui.botBrowser.loginmodal.logOut")}
+                  </button>
+                )}
+                <a
+                  href="https://character-tavern.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mari-chrome-control px-4 py-2 text-xs"
+                >
+                  <ExternalLink size="0.75rem" /> {localizeUi("ui.botBrowser.loginmodal.charactertavern")}
+                </a>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════
+// Card Tile
+// ════════════════════════════════════════════════
+
+function CardTile({ card, onClick }: { card: BrowseCard; onClick: () => void }) {
+  const { t: localizeUi } = useUiTranslation();
+  const [imgError, setImgError] = useState(false);
+  const Stat1Icon = STAT_ICONS[card.stat1Icon];
+  const Stat2Icon = STAT_ICONS[card.stat2Icon];
+  const Stat3Icon = STAT_ICONS[card.stat3Icon];
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onClick();
+        }
+      }}
+      className="group flex flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] text-left transition-all hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:shadow-lg hover:shadow-[var(--glow-primary)] active:scale-[0.98]"
+    >
+      <div className="relative aspect-square w-full overflow-hidden bg-[var(--secondary)]">
+        {imgError || !card.avatarUrl ? (
+          <div className="flex h-full items-center justify-center text-[var(--muted-foreground)]">
+            <Hash size="2rem" />
+          </div>
+        ) : (
+          <CharacterPhoto
+            src={card.avatarUrl}
+            name={card.name}
+            wrapperClassName="relative block h-full w-full"
+            className="block h-full w-full"
+          >
+            <img
+              src={card.avatarUrl}
+              alt={card.name}
+              loading="lazy"
+              className="h-full w-full object-cover transition-transform group-hover:scale-105"
+              onError={() => setImgError(true)}
+            />
+          </CharacterPhoto>
+        )}
+        {card.nsfw && (
+          <span className="absolute left-1.5 top-1.5 rounded bg-red-500/80 px-1.5 py-0.5 text-[0.55rem] font-bold text-white">
+            {localizeUi("ui.botBrowser.botbrowserview.nsfw")}
+          </span>
+        )}
+      </div>
+      <div className="flex flex-1 flex-col gap-1 p-2.5">
+        <h3 className="truncate text-sm font-semibold text-[var(--foreground)]">{card.name}</h3>
+        {card.creator && (
+          <p className="truncate text-xs text-[var(--muted-foreground)]">
+            {localizeUi("ui.panels.presetspanel.by")} {card.creator}
+          </p>
+        )}
+        {card.tagline && (
+          <p className="line-clamp-2 text-xs text-[var(--muted-foreground)] opacity-70">{card.tagline}</p>
+        )}
+        <div className="mari-chrome-text-muted mt-auto flex items-center gap-2 pt-1.5 text-[0.65rem]">
+          {card.stat1 > 0 && card.stat1Label && (
+            <span className="flex items-center gap-0.5" title={card.stat1Label}>
+              <Stat1Icon size="0.625rem" /> {fmtNum(card.stat1)}
+            </span>
+          )}
+          {card.stat2 > 0 && card.stat2Label && (
+            <span className="flex items-center gap-0.5" title={card.stat2Label}>
+              <Stat2Icon size="0.625rem" /> {fmtNum(card.stat2)}
+            </span>
+          )}
+          {card.stat3 > 0 && card.stat3Label && (
+            <span className="flex items-center gap-0.5" title={card.stat3Label}>
+              <Stat3Icon size="0.625rem" /> {fmtNum(card.stat3)}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════
+// Detail View
+// ════════════════════════════════════════════════
+
+function DetailView({
+  card,
+  detail,
+  loading,
+  importing,
+  provider,
+  onBack,
+  onImport,
+  tagImportMode,
+  onTagImportModeChange,
+  onDetailUpdate,
+}: {
+  card: BrowseCard;
+  detail: CardDetail | null;
+  loading: boolean;
+  importing: boolean;
+  provider: ProviderConfig;
+  onBack: () => void;
+  onImport: (card: BrowseCard) => void;
+  tagImportMode: TagImportMode;
+  onTagImportModeChange: (mode: TagImportMode) => void;
+  onDetailUpdate?: (detail: CardDetail) => void;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  const [imgError, setImgError] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const displayDetail = detail;
+  const handleDownloadPng = async () => {
+    setDownloading(true);
+    try {
+      let d = displayDetail;
+      if (!d && !loading) {
+        d = await provider.fetchDetail(card);
+        if (d) onDetailUpdate?.(d);
+      }
+      const descriptionText = d?.description || "";
+      const personalityText = d?.personality || "";
+      const charData: Record<string, unknown> = {
+        name: card.name,
+        description: descriptionText || personalityText,
+        personality: personalityText && descriptionText ? personalityText : "",
+        scenario: d?.scenario || "",
+        first_mes: d?.firstMessage || "",
+        mes_example: d?.exampleDialogs || "",
+        creator_notes: d?.creatorNotes || "",
+        system_prompt: d?.systemPrompt || "",
+        post_history_instructions: d?.postHistoryInstructions || "",
+        character_version: d?.characterVersion || "",
+        tags: card.tags || [],
+        creator: card.creator || "",
+        alternate_greetings: d?.alternateGreetings || [],
+        extensions: { [`${provider.id}`]: { id: card.id } },
+      };
+      if (hasLorebookEntries(d?.embeddedLorebook)) {
+        charData.character_book = d?.embeddedLorebook;
+      }
+
+      const blob = await buildCharacterCardPng(card.avatarUrl, charData);
+
+      // Trigger download
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${(card.name || "character").replace(/[^a-zA-Z0-9_-]/g, "_")}.png`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success(localizeUi("ui.botBrowser.detailview.downloadedValue1AsPngCharacterCard", { value1: card.name }));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : localizeUi("ui.botBrowser.detailview.downloadFailed"));
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onBack}
+          className="mari-editor-action inline-flex shrink-0"
+          title={localizeUi("ui.botBrowser.detailview.backToResults")}
+          aria-label={localizeUi("ui.botBrowser.detailview.backToResults")}
+        >
+          <ArrowLeft size="1.125rem" />
+        </button>
+        <div className="flex-1" />
+        <a
+          href={card.externalUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mari-chrome-control mari-chrome-control--small px-2 py-1.5 text-xs"
+        >
+          <ExternalLink size="0.75rem" /> {localizeUi("ui.botBrowser.detailview.viewOn")} {provider.siteName}
+        </a>
+      </div>
+      {loading ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 size="1.5rem" className="animate-spin text-[var(--muted-foreground)]" />
+        </div>
+      ) : (
+        <div className="flex gap-5 max-md:flex-col">
+          <div className="flex w-56 shrink-0 flex-col gap-3 max-md:w-full max-md:flex-row max-md:items-start">
+            <div className="aspect-square w-full overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--secondary)] max-md:w-32">
+              {imgError || !card.avatarUrl ? (
+                <div className="flex h-full items-center justify-center text-[var(--muted-foreground)]">
+                  <Hash size="2.5rem" />
+                </div>
+              ) : (
+                <CharacterPhoto
+                  src={fullSizeAvatarUrl(card.avatarUrl)}
+                  fallbackSrc={card.avatarUrl}
+                  name={card.name}
+                  wrapperClassName="relative block h-full w-full"
+                  className="block h-full w-full cursor-zoom-in focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                >
+                  <img
+                    src={card.avatarUrl}
+                    alt={card.name}
+                    className="h-full w-full object-cover"
+                    onError={() => setImgError(true)}
+                  />
+                </CharacterPhoto>
+              )}
+            </div>
+            <div className="flex flex-col gap-2 max-md:flex-1">
+              <div className="rounded-lg border border-[var(--border)] bg-[var(--secondary)]/60 p-2.5">
+                <p className="mb-2 text-[0.6875rem] font-semibold text-[var(--foreground)]">
+                  {localizeUi("ui.botBrowser.detailview.importedTags")}
+                </p>
+                <div className="flex flex-col gap-1.5">
+                  {TAG_IMPORT_OPTIONS.map((option) => (
+                    <label
+                      key={option.value}
+                      className={`cursor-pointer rounded-md border px-2 py-1.5 transition-colors ${
+                        tagImportMode === option.value
+                          ? "border-[var(--primary)] bg-[var(--primary)]/10"
+                          : "border-[var(--border)] hover:border-[var(--muted-foreground)]"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="botBrowserTagImportMode"
+                        value={option.value}
+                        checked={tagImportMode === option.value}
+                        onChange={() => onTagImportModeChange(option.value)}
+                        className="sr-only"
+                      />
+                      <span className="block text-[0.6875rem] font-medium">{option.label}</span>
+                      <span className="block text-[0.5625rem] leading-snug text-[var(--muted-foreground)]">
+                        {option.description}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <button
+                onClick={() => onImport(card)}
+                disabled={importing}
+                className="mari-panel-gradient-button mari-panel-gradient--browser px-4 py-2.5 text-xs"
+              >
+                {importing ? <Loader2 size="0.875rem" className="animate-spin" /> : <Download size="0.875rem" />}
+                {importing
+                  ? localizeUi("ui.botBrowser.detailview.importing")
+                  : localizeUi("ui.chat.chatbranchselector.import")}
+              </button>
+              <button
+                onClick={handleDownloadPng}
+                disabled={downloading}
+                className="mari-chrome-control px-4 py-2 text-xs"
+              >
+                {downloading ? <Loader2 size="0.75rem" className="animate-spin" /> : <Download size="0.75rem" />}
+                {downloading
+                  ? localizeUi("ui.botBrowser.detailview.buildingPng")
+                  : localizeUi("ui.botBrowser.detailview.downloadAsPng")}
+              </button>
+              <div className="mari-chrome-text-muted flex flex-col gap-1 rounded-lg bg-[var(--secondary)] p-2.5 text-xs">
+                {card.stat1 > 0 && card.stat1Label && (
+                  <span className="flex items-center gap-1.5">
+                    {(() => {
+                      const I = STAT_ICONS[card.stat1Icon];
+                      return <I size="0.75rem" />;
+                    })()}{" "}
+                    {fmtNum(card.stat1)} {card.stat1Label.toLowerCase()}
+                  </span>
+                )}
+                {card.stat2 > 0 && card.stat2Label && (
+                  <span className="flex items-center gap-1.5">
+                    {(() => {
+                      const I = STAT_ICONS[card.stat2Icon];
+                      return <I size="0.75rem" />;
+                    })()}{" "}
+                    {fmtNum(card.stat2)} {card.stat2Label.toLowerCase()}
+                  </span>
+                )}
+                {card.stat3 > 0 && card.stat3Label && (
+                  <span className="flex items-center gap-1.5">
+                    {(() => {
+                      const I = STAT_ICONS[card.stat3Icon];
+                      return <I size="0.75rem" />;
+                    })()}{" "}
+                    {fmtNum(card.stat3)} {card.stat3Label.toLowerCase()}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+          <div className="flex min-w-0 flex-1 flex-col gap-3">
+            <div>
+              <h3 className="text-lg font-bold text-[var(--foreground)]">{card.name}</h3>
+              {card.creator && (
+                <p className="text-xs text-[var(--muted-foreground)]">
+                  {localizeUi("ui.panels.presetspanel.by")} {card.creator}
+                </p>
+              )}
+            </div>
+            {card.tagline && <p className="text-sm text-[var(--foreground)]/80">{card.tagline}</p>}
+            {card.tags?.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {card.tags.slice(0, 20).map((tag) => (
+                  <span
+                    key={tag}
+                    className="rounded-full bg-[var(--secondary)] px-2 py-0.5 text-[0.65rem] text-[var(--muted-foreground)]"
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {displayDetail ? (
+              <div className="flex flex-col gap-3">
+                {displayDetail.creatorNotes && (
+                  <DefSection
+                    title={localizeUi("ui.botBrowser.detailview.creatorSNotes")}
+                    content={displayDetail.creatorNotes}
+                    allowHtml
+                  />
+                )}
+                {displayDetail.description && (
+                  <DefSection
+                    title={localizeUi("ui.botBrowser.detailview.descriptionPersonality")}
+                    content={displayDetail.description}
+                  />
+                )}
+                {displayDetail.personality && (
+                  <DefSection
+                    title={localizeUi("chat.settings.inlineEditor.fields.personality")}
+                    content={displayDetail.personality}
+                  />
+                )}
+                {displayDetail.scenario && (
+                  <DefSection
+                    title={localizeUi("chat.settings.inlineEditor.fields.scenario")}
+                    content={displayDetail.scenario}
+                  />
+                )}
+                {displayDetail.firstMessage && (
+                  <DefSection
+                    title={localizeUi("ui.characters.dialoguetab.firstMessage")}
+                    content={displayDetail.firstMessage}
+                  />
+                )}
+                {displayDetail.alternateGreetings && displayDetail.alternateGreetings.length > 0 && (
+                  <div>
+                    <h4 className="mb-1 text-xs font-semibold text-[var(--foreground)]">
+                      {localizeUi("ui.characters.dialoguetab.alternateGreetings")}
+                      {displayDetail.alternateGreetings.length})
+                    </h4>
+                    <div className="flex flex-col gap-1.5">
+                      {displayDetail.alternateGreetings.map((g, i) => (
+                        <div
+                          key={i}
+                          className="max-h-24 overflow-y-auto whitespace-pre-wrap rounded-lg bg-[var(--secondary)] p-2.5 text-xs text-[var(--muted-foreground)]"
+                        >
+                          {g}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {displayDetail.exampleDialogs && (
+                  <DefSection
+                    title={localizeUi("ui.botBrowser.detailview.exampleDialogues")}
+                    content={displayDetail.exampleDialogs}
+                  />
+                )}
+                {displayDetail.hasLorebook && (
+                  <div className="flex items-center gap-1.5 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
+                    <CheckCircle size="0.75rem" /> {localizeUi("ui.botBrowser.detailview.hasEmbeddedLorebook")}
+                  </div>
+                )}
+                {displayDetail.extra?.map((section, i) => (
+                  <DefSection key={i} title={section.title} content={section.content} />
+                ))}
+              </div>
+            ) : (
+              <div className="py-4 text-xs italic text-[var(--muted-foreground)]">
+                {localizeUi("ui.botBrowser.detailview.noDetailedDefinitionAvailableYouCanStillImportThis")}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════
+// PNG Character Card Builder
+// ════════════════════════════════════════════════
+
+/** Build a SillyTavern-compatible PNG character card with embedded V2 JSON in a tEXt chunk. */
+/**
+ * The list thumbnail is a compressed `avatar.webp`. For the enlarged view, ask
+ * the proxy for the card PNG instead — the same asset the card download uses.
+ * Providers with no larger source keep serving their single image.
+ */
+function fullSizeAvatarUrl(avatarUrl: string): string {
+  return avatarUrl.startsWith("/api/bot-browser/chub/avatar/") ? `${avatarUrl}?full=1` : avatarUrl;
+}
+
+async function buildCharacterCardPng(avatarUrl: string, charData: Record<string, unknown>): Promise<Blob> {
+  // Step 1: Fetch avatar and draw to canvas to get raw PNG bytes
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error("Failed to load avatar image"));
+    img.src = avatarUrl;
+  });
+  const canvas = document.createElement("canvas");
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(img, 0, 0);
+  const pngBlob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Canvas toBlob failed"))), "image/png");
+  });
+  const pngBuf = new Uint8Array(await pngBlob.arrayBuffer());
+
+  // Step 2: Build the V2 character card JSON
+  const v2Card = {
+    spec: "chara_card_v2",
+    spec_version: "2.0",
+    data: {
+      name: charData.name || "",
+      description: charData.description || "",
+      personality: charData.personality || "",
+      scenario: charData.scenario || "",
+      first_mes: charData.first_mes || "",
+      mes_example: charData.mes_example || "",
+      creator_notes: charData.creator_notes || "",
+      system_prompt: charData.system_prompt || "",
+      post_history_instructions: charData.post_history_instructions || "",
+      tags: charData.tags || [],
+      creator: charData.creator || "",
+      character_version: charData.character_version || "",
+      alternate_greetings: charData.alternate_greetings || [],
+      extensions: charData.extensions || {},
+    },
+  };
+
+  // Step 3: Encode JSON as base64
+  const jsonStr = JSON.stringify(v2Card);
+  const jsonBytes = new TextEncoder().encode(jsonStr);
+  // Manual base64 encode that handles UTF-8 properly
+  let binary = "";
+  for (let i = 0; i < jsonBytes.length; i++) binary += String.fromCharCode(jsonBytes[i]);
+  const b64 = btoa(binary);
+
+  // Step 4: Build tEXt chunk: keyword("chara") + null byte + base64 text
+  const keyword = new TextEncoder().encode("chara");
+  const textData = new TextEncoder().encode(b64);
+  const chunkPayload = new Uint8Array(keyword.length + 1 + textData.length);
+  chunkPayload.set(keyword, 0);
+  chunkPayload[keyword.length] = 0; // null separator
+  chunkPayload.set(textData, keyword.length + 1);
+
+  // Step 5: Calculate CRC32 for the chunk (type + data)
+  const typeBytes = new TextEncoder().encode("tEXt");
+  const crcInput = new Uint8Array(typeBytes.length + chunkPayload.length);
+  crcInput.set(typeBytes, 0);
+  crcInput.set(chunkPayload, typeBytes.length);
+  const crc = crc32(crcInput);
+
+  // Step 6: Build the full chunk (length + type + data + crc)
+  const chunkLength = chunkPayload.length;
+  const fullChunk = new Uint8Array(4 + 4 + chunkLength + 4);
+  // Length (big-endian)
+  fullChunk[0] = (chunkLength >> 24) & 0xff;
+  fullChunk[1] = (chunkLength >> 16) & 0xff;
+  fullChunk[2] = (chunkLength >> 8) & 0xff;
+  fullChunk[3] = chunkLength & 0xff;
+  // Type
+  fullChunk.set(typeBytes, 4);
+  // Data
+  fullChunk.set(chunkPayload, 8);
+  // CRC (big-endian)
+  fullChunk[8 + chunkLength] = (crc >> 24) & 0xff;
+  fullChunk[9 + chunkLength] = (crc >> 16) & 0xff;
+  fullChunk[10 + chunkLength] = (crc >> 8) & 0xff;
+  fullChunk[11 + chunkLength] = crc & 0xff;
+
+  // Step 7: Insert chunk before IEND in the PNG
+  // Find IEND chunk (last 12 bytes typically: length(4) + "IEND"(4) + crc(4))
+  let iendOffset = -1;
+  for (let i = pngBuf.length - 12; i >= 8; i--) {
+    if (pngBuf[i + 4] === 0x49 && pngBuf[i + 5] === 0x45 && pngBuf[i + 6] === 0x4e && pngBuf[i + 7] === 0x44) {
+      iendOffset = i;
+      break;
+    }
+  }
+  if (iendOffset === -1) throw new Error("Could not find IEND chunk in PNG");
+
+  // Build final PNG: everything before IEND + our tEXt chunk + IEND
+  const beforeIend = pngBuf.slice(0, iendOffset);
+  const iendChunk = pngBuf.slice(iendOffset);
+  const finalPng = new Uint8Array(beforeIend.length + fullChunk.length + iendChunk.length);
+  finalPng.set(beforeIend, 0);
+  finalPng.set(fullChunk, beforeIend.length);
+  finalPng.set(iendChunk, beforeIend.length + fullChunk.length);
+
+  return new Blob([finalPng], { type: "image/png" });
+}
+
+/** CRC32 implementation for PNG chunk checksums */
+function crc32(data: Uint8Array): number {
+  let crc = 0xffffffff;
+  // Build table on first call
+  if (!crc32.table) {
+    crc32.table = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) {
+        c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      }
+      crc32.table[n] = c;
+    }
+  }
+  for (let i = 0; i < data.length; i++) {
+    crc = crc32.table[(crc ^ data[i]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+crc32.table = null as Uint32Array | null;
+
+// ════════════════════════════════════════════════
+// Definition Section
+// ════════════════════════════════════════════════
+
+function DefSection({ title, content, allowHtml = false }: { title: string; content: string; allowHtml?: boolean }) {
+  const sectionId = useId();
+  const htmlScopeClass = `mari-bot-notes-${sectionId.replace(/[^a-zA-Z0-9_-]/g, "") || "content"}`;
+  const renderedHtml = useMemo(() => {
+    if (!allowHtml || !containsChatHtml(content)) return null;
+    const decoded = decodeEncodedChatHtmlTags(content);
+    const { html, css } = extractChatStyleBlocks(decoded);
+    const clean = sanitizeChatHtml(html, { allowStyle: true, allowLinks: false });
+    const scopedCss = scopeChatMessageCss(css, `.${htmlScopeClass}`);
+    return scopedCss ? `<style>${scopedCss}</style>${clean}` : clean;
+  }, [allowHtml, content, htmlScopeClass]);
+
+  return (
+    <div>
+      <h4 className="mb-1 text-xs font-semibold text-[var(--foreground)]">{title}</h4>
+      {renderedHtml !== null ? (
+        <div
+          data-bot-browser-rich-text
+          className={cn(
+            "relative max-h-40 !overflow-x-hidden overflow-y-auto whitespace-pre-wrap !contain-paint rounded-lg bg-[var(--secondary)] p-2.5 text-xs leading-relaxed text-[var(--muted-foreground)]",
+            htmlScopeClass,
+          )}
+          dangerouslySetInnerHTML={{ __html: renderedHtml }}
+        />
+      ) : (
+        <div className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg bg-[var(--secondary)] p-2.5 text-xs leading-relaxed text-[var(--muted-foreground)]">
+          {content}
+        </div>
+      )}
+    </div>
+  );
+}

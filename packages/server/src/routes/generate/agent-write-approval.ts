@@ -1,0 +1,302 @@
+import type { AgentWriteApprovalEnvelope, AgentWriteApprovalProposal, SourceMessageRef } from "@marinara-engine/shared";
+import {
+  mergeLorebookKeeperUpdateContent,
+  readKeeperUpdateName as readUpdateName,
+  readLorebookKeeperUpdateOrder,
+} from "./lorebook-keeper-utils.js";
+
+const LOREBOOK_APPROVAL_ENTRY_DELIMITER = "<!-- marinara:lorebook-entry:v1 -->";
+
+type ApprovalHeading = { index: number; end: number; name: string };
+
+function splitLinesWithOffsets(value: string): Array<{ text: string; start: number; end: number }> {
+  const lines: Array<{ text: string; start: number; end: number }> = [];
+  let start = 0;
+  while (start <= value.length) {
+    const newline = value.indexOf("\n", start);
+    const rawEnd = newline < 0 ? value.length : newline;
+    const end = rawEnd > start && value[rawEnd - 1] === "\r" ? rawEnd - 1 : rawEnd;
+    lines.push({ text: value.slice(start, end), start, end });
+    if (newline < 0) break;
+    start = newline + 1;
+  }
+  return lines;
+}
+
+function readApprovalHeading(line: string): string | null {
+  if (!line.startsWith("###") || !/\s/u.test(line[3] ?? "")) return null;
+  const name = line.slice(3).trim();
+  return name || null;
+}
+
+function scanApprovalHeadings(value: string): ApprovalHeading[] {
+  const lines = splitLinesWithOffsets(value);
+  const explicit: ApprovalHeading[] = [];
+  for (let index = 0; index + 1 < lines.length; index++) {
+    const marker = lines[index]!;
+    if (marker.text !== LOREBOOK_APPROVAL_ENTRY_DELIMITER) continue;
+    const headingLine = lines[index + 1]!;
+    const name = readApprovalHeading(headingLine.text);
+    if (name) explicit.push({ index: marker.start, end: headingLine.end, name });
+  }
+  if (explicit.length > 0) return explicit;
+
+  const legacy: ApprovalHeading[] = [];
+  for (let index = 0; index < lines.length; index++) {
+    const headingLine = lines[index]!;
+    const name = readApprovalHeading(headingLine.text);
+    if (name) legacy.push({ index: headingLine.start, end: headingLine.end, name });
+  }
+  // Pre-delimiter approval text always started with its first entry heading.
+  // Keeping that boundary lets users remove either or both metadata lines while
+  // avoiding reinterpretation of arbitrary prose that merely contains a heading.
+  return legacy[0]?.index === 0 ? legacy : [];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function readNestedEntry(update: Record<string, unknown>): Record<string, unknown> {
+  return isRecord(update.entry) ? update.entry : {};
+}
+
+function readUpdateReplacementContent(update: Record<string, unknown>): string {
+  const nested = readNestedEntry(update);
+  if (typeof update.content === "string" && update.content.trim()) return update.content.trim();
+  if (typeof nested.content === "string" && nested.content.trim()) return nested.content.trim();
+  return "";
+}
+
+function readUpdateKeys(update: Record<string, unknown>): string[] {
+  const nested = readNestedEntry(update);
+  const rawKeys = Array.isArray(update.keys) ? update.keys : Array.isArray(nested.keys) ? nested.keys : [];
+  const keys: string[] = [];
+  for (const key of rawKeys) {
+    if (typeof key !== "string") continue;
+    const trimmed = key.trim();
+    if (trimmed) keys.push(trimmed);
+  }
+  return Array.from(new Set(keys));
+}
+
+function readUpdateTag(update: Record<string, unknown>): string {
+  const nested = readNestedEntry(update);
+  const raw = typeof update.tag === "string" ? update.tag : typeof nested.tag === "string" ? nested.tag : "";
+  return raw.trim();
+}
+
+export function agentWriteApprovalRequired(chatMeta: Record<string, unknown>): boolean {
+  return chatMeta.agentWriteApprovalRequired === true;
+}
+
+export function isAgentWriteApprovalEnvelope(value: unknown): value is AgentWriteApprovalEnvelope {
+  return isRecord(value) && value.requiresApproval === true && isRecord(value.approval);
+}
+
+/** Refresh tool proposals after the assistant has been saved, before final delivery. */
+export function stampLorebookWriteApprovalSource(
+  envelope: AgentWriteApprovalEnvelope,
+  sourceAgentId: string,
+  sourceMessageRefs: SourceMessageRef[],
+): AgentWriteApprovalEnvelope {
+  if (envelope.approval.kind !== "lorebook_update") return envelope;
+  return {
+    ...envelope,
+    approval: { ...envelope.approval, payload: { ...envelope.approval.payload, sourceAgentId, sourceMessageRefs } },
+  };
+}
+
+function normalizeEntryName(value: string): string {
+  return value.trim().toLocaleLowerCase();
+}
+
+function buildExistingContentByName(
+  entries: Array<{ name?: string | null; content?: string | null }> | undefined,
+): Map<string, string> {
+  const byName = new Map<string, string>();
+  for (const entry of entries ?? []) {
+    const name = typeof entry.name === "string" ? normalizeEntryName(entry.name) : "";
+    if (!name || typeof entry.content !== "string") continue;
+    byName.set(name, entry.content);
+  }
+  return byName;
+}
+
+export function formatLorebookWriteApprovalText(
+  updates: Array<Record<string, unknown>>,
+  options: { existingEntries?: Array<{ name?: string | null; content?: string | null }> } = {},
+): string {
+  const existingContentByName = buildExistingContentByName(options.existingEntries);
+  return updates
+    .map((update, index) => {
+      const name = readUpdateName(update) || `Entry ${index + 1}`;
+      const keys = readUpdateKeys(update);
+      const tag = readUpdateTag(update);
+      const targetLorebook =
+        typeof update.targetLorebook === "string" && update.targetLorebook.trim() ? update.targetLorebook.trim() : null;
+      const order = readLorebookKeeperUpdateOrder(update);
+      const content = mergeLorebookKeeperUpdateContent({
+        existingContent: existingContentByName.get(normalizeEntryName(name)) ?? "",
+        replacementContent: readUpdateReplacementContent(update),
+        newFacts: update.newFacts,
+      });
+      return [
+        LOREBOOK_APPROVAL_ENTRY_DELIMITER,
+        `### ${name}`,
+        `Keys: ${keys.join(", ")}`,
+        `Tag: ${tag}`,
+        ...(targetLorebook ? [`Lorebook: ${targetLorebook}`] : []),
+        ...(order !== undefined ? [`Order: ${order}`] : []),
+        "",
+        content || "Add the lorebook text here.",
+      ].join("\n");
+    })
+    .join("\n\n");
+}
+
+export function parseLorebookWriteApprovalText(text: string): Array<Record<string, unknown>> {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+
+  const headings = scanApprovalHeadings(trimmed);
+  if (headings.length === 0) {
+    return [{ action: "append", name: "Approved Agent Lore", content: trimmed, keys: [], tag: "" }];
+  }
+
+  const updates: Array<Record<string, unknown>> = [];
+  for (let index = 0; index < headings.length; index++) {
+    const heading = headings[index]!;
+    const next = headings[index + 1];
+    const name = heading.name;
+    const blockStart = heading.end;
+    const blockEnd = next?.index ?? trimmed.length;
+    const block = trimmed.slice(blockStart, blockEnd).replace(/^\r?\n/, "");
+    const lines = block.split(/\r?\n/);
+    const keys: string[] = [];
+    let tag = "";
+    let order: number | undefined;
+    let targetLorebook: string | undefined;
+    let contentStart = 0;
+    let sawMetadata = false;
+
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+      const line = lines[lineIndex]!;
+      const keyMatch = line.match(/^Keys:\s*(.*)$/i);
+      const tagMatch = line.match(/^Tag:\s*(.*)$/i);
+      const orderMatch = line.match(/^Order:\s*(.*)$/i);
+      const lorebookMatch = line.match(/^Lorebook:\s*(.*)$/i);
+      if (keyMatch) {
+        sawMetadata = true;
+        keys.push(
+          ...keyMatch[1]!
+            .split(",")
+            .map((key) => key.trim())
+            .filter(Boolean),
+        );
+        contentStart = lineIndex + 1;
+        continue;
+      }
+      if (tagMatch) {
+        sawMetadata = true;
+        tag = tagMatch[1]!.trim();
+        contentStart = lineIndex + 1;
+        continue;
+      }
+      if (orderMatch) {
+        sawMetadata = true;
+        const rawOrder = orderMatch[1]!.trim();
+        const parsedOrder = /^[+-]?\d+$/u.test(rawOrder) ? Number(rawOrder) : NaN;
+        order = Number.isSafeInteger(parsedOrder) ? parsedOrder : undefined;
+        contentStart = lineIndex + 1;
+        continue;
+      }
+      if (lorebookMatch) {
+        sawMetadata = true;
+        targetLorebook = lorebookMatch[1]!.trim() || undefined;
+        contentStart = lineIndex + 1;
+        continue;
+      }
+      if (!line.trim()) {
+        contentStart = lineIndex + 1;
+        if (sawMetadata) break;
+        continue;
+      }
+      break;
+    }
+
+    const content = lines.slice(contentStart).join("\n").trim();
+    if (!name || !content) continue;
+    updates.push({
+      action: "append",
+      name,
+      content,
+      keys: Array.from(new Set(keys)),
+      tag,
+      ...(targetLorebook ? { targetLorebook } : {}),
+      ...(order !== undefined ? { order } : {}),
+    });
+  }
+
+  return updates;
+}
+
+export function buildLorebookWriteApprovalProposal(args: {
+  chatId: string;
+  agentType: string;
+  agentName: string;
+  updates: Array<Record<string, unknown>>;
+  preferredTargetLorebookId: string | null;
+  writableLorebookIds: string[] | null;
+  allowTargetRouting?: boolean;
+  writableLorebooks?: Array<{ id: string; name: string }>;
+  lorebookNamingScheme?: Record<string, string>;
+  worldName?: string | null;
+  existingEntries?: Array<{ name?: string | null; content?: string | null }>;
+  /** Round-trips through the approval payload so the later apply can stamp provenance. */
+  sourceAgentId?: string;
+  sourceMessageRefs?: SourceMessageRef[];
+}): AgentWriteApprovalProposal {
+  return {
+    kind: "lorebook_update",
+    chatId: args.chatId,
+    agentType: args.agentType,
+    agentName: args.agentName,
+    title: `${args.agentName} Lorebook Proposal`,
+    text: formatLorebookWriteApprovalText(args.updates, { existingEntries: args.existingEntries }),
+    payload: {
+      preferredTargetLorebookId: args.preferredTargetLorebookId,
+      writableLorebookIds: args.writableLorebookIds,
+      allowTargetRouting: args.allowTargetRouting,
+      writableLorebooks: args.writableLorebooks,
+      lorebookNamingScheme: args.lorebookNamingScheme,
+      worldName: args.worldName,
+      updates: args.updates,
+      sourceAgentId: args.sourceAgentId,
+      sourceMessageRefs: args.sourceMessageRefs,
+    },
+    canRegenerate: !!args.agentType,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+export function buildSummaryWriteApprovalProposal(args: {
+  chatId: string;
+  agentType: string | null;
+  agentName: string;
+  text: string;
+  payload?: Record<string, unknown>;
+  canRegenerate?: boolean;
+}): AgentWriteApprovalProposal {
+  return {
+    kind: "summary_update",
+    chatId: args.chatId,
+    agentType: args.agentType,
+    agentName: args.agentName,
+    title: `${args.agentName} Summary Proposal`,
+    text: args.text,
+    ...(args.payload ? { payload: args.payload } : {}),
+    canRegenerate: args.canRegenerate ?? false,
+    createdAt: new Date().toISOString(),
+  };
+}

@@ -1,0 +1,27 @@
+{
+  "name": "@marinara-engine/shared",
+  "version": "2.4.6",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "node -e \"const fs=require('fs');['dist','tsconfig.tsbuildinfo'].forEach(p=>{try{fs.rmSync(p,{recursive:true,force:true})}catch{}})\" && node scripts/generate-feature-registries.mjs && tsc",
+    "build:preserve": "node -e \"const fs=require('fs');try{fs.rmSync('tsconfig.tsbuildinfo',{force:true})}catch{}\" && node scripts/generate-feature-registries.mjs && tsc",
+    "dev": "node scripts/generate-feature-registries.mjs && tsc --watch --preserveWatchOutput",
+    "clean": "node -e \"const fs=require('fs');['dist','tsconfig.tsbuildinfo'].forEach(p=>{try{fs.rmSync(p,{recursive:true,force:true})}catch{}})\"",
+    "lint": "node scripts/generate-feature-registries.mjs && tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

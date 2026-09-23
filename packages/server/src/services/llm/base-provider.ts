@@ -1,0 +1,922 @@
+// ──────────────────────────────────────────────
+// LLM Provider — Abstract Base
+// ──────────────────────────────────────────────
+import { logger } from "../../lib/logger.js";
+import { createDiagnostic, getDiagnosticContext } from "../../lib/diagnostics.js";
+import { AsyncLocalStorage } from "node:async_hooks";
+import {
+  getChatGenerationTimeoutMs,
+  getEmbeddingRequestTimeoutMs,
+  isProviderLocalUrlsEnabled,
+} from "../../config/runtime-config.js";
+import { requestHeadersWithIdentityEncoding, safeFetch, type SafeFetchOptions } from "../../utils/security.js";
+import { providerRequestIdFrom, safeHost } from "./provider-error.js";
+import {
+  estimateTextTokens,
+  sliceTextToTokenBudget,
+  type GenerationParameterSendKey,
+} from "@marinara-engine/shared";
+
+/** For models that reject assistant prefill but can continue an existing reply from history. */
+export const ASSISTANT_CONTINUATION_PROMPT =
+  "Continue the assistant's reply from where it stopped, without repeating existing text.";
+
+/**
+ * Shared undici Agent settings. The headers timeout (time to first byte) follows
+ * CHAT_GENERATION_TIMEOUT_MS so slow local models get the same budget on background
+ * generation (Noodle, agents) as on the chat routes. The inter-chunk body timeout
+ * stays finite so half-open streams cannot hang forever.
+ */
+const LLM_BODY_TIMEOUT = 120 * 1000; // 2 minutes between body chunks
+const llmAgentOptions = () => ({ bodyTimeout: LLM_BODY_TIMEOUT, headersTimeout: getChatGenerationTimeoutMs() });
+const llmRequestTimeout = new AsyncLocalStorage<number>();
+const llmResolvedAddressOffset = new AsyncLocalStorage<number>();
+
+/** Scope a provider request timeout without changing background/agent generation behavior. */
+export function withLlmRequestTimeout<T>(timeoutMs: number, operation: () => Promise<T>): Promise<T> {
+  return llmRequestTimeout.run(timeoutMs, operation);
+}
+
+/** Route a bounded retry through the next validated DNS answer without changing provider APIs. */
+export function withLlmResolvedAddressOffset<T>(offset: number, operation: () => T): T {
+  return llmResolvedAddressOffset.run(offset, operation);
+}
+
+/**
+ * Drop-in replacement for `fetch()` that uses a custom undici dispatcher
+ * with provider-oriented timeout settings. Use this for all outgoing LLM requests.
+ */
+export async function llmFetch(
+  url: string | URL,
+  init?: RequestInit &
+    Pick<SafeFetchOptions, "agentOptions" | "bufferResponse" | "decodeCompressedResponse" | "resolvedAddressOffset">,
+): Promise<Response> {
+  const bufferResponse = init?.bufferResponse ?? false;
+  const requestTimeoutMs = llmRequestTimeout.getStore();
+  const agentOptions =
+    init?.agentOptions ??
+    (requestTimeoutMs ? { bodyTimeout: requestTimeoutMs, headersTimeout: requestTimeoutMs } : llmAgentOptions());
+  // Host and method only: the path and query can carry keys or ids and are never logged.
+  const host = safeHost(String(url));
+  const method = (init?.method ?? "GET").toUpperCase();
+  const startedAt = Date.now();
+  let res: Response;
+  try {
+    res = await safeFetch(url, {
+      ...(init ?? {}),
+      headers: requestHeadersWithIdentityEncoding(init?.headers),
+      policy: {
+        allowLocal: isProviderLocalUrlsEnabled(),
+        allowLoopback: true,
+        allowMdns: true,
+        allowedProtocols: ["https:", "http:"],
+        flagName: "PROVIDER_LOCAL_URLS_ENABLED",
+      },
+      maxResponseBytes: 50 * 1024 * 1024,
+      agentOptions,
+      bufferResponse,
+      decodeCompressedResponse: init?.decodeCompressedResponse ?? bufferResponse,
+      resolvedAddressOffset: init?.resolvedAddressOffset ?? llmResolvedAddressOffset.getStore() ?? 0,
+    });
+  } catch (err) {
+    const elapsedMs = Date.now() - startedAt;
+    const errorCode = transportErrorCode(err);
+    // No err object here: the caller reports the failure once, with the stack.
+    logger.warn({ event: "llm.http", outcome: "failed", host, method, errorCode, elapsedMs }, "LLM request failed");
+    // Cancellations keep their own type so abort detection further up still recognises them.
+    if (init?.signal?.aborted || isAbortLikeName(err)) throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    throw Object.assign(new Error(`LLM transport failed: ${msg}`, { cause: err }), {
+      name: "LLMTransportError",
+      host,
+      elapsedMs,
+      timeoutMs: (agentOptions as { headersTimeout?: number } | undefined)?.headersTimeout,
+    });
+  }
+  const elapsedMs = Date.now() - startedAt;
+  const record = {
+    event: "llm.http",
+    host,
+    method,
+    httpStatus: res.status,
+    elapsedMs,
+    providerRequestId: providerRequestIdFrom(res.headers),
+  };
+  if (res.ok) logger.debug(record, "LLM request answered");
+  else logger.warn({ ...record, outcome: "failed" }, "LLM request answered with an error status");
+  return res;
+}
+
+function transportErrorCode(err: unknown): string | undefined {
+  let current: unknown = err;
+  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth++) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string" && code) return code;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+function isAbortLikeName(err: unknown): boolean {
+  const name = err && typeof err === "object" ? (err as { name?: unknown }).name : undefined;
+  return name === "AbortError" || name === "TimeoutError";
+}
+
+export function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * Structured HTTP failure from a provider call. Plain `Error`s only carry the status in their
+ * message text, so a 429 is not distinguishable from any other failure without regexing strings.
+ * Providers throw this on `!response.ok` so retry/throttle logic above them can detect a rate
+ * limit and honour `Retry-After`.
+ */
+export class LLMHttpError extends Error {
+  readonly status: number;
+  readonly retryAfterMs?: number;
+  readonly providerCode?: string;
+  constructor(message: string, options: { status: number; retryAfterMs?: number; providerCode?: string }) {
+    super(message);
+    this.name = "LLMHttpError";
+    this.status = options.status;
+    this.retryAfterMs = options.retryAfterMs;
+    this.providerCode = options.providerCode;
+  }
+}
+
+/**
+ * Parse an HTTP `Retry-After` header into milliseconds. Accepts either a delta-seconds integer
+ * (`"12"`) or an HTTP date (`"Wed, 21 Oct 2026 07:28:00 GMT"`). Returns undefined when absent or
+ * unparseable so callers fall back to their own backoff.
+ */
+export function parseRetryAfterMs(headerValue: string | null | undefined): number | undefined {
+  if (!headerValue) return undefined;
+  const trimmed = headerValue.trim();
+  if (/^\d+$/.test(trimmed)) {
+    const seconds = Number.parseInt(trimmed, 10);
+    return Number.isFinite(seconds) ? seconds * 1000 : undefined;
+  }
+  const dateMs = Date.parse(trimmed);
+  if (Number.isNaN(dateMs)) return undefined;
+  const deltaMs = dateMs - Date.now();
+  return deltaMs > 0 ? deltaMs : 0;
+}
+
+/** Read the status + Retry-After off a Response and build a typed rate-limit-aware error. */
+export function llmHttpErrorFromResponse(message: string, response: Response): LLMHttpError {
+  return new LLMHttpError(message, {
+    status: response.status,
+    retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")),
+  });
+}
+
+/** Accept either an OpenAI-compatible API base URL or its full embeddings endpoint. */
+export function resolveEmbeddingEndpointUrl(baseUrl: string): string {
+  const endpoint = new URL(baseUrl.trim());
+  const pathname = endpoint.pathname.replace(/\/+$/u, "");
+  endpoint.pathname = /\/embeddings$/iu.test(pathname) ? pathname : `${pathname}/embeddings`;
+  return endpoint.toString();
+}
+
+/**
+ * True when an error is a provider rate-limit / transient-overload the caller should pause and
+ * retry rather than surface: HTTP 429 (rate limited) or 529 (Anthropic "overloaded").
+ */
+export function isRateLimitError(error: unknown): error is LLMHttpError {
+  if (!(error instanceof LLMHttpError)) return false;
+  if (error.providerCode === "server_is_overloaded") return true;
+  // 429 (rate limited) and 529 (Anthropic "overloaded") are always retryable. Some gateways signal
+  // intentional throttling with 503 plus a Retry-After; treat that as retryable too, but let a bare
+  // 503 (likely a real outage, not throttling) propagate.
+  if (error.status === 429 || error.status === 529) return true;
+  return error.status === 503 && typeof error.retryAfterMs === "number";
+}
+
+import type {
+  ChatMessage,
+  LLMToolDefinition,
+  ChatOptions,
+  LLMUsage,
+  ChatCompletionResult,
+  ContextFitResult,
+} from "@marinara-engine/shared";
+export type {
+  ChatMessage,
+  ChatMediaAttachment,
+  LLMToolCall,
+  LLMToolDefinition,
+  ChatOptions,
+  LLMUsage,
+  ChatCompletionResult,
+  ContextFitResult,
+} from "@marinara-engine/shared";
+
+type ContextFitOptions = Pick<
+  ChatOptions,
+  "maxContext" | "maxTokens" | "tools" | "responseFormat" | "suppressModelParameters" | "preserveContext"
+>;
+
+const MESSAGE_OVERHEAD_TOKENS = 6;
+const IMAGE_TOKEN_ESTIMATE = 256;
+const MIN_FILE_TOKEN_ESTIMATE = 1_500;
+const CONTEXT_SAFETY_MARGIN_TOKENS = 500;
+const CONTEXT_SAFETY_MARGIN_RATIO = 0.02;
+const MIN_INPUT_BUDGET_TOKENS = 128;
+const MIN_OUTPUT_BUDGET_TOKENS = 128;
+const OUTPUT_BUDGET_REDUCTION_HEADROOM_TOKENS = 64;
+const TRUNCATION_MARKER = "\n\n[Truncated to fit context window]";
+
+function normalizePositiveInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
+  return Math.floor(value);
+}
+
+function estimateFileTokens(file: { data: string }): number {
+  const raw = file.data.includes(",") ? (file.data.split(",", 2)[1] ?? "") : file.data;
+  const approxBytes = Math.floor((raw.length * 3) / 4);
+  const sizeBased = Math.ceil(approxBytes / 3);
+  return Math.max(MIN_FILE_TOKEN_ESTIMATE, sizeBased);
+}
+
+function minDefined(...values: Array<number | undefined>): number | undefined {
+  let result: number | undefined;
+  for (const value of values) {
+    if (value === undefined) continue;
+    result = result === undefined ? value : Math.min(result, value);
+  }
+  return result;
+}
+
+export { estimateTextTokens };
+
+function estimateStructuredTokens(value: unknown): number {
+  try {
+    return estimateTextTokens(JSON.stringify(value));
+  } catch {
+    return 0;
+  }
+}
+
+function estimateToolDefinitionTokens(tools?: LLMToolDefinition[]): number {
+  if (!tools?.length) return 0;
+  return estimateStructuredTokens(tools) + MESSAGE_OVERHEAD_TOKENS;
+}
+
+function contextSafetyMargin(maxContext: number): number {
+  return Math.max(CONTEXT_SAFETY_MARGIN_TOKENS, Math.ceil(maxContext * CONTEXT_SAFETY_MARGIN_RATIO));
+}
+
+/** Total window needed to retain a prompt allowance without charging reply tokens to it. */
+export function contextWindowForInputBudget(inputBudget: number, maxTokens = 0): number {
+  const usableWindow = (normalizePositiveInteger(inputBudget) ?? 1) + (normalizePositiveInteger(maxTokens) ?? 0);
+  return Math.max(
+    usableWindow + CONTEXT_SAFETY_MARGIN_TOKENS,
+    Math.ceil(usableWindow / (1 - CONTEXT_SAFETY_MARGIN_RATIO)),
+  );
+}
+
+function estimateMessageTokens(message: ChatMessage): number {
+  let total = MESSAGE_OVERHEAD_TOKENS + estimateTextTokens(message.content ?? "");
+  if (message.tool_call_id) {
+    total += estimateTextTokens(message.tool_call_id) + 2;
+  }
+  if (message.tool_calls?.length) {
+    total += estimateStructuredTokens(message.tool_calls) + 8;
+  }
+  if (message.images?.length) {
+    total += message.images.length * IMAGE_TOKEN_ESTIMATE;
+  }
+  if (message.files?.length) {
+    total += message.files.reduce((sum, file) => sum + estimateFileTokens(file), 0);
+  }
+  if (message.media?.length) {
+    total += message.media.reduce((sum, media) => sum + estimateFileTokens({ data: media.data }), 0);
+  }
+  if (message.providerMetadata) {
+    const { reasoning_content, reasoning, reasoning_details, geminiParts, encryptedReasoning, ...opaqueMetadata } =
+      message.providerMetadata;
+    if (typeof reasoning_content === "string") total += estimateTextTokens(reasoning_content);
+    if (typeof reasoning === "string") total += estimateTextTokens(reasoning);
+    // Conservatively estimate serialized replay payloads, not their decrypted reasoning-token usage.
+    if (reasoning_details !== undefined) total += estimateStructuredTokens(reasoning_details);
+    if (geminiParts !== undefined) total += estimateStructuredTokens(geminiParts);
+    if (encryptedReasoning !== undefined) total += estimateStructuredTokens(encryptedReasoning);
+    total += Math.min(estimateStructuredTokens(opaqueMetadata), 512);
+  }
+  return total;
+}
+
+export function estimateMessagesTokens(messages: ChatMessage[]): number {
+  return messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
+}
+
+/** Same estimator and reserves as provider fitting, without mutating the request or reducing the reply. */
+export function measureContextBudget(messages: ChatMessage[], options: ContextFitOptions & { maxContext: number }) {
+  const maxContext = normalizePositiveInteger(options.maxContext) ?? 1;
+  const reservedTokens =
+    contextSafetyMargin(maxContext) +
+    estimateToolDefinitionTokens(options.tools) +
+    (options.responseFormat ? estimateStructuredTokens(options.responseFormat) : 0);
+  const maxTokens = normalizePositiveInteger(options.maxTokens) ?? 0;
+  const inputBudget = Math.max(0, maxContext - reservedTokens - maxTokens);
+  const estimatedTokens = estimateMessagesTokens(messages);
+  return { maxContext, reservedTokens, maxTokens, inputBudget, estimatedTokens, fits: estimatedTokens <= inputBudget };
+}
+
+function cloneMessages(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    ...(message.images ? { images: [...message.images] } : {}),
+    ...(message.files ? { files: message.files.map((file) => ({ ...file })) } : {}),
+    ...(message.media ? { media: message.media.map((media) => ({ ...media })) } : {}),
+    ...(message.tool_calls
+      ? { tool_calls: message.tool_calls.map((call) => ({ ...call, function: { ...call.function } })) }
+      : {}),
+    ...(message.providerMetadata ? { providerMetadata: { ...message.providerMetadata } } : {}),
+  }));
+}
+
+function truncateContent(content: string, targetTokens: number, preserveStartOnly: boolean): string {
+  if (estimateTextTokens(content) <= targetTokens) return content;
+  const availableTokens = Math.floor(targetTokens) - estimateTextTokens(TRUNCATION_MARKER);
+  if (availableTokens <= 0) return sliceTextToTokenBudget(content, targetTokens);
+  if (preserveStartOnly) return sliceTextToTokenBudget(content, availableTokens) + TRUNCATION_MARKER;
+  const head = sliceTextToTokenBudget(content, Math.ceil(availableTokens * 0.65));
+  const tail = sliceTextToTokenBudget(content, availableTokens - estimateTextTokens(head), true);
+  return head + TRUNCATION_MARKER + tail;
+}
+
+/** Both static and freshly resolved full-lore entries are required context. */
+function isProtectedFullLore(message: ChatMessage | undefined): boolean {
+  return (
+    message?.providerMetadata?.marinaraFullLoreContext === true ||
+    message?.providerMetadata?.marinaraDynamicLoreContext === true
+  );
+}
+
+function findOldestRemovableConversationBlock(
+  messages: ChatMessage[],
+  preferredKind?: ChatMessage["contextKind"],
+): { start: number; deleteCount: number } | null {
+  for (let index = 0; index < messages.length - 1; index++) {
+    const message = messages[index]!;
+    if (isProtectedFullLore(message)) continue;
+    if (preferredKind) {
+      if (message.contextKind !== preferredKind) continue;
+    } else if (message.role === "system") {
+      continue;
+    }
+
+    let deleteCount = 1;
+    if (message.role === "assistant" && message.tool_calls?.length) {
+      for (let nextIndex = index + 1; nextIndex < messages.length - 1; nextIndex++) {
+        if (messages[nextIndex]?.role !== "tool") break;
+        deleteCount += 1;
+      }
+    }
+
+    return { start: index, deleteCount };
+  }
+
+  return null;
+}
+
+function findOldestRemovableSystemMessage(messages: ChatMessage[]): number {
+  for (let index = 1; index < messages.length - 1; index++) {
+    if (messages[index]?.role === "system" && !isProtectedFullLore(messages[index])) return index;
+  }
+  return -1;
+}
+
+function findLargestMessageIndex(
+  messages: ChatMessage[],
+  predicate: (message: ChatMessage, index: number) => boolean,
+): number {
+  let selectedIndex = -1;
+  let selectedTokens = 0;
+
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index]!;
+    if (isProtectedFullLore(message)) continue;
+    if (!predicate(message, index) || !message.content) continue;
+    const tokenEstimate = estimateMessageTokens(message);
+    if (tokenEstimate > selectedTokens) {
+      selectedTokens = tokenEstimate;
+      selectedIndex = index;
+    }
+  }
+
+  return selectedIndex;
+}
+
+export function fitMessagesToContext(
+  messages: ChatMessage[],
+  options: ContextFitOptions,
+  defaultMaxContext?: number,
+): ContextFitResult {
+  const requestedMaxTokens = normalizePositiveInteger(options.maxTokens);
+  const maxContext = minDefined(
+    normalizePositiveInteger(options.maxContext),
+    normalizePositiveInteger(defaultMaxContext),
+  );
+  const estimatedTokensBefore = estimateMessagesTokens(messages);
+  const definitionTokens =
+    estimateToolDefinitionTokens(options.tools) +
+    (options.responseFormat ? estimateStructuredTokens(options.responseFormat) : 0);
+
+  if (maxContext && options.preserveContext) {
+    const budget = measureContextBudget(messages, { ...options, maxContext });
+    if (!budget.fits) {
+      throw new Error(
+        "Advanced Memory: the complete request exceeds the context cap. Reduce fixed prompt content, attachments or the reply reserve, or increase the cap.",
+      );
+    }
+    return {
+      messages,
+      maxContext,
+      maxTokens: requestedMaxTokens,
+      inputBudget: budget.inputBudget,
+      reservedTokens: budget.reservedTokens,
+      estimatedTokensBefore,
+      estimatedTokensAfter: estimatedTokensBefore,
+      trimmed: false,
+    };
+  }
+
+  if (!maxContext) {
+    return {
+      messages,
+      maxTokens: requestedMaxTokens,
+      reservedTokens: definitionTokens,
+      estimatedTokensBefore,
+      estimatedTokensAfter: estimatedTokensBefore,
+      trimmed: false,
+    };
+  }
+
+  const reservedTokens = contextSafetyMargin(maxContext) + definitionTokens;
+  const usableWindow = Math.max(1, maxContext - reservedTokens);
+  const reservedInputFloor = Math.min(MIN_INPUT_BUDGET_TOKENS, Math.max(0, usableWindow - 1));
+  let maxTokens =
+    requestedMaxTokens === undefined
+      ? undefined
+      : Math.max(1, Math.min(requestedMaxTokens, Math.max(1, usableWindow - reservedInputFloor)));
+  let inputBudget = Math.max(0, usableWindow - (maxTokens ?? 0));
+
+  // Single-shot prompts (Noodle refreshes, summarizers, other one-off builders) carry no
+  // messages marked as history, so there is nothing in them that is safe to drop: the trimmer
+  // below would delete the prompt body itself and leave only the trailing instruction. Give the
+  // output budget back instead, and let the later passes handle a prompt that still cannot fit.
+  const hasRemovableHistory = messages.some((message) => message.contextKind === "history");
+
+  // If the requested output budget consumes nearly the whole context window,
+  // make room for the prompt before trimming. Otherwise, prefer trimming old
+  // history first so a large-but-valid response budget does not collapse to the
+  // 128-token floor just because the prompt is slightly over budget.
+  if (
+    estimatedTokensBefore > inputBudget &&
+    maxTokens !== undefined &&
+    (inputBudget <= reservedInputFloor || !hasRemovableHistory)
+  ) {
+    const minimumOutputBudget = Math.min(MIN_OUTPUT_BUDGET_TOKENS, Math.max(1, usableWindow - 1));
+    const headroom = Math.min(OUTPUT_BUDGET_REDUCTION_HEADROOM_TOKENS, Math.max(0, usableWindow - 1));
+    const maxTokensThatFitPrompt = Math.max(1, usableWindow - estimatedTokensBefore - headroom);
+    const reducedMaxTokens = Math.max(minimumOutputBudget, Math.min(maxTokens, maxTokensThatFitPrompt));
+    if (reducedMaxTokens < maxTokens) {
+      maxTokens = reducedMaxTokens;
+      inputBudget = Math.max(0, usableWindow - maxTokens);
+    }
+  }
+
+  if (estimatedTokensBefore <= inputBudget) {
+    return {
+      messages,
+      maxContext,
+      maxTokens,
+      inputBudget,
+      reservedTokens,
+      estimatedTokensBefore,
+      estimatedTokensAfter: estimatedTokensBefore,
+      trimmed: false,
+    };
+  }
+
+  const fittedMessages = cloneMessages(messages);
+  let estimatedTokensAfter = estimateMessagesTokens(fittedMessages);
+  const hasAnnotatedHistory = hasRemovableHistory;
+
+  while (estimatedTokensAfter > inputBudget && fittedMessages.length > 1) {
+    const block = findOldestRemovableConversationBlock(fittedMessages, "history");
+    if (!block) break;
+    fittedMessages.splice(block.start, block.deleteCount);
+    estimatedTokensAfter = estimateMessagesTokens(fittedMessages);
+  }
+
+  // Some legacy/manual prompt paths do not annotate chat turns. Only treat
+  // unmarked non-system messages as removable history when the whole prompt
+  // lacks history hints; otherwise those messages may be preset/setup blocks.
+  if (!hasAnnotatedHistory) {
+    while (estimatedTokensAfter > inputBudget && fittedMessages.length > 1) {
+      const block = findOldestRemovableConversationBlock(fittedMessages);
+      if (!block) break;
+      fittedMessages.splice(block.start, block.deleteCount);
+      estimatedTokensAfter = estimateMessagesTokens(fittedMessages);
+    }
+  }
+
+  if (estimatedTokensAfter > inputBudget && maxTokens !== undefined) {
+    const minimumOutputBudget = Math.min(MIN_OUTPUT_BUDGET_TOKENS, Math.max(1, usableWindow - 1));
+    const maxTokensThatFitPrompt = Math.max(1, usableWindow - estimatedTokensAfter);
+    const reducedMaxTokens = Math.max(minimumOutputBudget, Math.min(maxTokens, maxTokensThatFitPrompt));
+    if (reducedMaxTokens < maxTokens) {
+      maxTokens = reducedMaxTokens;
+      inputBudget = Math.max(0, usableWindow - maxTokens);
+    }
+  }
+
+  if (estimatedTokensAfter > inputBudget && fittedMessages.some(isProtectedFullLore)) {
+    throw new Error(
+      "Full lore exceeds the available context budget with the required prompt. Increase the context limit or disable fullLorebookContext for this chat; lore and instructions were not truncated.",
+    );
+  }
+
+  while (estimatedTokensAfter > inputBudget && fittedMessages.length > 1) {
+    const block = findOldestRemovableConversationBlock(fittedMessages);
+    if (!block) break;
+    fittedMessages.splice(block.start, block.deleteCount);
+    estimatedTokensAfter = estimateMessagesTokens(fittedMessages);
+  }
+
+  while (estimatedTokensAfter > inputBudget && fittedMessages.length > 1) {
+    const removableSystemIndex = findOldestRemovableSystemMessage(fittedMessages);
+    if (removableSystemIndex < 0) break;
+    fittedMessages.splice(removableSystemIndex, 1);
+    estimatedTokensAfter = estimateMessagesTokens(fittedMessages);
+  }
+
+  let guard = 0;
+  while (estimatedTokensAfter > inputBudget && guard < 12) {
+    guard += 1;
+
+    const systemIndex = findLargestMessageIndex(
+      fittedMessages,
+      (message, index) => message.role === "system" && index < fittedMessages.length,
+    );
+    if (systemIndex >= 0) {
+      const message = fittedMessages[systemIndex]!;
+      const nonContentTokens = estimateMessageTokens({ ...message, content: "" });
+      const excessTokens = estimatedTokensAfter - inputBudget;
+      const targetTokens = Math.max(8, estimateMessageTokens(message) - excessTokens - nonContentTokens);
+      const truncated = truncateContent(message.content, targetTokens, true);
+      if (truncated !== message.content) {
+        message.content = truncated;
+        estimatedTokensAfter = estimateMessagesTokens(fittedMessages);
+        continue;
+      }
+    }
+
+    const historicalIndex = findLargestMessageIndex(
+      fittedMessages,
+      (message, index) => message.contextKind === "history" && index < fittedMessages.length - 1,
+    );
+    const fallbackHistoricalIndex =
+      historicalIndex >= 0
+        ? historicalIndex
+        : findLargestMessageIndex(fittedMessages, (_message, index) => index < fittedMessages.length - 1);
+    if (fallbackHistoricalIndex >= 0) {
+      const message = fittedMessages[fallbackHistoricalIndex]!;
+      const nonContentTokens = estimateMessageTokens({ ...message, content: "" });
+      const excessTokens = estimatedTokensAfter - inputBudget;
+      const targetTokens = Math.max(8, estimateMessageTokens(message) - excessTokens - nonContentTokens);
+      const truncated = truncateContent(message.content, targetTokens, message.role === "system");
+      if (truncated !== message.content) {
+        message.content = truncated;
+        estimatedTokensAfter = estimateMessagesTokens(fittedMessages);
+        continue;
+      }
+    }
+
+    const lastIndex = fittedMessages.length - 1;
+    if (lastIndex >= 0 && !isProtectedFullLore(fittedMessages[lastIndex])) {
+      const message = fittedMessages[lastIndex]!;
+      const nonContentTokens = estimateMessageTokens({ ...message, content: "" });
+      const excessTokens = estimatedTokensAfter - inputBudget;
+      const targetTokens = Math.max(8, estimateMessageTokens(message) - excessTokens - nonContentTokens);
+      const truncated = truncateContent(message.content, targetTokens, false);
+      if (truncated !== message.content) {
+        message.content = truncated;
+        estimatedTokensAfter = estimateMessagesTokens(fittedMessages);
+        continue;
+      }
+    }
+
+    break;
+  }
+
+  return {
+    messages: fittedMessages,
+    maxContext,
+    maxTokens,
+    inputBudget,
+    reservedTokens,
+    estimatedTokensBefore,
+    estimatedTokensAfter,
+    trimmed: estimatedTokensAfter < estimatedTokensBefore,
+  };
+}
+
+/**
+ * Sanitise raw error response text for display.
+ * Strips HTML (Cloudflare/proxy error pages), extracts the title, and truncates.
+ */
+export function sanitizeApiError(raw: string, maxLen = 300): string {
+  // If it looks like HTML, pull out the <title> or strip all tags
+  if (raw.includes("<html") || raw.includes("<!DOCTYPE")) {
+    const titleMatch = raw.match(/<title[^>]*>(.*?)<\/title>/i);
+    if (titleMatch?.[1]) return titleMatch[1].trim().slice(0, maxLen);
+    // Strip tags and collapse whitespace
+    const stripped = raw
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return stripped.slice(0, maxLen) || "HTML error page (no details)";
+  }
+  // Try to parse as JSON and extract an error message
+  try {
+    const json = JSON.parse(raw);
+    const msg = json?.error?.message ?? json?.error ?? json?.message;
+    if (typeof msg === "string") return msg.slice(0, maxLen);
+  } catch {
+    // not JSON — return as-is
+  }
+  return raw.slice(0, maxLen);
+}
+
+/**
+ * Abstract base for all LLM providers.
+ * Every provider must implement the `chat` method as an async generator.
+ */
+export abstract class BaseLLMProvider {
+  protected customRequestHeaders: Record<string, string> = {};
+
+  /** Bind validated connection options without exposing credentials through the facade. */
+  public setCustomRequestHeaders(headers: Record<string, string>): void {
+    this.customRequestHeaders = { ...headers };
+  }
+
+  constructor(
+    protected baseUrl: string,
+    protected apiKey: string,
+    protected defaultMaxContext?: number,
+    protected defaultOpenrouterProvider?: string | null,
+    protected maxTokensOverride?: number | null,
+  ) {}
+
+  /** Cap output max_tokens to the connection-level override, if one is set. */
+  protected applyMaxTokensCap(tokens: number): number {
+    if (this.maxTokensOverride && tokens > this.maxTokensOverride) return this.maxTokensOverride;
+    return tokens;
+  }
+
+  /** Returns the connection-level max output tokens override, if set. */
+  public get maxTokensOverrideValue(): number | null {
+    return this.maxTokensOverride ?? null;
+  }
+
+  /** Returns the configured context window for this provider connection, if known. */
+  public get maxContextValue(): number | null {
+    return typeof this.defaultMaxContext === "number" && Number.isFinite(this.defaultMaxContext)
+      ? this.defaultMaxContext
+      : null;
+  }
+
+  protected fitMessagesToContext(messages: ChatMessage[], options: ContextFitOptions) {
+    return fitMessagesToContext(messages, options, this.defaultMaxContext);
+  }
+
+  protected logContextTrim(result: ContextFitResult, model: string): void {
+    if (!result.trimmed || !result.inputBudget) return;
+    const droppedTokens = Math.max(0, result.estimatedTokensBefore - result.estimatedTokensAfter);
+    const heavy = result.estimatedTokensBefore > 0 && droppedTokens / result.estimatedTokensBefore > 0.3;
+    logger[heavy ? "warn" : "info"](
+      {
+        event: "llm.context.trim",
+        model,
+        estimatedTokensBefore: result.estimatedTokensBefore,
+        estimatedTokensAfter: result.estimatedTokensAfter,
+        inputBudget: result.inputBudget,
+        maxContext: result.maxContext,
+        droppedTokens,
+      },
+      "Trimmed the prompt to fit the context window",
+    );
+  }
+
+  protected resolveOpenrouterProvider(openrouterProvider?: string | null): string | null | undefined {
+    return openrouterProvider ?? this.defaultOpenrouterProvider;
+  }
+
+  protected applyCustomParameters(body: Record<string, unknown>, options: ChatOptions): void {
+    if (!options.customParameters || Object.keys(options.customParameters).length === 0) return;
+    const hadStructuralModel = Object.prototype.hasOwnProperty.call(body, "model");
+    deepMergeRequestBody(body, options.customParameters);
+    if (
+      hadStructuralModel &&
+      (typeof body.model !== "string" || body.model.trim().length === 0) &&
+      options.model.trim().length > 0
+    ) {
+      logger.warn(
+        "[LLM request] Ignoring customParameters.model because it would remove the configured model %s",
+        options.model,
+      );
+      body.model = options.model;
+    }
+  }
+
+  protected shouldSendParameter(options: ChatOptions, key: GenerationParameterSendKey): boolean {
+    return options.enabledParameters?.[key] !== false;
+  }
+
+  /**
+   * Stream a chat completion. Yields text chunks, optionally returns usage on completion.
+   */
+  abstract chat(messages: ChatMessage[], options: ChatOptions): AsyncGenerator<string, LLMUsage | void, unknown>;
+
+  /**
+   * Non-streaming chat completion with tool-use support.
+   * Default implementation collects from the streaming generator.
+   * If onToken is provided, streams text chunks in real time.
+   */
+  async chatComplete(messages: ChatMessage[], options: ChatOptions): Promise<ChatCompletionResult> {
+    const startedAt = Date.now();
+    const context = {
+      ...getDiagnosticContext(),
+      operation: "llm.completion",
+      stage: "completion",
+      providerClass: this.constructor.name,
+      model: options.model,
+    };
+    let content = "";
+    const useStream = options.stream ?? !!options.onToken;
+    const gen = this.chat(messages, { ...options, stream: useStream });
+    const returnPartialOnStreamFailure = (error: unknown): ChatCompletionResult => {
+      // DiagnosticProvider owns the one failure line for a failed call, so a failure with no
+      // content is only rethrown here.
+      if (!content) throw error;
+      const diagnostic = createDiagnostic(error, { ...context, stage: "partial-stream" });
+      logger.warn(
+        {
+          event: "llm.call",
+          operation: context.operation,
+          stage: "partial-stream",
+          outcome: "failed",
+          degraded: true,
+          providerClass: context.providerClass,
+          model: context.model,
+          elapsedMs: Date.now() - startedAt,
+          outputLength: content.length,
+          errorId: diagnostic.errorId,
+          errorCode: diagnostic.code,
+        },
+        "LLM stream failed after partial content; returning partial completion",
+      );
+      return { content, toolCalls: [], finishReason: options.signal?.aborted ? "abort" : "error", usage: undefined };
+    };
+
+    let result: IteratorResult<string, LLMUsage | void>;
+    try {
+      try {
+        result = await gen.next();
+      } catch (error) {
+        return returnPartialOnStreamFailure(error);
+      }
+      while (!result.done) {
+        content += result.value;
+        if (options.onToken) {
+          // A callback failure propagates to DiagnosticProvider, which reports it once.
+          await options.onToken(result.value);
+        }
+        try {
+          result = await gen.next();
+        } catch (error) {
+          return returnPartialOnStreamFailure(error);
+        }
+      }
+      const usage = result.value || undefined;
+      return { content, toolCalls: [], finishReason: usage?.finishReason ?? "stop", usage };
+    } finally {
+      // Close the generator on every exit. A manual `next()` loop does not forward an early
+      // return the way `yield*` would, so an `onToken` throw would leave the stream suspended
+      // and an admission wrapper around it would never run its finally, leaking the slot.
+      await gen.return(undefined).catch((closeError: unknown) => {
+        logger.warn(
+          { event: "llm.stream.close", outcome: "failed", err: closeError },
+          "Failed to close the completion stream",
+        );
+      });
+    }
+  }
+
+  /**
+   * Generate embeddings for one or more texts.
+   * Default implementation calls the OpenAI-compatible /embeddings endpoint.
+   * Override in provider subclasses that use a different API shape.
+   */
+  async embed(texts: string[], model: string, signal?: AbortSignal): Promise<number[][]> {
+    const timeoutMs = getEmbeddingRequestTimeoutMs();
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    const headers = this.embeddingHeaders();
+    const res = await llmFetch(resolveEmbeddingEndpointUrl(this.baseUrl), {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ input: texts, model }),
+      signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
+      agentOptions: { bodyTimeout: timeoutMs, headersTimeout: timeoutMs },
+      bufferResponse: true,
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw llmHttpErrorFromResponse(`Embedding request failed (${res.status}): ${sanitizeApiError(body)}`, res);
+    }
+    const json = await res.json();
+    return parseEmbeddingResponse(json);
+  }
+
+  protected embeddingHeaders(): Record<string, string> {
+    return {
+      ...this.customRequestHeaders,
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${this.apiKey}`,
+    };
+  }
+}
+
+export function parseEmbeddingResponse(json: unknown): number[][] {
+  const data = Array.isArray(json) ? json : isPlainRecord(json) ? json.data : undefined;
+  if (!Array.isArray(data)) {
+    throw new Error("Embedding response did not include an embedding array.");
+  }
+
+  const items = data.map((item) => {
+    if (!isPlainRecord(item) || !Array.isArray(item.embedding)) {
+      throw new Error("Embedding response contained an invalid embedding item.");
+    }
+    const rawIndex = item.index;
+    let index: number | null = null;
+    if (rawIndex !== undefined) {
+      if (!(typeof rawIndex === "number" && Number.isInteger(rawIndex) && rawIndex >= 0)) {
+        throw new Error("Embedding response contained an invalid embedding index.");
+      }
+      index = rawIndex;
+    }
+    return {
+      embedding: item.embedding as number[],
+      index,
+    };
+  });
+
+  const indexedCount = items.filter((item) => item.index !== null).length;
+  if (indexedCount > 0 && indexedCount !== items.length) {
+    throw new Error("Embedding response mixed indexed and unindexed items.");
+  }
+
+  if (indexedCount === items.length) {
+    const ordered: number[][] = [];
+    for (const item of items) {
+      if (item.index! >= items.length || ordered[item.index!] !== undefined) {
+        throw new Error("Embedding response contained duplicate or out-of-range indexes.");
+      }
+      ordered[item.index!] = item.embedding;
+    }
+    for (let index = 0; index < items.length; index += 1) {
+      if (!ordered[index]) {
+        throw new Error("Embedding response indexes did not cover every input.");
+      }
+    }
+    return ordered;
+  }
+
+  return items.map((item) => item.embedding);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isUnsafeRequestBodyKey(key: string): boolean {
+  return key === "__proto__" || key === "constructor" || key === "prototype";
+}
+
+function deepMergeRequestBody(target: Record<string, unknown>, source: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(source)) {
+    if (isUnsafeRequestBodyKey(key)) continue;
+    if (value === undefined) continue;
+    const current = target[key];
+    if (isPlainRecord(current) && isPlainRecord(value)) {
+      deepMergeRequestBody(current, value);
+    } else {
+      target[key] = value;
+    }
+  }
+}

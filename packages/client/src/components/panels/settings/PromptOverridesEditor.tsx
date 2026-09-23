@@ -1,0 +1,501 @@
+// ──────────────────────────────────────────────
+// Settings: registered prompt overrides editor
+// ──────────────────────────────────────────────
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { AlertTriangle, Check, ChevronDown, Code2, FileText, Loader2, RotateCcw, Save, Sparkles } from "lucide-react";
+import { toast } from "sonner";
+import { estimateTextTokens } from "@marinara-engine/shared";
+import { formatEstimatedTokens } from "../../../lib/character-token-count";
+import {
+  usePromptOverride,
+  usePromptOverrideDefault,
+  usePromptOverrides,
+  useResetPromptOverride,
+  useSavePromptOverride,
+  type PromptOverrideSummary,
+} from "../../../hooks/use-prompt-overrides";
+import { ApiError } from "../../../lib/api-client";
+import { showConfirmDialog } from "../../../lib/app-dialogs";
+import { cn } from "../../../lib/utils";
+import { HelpTooltip } from "../../ui/HelpTooltip";
+import { SettingsSwitch } from "./SettingControls";
+import { useTranslation as useUiTranslation } from "react-i18next";
+import { translate } from "../../../localization/i18n";
+
+const PREFERRED_PROMPT_KEY = "conversation.selfie";
+const ROLEPLAY_GALLERY_VIDEO_DIRECTOR_PROMPT_KEY = "roleplay.galleryVideoDirector";
+
+type PromptOverridesEditorProps = {
+  title?: string;
+  description?: string;
+  help?: string;
+  keys?: readonly string[];
+  preferredKey?: string;
+  defaultOpen?: boolean;
+};
+
+function humanizePromptKey(key: string) {
+  return key
+    .replace(/\./g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function promptOverrideLabel(entry: Pick<PromptOverrideSummary, "key" | "label"> | null | undefined) {
+  return (
+    entry?.label?.trim() ||
+    (entry?.key ? humanizePromptKey(entry.key) : translate("ui.panels.promptoverrideseditor.promptOverride"))
+  );
+}
+
+function promptOverrideStatus(entry: PromptOverrideSummary | undefined) {
+  if (!entry?.hasOverride)
+    return {
+      label: translate("ui.panels.promptoverrideseditor.statusDefault"),
+      className: "bg-[var(--secondary)] text-[var(--muted-foreground)]",
+    };
+  if (entry.enabled) {
+    return {
+      label: translate("ui.panels.promptoverrideseditor.statusCustomActive"),
+      className: "bg-[var(--primary)]/15 text-[var(--primary)]",
+    };
+  }
+  return {
+    label: translate("ui.panels.promptoverrideseditor.statusCustomPaused"),
+    className: "bg-amber-500/15 text-amber-300",
+  };
+}
+
+function getPromptOverrideErrorMessage(error: unknown) {
+  if (error instanceof ApiError && error.payload && typeof error.payload === "object") {
+    const payload = error.payload as { unknownVariables?: unknown; error?: unknown };
+    if (Array.isArray(payload.unknownVariables) && payload.unknownVariables.length > 0) {
+      return translate("ui.panels.promptoverrideseditor.unknownVariables", {
+        count: payload.unknownVariables.length,
+        names: payload.unknownVariables.join(", "),
+      });
+    }
+    if (typeof payload.error === "string" && payload.error.trim()) return payload.error;
+  }
+  return error instanceof Error ? error.message : translate("ui.panels.promptoverrideseditor.saveFailed");
+}
+
+function buildEditableDefaultTemplate(
+  renderedDefault: string,
+  exampleContext: Record<string, string | number | undefined> | undefined,
+  variables: Array<{ name: string; example?: string }>,
+) {
+  if (!renderedDefault || !exampleContext) return renderedDefault;
+  let template = renderedDefault;
+  const candidates = variables.map((variable) => {
+    const value = exampleContext[variable.name] ?? variable.example;
+    const example = value === undefined || value === null ? "" : String(value);
+    return { example, token: "$" + "{" + variable.name + "}" };
+  });
+  const exampleCounts = candidates.reduce<Record<string, number>>(
+    (counts, item) => {
+      if (item.example.length > 1) counts[item.example] = (counts[item.example] ?? 0) + 1;
+      return counts;
+    },
+    Object.create(null) as Record<string, number>,
+  );
+  const replacements = candidates
+    .filter((item) => item.example.length > 1 && exampleCounts[item.example] === 1)
+    .sort((a, b) => b.example.length - a.example.length);
+
+  for (const { example, token } of replacements) {
+    template = template.split(example).join(token);
+  }
+  return template;
+}
+
+function renderTemplatePreview(
+  template: string,
+  exampleContext: Record<string, string | number | undefined> | undefined,
+  variables: Array<{ name: string; example?: string }>,
+) {
+  const declared = new Set(variables.map((variable) => variable.name));
+  const unknownVariables = new Set<string>();
+  const rendered = template.replace(/\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g, (token, name: string) => {
+    if (!declared.has(name)) {
+      unknownVariables.add(name);
+      return token;
+    }
+    const value = exampleContext?.[name] ?? variables.find((variable) => variable.name === name)?.example ?? "";
+    return String(value);
+  });
+  return { rendered, unknownVariables: Array.from(unknownVariables) };
+}
+
+export function PromptOverridesEditor({
+  title = translate("ui.panels.promptoverrideseditor.defaultTitle"),
+  description = translate("ui.panels.promptoverrideseditor.defaultDescription"),
+  help = translate("ui.panels.promptoverrideseditor.defaultHelp"),
+  keys,
+  preferredKey = PREFERRED_PROMPT_KEY,
+  defaultOpen = false,
+}: PromptOverridesEditorProps) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+  const [hasOpened, setHasOpened] = useState(defaultOpen);
+  const contentId = useId();
+
+  const toggleOpen = () => {
+    setHasOpened(true);
+    setIsOpen((open) => !open);
+  };
+
+  return (
+    <section className="overflow-hidden rounded-xl bg-[var(--secondary)]/40 ring-1 ring-[var(--border)]">
+      <div className="flex items-start gap-2 p-3">
+        <button
+          type="button"
+          onClick={toggleOpen}
+          aria-expanded={isOpen}
+          aria-controls={contentId}
+          className="flex min-w-0 flex-1 items-start gap-2 rounded-lg text-left transition-colors hover:text-[var(--primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]"
+        >
+          <ChevronDown
+            size="0.875rem"
+            className={cn(
+              "mt-0.5 shrink-0 text-[var(--muted-foreground)] transition-transform",
+              !isOpen && "-rotate-90",
+            )}
+          />
+          <span className="min-w-0">
+            <span className="flex items-center gap-1.5">
+              <FileText size="0.75rem" className="text-[var(--muted-foreground)]" />
+              <span className="text-xs font-medium text-[var(--foreground)]">{title}</span>
+            </span>
+            <span className="mt-1 block text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
+              {description}
+            </span>
+          </span>
+        </button>
+        <HelpTooltip text={help} />
+      </div>
+
+      {hasOpened && (
+        <div id={contentId} hidden={!isOpen} className="border-t border-[var(--border)]/70 p-3 pt-2.5">
+          <PromptOverridesEditorBody keys={keys} preferredKey={preferredKey} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PromptOverridesEditorBody({ keys, preferredKey }: { keys?: readonly string[]; preferredKey: string }) {
+  const { t: localizeUi } = useUiTranslation();
+  const { data: entries = [], isLoading: loadingEntries, isError: listFailed } = usePromptOverrides();
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const keySet = useMemo(() => (keys ? new Set(keys) : null), [keys]);
+  const filteredEntries = useMemo(
+    () => (keySet ? entries.filter((entry) => keySet.has(entry.key)) : entries),
+    [entries, keySet],
+  );
+  const selectedEntry = useMemo(
+    () => filteredEntries.find((entry) => entry.key === selectedKey),
+    [filteredEntries, selectedKey],
+  );
+  const localizedEntryLabel = (entry: PromptOverrideSummary | null | undefined) =>
+    entry?.key === ROLEPLAY_GALLERY_VIDEO_DIRECTOR_PROMPT_KEY
+      ? localizeUi("settings.promptOverrides.roleplayGalleryVideoDirector.label")
+      : promptOverrideLabel(entry);
+  const selectedEntryDescription =
+    selectedEntry?.key === ROLEPLAY_GALLERY_VIDEO_DIRECTOR_PROMPT_KEY
+      ? localizeUi("settings.promptOverrides.roleplayGalleryVideoDirector.description")
+      : selectedEntry?.description;
+  const detailQuery = usePromptOverride(selectedKey);
+  const defaultQuery = usePromptOverrideDefault(selectedKey);
+  const saveOverride = useSavePromptOverride();
+  const resetOverride = useResetPromptOverride();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [draft, setDraft] = useState("");
+  const [enabled, setEnabled] = useState(true);
+  const [lastError, setLastError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (selectedKey || filteredEntries.length === 0) return;
+    setSelectedKey(filteredEntries.some((entry) => entry.key === preferredKey) ? preferredKey : filteredEntries[0].key);
+  }, [filteredEntries, preferredKey, selectedKey]);
+
+  useEffect(() => {
+    if (!selectedKey || filteredEntries.length === 0) return;
+    if (!filteredEntries.some((entry) => entry.key === selectedKey)) setSelectedKey(filteredEntries[0].key);
+  }, [filteredEntries, selectedKey]);
+
+  const detail = detailQuery.data;
+  const variables = useMemo(
+    () => detail?.variables ?? selectedEntry?.variables ?? [],
+    [detail?.variables, selectedEntry?.variables],
+  );
+  const defaultTemplate = useMemo(
+    () => buildEditableDefaultTemplate(defaultQuery.data?.template ?? "", defaultQuery.data?.exampleContext, variables),
+    [defaultQuery.data?.exampleContext, defaultQuery.data?.template, variables],
+  );
+  const sourceTemplate = detail?.override?.template ?? defaultTemplate;
+  const sourceEnabled = detail?.override?.enabled ?? true;
+  const loadingPrompt = !!selectedKey && (detailQuery.isLoading || defaultQuery.isLoading);
+  const status = promptOverrideStatus(selectedEntry);
+  const isDirty = draft !== sourceTemplate || enabled !== sourceEnabled;
+  const canSave = !!selectedKey && draft.trim().length > 0 && isDirty && !saveOverride.isPending && !loadingPrompt;
+  const canReset = !!selectedKey && (detail?.override || draft !== defaultTemplate) && !resetOverride.isPending;
+  const renderedPreview = useMemo(
+    () => renderTemplatePreview(draft, defaultQuery.data?.exampleContext, variables),
+    [defaultQuery.data?.exampleContext, draft, variables],
+  );
+
+  useEffect(() => {
+    if (!selectedKey || !defaultQuery.data || detailQuery.isLoading) return;
+    setDraft(sourceTemplate);
+    setEnabled(sourceEnabled);
+    setLastError(null);
+  }, [defaultQuery.data, detailQuery.isLoading, selectedKey, sourceEnabled, sourceTemplate]);
+
+  const insertVariable = (name: string) => {
+    const token = "$" + "{" + name + "}";
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      setDraft((current) => `${current}${token}`);
+      return;
+    }
+    const start = textarea.selectionStart ?? draft.length;
+    const end = textarea.selectionEnd ?? draft.length;
+    const nextDraft = `${draft.slice(0, start)}${token}${draft.slice(end)}`;
+    setDraft(nextDraft);
+    setLastError(null);
+    requestAnimationFrame(() => {
+      textarea.focus();
+      const cursor = start + token.length;
+      textarea.setSelectionRange(cursor, cursor);
+    });
+  };
+
+  const handleSave = async () => {
+    if (!selectedKey) return;
+    if (!draft.trim()) {
+      setLastError(localizeUi("ui.panels.promptoverrideseditor.templateEmpty"));
+      return;
+    }
+    try {
+      setLastError(null);
+      await saveOverride.mutateAsync({ key: selectedKey, template: draft, enabled });
+      toast.success(localizeUi("ui.panels.promptoverrideseditorbody.promptOverrideSaved"));
+    } catch (error) {
+      const message = getPromptOverrideErrorMessage(error);
+      setLastError(message);
+      toast.error(message);
+    }
+  };
+
+  const handleReset = async () => {
+    if (!selectedKey) return;
+    if (!detail?.override) {
+      setDraft(defaultTemplate);
+      setEnabled(true);
+      setLastError(null);
+      return;
+    }
+
+    const confirmed = await showConfirmDialog({
+      title: localizeUi("ui.panels.promptoverrideseditorbody.resetPromptOverride"),
+      message: localizeUi("ui.panels.promptoverrideseditorbody.value1WillUseItsBuiltInDefaultAgainYour", {
+        value1: localizedEntryLabel(selectedEntry),
+      }),
+      confirmLabel: localizeUi("ui.panels.promptoverrideseditorbody.resetToDefault"),
+      cancelLabel: localizeUi("chat.delete.dialog.cancel"),
+      tone: "destructive",
+    });
+    if (!confirmed) return;
+
+    try {
+      setLastError(null);
+      await resetOverride.mutateAsync(selectedKey);
+      setDraft(defaultTemplate);
+      setEnabled(true);
+      toast.success(localizeUi("ui.panels.promptoverrideseditorbody.promptOverrideResetToDefault"));
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : localizeUi("ui.panels.promptoverrideseditor.resetFailed");
+      setLastError(message);
+      toast.error(message);
+    }
+  };
+
+  if (listFailed) {
+    return (
+      <div className="flex items-start gap-2 text-xs text-[var(--destructive)]">
+        <AlertTriangle size="0.875rem" className="mt-0.5 shrink-0" />
+        {localizeUi("ui.panels.promptoverrideseditorbody.couldNotLoadRegisteredPromptOverrides")}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2.5">
+      <label className="flex flex-col gap-1">
+        <span className="flex items-center justify-between gap-2">
+          <span className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+            {localizeUi("ui.panels.promptoverrideseditorbody.registeredPrompt")}
+          </span>
+          <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[0.5625rem] font-semibold", status.className)}>
+            {loadingEntries ? localizeUi("ui.panels.promptoverrideseditorbody.loading") : status.label}
+          </span>
+        </span>
+        <select
+          value={selectedKey ?? ""}
+          disabled={loadingEntries || filteredEntries.length === 0}
+          onChange={(event) => setSelectedKey(event.target.value)}
+          className="w-full rounded-lg bg-[var(--background)] px-3 py-2 text-xs text-[var(--foreground)] outline-none ring-1 ring-[var(--border)] focus:ring-[var(--primary)] disabled:opacity-60"
+        >
+          {loadingEntries && (
+            <option value="">{localizeUi("ui.panels.promptoverrideseditorbody.loadingPrompts")}</option>
+          )}
+          {!loadingEntries && filteredEntries.length === 0 && (
+            <option value="">{localizeUi("ui.panels.promptoverrideseditorbody.noRegisteredPrompts")}</option>
+          )}
+          {filteredEntries.map((entry) => (
+            <option key={entry.key} value={entry.key}>
+              {localizedEntryLabel(entry)}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      {selectedEntry && (
+        <p className="rounded-lg bg-[var(--background)]/50 px-2.5 py-2 text-[0.625rem] leading-relaxed text-[var(--muted-foreground)] ring-1 ring-[var(--border)]/70">
+          {selectedEntryDescription}
+        </p>
+      )}
+
+      {variables.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <span className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+            {localizeUi("ui.panels.promptoverrideseditorbody.availableVariables")}
+          </span>
+          <div className="flex flex-wrap gap-1.5">
+            {variables.map((variable) => (
+              <button
+                type="button"
+                key={variable.name}
+                onClick={() => insertVariable(variable.name)}
+                title={
+                  selectedEntry?.key === ROLEPLAY_GALLERY_VIDEO_DIRECTOR_PROMPT_KEY &&
+                  variable.name === "durationSeconds"
+                    ? localizeUi("settings.promptOverrides.roleplayGalleryVideoDirector.durationSeconds")
+                    : variable.description
+                }
+                className="inline-flex items-center gap-1 rounded-md bg-[var(--background)] px-2 py-1 font-mono text-[0.6rem] text-[var(--primary)] ring-1 ring-[var(--border)] transition-colors hover:bg-[var(--accent)]"
+              >
+                <Code2 size="0.625rem" />
+                {"${" + variable.name + "}"}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <label className="flex flex-col gap-1">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+            {localizeUi("ui.panels.promptoverrideseditorbody.template")}
+          </span>
+          <span className="text-[0.5625rem] text-[var(--muted-foreground)]">
+            {formatEstimatedTokens(loadingPrompt ? 0 : estimateTextTokens(draft), localizeUi)}
+          </span>
+        </div>
+        <textarea
+          ref={textareaRef}
+          value={loadingPrompt ? "" : draft}
+          disabled={loadingPrompt || !selectedKey}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            setLastError(null);
+          }}
+          placeholder={
+            loadingPrompt
+              ? localizeUi("ui.panels.promptoverrideseditorbody.loadingTemplate")
+              : localizeUi("ui.panels.promptoverrideseditorbody.writeAPromptTemplate")
+          }
+          className="min-h-52 resize-y rounded-lg border border-[var(--border)] bg-[var(--background)] p-2.5 font-mono text-[0.6875rem] leading-relaxed text-[var(--foreground)] outline-none transition-colors placeholder:text-[var(--muted-foreground)]/45 focus:border-[var(--primary)]/50 disabled:cursor-wait disabled:opacity-60"
+        />
+      </label>
+
+      <div className="rounded-lg bg-[var(--background)]/55 p-2.5 ring-1 ring-[var(--border)]/70">
+        <div className="mb-1.5 flex items-center justify-between gap-2">
+          <span className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+            {localizeUi("ui.panels.promptoverrideseditorbody.renderedPreview")}
+          </span>
+          <span className="text-[0.5625rem] text-[var(--muted-foreground)]">
+            {localizeUi("ui.panels.promptoverrideseditorbody.exampleValues")}
+          </span>
+        </div>
+        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--secondary)]/70 p-2 font-mono text-[0.625rem] leading-relaxed text-[var(--foreground)]">
+          {loadingPrompt
+            ? localizeUi("ui.panels.promptoverrideseditorbody.loadingPreview")
+            : renderedPreview.rendered || localizeUi("ui.panels.promptoverrideseditorbody.nothingToPreview")}
+        </pre>
+        {renderedPreview.unknownVariables.length > 0 && (
+          <p className="mt-1.5 text-[0.5625rem] text-amber-500">
+            {localizeUi("ui.panels.promptoverrideseditorbody.unknownVariables")}{" "}
+            {renderedPreview.unknownVariables.join(", ")}
+          </p>
+        )}
+      </div>
+
+      <SettingsSwitch
+        label={localizeUi("ui.panels.promptoverrideseditorbody.applyThisOverride")}
+        description={localizeUi("ui.panels.promptoverrideseditorbody.turnThisOffToKeepTheTemplateSavedWithout")}
+        checked={enabled}
+        disabled={loadingPrompt || !selectedKey}
+        onChange={setEnabled}
+        labelPosition="start"
+        className="justify-between rounded-lg bg-[var(--background)]/45 px-2.5 py-2 ring-1 ring-[var(--border)]/70"
+        labelClassName="text-xs font-medium text-[var(--foreground)]"
+      />
+
+      {lastError && (
+        <div className="flex items-start gap-1.5 rounded-lg bg-[var(--destructive)]/10 px-2.5 py-2 text-[0.625rem] text-[var(--destructive)] ring-1 ring-[var(--destructive)]/20">
+          <AlertTriangle size="0.75rem" className="mt-0.5 shrink-0" />
+          <span>{lastError}</span>
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => void handleSave()}
+          disabled={!canSave}
+          className={cn(
+            "mari-chrome-control flex-1 text-xs disabled:cursor-not-allowed",
+            canSave && "mari-chrome-control--selected",
+          )}
+        >
+          {saveOverride.isPending ? <Loader2 size="0.8125rem" className="animate-spin" /> : <Save size="0.8125rem" />}
+          {localizeUi("ui.noodle.noodlehome.save")}
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleReset()}
+          disabled={!canReset}
+          className="mari-chrome-control flex-1 text-xs disabled:cursor-not-allowed"
+        >
+          {resetOverride.isPending ? (
+            <Loader2 size="0.8125rem" className="animate-spin" />
+          ) : detail?.override ? (
+            <RotateCcw size="0.8125rem" />
+          ) : (
+            <Sparkles size="0.8125rem" />
+          )}
+          {localizeUi("ui.panels.promptoverrideseditorbody.resetToDefault")}
+        </button>
+      </div>
+
+      {detail?.override && !isDirty && (
+        <div className="flex items-center gap-1.5 text-[0.625rem] text-[var(--muted-foreground)]">
+          <Check size="0.6875rem" className="text-green-500" />
+          {localizeUi("chat.settings.inlineEditor.saved")} {new Date(detail.override.updatedAt).toLocaleString()}
+        </div>
+      )}
+    </div>
+  );
+}

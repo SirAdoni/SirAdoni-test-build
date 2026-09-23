@@ -1,0 +1,370 @@
+import { mkdir, readFile, writeFile, chmod, rename, unlink } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { APP_VERSION, type ModelParameterCapabilities, type StoredEffortLevel } from "@marinara-engine/shared";
+import { logger } from "../../lib/logger.js";
+import { safeFetch } from "../../utils/security.js";
+import { LLMHttpError, sanitizeApiError } from "./base-provider.js";
+
+export const OPENAI_CHATGPT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
+
+const REFRESH_TOKEN_URL = "https://auth.openai.com/oauth/token";
+const CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+const TOKEN_REFRESH_INTERVAL_DAYS = 8;
+const EXPIRY_REFRESH_SKEW_SECONDS = 60;
+
+type JsonRecord = Record<string, unknown>;
+
+type CodexAuthJson = {
+  auth_mode?: string;
+  OPENAI_API_KEY?: string | null;
+  tokens?: {
+    access_token?: string;
+    refresh_token?: string;
+    account_id?: string | null;
+    id_token?: string | JsonRecord | null;
+    [key: string]: unknown;
+  } | null;
+  last_refresh?: string | null;
+  [key: string]: unknown;
+};
+
+export type OpenAIChatGPTAuth = {
+  accessToken: string;
+  accountId: string | null;
+  planType: string | null;
+  isFedrampAccount: boolean;
+  authFilePath: string;
+  refreshed: boolean;
+};
+
+let refreshInFlight: Promise<OpenAIChatGPTAuth> | null = null;
+
+function getCodexHome(): string {
+  const configured = process.env.CODEX_HOME?.trim();
+  return configured || join(homedir(), ".codex");
+}
+
+export function getCodexAuthFilePath(): string {
+  return join(getCodexHome(), "auth.json");
+}
+
+function asRecord(value: unknown): JsonRecord | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : null;
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function boolValue(value: unknown): boolean {
+  return value === true || value === "true";
+}
+
+function decodeJwtPayload(token: string): JsonRecord | null {
+  const parts = token.split(".");
+  if (parts.length < 2 || !parts[1]) return null;
+  const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+  const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), "=");
+  try {
+    const decoded = Buffer.from(padded, "base64").toString("utf8");
+    return asRecord(JSON.parse(decoded));
+  } catch {
+    return null;
+  }
+}
+
+function getNestedAuthClaims(claims: JsonRecord | null): JsonRecord | null {
+  return asRecord(claims?.["https://api.openai.com/auth"]);
+}
+
+function normalizeIdTokenInfo(value: unknown): JsonRecord | null {
+  if (typeof value === "string") {
+    const claims = decodeJwtPayload(value);
+    const authClaims = getNestedAuthClaims(claims);
+    return {
+      email: stringValue(claims?.email) ?? stringValue(asRecord(claims?.["https://api.openai.com/profile"])?.email),
+      chatgpt_plan_type: authClaims?.chatgpt_plan_type,
+      chatgpt_user_id: stringValue(authClaims?.chatgpt_user_id) ?? stringValue(authClaims?.user_id),
+      chatgpt_account_id: stringValue(authClaims?.chatgpt_account_id),
+      chatgpt_account_is_fedramp: boolValue(authClaims?.chatgpt_account_is_fedramp),
+      raw_jwt: value,
+    };
+  }
+  return asRecord(value);
+}
+
+function jwtExpiresSoon(accessToken: string): boolean {
+  const exp = decodeJwtPayload(accessToken)?.exp;
+  if (typeof exp !== "number" || !Number.isFinite(exp)) return false;
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  return exp <= nowSeconds + EXPIRY_REFRESH_SKEW_SECONDS;
+}
+
+function lastRefreshIsStale(lastRefresh: unknown): boolean {
+  const raw = stringValue(lastRefresh);
+  if (!raw) return false;
+  const parsed = Date.parse(raw);
+  if (!Number.isFinite(parsed)) return false;
+  const ageMs = Date.now() - parsed;
+  return ageMs > TOKEN_REFRESH_INTERVAL_DAYS * 24 * 60 * 60 * 1000;
+}
+
+function authPolicy() {
+  return {
+    allowLocal: false,
+    allowLoopback: false,
+    allowMdns: false,
+    allowedProtocols: ["https:"],
+    flagName: "OPENAI_CHATGPT_AUTH",
+  };
+}
+
+async function readCodexAuth(authFilePath: string): Promise<CodexAuthJson> {
+  let raw: string;
+  try {
+    raw = await readFile(authFilePath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(
+        `No Codex ChatGPT login found at ${authFilePath}. Run \`codex login\` on this host, then try again.`,
+      );
+    }
+    throw err;
+  }
+
+  const parsed = JSON.parse(raw) as unknown;
+  const auth = asRecord(parsed);
+  if (!auth) throw new Error(`Codex auth file at ${authFilePath} is not a JSON object.`);
+  return auth as CodexAuthJson;
+}
+
+function authFromJson(auth: CodexAuthJson, authFilePath: string, refreshed: boolean): OpenAIChatGPTAuth {
+  const tokens = auth.tokens;
+  if (!tokens || typeof tokens !== "object") {
+    const mode = stringValue(auth.auth_mode) ?? (auth.OPENAI_API_KEY ? "ApiKey" : "unknown");
+    throw new Error(
+      `Codex auth at ${authFilePath} is ${mode} auth, not ChatGPT OAuth. Run \`codex login\` on this host.`,
+    );
+  }
+
+  const accessToken = stringValue(tokens.access_token);
+  if (!accessToken) {
+    throw new Error(`Codex ChatGPT auth at ${authFilePath} does not contain an access token. Run \`codex login\`.`);
+  }
+
+  const idTokenInfo = normalizeIdTokenInfo(tokens.id_token);
+  const accessClaims = decodeJwtPayload(accessToken);
+  const accessAuthClaims = getNestedAuthClaims(accessClaims);
+  const accountId =
+    stringValue(tokens.account_id) ??
+    stringValue(idTokenInfo?.chatgpt_account_id) ??
+    stringValue(accessAuthClaims?.chatgpt_account_id);
+  const planTypeRaw = idTokenInfo?.chatgpt_plan_type;
+  const planType =
+    typeof planTypeRaw === "string"
+      ? planTypeRaw
+      : asRecord(planTypeRaw)?.known
+        ? stringValue(asRecord(planTypeRaw)?.known)
+        : asRecord(planTypeRaw)?.unknown
+          ? stringValue(asRecord(planTypeRaw)?.unknown)
+          : null;
+
+  return {
+    accessToken,
+    accountId,
+    planType,
+    isFedrampAccount: boolValue(idTokenInfo?.chatgpt_account_is_fedramp),
+    authFilePath,
+    refreshed,
+  };
+}
+
+/** A typed HTTP failure with a sanitized, bounded body excerpt; the OAuth `error` string becomes providerCode. */
+async function authHttpError(label: string, res: Response): Promise<LLMHttpError> {
+  const text = await res.text().catch(() => "");
+  let parsed: JsonRecord | null = null;
+  try {
+    parsed = asRecord(JSON.parse(text));
+  } catch {
+    parsed = null;
+  }
+  const code = parsed?.error;
+  return new LLMHttpError(`${label} (${res.status}): ${sanitizeApiError(text, 200)}`, {
+    status: res.status,
+    providerCode: typeof code === "string" ? code : undefined,
+  });
+}
+
+async function refreshAuth(auth: CodexAuthJson, authFilePath: string): Promise<OpenAIChatGPTAuth> {
+  const tokens = auth.tokens;
+  const refreshToken = stringValue(tokens?.refresh_token);
+  if (!tokens || !refreshToken) {
+    throw new Error(`Codex ChatGPT access token is stale, but no refresh token is available. Run \`codex login\`.`);
+  }
+
+  const startedAt = Date.now();
+  const res = await safeFetch(REFRESH_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      client_id: CODEX_CLIENT_ID,
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+    }),
+    policy: authPolicy(),
+    maxResponseBytes: 1024 * 1024,
+    decodeCompressedResponse: true,
+  });
+
+  if (!res.ok) {
+    throw await authHttpError("Failed to refresh Codex ChatGPT login", res);
+  }
+
+  const response = (await res.json()) as JsonRecord;
+  const nextAccessToken = stringValue(response.access_token) ?? stringValue(tokens.access_token);
+  if (!nextAccessToken) {
+    throw new Error("Codex ChatGPT token refresh did not return an access token.");
+  }
+
+  tokens.access_token = nextAccessToken;
+  const nextRefreshToken = stringValue(response.refresh_token);
+  if (nextRefreshToken) tokens.refresh_token = nextRefreshToken;
+  const nextIdToken = stringValue(response.id_token);
+  if (nextIdToken) tokens.id_token = nextIdToken;
+  auth.last_refresh = new Date().toISOString();
+
+  await mkdir(dirname(authFilePath), { recursive: true });
+  // Write a sibling temp file and rename it over auth.json so a crash mid-write can never leave a
+  // truncated file (and lose the rotated refresh token) for us or the Codex CLI to read.
+  const tmpPath = `${authFilePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await writeFile(tmpPath, `${JSON.stringify(auth, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    await chmod(tmpPath, 0o600).catch(() => {});
+    await rename(tmpPath, authFilePath);
+  } catch (err) {
+    await unlink(tmpPath).catch(() => {});
+    throw err;
+  }
+  logger.debug(
+    {
+      event: "llm.auth.refresh",
+      outcome: "ok",
+      elapsedMs: Date.now() - startedAt,
+      expiresInS: typeof response.expires_in === "number" ? response.expires_in : undefined,
+    },
+    "Refreshed local Codex ChatGPT auth token",
+  );
+
+  return authFromJson(auth, authFilePath, true);
+}
+
+async function loadAuthImpl(): Promise<OpenAIChatGPTAuth> {
+  const authFilePath = getCodexAuthFilePath();
+  const auth = await readCodexAuth(authFilePath);
+  const tokens = auth.tokens;
+  const accessToken = stringValue(tokens?.access_token);
+  const shouldRefresh = accessToken != null && (jwtExpiresSoon(accessToken) || lastRefreshIsStale(auth.last_refresh));
+
+  if (shouldRefresh) return refreshAuth(auth, authFilePath);
+  return authFromJson(auth, authFilePath, false);
+}
+
+export async function getOpenAIChatGPTAuth(): Promise<OpenAIChatGPTAuth> {
+  if (!refreshInFlight) {
+    refreshInFlight = loadAuthImpl().finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
+}
+
+export function buildOpenAIChatGPTHeaders(auth: OpenAIChatGPTAuth): Record<string, string> {
+  const headers: Record<string, string> = {
+    version: APP_VERSION,
+    originator: "Marinara-Engine",
+    "User-Agent": `MarinaraEngine/${APP_VERSION}`,
+  };
+  if (auth.accountId) headers["ChatGPT-Account-ID"] = auth.accountId;
+  if (auth.isFedrampAccount) headers["X-OpenAI-Fedramp"] = "true";
+  return headers;
+}
+
+const STORED_EFFORT_LEVELS = new Set<string>(["low", "medium", "high", "xhigh", "maximum"]);
+
+/** What one ChatGPT catalog row says the model accepts: effort levels with their names and descriptions, and verbosity. */
+export function readOpenAIChatGPTModelCapabilities(record: JsonRecord): ModelParameterCapabilities {
+  const capabilities: ModelParameterCapabilities = {};
+  if (Array.isArray(record.supported_reasoning_levels)) {
+    const levels: StoredEffortLevel[] = [];
+    const labels: Partial<Record<StoredEffortLevel, string>> = {};
+    const descriptions: Partial<Record<StoredEffortLevel, string>> = {};
+    for (const entry of record.supported_reasoning_levels) {
+      const reported = stringValue(asRecord(entry)?.effort);
+      if (!reported) continue;
+      // Levels Marinara cannot store (for example "ultra") are skipped rather than mislabelled.
+      const stored = reported === "max" ? "maximum" : reported;
+      if (!STORED_EFFORT_LEVELS.has(stored)) continue;
+      const level = stored as StoredEffortLevel;
+      levels.push(level);
+      labels[level] = reported;
+      const description = stringValue(asRecord(entry)?.description);
+      if (description) descriptions[level] = description;
+    }
+    capabilities.effortLevels = levels;
+    capabilities.effortLabels = labels;
+    if (Object.keys(descriptions).length > 0) capabilities.effortDescriptions = descriptions;
+  }
+  const defaultEffort = stringValue(record.default_reasoning_level);
+  if (defaultEffort) capabilities.defaultEffort = defaultEffort;
+  if (typeof record.support_verbosity === "boolean") {
+    const defaultVerbosity = stringValue(record.default_verbosity);
+    capabilities.verbosity = {
+      supported: record.support_verbosity,
+      ...(defaultVerbosity ? { default: defaultVerbosity } : {}),
+    };
+  }
+  return capabilities;
+}
+
+export async function fetchOpenAIChatGPTModels(
+  existingAuth?: OpenAIChatGPTAuth,
+): Promise<
+  Array<{ id: string; name: string; description?: string; context?: number; capabilities?: ModelParameterCapabilities }>
+> {
+  const auth = existingAuth ?? (await getOpenAIChatGPTAuth());
+  const url = `${OPENAI_CHATGPT_CODEX_BASE_URL}/models?client_version=${encodeURIComponent(APP_VERSION)}`;
+  const res = await safeFetch(url, {
+    headers: {
+      Authorization: `Bearer ${auth.accessToken}`,
+      ...buildOpenAIChatGPTHeaders(auth),
+    },
+    policy: authPolicy(),
+    maxResponseBytes: 5 * 1024 * 1024,
+    decodeCompressedResponse: true,
+  });
+
+  if (!res.ok) {
+    throw await authHttpError("ChatGPT model catalog request failed", res);
+  }
+
+  const json = (await res.json()) as JsonRecord;
+  const models = Array.isArray(json.models) ? json.models : [];
+  return models
+    .map((item) => {
+      const record = asRecord(item);
+      const id = stringValue(record?.slug) ?? stringValue(record?.id);
+      if (!record || !id) return null;
+      const description = stringValue(record.description);
+      const context =
+        typeof record.context_window === "number" && record.context_window > 0 ? record.context_window : undefined;
+      return {
+        id,
+        name: stringValue(record.display_name) ?? stringValue(record.name) ?? id,
+        ...(description ? { description } : {}),
+        ...(context ? { context } : {}),
+        capabilities: readOpenAIChatGPTModelCapabilities(record),
+      };
+    })
+    .filter((model): model is NonNullable<typeof model> => Boolean(model));
+}
