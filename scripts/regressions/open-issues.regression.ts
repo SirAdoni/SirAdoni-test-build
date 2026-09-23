@@ -6859,7 +6859,7 @@ assert.match(
 );
 assert.match(
   backupRoutesSource,
-  /catch \(error\) \{\s*const message = getBackupErrorMessage[\s\S]*try \{[\s\S]*await saveAutomaticBackupSettings[\s\S]*catch \(settingsError\)[\s\S]*Could not persist the automatic backup failure state/u,
+  /catch \(error\) \{\s*const message = getBackupErrorMessage[\s\S]*try \{[\s\S]*await saveAutomaticBackupSettings[\s\S]*catch \(settingsError\)[\s\S]*(?:Could not persist the automatic backup failure state|logSuppressed\(settingsError, \{ event: "backup\.automatic", stage: "saveFailureState" \}\))/u,
   "automatic-backup error reporting must not reject when its settings write also fails",
 );
 assert.match(

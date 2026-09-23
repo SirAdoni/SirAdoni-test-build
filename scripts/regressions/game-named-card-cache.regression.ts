@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 // ride in a small uncached section, and that section is folded in only once it grows past a limit.
 const root = mkdtempSync(join(tmpdir(), "marinara-named-card-cache-"));
 process.env.DATA_DIR = root;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 
 try {
   const { planNamedCardLayout, layoutNamedCards, NAMED_CARD_FOLD_COUNT } = await import(

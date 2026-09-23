@@ -6,6 +6,7 @@ import Fastify from "../../packages/server/node_modules/fastify/fastify.js";
 
 const dataDir = mkdtempSync(join(tmpdir(), "marinara-b14-"));
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 process.env.LOG_LEVEL = "silent";
 
 const { fontsRoutes } = await import("../../packages/server/src/routes/fonts.routes.js");

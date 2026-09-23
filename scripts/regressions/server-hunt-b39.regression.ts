@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 
 const dataDir = await mkdtemp(join(tmpdir(), "marinara-b39-data-"));
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 process.env.LOG_LEVEL = "silent";
 
 const stRoot = await mkdtemp(join(tmpdir(), "marinara-b39-st-"));

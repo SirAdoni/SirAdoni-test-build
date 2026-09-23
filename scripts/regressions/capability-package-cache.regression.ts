@@ -14,6 +14,7 @@ import { join } from "node:path";
 
 const dataDir = mkdtempSync(join(tmpdir(), "marinara-capability-cache-"));
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 
 const packagesRoot = join(dataDir, "capability-packages");
 const registryPath = join(packagesRoot, "installed.json");

@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 // before any model call when the cached share falls under the chat's threshold.
 const root = mkdtempSync(join(tmpdir(), "marinara-cache-guard-"));
 process.env.DATA_DIR = root;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 
 try {
   const guard = await import("../../packages/server/src/services/generation/cache-send-guard.js");

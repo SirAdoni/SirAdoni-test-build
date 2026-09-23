@@ -16,6 +16,7 @@ process.env.LOG_DIR = logDir;
 process.env.LOG_FILE_LEVEL = "debug";
 process.env.LOG_LEVEL = "fatal";
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 
 const PLANTED_CONTENT = "PLANTED CARD CONTENT never logged";
 

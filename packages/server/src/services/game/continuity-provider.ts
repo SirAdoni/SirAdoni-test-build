@@ -8,6 +8,7 @@ import { createLLMProvider } from "../llm/provider-registry.js";
 import { isRateLimitError, LLMHttpError } from "../llm/base-provider.js";
 import { withConnectionFallbackProvider } from "../llm/connection-fallback-provider.js";
 import { resolveBaseUrl } from "../generation/connection-base-url.js";
+import { canRefreshLocalContext } from "../llm/local-context-limit.js";
 import { fitMessagesToModelAccessContext, resolveModelAccessPolicy } from "../generation/model-access-policy.js";
 import { runDiagnosticOperation } from "../../lib/diagnostic-operation.js";
 import { createDiagnostic } from "../../lib/diagnostics.js";
@@ -42,6 +43,13 @@ export const CONTINUITY_ERROR_CODES = {
   TIMEOUT: "CONTINUITY_TIMEOUT",
   /** HTTP 429/529 or a Retry-After throttle: the whole runtime backs off. */
   PROVIDER_LIMITED: CONTINUITY_PROVIDER_LIMITED,
+  /**
+   * HTTP 401, or a 403/prose with explicit credential wording. A connection-level fault, not the batch's:
+   * the runtime parks that chat's continuity work (without spending attempts) instead of failing every receipt.
+   */
+  PROVIDER_AUTH: "CONTINUITY_PROVIDER_AUTH",
+  /** Refused locally by the global hourly cap on automatic model calls; no request was sent. */
+  BACKGROUND_BUDGET: "CONTINUITY_BACKGROUND_BUDGET",
   /** Network failure, undici termination, or a 5xx/408 response. */
   PROVIDER_UNAVAILABLE: "CONTINUITY_PROVIDER_UNAVAILABLE",
   /** The provider answered but not with one complete JSON object. */
@@ -185,6 +193,30 @@ function isContextOverflow(error: unknown): boolean {
 const RATE_LIMIT_TEXT_PATTERN =
   /\b(rate[ _-]?limit|session limit|usage limit|quota (?:exceeded|exhausted)|too many requests|resets? (?:at|in))\b/iu;
 
+/** Credential rejections that reach us as prose rather than a typed 401. Narrow on purpose. */
+// Gemini answers a bad key with HTTP 400 "API key not valid" and reason API_KEY_INVALID.
+const AUTH_TEXT_PATTERN =
+  /\b(invalid[ _-]?api[ _-]?key|incorrect api key|authentication[_ ]error|permission[_ ]error|invalid[ _-]?x-api-key|api key (?:is )?(?:invalid|revoked|expired|disabled)|api[ _-]?key[ _-]?(?:not[ _-]?valid|invalid)|invalid (?:credentials|token)|unauthori[sz]ed)\b/iu;
+/**
+ * A 403 that blames the request, not the key: OpenRouter answers 403 when a moderated model flags
+ * the input. That is the batch's own fault and must spend attempts like any other 4xx.
+ */
+const REQUEST_FAULT_TEXT_PATTERN = /\b(moderation|flagged|content[ _-]?(?:policy|filter)|safety)\b/iu;
+
+/**
+ * 401 is always a credential rejection. 403 means "forbidden" for many reasons (moderation, region,
+ * model access), so it counts as a credential failure only when the text says so.
+ */
+function isAuthFailure(error: unknown): boolean {
+  for (const item of causeChain(error)) {
+    const text = [messageOf(item), item instanceof LLMHttpError ? (item.providerCode ?? "") : ""].join(" ");
+    if (REQUEST_FAULT_TEXT_PATTERN.test(text)) return false;
+    if (item instanceof LLMHttpError && item.status === 401) return true;
+    if (AUTH_TEXT_PATTERN.test(text)) return true;
+  }
+  return false;
+}
+
 export function normalizeContinuityError(
   error: unknown,
   hints: { timedOut?: boolean; aborted?: boolean; telemetry?: GameContinuityTelemetryEntry } = {},
@@ -205,6 +237,9 @@ export function normalizeContinuityError(
   // archive index once burned three attempts on every receipt against an exhausted session limit.
   if (isRateLimitError(error) || RATE_LIMIT_TEXT_PATTERN.test(message))
     return wrap(CONTINUITY_ERROR_CODES.PROVIDER_LIMITED);
+  // Checked after the throttle test (some gateways send 403 with quota wording) and before the
+  // generic 4xx fallback, which would otherwise spend three paid attempts on every receipt.
+  if (isAuthFailure(error)) return wrap(CONTINUITY_ERROR_CODES.PROVIDER_AUTH);
   if (isContextOverflow(error)) return wrap(CONTINUITY_ERROR_CODES.CONTEXT_OVERFLOW);
   if (hints.aborted) return wrap(CONTINUITY_ERROR_CODES.ABORTED);
   if (error instanceof SyntaxError) return wrap(CONTINUITY_ERROR_CODES.INVALID_JSON);
@@ -457,6 +492,36 @@ function stageSnapshot(receipt: GameContinuityReceipt, stage: ContinuityStage): 
   if (!snapshot?.connectionId || !snapshot.model || !snapshot.provider)
     throw new Error("CONTINUITY_PROVIDER_SNAPSHOT_MISSING");
   return snapshot;
+}
+
+/**
+ * Whether a stage's model call books the global hourly cap on automatic calls. The cap exists to stop a
+ * storm of paid calls, so a stage whose frozen connection is a local inference server (a local base URL or
+ * the connection's "treat as local endpoint" flag) is exempt, unless the agents fallback it can switch to
+ * is a remote one. Anything unreadable books the cap, the safe side.
+ */
+export async function continuityStageBooksBudget(
+  db: DB,
+  receipt: GameContinuityReceipt,
+  stage: ContinuityStage,
+): Promise<boolean> {
+  try {
+    const frozen = stageSnapshot(receipt, stage);
+    const connections = createConnectionsStorage(db);
+    const primary = frozen.connectionId ? await connections.getById(frozen.connectionId) : null;
+    if (!primary) return true;
+    const isLocal = (connection: ConnectionRow): boolean =>
+      canRefreshLocalContext({
+        provider: connection.provider,
+        baseUrl: resolveBaseUrl(connection),
+        treatAsLocalEndpoint: connection.treatAsLocalEndpoint,
+      });
+    if (!isLocal(primary)) return true;
+    const fallback = await connections.getFallbackForAgents();
+    return Boolean(fallback && fallback.id !== primary.id && !isLocal(fallback));
+  } catch {
+    return true;
+  }
 }
 
 const STAGE_TELEMETRY = Symbol.for("marinara.continuity.stageTelemetry");

@@ -8,6 +8,7 @@ import { join } from "node:path";
 
 const dataDir = mkdtempSync(join(tmpdir(), "marinara-hunt-b49-"));
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 process.env.LOG_LEVEL = "silent";
 
 // Route @huggingface/transformers to a fake so the Whisper load race can be driven without network or ONNX.

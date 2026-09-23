@@ -20,6 +20,7 @@ process.env.LOG_DIR = logDirectory;
 process.env.LOG_LEVEL = "silent";
 process.env.LOG_FILE_LEVEL = "debug";
 process.env.DATA_DIR = dataDirectory;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 process.env.CLAUDE_SUBSCRIPTION_USE_RESUME = "false";
 delete process.env.MARINARA_CACHE_DIAGNOSTICS;
 

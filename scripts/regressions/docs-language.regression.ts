@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 // so every module under test is imported dynamically after this line.
 const fixtureRoot = mkdtempSync(join(tmpdir(), "marinara-docs-pack-regression-"));
 process.env.DATA_DIR = fixtureRoot;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 
 const { normalizeDocsLanguage, DEFAULT_DOCS_LANGUAGE, DOCS_LANGUAGE_LABELS, docsLanguageDirection } =
   await import("../../packages/shared/src/constants/docs-languages.ts");

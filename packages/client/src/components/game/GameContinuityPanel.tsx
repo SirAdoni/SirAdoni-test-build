@@ -193,6 +193,8 @@ function connectionLabel(connection: unknown): string {
 
 type ProblemKind =
   | "connection"
+  | "credentials"
+  | "budget"
   | "limit"
   | "timeout"
   | "tooLong"
@@ -208,6 +210,8 @@ function problemKind(code: string | null | undefined, message: string | null | u
   const value = `${code ?? ""} ${message ?? ""}`;
   if (!value.trim()) return null;
   if (/NO_CONNECTION|CONNECTION_UNAVAILABLE|CONNECTION_MISSING|CONNECTION_NOT_FOUND/i.test(value)) return "connection";
+  if (/PROVIDER_AUTH/i.test(value)) return "credentials";
+  if (/BACKGROUND_BUDGET/i.test(value)) return "budget";
   if (/PROVIDER_LIMITED|rate.?limit|session limit|usage limit|quota|429/i.test(value)) return "limit";
   if (/TIMEOUT|UNRESPONSIVE|PROVIDER_UNAVAILABLE|timed out/i.test(value)) return "timeout";
   if (/CONTEXT_OVERFLOW|context length|too long/i.test(value)) return "tooLong";
@@ -224,6 +228,14 @@ function problemText(t: Translate, kind: ProblemKind): string {
     case "connection":
       return t("ui.game.continuityPanel.problem.connection", {
         defaultValue: "No AI connection is set for memory, or the chosen one was removed.",
+      });
+    case "credentials":
+      return t("ui.game.continuityPanel.problem.credentials", {
+        defaultValue: "Your AI connection rejected its API key. Fix the key in Connections, then press Retry.",
+      });
+    case "budget":
+      return t("ui.game.continuityPanel.problem.budget", {
+        defaultValue: "Automatic AI calls reached the hourly cap. Memory resumes on its own when a slot frees.",
       });
     case "limit":
       return t("ui.game.continuityPanel.problem.limit", {
@@ -360,6 +372,8 @@ type Health =
   | "off"
   | "error"
   | "connection"
+  | "credentials"
+  | "budget"
   | "limit"
   | "attention"
   | "catchingUp"
@@ -372,6 +386,8 @@ const HEALTH_TONE: Record<Health, { icon: typeof CheckCircle2; className: string
   off: { icon: CircleSlash, className: "bg-secondary text-muted-foreground" },
   error: { icon: AlertTriangle, className: "bg-destructive/15 text-destructive" },
   connection: { icon: PauseCircle, className: "bg-destructive/15 text-destructive" },
+  credentials: { icon: PauseCircle, className: "bg-destructive/15 text-destructive" },
+  budget: { icon: PauseCircle, className: "bg-amber-400/15 text-amber-200" },
   limit: { icon: PauseCircle, className: "bg-amber-400/15 text-amber-200" },
   attention: { icon: AlertTriangle, className: "bg-amber-400/15 text-amber-200" },
   catchingUp: { icon: Loader2, className: "bg-sky-400/15 text-sky-200" },
@@ -581,13 +597,18 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
   const blockingProblem = useMemo(() => {
     let connection = 0;
     let limit = 0;
+    let budget = 0;
+    // The first batch parked by a rejected key: the header's Retry releases that chat's parked work.
+    let credentialsBatchId: string | null = null;
     for (const batch of batches) {
       if (!(batch.status === "failed" || activeStatuses.has(batch.status))) continue;
       const kind = problemKind(batch.errorCode, batch.error);
       if (kind === "connection") connection += 1;
+      else if (kind === "credentials" && activeStatuses.has(batch.status)) credentialsBatchId ??= batch.id;
       else if (kind === "limit" && activeStatuses.has(batch.status)) limit += 1;
+      else if (kind === "budget" && activeStatuses.has(batch.status)) budget += 1;
     }
-    return { connection, limit };
+    return { connection, limit, budget, credentialsBatchId };
   }, [batches]);
 
   const health: Health =
@@ -599,17 +620,21 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
           ? "loading"
           : blockingProblem.connection > 0 || status.data?.connectionAvailable === false
             ? "connection"
-            : blockingProblem.limit > 0 && counts.pending > 0
-              ? "limit"
-              : counts.attention > 0
-                ? "attention"
-                : counts.pending > 0
-                  ? "catchingUp"
-                  : counts.stale > 0
-                    ? "stale"
-                    : counts.total === 0
-                      ? "empty"
-                      : "ok";
+            : blockingProblem.credentialsBatchId
+              ? "credentials"
+              : blockingProblem.limit > 0 && counts.pending > 0
+                ? "limit"
+                : blockingProblem.budget > 0 && counts.pending > 0
+                  ? "budget"
+                  : counts.attention > 0
+                    ? "attention"
+                    : counts.pending > 0
+                      ? "catchingUp"
+                      : counts.stale > 0
+                        ? "stale"
+                        : counts.total === 0
+                          ? "empty"
+                          : "ok";
 
   const openBatches = (next: BatchFilter) => {
     setFilter(next);
@@ -622,6 +647,8 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
     off: t("ui.game.continuityPanel.health.off", { defaultValue: "Memory is off" }),
     error: t("ui.game.continuityPanel.health.error", { defaultValue: "Memory status is unavailable" }),
     connection: t("ui.game.continuityPanel.health.connection", { defaultValue: "Paused: no memory connection" }),
+    credentials: t("ui.game.continuityPanel.health.credentials", { defaultValue: "Paused: API key rejected" }),
+    budget: t("ui.game.continuityPanel.health.budget", { defaultValue: "Paused: hourly call cap reached" }),
     limit: t("ui.game.continuityPanel.health.limit", { defaultValue: "Paused: usage limit reached" }),
     attention: t("ui.game.continuityPanel.health.attention", {
       defaultValue: "Needs attention: {{count}} turns",
@@ -646,6 +673,14 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
     error: t("ui.game.continuity.statusUnavailable"),
     connection: t("ui.game.continuityPanel.explain.connection", {
       defaultValue: "Pick an AI connection for memory in the settings below, then retry the stopped turns.",
+    }),
+    credentials: t("ui.game.continuityPanel.explain.credentials", {
+      defaultValue:
+        "The memory connection refused its API key. Fix the key in Connections, then press Retry. Nothing is lost: waiting turns are kept.",
+    }),
+    budget: t("ui.game.continuityPanel.explain.budget", {
+      defaultValue:
+        "Automatic AI calls reached the hourly cap. Nothing is lost: waiting turns resume on their own when a slot frees.",
     }),
     limit: t("ui.game.continuityPanel.explain.limit", {
       defaultValue: "Your AI connection hit its usage limit. Nothing is lost: waiting turns resume on their own.",
@@ -702,13 +737,23 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
         <Settings2 size={13} aria-hidden="true" />
         {t("ui.game.continuityPanel.action.chooseConnection", { defaultValue: "Choose a connection" })}
       </button>
+    ) : health === "credentials" && blockingProblem.credentialsBatchId ? (
+      <button
+        type="button"
+        className={primaryButton}
+        onClick={() => retry.mutate(blockingProblem.credentialsBatchId!)}
+        disabled={retry.isPending}
+      >
+        <RefreshCw size={13} className={retry.isPending ? "animate-spin" : ""} aria-hidden="true" />
+        {t("ui.game.continuity.retry")}
+      </button>
     ) : health === "attention" ? (
       <button type="button" className={primaryButton} onClick={() => openBatches("attention")}>
         {t("ui.game.continuityPanel.action.showProblems", { defaultValue: "Show problems" })}
       </button>
     ) : health === "stale" ? (
       recheckButton
-    ) : health === "catchingUp" || health === "limit" ? (
+    ) : health === "catchingUp" || health === "limit" || health === "budget" ? (
       <button type="button" className={secondaryButton} onClick={() => openBatches("waiting")}>
         {t("ui.game.continuityPanel.action.showProgress", { defaultValue: "See progress" })}
       </button>
@@ -1122,7 +1167,9 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
                         )}
                       </span>
                     </button>
-                    {retryableStatuses.has(batch.status) && (
+                    {(retryableStatuses.has(batch.status) ||
+                      (activeStatuses.has(batch.status) &&
+                        problemKind(batch.errorCode, batch.error) === "credentials")) && (
                       <button
                         type="button"
                         onClick={() => retry.mutate(batch.id)}

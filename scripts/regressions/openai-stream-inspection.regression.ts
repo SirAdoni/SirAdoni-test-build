@@ -12,6 +12,7 @@ import {
 const originalDataDir = process.env.DATA_DIR;
 const dataDir = await mkdtemp(join(tmpdir(), "marinara-openai-stream-"));
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 
 function sse(payloads: string[]): string {
   return payloads.map((payload) => `data: ${payload}\n\n`).join("") + "data: [DONE]\n\n";

@@ -19,6 +19,7 @@ import { logger } from "../lib/logger.js";
 import { getRequestTimeoutSettings, saveRequestTimeoutSettings, isDockerRuntime } from "../config/runtime-config.js";
 import { noteSessionExitKind } from "../lib/session-postmortem.js";
 import { armShutdownDeadline } from "../lib/shutdown-deadline.js";
+import { collectRuntimeDiagnostics } from "../lib/runtime-diagnostics.js";
 import {
   ABANDONED_AVATAR_MIN_AGE_MS,
   collectCharacterAvatarPaths,
@@ -73,6 +74,15 @@ export async function adminRoutes(app: FastifyInstance) {
   let restartScheduled = false;
 
   app.get("/request-timeouts", () => getRequestTimeoutSettings());
+
+  // Read-only runtime detail for support and the dev MCP, beyond what /api/health
+  // serves: memory peaks, storage residency, whether each capability package runtime
+  // is live, and worker gauges. Counts and states only, never row content or settings values.
+  app.get("/runtime-diagnostics", async (req, reply) => {
+    if (!requirePrivilegedAccess(req, reply, { feature: "Runtime diagnostics" })) return;
+    reply.header("Cache-Control", "no-store");
+    return collectRuntimeDiagnostics({ continuity: app.gameContinuity ?? null });
+  });
   app.put("/request-timeouts", { config: { rateLimit: REQUEST_TIMEOUT_SETTINGS_RATE_LIMIT } }, async (req, reply) => {
     if (!requirePrivilegedAccess(req, reply, { feature: "Request timeout settings" })) return;
     return saveRequestTimeoutSettings(req.body);

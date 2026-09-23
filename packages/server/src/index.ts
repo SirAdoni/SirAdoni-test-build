@@ -7,10 +7,18 @@ import { execFileSync } from "node:child_process";
 import { APP_VERSION } from "@marinara-engine/shared";
 import { buildApp } from "./app.js";
 import { StorageWriterLeaseError } from "./db/file-backed-store.js";
+import { flushDB } from "./db/connection.js";
 import { getBootId, logger } from "./lib/logger.js";
 import { startFreezeDetector, stopFreezeDetector } from "./lib/freeze-detector.js";
 import { finalizeSessionExit, noteSessionExitKind, startSessionPostmortem } from "./lib/session-postmortem.js";
 import { armShutdownDeadline } from "./lib/shutdown-deadline.js";
+import {
+  createShutdownSignalController,
+  installShutdownSignalHandlers,
+  runtimeStopBudgetFor,
+  shutdownDeadlinesFor,
+} from "./lib/shutdown-signals.js";
+import { setRuntimeStopBudgetMs } from "./lib/shutdown-steps.js";
 import {
   getDataDir,
   getFileStorageDir,
@@ -174,17 +182,25 @@ async function main() {
   });
 
   const shutdown = async (signal: NodeJS.Signals) => {
+    // fatalExit sets isShuttingDown before its own close: a signal arriving
+    // then must not start a second close that ends in exit(0) and reports a
+    // crash as a clean stop.
     if (isShuttingDown) {
       logger.warn("Received %s while shutdown is already in progress", signal);
       return;
     }
-
     isShuttingDown = true;
     logger.info("Received %s; shutting down Marinara Engine", signal);
     // #5838: bound the whole close - sever connections at 4 s, force-exit at
     // 8 s - so a supervisor's stop window (earlyoom ~10 s, Docker 10 s) never
     // expires on a connection-wait and escalates to a write-dropping SIGKILL.
-    armShutdownDeadline(app, signal);
+    // A Windows console close gets a tighter budget (see shutdownDeadlinesFor).
+    armShutdownDeadline(app, signal, shutdownDeadlinesFor(signal));
+    setRuntimeStopBudgetMs(runtimeStopBudgetFor(signal));
+
+    // Start writing pending saves now, while app.close() may still be waiting
+    // on open connections; the store close inside onClose writes the rest.
+    void flushDB().catch((err) => logger.warn(err, "Early shutdown flush failed; the store close will retry"));
 
     const shutdownStarted = Date.now();
     try {
@@ -205,17 +221,16 @@ async function main() {
     }
   };
 
-  process.on("SIGTERM", () => {
-    void shutdown("SIGTERM");
-  });
-  process.on("SIGINT", () => {
-    void shutdown("SIGINT");
-  });
-  if (process.platform !== "win32") {
-    process.on("SIGHUP", () => {
-      void shutdown("SIGHUP");
-    });
-  }
+  // Duplicate delivery of one stop request is ignored; a deliberate repeat
+  // after the grace window forces the exit.
+  installShutdownSignalHandlers(
+    createShutdownSignalController({
+      alreadyStopping: () => isShuttingDown,
+      onShutdown: (signal) => {
+        void shutdown(signal);
+      },
+    }),
+  );
 
   try {
     await app.listen({ port, host });

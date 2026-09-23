@@ -16,6 +16,7 @@ import { join } from "node:path";
 process.env.LOG_LEVEL = "silent";
 const dataDir = await mkdtemp(join(tmpdir(), "server-hunt-b54-"));
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 
 const { UtilitySidecarService } = await import(
   "../../packages/server/src/services/utility-sidecar/utility-sidecar.service.js"

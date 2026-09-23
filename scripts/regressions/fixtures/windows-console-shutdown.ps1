@@ -52,8 +52,8 @@ try {
     Start-Sleep -Milliseconds 100
     $output = Read-ServerOutput
     if ($server.HasExited) { throw "Server exited before readiness: $output" }
-  } until ($output -match 'Marinara Engine server listening' -or [DateTime]::UtcNow -gt $deadline)
-  if ($output -notmatch 'Marinara Engine server listening') { throw "Server readiness timed out: $output" }
+  } until ($output -match '"event":"startup.ready"' -or [DateTime]::UtcNow -gt $deadline)
+  if ($output -notmatch '"event":"startup.ready"') { throw "Server readiness timed out: $output" }
   Write-Phase 'Production server ready'
   # Keep app.close pending, making the premature hard-kill reliably observable.
   $socket = [Net.Sockets.TcpClient]::new('127.0.0.1', $Port)
@@ -68,7 +68,7 @@ try {
   if ($output -notmatch 'Received SIGINT; shutting down') { throw "No SIGINT reached production shutdown: $output" }
   if ($output -notmatch 'Shutdown complete') { throw "Graceful shutdown was interrupted: $output" }
   if ($output -match 'forcing exit now') { throw "Shutdown exceeded its deadline: $output" }
-  $ready = ($output -split "`n" | Where-Object { $_ -match 'Marinara Engine server listening' } | Select-Object -First 1) | ConvertFrom-Json
+  $ready = ($output -split "`n" | Where-Object { $_ -match '"event":"startup.ready"' } | Select-Object -First 1) | ConvertFrom-Json
   if (Get-Process -Id $ready.pid -ErrorAction SilentlyContinue) { throw 'Server survived its supervisor' }
   Write-Output 'Native Windows console Ctrl+C reached the server and completed graceful shutdown.'
 } catch {

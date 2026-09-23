@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const dataDir = mkdtempSync(join(tmpdir(), "marinara-hunt-b33-"));
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 process.env.LOG_LEVEL = "silent";
 
 const readSource = (relativePath: string) =>

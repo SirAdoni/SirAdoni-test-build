@@ -21,6 +21,7 @@ import { join, relative } from "node:path";
 
 const dataDir = await mkdtemp(join(tmpdir(), "utility-sidecar-regression-"));
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 
 // Imported after DATA_DIR is set: the service resolves its paths at module load.
 const { UtilitySidecarService, utilitySlotServesAgent, compareModelVersions } =

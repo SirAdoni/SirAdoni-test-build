@@ -10,6 +10,7 @@ import multipart from "../../packages/server/node_modules/@fastify/multipart/ind
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const dataDir = await mkdtemp(join(tmpdir(), "marinara-notification-sound-"));
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 
 const { detectNotificationSoundFormat, notificationSoundRoutes } =
   await import("../../packages/server/src/routes/notification-sound.routes.js");

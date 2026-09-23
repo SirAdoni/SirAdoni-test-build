@@ -25,8 +25,11 @@ import {
   validateContinuityManifest,
 } from "./continuity-sources.js";
 import {
+  CONTINUITY_ERROR_CODES,
   CONTINUITY_PROVIDER_LIMITED,
+  ContinuityError,
   completeContinuityStage,
+  continuityStageBooksBudget,
   readContinuityConfig,
   readContinuityStageTelemetry,
   recordContinuityTelemetry,
@@ -44,8 +47,9 @@ import {
   wasDiagnosticReported,
 } from "../../lib/diagnostics.js";
 import { reportDiagnosticError } from "../../lib/diagnostic-operation.js";
-import { logEvent } from "../../lib/log-events.js";
+import { logEvent, logRecovered, logRepeated } from "../../lib/log-events.js";
 import { registerWorkerGauge } from "../../lib/worker-gauges.js";
+import { backgroundCallBudgetSnapshot, tryConsumeBackgroundCall } from "../generation/background-call-budget.js";
 import type {
   GameContinuityContextSource,
   GameContinuityMetadata,
@@ -65,6 +69,14 @@ export type ContinuityRuntimeOptions = {
   onPublished?: (receipt: GameContinuityReceipt) => void | Promise<void>;
   /** Pause after a provider quota/rate limit: first delay, doubling up to max. */
   providerBackoffMs?: { initial: number; max: number };
+  /**
+   * Delay before a batch that failed on its own (invalid output, provider 4xx) is tried again:
+   * first delay, doubling per spent attempt up to max, with +/-20% jitter so a backlog that failed
+   * together does not retry together. A batch gets three attempts, so only two delays ever run: for
+   * real providers that is 60 s, then 120 s. Runtimes built with an injected `complete` (no paid calls)
+   * default to an immediate retry as before.
+   */
+  itemRetryDelayMs?: { initial: number; max: number };
   /** Consecutive transient provider failures (timeouts, unavailable) across batches before the pump pauses. */
   unresponsiveThreshold?: number;
   /** Total workers (default 2, or CONTINUITY_MAX_CONCURRENT). Historical backfill keeps one slot free for live turns. */
@@ -73,6 +85,16 @@ export type ContinuityRuntimeOptions = {
   backfillConcurrency?: number;
   /** Accepted turns per historical receipt (default 1, or CONTINUITY_BACKFILL_TURNS_PER_RECEIPT). */
   backfillTurnsPerReceipt?: number;
+  /**
+   * Share of the global hourly automatic-call cap historical backfill may fill (default 0.75). The rest is
+   * headroom for live turns, so a long backfill never leaves live receipts waiting for the hour to roll.
+   */
+  backfillBudgetShare?: number;
+  /**
+   * Whether a stage books the hourly cap. Defaults to `continuityStageBooksBudget` (local inference
+   * endpoints are exempt); tests inject it because their `complete` never reaches a real connection.
+   */
+  stageBooksBudget?: (receipt: GameContinuityReceipt, stage: ContinuityStage) => Promise<boolean>;
 };
 export type ContinuityRuntime = ReturnType<typeof createGameContinuityRuntime>;
 
@@ -155,12 +177,23 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
     for (const item of items) if (!pending.some((candidate) => candidate.id === item.id)) pending.push(item);
     if (items.length) void pump();
   };
-  const park = (item: { id: string; chatId: string }): void => {
+  const parkRepeatKey = (chatId: string, code: string): string => `continuity.park:${chatId}:${code}`;
+  const park = (
+    item: { id: string; chatId: string },
+    code: "CONTINUITY_CONNECTION_UNAVAILABLE" | "CONTINUITY_PROVIDER_AUTH" = "CONTINUITY_CONNECTION_UNAVAILABLE",
+  ): void => {
     const list = parked.get(item.chatId) ?? [];
+    // The unpark timer re-runs parked work every 10 minutes, so a key that stays bad would park the
+    // chat again each time: logRepeated keeps it to one warn per window, and the first answered stage
+    // for the chat writes the recovered line.
     if (!list.length)
-      logger.warn(
-        { chatId: item.chatId, code: "CONTINUITY_CONNECTION_UNAVAILABLE" },
-        "[game-continuity] no extraction/review connection for this chat; its work waits until one is set",
+      logRepeated(
+        parkRepeatKey(item.chatId, code),
+        "warn",
+        { event: "continuity.breaker", state: "running", chatId: item.chatId, errorCode: code },
+        code === "CONTINUITY_PROVIDER_AUTH"
+          ? "[game-continuity] this chat's extraction/review connection rejected its credentials; its work waits until the key is fixed"
+          : "[game-continuity] no extraction/review connection for this chat; its work waits until one is set",
       );
     if (!list.some((candidate) => candidate.id === item.id)) list.push(item);
     parked.set(item.chatId, list);
@@ -238,6 +271,88 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
     );
     pauseStartedAt = 0;
     suppressedFailures = 0;
+  };
+  // Local refusal by the global hourly cap: pause exactly until a slot frees, without touching the
+  // provider backoff (the provider did nothing wrong). The budget module logs the warn once, so this is debug.
+  const pauseForBudget = (retryAfterMs: number): void => {
+    const until = Date.now() + Math.max(1000, retryAfterMs);
+    if (until <= providerPausedUntil) return;
+    providerPausedUntil = until;
+    pauseCode = CONTINUITY_ERROR_CODES.BACKGROUND_BUDGET;
+    logger.debug(
+      { event: "continuity.breaker", state: "running", errorCode: pauseCode, delayMs: until - Date.now() },
+      "[game-continuity] hourly automatic-call cap reached; continuity work waits for a free slot",
+    );
+  };
+  // A cap refusal on historical backfill pauses backfill admission only: live turns keep running on the
+  // headroom the share below leaves them. Backfill re-checks after at most a minute because the local check
+  // is free and the budget module does not say when the backfill share frees up.
+  const backfillBudgetShare = Math.min(1, Math.max(0, options.backfillBudgetShare ?? 0.75));
+  const BACKFILL_BUDGET_RECHECK_MS = 60_000;
+  let backfillPausedUntil = 0;
+  let backfillResumeTimer: ReturnType<typeof setTimeout> | null = null;
+  const isBackfillPaused = (): boolean => Date.now() < backfillPausedUntil;
+  const pauseBackfillForBudget = (retryAfterMs: number): void => {
+    const until = Date.now() + Math.max(1000, Math.min(retryAfterMs, BACKFILL_BUDGET_RECHECK_MS));
+    if (until <= backfillPausedUntil) return;
+    backfillPausedUntil = until;
+    logger.debug(
+      {
+        event: "continuity.breaker",
+        state: "running",
+        errorCode: CONTINUITY_ERROR_CODES.BACKGROUND_BUDGET,
+        scope: "backfill",
+        delayMs: until - Date.now(),
+      },
+      "[game-continuity] backfill reached its share of the hourly automatic-call cap; live turns keep running",
+    );
+    if (backfillResumeTimer) clearTimeout(backfillResumeTimer);
+    if (stopped) return;
+    backfillResumeTimer = setTimeout(() => {
+      backfillResumeTimer = null;
+      void pump();
+    }, until - Date.now());
+    backfillResumeTimer.unref?.();
+  };
+  const stageBooksBudget =
+    options.stageBooksBudget ??
+    (options.complete
+      ? async () => true
+      : (receipt: GameContinuityReceipt, stage: ContinuityStage) => continuityStageBooksBudget(db, receipt, stage));
+  /**
+   * Book one stage call against the hourly cap. Backfill may only fill `backfillBudgetShare` of it; live
+   * stages may use the whole cap. Returns null when the call may go, else the refusal to throw.
+   */
+  const bookStageBudget = async (
+    receipt: GameContinuityReceipt,
+    stage: ContinuityStage,
+  ): Promise<{ limit: number; retryAfterMs: number; scope: "backfill" | "all" } | null> => {
+    if (!(await stageBooksBudget(receipt, stage))) return null;
+    const backfill = receipt.id.startsWith("gch_");
+    if (backfill) {
+      const { used, limit } = backgroundCallBudgetSnapshot();
+      // At least one call, so a tiny cap still lets backfill move; a cap of 2 or more keeps a live slot.
+      if (limit > 0 && used >= Math.max(1, Math.floor(limit * backfillBudgetShare)))
+        return { limit, retryAfterMs: BACKFILL_BUDGET_RECHECK_MS, scope: "backfill" };
+    }
+    const budget = tryConsumeBackgroundCall(`continuity:${stage}`);
+    if (budget.allowed) return null;
+    return { limit: budget.limit, retryAfterMs: budget.retryAfterMs, scope: backfill ? "backfill" : "all" };
+  };
+  const itemRetry =
+    options.itemRetryDelayMs ?? (options.complete ? { initial: 0, max: 0 } : { initial: 60_000, max: 120_000 });
+  const retryDelayMs = new Map<string, number>();
+  const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  // Receipts whose run ended in a credential rejection; the completion handler parks their chat.
+  const authParkIds = new Set<string>();
+  /** Jittered exponential delay for a batch's own failure; `spentAttempts` is 1 after the first failure. */
+  const itemRetryDelay = (spentAttempts: number): number => {
+    if (itemRetry.initial <= 0) return 0;
+    const base = Math.min(
+      itemRetry.initial * 2 ** Math.max(0, spentAttempts - 1),
+      Math.max(itemRetry.initial, itemRetry.max),
+    );
+    return Math.max(0, Math.round(base * (0.8 + Math.random() * 0.4)));
   };
   const pauseForProviderLimit = (): void =>
     pauseProvider(CONTINUITY_PROVIDER_LIMITED, "provider rate/usage limit reached");
@@ -505,6 +620,18 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
       const call = async (stage: ContinuityStage, prompt: string): Promise<unknown> => {
         if (stopped) throw new Error("CONTINUITY_STOPPED");
         await current(receipt!);
+        // Continuity calls run outside connection admission, so they book the global hourly cap here.
+        const refusal = await bookStageBudget(receipt!, stage);
+        if (refusal)
+          throw Object.assign(
+            new ContinuityError(CONTINUITY_ERROR_CODES.BACKGROUND_BUDGET, {
+              detail:
+                refusal.scope === "backfill"
+                  ? `Historical backfill reached its share of the hourly cap on automatic model calls (${refusal.limit}/hour); no request was sent.`
+                  : `Automatic model calls reached the hourly cap (${refusal.limit}/hour); no request was sent.`,
+            }),
+            { retryAfterMs: refusal.retryAfterMs, budgetScope: refusal.scope },
+          );
         const answer = await complete({ stage, prompt, receipt: receipt!, signal: abort!.signal });
         await recordContinuityTelemetry(storage, receipt!.id, readContinuityStageTelemetry(answer));
         // Any answered stage proves the provider is responsive again: close the unresponsive breaker.
@@ -512,6 +639,9 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
         transientReceiptIds.clear();
         if (pauseCode === CONTINUITY_PROVIDER_UNRESPONSIVE) pauseCode = null;
         closeBreakerEpisode();
+        // This chat's connection answered, so a park for a missing connection or a rejected key is over.
+        for (const parkCode of ["CONTINUITY_CONNECTION_UNAVAILABLE", "CONTINUITY_PROVIDER_AUTH"])
+          logRecovered(parkRepeatKey(receipt!.chatId, parkCode), { chatId: receipt!.chatId });
         return answer;
       };
       const chat = await chats.getById(receipt.chatId);
@@ -697,6 +827,33 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
         }
         return false;
       }
+      if (code === CONTINUITY_ERROR_CODES.BACKGROUND_BUDGET || code === CONTINUITY_ERROR_CODES.PROVIDER_AUTH) {
+        // Neither is the batch's fault, so the attempt is given back and the batch stays resumable.
+        // The hourly cap refused locally (no request left the server): the whole runtime waits for a slot.
+        // A credential rejection belongs to this chat's connection: only this chat is parked, so one
+        // revoked key never throttles every other chat, and a healthy chat's success cannot reset it.
+        // A refusal of historical backfill pauses backfill admission only, never live turns.
+        const budgetRefusal = code === CONTINUITY_ERROR_CODES.BACKGROUND_BUDGET;
+        const refusedRetryAfter = Number((error as { retryAfterMs?: unknown }).retryAfterMs) || 60_000;
+        if (budgetRefusal && (error as { budgetScope?: unknown }).budgetScope === "backfill")
+          pauseBackfillForBudget(refusedRetryAfter);
+        else if (budgetRefusal) pauseForBudget(refusedRetryAfter);
+        else authParkIds.add(id);
+        try {
+          await storage.save({
+            ...currentReceipt,
+            attempts: countedAttempt ? Math.max(0, currentReceipt.attempts - 1) : currentReceipt.attempts,
+            errorCode: code,
+            error: budgetRefusal
+              ? "Automatic model calls reached the hourly cap; the batch resumes automatically when a slot frees."
+              : "The extraction or review connection rejected its credentials; this chat's continuity work waits and retries later. Check the API key in Settings.",
+            updatedAt: new Date().toISOString(),
+          });
+        } catch (checkpointError) {
+          if (!stopped) logger.error(checkpointError, "[game-continuity] failed to persist paused receipt");
+        }
+        return true;
+      }
       if (code === CONTINUITY_PROVIDER_LIMITED) {
         // Quota exhaustion is not the batch's fault: give back the attempt this execution counted and
         // keep the batch resumable with a visible reason, then stop the whole runtime for a while.
@@ -732,9 +889,13 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
       } catch (checkpointError) {
         if (!stopped) logger.error(checkpointError, "[game-continuity] failed to persist worker error");
       }
+      const retry = !stale && currentReceipt.attempts < 3;
+      // Per-item backoff for the batch's own failure; the rest of the queue keeps running.
+      const delayMs = retry ? itemRetryDelay(currentReceipt.attempts) : 0;
+      if (delayMs > 0) retryDelayMs.set(id, delayMs);
       if (!stopped) {
         const final = !stale && currentReceipt.attempts >= 3;
-        const willRetry = !stale && currentReceipt.attempts < 3;
+        const willRetry = retry;
         logger[final ? "error" : "warn"](
           {
             event: "job.state",
@@ -748,6 +909,7 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
             errorCode: code || "CONTINUITY_WORKER_FAILED",
             errorId: createDiagnostic(error).errorId,
             willRetry,
+            ...(delayMs > 0 ? { delayMs } : {}),
             elapsedMs: Date.now() - startedAt,
             ...(wasDiagnosticReported(error) ? {} : { err: error }),
           },
@@ -755,7 +917,7 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
         );
         markDiagnosticReported(error);
       }
-      return !stale && currentReceipt.attempts < 3;
+      return retry;
     } finally {
       if (abort) controllers.delete(abort);
     }
@@ -794,6 +956,7 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
         const liveWaiting = pending.some((candidate) => !candidate.id.startsWith("gch_"));
         const admits = async (candidate: { id: string; chatId: string }): Promise<boolean> => {
           const backfill = candidate.id.startsWith("gch_");
+          if (backfill && isBackfillPaused()) return false;
           if (backfill && backfillActive() >= (liveWaiting ? maxBackfillConcurrent : maxConcurrent)) return false;
           const occupied = activeChats.get(candidate.chatId);
           if (!occupied) return true;
@@ -932,7 +1095,38 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
             else if (occupied) activeChats.set(item.chatId, { ...occupied, count: occupied.count - 1 });
             activeIds.delete(item.id);
             active -= 1;
-            if (!stopped && shouldRequeue) {
+            const delayMs = retryDelayMs.get(item.id) ?? 0;
+            retryDelayMs.delete(item.id);
+            const authParked = authParkIds.delete(item.id);
+            if (!stopped && shouldRequeue && authParked) {
+              // Park this chat's queued work with the failed batch; other chats keep running.
+              park(item, "CONTINUITY_PROVIDER_AUTH");
+              for (let index = pending.length - 1; index >= 0; index -= 1)
+                if (pending[index]!.chatId === item.chatId)
+                  park(pending.splice(index, 1)[0]!, "CONTINUITY_PROVIDER_AUTH");
+            } else if (!stopped && shouldRequeue && delayMs > 0 && retryTimers.has(item.id)) {
+              // Another path re-ran this batch while its retry timer was pending; that timer requeues it.
+            } else if (!stopped && shouldRequeue && delayMs > 0) {
+              // Per-item backoff: the batch waits out its own jittered delay while the rest of the queue runs.
+              const timer = setTimeout(() => {
+                retryTimers.delete(item.id);
+                if (stopped) return;
+                void storage
+                  .get(item.id)
+                  .then((receipt) => {
+                    if (!stopped && receipt && resumable(receipt.status) && receipt.attempts < 3)
+                      enqueuePending(receipt);
+                  })
+                  .catch((error) =>
+                    logger.error(
+                      { err: error, event: "job.state", jobKind: "continuity", jobId: item.id, chatId: item.chatId },
+                      "[game-continuity] delayed retry failed",
+                    ),
+                  );
+              }, delayMs);
+              timer.unref?.();
+              retryTimers.set(item.id, timer);
+            } else if (!stopped && shouldRequeue) {
               const receipt = await storage.get(item.id);
               if (receipt && resumable(receipt.status) && receipt.attempts < 3) enqueuePending(receipt);
             }
@@ -1361,6 +1555,12 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
       unparkTimer = null;
       if (resumeTimer) clearTimeout(resumeTimer);
       resumeTimer = null;
+      if (backfillResumeTimer) clearTimeout(backfillResumeTimer);
+      backfillResumeTimer = null;
+      for (const timer of retryTimers.values()) clearTimeout(timer);
+      retryTimers.clear();
+      retryDelayMs.clear();
+      authParkIds.clear();
       controllers.forEach((controller) => controller.abort());
       if (active === 0) return;
       let drainTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1583,7 +1783,29 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
         ? list.find((item) => item.id === batchId)
         : list.find((item) => ["failed", "unresolved", "stale"].includes(item.status) && !staleHistorical(item));
       if (!target || target.status === "published") return target ?? null;
-      if (resumable(target.status)) throw new Error("CONTINUITY_BUSY");
+      if (resumable(target.status)) {
+        // A parked batch (rejected key, missing connection) is waiting, not running: Retry releases the
+        // chat's parked work now, so a player who fixed the key need not wait for the 10-minute unpark.
+        // The panel offers that Retry on any waiting batch whose last error was a park reason, and the batch
+        // may already have been released (unpark timer, another Retry) and be queued or running again. Such
+        // a batch is not busy in the user's sense: release whatever the chat still has parked, and put the
+        // batch back in the queue if nothing holds it. Only a batch with its own error waiting out its own
+        // retry delay, or one that simply is running, is refused as busy.
+        const parkedList = parked.get(chatId);
+        const parkReason =
+          target.errorCode === "CONTINUITY_PROVIDER_AUTH" || target.errorCode === "CONTINUITY_CONNECTION_UNAVAILABLE";
+        if (!parkedList?.some((item) => item.id === target.id) && !parkReason) throw new Error("CONTINUITY_BUSY");
+        parked.delete(chatId);
+        for (const item of parkedList ?? [])
+          if (!pending.some((candidate) => candidate.id === item.id)) pending.push(item);
+        const held =
+          activeIds.has(target.id) ||
+          retryTimers.has(target.id) ||
+          pending.some((candidate) => candidate.id === target.id);
+        if (!held) pending.push({ id: target.id, chatId });
+        void pump();
+        return target;
+      }
       if (staleHistorical(target)) throw new Error("CONTINUITY_BACKFILL_RERUN_REQUIRED");
       // A clean, reviewed receipt that only failed to publish (memory write, lorebook, publication step) needs no new
       // model read: put it back to verified and publish it again.
@@ -1697,7 +1919,29 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
     /** Runtime-wide breaker state: when the pump is paused, why, and how many transient failures are in a row. */
     health() {
       const pausedUntil = providerPausedUntil > Date.now() ? providerPausedUntil : null;
-      return { pausedUntil, pauseCode: pausedUntil ? pauseCode : null, transientFailures };
+      return {
+        pausedUntil,
+        pauseCode: pausedUntil ? pauseCode : null,
+        transientFailures,
+        // Backfill alone waits for its share of the hourly cap; live turns are unaffected.
+        backfillPausedUntil: backfillPausedUntil > Date.now() ? backfillPausedUntil : null,
+      };
+    },
+    /** Queue depths for the admin runtime diagnostics endpoint: counts only, no receipt content. */
+    queueStats() {
+      let parkedCount = 0;
+      for (const list of parked.values()) parkedCount += list.length;
+      // pending and active are left to the continuity worker gauge, which already samples them.
+      return {
+        pendingBackfill: pending.filter((item) => item.id.startsWith("gch_")).length,
+        parked: parkedCount,
+        parkedChats: parked.size,
+        // Batches waiting out a per-item retry delay: in neither pending nor parked until the timer fires.
+        retryWaiting: retryTimers.size,
+        activeBackfill: backfillActive(),
+        maxConcurrent,
+        stopped,
+      };
     },
     publish: publishActual,
   };

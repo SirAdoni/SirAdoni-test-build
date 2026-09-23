@@ -11,6 +11,7 @@ import { join } from "node:path";
 // here instead of silently misleading the panel.
 const root = mkdtempSync(join(tmpdir(), "marinara-param-relevance-"));
 process.env.DATA_DIR = root;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 // Every stubbed request fails on purpose; keep those expected provider errors out of the output.
 process.env.LOG_LEVEL = "silent";
 process.env.LOG_FILE_LEVEL = "silent";

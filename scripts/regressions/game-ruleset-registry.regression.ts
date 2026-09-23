@@ -15,6 +15,7 @@ import {
 const dataDir = mkdtempSync(join(tmpdir(), "marinara-ruleset-registry-"));
 const previousDataDir = process.env.DATA_DIR;
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 const { buildRulesetRegistry, createRulesetRef, resolveGameRuleset } =
   await import("../../packages/server/src/services/game/ruleset-registry.service.js");
 process.on("exit", () => {

@@ -8,6 +8,7 @@ process.env.LOG_LEVEL ??= "silent";
 const originalDataDir = process.env.DATA_DIR;
 const dataDir = await mkdtemp(join(tmpdir(), "marinara-b43-"));
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 
 const { OpenAIProvider } = await import("../../packages/server/src/services/llm/providers/openai.provider.js");
 const { appendOpenAIStreamCaptureChunk } = await import(

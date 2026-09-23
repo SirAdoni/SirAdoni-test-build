@@ -15,6 +15,7 @@ import { join } from "node:path";
 const tempDir = mkdtempSync(join(tmpdir(), "marinara-server-hunt-b16-"));
 const savedEnv = { DATA_DIR: process.env.DATA_DIR, LOG_LEVEL: process.env.LOG_LEVEL };
 process.env.DATA_DIR = join(tempDir, "data");
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 process.env.LOG_LEVEL = "silent";
 
 try {

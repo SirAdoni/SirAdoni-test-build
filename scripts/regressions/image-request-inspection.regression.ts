@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 const dataDir = await mkdtemp(join(tmpdir(), "marinara-image-inspection-"));
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 
 const { captureImageRequestInspection } = await import(
   "../../packages/server/src/services/image/image-request-inspection.js"

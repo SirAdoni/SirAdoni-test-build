@@ -6,7 +6,10 @@ import { constants } from "node:os";
 let child;
 let stopping = false;
 let stopTimer;
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+// Ctrl+Break (SIGBREAK) reaches both processes on a Windows console; without a
+// listener the launcher would die at once and lose the server's exit status.
+const stopSignals = ["SIGINT", "SIGTERM", "SIGHUP", ...(process.platform === "win32" ? ["SIGBREAK"] : [])];
+for (const signal of stopSignals) {
   process.on(signal, () => {
     if (stopping) return;
     stopping = true;

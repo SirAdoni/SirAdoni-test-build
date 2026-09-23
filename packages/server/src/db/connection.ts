@@ -3,7 +3,12 @@
 // ──────────────────────────────────────────────
 import { logger } from "../lib/logger.js";
 import { startup } from "../lib/startup-timeline.js";
-import { createFileNativeDB, type FileNativeDB, type FileNativeStoreController } from "./file-backed-store.js";
+import {
+  createFileNativeDB,
+  type FileNativeDB,
+  type FileNativeStoreController,
+  type FileStoreStats,
+} from "./file-backed-store.js";
 
 type DbCleanup = () => void | Promise<void>;
 
@@ -28,6 +33,11 @@ export async function getDB() {
     dbPromise = createStorage();
   }
   return dbPromise;
+}
+
+/** Cheap in-memory counters for diagnostics; null before storage opens or after it closes. */
+export function getFileStoreStats(): FileStoreStats | null {
+  return fileStore?.getStorageStats?.() ?? null;
 }
 
 export async function flushDB() {

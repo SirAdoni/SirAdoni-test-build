@@ -12,6 +12,7 @@ const logDir = mkdtempSync(join(tmpdir(), "marinara-logging-b11-"));
 const dataDir = mkdtempSync(join(tmpdir(), "marinara-logging-b11-data-"));
 process.env.LOG_DIR = logDir;
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 process.env.LOG_FILE_LEVEL = "debug";
 process.env.LOG_LEVEL = "fatal";
 // node rejects "-m" as a bad option, so the "python -m backgroundremover" call exits non-zero at once.

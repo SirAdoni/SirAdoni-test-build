@@ -232,8 +232,8 @@ export function relevantGenerationParameters(context: GenerationParameterContext
     }
 
     if (provider === "anthropic" && effortActive) {
-      // Extended thinking requires the default temperature, so the provider drops it while thinking is on.
-      hide("temperature");
+      // Extended thinking requires the default temperature and no top_k, so the provider drops both while thinking is on.
+      hide("temperature", "topK");
     }
 
     if (provider === "openai_chatgpt" && !/^gpt-(?:5|6)/u.test(model)) hide("verbosity");

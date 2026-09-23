@@ -73,7 +73,7 @@ try {
       ],
       {
         cwd: fileURLToPath(new URL("../..", import.meta.url)),
-        env: { ...process.env, DATA_DIR: childData, LOG_DIR: "", LOG_LEVEL: "error", LOG_FILE_LEVEL: "info" },
+        env: { ...process.env, DATA_DIR: childData, FILE_STORAGE_DIR: `${childData}/storage`, LOG_DIR: "", LOG_LEVEL: "error", LOG_FILE_LEVEL: "info" },
         stdio: "ignore",
         windowsHide: true,
       },

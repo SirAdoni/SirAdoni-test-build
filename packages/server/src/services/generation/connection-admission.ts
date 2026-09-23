@@ -3,6 +3,7 @@ import { BaseLLMProvider } from "../llm/base-provider.js";
 import { logger } from "../../lib/logger.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { timeStoryboardStage } from "../game/storyboard-progress.js";
+import { tryConsumeBackgroundCall } from "./background-call-budget.js";
 
 // Admission keys identify one physical provider endpoint. Text work keys on the configured
 // connection id; image work keys on the resolved base URL plus the endpoint id where the
@@ -43,7 +44,7 @@ export function admissionModeForRequest(headers: Record<string, unknown>): Conne
 export class BackgroundConnectionBusyError extends Error {
   constructor(
     readonly connectionId: string,
-    readonly reason: "foreground" | "background" | "cooldown" | "quarantined" = "background",
+    readonly reason: "foreground" | "background" | "cooldown" | "quarantined" | "budget" = "background",
     readonly retryAfterMs = 1000,
   ) {
     const seconds = Math.ceil(retryAfterMs / 1000);
@@ -54,7 +55,9 @@ export class BackgroundConnectionBusyError extends Error {
           ? "Another background batch is using the connection."
           : reason === "cooldown"
             ? `The connection is cooling down after an interactive request (${seconds}s remaining).`
-            : `Automatic generation is paused after repeated provider failures (${Math.ceil(seconds / 60)} minutes remaining). Test the image connection in Settings, then retry.`;
+            : reason === "budget"
+              ? `Automatic model calls reached the hourly cap (about ${Math.ceil(seconds / 60)} minutes until the next slot). Raise MARINARA_BACKGROUND_CALLS_PER_HOUR if this volume is expected.`
+              : `Automatic generation is paused after repeated provider failures (${Math.ceil(seconds / 60)} minutes remaining). Test the image connection in Settings, then retry.`;
     super(`No request was sent to the provider. ${detail}`);
     this.name = "BackgroundConnectionBusyError";
   }
@@ -177,6 +180,12 @@ async function beginConnectionAttempt(
   const admission = tryBackgroundConnection(connectionId, new Date(), mode.groupId);
   if (!admission.acquired)
     throw new BackgroundConnectionBusyError(connectionId, admission.reason, admission.retryAfterMs);
+  // Booked only once the connection is actually free, so busy refusals never spend the hourly cap.
+  const budget = tryConsumeBackgroundCall(`connection:${connectionId}`);
+  if (!budget.allowed) {
+    admission.release();
+    throw new BackgroundConnectionBusyError(connectionId, "budget", budget.retryAfterMs);
+  }
   try {
     return { release: admission.release, finalize: (await mode.beforeAttempt?.()) || undefined };
   } catch (error) {
@@ -236,7 +245,12 @@ export async function waitForImageConnection<T>(
     try {
       return await operation();
     } catch (error) {
-      if (!(error instanceof BackgroundConnectionBusyError) || error.reason === "quarantined") throw error;
+      if (
+        !(error instanceof BackgroundConnectionBusyError) ||
+        error.reason === "quarantined" ||
+        error.reason === "budget"
+      )
+        throw error;
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
         error.message = `Image generation could not start after waiting ${Math.ceil(maxWaitMs / 60_000)} minutes. ${error.message} Retry generation when the connection is idle.`;

@@ -50,7 +50,7 @@ with tempfile.TemporaryDirectory(prefix="marinara-terminal-shutdown-") as temp:
             pump()
             for line in output.decode(errors="replace").splitlines():
                 heartbeat = data / "diagnostics/session-heartbeat.json"
-                if "Marinara Engine server listening" in line and heartbeat.exists():
+                if '"event":"startup.ready"' in line and heartbeat.exists():
                     server_pid = json.loads(heartbeat.read_text())["pid"]
                     break
             if server_pid:

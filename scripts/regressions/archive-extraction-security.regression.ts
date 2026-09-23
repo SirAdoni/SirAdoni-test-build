@@ -21,6 +21,7 @@ import type { SidecarDownloadProgress } from "@marinara-engine/shared";
 
 const workDir = mkdtempSync(join(os.tmpdir(), "marinara-extraction-security-"));
 process.env.DATA_DIR = join(workDir, "data");
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 const payload = Buffer.from("verified runtime fixture");
 const runtimeZip = new AdmZip();
 runtimeZip.addFile("bin/llama-server.exe", payload);

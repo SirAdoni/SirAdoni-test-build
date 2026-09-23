@@ -184,8 +184,24 @@ async function runCleanups(cleanups: Cleanup[]): Promise<void> {
   if (firstError) throw firstError;
 }
 
+/** The last activation failure of one package in this process (admin runtime diagnostics). */
+export interface CapabilityActivationErrorRecord {
+  message: string;
+  at: string;
+  errorId?: string;
+  errorCode?: string;
+}
+
 class CapabilityModuleRuntime {
   private cleanups = new Map<string, Cleanup>();
+  // Last activation failure per package in this process, including host-lifecycle failures that are
+  // deliberately not persisted to the registry. Read by the admin runtime diagnostics endpoint.
+  private activationErrors = new Map<string, CapabilityActivationErrorRecord>();
+
+  /** Read-only view for diagnostics: which package runtimes are live now, and recent activation failures. */
+  runtimeState(): { live: string[]; activationErrors: Record<string, CapabilityActivationErrorRecord> } {
+    return { live: [...this.cleanups.keys()].sort(), activationErrors: Object.fromEntries(this.activationErrors) };
+  }
 
   async start(app: FastifyInstance): Promise<void> {
     // Bundled package modules execute before activate(context), so give their
@@ -486,6 +502,7 @@ class CapabilityModuleRuntime {
         { event: "package.activate", packageId, version, outcome: "ok", elapsedMs },
         "[capability] Package activated",
       );
+      this.activationErrors.delete(packageId);
       return { packageId, version, outcome: "ok", stage, elapsedMs };
     } catch (error) {
       const elapsedMs = Date.now() - started;
@@ -514,6 +531,11 @@ class CapabilityModuleRuntime {
           fields: { packageId, version, outcome: "failed", elapsedMs },
         });
       }
+      this.activationErrors.set(packageId, {
+        message: error instanceof Error ? error.message : String(error),
+        at: new Date().toISOString(),
+        ...(reference ? { errorId: reference.errorId, errorCode: reference.code } : { errorCode: "ME_EARLY_BOOT" }),
+      });
       activationLive = false;
       for (const release of toolCleanups.splice(0)) release();
       try {

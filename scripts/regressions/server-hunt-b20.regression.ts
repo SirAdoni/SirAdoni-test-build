@@ -13,6 +13,7 @@ import AdmZip from "../../packages/server/node_modules/adm-zip/adm-zip.js";
 process.env.LOG_LEVEL = "silent";
 const dataDir = mkdtempSync(join(tmpdir(), "marinara-b20-"));
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 
 const { importRoutes } = await import("../../packages/server/src/routes/import.routes.js");
 

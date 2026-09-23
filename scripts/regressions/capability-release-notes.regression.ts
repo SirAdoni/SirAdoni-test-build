@@ -25,6 +25,7 @@ import { join } from "node:path";
 
 const dataDir = mkdtempSync(join(tmpdir(), "marinara-release-notes-"));
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 process.env.MARINARA_GIT_BRANCH = "staging";
 
 const AGENTS_ROOT = "https://raw.githubusercontent.com/Pasta-Devs/Marinara-Agents";

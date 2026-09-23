@@ -22,6 +22,7 @@ const flatten = (source: string) => source.replace(/\s+/gu, " ");
 const dataDir = mkdtempSync(join(tmpdir(), "marinara-postmortem-"));
 const previousDataDir = process.env.DATA_DIR;
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 try {
   const {
     classifyPreviousSession,
@@ -187,11 +188,14 @@ assert.match(postmortemFlat, /return \{ status: "unknown", reason: "another serv
 // each exit path remembering; the crash handlers name themselves.
 const indexSource = flatten(readSource("packages/server/src/index.ts"));
 assert.match(indexSource, /process\.once\("exit", \(code\) => \{ finalizeSessionExit\(code\); \}\);/u);
+// Both fatal handlers share one fatalExit path (it flushes storage before exiting), which names the crash once.
 assert.equal(
   (indexSource.match(/noteSessionExitKind\("crash"\)/gu) ?? []).length,
-  2,
-  "both fatal handlers (uncaughtException, unhandledRejection) must name the crash",
+  1,
+  "the shared fatal path must name the crash",
 );
+for (const event of ["uncaughtException", "unhandledRejection"])
+  assert.match(indexSource, new RegExp(String.raw`process\.on\("${event}", \([a-z]+\) => \{ fatalExit\(`, "u"), `${event} must go through fatalExit`);
 assert.match(indexSource, /startFreezeDetector\(\); startSessionPostmortem\(\);/u);
 
 // The two deliberate restart paths name themselves, so an in-app update or a

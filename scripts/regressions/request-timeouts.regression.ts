@@ -14,6 +14,7 @@ const root = mkdtempSync(join(tmpdir(), "marinara-timeouts-"));
 process.env.MARINARA_ENV_FILE = join(root, ".env");
 process.env.NODE_ENV = "production";
 process.env.DATA_DIR = root;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 delete process.env.MARINARA_E2E_DISABLE_RATE_LIMIT;
 writeFileSync(process.env.MARINARA_ENV_FILE, "# Keep this configuration intact\nCHAT_GENERATION_TIMEOUT_MS=420000\n");
 for (const { env } of Object.values(REQUEST_TIMEOUTS)) delete process.env[env];

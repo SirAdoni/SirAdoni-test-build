@@ -19,6 +19,7 @@ for (const key of ["MARINARA_ENV_FILE", "DATA_DIR", "LOG_LEVEL", "IMAGE_GEN_TIME
 }
 process.env.MARINARA_ENV_FILE = envPath;
 process.env.DATA_DIR = join(tempDir, "data");
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 process.env.LOG_LEVEL = "silent";
 delete process.env.IMAGE_GEN_TIMEOUT_MS;
 delete process.env[PROBE];

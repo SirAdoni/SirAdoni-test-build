@@ -85,11 +85,11 @@ async function runCase(kind: "rejection" | "exception") {
   const killer = setTimeout(() => child.kill("SIGKILL"), 150_000);
   try {
     const started = Date.now();
-    while (!output.includes("Marinara Engine server listening") && child.exitCode === null) {
+    while (!output.includes('"event":"startup.ready"') && child.exitCode === null) {
       assert.ok(Date.now() - started < 120_000, `Server did not start: ${output}`);
       await new Promise((done) => setTimeout(done, 25));
     }
-    assert.ok(output.includes("Marinara Engine server listening"), output);
+    assert.ok(output.includes('"event":"startup.ready"'), output);
 
     const value = `fatal-flush-${kind}-${Date.now()}`;
     const response = await fetch(`http://127.0.0.1:${port}/api/app-settings/ui`, {

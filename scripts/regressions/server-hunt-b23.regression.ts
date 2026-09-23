@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 const fixtureRoot = mkdtempSync(join(tmpdir(), "marinara-server-hunt-b23-"));
 process.env.DATA_DIR = join(fixtureRoot, "data");
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 process.env.LOG_LEVEL = "silent";
 const requireFromServer = createRequire(new URL("../../packages/server/package.json", import.meta.url));
 const app = requireFromServer("fastify")();

@@ -7,6 +7,7 @@ import { buildSessionConclusionPrompt } from "../../packages/server/src/services
 import type { ChatMessage } from "../../packages/server/src/services/llm/base-provider.js";
 const disposableDataDir = mkdtempSync(join(tmpdir(), "marinara-session-review-fit-"));
 process.env.DATA_DIR = disposableDataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 const { fitSessionConclusionMessages } = await import("../../packages/server/src/routes/game.routes.js");
 const transcript =
   "[user] Edmund: I want you to learn through experience.\n\n[assistant] Gwenllian: I cannot issue an order quickly enough. Hilde: That is the lesson. Jadwiga: Create distance or use the choker.\n\n[user OOC correction] Preserve who made the decision.";

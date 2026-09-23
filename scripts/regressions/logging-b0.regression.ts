@@ -8,6 +8,7 @@ import { join } from "node:path";
 
 const dataDir = mkdtempSync(join(tmpdir(), "marinara-logging-b0-"));
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 process.env.LOG_DIR = join(dataDir, "logs");
 process.env.LOG_LEVEL = "fatal";
 

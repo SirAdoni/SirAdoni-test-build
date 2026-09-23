@@ -7,6 +7,7 @@ import Fastify from "../../packages/server/node_modules/fastify/fastify.js";
 
 const fixture = await mkdtemp(join(tmpdir(), "marinara-ui-language-"));
 process.env.DATA_DIR = fixture;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 // A public IP avoids DNS dependency; fetch below is fully mocked, no remote requests are made.
 process.env.DOCS_I18N_BASE_URL = "https://93.184.216.34/translation-fixture";
 const { installUIPack, readUIPack, uiPackManifestFile, uiPackPath } =

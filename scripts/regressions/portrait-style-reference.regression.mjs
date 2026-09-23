@@ -46,6 +46,7 @@ await writeFile(
 process.env.NODE_ENV = "production";
 process.env.LOG_LEVEL = "silent";
 process.env.DATA_DIR = resolve(".tmp/portrait-style-proof/data");
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 const require = createRequire(import.meta.url);
 const { generateNpcPortrait, applyNpcPortraitStyleReference } = require(out);
 const request = {

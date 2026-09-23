@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 const dataDir = mkdtempSync(join(tmpdir(), "marinara-host-integrations-"));
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 process.env.IMAGE_LOCAL_URLS_ENABLED = "false";
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 const requests: Array<{ path: string; body: Record<string, unknown>; headers: Record<string, unknown> }> = [];

@@ -9,6 +9,7 @@ import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import { getDB, closeDB, type DB } from "./db/connection.js";
+import { getRuntimeStopBudgetMs, runShutdownStepsWithin, type ShutdownStepRecord } from "./lib/shutdown-steps.js";
 import { registerRoutes } from "./routes/index.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import { ipAllowlistHook } from "./middleware/ip-allowlist.js";
@@ -107,7 +108,7 @@ function resolveServerOs(): string {
 const SERVER_OS = resolveServerOs();
 
 type RequestWithDiagnosticContext = { [kDiagnosticContext]?: DiagnosticContext };
-type ShutdownServiceRecord = { stage: string; elapsedMs: number; outcome: "ok" | "failed" };
+type ShutdownServiceRecord = ShutdownStepRecord;
 
 /** Shared request correlation and response normalization hooks for HTTP tests and the live app. */
 export function registerDiagnosticHttpHooks(app: FastifyInstance): void {
@@ -274,41 +275,48 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
     const closeStarted = performance.now();
     const services: ShutdownServiceRecord[] = [];
     try {
-      const named: Array<[string, () => Promise<unknown> | unknown]> = [
-        ["sessionSummaryRefresh", () => app.sessionSummaryRefresh?.stop()],
-        ["gameContinuity", () => gameContinuity.stop()],
-        ["capabilityModuleRuntime", () => capabilityModuleRuntime.stop()],
-        ["personalExtensions", () => personalServerExtensionRuntime.stop()],
-        ["sidecar", () => sidecarProcessService.stop()],
+      // Bounded: a runtime whose stop() hangs must not keep closeDB() from
+      // flushing before the shutdown force-exit deadline.
+      const { failed, timedOut, records } = await runShutdownStepsWithin([
+        { name: "sessionSummaryRefresh", run: () => app.sessionSummaryRefresh?.stop() },
+        { name: "gameContinuity", run: () => gameContinuity.stop() },
+        { name: "capabilityModuleRuntime", run: () => capabilityModuleRuntime.stop() },
+        { name: "personalExtensions", run: () => personalServerExtensionRuntime.stop() },
+        { name: "sidecar", run: () => sidecarProcessService.stop() },
         // Write the last batched lorebook activation counts while the database is still open.
-        ["lorebookActivationStats", () => flushLorebookActivationStats()],
-      ];
-      await Promise.all(
-        named.map(async ([name, stop]) => {
-          const started = performance.now();
-          try {
-            await stop();
-            const elapsedMs = Math.round(performance.now() - started);
-            services.push({ stage: name, elapsedMs, outcome: "ok" });
-            if (elapsedMs > 2_000) {
-              logger.warn(
-                { event: "shutdown.service", stage: name, outcome: "ok", elapsedMs },
-                "[shutdown] %s took %d ms to stop",
-                name,
-                elapsedMs,
-              );
-            }
-          } catch (err) {
-            const elapsedMs = Math.round(performance.now() - started);
-            services.push({ stage: name, elapsedMs, outcome: "failed" });
-            logger.error(
-              { err, event: "shutdown.service", stage: name, outcome: "failed", elapsedMs },
-              "[shutdown] Failed to stop %s",
-              name,
-            );
-          }
-        }),
-      );
+        { name: "lorebookActivationStats", run: () => flushLorebookActivationStats() },
+      ]);
+      services.push(...records);
+      for (const { name, reason, elapsedMs } of failed) {
+        logger.error(
+          { err: reason, event: "shutdown.service", stage: name, outcome: "failed", elapsedMs },
+          "[shutdown] Failed to stop %s",
+          name,
+        );
+      }
+      for (const record of records) {
+        if (record.outcome === "ok" && record.elapsedMs > 1_000) {
+          logger.warn(
+            { event: "shutdown.service", stage: record.stage, outcome: "ok", elapsedMs: record.elapsedMs },
+            "[shutdown] %s took %d ms to stop",
+            record.stage,
+            record.elapsedMs,
+          );
+        }
+      }
+      if (timedOut.length > 0) {
+        logger.warn(
+          {
+            event: "shutdown.service",
+            outcome: "failed",
+            reason: "timeout",
+            stages: timedOut,
+            timeoutMs: getRuntimeStopBudgetMs(),
+          },
+          "[shutdown] %s did not stop within the shutdown budget; closing storage anyway",
+          timedOut.join(", "),
+        );
+      }
     } finally {
       await closeDB();
       logger.info(

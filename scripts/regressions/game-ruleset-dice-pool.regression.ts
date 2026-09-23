@@ -42,6 +42,7 @@ import type { SkillCheckModifierContext } from "../../packages/server/src/servic
 const dataDir = mkdtempSync(join(tmpdir(), "marinara-ruleset-dice-pool-"));
 const previousDataDir = process.env.DATA_DIR;
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 
 try {
   const [

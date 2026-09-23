@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const dataDir = await mkdtemp(join(tmpdir(), "server-hunt-b24-"));
 process.env.DATA_DIR = dataDir;
+process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 process.env.LOG_LEVEL = "silent";
 process.env.DEEPLX_LOCAL_URLS_ENABLED = "true";
 
