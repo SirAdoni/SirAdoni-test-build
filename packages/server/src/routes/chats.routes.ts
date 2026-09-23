@@ -46,11 +46,15 @@ import {
   normalizeMessageMarkPatch,
   stripPrivateMessageNote,
   readMessagePrivateNote,
+  listMessageChapters,
+  readMessageChapter,
+  type MessageChapter,
   MAX_PINNED_CONTEXT_MESSAGES,
   MESSAGE_MARK_EXTRA_KEYS,
 } from "@marinara-engine/shared";
 import type {
   CharacterData,
+  ChatChapterSummary,
   ChatMemoryChunk,
   ChatMemoryRecallExportChunk,
   ChatMemoryRecallExportPayload,
@@ -2460,6 +2464,21 @@ export async function chatsRoutes(app: FastifyInstance) {
     return reply.status(204).send();
   });
 
+  // ── Chapters: user-marked chapter starts, in reading order ──
+  app.get<{ Params: { chatId: string } }>("/:chatId/chapters", async (req, reply) => {
+    const chat = await storage.getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const rows = await storage.listMessages(req.params.chatId);
+    return listMessageChapters(rows).map(
+      ({ message, messageNumber, chapter }): ChatChapterSummary => ({
+        messageId: message.id,
+        messageNumber,
+        title: chapter.title,
+        summary: chapter.summary ?? null,
+      }),
+    );
+  });
+
   // ── Message trash ──
   app.get<{ Params: { chatId: string } }>("/:chatId/trash", async (req, reply) => {
     const chat = await storage.getById(req.params.chatId);
@@ -4332,10 +4351,15 @@ export async function chatsRoutes(app: FastifyInstance) {
     if (format === "markdown" || format === "html") {
       const userName = persona?.name?.trim() || "User";
       const entries: TranscriptDocumentEntry[] = [];
+      // A chapter marked on a turn the story leaves out starts at the next turn it keeps.
+      let pendingChapter: MessageChapter | null = null;
       for (const msg of msgs) {
         const extra = parseExportMetadata(msg.extra);
+        pendingChapter = readMessageChapter(extra) ?? pendingChapter;
         const content = resolveExportMessageContent(msg);
         if (!isStoryTranscriptMessage({ role: msg.role, content, extra })) continue;
+        const chapter = pendingChapter;
+        pendingChapter = null;
         const displayName = getDisplayName(msg);
         const snapshotName =
           msg.role === "user" && isExportRecord(extra.personaSnapshot)
@@ -4350,6 +4374,7 @@ export async function chatsRoutes(app: FastifyInstance) {
           content,
           createdAt: msg.createdAt,
           thinking: includeReasoning ? getExportThinking(extra) : null,
+          chapter: chapter ? { title: chapter.title, summary: chapter.summary ?? null } : null,
         });
       }
       const title = branchName ? `${chat.name} (${branchName})` : chat.name;

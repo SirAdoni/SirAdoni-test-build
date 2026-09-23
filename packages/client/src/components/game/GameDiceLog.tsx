@@ -18,6 +18,7 @@ const SOURCE_KEYS: Record<DiceLogSource, string> = {
   gm: "ui.game.diceLog.sourceGm",
   skill_check: "ui.game.diceLog.sourceCheck",
   table: "ui.game.diceLog.sourceTable",
+  initiative: "ui.game.diceLog.sourceInitiative",
 };
 
 function formatNumber(value: number | null | undefined): string {

@@ -791,6 +791,8 @@ interface UIState {
   showTokenUsage: boolean;
   showContextUsage: boolean;
   showMessageNumbers: boolean;
+  /** When true, linked character names in chats and Game narration show a quick reference popover. */
+  npcQuickReference: boolean;
   /** When true, character cards are available in Persona pickers. */
   showCharactersInPersonaPickers: boolean;
   guideGenerations: boolean;
@@ -1150,6 +1152,7 @@ interface UIState {
   setShowTokenUsage: (v: boolean) => void;
   setShowContextUsage: (v: boolean) => void;
   setShowMessageNumbers: (v: boolean) => void;
+  setNpcQuickReference: (v: boolean) => void;
   setShowCharactersInPersonaPickers: (v: boolean) => void;
   setGuideGenerations: (v: boolean) => void;
   setShowQuickRepliesMenu: (v: boolean) => void;
@@ -1388,6 +1391,7 @@ export function pickSyncedSettings(state: UIState) {
     showTokenUsage: state.showTokenUsage,
     showContextUsage: state.showContextUsage,
     showMessageNumbers: state.showMessageNumbers,
+    npcQuickReference: state.npcQuickReference,
     showCharactersInPersonaPickers: state.showCharactersInPersonaPickers,
     guideGenerations: state.guideGenerations,
     showQuickRepliesMenu: state.showQuickRepliesMenu,
@@ -1596,6 +1600,7 @@ export function pickPersistedUIState(state: UIState) {
     showTokenUsage: state.showTokenUsage,
     showContextUsage: state.showContextUsage,
     showMessageNumbers: state.showMessageNumbers,
+    npcQuickReference: state.npcQuickReference,
     showCharactersInPersonaPickers: state.showCharactersInPersonaPickers,
     guideGenerations: state.guideGenerations,
     showQuickRepliesMenu: state.showQuickRepliesMenu,
@@ -1844,6 +1849,7 @@ export const useUIStore = create<UIState>()(
         showTokenUsage: false,
         showContextUsage: true,
         showMessageNumbers: false,
+        npcQuickReference: false,
         showCharactersInPersonaPickers: false,
         guideGenerations: false,
         showQuickRepliesMenu: false,
@@ -2637,6 +2643,7 @@ export const useUIStore = create<UIState>()(
         setShowTokenUsage: (v) => set({ showTokenUsage: v }),
         setShowContextUsage: (v) => set({ showContextUsage: v }),
         setShowMessageNumbers: (v) => set({ showMessageNumbers: v }),
+        setNpcQuickReference: (v) => set({ npcQuickReference: v }),
         setShowCharactersInPersonaPickers: (v) => set({ showCharactersInPersonaPickers: v }),
         setGuideGenerations: (v) => set({ guideGenerations: v }),
         setShowQuickRepliesMenu: (v) => set({ showQuickRepliesMenu: v }),

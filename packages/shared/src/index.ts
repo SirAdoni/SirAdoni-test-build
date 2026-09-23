@@ -151,6 +151,8 @@ export * from "./utils/agent-output.js";
 export * from "./utils/generation-guide.js";
 export * from "./utils/lorebook-keyword-matching.js";
 export * from "./utils/lorebook-lint.js";
+export * from "./utils/lorebook-bulk-edit.js";
+export * from "./utils/lorebook-text-format.js";
 export * from "./utils/character-duplicates.js";
 export * from "./utils/character-tag-edits.js";
 export * from "./utils/regex-safety.js";
@@ -199,6 +201,8 @@ export * from "./utils/dice-placeholder.js";
 export * from "./utils/dice-pool.js";
 export * from "./utils/message-marks.js";
 export * from "./utils/random-tables.js";
+export * from "./utils/prep-board.js";
+export * from "./utils/initiative-tracker.js";
 
 export { parseChoiceOptions, resolveChoiceVariableValue, type ChoiceOptionValue } from "./utils/preset-choices.js";
 

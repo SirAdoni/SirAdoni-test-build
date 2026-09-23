@@ -14,6 +14,7 @@ import {
   HelpCircle,
   Loader2,
   MessageSquarePlus,
+  PackagePlus,
   Pencil,
   Plus,
   Trash2,
@@ -25,6 +26,7 @@ import {
   ORACLE_LIKELIHOODS,
   buildRandomTableExport,
   formatPlainTableList,
+  normalizeTableName,
   parsePlainTableList,
   parseTableDice,
   type OracleLikelihood,
@@ -35,6 +37,12 @@ import { cn } from "../../lib/utils";
 import { showConfirmDialog } from "../../lib/app-dialogs";
 import { formatOocNote, insertIntoChatInput } from "../../lib/chat-input-insert";
 import { useLorebooks } from "../../hooks/use-lorebooks";
+import {
+  RANDOM_TABLE_PACKS,
+  RANDOM_TABLE_PACK_KEYS,
+  randomTablePackImport,
+  type RandomTablePack,
+} from "../../lib/random-table-packs";
 import {
   useLorebookTableSources,
   useRandomTableMutations,
@@ -78,7 +86,8 @@ type RollOutput =
 type Panel =
   | { kind: "none" }
   | { kind: "edit"; id: string | null; name: string; dice: string; scope: RandomTableScope; text: string }
-  | { kind: "lorebook" };
+  | { kind: "lorebook" }
+  | { kind: "packs" };
 
 function readLogPreference(): boolean {
   try {
@@ -272,6 +281,87 @@ function LorebookBuilder({
   );
 }
 
+function StarterPacks({
+  canScopeToGame,
+  tableNames,
+  globalTableNames,
+  pendingId,
+  onAdd,
+  onCancel,
+}: {
+  canScopeToGame: boolean;
+  tableNames: ReadonlySet<string>;
+  globalTableNames: ReadonlySet<string>;
+  pendingId: string | null;
+  onAdd: (pack: RandomTablePack, scope: RandomTableScope) => void;
+  onCancel: () => void;
+}) {
+  const { t } = useTranslation();
+  const [scope, setScope] = useState<RandomTableScope>(canScopeToGame ? "game" : "global");
+  return (
+    <div className="space-y-2 rounded-lg border border-border p-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className={LABEL_CLASS}>{t("ui.randomTables.starterPacks")}</span>
+        {canScopeToGame && (
+          <select
+            className={cn(FIELD_CLASS, "h-7")}
+            value={scope}
+            onChange={(event) => setScope(event.target.value as RandomTableScope)}
+            aria-label={t("ui.randomTables.scope")}
+          >
+            <option value="game">{t("ui.randomTables.scopeGame")}</option>
+            <option value="global">{t("ui.randomTables.scopeGlobal")}</option>
+          </select>
+        )}
+      </div>
+      <p className="text-[0.6875rem] leading-snug text-muted-foreground">{t("ui.randomTables.starterPacksHint")}</p>
+      <ul className="space-y-1.5">
+        {RANDOM_TABLE_PACKS.map((pack) => {
+          const keys = RANDOM_TABLE_PACK_KEYS[pack.id];
+          // A game sees its own tables and the global ones; an "All games" add only checks the global ones.
+          const names = canScopeToGame && scope === "global" ? globalTableNames : tableNames;
+          const owned = pack.tables.filter((table) => names.has(normalizeTableName(table.name))).length;
+          const complete = owned === pack.tables.length;
+          return (
+            <li key={pack.id} className="flex items-start gap-2 rounded-md bg-secondary/40 px-2 py-1.5">
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-xs font-medium text-foreground">
+                  {keys ? t(keys.name, { defaultValue: pack.name }) : pack.name}
+                </div>
+                <div className="text-[0.625rem] leading-snug text-muted-foreground">
+                  {keys ? t(keys.description, { defaultValue: pack.description }) : pack.description}{" "}
+                  {t("ui.randomTables.packTableCount", { count: pack.tables.length })}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => onAdd(pack, canScopeToGame ? scope : "global")}
+                disabled={pendingId !== null || complete}
+                className={SMALL_BUTTON_CLASS}
+                title={complete ? t("ui.randomTables.packOwned") : t("ui.randomTables.addPack")}
+              >
+                {pendingId === pack.id ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : complete ? (
+                  <Check size={12} />
+                ) : (
+                  <Plus size={12} />
+                )}
+                {complete ? t("ui.randomTables.packAdded") : t("ui.randomTables.add")}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      <div className="flex justify-end">
+        <button type="button" onClick={onCancel} className={SMALL_BUTTON_CLASS}>
+          {t("ui.randomTables.close")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function RandomTablesTool({ chatId, className }: { chatId: string | null; className?: string }) {
   const { t } = useTranslation();
   const { data, isLoading } = useRandomTables(chatId);
@@ -288,6 +378,12 @@ export function RandomTablesTool({ chatId, className }: { chatId: string | null;
   const [logRolls, setLogRolls] = useState(readLogPreference);
   const [panel, setPanel] = useState<Panel>({ kind: "none" });
   const fileRef = useRef<HTMLInputElement>(null);
+  const [packPending, setPackPending] = useState<string | null>(null);
+  const tableNames = useMemo(() => new Set(tables.map((table) => normalizeTableName(table.name))), [tables]);
+  const globalTableNames = useMemo(
+    () => new Set(tables.filter((table) => table.gameId === "").map((table) => normalizeTableName(table.name))),
+    [tables],
+  );
 
   const selected = tables.find((table) => table.id === selectedId) ?? null;
   useEffect(() => {
@@ -414,6 +510,33 @@ export function RandomTablesTool({ chatId, className }: { chatId: string | null;
     }
   };
 
+  const addPack = (pack: RandomTablePack, scope: RandomTableScope) => {
+    const keys = RANDOM_TABLE_PACK_KEYS[pack.id];
+    const name = keys ? t(keys.name, { defaultValue: pack.name }) : pack.name;
+    setPackPending(pack.id);
+    importTables.mutate(
+      { scope, data: randomTablePackImport(pack), skipExisting: true },
+      {
+        onSuccess: (result) => {
+          const existing = result.existing ?? 0;
+          // Whatever was neither created nor already there hit the per-scope table cap.
+          const capped = result.skipped - existing;
+          if (capped > 0) toast.warning(t("ui.randomTables.packCapped", { count: capped }));
+          if (result.created.length === 0 && existing > 0) {
+            toast.success(t("ui.randomTables.packAlreadyThere", { name }));
+            return;
+          }
+          const added = t("ui.randomTables.packImported", { count: result.created.length, name });
+          toast.success(
+            existing > 0 ? [added, t("ui.randomTables.packKeptExisting", { count: existing })].join(" ") : added,
+          );
+        },
+        onError: (error) => toast.error(errorText(error, t("ui.randomTables.importFailed"))),
+        onSettled: () => setPackPending(null),
+      },
+    );
+  };
+
   const exportTables = () => {
     if (tables.length === 0) return;
     downloadJson("random-tables.json", buildRandomTableExport(tables));
@@ -480,6 +603,15 @@ export function RandomTablesTool({ chatId, className }: { chatId: string | null;
             </button>
             <button
               type="button"
+              onClick={() => setPanel(panel.kind === "packs" ? { kind: "none" } : { kind: "packs" })}
+              className={ICON_BUTTON_CLASS}
+              title={t("ui.randomTables.addStarterPack")}
+              aria-label={t("ui.randomTables.addStarterPack")}
+            >
+              <PackagePlus size={13} />
+            </button>
+            <button
+              type="button"
               onClick={() => fileRef.current?.click()}
               disabled={importTables.isPending}
               className={ICON_BUTTON_CLASS}
@@ -514,9 +646,19 @@ export function RandomTablesTool({ chatId, className }: { chatId: string | null;
         {isLoading ? (
           <Loader2 size={14} className="animate-spin text-muted-foreground" />
         ) : tables.length === 0 ? (
-          <p className="rounded-md border border-dashed border-border px-3 py-3 text-center text-xs text-muted-foreground">
-            {t("ui.randomTables.empty")}
-          </p>
+          <div className="space-y-2 rounded-md border border-dashed border-border px-3 py-3 text-center">
+            <p className="text-xs text-muted-foreground">{t("ui.randomTables.empty")}</p>
+            {panel.kind !== "packs" && (
+              <button
+                type="button"
+                onClick={() => setPanel({ kind: "packs" })}
+                className={cn(SMALL_BUTTON_CLASS, "mx-auto")}
+              >
+                <PackagePlus size={12} />
+                {t("ui.randomTables.addStarterPack")}
+              </button>
+            )}
+          </div>
         ) : (
           <div className="flex gap-1.5">
             <select
@@ -698,6 +840,17 @@ export function RandomTablesTool({ chatId, className }: { chatId: string | null;
             </div>
           </div>
         </div>
+      )}
+
+      {panel.kind === "packs" && (
+        <StarterPacks
+          canScopeToGame={inGame}
+          tableNames={tableNames}
+          globalTableNames={globalTableNames}
+          pendingId={packPending}
+          onAdd={addPack}
+          onCancel={() => setPanel({ kind: "none" })}
+        />
       )}
 
       {panel.kind === "lorebook" && (

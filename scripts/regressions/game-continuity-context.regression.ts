@@ -223,6 +223,15 @@ try {
     0,
     "historical cutoff must not leak future gaps",
   );
+  // A cutoff on a message continuity never reads (hidden from the AI, system) narrows the window to the sources
+  // before it; it used to resolve to -1 and silently drop every record.
+  const hidden = await add("assistant", "An aside the GM keeps hidden.");
+  await chats.updateMessageExtra(hidden.id, { hiddenFromAI: true });
+  const hiddenCutoff = await buildGameContinuityPromptContext(db, chat.id, { throughMessageId: hidden.id });
+  assert(hiddenCutoff.text.includes("The lantern was kept lit."), "a hidden cutoff keeps the records before it");
+  assert(hiddenCutoff.text.includes("Keep the lantern lit before dawn."));
+  const beforeFirst = await buildGameContinuityPromptContext(db, chat.id, { throughMessageId: firstUser.id });
+  assert(!beforeFirst.text.includes("The lantern was kept lit."), "records after the cutoff stay out");
   assert.equal(firstUser.role, "user");
 } finally {
   if (app) await app.close();

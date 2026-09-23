@@ -205,7 +205,7 @@ try {
   assert.deepEqual(body.items[0].location, { entityId: "hall", alias: "Great Hall" });
   assert.equal(body.items[1].location, null);
   assert.deepEqual(body.items[0].participants, [{ entityId: "char-bob", alias: "Bob" }]);
-  assert.equal(body.items[0].summary, "Transition event-c");
+  assert.equal(body.items[0].summary, "Steward", "an event reads as what its transition recorded, never its transition ids");
   assert.deepEqual(body.items[0].stateChanges, [{ entityId: "char-bob", key: "title", value: "Steward" }]);
   assert.deepEqual(body.items[1].stateChanges, []);
   assert.equal(body.items[0].sourceMessageId, "wiki-msg-1");
@@ -251,8 +251,19 @@ try {
     { knowledgeId: "k-annabel", holder: { entityId: "char-annabel", alias: "Annabel" }, epistemicState: "knows" },
     { knowledgeId: "k-bob", holder: { entityId: "char-bob", alias: "Bob" }, epistemicState: "knows" },
   ]);
-  assert.deepEqual(body.events, [{ eventId: "event-c", summary: "Transition event-c" }]);
+  assert.deepEqual(body.events, [{ eventId: "event-c", summary: "Steward" }]);
   assert.deepEqual(body.states, [{ entityId: "char-bob", key: "title", causeEventId: "event-c" }]);
+  // Campaign fact list (the wiki's Canon page): every fact names its subject; pinned=true lists only pinned canon.
+  response = await get("facts");
+  assert.equal(response.statusCode, 200);
+  const listed = response.json().items.find((item: { factId: string }) => item.factId === "fact-shared");
+  assert.ok(listed, "the fact list includes stored facts");
+  assert.equal(typeof listed.subject.alias, "string", "each fact names its subject");
+  response = await get("facts?pinned=true");
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().total, 0, "no fact is pinned in this fixture");
+  assert.equal((await get("facts?pinned=maybe")).statusCode, 400);
+
   response = await get("facts/fact-missing/dependents");
   assert.equal(response.statusCode, 404);
 

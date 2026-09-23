@@ -51,7 +51,8 @@ const knowledgeRecord: GameContinuityRecord = {
   id: createGameContinuityRecordId("batch", { ...base, knowledge: privateKnowledge }),
 };
 assert.equal(selectContinuityRecordsForAudience([knowledgeRecord], { kind: "gm" }).length, 1);
-assert.equal(selectContinuityRecordsForAudience([knowledgeRecord], { kind: "character", name: "robert" }).length, 1);
+// Holder names match case-insensitively; an unrelated name does not.
+assert.equal(selectContinuityRecordsForAudience([knowledgeRecord], { kind: "character", name: "rowan" }).length, 1);
 assert.equal(selectContinuityRecordsForAudience([knowledgeRecord], { kind: "character", name: "Mira" }).length, 0);
 assert.throws(() =>
   validateGameContinuityExtraction(

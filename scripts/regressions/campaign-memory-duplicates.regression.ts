@@ -238,6 +238,25 @@ try {
   assert.equal(response.statusCode, 400);
   await assertRoleUntouched();
 
+  // 6. A kept fact that another tab already retired is refused, so a group can never lose every fact.
+  //    Both facts already carry a link, so resolving onto the first does not move its revision.
+  await makeFact("fact-cap-k", "cap", "receipt-1", "dup-msg-1", "Bob wears a red cap", { supersedesFactId: "fact-mood-i" });
+  await makeFact("fact-cap-l", "cap", "receipt-2", "dup-msg-2", "Bob wears a red cap", { supersedesFactId: "fact-mood-j" });
+  response = await resolve("manual-cap", {
+    keepFactId: "fact-cap-k",
+    retireFactIds: ["fact-cap-l"],
+    expectedRevisions: { "fact-cap-k": 1, "fact-cap-l": 1 },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  response = await resolve("manual-cap-stale-tab", {
+    keepFactId: "fact-cap-l",
+    retireFactIds: ["fact-cap-k"],
+    expectedRevisions: { "fact-cap-k": 1, "fact-cap-l": 1 },
+  });
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().error.code, "CAMPAIGN_MEMORY_CAS_MISMATCH");
+  assert.equal((await storage.getFact({ chatId: CHAT }, "fact-cap-k"))?.status, "verified", "the kept fact stays live");
+
   await app.close();
   await db._fileStore.close();
   console.log("campaign-memory-duplicates regression passed");

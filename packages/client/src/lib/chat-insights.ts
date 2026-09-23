@@ -5,6 +5,7 @@
 // other surface can open the same modals without importing their components.
 import { useChatStore } from "../stores/chat.store";
 import { useUIStore } from "../stores/ui.store";
+import { READING_MODE_MODAL } from "./reading-mode";
 
 export const GLOBAL_SEARCH_MODAL = "global-chat-search";
 export const CHAT_STATS_MODAL = "chat-stats";
@@ -17,6 +18,11 @@ export function openGlobalSearch(initialQuery?: string) {
 
 export function openChatStats(chatId: string) {
   useUIStore.getState().openModal(CHAT_STATS_MODAL, { chatId });
+}
+
+/** Open the full-screen reader for a roleplay chat. */
+export function openReadingMode(chatId: string) {
+  useUIStore.getState().openModal(READING_MODE_MODAL, { chatId });
 }
 
 export function openActivityOverview() {

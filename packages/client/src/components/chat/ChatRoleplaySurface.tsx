@@ -80,6 +80,7 @@ import { usePresetFull, usePresets } from "../../hooks/use-presets";
 import { useInstalledCapabilityPackages } from "../../hooks/use-capability-packages";
 import { CapabilityElement } from "../capabilities/CapabilityElement";
 import { ChatMessage } from "./ChatMessage";
+import { ChapterDivider } from "./MessageChapters";
 import { ChatInput } from "./ChatInput";
 import { CyoaChoices } from "./CyoaChoices";
 import { ChatBranchSelector } from "./ChatBranchSelector";
@@ -2256,6 +2257,7 @@ export function ChatRoleplaySurface({
                       activeChatName={chat?.name}
                       groupId={chat?.groupId ?? null}
                       variant="roleplay"
+                      showReadingMode
                     />
                     <ChatToolbarMenu openSummaryOnRequest>
                       <ChatHelpButton mode="roleplay" className="md:hidden" />
@@ -2391,6 +2393,7 @@ export function ChatRoleplaySurface({
                           activeChatName={chat?.name}
                           groupId={chat?.groupId ?? null}
                           variant="roleplay"
+                          showReadingMode
                           compact
                         />
                         <SummaryButton
@@ -2485,6 +2488,7 @@ export function ChatRoleplaySurface({
                         activeChatName={chat?.name}
                         groupId={chat?.groupId ?? null}
                         variant="roleplay"
+                        showReadingMode
                         compact
                       />
                       <SummaryButton
@@ -2668,6 +2672,7 @@ export function ChatRoleplaySurface({
                           : undefined
                       }
                     >
+                      <ChapterDivider extra={msg.extra} />
                       {isRegenerating ? (
                         <RegeneratingMessageContent
                           msg={msg}

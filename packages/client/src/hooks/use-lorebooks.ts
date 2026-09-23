@@ -6,6 +6,8 @@ import { api, ApiError } from "../lib/api-client";
 import type {
   BulkUpdateLorebookEntriesInput,
   Lorebook,
+  LorebookBulkEditInput,
+  LorebookBulkEditResult,
   LorebookEntry,
   LorebookFolder,
   SetLorebooksEnabledResult,
@@ -372,6 +374,32 @@ export function useBulkUpdateLorebookEntries() {
   });
 }
 
+/** Bulk editor: field changes and key add/remove across the selection in one request. */
+export function useBulkEditLorebookEntries() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ lorebookId, ...edit }: { lorebookId: string } & LorebookBulkEditInput) =>
+      api.post<LorebookBulkEditResult>(`/lorebooks/${lorebookId}/entries/bulk-edit`, edit),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.lorebookId) });
+      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
+    },
+  });
+}
+
+/** Bulk editor: delete the selection in one request. */
+export function useBulkDeleteLorebookEntries() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ lorebookId, entryIds }: { lorebookId: string; entryIds: string[] }) =>
+      api.post<{ deleted: number }>(`/lorebooks/${lorebookId}/entries/bulk-delete`, { entryIds }),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.lorebookId) });
+      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
+    },
+  });
+}
+
 export function useDeleteLorebookEntry() {
   const qc = useQueryClient();
   return useMutation({
@@ -640,6 +668,40 @@ export interface LorebookEntryActivationStat {
   count: number;
   lastActivatedAt: string | null;
   lastChatId: string | null;
+  /** Chats this entry fired in, newest first (at most 20). */
+  recentChats?: LorebookEntryRecentChat[];
+}
+
+export interface LorebookEntryRecentChat {
+  chatId: string;
+  /** Generations in this chat; 0 when only known from older statistics. */
+  count: number;
+  lastActivatedAt: string | null;
+  /** Null when the chat has since been deleted. */
+  chatName: string | null;
+  chatMode: "conversation" | "roleplay" | "game" | null;
+}
+
+export interface LorebookStaleEntries {
+  days: number;
+  cutoff: string;
+  lorebookLastActivatedAt: string | null;
+  lorebookActive: boolean;
+  entries: Array<{ entryId: string; lastActivatedAt: string | null }>;
+}
+
+/** Entries that have not fired in the last `days` days while their lorebook did. */
+export function useLorebookStaleEntries(lorebookId: string | null, days: number, enabled = true) {
+  return useQuery({
+    queryKey: [...lorebookKeys.all, "stale-entries", lorebookId ?? "", days] as const,
+    queryFn: () =>
+      api.get<LorebookStaleEntries>(`/lorebooks/${lorebookId}/stale-entries?days=${encodeURIComponent(String(days))}`),
+    enabled: !!lorebookId && enabled,
+    staleTime: 60_000,
+    // Keep the current list while another window loads so the toggle and picker stay mounted.
+    placeholderData: (previousData, previousQuery) =>
+      previousQuery?.queryKey[previousQuery.queryKey.length - 2] === (lorebookId ?? "") ? previousData : undefined,
+  });
 }
 
 export function useLorebookActivationStats(lorebookId: string | null) {

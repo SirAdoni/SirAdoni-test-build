@@ -3,9 +3,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-// A contract or settings change must retire the queued backlog quietly: one status write per receipt
-// (stale, CONTINUITY_CONFIG_CHANGED) before any worker starts, never a provider call and never a
-// warning per receipt.
+// A contract or settings change must handle the queued backlog quietly: one status write per receipt before any
+// worker starts and never a warning per receipt. A receipt that already holds a model result (an extraction
+// checkpoint) is retired as stale with CONTINUITY_CONFIG_CHANGED and never reaches the provider. A receipt with no
+// model work yet used to be retired too, which threw away the whole queue on every settings tweak; it now loses
+// nothing by being re-frozen onto the current config and read. It is still retired when another receipt already
+// reads the same text under the current config, so no text is read twice.
 const root = mkdtempSync(join(tmpdir(), "marinara-continuity-config-sweep-"));
 process.env.DATA_DIR = root;
 process.env.FILE_STORAGE_DIR = join(root, "storage");
@@ -17,6 +20,7 @@ try {
   const { createGameContinuityStorage } = await import("../../packages/server/src/services/storage/game-continuity.storage.js");
   const { readContinuityConfig } = await import("../../packages/server/src/services/game/continuity-provider.js");
   const { prepareContinuitySources } = await import("../../packages/server/src/services/game/continuity-sources.js");
+  const { createGameContinuityRecordId } = await import("../../packages/server/src/services/game/continuity-review.js");
   const db = await createFileNativeDB();
   const t = (seconds: number) => new Date(Date.UTC(2026, 8, 16, 0, 0, seconds)).toISOString();
   await db.insert(apiConnections).values({ id: "conn", name: "Sweep test", provider: "custom", model: "m" });
@@ -60,9 +64,26 @@ try {
     createdAt: t(3),
     updatedAt: t(3),
   });
-  // Two receipts queued under an older contract, one under the current one.
+  // Under an older contract: one receipt with no model work, one mid-review with an extraction checkpoint, and one
+  // with no model work whose text a current receipt already reads. One receipt under the current contract.
+  const checkpointRecord = {
+    kind: "event" as const,
+    text: "Acknowledged.",
+    subjects: [],
+    conditions: [],
+    status: "asserted" as const,
+    evidence: [{ messageId: "m-a", quote: "Acknowledged." }],
+    keys: [],
+  };
   await storage.enqueue(receipt("gcb_old-1", "contract-v-old") as any);
-  await storage.enqueue(receipt("gcb_old-2", "contract-v-old") as any);
+  await storage.enqueue({
+    ...receipt("gcb_old-2", "contract-v-old"),
+    status: "reviewing",
+    attempts: 1,
+    records: [{ ...checkpointRecord, id: createGameContinuityRecordId("gcb_old-2", checkpointRecord) }],
+    dispositions: [{ messageId: "m-a", status: "covered", reason: "acknowledgement" }],
+  } as any);
+  await storage.enqueue({ ...receipt("gcb_old-3", "contract-v-old"), sourceHash: "source-gcb_current" } as any);
   await storage.enqueue(receipt("gcb_current", config.hash) as any);
 
   const calls: string[] = [];
@@ -81,7 +102,9 @@ try {
   await runtime.start();
   const deadline = Date.now() + 15_000;
   const settled = async () => {
-    const rows = await Promise.all(["gcb_old-1", "gcb_old-2", "gcb_current"].map((id) => storage.get(id)));
+    const rows = await Promise.all(
+      ["gcb_old-1", "gcb_old-2", "gcb_old-3", "gcb_current"].map((id) => storage.get(id)),
+    );
     return rows.every((row) => row && !["queued", "extracting", "reviewing", "repairing"].includes(row.status));
   };
   while (!(await settled())) {
@@ -90,14 +113,26 @@ try {
   }
   await runtime.stop();
 
-  for (const id of ["gcb_old-1", "gcb_old-2"]) {
-    const row = await storage.get(id);
-    assert.ok(row);
-    assert.equal(row.status, "stale", `${id} is retired as stale`);
-    assert.equal(row.errorCode, "CONTINUITY_CONFIG_CHANGED");
-    assert.equal(row.attempts, 0, `${id} spent no attempt`);
-  }
-  assert.ok(!calls.some((call) => call.startsWith("gcb_old")), "no provider call for config-changed receipts");
+  const oldCheckpoint = await storage.get("gcb_old-2");
+  assert.ok(oldCheckpoint);
+  assert.equal(oldCheckpoint.status, "stale", "a receipt holding model work under the old config is retired");
+  assert.equal(oldCheckpoint.errorCode, "CONTINUITY_CONFIG_CHANGED");
+  assert.equal(oldCheckpoint.attempts, 1, "retiring it spent no attempt");
+  const superseded = await storage.get("gcb_old-3");
+  assert.ok(superseded);
+  assert.equal(superseded.status, "stale", "an empty receipt whose text a current receipt reads is retired");
+  assert.equal(superseded.errorCode, "CONTINUITY_CONFIG_CHANGED");
+  assert.equal(superseded.attempts, 0);
+  assert.ok(
+    !calls.some((call) => call.startsWith("gcb_old-2") || call.startsWith("gcb_old-3")),
+    "no provider call for retired config-changed receipts",
+  );
+  const refrozen = await storage.get("gcb_old-1");
+  assert.ok(refrozen);
+  assert.equal(refrozen.configHash, config.hash, "an empty receipt is re-frozen onto the current config");
+  assert.deepEqual(refrozen.config, config.frozen);
+  assert.equal(refrozen.status, "verified", "and read under it instead of being thrown away");
+  assert.ok(calls.includes("gcb_old-1:extract"));
   const current = await storage.get("gcb_current");
   assert.ok(current);
   assert.equal(current.status, "verified", "the receipt under the current contract still runs");

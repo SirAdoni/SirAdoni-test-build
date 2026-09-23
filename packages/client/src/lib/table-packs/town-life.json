@@ -1,0 +1,145 @@
+{
+  "id": "town-life",
+  "name": "Town life",
+  "description": "Rumours, city districts and the quirks that make townsfolk memorable.",
+  "tables": [
+    {
+      "name": "Rumour",
+      "dice": null,
+      "description": "What people are saying over their drinks.",
+      "rows": [
+        { "text": "They say [[Rumour Subject]] [[Rumour Deed]].", "weight": 10 },
+        { "text": "Word is [[Rumour Subject]] and [[Rumour Subject]] are secretly working together.", "weight": 3 },
+        "A caravan went into the hills a month ago and only the horses came back.",
+        "Someone is paying good coin for rat tails, and nobody knows why.",
+        "The old well in the square is whispering again.",
+        "A ship came in last night with no crew and a full hold.",
+        "The harvest festival is cancelled this year, by order, with no reason given.",
+        "There is a door in the cellars under the temple that was not there last week.",
+        "A wolf the size of a pony was seen at the edge of town.",
+        "The mint has been making coins a little lighter than they should be.",
+        "A travelling fortune teller is always right, and people are scared of her.",
+        "Someone keeps leaving flowers on a grave nobody remembers digging.",
+        "The river fish have gone, all of them, overnight.",
+        "Two families are about to settle an old feud with a wedding, or with knives."
+      ]
+    },
+    {
+      "name": "Rumour Subject",
+      "dice": null,
+      "rows": [
+        "the mayor", "the captain of the watch", "the high priestess", "the baker's widow",
+        "the new moneylender", "the hermit on the hill", "the guild master of masons",
+        "a visiting noble", "the miller", "the town healer", "the ferry keeper",
+        "the smith's apprentice", "a retired general", "the gravedigger", "the lord's steward",
+        "the tavern keeper at the Mill"
+      ]
+    },
+    {
+      "name": "Rumour Deed",
+      "dice": null,
+      "rows": [
+        "has been seen buying poison", "is not who they claim to be", "keeps a monster in the cellar",
+        "has come into a great deal of money very suddenly", "was out at the old ruins at midnight",
+        "has stopped sleeping entirely", "is being blackmailed", "is planning to leave town for good",
+        "has a secret child", "made a deal with something in the woods",
+        "has been writing letters to an enemy lord", "is dying and hiding it",
+        "is hiring sellswords quietly", "found something in the river"
+      ]
+    },
+    {
+      "name": "City District",
+      "dice": null,
+      "description": "A quarter of the city and what stands out there.",
+      "rows": [
+        { "text": "The Old Market, loud and crowded, where [[District Feature]]", "weight": 2 },
+        { "text": "The Docks, tar and gulls, where [[District Feature]]", "weight": 2 },
+        "The Temple Ward, bells and incense, where [[District Feature]]",
+        "The Tanneries, stink and cheap rent, where [[District Feature]]",
+        "The High Terrace, walled gardens and guards, where [[District Feature]]",
+        "The Warrens, twisting alleys and no names on doors, where [[District Feature]]",
+        "The Scholars' Row, ink and argument, where [[District Feature]]",
+        "The Garrison Quarter, drills at dawn, where [[District Feature]]",
+        "The Foreign Quarter, many tongues and spices, where [[District Feature]]",
+        "The Bridges, houses built right over the river, where [[District Feature]]",
+        "The Smiths' Lane, sparks and hammers, where [[District Feature]]",
+        "The Old Walls, crumbling and half abandoned, where [[District Feature]]",
+        "The Gallows Green, open ground and bad memories, where [[District Feature]]",
+        "The Gardens, fountains and slow walkers, where [[District Feature]]"
+      ]
+    },
+    {
+      "name": "District Feature",
+      "dice": null,
+      "rows": [
+        "a street preacher shouts about the end of days",
+        "every house has a blue ribbon on its door, for a reason locals will not say",
+        "a gang of children runs the pickpocketing",
+        "a famous duel happened last week and people still talk about it",
+        "the watch never patrols after dark",
+        "a small shrine grants luck to anyone who leaves a coin",
+        "an auction is held every evening, no questions asked",
+        "a rich family is hiring guards for a wedding",
+        "a building collapsed and people are digging through it",
+        "a bathhouse doubles as a meeting place for spies",
+        "a statue of a forgotten hero is said to weep",
+        "a feud between two guilds has turned into street fights",
+        "a plague of rats is getting worse",
+        "a fortune teller's tent is always in a different place",
+        "a new tavern has opened that everyone loves and nobody trusts",
+        "a curfew bell rings an hour early for no reason",
+        "a hidden garden is behind a door with no handle",
+        "the cobbles are being torn up for a new sewer",
+        "a mysterious patron is buying up every empty house",
+        "a hanging is scheduled for the next holy day"
+      ]
+    },
+    {
+      "name": "NPC Quirk",
+      "dice": null,
+      "description": "One memorable habit for a background character.",
+      "rows": [
+        "hums the same three notes when thinking",
+        "counts everything out loud: coins, steps, stairs",
+        "always eats while talking",
+        "calls everyone by the wrong name, confidently",
+        "never sits with their back to a door",
+        "laughs at the wrong moments",
+        "speaks very formally to animals",
+        "keeps a small lizard in a coat pocket",
+        "cannot stand being touched",
+        "quotes proverbs that do not quite fit",
+        "is missing a finger and changes the story every time",
+        "whistles through a gap in their teeth",
+        "collects buttons from strangers",
+        "is terrified of birds",
+        "speaks in a whisper even in a crowd",
+        "wears a heavy perfume you can smell from the street",
+        "fidgets with a coin, rolling it over their knuckles",
+        "answers questions with questions",
+        "ends every sentence with a small nod",
+        "writes everything down in a tiny notebook",
+        "is always slightly out of breath",
+        "has a very loud laugh",
+        "sniffs food before eating it, every time",
+        "tells long stories about a cousin",
+        "wears too many rings",
+        "refuses to say the name of the local lord",
+        "is unfailingly polite, even while threatening",
+        "carries a walking stick they do not need",
+        "keeps checking the sky for weather",
+        "mispronounces one common word with total confidence",
+        "knits during every conversation",
+        "smells faintly of smoke",
+        "has a nervous cough before lying",
+        "blesses themselves before any decision",
+        "speaks of the dead in the present tense",
+        "is overly proud of a small garden",
+        "always has something to sell",
+        "mutters rhymes under their breath",
+        "keeps a list of people who owe them favours",
+        "treats everyone younger as a grandchild"
+      ]
+    }
+  ]
+}

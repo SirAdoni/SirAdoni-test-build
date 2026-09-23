@@ -1,0 +1,62 @@
+{
+  "id": "story-complications",
+  "name": "Story complications",
+  "description": "Oracle-style complications and an action and subject pair for inspiration.",
+  "tables": [
+    {
+      "name": "Complication",
+      "dice": null,
+      "description": "Roll when a scene needs a twist or the oracle says \"but\".",
+      "rows": [
+        { "text": "Inspiration: [[Twist Action]] [[Twist Subject]]", "weight": 6 },
+        "An ally has their own agenda here, and it is not yours",
+        "Someone arrives who should not be here",
+        "The price turns out to be higher than agreed",
+        "It is a trap, but not for you",
+        "A secret comes out at the worst moment",
+        "The weather turns against you",
+        "Equipment breaks, runs out or goes missing",
+        "An old enemy hears where you are",
+        "Time runs short; something must be left behind",
+        "The authorities take an interest",
+        "A bystander is hurt or in danger",
+        "The information was wrong, or half true",
+        "Two goals you care about collide",
+        "Someone asks for a favour you cannot easily refuse",
+        "A rival reaches the goal first",
+        "You are followed",
+        "The way back is closed",
+        "Someone you trust lies to you",
+        "Help arrives, and brings its own trouble",
+        "The target is not who you thought",
+        "An illness or injury flares up",
+        "The crowd turns against you",
+        "A promise made long ago comes due",
+        "The thing you seek is already damaged or changed",
+        "Nature intrudes: a flood, a fire, a hungry animal",
+        "Someone offers a better deal to your enemy",
+        "A messenger brings news that changes everything",
+        "It is much quieter than it should be"
+      ]
+    },
+    {
+      "name": "Twist Action",
+      "dice": null,
+      "rows": [
+        "betray", "protect", "reveal", "steal", "summon", "abandon", "bargain with", "hunt",
+        "hide", "awaken", "corrupt", "rescue", "delay", "challenge", "heal", "break",
+        "follow", "forget", "seize", "guide", "mourn", "free", "trick", "honour"
+      ]
+    },
+    {
+      "name": "Twist Subject",
+      "dice": null,
+      "rows": [
+        "a stranger", "an old promise", "the law", "a family", "a weapon", "the dead",
+        "a secret", "a rival", "a leader", "the faith", "a debt", "a beast",
+        "a home", "the past", "a child", "wealth", "a bond of friendship", "a border",
+        "knowledge", "an illness", "the land", "a messenger", "a curse", "the weather"
+      ]
+    }
+  ]
+}

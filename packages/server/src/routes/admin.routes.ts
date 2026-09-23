@@ -177,6 +177,9 @@ export async function adminRoutes(app: FastifyInstance) {
       await runDelete("random_tables", () =>
         db.delete(schema.randomTables).where(ne(schema.randomTables.gameId, "")).run(),
       );
+      // Prep boards and initiative encounters only exist per game.
+      await runDelete("game_prep_boards", () => db.delete(schema.gamePrepBoards).run());
+      await runDelete("game_initiative_encounters", () => db.delete(schema.gameInitiativeEncounters).run());
       await runDelete("library_campaign_links", () => db.delete(schema.libraryCampaignLinks).run());
       await runDelete("generation_job_records", () => db.delete(schema.generationJobRecords).run());
       filesDeleted.gallery = clearDirectory(join(DATA_DIR, "gallery"));

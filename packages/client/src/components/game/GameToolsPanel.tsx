@@ -1,18 +1,33 @@
 // ──────────────────────────────────────────────
 // Game: Tools tab of the Session panel
-// Dice log, random tables and oracle, the name generator, the campaign log and the campaign codex export, in one place.
-// ──────────────────────────────────────────────
+// Dice log, the GM prep board, initiative tracker, random tables and oracle, the name generator, the campaign log and the campaign codex export, in one place.
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 import { useState, type ReactNode } from "react";
-import { BookDown, BookOpenText, Dices, FileJson, FileText, Loader2, Maximize2, Sparkles } from "lucide-react";
+import {
+  BookDown,
+  BookOpenText,
+  ClipboardList,
+  Dices,
+  FileJson,
+  FileText,
+  Loader2,
+  Maximize2,
+  Sparkles,
+  Swords,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { GameDiceLog } from "./GameDiceLog";
+import { GamePrepBoard } from "./GamePrepBoard";
 import { NameGenerator } from "../tools/NameGenerator";
 import { RandomTablesTool } from "../tools/RandomTablesTool";
+import { InitiativeTracker } from "../tools/InitiativeTracker";
 import { downloadCampaignCodex } from "../../hooks/use-game-tools";
 import { openNameGenerator } from "../../lib/open-name-generator";
 import { openGameLog } from "../../lib/open-game-log";
 import { openRandomTables } from "../../lib/open-random-tables";
+import { openPrepBoard } from "../../lib/open-prep-board";
+import { openInitiativeTracker } from "../../lib/open-initiative-tracker";
 
 function SectionTitle({ icon, title, action }: { icon: ReactNode; title: string; action?: ReactNode }) {
   return (
@@ -62,6 +77,44 @@ export function GameToolsPanel({ chatId }: { chatId: string }) {
   return (
     <div className="space-y-5">
       <GameDiceLog chatId={chatId} />
+
+      <section className="border-t border-border pt-4" aria-label={t("ui.prepBoard.title")}>
+        <SectionTitle
+          icon={<ClipboardList size={14} className="text-muted-foreground" />}
+          title={t("ui.prepBoard.title")}
+          action={
+            <button
+              type="button"
+              onClick={() => openPrepBoard(chatId)}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+              title={t("ui.prepBoard.openWindow")}
+              aria-label={t("ui.prepBoard.openWindow")}
+            >
+              <Maximize2 size={13} />
+            </button>
+          }
+        />
+        <GamePrepBoard chatId={chatId} />
+      </section>
+
+      <section className="border-t border-border pt-4" aria-label={t("ui.initiative.title")}>
+        <SectionTitle
+          icon={<Swords size={14} className="text-muted-foreground" />}
+          title={t("ui.initiative.title")}
+          action={
+            <button
+              type="button"
+              onClick={() => openInitiativeTracker(chatId)}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+              title={t("ui.initiative.openWindow")}
+              aria-label={t("ui.initiative.openWindow")}
+            >
+              <Maximize2 size={13} />
+            </button>
+          }
+        />
+        <InitiativeTracker chatId={chatId} />
+      </section>
 
       <section className="border-t border-border pt-4" aria-label={t("ui.randomTables.title")}>
         <SectionTitle

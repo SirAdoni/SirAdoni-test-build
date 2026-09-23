@@ -84,11 +84,20 @@ const ActivityOverviewModal = lazy(() =>
 const RandomTablesModal = lazy(() =>
   import("../modals/RandomTablesModal").then((module) => ({ default: module.RandomTablesModal })),
 );
+const PrepBoardModal = lazy(() =>
+  import("../modals/PrepBoardModal").then((module) => ({ default: module.PrepBoardModal })),
+);
+const InitiativeTrackerModal = lazy(() =>
+  import("../modals/InitiativeTrackerModal").then((module) => ({ default: module.InitiativeTrackerModal })),
+);
 const NameGeneratorModal = lazy(() =>
   import("../modals/NameGeneratorModal").then((module) => ({ default: module.NameGeneratorModal })),
 );
 const CharacterDuplicatesModal = lazy(() =>
   import("../characters/CharacterDuplicatesModal").then((module) => ({ default: module.CharacterDuplicatesModal })),
+);
+const ReadingModeModal = lazy(() =>
+  import("../modals/ReadingModeModal").then((module) => ({ default: module.ReadingModeModal })),
 );
 const GameLogModal = lazy(() => import("../modals/GameLogModal").then((module) => ({ default: module.GameLogModal })));
 
@@ -252,11 +261,21 @@ export function ModalRenderer() {
           chatId={(modal?.props?.chatId as string) ?? ""}
           messageId={(modal?.props?.messageId as string | null | undefined) ?? null}
           messageNumber={(modal?.props?.messageNumber as number | null | undefined) ?? null}
+          focusChapters={modal?.props?.focusChapters === true}
         />
       );
       break;
+    case "reading-mode":
+      content = <ReadingModeModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
+      break;
     case "random-tables":
       content = <RandomTablesModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
+      break;
+    case "prep-board":
+      content = <PrepBoardModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
+      break;
+    case "initiative-tracker":
+      content = <InitiativeTrackerModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
       break;
     default:
       content = null;

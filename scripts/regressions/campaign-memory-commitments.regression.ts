@@ -112,6 +112,12 @@ try {
   assert.equal(original?.status, "superseded", "the original row is linked as the previous version");
   const head = await storage.getFact({ chatId }, accepted.commitmentId);
   assert.equal(head?.supersedesFactId, "fact-offer");
+  // A retry of the same transition (its response was lost) replays it instead of reporting a conflict.
+  const factCount = (await storage.listFacts({ chatId })).length;
+  response = await post(`/api/game/${chatId}/memory/commitments/fact-offer/transition`, { state: "accepted", expectedRevision: 1, evidence: acceptEvidence, operationId: "commit-accept-1", reason: "Mira accepted" });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().commitmentId, accepted.commitmentId, "the retry returns the committed transition");
+  assert.equal((await storage.listFacts({ chatId })).length, factCount, "the retry writes nothing");
 
   // Stale revision and non-head conflicts, illegal transition.
   response = await post(`/api/game/${chatId}/memory/commitments/fact-offer/transition`, { state: "declined", expectedRevision: 1, operationId: "commit-stale" });

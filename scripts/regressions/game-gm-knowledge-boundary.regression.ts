@@ -70,12 +70,14 @@ assert.ok(!boundary("char-b").mayUseIds.includes("fact-a-new"), "a fact about a 
 for (const id of ["char-a", "char-b", "persona-p"]) assert.ok(boundary(id).mayUseIds.includes("fact-world"), `world-scope fact is usable by present ${id}`);
 assert.equal(full.characterBoundaries!.some((item) => item.entityId === "char-c"), false, "absent characters get no may-use list");
 
-// 2. Receipt dedup: same evidence message + subject (record id match or subject match) is merged exactly once, without degrading.
-assert.equal(full.omissions?.duplicatesMerged, 2);
-assert.deepEqual(full.omissions?.mergedIds, ["fact-dup", "fact-dup-subject"]);
+// 2. Receipt dedup: only an exact provenance link (same receipt and record, evidence cited by it) merges, exactly once,
+// without degrading. A same-subject fact from the same message is a different statement and stays in the block.
+assert.equal(full.omissions?.duplicatesMerged, 1);
+assert.deepEqual(full.omissions?.mergedIds, ["fact-dup"]);
 assert.equal(full.exclusions.filter((item) => item.id === "fact-dup").length, 1, "merged once");
 assert.match(full.exclusions.find((item) => item.id === "fact-dup")!.reason, /merged with continuity receipt rcpt-1 record rec-1/u);
-assert.doesNotMatch(full.text, /\[fact fact-dup\]|\[fact fact-dup-subject\]/u, "merged facts are not repeated in the memory block");
+assert.doesNotMatch(full.text, /\[fact fact-dup\]/u, "the merged fact is not repeated in the memory block");
+assert.match(full.text, /\[fact fact-dup-subject\]/u, "a same-subject fact without a provenance link is kept");
 assert.equal(full.degraded, false, "merging is not degradation");
 assert.equal(full.omissions?.budgetOmitted, 0);
 const noReceipts = buildCampaignMemoryContext({ ...base, maxCharacters: 10_000, presentEntityIds: ["char-a"] });
@@ -96,7 +98,7 @@ const budgetExclusions = limited.exclusions.filter((item) => item.reason === "om
 assert.equal(limited.omissions?.budgetOmitted, budgetExclusions);
 assert.equal(limited.omissions?.budgetOmitted, full.includedIds.length - limited.includedIds.length, "omitted count equals the records that no longer fit");
 assert.ok(limited.omissions!.budgetOmitted > 0);
-assert.equal(limited.omissions?.duplicatesMerged, 2);
+assert.equal(limited.omissions?.duplicatesMerged, 1);
 assert.ok(limited.text.length <= 260);
 
 // 5. Prompt rendering keeps the stable prefix byte-identical and states the boundary and trailer explicitly.
@@ -118,7 +120,7 @@ assert.doesNotMatch(lineFor("char-b"), /fact-private|k-a/u, "B's rendered may-us
 assert.match(block.content, /Everything else above is GM-only: no character may reference it unless they learn it on-screen\./u);
 assert.equal(
   block.content.split("\n").find((line: string) => line.startsWith("[memory_omissions]")),
-  `[memory_omissions] ${limited.omissions!.budgetOmitted} records omitted for budget; 2 duplicates merged into continuity receipts`,
+  `[memory_omissions] ${limited.omissions!.budgetOmitted} records omitted for budget; 1 duplicates merged into continuity receipts`,
 );
 assert.deepEqual(block.providerMetadata.marinaraCampaignMemory.omissions, limited.omissions);
 assert.equal(block.providerMetadata.marinaraCampaignMemory.characterBoundaries.length, 2);

@@ -8,8 +8,11 @@
 
 import { parseDiceNotation, type DiceRollResult, type SkillCheckResult } from "@marinara-engine/shared";
 
-/** "table" is a roll on a random table or the oracle, made from the Tools tab. */
-export type DiceRollLogSource = "player" | "gm" | "skill_check" | "table";
+/**
+ * "table" is a roll on a random table or the oracle, made from the Tools tab;
+ * "initiative" is a roll from the Tools tab's initiative tracker.
+ */
+export type DiceRollLogSource = "player" | "gm" | "skill_check" | "table" | "initiative";
 
 export interface DiceRollLogEntry {
   source: DiceRollLogSource;

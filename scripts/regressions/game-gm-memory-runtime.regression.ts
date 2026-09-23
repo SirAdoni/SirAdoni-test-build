@@ -164,7 +164,7 @@ const currentState = buildCampaignMemoryContext({
 });
 assert.match(
   currentState.text,
-  /^\[current_state\]\nchar-ari\.inventory\.key = observatory-key \(since message-1, source event event-current\)\n\[fact /u,
+  /^\[current_state\]\nAri: inventory\.key = observatory-key\n\[fact /u,
   "current state renders in its own section ahead of facts",
 );
 assert.equal(currentState.currentStateCount, 1);

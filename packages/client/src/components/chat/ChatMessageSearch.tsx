@@ -1,13 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
 import { normalizeTextForMatch, type Message } from "@marinara-engine/shared";
-import { Bookmark, Loader2, Search, Trash2, X } from "lucide-react";
+import { BookOpen, Bookmark, Loader2, Search, Trash2, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { useChat } from "../../hooks/use-chats";
 import { api } from "../../lib/api-client";
+import { CHAT_CHAPTERS_OPEN_EVENT, readChatChaptersRequest } from "../../lib/chat-chapters-events";
 import { CHAT_FLOATING_UI_DISMISS_EVENT } from "../../lib/chat-floating-ui-events";
 import { isMessageHiddenFromUser } from "../../lib/chat-message-visibility";
 import { normalizeHydratedMessage } from "../../lib/message-hydration";
+import { openGameLog } from "../../lib/open-game-log";
 import { cn } from "../../lib/utils";
 import { useChatStore } from "../../stores/chat.store";
 import {
@@ -26,12 +29,14 @@ import {
   NEUTRAL_PANEL_TITLE,
 } from "../ui/neutral-surface-styles";
 import { ChatBookmarksList, ChatTrashList } from "./ChatMessageMarksPanels";
+import { ChatChaptersList } from "./MessageChapters";
 
-type SearchPanelView = "search" | "bookmarks" | "trash";
+type SearchPanelView = "search" | "bookmarks" | "chapters" | "trash";
 
 const PANEL_VIEWS = [
   { id: "search", icon: Search, labelKey: "ui.chat.messagemarks.searchTab" },
   { id: "bookmarks", icon: Bookmark, labelKey: "ui.chat.messagemarks.bookmarksTab" },
+  { id: "chapters", icon: BookOpen, labelKey: "ui.chat.chapters.tab" },
   { id: "trash", icon: Trash2, labelKey: "ui.chat.messagetrash.trashTab" },
 ] as const satisfies ReadonlyArray<{ id: SearchPanelView; icon: typeof Search; labelKey: string }>;
 
@@ -75,6 +80,7 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
   const ViewIcon = activeView.icon;
   const viewTitle = view === "search" ? title : localizeUi(activeView.labelKey);
   const buttonTitle = localizeUi("ui.chat.messagemarks.toolbarTitle");
+  const { data: chat } = useChat(chatId);
 
   const {
     data: messages,
@@ -85,7 +91,8 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
     queryKey: ["chat-message-search", chatId],
     queryFn: ({ signal }) =>
       api.get<Message[]>(`/chats/${chatId}/messages`, { signal }).then((items) => items.map(normalizeHydratedMessage)),
-    enabled: open,
+    // Chapters and Trash have their own lighter endpoints.
+    enabled: open && (view === "search" || view === "bookmarks"),
     staleTime: 30_000,
     gcTime: 5 * 60_000,
   });
@@ -108,6 +115,19 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
     setOpen(false);
     setQuery("");
     setView("search");
+  }, [chatId]);
+
+  // The command palette's "Go to chapter" opens this panel on its Chapters tab.
+  useEffect(() => {
+    const handleOpenChapters = (event: Event) => {
+      if (readChatChaptersRequest(event) !== chatId) return;
+      // Several toolbars can mount this panel; only the visible one answers.
+      if (!buttonRef.current || buttonRef.current.getClientRects().length === 0) return;
+      setView("chapters");
+      setOpen(true);
+    };
+    window.addEventListener(CHAT_CHAPTERS_OPEN_EVENT, handleOpenChapters);
+    return () => window.removeEventListener(CHAT_CHAPTERS_OPEN_EVENT, handleOpenChapters);
   }, [chatId]);
 
   useLayoutEffect(() => {
@@ -156,6 +176,16 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
     useChatStore.getState().requestGotoMessage(chatId, messageNumber);
     // On phones the panel covers most of the transcript, so close it to reveal the match.
     if (window.matchMedia("(max-width: 767px)").matches) setOpen(false);
+  };
+
+  const jumpToChapter = (chapter: { messageId: string; messageNumber: number }) => {
+    // Game mode has no per-message anchors; its chapters open in the campaign log.
+    if (chat?.mode === "game") {
+      setOpen(false);
+      openGameLog({ chatId, messageId: chapter.messageId, messageNumber: chapter.messageNumber });
+      return;
+    }
+    jumpToMessage(chapter.messageNumber);
   };
 
   return (
@@ -207,7 +237,7 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
             <div
               role="tablist"
               aria-label={localizeUi("ui.chat.messagemarks.panelViews")}
-              className="flex shrink-0 gap-1 border-b border-[var(--border)] px-3 py-1.5"
+              className="flex shrink-0 gap-1 overflow-x-auto border-b border-[var(--border)] px-3 py-1.5 [scrollbar-width:none] max-md:gap-0.5 max-md:px-2"
             >
               {PANEL_VIEWS.map(({ id, icon: Icon, labelKey }) => (
                 <button
@@ -217,7 +247,7 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
                   aria-selected={view === id}
                   onClick={() => setView(id)}
                   className={cn(
-                    "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]",
+                    "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] max-md:gap-1 max-md:px-1",
                     view === id
                       ? "bg-[var(--accent)] font-medium text-[var(--foreground)]"
                       : "text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
@@ -262,6 +292,8 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
             >
               {view === "trash" ? (
                 <ChatTrashList chatId={chatId} enabled={open} />
+              ) : view === "chapters" ? (
+                <ChatChaptersList chatId={chatId} enabled={open} onJump={jumpToChapter} />
               ) : isLoading ? (
                 <div className="flex items-center justify-center gap-2 px-3 py-8 text-sm text-[var(--muted-foreground)]">
                   <Loader2 size="0.875rem" className="animate-spin" />

@@ -5,7 +5,12 @@ import {
   createContext,
   isValidElement,
   useContext,
+  useCallback,
+  useEffect,
   useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
   type ReactElement,
   type ReactNode,
 } from "react";
@@ -14,14 +19,23 @@ import { useCharacters } from "../../hooks/use-characters";
 import { useUIStore } from "../../stores/ui.store";
 import { createCharacterMatcher, type CharacterReference } from "../../lib/character-references";
 import { CharacterPhoto } from "../ui/CharacterPhoto";
+import { readNpcPeekSummary, type NpcPeekSummary } from "../../lib/npc-quick-reference";
+import { NpcQuickReferencePopover } from "./NpcQuickReference";
 
 type VisualCharacterReference = CharacterReference & { avatarUrl?: string | null };
 type ReferenceContext = {
   characters: VisualCharacterReference[];
   editableIds: Set<string>;
   open: (id: string) => void;
+  /** Library card summary for the NPC quick reference popover, read on demand. */
+  summaryFor: (id: string) => NpcPeekSummary | undefined;
 };
-const Context = createContext<ReferenceContext>({ characters: [], editableIds: new Set(), open: () => {} });
+const Context = createContext<ReferenceContext>({
+  characters: [],
+  editableIds: new Set(),
+  open: () => {},
+  summaryFor: () => undefined,
+});
 const openEditor = (id: string) => useUIStore.getState().openCharacterDetail(id);
 const protectedTags = new Set(["a", "button", "code", "pre", "script", "style", "textarea", "input", "select", "svg"]);
 const linkClass =
@@ -49,7 +63,24 @@ export function CharacterReferencesProvider({ children }: { children: ReactNode 
     [data],
   );
   const editableIds = useMemo(() => new Set(characters.map((character) => character.id)), [characters]);
-  const value = useMemo(() => ({ characters, editableIds, open: openEditor }), [characters, editableIds]);
+  const summaryFor = useMemo(() => {
+    const rows = new Map(
+      ((data ?? []) as Array<Record<string, unknown>>).flatMap((row) =>
+        typeof row.id === "string" ? [[row.id, row] as const] : [],
+      ),
+    );
+    const cache = new Map<string, NpcPeekSummary>();
+    return (id: string) => {
+      const row = rows.get(id);
+      if (!row) return undefined;
+      if (!cache.has(id)) cache.set(id, readNpcPeekSummary(row));
+      return cache.get(id);
+    };
+  }, [data]);
+  const value = useMemo(
+    () => ({ characters, editableIds, open: openEditor, summaryFor }),
+    [characters, editableIds, summaryFor],
+  );
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
 
@@ -75,6 +106,7 @@ export function GameCharacterReferences({
     return {
       characters: [...merged.values()],
       editableIds: parent.editableIds,
+      summaryFor: parent.summaryFor,
       open: (id: string) => {
         if (cards[id]) return onOpen(id);
         const reference = merged.get(id);
@@ -98,12 +130,15 @@ export function CharacterLinkedContent({
   currentNames?: boolean;
   showAvatar?: boolean;
 }) {
-  const { characters, editableIds, open } = useContext(Context);
+  const { characters, editableIds, open, summaryFor } = useContext(Context);
   const { t } = useTranslation();
+  const peekEnabled = useUIStore((s) => s.npcQuickReference);
+  const peek = useNpcPeek(peekEnabled, open);
   const match = useMemo(() => createCharacterMatcher(characters), [characters]);
   const ids = useMemo(() => new Set(characters.map((c) => c.id)), [characters]);
   const rendered = useMemo(() => {
-    const label = (name: string) => t("ui.characterReferences.open", { name });
+    const label = (name: string) =>
+      peekEnabled ? t("ui.characterReferences.peek.show", { name }) : t("ui.characterReferences.open", { name });
     const visibleName = (text: string, character: CharacterReference) =>
       !currentNames ? text : /\s/u.test(text.trim()) ? character.name : character.name.split(/\s/u)[0];
     const processHtml = (html: string) => {
@@ -135,6 +170,7 @@ export function CharacterLinkedContent({
           button.className = linkClass;
           button.title = label(part.character.name);
           button.setAttribute("aria-label", label(part.character.name));
+          if (peekEnabled) button.setAttribute("aria-haspopup", "dialog");
           button.textContent = visibleName(part.text, part.character) ?? part.text;
           fragment.append(button);
         }
@@ -155,11 +191,12 @@ export function CharacterLinkedContent({
                 className={linkClass}
                 title={label(part.character.name)}
                 aria-label={label(part.character.name)}
+                aria-haspopup={peekEnabled ? "dialog" : undefined}
                 onKeyDown={(event) => {
                   if (event.target !== event.currentTarget) return;
                   if (event.key !== "Enter" && event.key !== " ") return;
                   event.preventDefault();
-                  open(part.character!.id);
+                  peek.activateRef.current(part.character!.id, event.currentTarget, true);
                 }}
               >
                 {showAvatar && part.character.avatarUrl ? (
@@ -200,7 +237,8 @@ export function CharacterLinkedContent({
         return element.props.children ? cloneElement(element, { children: visit(element.props.children) }) : element;
       });
     return visit(children);
-  }, [children, editableIds, match, currentNames, open, showAvatar, t]);
+  }, [children, editableIds, match, currentNames, peek.activateRef, peekEnabled, showAvatar, t]);
+  const peekCharacter = peek.state ? characters.find((c) => c.id === peek.state!.id) : undefined;
   return (
     <span
       className="contents"
@@ -220,8 +258,11 @@ export function CharacterLinkedContent({
         if (!id || !ids.has(id)) return;
         event.preventDefault();
         event.stopPropagation();
-        open(id);
+        // A keyboard-activated native button reports detail 0.
+        peek.activateRef.current(id, reference, event.detail === 0);
       }}
+      onPointerOver={peekEnabled ? peek.onPointerOver : undefined}
+      onPointerOut={peekEnabled ? peek.onPointerOut : undefined}
       onKeyDownCapture={(event) => {
         const target = event.target as Element;
         const reference = target.closest<HTMLElement>("[data-character-reference]");
@@ -229,6 +270,125 @@ export function CharacterLinkedContent({
       }}
     >
       {rendered}
+      {peek.state && peekCharacter ? (
+        <NpcQuickReferencePopover
+          key={peek.state.id}
+          character={{ ...peekCharacter, summary: summaryFor(peekCharacter.id) }}
+          anchor={peek.state.anchor}
+          library={editableIds.has(peekCharacter.id)}
+          focusOnOpen={peek.state.focus}
+          onOpenCard={peek.openCard}
+          onClose={peek.close}
+          onPointerEnter={peek.cancelHoverClose}
+          onPointerLeave={peek.scheduleHoverClose}
+        />
+      ) : null}
     </span>
   );
+}
+
+type PeekState = { id: string; anchor: HTMLElement; focus: boolean; hover: boolean };
+const HOVER_OPEN_MS = 400;
+const HOVER_CLOSE_MS = 250;
+/** Only one quick reference is open across all messages. */
+let closeActivePeek: (() => void) | null = null;
+
+/** Hover (mouse), tap and keyboard handling for the opt-in NPC quick reference popover. */
+function useNpcPeek(enabled: boolean, open: (id: string) => void) {
+  const [state, setState] = useState<PeekState | null>(null);
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const openTimer = useRef<number | undefined>(undefined);
+  const closeTimer = useRef<number | undefined>(undefined);
+  const hide = useCallback(() => {
+    window.clearTimeout(openTimer.current);
+    window.clearTimeout(closeTimer.current);
+    setState(null);
+  }, []);
+  const show = useCallback(
+    (next: PeekState) => {
+      if (closeActivePeek && closeActivePeek !== hide) closeActivePeek();
+      closeActivePeek = hide;
+      setState(next);
+    },
+    [hide],
+  );
+  const activateRef = useRef<(id: string, anchor: HTMLElement, viaKeyboard: boolean) => void>(open);
+  activateRef.current = (id, anchor, viaKeyboard) => {
+    window.clearTimeout(openTimer.current);
+    window.clearTimeout(closeTimer.current);
+    if (!enabled) return open(id);
+    const current = stateRef.current;
+    // A second click on a pinned popover's name closes it; a click on a hover preview pins it.
+    if (current && current.anchor === anchor && !current.hover && !viaKeyboard) return hide();
+    show({ id, anchor, focus: viaKeyboard, hover: false });
+  };
+  const close = useCallback(
+    (restoreFocus: boolean) => {
+      const anchor = stateRef.current?.anchor;
+      hide();
+      if (restoreFocus && anchor?.isConnected) anchor.focus({ preventScroll: true });
+    },
+    [hide],
+  );
+  const openCard = useCallback(() => {
+    const id = stateRef.current?.id;
+    hide();
+    if (id) open(id);
+  }, [hide, open]);
+  const cancelHoverClose = useCallback(() => window.clearTimeout(closeTimer.current), []);
+  const scheduleHoverClose = useCallback(() => {
+    window.clearTimeout(closeTimer.current);
+    if (!stateRef.current?.hover) return;
+    closeTimer.current = window.setTimeout(hide, HOVER_CLOSE_MS);
+  }, [hide]);
+  const onPointerOver = useCallback(
+    (event: ReactPointerEvent) => {
+      if (event.pointerType !== "mouse") return;
+      const reference = (event.target as Element).closest<HTMLElement>("[data-character-reference]");
+      if (!reference) return;
+      window.clearTimeout(closeTimer.current);
+      if (stateRef.current?.anchor === reference) return;
+      window.clearTimeout(openTimer.current);
+      const id = reference.dataset.characterReference;
+      if (!id) return;
+      openTimer.current = window.setTimeout(() => {
+        // Never replace a popover the reader pinned with a click or the keyboard.
+        if (!reference.isConnected || stateRef.current?.hover === false) return;
+        show({ id, anchor: reference, focus: false, hover: true });
+      }, HOVER_OPEN_MS);
+    },
+    [show],
+  );
+  const onPointerOut = useCallback(
+    (event: ReactPointerEvent) => {
+      if (event.pointerType !== "mouse") return;
+      const reference = (event.target as Element).closest<HTMLElement>("[data-character-reference]");
+      if (!reference || reference.contains(event.relatedTarget as Node | null)) return;
+      window.clearTimeout(openTimer.current);
+      scheduleHoverClose();
+    },
+    [scheduleHoverClose],
+  );
+  useEffect(() => {
+    if (!enabled) hide();
+  }, [enabled, hide]);
+  useEffect(
+    () => () => {
+      window.clearTimeout(openTimer.current);
+      window.clearTimeout(closeTimer.current);
+      if (closeActivePeek === hide) closeActivePeek = null;
+    },
+    [hide],
+  );
+  return {
+    state: enabled ? state : null,
+    activateRef,
+    close,
+    openCard,
+    cancelHoverClose,
+    scheduleHoverClose,
+    onPointerOver,
+    onPointerOut,
+  };
 }

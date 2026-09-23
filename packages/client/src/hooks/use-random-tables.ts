@@ -86,11 +86,12 @@ export function useRandomTableMutations(chatId: string | null | undefined) {
   });
 
   const importTables = useMutation({
-    mutationFn: (input: { scope: RandomTableScope; data: unknown }) =>
-      api.post<{ created: RandomTableRecord[]; skipped: number }>("/random-tables/import", {
+    mutationFn: (input: { scope: RandomTableScope; data: unknown; skipExisting?: boolean }) =>
+      api.post<{ created: RandomTableRecord[]; skipped: number; existing?: number }>("/random-tables/import", {
         chatId: chat,
         scope: input.scope,
         data: input.data,
+        ...(input.skipExisting ? { skipExisting: true } : {}),
       }),
     onSuccess: invalidate,
   });

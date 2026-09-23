@@ -5,12 +5,13 @@
 // reader. A Game session shows one narration beat at a time, so rereading a long
 // campaign needs the whole line in one place. The payload stays compact: only
 // what the reader renders (role, text, time, the message number the chat uses
-// for /goto) plus each session's segment edits and deletions, so the client
-// shows the story the way the game shows it.
+// for /goto, a user-marked chapter) plus each session's segment edits and
+// deletions, so the client shows the story the way the game shows it.
 //
 // The session list is the codex's: the canonical line, or the branch the log was
 // opened from standing in for the chain it forked from. Read-only.
 // ──────────────────────────────────────────────
+import { readMessageChapter, type MessageChapter } from "@marinara-engine/shared";
 import type { DB } from "../../db/connection.js";
 import { eq } from "../../db/file-query.js";
 import { messages, personas } from "../../db/schema/index.js";
@@ -24,6 +25,11 @@ export interface CampaignLogMessage {
   role: "user" | "assistant" | "system" | "narrator";
   content: string;
   createdAt: string;
+  /**
+   * A chapter the player marked as starting at this turn. `messageId` is the message that
+   * stores it: this turn, or a hidden turn just before it.
+   */
+  chapter?: { title: string; summary: string | null; messageId: string } | null;
 }
 
 export interface CampaignLogSession {
@@ -132,14 +138,23 @@ export async function loadCampaignLog(
       .where(eq(messages.chatId, row.id))
       .orderBy(messages.createdAt, messages.id);
     const readable: CampaignLogMessage[] = [];
+    // A chapter marked on a turn the log leaves out starts at the next turn it shows.
+    let pendingChapter: (MessageChapter & { messageId: string }) | null = null;
     rows.forEach((message, position) => {
+      const marked = readMessageChapter(message.extra);
+      if (marked) pendingChapter = { ...marked, messageId: message.id };
       if (!isCampaignLogMessage(message)) return;
+      const chapter = pendingChapter;
+      pendingChapter = null;
       readable.push({
         id: message.id,
         number: position + 1,
         role: message.role as CampaignLogMessage["role"],
         content: message.content,
         createdAt: message.createdAt,
+        ...(chapter
+          ? { chapter: { title: chapter.title, summary: chapter.summary ?? null, messageId: chapter.messageId } }
+          : {}),
       });
     });
     sessions.push({

@@ -78,6 +78,7 @@ import {
   type SpritePlacement,
   type SpriteSide,
   type WeekSchedule,
+  readMessageChapter,
 } from "@marinara-engine/shared";
 import { resolveLiveConversationStatus } from "../../lib/conversation-presence-status";
 import { useUIStore } from "../../stores/ui.store";
@@ -3105,6 +3106,8 @@ const ChatAreaContent = memo(function ChatAreaContent() {
     const prev = messages[i - 1];
     const curr = messages[i];
     if (startsNewAssistantBubble(curr)) return false;
+    // A chapter divider sits above this message, so it starts a fresh group.
+    if (readMessageChapter(curr.extra)) return false;
     if (prev.role !== curr.role || prev.characterId !== curr.characterId) return false;
     // Break grouping when persona changes between consecutive user messages
     if (prev.role === "user" && curr.role === "user") {

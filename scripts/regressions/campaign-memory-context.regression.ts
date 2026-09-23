@@ -40,10 +40,10 @@ assert.equal(beforeLearning.text, "");
 assert.ok(beforeLearning.exclusions.some((item) => item.id === "alice-knows"));
 const alice = buildCampaignMemoryContext({ ...base, audience: { kind: "character", entityId: "alice" }, cutoffOrder: orderCurrent });
 assert.match(alice.text, /blue-room/);
-assert.match(alice.text, /conditions=when:dawn/);
-assert.match(alice.text, /holder=alice/);
+assert.match(alice.text, /\(if when: dawn\)/, "conditions render as a readable if-clause");
+assert.match(alice.text, /\[knowledge alice-knows\] Alice knows: Alice, secret: blue-room/, "knowledge names its holder and subject, never a raw entity id");
 assert.ok(alice.exclusions.some((item) => item.id === "unknown-order"));
-assert.match(alice.text, /aliases=Alice/);
+assert.doesNotMatch(alice.text, /holder=|aliases=/, "raw id attributes are gone from the rendered block");
 const laterSource = source("The later source says green-room secret");
 const laterEvidenceHash = createHash("sha256").update(laterSource.content).digest("hex");
 const laterFact = { ...fact("later-evidence", "alice", "green-room", orderBefore), evidence: [{ messageId: "m2", quote: laterSource.content, sourceHash: laterEvidenceHash }] };
@@ -85,7 +85,7 @@ const deterministicA = buildCampaignMemoryContext({ ...base, audience: { kind: "
 const deterministicB = buildCampaignMemoryContext({ ...base, audience: { kind: "gm" }, maxCharacters: 140 });
 assert.deepEqual(deterministicA, deterministicB);
 assert.ok(deterministicA.exclusions.some((item) => item.reason.includes("budget")));
-assert.match(deterministicA.text, /blue-room.*conditions=when:dawn/);
+assert.match(deterministicA.text, /blue-room \(if when: dawn\)/);
 assert.ok(deterministicA.text.length <= 140);
 assert.equal(deterministicA.text.includes("[state"), false);
 

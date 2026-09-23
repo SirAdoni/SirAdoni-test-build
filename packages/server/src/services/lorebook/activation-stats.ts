@@ -7,12 +7,14 @@
 // route reports the entries it actually injected; counts accumulate in memory
 // and flush in one batched write a moment later. Recording is best-effort by
 // design: every failure is logged and swallowed so it can never affect a
-// generation.
+// generation. Each entry also keeps a small bounded list of the chats it fired
+// in (see activation-backlinks.ts), merged in the same batched write.
 // ──────────────────────────────────────────────
 import type { DB } from "../../db/connection.js";
 import { eq, inArray } from "../../db/file-query.js";
 import { lorebookEntries, lorebookEntryActivationStats } from "../../db/schema/index.js";
 import { logger } from "../../lib/logger.js";
+import { mergeRecentChats, parseRecentChats, type LorebookEntryRecentChat } from "./activation-backlinks.js";
 
 export interface LorebookEntryActivationStat {
   entryId: string;
@@ -20,12 +22,15 @@ export interface LorebookEntryActivationStat {
   count: number;
   lastActivatedAt: string | null;
   lastChatId: string | null;
+  /** Up to MAX_RECENT_CHATS_PER_ENTRY chats this entry fired in, newest first. */
+  recentChats: LorebookEntryRecentChat[];
 }
 
 interface PendingActivation {
   count: number;
   lastActivatedAt: string;
   lastChatId: string | null;
+  chats: Map<string, { count: number; lastActivatedAt: string }>;
 }
 
 const FLUSH_DELAY_MS = 2_000;
@@ -49,10 +54,16 @@ export function recordLorebookActivations(
     const at = input.at ?? new Date().toISOString();
     for (const id of ids) {
       const current = pending.get(id);
+      const chats = current?.chats ?? new Map<string, { count: number; lastActivatedAt: string }>();
+      if (input.chatId) {
+        const chat = chats.get(input.chatId);
+        chats.set(input.chatId, { count: (chat?.count ?? 0) + 1, lastActivatedAt: at });
+      }
       pending.set(id, {
         count: (current?.count ?? 0) + 1,
         lastActivatedAt: at,
         lastChatId: input.chatId ?? current?.lastChatId ?? null,
+        chats,
       });
     }
     pendingDb = db;
@@ -123,6 +134,15 @@ async function writeBatch(db: DB, batch: Map<string, PendingActivation>) {
             count: (existing.count ?? 0) + activation.count,
             lastActivatedAt: activation.lastActivatedAt,
             lastChatId: activation.lastChatId ?? existing.lastChatId ?? null,
+            recentChats: JSON.stringify(
+              mergeRecentChats(
+                parseRecentChats(existing.recentChats, {
+                  lastChatId: existing.lastChatId,
+                  lastActivatedAt: existing.lastActivatedAt,
+                }),
+                activation.chats,
+              ),
+            ),
           })
           .where(eq(lorebookEntryActivationStats.entryId, entryId));
         continue;
@@ -136,6 +156,7 @@ async function writeBatch(db: DB, batch: Map<string, PendingActivation>) {
         count: activation.count,
         lastActivatedAt: activation.lastActivatedAt,
         lastChatId: activation.lastChatId,
+        recentChats: JSON.stringify(mergeRecentChats([], activation.chats)),
       });
     }
   });
@@ -157,5 +178,9 @@ export async function listLorebookActivationStats(
     count: row.count ?? 0,
     lastActivatedAt: row.lastActivatedAt ?? null,
     lastChatId: row.lastChatId ?? null,
+    recentChats: parseRecentChats(row.recentChats, {
+      lastChatId: row.lastChatId,
+      lastActivatedAt: row.lastActivatedAt,
+    }),
   }));
 }

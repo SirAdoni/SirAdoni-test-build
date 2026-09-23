@@ -11,4 +11,8 @@ export const lorebookEntryActivationStats = fileTable("lorebook_entry_activation
   count: integer("count").notNull().default(0),
   lastActivatedAt: text("last_activated_at"),
   lastChatId: text("last_chat_id"),
+  // JSON array of { chatId, count, lastActivatedAt }, newest first, capped at
+  // 20. Absent on rows written before backlinks existed; readers fall back to
+  // lastChatId.
+  recentChats: text("recent_chats"),
 });

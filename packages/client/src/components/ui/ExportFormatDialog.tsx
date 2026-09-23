@@ -5,6 +5,14 @@ import { useTranslation as useUiTranslation } from "react-i18next";
 
 export type ExportFormatChoice = "native" | "compatible" | "compatible-png";
 
+/** Additional formats a caller can offer next to the standard ones. */
+export interface ExportFormatExtraOption {
+  id: string;
+  label: string;
+  icon: typeof Layers;
+  description: string;
+}
+
 interface ExportFormatDialogProps {
   open: boolean;
   title: string;
@@ -13,8 +21,10 @@ interface ExportFormatDialogProps {
   compatibleDescription?: string;
   pngDescription?: string;
   showPngOption?: boolean;
+  extraOptions?: ExportFormatExtraOption[];
   onClose: () => void;
   onSelect: (format: ExportFormatChoice) => void;
+  onSelectExtra?: (id: string) => void;
 }
 
 export function ExportFormatDialog({
@@ -25,8 +35,10 @@ export function ExportFormatDialog({
   compatibleDescription: compatibleDescriptionProp,
   pngDescription: pngDescriptionProp,
   showPngOption = false,
+  extraOptions = [],
   onClose,
   onSelect,
+  onSelectExtra,
 }: ExportFormatDialogProps) {
   const { t: localizeUi } = useUiTranslation();
   const description = descriptionProp ?? localizeUi("ui.ui.exportformatdialog.description");
@@ -35,7 +47,7 @@ export function ExportFormatDialog({
     compatibleDescriptionProp ?? localizeUi("ui.ui.exportformatdialog.compatibleDescription");
   const pngDescription = pngDescriptionProp ?? localizeUi("ui.ui.exportformatdialog.pngDescription");
   const options: Array<{
-    id: ExportFormatChoice;
+    id: ExportFormatChoice | string;
     label: string;
     icon: typeof Layers;
     description: string;
@@ -62,7 +74,9 @@ export function ExportFormatDialog({
           },
         ]
       : []),
+    ...extraOptions,
   ];
+  const extraIds = new Set(extraOptions.map((option) => option.id));
   const gridColumns = options.length === 3 ? "sm:grid-cols-3" : "sm:grid-cols-2";
 
   return (
@@ -76,7 +90,9 @@ export function ExportFormatDialog({
               <button
                 key={option.id}
                 type="button"
-                onClick={() => onSelect(option.id)}
+                onClick={() =>
+                  extraIds.has(option.id) ? onSelectExtra?.(option.id) : onSelect(option.id as ExportFormatChoice)
+                }
                 className={cn(
                   "group flex min-h-[8.5rem] flex-col items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--secondary)]/55 p-4 text-left transition-all",
                   "hover:border-[var(--primary)]/45 hover:bg-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/35",

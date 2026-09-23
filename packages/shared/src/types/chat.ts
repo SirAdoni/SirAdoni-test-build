@@ -977,6 +977,8 @@ export interface MessageExtra {
   pinnedToContext?: boolean;
   /** Private user note on this message. Never sent to the model and left out of exports by default. */
   privateNote?: string | null;
+  /** A chapter starts at this message: user-written title and summary. Never sent to the model. */
+  chapter?: import("../utils/message-marks.js").MessageChapter | null;
   /** Character IDs whose generation context excludes this message. Global hiddenFromAI takes precedence. */
   hiddenFromAICharacterIds?: string[];
   /** When true, Roleplay renders this generated assistant turn as a fresh bubble instead of grouping with the previous assistant turn. */

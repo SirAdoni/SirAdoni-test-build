@@ -53,25 +53,63 @@ export function createCharacterMatcher(characters: CharacterReference[]) {
       }
     }
   }
-  const keys = [...names.keys()].sort((a, b) => b.length - a.length);
-  const pattern = keys.length
-    ? new RegExp(
-        `(?<![\\p{L}\\p{N}_])(${keys.map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![\\p{L}\\p{N}_])`,
-        "giu",
-      )
-    : null;
+  // Scan with a precomputed name set instead of one giant alternation regex, so
+  // long messages against a large library stay linear in the message length.
+  const lengths = [...new Set([...names.keys()].map((key) => key.length))].sort((a, b) => b - a);
+  const firstChars = new Set([...names.keys()].map((key) => key[0]));
+  const wordChar = /[\p{L}\p{N}_]/u;
+  const endsWithWordChar = (text: string, index: number) =>
+    index > 0 && wordChar.test(String.fromCodePoint(text.codePointAt(index - 1 - (isLowSurrogate(text, index - 1) ? 1 : 0))!));
+  const startsWithWordChar = (text: string, index: number) =>
+    index < text.length && wordChar.test(String.fromCodePoint(text.codePointAt(index)!));
+  let fallback: RegExp | null | undefined;
+  const fallbackPattern = () => {
+    if (fallback !== undefined) return fallback;
+    const keys = [...names.keys()].sort((a, b) => b.length - a.length);
+    fallback = keys.length
+      ? new RegExp(
+          `(?<![\\p{L}\\p{N}_])(${keys.map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![\\p{L}\\p{N}_])`,
+          "giu",
+        )
+      : null;
+    return fallback;
+  };
+  const resolve = (found: string) => names.get(keyFor(found)) ?? names.get(found.toLocaleLowerCase());
   return (text: string): Array<{ text: string; character?: CharacterReference }> => {
-    if (!pattern) return [{ text }];
-    pattern.lastIndex = 0;
+    if (!names.size || !text) return [{ text }];
     const result: Array<{ text: string; character?: CharacterReference }> = [];
     let end = 0;
-    for (const match of text.matchAll(pattern)) {
-      if (match.index > end) result.push({ text: text.slice(end, match.index) });
-      const character = names.get(keyFor(match[0])) ?? names.get(match[0].toLocaleLowerCase());
-      result.push({ text: match[0], ...(character ? { character } : {}) });
-      end = match.index + match[0].length;
+    const push = (index: number, found: string) => {
+      if (index > end) result.push({ text: text.slice(end, index) });
+      const character = resolve(found);
+      result.push({ text: found, ...(character ? { character } : {}) });
+      end = index + found.length;
+    };
+    const lower = text.toLocaleLowerCase();
+    if (lower.length !== text.length) {
+      // Rare case-mapping that changes string length: keep the exact regex semantics.
+      const pattern = fallbackPattern();
+      if (!pattern) return [{ text }];
+      pattern.lastIndex = 0;
+      for (const match of text.matchAll(pattern)) push(match.index, match[0]);
+    } else {
+      for (let index = 0; index < text.length; index++) {
+        if (!firstChars.has(lower[index]!) || endsWithWordChar(text, index)) continue;
+        for (const length of lengths) {
+          const stop = index + length;
+          if (stop > text.length || !names.has(lower.slice(index, stop)) || startsWithWordChar(text, stop)) continue;
+          push(index, text.slice(index, stop));
+          index = stop - 1;
+          break;
+        }
+      }
     }
     if (end < text.length) result.push({ text: text.slice(end) });
-    return result;
+    return result.length ? result : [{ text }];
   };
+}
+
+function isLowSurrogate(text: string, index: number) {
+  const code = text.charCodeAt(index);
+  return index > 0 && code >= 0xdc00 && code <= 0xdfff;
 }

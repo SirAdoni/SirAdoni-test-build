@@ -1,14 +1,16 @@
 // ──────────────────────────────────────────────
-// Per-message user marks: bookmarks, context pins and private notes
+// Per-message user marks: bookmarks, context pins, private notes and chapters
 // ──────────────────────────────────────────────
-// All three live in the message's `extra` JSON (message-level, mirrored to every swipe).
-// Bookmarks and notes are reader-only: they never enter prompts. Pins only change which
-// history rows survive the chat's context message limit.
+// All of them live in the message's `extra` JSON (message-level, mirrored to every swipe).
+// Bookmarks, notes and chapters are reader-only: they never enter prompts. Pins only change
+// which history rows survive the chat's context message limit.
 
 /** Most messages one chat may pin into its prompt context. */
 export const MAX_PINNED_CONTEXT_MESSAGES = 10;
 export const MAX_BOOKMARK_LABEL_LENGTH = 80;
 export const MAX_PRIVATE_NOTE_LENGTH = 2000;
+export const MAX_CHAPTER_TITLE_LENGTH = 120;
+export const MAX_CHAPTER_SUMMARY_LENGTH = 600;
 /** Trashed messages older than this are purged automatically. */
 export const MESSAGE_TRASH_RETENTION_DAYS = 30;
 /** Line prefixed to a pinned message that was restored from outside the context message limit. */
@@ -20,8 +22,16 @@ export interface MessageBookmark {
   createdAt: string;
 }
 
+/** A chapter that starts at this message. Title and summary are written by the user, never generated. */
+export interface MessageChapter {
+  title: string;
+  /** Optional short summary shown in the chapter list and exports. */
+  summary?: string | null;
+  createdAt: string;
+}
+
 /** Extra keys that belong to the whole message, not one swipe. */
-export const MESSAGE_MARK_EXTRA_KEYS = ["bookmark", "pinnedToContext", "privateNote"] as const;
+export const MESSAGE_MARK_EXTRA_KEYS = ["bookmark", "pinnedToContext", "privateNote", "chapter"] as const;
 
 function readExtraRecord(extra: unknown): Record<string, unknown> {
   if (!extra) return {};
@@ -52,6 +62,44 @@ export function isMessagePinnedToContext(extra: unknown): boolean {
 export function readMessagePrivateNote(extra: unknown): string | null {
   const value = readExtraRecord(extra).privateNote;
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+export function readMessageChapter(extra: unknown): MessageChapter | null {
+  const value = readExtraRecord(extra).chapter;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const title = typeof record.title === "string" ? record.title.trim() : "";
+  if (!title) return null;
+  const summary = typeof record.summary === "string" && record.summary.trim() ? record.summary.trim() : null;
+  const createdAt = typeof record.createdAt === "string" ? record.createdAt : "";
+  return { title, summary, createdAt };
+}
+
+/** One chapter of a transcript: where it starts (1-based message number, as /goto counts) and its text. */
+export interface ChapterListEntry<T> {
+  message: T;
+  /** 1-based position of the message in the list it was read from. */
+  messageNumber: number;
+  chapter: MessageChapter;
+}
+
+/** A chapter as the chapters endpoint lists it. */
+export interface ChatChapterSummary {
+  messageId: string;
+  /** 1-based position among every stored message of the chat, as /goto and search count it. */
+  messageNumber: number;
+  title: string;
+  summary: string | null;
+}
+
+/** Chapters of a transcript in reading order. */
+export function listMessageChapters<T extends { extra?: unknown }>(messages: readonly T[]): ChapterListEntry<T>[] {
+  const out: ChapterListEntry<T>[] = [];
+  messages.forEach((message, index) => {
+    const chapter = readMessageChapter(message.extra);
+    if (chapter) out.push({ message, messageNumber: index + 1, chapter });
+  });
+  return out;
 }
 
 /**
@@ -90,6 +138,27 @@ export function normalizeMessageMarkPatch(
     if (trimmed.length > MAX_PRIVATE_NOTE_LENGTH)
       return { error: `privateNote must be at most ${MAX_PRIVATE_NOTE_LENGTH} characters` };
     patch.privateNote = trimmed || null;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "chapter")) {
+    const value = patch.chapter;
+    if (value === null || value === false) {
+      patch.chapter = null;
+    } else if (value && typeof value === "object" && !Array.isArray(value)) {
+      const record = value as Record<string, unknown>;
+      if (typeof record.title !== "string" || !record.title.trim()) return { error: "chapter.title is required" };
+      if (record.summary !== undefined && record.summary !== null && typeof record.summary !== "string")
+        return { error: "chapter.summary must be a string" };
+      const summary = typeof record.summary === "string" ? record.summary.trim() : "";
+      if (summary.length > MAX_CHAPTER_SUMMARY_LENGTH)
+        return { error: `chapter.summary must be at most ${MAX_CHAPTER_SUMMARY_LENGTH} characters` };
+      patch.chapter = {
+        title: record.title.trim().replace(/\s+/gu, " ").slice(0, MAX_CHAPTER_TITLE_LENGTH),
+        summary: summary || null,
+        createdAt: typeof record.createdAt === "string" && record.createdAt ? record.createdAt : now(),
+      } satisfies MessageChapter;
+    } else {
+      return { error: "chapter must be an object or null" };
+    }
   }
   return { patch };
 }

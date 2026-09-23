@@ -21,7 +21,15 @@ try {
   const schema = await import("../../packages/server/src/db/schema/index.js");
   const { prepareContinuitySources } = await import("../../packages/server/src/services/game/continuity-sources.js");
   const { createGameContinuityRecordId } = await import("../../packages/server/src/services/game/continuity-review.js");
-  const { publishContinuityMemory } = await import("../../packages/server/src/services/game/continuity-memory-publication.js");
+  const { publishContinuityMemory, transferQuantity } = await import("../../packages/server/src/services/game/continuity-memory-publication.js");
+
+  // Item-transfer quantity is the count written next to the item, never the first number in the text (a year).
+  assert.equal(transferQuantity("In 412 AS Bob received the Silver Dagger", "Silver Dagger"), 1);
+  assert.equal(transferQuantity("In 412 AS Alice gave Bob the Silver Dagger", "Silver Dagger"), 1);
+  assert.equal(transferQuantity("Alice gave Bob 3 Silver Dagger", "Silver Dagger"), 3);
+  assert.equal(transferQuantity("Alice gave Bob 2 of the Silver Dagger", "Silver Dagger"), 2);
+  assert.equal(transferQuantity("Alice gave Bob the Silver Dagger x4", "Silver Dagger"), 4);
+  assert.equal(transferQuantity("Alice gave Bob 5 coins", undefined), 1);
   const { readContinuityConfig } = await import("../../packages/server/src/services/game/continuity-provider.js");
   const { eq } = await import("../../packages/server/src/db/file-query.js");
 
@@ -44,6 +52,7 @@ try {
     m3: "Tilda arrived at The Ford at dusk.",
     m4: "Tilda reached the Old Mill before dawn.",
     m5: "Ada and Cole are allies now.",
+    m6: "Ada and Cole reached an agreement at The Ford.",
   };
   await db.insert(schema.messages).values(Object.entries(texts).map(([id, content], index) => ({ id, chatId, role: "assistant", content, createdAt: `2026-09-16T00:0${index}:00.000Z` })));
   await db.insert(schema.lorebooks).values({ id: "keeper", name: "Keeper", chatId, enabled: "false", sourceAgentId: "game-lorebook-keeper", createdAt: now, updatedAt: now });
@@ -64,9 +73,10 @@ try {
     { kind: "event" as const, text: "Tilda Pennock arrived at The Ford at dusk.", subjects: ["Tilda Pennock"], conditions: [], status: "completed" as const, keys: ["arrival"], evidence: [{ messageId: "m3", quote: "Tilda arrived at The Ford at dusk." }] },
     { kind: "event" as const, text: "Tilda Pennock reached the Old Mill before dawn.", subjects: ["Tilda Pennock"], conditions: [], status: "completed" as const, keys: ["arrival"], evidence: [{ messageId: "m4", quote: "Tilda reached the Old Mill before dawn." }] },
     { kind: "decision" as const, text: "Ada Vale and Cole Marsh are allies now.", subjects: ["Ada Vale", "Cole Marsh"], conditions: [], status: "completed" as const, keys: ["relationship"], evidence: [{ messageId: "m5", quote: "Ada and Cole are allies now." }] },
+    { kind: "event" as const, text: "Ada Vale and Cole Marsh reached an agreement at The Ford.", subjects: ["Ada Vale", "Cole Marsh"], conditions: [], status: "completed" as const, keys: ["agreement"], evidence: [{ messageId: "m6", quote: "Ada and Cole reached an agreement at The Ford." }] },
   ];
   const records: GameContinuityRecord[] = raw.map((record) => ({ ...record, id: createGameContinuityRecordId("receipt-1", record) }));
-  const [pactRecord, invitationRecord, arrivalRecord, millRecord, allyRecord] = records as [GameContinuityRecord, GameContinuityRecord, GameContinuityRecord, GameContinuityRecord, GameContinuityRecord];
+  const [pactRecord, invitationRecord, arrivalRecord, millRecord, allyRecord, agreementRecord] = records as [GameContinuityRecord, GameContinuityRecord, GameContinuityRecord, GameContinuityRecord, GameContinuityRecord, GameContinuityRecord];
   const entryId = `gce_${hash("receipt-1").slice(0, 32)}`;
   const content = records.map((record) => record.text).join("\n");
   await db.insert(schema.lorebookEntries).values({ id: entryId, lorebookId: "keeper", name: "Game continuity 1", content, keys: "[]", dynamicState: JSON.stringify({ receiptId: "receipt-1", publishedContentHash: hash(content), source: "incremental-game-continuity" }), createdAt: now, updatedAt: now });
@@ -93,7 +103,7 @@ try {
   const outcomeFor = (recordId: string) => [...result.transitions.applied, ...result.transitions.pending, ...result.transitions.skipped].find((item) => item.recordId === recordId);
   assert.equal(result.transitions.skipped.length, 0, "no transition derivation failed");
   const first = await rows();
-  assert.equal(first.facts.length, 8, "facts are unchanged by transitions: one per resolved subject plus one fallback for the unresolved inviter");
+  assert.equal(first.facts.length, 10, "facts are unchanged by transitions: one per resolved subject plus one fallback for the unresolved inviter");
 
   // Event: one row with both participants and the exact-alias location, ordered by the evidence message.
   const pact = outcomeFor(pactRecord.id)!;
@@ -104,6 +114,15 @@ try {
   assert.deepEqual(parse(pactEvents[0]!.participantEntityIds).sort(), ["ent-ada", "ent-cole"]);
   assert.equal(pactEvents[0]!.locationEntityId, "ent-ford");
   assert.ok(pactEvents[0]!.occurrenceOrder.length > 0);
+
+  // A completed event worded with "reached" stays an event with both participants, not an ambiguous movement.
+  const agreement = outcomeFor(agreementRecord.id)!;
+  assert.equal(agreement.class, "event");
+  assert.equal(agreement.status, "applied");
+  const agreementEvents = first.events.filter((row: any) => parse(row.transitions).includes(agreement.transitionId));
+  assert.equal(agreementEvents.length, 1);
+  assert.deepEqual(parse(agreementEvents[0]!.participantEntityIds).sort(), ["ent-ada", "ent-cole"]);
+  assert.equal(agreementEvents[0]!.locationEntityId, "ent-ford");
 
   // Invitation: movement-like wording with a proposed status never moves anyone.
   const invitation = outcomeFor(invitationRecord.id)!;

@@ -12,10 +12,13 @@ import {
   createLorebookEntrySchema,
   updateLorebookEntrySchema,
   bulkUpdateLorebookEntriesSchema,
+  lorebookBulkEditSchema,
+  lorebookBulkDeleteSchema,
   createLorebookFolderSchema,
   updateLorebookFolderSchema,
   LOCAL_SIDECAR_CONNECTION_ID,
   canReparentFolder,
+  collectEffectivelyDisabledFolderIds,
   estimateTextTokens,
   type CreateLorebookEntryInput,
   type LorebookEntryTimingState,
@@ -34,6 +37,9 @@ import { createConnectionsStorage } from "../services/storage/connections.storag
 import { filterRelevantLorebooks, processLorebooks } from "../services/lorebook/index.js";
 import { runLorebookTestScan } from "../services/lorebook/test-scan.js";
 import { listLorebookActivationStats } from "../services/lorebook/activation-stats.js";
+import { findStaleEntries, type StaleEntryInput } from "../services/lorebook/activation-backlinks.js";
+import { chats as chatsTable } from "../db/schema/index.js";
+import { inArray } from "../db/file-query.js";
 import {
   buildLorebookEntryEmbeddingText,
   buildLorebookSemanticEmbeddingsById,
@@ -66,6 +72,7 @@ import { DATA_DIR } from "../utils/data-dir.js";
 import { assertInsideDir, extensionFromImageMime, isAllowedImageBuffer } from "../utils/security.js";
 import { parseLibraryPageQuery } from "../utils/list-pagination.js";
 import { resolveLibraryCampaignFilter } from "./library-campaigns.routes.js";
+import { lorebookTextRoutes } from "./lorebook-text.routes.js";
 import AdmZip from "adm-zip";
 
 const LOREBOOK_IMAGES_DIR = join(DATA_DIR, "lorebooks", "images");
@@ -415,6 +422,9 @@ function buildTransferredEntryInput(
 export async function lorebooksRoutes(app: FastifyInstance) {
   const storage = createLorebooksStorage(app.db);
 
+  // Markdown / CSV import and export (/import-text, /:id/import-text, /:id/export-text).
+  await app.register(lorebookTextRoutes);
+
   // ── Lorebooks CRUD ──
 
   app.get("/", async (req) => {
@@ -740,6 +750,37 @@ export async function lorebooksRoutes(app: FastifyInstance) {
       }
       throw err;
     }
+  });
+
+  /** Bulk editor: field changes plus key add/remove across many entries, all or nothing. */
+  app.post<{ Params: { id: string } }>("/:id/entries/bulk-edit", async (req, reply) => {
+    const parsed = lorebookBulkEditSchema.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.issues[0]?.message ?? "Invalid request" });
+    if (!(await storage.getById(req.params.id))) return reply.status(404).send({ error: "Lorebook not found" });
+    try {
+      const result = await storage.bulkEditEntries(req.params.id, parsed.data);
+      if (result.updated > 0) await syncCharacterBookFromLorebook(app.db, req.params.id);
+      return result;
+    } catch (err) {
+      if (
+        err instanceof Error &&
+        (err.message === "One or more selected entries do not belong to this lorebook" ||
+          err.message === "folderId does not belong to this lorebook")
+      ) {
+        return reply.status(400).send({ error: err.message });
+      }
+      throw err;
+    }
+  });
+
+  /** Bulk editor: delete many entries of this lorebook in one pass. Unknown ids are ignored. */
+  app.post<{ Params: { id: string } }>("/:id/entries/bulk-delete", async (req, reply) => {
+    const parsed = lorebookBulkDeleteSchema.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.issues[0]?.message ?? "Invalid request" });
+    if (!(await storage.getById(req.params.id))) return reply.status(404).send({ error: "Lorebook not found" });
+    const result = await storage.bulkRemoveEntries(req.params.id, parsed.data.entryIds);
+    if (result.deleted > 0) await syncCharacterBookFromLorebook(app.db, req.params.id);
+    return result;
   });
 
   app.post<{ Params: { id: string } }>("/:id/entries/transfer", async (req, reply) => {
@@ -1280,10 +1321,49 @@ export async function lorebooksRoutes(app: FastifyInstance) {
     const lorebook = await storage.getById(req.params.id);
     if (!lorebook) return reply.status(404).send({ error: "Lorebook not found" });
     const entries = (await storage.listEntries(req.params.id)) as unknown as Array<{ id: string }>;
-    return listLorebookActivationStats(
+    const stats = await listLorebookActivationStats(
       app.db,
       entries.map((entry) => entry.id),
     );
+    // Backlinks: name the chats each entry fired in. Deleted chats keep a null name.
+    const chatIds = Array.from(new Set(stats.flatMap((stat) => stat.recentChats.map((chat) => chat.chatId))));
+    const chatRows =
+      chatIds.length > 0
+        ? await app.db
+            .select({ id: chatsTable.id, name: chatsTable.name, mode: chatsTable.mode })
+            .from(chatsTable)
+            .where(inArray(chatsTable.id, chatIds))
+        : [];
+    const chatById = new Map(chatRows.map((row) => [row.id, row]));
+    return stats.map((stat) => ({
+      ...stat,
+      recentChats: stat.recentChats.map((chat) => ({
+        ...chat,
+        chatName: chatById.get(chat.chatId)?.name ?? null,
+        chatMode: chatById.get(chat.chatId)?.mode ?? null,
+      })),
+    }));
+  });
+
+  // Entries that have not fired in the last N days while their lorebook did.
+  app.get<{ Params: { id: string }; Querystring: { days?: string } }>("/:id/stale-entries", async (req, reply) => {
+    const lorebook = await storage.getById(req.params.id);
+    if (!lorebook) return reply.status(404).send({ error: "Lorebook not found" });
+    const [entries, folders] = await Promise.all([
+      storage.listEntries(req.params.id) as unknown as Promise<StaleEntryInput[]>,
+      storage.listFolders(req.params.id) as unknown as Promise<LorebookFolder[]>,
+    ]);
+    const stats = await listLorebookActivationStats(
+      app.db,
+      entries.map((entry) => entry.id),
+    );
+    return findStaleEntries({
+      entries,
+      stats,
+      // A disabled parent folder gates entries in its enabled subfolders too.
+      disabledFolderIds: collectEffectivelyDisabledFolderIds(folders),
+      days: req.query.days,
+    });
   });
 
   // ── Vectorize: generate embeddings for all entries in a lorebook ──

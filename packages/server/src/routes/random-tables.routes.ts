@@ -16,6 +16,7 @@ import {
   createTableLookup,
   formatOracleLine,
   formatTableRollLine,
+  normalizeTableName,
   ORACLE_OUTCOME_TEXT,
   parseRandomTableImport,
   resolveEffectiveGameId,
@@ -49,7 +50,13 @@ const tableBody = z.object({
 
 const createSchema = z.object({ chatId: chatIdField, scope: scopeField, table: tableBody });
 const updateSchema = z.object({ chatId: chatIdField, scope: z.enum(["global", "game"]).optional(), table: tableBody });
-const importSchema = z.object({ chatId: chatIdField, scope: scopeField, data: z.unknown() });
+const importSchema = z.object({
+  chatId: chatIdField,
+  scope: scopeField,
+  data: z.unknown(),
+  /** Leave out tables whose name a visible table already has (a starter pack added twice adds nothing). */
+  skipExisting: z.boolean().default(false),
+});
 const rollSchema = z.object({ tableId: z.string().min(1), chatId: chatIdField, log: z.boolean().default(false) });
 const oracleSchema = z.object({
   likelihood: z.enum(ORACLE_LIKELIHOODS as [OracleLikelihood, ...OracleLikelihood[]]),
@@ -190,13 +197,25 @@ export async function randomTablesRoutes(app: FastifyInstance, options: { maxTab
     if (gameId === null) return reply.status(400).send({ error: "Game tables need a Game Mode chat" });
     const parsed = parseRandomTableImport(body.data.data);
     if (parsed.length === 0) return reply.status(400).send({ error: "No tables found in the file" });
+    let fresh = parsed;
+    if (body.data.skipExisting) {
+      // Visible means this scope plus the global tables a game also sees, so a game import
+      // does not shadow a global table of the same name.
+      const taken = new Set((await tables.listVisible(gameId || null)).map((table) => normalizeTableName(table.name)));
+      fresh = parsed.filter((table) => {
+        const key = normalizeTableName(table.name);
+        if (taken.has(key)) return false;
+        taken.add(key);
+        return true;
+      });
+    }
     const room = maxTables - (await tables.countInScope(gameId));
     const created = [];
-    for (const table of parsed.slice(0, Math.max(0, room))) {
+    for (const table of fresh.slice(0, Math.max(0, room))) {
       const record = await tables.create(table, gameId);
       if (record) created.push(record);
     }
-    return { created, skipped: parsed.length - created.length };
+    return { created, skipped: parsed.length - created.length, existing: parsed.length - fresh.length };
   });
 
   // ── POST /roll ── roll a table, expanding [[references]] among the visible tables

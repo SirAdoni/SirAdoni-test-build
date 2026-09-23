@@ -2,6 +2,7 @@ import { createPortal } from "react-dom";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import {
   BookOpen,
+  BookOpenText,
   ChartColumn,
   Check,
   Download,
@@ -28,7 +29,7 @@ import {
 import { showConfirmDialog, showPromptDialog } from "../../lib/app-dialogs";
 import { CHAT_FLOATING_UI_DISMISS_EVENT, isDesktopShellNavigationTarget } from "../../lib/chat-floating-ui-events";
 import { getChatDisplayName } from "../../lib/chat-display";
-import { openChatStats } from "../../lib/chat-insights";
+import { openChatStats, openReadingMode } from "../../lib/chat-insights";
 import { compareChatsByActivityDesc } from "../../lib/chat-recency";
 import { api } from "../../lib/api-client";
 import { useChatStore } from "../../stores/chat.store";
@@ -61,6 +62,8 @@ interface ChatBranchSelectorProps {
   activeChatName?: string | null;
   groupId?: string | null;
   variant?: "conversation" | "roleplay";
+  /** Show the Read button that opens reading mode (roleplay chats). */
+  showReadingMode?: boolean;
   compact?: boolean;
   className?: string;
   onOpen?: () => void;
@@ -70,6 +73,7 @@ export function ChatBranchSelector({
   activeChatId,
   activeChatName,
   groupId,
+  showReadingMode = false,
   compact = false,
   className,
   onOpen,
@@ -402,6 +406,20 @@ export function ChatBranchSelector({
                   <ChartColumn size="0.75rem" />
                   {localizeUi("chatInsights.stats.button")}
                 </button>
+                {showReadingMode ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpen(false);
+                      openReadingMode(activeChatId);
+                    }}
+                    title={localizeUi("readingMode.open")}
+                    className="col-span-3 flex items-center justify-center gap-1.5 rounded-lg bg-[var(--secondary)] px-2 py-2 text-[0.6875rem] font-medium text-[var(--foreground)] ring-1 ring-[var(--border)] transition-colors hover:bg-[var(--accent)]"
+                  >
+                    <BookOpenText size="0.75rem" />
+                    {localizeUi("readingMode.button")}
+                  </button>
+                ) : null}
               </div>
             </div>
 
