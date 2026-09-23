@@ -2365,8 +2365,9 @@ export class OpenAIProvider extends BaseLLMProvider {
       ),
       store: false, // don't persist responses on OpenAI side
     };
-    if (isOpenAIChatGPT && messages.some((message) => message.providerMetadata?.marinaraFullLoreContext === true)) {
-      body.prompt_cache_key = `me-lore-${resolveOpenAIChatGPTCacheIdentity(messages)}`;
+    const chatGptCacheIdentity = isOpenAIChatGPT ? resolveOpenAIChatGPTCacheIdentity(messages) : undefined;
+    if (chatGptCacheIdentity) {
+      body.prompt_cache_key = `me-lore-${chatGptCacheIdentity}`;
       // ChatGPT's Codex backend rejects prompt_cache_options and content
       // breakpoints. Use its supported automatic caching and stable routing key.
     }

@@ -22,6 +22,7 @@ import { BaseLLMProvider, LLMHttpError, isRateLimitError, withLlmResolvedAddress
 import { getConnectionRateLimit } from "./connection-rate-limit-registry.js";
 import { logger } from "../../lib/logger.js";
 import { withDiagnosticContext } from "../../lib/diagnostics.js";
+import { isFeatureEnabled } from "../features/feature-settings.js";
 
 export const MAX_RATE_LIMIT_RETRIES = 6;
 /** Transient transport / gateway failures get a much smaller budget than rate limits. */
@@ -128,10 +129,13 @@ function errorFields(error: unknown): { httpStatus?: number; providerCode?: stri
   };
 }
 
-/** Classify a failed attempt, or null when it must propagate. Rate limits take precedence. */
+/**
+ * Classify a failed attempt, or null when it must propagate. Rate limits take precedence. With the
+ * "Retry failed provider calls" feature off only rate limits retry, as upstream.
+ */
 function classifyRetry(error: unknown): RetryKind | null {
   if (isRateLimitError(error)) return "rate_limit";
-  if (isTransientProviderError(error)) return "transient";
+  if (isFeatureEnabled("providerRetry") && isTransientProviderError(error)) return "transient";
   return null;
 }
 
@@ -225,6 +229,14 @@ function reserveThrottleSlot(connectionId: string, context: RetryContext): Promi
     }
     throw error;
   });
+}
+
+/**
+ * Resolved-address offset for an attempt: each retry tries the next DNS address. With provider
+ * retry off every attempt uses the first address, as upstream.
+ */
+export function resolvedAddressOffsetForAttempt(attempt: number): number {
+  return isFeatureEnabled("providerRetry") ? attempt : 0;
 }
 
 /**
@@ -360,7 +372,9 @@ export class RateLimitAwareProvider extends BaseLLMProvider {
       const tracked = trackStreamedOutput(options);
       const iterator = this.attemptContext(attempt, () => this.provider.chat(messages, tracked.options));
       const next = () =>
-        this.attemptContext(attempt, () => withLlmResolvedAddressOffset(attempt, () => iterator.next()));
+        this.attemptContext(attempt, () =>
+          withLlmResolvedAddressOffset(resolvedAddressOffsetForAttempt(attempt), () => iterator.next()),
+        );
       try {
         let step = await next();
         while (!step.done) {
@@ -402,7 +416,9 @@ export class RateLimitAwareProvider extends BaseLLMProvider {
       const tracked = trackStreamedOutput(options);
       try {
         return await this.attemptContext(attempt, () =>
-          withLlmResolvedAddressOffset(attempt, () => this.provider.chatComplete(messages, tracked.options)),
+          withLlmResolvedAddressOffset(resolvedAddressOffsetForAttempt(attempt), () =>
+            this.provider.chatComplete(messages, tracked.options),
+          ),
         );
       } catch (error) {
         // Tokens already streamed through onToken / onThinking cannot be taken back: no replay.
@@ -426,7 +442,9 @@ export class RateLimitAwareProvider extends BaseLLMProvider {
       if (throttleWait) await throttleWait;
       try {
         return await this.attemptContext(attempt, () =>
-          withLlmResolvedAddressOffset(attempt, () => this.provider.embed(texts, model, signal)),
+          withLlmResolvedAddressOffset(resolvedAddressOffsetForAttempt(attempt), () =>
+            this.provider.embed(texts, model, signal),
+          ),
         );
       } catch (error) {
         const kind = this.nextRetry(error, counts, signal);

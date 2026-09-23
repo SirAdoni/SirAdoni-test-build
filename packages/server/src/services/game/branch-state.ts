@@ -7,6 +7,7 @@ import {
   type HudWidget,
   type WidgetUpdate,
 } from "@marinara-engine/shared";
+import { isGameExtendedWidgetsEnabled } from "@marinara-engine/shared";
 import type { Journal, JournalEntry } from "./journal.service.js";
 
 function normalizeListItem(value: string): string {
@@ -90,6 +91,8 @@ export function restoreBranchHudLists(
       const body = match[2] ?? "";
       const action = readWidgetParam(body, "action");
       if (action === "create" || action === "delete") {
+        // Extended HUD widgets OFF: upstream has no widget create/delete commands.
+        if (!isGameExtendedWidgetsEnabled(metadata)) continue;
         const changes: WidgetUpdate["changes"] = {
           action,
           type: readWidgetParam(body, "type") as WidgetUpdate["changes"]["type"],

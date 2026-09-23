@@ -140,6 +140,7 @@ import {
   LifeBuoy,
   SlidersHorizontal,
   TextQuote,
+  ToggleRight,
 } from "lucide-react";
 import {
   useChat,
@@ -179,6 +180,7 @@ import {
 import { CustomGenerationParametersSettings } from "./settings/CustomGenerationParametersSettings";
 import { TextSnippetsSettings } from "./settings/TextSnippetsSettings";
 import { UsageDashboardSettings } from "./settings/UsageDashboardSettings";
+import { FEATURE_SWITCHES_CONTROL_ID, FeatureSwitchesSettings } from "./settings/FeatureSwitchesSettings";
 import { TEXT_SNIPPETS_SETTINGS_CONTROL_ID, USAGE_DASHBOARD_SETTINGS_CONTROL_ID } from "../../lib/settings-targets";
 import { ExternalExtensionsSettings, PersonalExtensionsSettings } from "./settings/PersonalExtensionsSettings";
 import { usePersonalExtensionPolicy, useSetExternalExtensionsEnabled } from "../../hooks/use-personal-extensions";
@@ -289,6 +291,7 @@ type SettingsSectionId =
   | "profile-marinara"
   | "sillytavern-import"
   | "admin-access"
+  | "features"
   | "updates"
   | "support-diagnostics"
   | "usage-dashboard"
@@ -528,6 +531,23 @@ const SETTINGS_SECTIONS: readonly SettingsSectionMeta[] = [
     label: "Admin Access",
     description: "Admin authorization for privileged actions.",
     aliases: ["admin", "secret", "access", "authorization"],
+  },
+  {
+    id: "features",
+    tab: "advanced",
+    label: "Features",
+    description: "Switch off additions to restore the original Marinara behaviour.",
+    aliases: [
+      "features",
+      "switches",
+      "upstream",
+      "trash",
+      "retry",
+      "cache",
+      "usage",
+      "error reports",
+      "lorebook groups",
+    ],
   },
   {
     id: "updates",
@@ -8617,6 +8637,15 @@ function AdvancedSettings() {
             </p>
           </SearchableSettingTarget>
         </div>
+      </SettingsSection>
+
+      <SettingsSection
+        title={localizeUi("settings.sections.features.title")}
+        description={localizeUi("settings.sections.features.description")}
+        icon={<ToggleRight size="0.875rem" />}
+        {...getSettingsSectionAnchorProps("features")}
+      >
+        <FeatureSwitchesSettings anchorId={getSettingsControlAnchorId(FEATURE_SWITCHES_CONTROL_ID)} />
       </SettingsSection>
 
       <SettingsSection

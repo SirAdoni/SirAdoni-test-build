@@ -36,6 +36,7 @@ import {
   type PromptFingerprint,
 } from "../services/generation/cache-send-guard.js";
 import { queueSceneTimeline, readSceneTimeline } from "../services/game/scene-timeline.service.js";
+import { isGameAutoSceneMediaEnabled, isGameSceneTimelineEnabled } from "@marinara-engine/shared";
 import {
   resolveIsolatedPresentActorIds,
   type IsolatedPresenceCharacter,
@@ -758,6 +759,7 @@ import {
   type PromptHistoryReplayDescriptor,
 } from "../services/generation/prompt-history-replay.js";
 import { injectCommittedTrackerContext } from "../services/generation/committed-tracker-context.js";
+import { isFeatureEnabled } from "../services/features/feature-settings.js";
 import { loadPriorBeholderState } from "../services/agents/beholder-state.js";
 import {
   appendGameGmCampaignMemory,
@@ -777,6 +779,7 @@ import {
   applyTrackerLorebookContextPolicy,
   getTrackerAgentTypes,
 } from "../services/generation/tracker-agent-context.js";
+import { lorebookGroupPickRandom } from "../services/lorebook/group-pick-policy.js";
 
 type PromptHistoryReplaySourceMessage = {
   id?: string | null;
@@ -829,6 +832,8 @@ export function isPromptHistoryReplayEligible(input: {
   toolCount: number;
 }): boolean {
   return (
+    // Settings > Features "ChatGPT history replay" off: rebuild the prompt every turn, as upstream.
+    isFeatureEnabled("chatgptHistoryReplay") &&
     input.chatMode === "game" &&
     !input.usesIndividualGroupGeneration &&
     input.provider === "openai_chatgpt" &&
@@ -2923,6 +2928,7 @@ export async function generateRoutes(app: FastifyInstance) {
         const useFullLorebookContext = shouldUseFullLorebookContext(
           conn.provider,
           chatMeta.fullLorebookContext === false,
+          chatMeta.fullLorebookContext === true,
         );
         const fullConversationLoreByCharacter = new Map<string, LorebookScanResult>();
         const scopedLorebookScansByCharacterId = new Map<string, Promise<LorebookScanResult>>();
@@ -3141,6 +3147,7 @@ export async function generateRoutes(app: FastifyInstance) {
           const lorebookResult = await processLorebooks(app.db, toLorebookScanMessages(), null, {
             fullContext: useFullLorebookContext,
             chatId: input.chatId,
+            random: lorebookGroupPickRandom(),
             characterIds: withIdentityLorebookScope(targetCharacterIds),
             personaId,
             activeLorebookIds: chatActiveLorebookIds,
@@ -3924,6 +3931,7 @@ export async function generateRoutes(app: FastifyInstance) {
           const lorebookResult = await processLorebooks(app.db, toLorebookScanMessages(), null, {
             fullContext: useFullLorebookContext,
             chatId: input.chatId,
+            random: lorebookGroupPickRandom(),
             characterIds: withIdentityLorebookScope(promptCharacterIds),
             personaId,
             activeLorebookIds: chatActiveLorebookIds,
@@ -4542,6 +4550,7 @@ export async function generateRoutes(app: FastifyInstance) {
               {
                 fullContext: useFullLorebookContext,
                 chatId: input.chatId,
+                random: lorebookGroupPickRandom(),
                 characterIds: withIdentityLorebookScope(characterIds),
                 personaId,
                 activeLorebookIds: chatActiveLorebookIds,
@@ -4807,6 +4816,7 @@ export async function generateRoutes(app: FastifyInstance) {
               hasSceneModel,
               hudWidgets: gmCtx.hudWidgets,
               enableCustomWidgets: gmCtx.enableCustomWidgets,
+              enableExtendedWidgets: gmCtx.enableExtendedWidgets,
               turnNumber: gameTurnNumber,
               gameActiveState: gameActiveState as import("@marinara-engine/shared").GameActiveState,
               sessionNumber,
@@ -7407,7 +7417,10 @@ export async function generateRoutes(app: FastifyInstance) {
           // regeneration). The scene timeline is evidence-based and follows active swipes, so
           // use only its latest present roster to repair an empty/stale snapshot. Names must map
           // uniquely to a known NPC or library character; ambiguity fails closed.
-          const timeline = await readSceneTimeline(app.db, input.chatId, { allowedMessageIds });
+          // Scene timeline OFF: an empty timeline is incomplete, so presence uses the snapshot IDs.
+          const timeline = isGameSceneTimelineEnabled(chatMeta)
+            ? await readSceneTimeline(app.db, input.chatId, { allowedMessageIds })
+            : { scenes: [], remaining: 0 };
           const eligibleScenes = timeline.scenes;
           const timelineIsComplete = timeline.remaining === 0 && eligibleScenes.length > 0;
           const latestPresentNames = timelineIsComplete ? (eligibleScenes.at(-1)?.present ?? []) : [];
@@ -14620,12 +14633,13 @@ export async function generateRoutes(app: FastifyInstance) {
               );
           })
           .catch((error) => logger.warn(error, "[npc-biographer] Automatic post-turn sync failed"));
-        await queueAutomaticGameMedia(app, {
-          chatId: input.chatId,
-          messageId: lastSavedMsg.id,
-          swipeIndex: lastSavedMsg.activeSwipeIndex ?? 0,
-          headers: req.headers,
-        });
+        if (isGameAutoSceneMediaEnabled(chatMeta))
+          await queueAutomaticGameMedia(app, {
+            chatId: input.chatId,
+            messageId: lastSavedMsg.id,
+            swipeIndex: lastSavedMsg.activeSwipeIndex ?? 0,
+            headers: req.headers,
+          });
       }
       dispatchAutomaticTranslations();
 
@@ -14634,7 +14648,12 @@ export async function generateRoutes(app: FastifyInstance) {
       // still arrive without holding the chat's generation lock hostage.
       sendSseEvent(reply, { type: "done", data: "" });
       releaseActiveGeneration();
-      if (chatMode === "game" && !input.impersonate && !abortController.signal.aborted) {
+      if (
+        chatMode === "game" &&
+        !input.impersonate &&
+        !abortController.signal.aborted &&
+        isGameSceneTimelineEnabled(chatMeta)
+      ) {
         queueSceneTimeline(app.db, input.chatId, () => activeGenerations.has(input.chatId));
       }
 

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { ChatMessage } from "../base-provider.js";
+import { isFeatureEnabled } from "../../features/feature-settings.js";
 
 const FULL_LORE_METADATA_KEY = "marinaraFullLoreContext";
 const CACHE_SCOPE_NAMESPACE = "marinara-chat-cache-scope:v1:";
@@ -13,9 +14,11 @@ export function formatOpenAIChatGPTCacheSession(identity: string): string {
 /**
  * Resolve the opaque routing identity used by the ChatGPT subscription cache.
  * A caller-provided chat scope stays stable when lore changes; legacy callers
- * retain the historical full-lore hash behavior.
+ * retain the historical full-lore hash behavior. Undefined when the ChatGPT history replay
+ * feature is off: no session-id header and no prompt_cache_key, as upstream sends.
  */
 export function resolveOpenAIChatGPTCacheIdentity(messages: ChatMessage[]): string | undefined {
+  if (!isFeatureEnabled("chatgptHistoryReplay")) return undefined;
   const lore = messages.find((message) => message.providerMetadata?.[FULL_LORE_METADATA_KEY] === true);
   if (!lore) return undefined;
 

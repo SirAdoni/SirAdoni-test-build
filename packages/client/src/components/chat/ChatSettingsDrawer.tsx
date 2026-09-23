@@ -95,6 +95,11 @@ import { TranslationSection } from "../../features/chat-settings/sections/Transl
 import { CapabilityElement } from "../capabilities/CapabilityElement";
 import type { AvatarCrop } from "@marinara-engine/shared";
 import {
+  GAME_AUTO_SCENE_MEDIA_ENABLED_KEY,
+  GAME_EXTENDED_WIDGETS_ENABLED_KEY,
+  GAME_SCENE_TIMELINE_ENABLED_KEY,
+} from "@marinara-engine/shared";
+import {
   DEFAULT_GAME_DICE_POOL_AGE_TURNS as DEFAULT_DICE_POOL_AGE_TURNS,
   DEFAULT_GAME_DICE_POOL_WINDOW as DEFAULT_DICE_POOL_WINDOW,
   estimateTextTokens,
@@ -7460,6 +7465,38 @@ export function ChatSettingsDrawer({
                   </label>
                 </div>
               )}
+              {/* Per-game feature switches. A missing key is ON; OFF restores upstream behaviour. */}
+              {isGame &&
+                (
+                  [
+                    [
+                      GAME_SCENE_TIMELINE_ENABLED_KEY,
+                      "chat.settings.game.sceneTimeline",
+                      "chat.settings.game.sceneTimelineHelp",
+                    ],
+                    [
+                      GAME_EXTENDED_WIDGETS_ENABLED_KEY,
+                      "chat.settings.game.extendedWidgets",
+                      "chat.settings.game.extendedWidgetsHelp",
+                    ],
+                    [
+                      GAME_AUTO_SCENE_MEDIA_ENABLED_KEY,
+                      "chat.settings.game.autoSceneMedia",
+                      "chat.settings.game.autoSceneMediaHelp",
+                    ],
+                  ] as const
+                ).map(([key, label, help]) => (
+                  <SettingsSwitch
+                    key={key}
+                    label={localizeUi(label)}
+                    description={localizeUi(help)}
+                    checked={metadata[key] !== false}
+                    onChange={(checked) => updateMeta.mutate({ id: chat.id, [key]: checked })}
+                    labelPosition="start"
+                    className="mb-2 justify-between rounded-lg bg-[var(--secondary)] px-3 py-2.5 text-left"
+                    labelClassName="text-xs font-medium"
+                  />
+                ))}
               {availableAgents.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-[var(--border)] bg-[var(--secondary)]/35 px-4 py-5 text-center">
                   <p className="text-xs font-medium text-[var(--foreground)]">
@@ -9743,6 +9780,7 @@ export function ChatSettingsDrawer({
               onPastReasoningLimitChange={(pastReasoningLimit) =>
                 updateMeta.mutate({ id: chat.id, pastReasoningLimit })
               }
+              onCacheSendGuardChange={(cacheSendGuard) => updateMeta.mutate({ id: chat.id, cacheSendGuard })}
               onImageCaptioningChange={(patch) => updateMeta.mutate({ id: chat.id, ...patch })}
             />
           </div>

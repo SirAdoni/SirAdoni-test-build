@@ -30,6 +30,7 @@ import { cardPromptText } from "./card-text.js";
 import { wrapContent } from "./format-engine.js";
 import { advancedMemoryMarkerContent, type AdvancedMemoryPromptParts } from "./advanced-memory-prompt.js";
 import { sanitizeExampleDialoguePromptLeaf, sanitizePromptLeaf } from "./prompt-escaping.js";
+import { lorebookGroupPickRandom } from "../lorebook/group-pick-policy.js";
 
 /** World-info positions a lorebook marker can place: position 0 (before) and position 1 (after). */
 export type LorebookMarkerPosition = "before" | "after";
@@ -401,6 +402,7 @@ export async function ensureLorebookScan(ctx: MarkerContext): Promise<LorebookSc
       ctx.gameState ?? null,
       {
         chatId: ctx.chatId,
+        random: lorebookGroupPickRandom(),
         fullContext: ctx.fullLorebookContext,
         characterIds: ctx.lorebookCharacterIds ?? ctx.characterIds,
         personaId: ctx.personaId ?? null,

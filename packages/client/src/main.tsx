@@ -6,7 +6,11 @@ import { startKeepAlive } from "./lib/keep-alive";
 import { installCsrfFetchShim } from "./lib/csrf-fetch";
 import { registerPreloadErrorRecovery } from "./lib/browser-runtime";
 import { showAppUpdatePrompt } from "./lib/app-update-prompt";
-import { configureClientDiagnosticSender, installClientDiagnostics } from "./lib/client-diagnostics";
+import {
+  applyClientErrorReportsSetting,
+  configureClientDiagnosticSender,
+  setClientDiagnosticsEnabled,
+} from "./lib/client-diagnostics";
 import { api } from "./lib/api-client";
 import { initializeLocalization } from "./localization/i18n";
 import { LocalizationProvider } from "./localization/LocalizationProvider";
@@ -30,6 +34,8 @@ installCsrfFetchShim();
 // 404s after an update) instead of surfacing "Failed to fetch dynamically
 // imported module" to the user.
 registerPreloadErrorRecovery();
+// Apply the saved report switch before the sender flushes any queue left from an earlier visit.
+setClientDiagnosticsEnabled(useUIStore.getState().clientErrorReports !== false);
 void configureClientDiagnosticSender(async (record, signal) => {
   const response = await api.raw("/diagnostics/client", {
     method: "POST",
@@ -47,7 +53,12 @@ void configureClientDiagnosticSender(async (record, signal) => {
   // Discard malformed/oversized reports; retaining them would block the queue.
   return response.status === 400 || response.status === 413;
 });
-installClientDiagnostics();
+// Settings > Features "Send client error reports": when off the listeners are never installed.
+applyClientErrorReportsSetting(useUIStore.getState().clientErrorReports !== false);
+useUIStore.subscribe((state, prev) => {
+  if (state.clientErrorReports !== prev.clientErrorReports)
+    applyClientErrorReportsSetting(state.clientErrorReports !== false);
+});
 
 const queryClient = new QueryClient({
   defaultOptions: {

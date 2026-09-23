@@ -154,6 +154,7 @@ import { buildGameSpecialInstructionsPrompt } from "../../services/game/gm-promp
 
 import { injectCapabilityContexts } from "../../services/generation/capability-prompt-runtime.js";
 import { getCapabilityPromptContextPackageIds } from "../../services/capability-packages/capability-prompt-context.service.js";
+import { lorebookGroupPickRandom } from "../../services/lorebook/group-pick-policy.js";
 
 type WrapFormat = "xml" | "markdown" | "none";
 type DryRunPromptMessage = {
@@ -569,7 +570,11 @@ export async function registerDryRunRoute(app: FastifyInstance) {
     if (!baseUrl) return reply.status(400).send({ error: "No base URL configured for this connection" });
 
     const chatMeta = parseExtra(chat.metadata) as Record<string, unknown>;
-    const useFullLorebookContext = shouldUseFullLorebookContext(conn.provider, chatMeta.fullLorebookContext === false);
+    const useFullLorebookContext = shouldUseFullLorebookContext(
+      conn.provider,
+      chatMeta.fullLorebookContext === false,
+      chatMeta.fullLorebookContext === true,
+    );
     let fullLorebookContext: string | undefined;
     let dynamicFullLorebookContext: string | undefined;
     const modelAccessPolicy = resolveModelAccessPolicy({
@@ -1213,6 +1218,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
             const lorebookResult = await processLorebooks(app.db, scanMessages, null, {
               fullContext: useFullLorebookContext,
               chatId,
+              random: lorebookGroupPickRandom(),
               characterIds: withIdentityLorebookScope(promptCharacterIds),
               personaId,
               activeLorebookIds,
@@ -1658,6 +1664,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
       const lorebookResult = await processLorebooks(app.db, scanMessages, null, {
         fullContext: useFullLorebookContext,
         chatId,
+        random: lorebookGroupPickRandom(),
         characterIds: withIdentityLorebookScope(promptCharacterIds),
         personaId,
         forcedEntryIds: ownerSpatialLorebookEntryIds,

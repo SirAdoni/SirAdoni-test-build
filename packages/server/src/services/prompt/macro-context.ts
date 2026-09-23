@@ -25,6 +25,7 @@ import { createLorebooksStorage } from "../storage/lorebooks.storage.js";
 import { wrapContent } from "./format-engine.js";
 import { sanitizePromptLeaf } from "./prompt-escaping.js";
 import { logger } from "../../lib/logger.js";
+import { lorebookGroupPickRandom } from "../lorebook/group-pick-policy.js";
 
 type PersonaFields = NonNullable<MacroContext["personaFields"]>;
 
@@ -382,6 +383,7 @@ export async function buildReferencedPersonaContext(input: {
       input.includeLorebooks !== false && attachedIds.size > 0
         ? await processLorebooks(input.db, scanMessages, input.gameState, {
             chatId: input.chatId,
+            random: lorebookGroupPickRandom(),
             characterIds: [],
             personaId: id,
             activeLorebookIds: [],
@@ -474,6 +476,7 @@ export async function buildReferencedCharacterContext(input: {
       input.includeLorebooks !== false && attachedIds.size > 0
         ? await processLorebooks(input.db, scanMessages, input.gameState, {
             chatId: input.chatId,
+            random: lorebookGroupPickRandom(),
             characterIds: [id],
             activeLorebookIds: [],
             excludedLorebookIds,

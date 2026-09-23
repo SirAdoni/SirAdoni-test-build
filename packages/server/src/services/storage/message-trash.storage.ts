@@ -7,20 +7,22 @@
 // createdAt, which puts them back at their original position in the timeline.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { MESSAGE_TRASH_RETENTION_DAYS, type MessageTrashEntry } from "@marinara-engine/shared";
+import { type MessageTrashEntry } from "@marinara-engine/shared";
 import type { DB } from "../../db/connection.js";
 import { encodeShardKey, isLazyUnitTable } from "../../db/file-backed-store.js";
 import { and, desc, eq, gt, inArray, isNull, lt } from "../../db/file-query.js";
 import { chats, memoryChunks, messages, messageSwipes, messageTrash } from "../../db/schema/index.js";
 import { newId, now } from "../../utils/id-generator.js";
 import { createChatsStorage } from "./chats.storage.js";
+import { getFeatureNumber } from "../features/feature-settings.js";
 
 type MessageRow = typeof messages.$inferSelect;
 type SwipeRow = typeof messageSwipes.$inferSelect;
 type TrashRow = typeof messageTrash.$inferSelect;
 type TrashSnapshot = { message: MessageRow; swipes: SwipeRow[] };
 
-const RETENTION_MS = MESSAGE_TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+/** Retention window from Settings > Features "Message trash" days (default 30). */
+const retentionMs = () => getFeatureNumber("messageTrashDays") * 24 * 60 * 60 * 1000;
 const CHUNK = 500;
 
 function parseSnapshot(row: TrashRow): TrashSnapshot | null {
@@ -46,7 +48,7 @@ export function toMessageTrashEntry(row: TrashRow): MessageTrashEntry {
     swipeCount: snapshot?.swipes.length ?? 0,
     messageCreatedAt: row.messageCreatedAt,
     deletedAt: row.deletedAt,
-    expiresAt: new Date((Number.isNaN(deletedMs) ? Date.now() : deletedMs) + RETENTION_MS).toISOString(),
+    expiresAt: new Date((Number.isNaN(deletedMs) ? Date.now() : deletedMs) + retentionMs()).toISOString(),
   };
 }
 
@@ -70,7 +72,7 @@ export function createMessageTrashStorage(db: DB) {
   return {
     /** Drop entries older than the retention window. Returns how many were purged. */
     async purgeExpired(chatId: string, nowMs = Date.now()): Promise<number> {
-      const cutoff = new Date(nowMs - RETENTION_MS).toISOString();
+      const cutoff = new Date(nowMs - retentionMs()).toISOString();
       const expired = await db
         .select({ id: messageTrash.id })
         .from(messageTrash)
@@ -289,7 +291,7 @@ export async function sweepExpiredMessageTrash(
 ): Promise<{ purged: number; chats: number }> {
   const nowMs = options.nowMs ?? Date.now();
   const maxChats = options.maxChats ?? 25;
-  const cutoff = new Date(nowMs - RETENTION_MS).toISOString();
+  const cutoff = new Date(nowMs - retentionMs()).toISOString();
   const store = createMessageTrashStorage(db);
   const fileStore = db._fileStore;
   const resident = fileStore.getResidentChatUnits();

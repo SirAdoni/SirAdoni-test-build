@@ -16,6 +16,7 @@ import {
   type MacroContext,
   type SessionSummary,
 } from "@marinara-engine/shared";
+import { isGameExtendedWidgetsEnabled } from "@marinara-engine/shared";
 import { buildGmSystemPromptParts, type GmPromptContext } from "../game/gm-prompts.js";
 import { listPartySprites } from "../game/sprite.service.js";
 import { generatePerceptionHints, formatPerceptionHints, type PerceptionContext } from "../game/perception.service.js";
@@ -798,6 +799,7 @@ export async function injectGameGmPromptRuntime(args: {
       args.chatMetadata.enableCustomWidgets !== false &&
       (args.chatMetadata.gameSetupConfig as { enableCustomWidgets?: boolean } | undefined)?.enableCustomWidgets !==
         false,
+    enableExtendedWidgets: isGameExtendedWidgetsEnabled(args.chatMetadata),
     hudWidgets: Array.isArray(args.chatMetadata.gameWidgetState)
       ? (args.chatMetadata.gameWidgetState as any[])
       : Array.isArray(gameBlueprint?.hudWidgets)

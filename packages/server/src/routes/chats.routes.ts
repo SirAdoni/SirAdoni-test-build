@@ -201,6 +201,8 @@ import {
   isBackgroundAutonomousCandidate,
   hasRoleplayDmThreadMarkers,
 } from "../services/conversation/autonomous-candidates.js";
+import { lorebookGroupPickRandom } from "../services/lorebook/group-pick-policy.js";
+import { isFeatureEnabled } from "../services/features/feature-settings.js";
 
 type TrackerWrapFormat = "xml" | "markdown" | "none";
 type EntryStateOverrides = Record<string, { ephemeral?: number | null; enabled?: boolean }>;
@@ -2479,8 +2481,10 @@ export async function chatsRoutes(app: FastifyInstance) {
   });
 
   // Game turns carry state snapshots a restore cannot bring back, and Game mode has no Trash
-  // view, so its deletes stay permanent as before.
-  const chatUsesMessageTrash = async (chatId: string) => (await storage.getById(chatId))?.mode !== "game";
+  // view, so its deletes stay permanent as before. With Settings > Features "Message trash" off
+  // every delete is permanent, as upstream.
+  const chatUsesMessageTrash = async (chatId: string) =>
+    isFeatureEnabled("messageTrash") && (await storage.getById(chatId))?.mode !== "game";
 
   // Delete message (moves it to the chat's trash)
   app.delete<{ Params: { chatId: string; messageId: string }; Querystring: { trash?: string } }>(
@@ -3590,6 +3594,7 @@ export async function chatsRoutes(app: FastifyInstance) {
                 : null,
               {
                 chatId: req.params.id,
+                random: lorebookGroupPickRandom(),
                 characterIds: lorebookCharacterIds,
                 personaId,
                 activeLorebookIds,
@@ -3627,6 +3632,7 @@ export async function chatsRoutes(app: FastifyInstance) {
           if (!preset && chatMode === "roleplay") {
             const lorebookResult = await processLorebooks(app.db, mappedMessages, null, {
               chatId: req.params.id,
+              random: lorebookGroupPickRandom(),
               characterIds: lorebookCharacterIds,
               personaId,
               activeLorebookIds,

@@ -72,6 +72,8 @@ import {
   getWorkspaceShellSandboxStatus,
   spawnWorkspaceSandboxedShell,
 } from "../professor-mari/workspace-shell-sandbox.js";
+import { reloadFeatureSettingsIfTouched } from "../features/feature-settings.js";
+import { createAppSettingsStorage } from "../storage/app-settings.storage.js";
 
 type Row = Record<string, unknown>;
 type Table = AnyFileTable;
@@ -8409,6 +8411,8 @@ export class MariDbService {
       );
     }
     await flushDB();
+    // A Settings > Features row written here bypasses app-settings storage; refresh its cache.
+    await reloadFeatureSettingsIfTouched(plan.changes, createAppSettingsStorage(this.db));
     return journalPath;
   }
 
@@ -8512,6 +8516,7 @@ export class MariDbService {
       );
     }
     await flushDB();
+    await reloadFeatureSettingsIfTouched(changes, createAppSettingsStorage(this.db));
   }
 
   private async writeJournal(operationId: string, plan: Plan): Promise<string> {
