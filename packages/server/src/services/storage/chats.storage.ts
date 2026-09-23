@@ -64,6 +64,11 @@ import type { ConversationStatusOverride } from "@marinara-engine/shared";
 import { MESSAGE_MARK_EXTRA_KEYS } from "@marinara-engine/shared";
 import { resolveConversationTimeZone } from "../conversation/timezone.js";
 import { logger } from "../../lib/logger.js";
+import {
+  compactLorebookScanInExtra,
+  lorebookScanHasContent,
+  serializedExtraMayHoldFullLorebookScan,
+} from "../lorebook/lorebook-scan-compaction.js";
 import { galleryFileHasReferences, unlinkGalleryFileIfUnreferenced } from "../image/gallery-file-lifecycle.js";
 import { deletePrivateNotebookRowsForChat } from "../private-notebook.service.js";
 
@@ -713,6 +718,47 @@ export function createChatsStorage(db: DB) {
   const readMessage = async (id: string) => (await db.select().from(messages).where(eq(messages.id, id)))[0] ?? null;
   const readSwipes = (id: string) =>
     db.select().from(messageSwipes).where(eq(messageSwipes.messageId, id)).orderBy(messageSwipes.index);
+
+  /** Swipes store the lorebook scan without entry text; only the newest message row keeps it (see lorebook-scan-compaction). */
+  const swipeExtraPatch = (partial: Record<string, unknown>) => compactLorebookScanInExtra(partial) ?? partial;
+
+  /**
+   * After a new scan is saved on `keepMessageId`, strip entry text from every other stored scan in the chat. Runs
+   * outside the caller's queue and takes one message queue at a time, so it never nests queues. Failures only log:
+   * a scan that keeps its text is harmless and is compacted on the next generation.
+   */
+  async function compactStaleLorebookScans(chatId: string, keepMessageId: string) {
+    try {
+      const rows = await db.select({ id: messages.id, extra: messages.extra }).from(messages).where(eq(messages.chatId, chatId));
+      const ids = rows.map((row) => row.id);
+      if (ids.length === 0) return;
+      const swipeRows = await db
+        .select({ messageId: messageSwipes.messageId, extra: messageSwipes.extra })
+        .from(messageSwipes)
+        .where(inArray(messageSwipes.messageId, ids));
+      const targets = new Set<string>();
+      for (const row of rows)
+        if (row.id !== keepMessageId && serializedExtraMayHoldFullLorebookScan(row.extra)) targets.add(row.id);
+      for (const row of swipeRows) if (serializedExtraMayHoldFullLorebookScan(row.extra)) targets.add(row.messageId);
+      for (const messageId of targets) {
+        await withPatchQueue(messageExtraPatchQueues, messageId, async () => {
+          if (messageId !== keepMessageId) {
+            const message = await readMessage(messageId);
+            const compacted = message ? compactLorebookScanInExtra(parseExtraRecord(message.extra)) : null;
+            if (compacted)
+              await db.update(messages).set({ extra: JSON.stringify(compacted) }).where(eq(messages.id, messageId));
+          }
+          for (const swipe of await readSwipes(messageId)) {
+            const compacted = compactLorebookScanInExtra(parseExtraRecord(swipe.extra));
+            if (compacted)
+              await db.update(messageSwipes).set({ extra: JSON.stringify(compacted) }).where(eq(messageSwipes.id, swipe.id));
+          }
+        });
+      }
+    } catch (error) {
+      logger.warn(error, "[chats] Could not compact older lorebook scans for chat %s", chatId);
+    }
+  }
   const receipts = (extra: unknown) =>
     getRoleplayCommandActivity(parseExtraRecord(extra)).flatMap((activity) => {
       const receipt = readRoleplayInterruption(activity.interruption);
@@ -777,7 +823,7 @@ export function createChatsStorage(db: DB) {
     if (!swipe) throw new RoleplayInterruptionConflictError("The response swipe no longer exists.");
     await db
       .update(messageSwipes)
-      .set({ extra: JSON.stringify({ ...parseExtraRecord(swipe.extra), ...extra }) })
+      .set({ extra: JSON.stringify({ ...parseExtraRecord(swipe.extra), ...swipeExtraPatch(extra) }) })
       .where(eq(messageSwipes.id, swipe.id));
     if (owner.activeSwipeIndex === swipeIndex)
       await db
@@ -2073,7 +2119,7 @@ export function createChatsStorage(db: DB) {
       target: { id: string; activeSwipeIndex: number; content: string } | null;
       signal?: AbortSignal;
     }) {
-      return withInterruptionQueue(
+      const committed = await withInterruptionQueue(
         [args.messageId],
         async (locked) => {
           const owner = await readMessage(args.messageId);
@@ -2141,6 +2187,9 @@ export function createChatsStorage(db: DB) {
         },
         args.target ? [args.target.id] : [],
       );
+      if (committed.message && lorebookScanHasContent(args.extraUpdate.lorebookScan))
+        await compactStaleLorebookScans(committed.message.chatId, committed.message.id);
+      return committed;
     },
 
     async restoreRoleplayInterruption(
@@ -2331,7 +2380,7 @@ export function createChatsStorage(db: DB) {
 
     /** Merge partial data into a message's extra JSON field. */
     async updateMessageExtra(id: string, partial: Record<string, unknown>) {
-      return withPatchQueue(messageExtraPatchQueues, id, async () => {
+      const updated = await withPatchQueue(messageExtraPatchQueues, id, async () => {
         const msg = await this.getMessage(id);
         if (!msg) return null;
         const existing = parseExtraRecord(msg.extra);
@@ -2347,17 +2396,19 @@ export function createChatsStorage(db: DB) {
           const swipeExtra = parseExtraRecord(activeSwipe.extra);
           await db
             .update(messageSwipes)
-            .set({ extra: JSON.stringify({ ...swipeExtra, ...partial }) })
+            .set({ extra: JSON.stringify({ ...swipeExtra, ...swipeExtraPatch(partial) }) })
             .where(and(eq(messageSwipes.messageId, id), eq(messageSwipes.id, activeSwipe.id)));
         }
 
         return this.getMessage(id);
       });
+      if (updated && lorebookScanHasContent(partial.lorebookScan)) await compactStaleLorebookScans(updated.chatId, id);
+      return updated;
     },
 
     /** Merge partial data into a specific swipe and mirror it to the message only if that swipe is active. */
     async updateMessageExtraForSwipe(id: string, swipeIndex: number, partial: Record<string, unknown>) {
-      return withPatchQueue(messageExtraPatchQueues, id, async () => {
+      const updated = await withPatchQueue(messageExtraPatchQueues, id, async () => {
         const msg = await this.getMessage(id);
         if (!msg) return null;
         const swipes = await this.getSwipes(id);
@@ -2367,7 +2418,7 @@ export function createChatsStorage(db: DB) {
         const swipeExtra = parseExtraRecord(targetSwipe.extra);
         await db
           .update(messageSwipes)
-          .set({ extra: JSON.stringify({ ...swipeExtra, ...partial }) })
+          .set({ extra: JSON.stringify({ ...swipeExtra, ...swipeExtraPatch(partial) }) })
           .where(and(eq(messageSwipes.messageId, id), eq(messageSwipes.id, targetSwipe.id)));
 
         if (msg.activeSwipeIndex === swipeIndex) {
@@ -2380,8 +2431,9 @@ export function createChatsStorage(db: DB) {
 
         return this.getMessage(id);
       });
+      if (updated && lorebookScanHasContent(partial.lorebookScan)) await compactStaleLorebookScans(updated.chatId, id);
+      return updated;
     },
-
     /** Atomically claim a marker in one swipe's extra data. */
     async claimMessageExtraForSwipe(id: string, swipeIndex: number, key: string, value: unknown) {
       return withMessageExtraPatchQueue(id, async () => {

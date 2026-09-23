@@ -162,7 +162,8 @@ function resolveScanGenerationTriggers(mode: unknown): string[] {
 
 type CachedLorebookScanEntry = {
   id: string;
-  content: string;
+  /** Absent on compacted scans (all but the newest message's row); the stored entry text is shown instead. */
+  content?: string;
   matchedKeys: string[];
   activationSources: string[];
   matchType?: "keyword" | "semantic" | "constant" | "always_loaded" | "sticky";
@@ -205,7 +206,7 @@ function normalizeCachedLorebookScan(raw: unknown): CachedLorebookScan | null {
         return [
           {
             id: candidate.id,
-            content: typeof candidate.content === "string" ? candidate.content : "",
+            ...(typeof candidate.content === "string" ? { content: candidate.content } : {}),
             matchedKeys: Array.isArray(candidate.matchedKeys)
               ? candidate.matchedKeys.filter((key): key is string => typeof key === "string")
               : [],
@@ -942,10 +943,14 @@ export async function lorebooksRoutes(app: FastifyInstance) {
       } catch {
         cachedScan = null;
       }
-      cachedScan ??= normalizeCachedLorebookScan(parseRecord(latestGeneratedMessage.extra).lorebookScan);
+      // Swipes keep a compacted scan; the message row of the newest generation also keeps the resolved entry text.
+      const messageScan = normalizeCachedLorebookScan(parseRecord(latestGeneratedMessage.extra).lorebookScan);
+      cachedScan ??= messageScan;
 
       if (cachedScan) {
-        const resolvedContentById = new Map(cachedScan.activatedEntries.map((entry) => [entry.id, entry.content]));
+        const resolvedContentById = new Map<string, string>();
+        for (const entry of [...(messageScan?.activatedEntries ?? []), ...cachedScan.activatedEntries])
+          if (entry.content !== undefined) resolvedContentById.set(entry.id, entry.content);
         const matchedKeysById = new Map(cachedScan.activatedEntries.map((entry) => [entry.id, entry.matchedKeys]));
         const matchTypeById = new Map(cachedScan.activatedEntries.map((entry) => [entry.id, entry.matchType]));
         const semanticScoreById = new Map(cachedScan.activatedEntries.map((entry) => [entry.id, entry.semanticScore]));
