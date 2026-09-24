@@ -274,6 +274,15 @@ function isEnabledFlag(value: string | undefined | null) {
   return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
 }
 
+/**
+ * An on/off environment variable that overrides a Settings > Features switch: null when unset or
+ * blank, otherwise true for 1/true/yes/on and false for anything else. Read per call.
+ */
+export function readEnvFlagOverride(envVar: string): boolean | null {
+  const raw = normalizeEnvValue(process.env[envVar]);
+  return raw === null ? null : isEnabledFlag(raw);
+}
+
 function parsePositiveIntEnv(value: string | undefined | null, fallback: number, max: number) {
   const raw = normalizeEnvValue(value);
   if (!raw || !/^\d+$/.test(raw)) return fallback;

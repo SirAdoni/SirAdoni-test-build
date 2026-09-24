@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { useChat } from "../../hooks/use-chats";
+import { useFeatureEnabled } from "../../hooks/use-feature-settings";
 import { api } from "../../lib/api-client";
 import { CHAT_CHAPTERS_OPEN_EVENT, readChatChaptersRequest } from "../../lib/chat-chapters-events";
 import { CHAT_FLOATING_UI_DISMISS_EVENT } from "../../lib/chat-floating-ui-events";
@@ -69,6 +70,9 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [view, setView] = useState<SearchPanelView>("search");
+  // Settings > Features "Message trash" off: deletes are permanent, so there is no Trash view.
+  const messageTrashEnabled = useFeatureEnabled("messageTrash");
+  const visiblePanelViews = messageTrashEnabled ? PANEL_VIEWS : PANEL_VIEWS.filter(({ id }) => id !== "trash");
   const [anchor, setAnchor] = useState<ChatToolbarFloatingPanelAnchor>(null);
   const panelId = useId();
   const titleId = useId();
@@ -239,7 +243,7 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
               aria-label={localizeUi("ui.chat.messagemarks.panelViews")}
               className="flex shrink-0 gap-1 overflow-x-auto border-b border-[var(--border)] px-3 py-1.5 [scrollbar-width:none] max-md:gap-0.5 max-md:px-2"
             >
-              {PANEL_VIEWS.map(({ id, icon: Icon, labelKey }) => (
+              {visiblePanelViews.map(({ id, icon: Icon, labelKey }) => (
                 <button
                   key={id}
                   type="button"
@@ -290,7 +294,7 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
             <div
               className={cn("min-h-0 flex-1 overflow-y-auto", view === "search" && "border-t border-[var(--border)]")}
             >
-              {view === "trash" ? (
+              {view === "trash" && messageTrashEnabled ? (
                 <ChatTrashList chatId={chatId} enabled={open} />
               ) : view === "chapters" ? (
                 <ChatChaptersList chatId={chatId} enabled={open} onJump={jumpToChapter} />

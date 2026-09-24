@@ -1,3 +1,5 @@
+import { isFeatureEnabled } from "../features/feature-settings.js";
+
 export interface PromptCacheLayoutMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
@@ -18,6 +20,8 @@ export interface FullLorebookContextParts {
  * trade that optimization for clearer conversational continuity.
  */
 export function keepGameDialogueAdjacent<T extends PromptCacheLayoutMessage>(input: readonly T[]): T[] {
+  // Settings > Features "Cache-friendly prompt layout" off: keep the assembled order, as upstream.
+  if (!isFeatureEnabled("cacheFriendlyPromptLayout")) return input.slice();
   const currentUserIndex = input.length - 1;
   const currentUser = input[currentUserIndex];
   if (currentUser?.role !== "user" || currentUser.contextKind !== "history") return input.slice();
@@ -115,11 +119,18 @@ export function supportsFullLorebookContext(provider: string | null | undefined)
   return provider === "openai_chatgpt" || provider === "claude_subscription";
 }
 
+/**
+ * Full-lore layout is the default on subscription providers. With the "Cache-friendly prompt layout"
+ * feature off it is no longer the default: only a chat that explicitly turned it on keeps it, and every
+ * other chat gets the keyword lore scan.
+ */
 export function shouldUseFullLorebookContext(
   provider: string | null | undefined,
   explicitlyDisabled: boolean,
+  explicitlyEnabled = false,
 ): boolean {
-  return supportsFullLorebookContext(provider) && !explicitlyDisabled;
+  if (!supportsFullLorebookContext(provider) || explicitlyDisabled) return false;
+  return explicitlyEnabled || isFeatureEnabled("cacheFriendlyPromptLayout");
 }
 
 /**
@@ -128,6 +139,7 @@ export function shouldUseFullLorebookContext(
  * and runtime agent sections retain their existing placement.
  */
 export function normalizePromptCacheLayout<T extends PromptCacheLayoutMessage>(messages: readonly T[]): T[] {
+  if (!isFeatureEnabled("cacheFriendlyPromptLayout")) return messages.map((message) => ({ ...message })) as T[];
   const next = messages.map((message) => ({ ...message })) as T[];
   const hasPromptMacroSyntax = (value: string) => /\{\{[^{}]+\}\}/u.test(value);
   const loreIndex = next.findIndex((message) => message.providerMetadata?.marinaraFullLoreContext === true);

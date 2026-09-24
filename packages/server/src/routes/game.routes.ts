@@ -18,6 +18,8 @@ import {
 import { buildGameContactBook } from "../services/game/game-contact-book.js";
 import { ensureContinuityHolderReferences } from "../services/game/continuity-holder-snapshot.js";
 import { queueSceneTimeline, readSceneTimeline, sceneTimelineRecap } from "../services/game/scene-timeline.service.js";
+import { isGameSceneTimelineEnabled } from "@marinara-engine/shared";
+import { snapshotPresenceTimeline } from "../services/game/game-feature-switches.js";
 import { readGameContinuityState } from "../services/game/continuity-state.js";
 import { readGameContinuityPromptContext } from "../services/game/continuity-context.js";
 import { selectContinuityRecordsForAudience } from "../services/game/continuity-knowledge.js";
@@ -528,6 +530,7 @@ import {
   readPreferredCharacterReferenceImage,
   readPreferredPersonaReferenceImage,
 } from "./generate/illustrator-references.js";
+import { lorebookGroupPickRandom } from "../services/lorebook/group-pick-policy.js";
 
 // ──────────────────────────────────────────────
 // Helpers
@@ -7770,6 +7773,8 @@ export async function gameRoutes(app: FastifyInstance) {
   );
   app.post<{ Params: { chatId: string } }>("/:chatId/scene-timeline/sync", async (req) => {
     await readSceneTimeline(app.db, req.params.chatId);
+    const timelineChat = await createChatsStorage(app.db).getById(req.params.chatId);
+    if (!isGameSceneTimelineEnabled(parseMeta(timelineChat?.metadata))) return { queued: false };
     queueSceneTimeline(
       app.db,
       req.params.chatId,
@@ -8742,6 +8747,7 @@ export async function gameRoutes(app: FastifyInstance) {
       const setupLorebookScopeExclusions = resolveLorebookScopeExclusions("game", meta);
       const lorebookResult = await processLorebooks(app.db, [], null, {
         chatId,
+        random: lorebookGroupPickRandom(),
         characterIds: setupConfig.partyCharacterIds,
         personaId: setupPersonaId,
         activeLorebookIds: setupConfig.activeLorebookIds,
@@ -9582,7 +9588,7 @@ export async function gameRoutes(app: FastifyInstance) {
         const continuityPromptContext = await readSessionContinuityPromptContext(app.db, chatId, messages);
         const journalRecap =
           buildStructuredRecap((meta.gameJournal as Journal | null) ?? createJournal(), sessionNumber) +
-          (await sceneTimelineRecap(app.db, chatId));
+          (isGameSceneTimelineEnabled(meta) ? await sceneTimelineRecap(app.db, chatId) : "");
 
         const gameStates = createGameStateStorage(app.db);
         const latestState = await gameStates.getLatest(chatId);
@@ -13621,6 +13627,7 @@ export async function gameRoutes(app: FastifyInstance) {
         const loreScopeExclusions = resolveLorebookScopeExclusions("game", meta);
         const lorebookResult = await processLorebooks(app.db, [], null, {
           chatId: req.params.chatId,
+          random: lorebookGroupPickRandom(),
           characterIds: loreCharacterIds,
           personaId: lorePersonaId,
           excludedLorebookIds: loreScopeExclusions.excludedLorebookIds,
@@ -14203,7 +14210,15 @@ export async function gameRoutes(app: FastifyInstance) {
       return { raw: "" };
     }
 
-    const timeline = await readSceneTimeline(app.db, input.chatId).catch(() => null);
+    const timeline = isGameSceneTimelineEnabled(meta)
+      ? await readSceneTimeline(app.db, input.chatId).catch(() => null)
+      : snapshotPresenceTimeline(
+          parseJsonField<unknown[]>(
+            (await createGameStateStorage(app.db).getLatest(input.chatId))?.presentCharacters,
+            [],
+          ),
+          partyIdNamePairs,
+        );
     const presentNames = selectPresentPartySpeakers(
       timeline,
       partyCards.map((partyCard) => partyCard.name),
@@ -15524,6 +15539,7 @@ export async function gameRoutes(app: FastifyInstance) {
           if (!prompt.trim()) throw new Error("NPC Biographer has no prompt configured");
           const profileLore = await processLorebooks(app.db, recentMessages, null, {
             chatId: input.chatId,
+            random: lorebookGroupPickRandom(),
             characterIds: [...protectedCharacterIds],
             personaId: chat.personaId,
             activeLorebookIds: Array.isArray(meta.activeLorebookIds)
@@ -19047,6 +19063,7 @@ export async function gameRoutes(app: FastifyInstance) {
         const visualMessages = (await chats.listMessages(input.chatId)).slice(-20);
         const visualLore = await processLorebooks(app.db, visualMessages, null, {
           chatId: input.chatId,
+          random: lorebookGroupPickRandom(),
           activeLorebookIds: Array.isArray(latestMeta.activeLorebookIds)
             ? latestMeta.activeLorebookIds.filter((id): id is string => typeof id === "string")
             : [],

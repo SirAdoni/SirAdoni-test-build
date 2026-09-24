@@ -4,6 +4,9 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Game Mode list widgets keep every entry you or the GM add (up to 100); they used to keep only 5, so adding a long roster such as eighteen expected arrivals silently kept the last five. Long lists scroll inside the widget, and a toast appears if a list limited on purpose has to drop entries.
+- Added a **Features** section (Settings > Advanced) where each addition this build makes over upstream Marinara can be switched off. Every switch starts on, so nothing changes until you turn one off; off restores the upstream behaviour. The app-wide switches cover ChatGPT history replay (with its session header and cache key), the cache-friendly prompt layout and full-lore default, stable lorebook group picks, retries of failed provider calls, the hourly cap on background model calls (with its number), Message Trash (with its days), usage and lorebook activation stats, and client error reports. `LOREBOOK_STABLE_GROUP_WINNERS`, `PROVIDER_RETRY_TRANSIENT_ERRORS` and `MARINARA_BACKGROUND_CALLS_PER_HOUR` still win when set. See docs/configuration/features.md.
+- Added per-game switches in chat settings (Game mode, Agents): **Scene timeline**, **Extended HUD widgets** and **Automatic scene media**. All start on, which is today's behaviour; turning one off restores upstream's: no scene review call or scene recap index (presence comes from the tracker), upstream widget types only with extended widgets hidden rather than deleted, or no automatic scene media. New sessions keep the game's choice. Chat settings > Advanced Parameters now also shows the existing **Warn before a low-cache send** setting and its threshold (on, 80% by default). See docs/configuration/features.md.
 - Added an in-world calendar for Game mode (Tools tab > Calendar, or **In-world calendar** in the command palette): your own months, weekdays, era, leap years and moons, a month view, and dated events and deadlines with an upcoming list. It reads and moves the same game clock as the Day editor instead of keeping a second date, the GM sees the calendar date and upcoming events, and a GM calendar widget also lists them. Games without a calendar are unchanged.
 - Server logs are easier to follow and much quieter. Each failure now produces one error line with one reference instead of two or three, wrapped errors keep the reference of their cause, and cause chains, AggregateError members and system error details (errno, syscall, exit code) are kept. Cancellations log at info and client mistakes at warn, never at error. Every line carries a `bootId`; request ids are UUIDs, are returned in the `x-request-id` response header, and stay on every line of a request, including routes with a request body. Each request ends with one `request.end` line, slow requests log `request.slow`, and client disconnects log `request.aborted`. Startup is timed phase by phase, names the phase that failed, warns when Fastify boots before registration finishes, checks that the running build matches its sources, and ends with one `startup.ready` summary that `/api/health` also reports. Shutdown times each service. Memory pressure, event-loop stalls and host freezes log once per episode with worker gauges and a recovery line. Repeating warnings are rate-limited with a count of what was suppressed. Prompt debug output now goes only to `logs/prompt-debug/` and never into the main log files, and debug level no longer unredacts prompts. The build now fails if compiled output is missing for a source module. Contributors: see [docs/development/logging.md](docs/development/logging.md).
 - Lorebooks panel: selection mode has Enable and Disable for the selected lorebooks, with Undo on the notice, and while a chat is open a small dot marks each lorebook that feeds that chat.
@@ -144,6 +147,38 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Tucked Game Mode status and widget panels preserve their edge anchor while revealing, including during resize and value-change updates.
 - Custom HUD widget bookmarks show their widget icon and can be moved along the selected edge while layout editing is active.
 
+- RPG pool names can be cleared and typed with spaces without resetting to HP or MP while editing (#6566).
+- Chat and game dialogs stay open when a drag ends on their backdrop, and overlapping pointers cannot combine into an accidental dismissal (#6576, #6577).
+- Browser notifications use the app's service worker when available and alert again for each completed reply in the same chat (#6571).
+- Browser checks wait for the settings search to finish focusing its result and capture the visible Advanced Memory inspector without scrolling its full container (#6578, #6579).
+- In Individual group chats, characters can hand the next reply to another available character with an @mention. Conversation and Roleplay reuse the current turn queue, with one reply per character to prevent loops; swipes and continuations do not start handoffs (#6567).
+
+- Roleplay Personal Notes and command instructions survive Advanced Memory context cutoffs, including when regenerating a reply (#6583).
+
+- Each Decision connection has a **Time limit** (0.5 to 30 seconds, 1.5 by default). A hosted provider that is sometimes slower than 1.5 seconds made decisions look randomly broken, with no way to allow for it. **Test** now waits longer and shows how long the answer took next to the limit, and says when an answer would arrive too late during chats (#6580).
+
+- Lorebook entries can be activated by your Decision model. In an entry's new **Decision** field, **Require** makes the entry activate only when a statement about the recent chat is also true (so passing mentions stay out), and **Trigger** lets the statement activate the entry without its keywords. Statements are asked only when the entry could otherwise activate, answered once per turn, and read as no without a Decision model. Imports and exports keep the setting (#6570).
+
+- The Decision Models guide now says exactly what a decision model reads: only the statement and the recent chat messages. It never sees the preset, character cards, persona description, lorebook entries or anything inserted **@ Depth**, and decision statements read the last 5 messages.
+
+- The browser regression checks on pull requests run in more shards (ten for desktop Chromium and mobile WebKit, eight for mobile Chromium, instead of four each). That is expected to bring them from about 30 minutes to under 20, well clear of the 30-minute limit that a slow run could previously hit (#6573).
+
+- Agent history lookups no longer compare every loaded agent run with every loaded message, preventing long server stalls as more chats are opened (#6562).
+
+- Conditional prompts can ask your Decision model about the scene: `{{#if decision:"..."}}` for yes or no, and `{{#if decision_choice:"..." == "option"}}` to pick one option. They work in presets, cards, lorebooks and agent prompts, are answered once per turn (post-processing agents once per reply), and read as no when there is no Decision model or no answer. A new **Decision statements per turn** setting limits how many are asked, fields that use them warn when no Decision model is set, and imports that contain them say so (#6569).
+
+- A new **Decision Models** guide explains what a decision model is, the three ways to get one (a local model you already run, a hosted Decision connection, or the installable Open-Jev), which to pick, including on Termux, and everywhere Marinara uses it. The agent guide now covers decision statements in an agent's prompt, and the package guide has notes for agent and Game Mode Experience authors.
+
+- Open-Jev 9B can be installed as a decision model alongside 2B. It was more accurate in our tests, but it needs about 22 GB of GPU memory and takes about a second per question, so its request budget grows with the number of questions.
+
+- Installing a decision model after a dropped connection or a sleep keeps the files that already finished, checked against their published sizes and checksums, instead of downloading everything again.
+
+- Development servers, scripts and regression specs no longer stay open after finishing when they log while the log worker is still starting; this intermittently failed the image-dimension regression. The regression summary also names every file that did not pass (#6529).
+
+- Smart response order in group chats can ask your Decision model who should speak, one yes/no question per character, instead of making a full AI call each turn. Turn it on under **Decision model** in the Connections panel. It is off by default. If the decision model does not answer, Smart order makes its usual AI call (#6559).
+
+- Advanced Recall cutoff summaries report activity in the Agents menu and preserve each character POV without duplicating summary conditions (#6557).
+
 - Message voice controls share a compact audio menu. Clear cached voice removes only that message’s audio and regenerates it on the next playback, without discarding other chats’ saved voice lines (#6514).
 
 - Roleplay dice outcomes follow the selected accent. Message usage and Peek Prompt distinguish tool-turn totals from the last request's input size, so repeated tool requests are not mistaken for an oversized context (#6550).
@@ -156,6 +191,16 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 - Scene setup lets you choose its persona and Conversation characters. Characters in an active Scene pause automatic messages in the source Conversation until the Scene ends (#6542, #6541).
 - Roleplay tracker widgets tolerate saved blank rows, and Custom Tracker updates discard nameless entries after applying field locks instead of making a chat unusable (#6549).
+
+- Marinara can now download and run a purpose-built decision model for activation questions. It runs as its own local process, so it answers them whether or not you also run a local chat model. It is off by default and behind a warning, a confirmation carrying your machine's verdict, and a separate size-and-license step, because it costs about 10 GB of disk and 5 GB of GPU memory. If you already run a local chat model, that model is more accurate on roleplay questions; the decision model is faster and slightly smaller. You can also paste a decision model's repository, which is installed only when its own manifest declares a runtime this build ships.
+
+- On a machine with several NVIDIA GPUs, the decision model installer has a GPU menu for the card it runs on. Where the machine cannot run a decision model at all, the installer offers to set up a Decision connection instead.
+
+- The decision model preflight checks GPU compute capability, not just whether an NVIDIA card is present. Pascal cards and older cannot run the runtime whatever memory they have, and without this check the download would have been offered and then failed at load.
+
+- Activation question thresholds now start from whatever the selected decision model actually answers around, instead of always 0.5. Probabilities are not comparable between models: a general local model answers a clear scene change at 0.99 while a purpose-built decision model answers the same turn at 0.2, so one fixed number made the second kind skip every relevant turn while appearing to work. The editor seeds new questions from the selected model and offers to put its recommended value back.
+
+- Choosing a decision model that turns out to be unusable now leaves your current choice alone. A rejected selection reported the error but also silently switched the Decision model to None, which stopped every activation question until it was noticed.
 
 - Activation questions can be answered by the local model you already run, on either the main or the utility slot, with no download and nothing leaving your machine. Pick it under **Decision model**, which now lists local models alongside Decision connections and shows why an unavailable entry cannot be used. A **Thinking** setting handles models that always reason first; those gate post-processing agents by default so replies do not wait.
 

@@ -658,6 +658,14 @@ export interface ChatMetadata {
   gameNpcKnowledgeMode?: "legacy" | "isolated";
   /** Create a linked Character-library card when Game Mode confirms a named NPC. Defaults to true. */
   gameAutoCreateNpcCharacters?: boolean;
+  /** Scene timeline review, recap and timeline-based presence. Absent = on; false = upstream (snapshot presence). */
+  gameSceneTimelineEnabled?: boolean;
+  /** Extended HUD widget types and GM widget create/delete. Absent = on; false hides extended widgets. */
+  gameExtendedWidgetsEnabled?: boolean;
+  /** Automatic post-turn scene media queue. Absent = on; false = nothing queued automatically. */
+  gameAutoSceneMediaEnabled?: boolean;
+  /** Hold a send whose predicted prompt-cache hit is below the threshold. Absent = enabled at 80 percent. */
+  cacheSendGuard?: { enabled?: boolean; thresholdPercent?: number; ttlMinutes?: number };
   /** NPC identities the user removed and does not want automatically re-created. */
   gameIgnoredNpcIds?: string[];
   /** Current-session turn number when the last rare generated scene illustration was created. */

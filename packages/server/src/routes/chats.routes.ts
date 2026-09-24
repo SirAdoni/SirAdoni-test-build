@@ -7,6 +7,8 @@ import AdmZip from "adm-zip";
 import { logger } from "../lib/logger.js";
 import { cardPromptText } from "../services/prompt/card-text.js";
 import {
+  DECISION_PROMPT_QUESTION_LIMIT_SETTINGS_KEY,
+  parseDecisionPromptQuestionLimit,
   PROFESSOR_MARI_ID,
   createChatSchema,
   createMessageSchema,
@@ -88,6 +90,17 @@ import { resolveChatUserIdentity } from "../services/chat-user-identity.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createLorebooksStorage } from "../services/storage/lorebooks.storage.js";
+import {
+  cachedPromptDecisionAnswers,
+  collectTurnDecisionTexts,
+  createLorebookDecisionResolver,
+  decisionModelUsable,
+  latestTurnDecisionId,
+  planPromptDecisions,
+  promptDecisionCacheKey,
+} from "../services/decision/prompt-decisions.js";
+import { gameGmPromptDecisionTexts } from "../services/generation/game-gm-prompt-runtime.js";
+import { DECISION_SETTINGS_KEYS } from "../services/decision/decision-default.js";
 import {
   createGameStateStorage,
   parseStoredRulesetLive,
@@ -201,6 +214,8 @@ import {
   isBackgroundAutonomousCandidate,
   hasRoleplayDmThreadMarkers,
 } from "../services/conversation/autonomous-candidates.js";
+import { lorebookGroupPickRandom } from "../services/lorebook/group-pick-policy.js";
+import { isFeatureEnabled } from "../services/features/feature-settings.js";
 
 type TrackerWrapFormat = "xml" | "markdown" | "none";
 type EntryStateOverrides = Record<string, { ephemeral?: number | null; enabled?: boolean }>;
@@ -2479,8 +2494,10 @@ export async function chatsRoutes(app: FastifyInstance) {
   });
 
   // Game turns carry state snapshots a restore cannot bring back, and Game mode has no Trash
-  // view, so its deletes stay permanent as before.
-  const chatUsesMessageTrash = async (chatId: string) => (await storage.getById(chatId))?.mode !== "game";
+  // view, so its deletes stay permanent as before. With Settings > Features "Message trash" off
+  // every delete is permanent, as upstream.
+  const chatUsesMessageTrash = async (chatId: string) =>
+    isFeatureEnabled("messageTrash") && (await storage.getById(chatId))?.mode !== "game";
 
   // Delete message (moves it to the chat's trash)
   app.delete<{ Params: { chatId: string; messageId: string }; Querystring: { trash?: string } }>(
@@ -3506,6 +3523,83 @@ export async function chatsRoutes(app: FastifyInstance) {
           const activeLorebookIds = Array.isArray(chatMeta.activeLorebookIds)
             ? (chatMeta.activeLorebookIds as string[])
             : [];
+          // Decision statements (#6569): the preview shows what this turn has already
+          // answered and never asks the model; anything unanswered reads as no, and the
+          // preview says so.
+          const decisionUnanswered = new Set<string>();
+          const decisionLocalSetting = await appSettings.get(DECISION_SETTINGS_KEYS.localDefault);
+          const decisionConnectionId = (await connections.getDefaultForDecision())?.id ?? null;
+          // The cache key uses the setting as generation does; the report says whether it can serve.
+          const decisionModelId = decisionLocalSetting ?? decisionConnectionId;
+          const decisionModelSet = decisionModelUsable(decisionLocalSetting, decisionConnectionId);
+          // Every live preview below reports the statements it had no answer for.
+          const decisionReport = () =>
+            decisionUnanswered.size > 0 ? { decisions: { unanswered: [...decisionUnanswered], decisionModelSet } } : {};
+          {
+            const texts = collectTurnDecisionTexts({
+              // The same sources generation plans from: preset sections only outside
+              // Conversation and Game, where the conversation prompt takes their place.
+              preset:
+                preset && chatMode !== "conversation" && chatMode !== "game"
+                  ? [sections, groups, choiceBlocks]
+                  : undefined,
+              ctx: promptMacroContext,
+              extra: [
+                personaDescription,
+                resolveRoleplayChatSummary(chatMode, chatMeta),
+                chatMeta.groupScenarioText,
+                ...(chatMode === "conversation"
+                  ? [
+                      typeof chatMeta.customSystemPrompt === "string" && chatMeta.customSystemPrompt.trim()
+                        ? chatMeta.customSystemPrompt
+                        : presetStringField(preset as Record<string, unknown> | null, "conversationPrompt"),
+                    ]
+                  : []),
+                // Resolved in the same macro pass as the prompt.
+                chatMeta.authorNotes,
+                ...(chatMode === "game"
+                  ? gameGmPromptDecisionTexts(
+                      chatMeta,
+                      presetStringField(preset as Record<string, unknown> | null, "gamePrompt"),
+                    )
+                  : []),
+              ],
+              lorebookEntries: (await createLorebooksStorage(app.db).listActiveEntries({
+                chatId: req.params.id,
+                characterIds: lorebookCharacterIds,
+                personaId,
+                activeLorebookIds,
+                excludedLorebookIds: lorebookScopeExclusions.excludedLorebookIds,
+                excludedSourceAgentIds: lorebookScopeExclusions.excludedSourceAgentIds,
+              })) as Array<{ content?: unknown }>,
+            });
+            if (texts.length > 0) {
+              const plan = planPromptDecisions(
+                [{ texts, ctx: promptMacroContext }],
+                parseDecisionPromptQuestionLimit(await appSettings.get(DECISION_PROMPT_QUESTION_LIMIT_SETTINGS_KEY)),
+              );
+              const latestMessageId = latestTurnDecisionId(filteredMessages);
+              promptMacroContext.decisions = {
+                ...cachedPromptDecisionAnswers(
+                  plan,
+                  promptDecisionCacheKey(req.params.id, latestMessageId, decisionModelId),
+                ),
+                unanswered: decisionUnanswered,
+              };
+            }
+          }
+          // Lorebook entries activated by a decision (#6570) read the answers this turn
+          // already has. The preview never asks, and reports the statements it had none for.
+          const lorebookDecisions = createLorebookDecisionResolver({
+            macroContext: promptMacroContext,
+            limit: Number.POSITIVE_INFINITY,
+            answer: async (plan) =>
+              cachedPromptDecisionAnswers(
+                plan,
+                promptDecisionCacheKey(req.params.id, latestTurnDecisionId(filteredMessages), decisionModelId),
+              ),
+            onUnanswered: (statement) => decisionUnanswered.add(statement),
+          });
           const entryStateOverrides = resolveEntryStateOverrides(
             chatMeta.entryStateOverrides ?? chatMeta.lorebookEntryStateOverrides,
           );
@@ -3556,6 +3650,7 @@ export async function chatsRoutes(app: FastifyInstance) {
               source: "live_preview",
               exact: false,
               generationInfo: null,
+              ...decisionReport(),
               agentNote:
                 "No saved model request was available, so this is a live best-effort preview assembled without sending.",
             };
@@ -3590,6 +3685,7 @@ export async function chatsRoutes(app: FastifyInstance) {
                 : null,
               {
                 chatId: req.params.id,
+                random: lorebookGroupPickRandom(),
                 characterIds: lorebookCharacterIds,
                 personaId,
                 activeLorebookIds,
@@ -3602,6 +3698,7 @@ export async function chatsRoutes(app: FastifyInstance) {
                 generationTriggers,
                 previewOnly: true,
                 resolveContent: resolvePromptMacros,
+                resolveDecisions: lorebookDecisions,
               },
             );
             const loreContent = [lorebookResult.worldInfoBefore, lorebookResult.worldInfoAfter]
@@ -3620,6 +3717,7 @@ export async function chatsRoutes(app: FastifyInstance) {
               source: "live_preview",
               exact: false,
               generationInfo: null,
+              ...decisionReport(),
               agentNote:
                 "No saved model request was available, so this is a live best-effort preview assembled without sending.",
             };
@@ -3627,6 +3725,7 @@ export async function chatsRoutes(app: FastifyInstance) {
           if (!preset && chatMode === "roleplay") {
             const lorebookResult = await processLorebooks(app.db, mappedMessages, null, {
               chatId: req.params.id,
+              random: lorebookGroupPickRandom(),
               characterIds: lorebookCharacterIds,
               personaId,
               activeLorebookIds,
@@ -3639,6 +3738,7 @@ export async function chatsRoutes(app: FastifyInstance) {
               generationTriggers,
               previewOnly: true,
               resolveContent: resolvePromptMacros,
+              resolveDecisions: lorebookDecisions,
             });
             let messages: Parameters<typeof toPeekPromptMessages>[0] = [...mappedMessages];
             const loreContent = [lorebookResult.worldInfoBefore, lorebookResult.worldInfoAfter]
@@ -3664,6 +3764,7 @@ export async function chatsRoutes(app: FastifyInstance) {
               source: "live_preview",
               exact: false,
               generationInfo: null,
+              ...decisionReport(),
               agentNote:
                 "No saved model request was available, so this is a live best-effort preview assembled without sending.",
             };
@@ -3686,6 +3787,8 @@ export async function chatsRoutes(app: FastifyInstance) {
             chatId: req.params.id,
             characterIds: assistantCharacterIds,
             lorebookCharacterIds,
+            decisions: promptMacroContext.decisions,
+            lorebookDecisions,
             groupCharacterIds: assistantCharacterIds,
             characterAdvancedPromptIds: resolveCharacterAdvancedPromptIds(assistantCharacterIds, chatMode, chatMeta),
             personaId,
@@ -3955,6 +4058,7 @@ export async function chatsRoutes(app: FastifyInstance) {
             layout: "next-turn",
             exact: false,
             generationInfo: null,
+            ...decisionReport(),
             agentNote:
               "No saved model request was available, so this is a live best-effort preview assembled without sending. " +
               "It uses the provider layout of a real turn (runtime context moved to the current turn); the next player message would follow the last line.",

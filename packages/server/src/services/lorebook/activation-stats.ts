@@ -15,6 +15,7 @@ import { eq, inArray } from "../../db/file-query.js";
 import { lorebookEntries, lorebookEntryActivationStats } from "../../db/schema/index.js";
 import { logger } from "../../lib/logger.js";
 import { mergeRecentChats, parseRecentChats, type LorebookEntryRecentChat } from "./activation-backlinks.js";
+import { isFeatureEnabled } from "../features/feature-settings.js";
 
 export interface LorebookEntryActivationStat {
   entryId: string;
@@ -42,12 +43,14 @@ let flushChain: Promise<void> = Promise.resolve();
 
 /**
  * Note that these entries fired once in a generation. Synchronous, allocation
- * light, and never throws; the write happens later in a batch.
+ * light, and never throws; the write happens later in a batch. Nothing is recorded when
+ * Settings > Features "Usage and activation stats" is off.
  */
 export function recordLorebookActivations(
   db: DB,
   input: { entryIds: readonly string[]; chatId?: string | null; at?: string },
 ): void {
+  if (!isFeatureEnabled("usageAndActivationStats")) return;
   try {
     const ids = new Set(input.entryIds.filter((id) => typeof id === "string" && id.length > 0));
     if (ids.size === 0) return;
@@ -96,6 +99,8 @@ export function flushLorebookActivationStats(db?: DB): Promise<void> {
     if (!target || pending.size === 0) return;
     const batch = pending;
     pending = new Map();
+    // Switched off after these were queued: drop them, so nothing is written once the switch is off.
+    if (!isFeatureEnabled("usageAndActivationStats")) return;
     try {
       await writeBatch(target, batch);
     } catch (err) {

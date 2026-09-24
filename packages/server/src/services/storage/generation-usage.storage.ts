@@ -5,6 +5,7 @@ import { and, gte, lte } from "../../db/file-query.js";
 import type { DB } from "../../db/connection.js";
 import { generationUsage } from "../../db/schema/index.js";
 import { newTimeSortableId, now } from "../../utils/id-generator.js";
+import { isFeatureEnabled } from "../features/feature-settings.js";
 
 export interface GenerationUsageInput {
   chatId: string | null;
@@ -37,8 +38,12 @@ export function ledgerInputTokens(input: GenerationUsageInput): number {
 
 export function createGenerationUsageStorage(db: DB) {
   return {
-    /** Records one completed generation. Returns null when the provider reported no tokens at all. */
+    /**
+     * Records one completed generation. Returns null when the provider reported no tokens at all, or
+     * when Settings > Features "Usage and activation stats" is off (nothing is written, as upstream).
+     */
     async record(input: GenerationUsageInput, createdAt: string = now()): Promise<GenerationUsageRow | null> {
+      if (!isFeatureEnabled("usageAndActivationStats")) return null;
       const inputTokens = ledgerInputTokens(input);
       const outputTokens = tokenCount(input.outputTokens);
       if (inputTokens === 0 && outputTokens === 0) return null;

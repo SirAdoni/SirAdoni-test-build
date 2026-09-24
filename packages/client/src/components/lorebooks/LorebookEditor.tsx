@@ -118,6 +118,7 @@ import { useEditorLeaveSave } from "../../hooks/use-editor-leave-save";
 import { leaveWithoutSaving } from "../../lib/editor-leave";
 import { hasPendingLorebookEntryFocus, takePendingLorebookEntryFocus } from "../../lib/lorebook-entry-focus";
 import { Modal } from "../ui/Modal";
+import { useFeatureEnabled } from "../../hooks/use-feature-settings";
 
 // ──────────────────────────────────────────────
 // Folder collapse state lives in localStorage — purely a UI preference, not
@@ -570,7 +571,9 @@ export function LorebookEditor() {
   }, [keywordPreviewText]);
   // Full scanner test result; while shown, row highlights follow it instead of the instant preview.
   const [scanTestMatches, setScanTestMatches] = useState<Map<string, LorebookScanPreviewMatch> | null>(null);
-  const { data: activationStats } = useLorebookActivationStats(lorebookId);
+  // Settings > Features "Usage and activation stats" off: nothing is recorded, so no stats view.
+  const activationStatsEnabled = useFeatureEnabled("usageAndActivationStats");
+  const { data: activationStats } = useLorebookActivationStats(activationStatsEnabled ? lorebookId : null);
   const activationStatsById = useMemo(
     () => new Map((activationStats ?? []).map((stat) => [stat.entryId, stat])),
     [activationStats],

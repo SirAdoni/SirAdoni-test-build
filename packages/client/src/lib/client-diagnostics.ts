@@ -11,6 +11,8 @@ let storageUnavailable = false;
 let diagnosticSender: ((record: ClientDiagnosticRecord, signal: AbortSignal) => Promise<boolean>) | null = null;
 let flushPromise: Promise<void> | null = null;
 let installed = false;
+/** Settings > Features "Send client error reports". Off: nothing is queued or sent. */
+let reportsEnabled = true;
 
 export type ClientDiagnosticKind = "error" | "unhandledrejection" | "react" | "network";
 
@@ -142,6 +144,7 @@ function enqueue(record: ClientDiagnosticRecord) {
 }
 
 async function flushQueue() {
+  if (!reportsEnabled) return;
   if (flushPromise) return flushPromise;
   flushPromise = (async () => {
     if (typeof navigator !== "undefined" && navigator.onLine === false) return;
@@ -174,8 +177,12 @@ async function flushQueue() {
   return flushPromise;
 }
 
+export function setClientDiagnosticsEnabled(enabled: boolean) {
+  reportsEnabled = enabled;
+}
+
 export function reportClientDiagnostic(input: ClientDiagnosticInput): Promise<void> {
-  if (typeof window === "undefined") return Promise.resolve();
+  if (typeof window === "undefined" || !reportsEnabled) return Promise.resolve();
   const record = sanitizeClientDiagnostic(input);
   enqueue(record);
   return flushQueue();
@@ -212,6 +219,15 @@ export function installClientDiagnostics() {
   });
   window.addEventListener("online", () => void flushQueue());
   void flushQueue();
+}
+
+/**
+ * Settings > Features "Send client error reports". ON installs the error listeners (once) and sends
+ * reports; OFF never installs them and drops every report, so nothing is queued or sent.
+ */
+export function applyClientErrorReportsSetting(enabled: boolean) {
+  setClientDiagnosticsEnabled(enabled);
+  if (enabled) installClientDiagnostics();
 }
 
 export function reportReactRecovery(error: unknown, componentStack?: string) {

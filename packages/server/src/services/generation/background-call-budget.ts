@@ -1,4 +1,5 @@
 import { logger } from "../../lib/logger.js";
+import { getFeatureNumber, isFeatureEnabled } from "../features/feature-settings.js";
 
 /**
  * Global ceiling on automatic (unattended) model calls per rolling hour.
@@ -10,7 +11,8 @@ import { logger } from "../../lib/logger.js";
  * sent) until the oldest call ages out. Interactive requests never consume or check it.
  *
  * Configure with MARINARA_BACKGROUND_CALLS_PER_HOUR: a positive integer sets the cap, "0" or
- * "off" disables it. Anything else falls back to the default.
+ * "off" disables it. Anything else falls back to the default. When the variable is unset, the
+ * Settings > Features "Background call cap" switch and its number apply (off = no cap, as upstream).
  */
 export const DEFAULT_BACKGROUND_CALLS_PER_HOUR = 600;
 export const BACKGROUND_CALL_BUDGET_WINDOW_MS = 60 * 60 * 1000;
@@ -26,7 +28,7 @@ let limitOverride: number | null = null;
 export function backgroundCallsPerHourLimit(): number {
   if (limitOverride !== null) return limitOverride;
   const raw = process.env.MARINARA_BACKGROUND_CALLS_PER_HOUR?.trim().toLowerCase();
-  if (!raw) return DEFAULT_BACKGROUND_CALLS_PER_HOUR;
+  if (!raw) return isFeatureEnabled("backgroundCallCap") ? getFeatureNumber("backgroundCallsPerHour") : 0;
   if (raw === "0" || raw === "off" || raw === "false" || raw === "disabled") return 0;
   const parsed = Number(raw);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_BACKGROUND_CALLS_PER_HOUR;

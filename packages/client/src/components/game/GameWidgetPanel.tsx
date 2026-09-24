@@ -15,6 +15,8 @@ import {
   extendedWidgetConfigFromText,
   extendedWidgetConfigToText,
   isExtendedHudWidgetType,
+  LIST_WIDGET_MAX_LIMIT,
+  listWidgetCapacity,
   normalizeExtendedWidgetConfig,
   type HudWidget,
 } from "@marinara-engine/shared";
@@ -230,7 +232,10 @@ function buildUpdatedWidgetConfig(
       nextConfig.items = draft.items
         .split(/\r?\n/)
         .map((item) => item.trim())
-        .filter(Boolean);
+        .filter(Boolean)
+        .slice(0, LIST_WIDGET_MAX_LIMIT);
+      // The limit grows to fit the entries typed here, so the next GM add does not trim them back to 5.
+      if (nextConfig.items.length > listWidgetCapacity(nextConfig)) nextConfig.max = nextConfig.items.length;
       return nextConfig;
     case "timer":
       nextConfig.seconds = parseNumberDraft(
@@ -1306,14 +1311,15 @@ function ListWidget({ widget }: { widget: HudWidget }) {
   const rawItems = widget.config.items;
   const items = Array.isArray(rawItems) ? rawItems : [];
 
+  // Lists keep every entry now, so a long roster scrolls inside the widget instead of stretching the HUD.
   return (
-    <div className="space-y-0.5">
+    <div className="max-h-64 space-y-0.5 overflow-y-auto">
       {items.length === 0 ? (
         <p className={cn("text-[0.5625rem] italic", GAME_WIDGET_MUTED_CLASS)}>
           {localizeUi("ui.characters.characterversionhistorypanel.empty")}
         </p>
       ) : (
-        items.slice(0, 8).map((item, i) => (
+        items.map((item, i) => (
           <div key={i} className="flex items-center gap-1.5 text-[0.5625rem]">
             <span className="text-[var(--marinara-chat-chrome-panel-muted)]/55">*</span>
             <span className="text-[var(--marinara-chat-chrome-panel-text)]">

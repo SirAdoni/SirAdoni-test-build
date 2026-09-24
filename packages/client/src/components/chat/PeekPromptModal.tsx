@@ -102,6 +102,7 @@ interface PeekPromptModalProps {
     gameToolPlanning?: GameToolPlanningInfo | null;
     agentNote?: string;
     promptRequests?: PromptRequest[];
+    decisions?: { unanswered: string[]; decisionModelSet: boolean };
   };
   onClose: () => void;
 }
@@ -1174,6 +1175,28 @@ export function PeekPromptModal({ data, onClose }: PeekPromptModalProps) {
       </div>
 
       <div className={cn(NEUTRAL_PANEL_SCROLL_AREA, "min-h-0 flex-1 overflow-y-auto p-4 space-y-2")}>
+        {/* A preview never asks the Decision model, so a decision branch it could not
+            answer is shown as "no". Saying so keeps a preview from being read as final. */}
+        {data.decisions && data.decisions.unanswered.length > 0 && (
+          <div
+            role="status"
+            className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-[0.6875rem] text-[var(--foreground)]"
+          >
+            <p>
+              {localizeUi(
+                data.decisions.decisionModelSet
+                  ? "ui.chat.peekpromptmodal.decisionsUnanswered"
+                  : "ui.chat.peekpromptmodal.decisionsNoModel",
+                { count: data.decisions.unanswered.length },
+              )}
+            </p>
+            <ul className="mt-1 list-disc pl-4 text-[var(--muted-foreground)]">
+              {data.decisions.unanswered.slice(0, 12).map((statement) => (
+                <li key={statement}>{statement}</li>
+              ))}
+            </ul>
+          </div>
+        )}
         <PromptDiagnostics diagnostics={diagnostics} />
 
         {/* Generation info panel */}

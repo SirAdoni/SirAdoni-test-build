@@ -8,7 +8,10 @@ import {
   applyHudWidgetLifecycle,
   isExtendedHudWidgetType,
   leadingWidgetNumber,
+  listWidgetCapacity,
 } from "@marinara-engine/shared";
+import { toast } from "sonner";
+import { translate } from "../localization/i18n";
 import {
   mergeGameNpcsPreservingAvatars,
   normalizeNpcAvatarName,
@@ -151,7 +154,6 @@ function debouncedPersistWidgets(chatId: string, widgets: HudWidget[]) {
   }, 1000);
 }
 
-const MAX_LIST_WIDGET_ITEMS = 5;
 
 function normalizeListWidgetItem(value: string): string {
   return value
@@ -162,13 +164,13 @@ function normalizeListWidgetItem(value: string): string {
     .toLowerCase();
 }
 
-function appendListWidgetItem(items: string[], nextItem: string): string[] {
+function appendListWidgetItem(items: string[], nextItem: string, capacity: number): string[] {
   const cleaned = nextItem.trim();
   if (!cleaned) return items;
 
   const normalizedNewItem = normalizeListWidgetItem(cleaned);
   const dedupedItems = items.filter((item) => normalizeListWidgetItem(item) !== normalizedNewItem);
-  return [...dedupedItems, cleaned].slice(-MAX_LIST_WIDGET_ITEMS);
+  return [...dedupedItems, cleaned].slice(-capacity);
 }
 
 function removeListWidgetItem(items: string[], target: string): string[] {
@@ -379,6 +381,7 @@ export const useGameModeStore = create<GameModeStore>((set) => ({
   setHudWidgets: (widgets) => set({ hudWidgets: widgets }),
   applyWidgetUpdate: (update) => {
     let nextWidgets: HudWidget[] = [];
+    const listOverflow = new Map<string, { label: string; capacity: number; dropped: number }>();
     set((s) => {
       const updatedWidgets = update.changes.action
         ? applyHudWidgetLifecycle(s.hudWidgets, update)
@@ -419,12 +422,26 @@ export const useGameModeStore = create<GameModeStore>((set) => ({
 
             // Handle list/inventory add/remove
             if (w.type === "list") {
+              // [widget: id, max: N] raises (or lowers) how many entries the list keeps.
+              if (typeof changes.max === "number" && Number.isFinite(changes.max)) {
+                newConfig.max = listWidgetCapacity({ max: changes.max });
+              }
+              const capacity = listWidgetCapacity(newConfig);
               let nextItems = [...(newConfig.items ?? [])];
               if (changes.remove) {
                 nextItems = removeListWidgetItem(nextItems, changes.remove);
               }
               if (changes.add) {
-                nextItems = appendListWidgetItem(nextItems, changes.add);
+                const before = nextItems;
+                nextItems = appendListWidgetItem(nextItems, changes.add, capacity);
+                const dropped = before.filter((item) => !nextItems.includes(item)).length;
+                if (dropped > 0) {
+                  listOverflow.set(w.id, {
+                    label: w.label,
+                    capacity,
+                    dropped: (listOverflow.get(w.id)?.dropped ?? 0) + dropped,
+                  });
+                }
               }
               newConfig.items = nextItems;
             } else {
@@ -443,6 +460,17 @@ export const useGameModeStore = create<GameModeStore>((set) => ({
       nextWidgets = updatedWidgets;
       return { hudWidgets: updatedWidgets };
     });
+    // Narration can claim "added all eighteen" while a full list pushed older entries out; say so.
+    for (const [widgetId, overflow] of listOverflow) {
+      toast.warning(
+        translate("ui.game.widgets.listOverflow", {
+          label: overflow.label,
+          capacity: overflow.capacity,
+          dropped: overflow.dropped,
+        }),
+        { id: "widget-list-overflow:" + widgetId },
+      );
+    }
     return nextWidgets;
   },
   setBlueprint: (bp) => set({ blueprint: bp }),

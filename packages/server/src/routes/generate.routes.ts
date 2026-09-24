@@ -1,5 +1,23 @@
 import { DECISION_SETTINGS_KEYS, resolveDecisionBackend } from "../services/decision/decision-default.js";
 import {
+  agentShapedDecisionContext,
+  answerPromptDecisions,
+  createLorebookDecisionResolver,
+  collectDecisionTexts,
+  collectTurnDecisionTexts,
+  planPromptDecisions,
+  latestTurnDecisionId,
+  promptDecisionCacheKey,
+  replyDecisionTurnId,
+  type PromptDecisionPlan,
+} from "../services/decision/prompt-decisions.js";
+import {
+  chooseSmartResponders,
+  smartOrderQuestions,
+  smartOrderState,
+  type SmartOrderCandidate,
+} from "../services/generation/smart-group-decision.js";
+import {
   activationQuestionSettings,
   bypassActivationQuestion,
   evaluateActivationQuestions,
@@ -36,6 +54,7 @@ import {
   type PromptFingerprint,
 } from "../services/generation/cache-send-guard.js";
 import { queueSceneTimeline, readSceneTimeline } from "../services/game/scene-timeline.service.js";
+import { isGameAutoSceneMediaEnabled, isGameSceneTimelineEnabled } from "@marinara-engine/shared";
 import {
   resolveIsolatedPresentActorIds,
   type IsolatedPresenceCharacter,
@@ -51,6 +70,9 @@ import { createHash, randomUUID } from "crypto";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import {
+  DECISION_PROMPT_QUESTION_LIMIT_SETTINGS_KEY,
+  parseDecisionPromptQuestionLimit,
+  type MacroDecisionAnswers,
   generateRequestSchema,
   getChatTranslationConfig,
   normalizeAdvancedMemorySettings,
@@ -282,6 +304,7 @@ import { executeToolCalls, formatToolExecutionResultForModel } from "../services
 import { createAgentPipeline, type ResolvedAgent, type AgentInjection } from "../services/agents/agent-pipeline.js";
 import { DATA_DIR } from "../utils/data-dir.js";
 import {
+  effectiveAgentPromptTemplate,
   executeAgent,
   normalizeAgentContextSize,
   renderAgentPromptTemplate,
@@ -758,10 +781,12 @@ import {
   type PromptHistoryReplayDescriptor,
 } from "../services/generation/prompt-history-replay.js";
 import { injectCommittedTrackerContext } from "../services/generation/committed-tracker-context.js";
+import { isFeatureEnabled } from "../services/features/feature-settings.js";
 import { loadPriorBeholderState } from "../services/agents/beholder-state.js";
 import {
   appendGameGmCampaignMemory,
   DEFAULT_CAMPAIGN_MEMORY_MAX_CHARACTERS,
+  gameGmPromptDecisionTexts,
   injectGameGmPromptRuntime,
   resolveGameCharacterCardMacros,
 } from "../services/generation/game-gm-prompt-runtime.js";
@@ -777,6 +802,7 @@ import {
   applyTrackerLorebookContextPolicy,
   getTrackerAgentTypes,
 } from "../services/generation/tracker-agent-context.js";
+import { lorebookGroupPickRandom } from "../services/lorebook/group-pick-policy.js";
 
 type PromptHistoryReplaySourceMessage = {
   id?: string | null;
@@ -829,6 +855,8 @@ export function isPromptHistoryReplayEligible(input: {
   toolCount: number;
 }): boolean {
   return (
+    // Settings > Features "ChatGPT history replay" off: rebuild the prompt every turn, as upstream.
+    isFeatureEnabled("chatgptHistoryReplay") &&
     input.chatMode === "game" &&
     !input.usesIndividualGroupGeneration &&
     input.provider === "openai_chatgpt" &&
@@ -2832,6 +2860,7 @@ export async function generateRoutes(app: FastifyInstance) {
           { displayName: string; status: string; activity: string; talkativeness: number }
         >();
         let conversationResponderDelays = new Map<string, ConversationResponderDelay>();
+        let conversationMentionResponderDelays = new Map<string, ConversationResponderDelay>();
         let conversationPresenceDelayStartedAt = Date.now();
         let conversationImportantMemoryBlock: string | null = null;
         // Relocation-macro content captured for the deferred-{{#if}} decode pass
@@ -2923,6 +2952,7 @@ export async function generateRoutes(app: FastifyInstance) {
         const useFullLorebookContext = shouldUseFullLorebookContext(
           conn.provider,
           chatMeta.fullLorebookContext === false,
+          chatMeta.fullLorebookContext === true,
         );
         const fullConversationLoreByCharacter = new Map<string, LorebookScanResult>();
         const scopedLorebookScansByCharacterId = new Map<string, Promise<LorebookScanResult>>();
@@ -3014,6 +3044,148 @@ export async function generateRoutes(app: FastifyInstance) {
         });
         const conversationMacroFieldsByCharacterId = new Map<string, NonNullable<MacroContext["convoFields"]>>();
         const historyMacroProfilesById = (await resolveCharacterMacroData(app.db, allCharacterIds)).profilesById;
+
+        // Decision statements in prompt conditionals (#6569). Asked once, before anything
+        // below resolves a macro, so every place a condition is evaluated finds its answer.
+        // The backend is only resolved when a statement exists: resolving it can start a
+        // local model.
+        let promptDecisionBackend: Awaited<ReturnType<typeof resolveDecisionBackend>> | undefined;
+        const getPromptDecisionBackend = async () => {
+          if (promptDecisionBackend === undefined)
+            promptDecisionBackend = await resolveDecisionBackend(
+              {
+                getLocalDefault: () => appSettings.get(DECISION_SETTINGS_KEYS.localDefault),
+                getThinkingPreGeneration: async () =>
+                  (await appSettings.get(DECISION_SETTINGS_KEYS.thinkingPreGeneration)) === "true",
+                getDefaultConnection: () => connections.getDefaultForDecision(),
+                getConnectionWithKey: (id) => connections.getWithKey(id),
+                debugMode: requestDebug,
+              },
+              abortController.signal,
+            );
+          return promptDecisionBackend;
+        };
+        const promptDecisionLimit = parseDecisionPromptQuestionLimit(
+          await appSettings.get(DECISION_PROMPT_QUESTION_LIMIT_SETTINGS_KEY),
+        );
+        const decisionMessages = (): DecisionMessage[] =>
+          chatMessages.map((message: any) => ({
+            role: message.role,
+            name:
+              message.role === "user"
+                ? personaName
+                : (historyMacroProfilesById.get(message.characterId)?.name ?? "Narrator"),
+            content: typeof message.content === "string" ? message.content : "",
+          }));
+        /** Answer a plan against these messages; undefined when there is nothing to ask or no model. */
+        const answerDecisionPlan = async (
+          plan: PromptDecisionPlan,
+          messages: DecisionMessage[],
+          latestMessageId: string | null,
+          afterReply = false,
+        ): Promise<MacroDecisionAnswers | undefined> => {
+          if (plan.decisions.length === 0) return undefined;
+          // A Decision model that cannot start or answer never fails the turn: its
+          // statements read as no, like every other decision in this route.
+          try {
+            const backend = await getPromptDecisionBackend();
+            if (!backend) {
+              logger.debug(
+                "[decision] Chat %s has %d decision statements but no Decision model; they read as no",
+                input.chatId,
+                plan.decisions.length,
+              );
+              return undefined;
+            }
+            return await answerPromptDecisions({
+              plan,
+              backend,
+              chatId: input.chatId,
+              messages,
+              afterReply,
+              cacheKey: promptDecisionCacheKey(
+                input.chatId,
+                latestMessageId,
+                (await appSettings.get(DECISION_SETTINGS_KEYS.localDefault)) ??
+                  (await connections.getDefaultForDecision())?.id ??
+                  null,
+              ),
+            });
+          } catch (error) {
+            if (abortController.signal.aborted) throw error;
+            logger.warn(error, "[decision] Prompt decisions failed for chat %s; they read as no", input.chatId);
+            return undefined;
+          }
+        };
+        const decisionPresetParts =
+          presetId && resolvedPreset && chatMode !== "conversation" && chatMode !== "game"
+            ? await Promise.all([
+                presets.listSections(presetId),
+                presets.listGroups(presetId),
+                presets.listChoiceBlocksForPreset(presetId),
+              ])
+            : undefined;
+        // Read once here and reused by the semantic lorebook check below.
+        const decisionActiveLorebookEntries = await lorebooksStore.listActiveEntries({
+          chatId: input.chatId,
+          characterIds: withIdentityLorebookScope(promptCharacterIds),
+          personaId,
+          activeLorebookIds: chatActiveLorebookIds,
+          excludedLorebookIds: lorebookScopeExclusions.excludedLorebookIds,
+          excludedSourceAgentIds: lorebookScopeExclusions.excludedSourceAgentIds,
+        });
+        const promptDecisionTexts = collectTurnDecisionTexts({
+          preset: decisionPresetParts,
+          ctx: promptMacroContext,
+          extra: [
+            personaDescription,
+            activeChatSummary,
+            chatMeta.groupScenarioText,
+            // Resolved in the same macro pass as the prompt.
+            chatMeta.authorNotes,
+            // Conversation mode's system prompt replaces the preset sections: the chat's
+            // own prompt when it has one, otherwise the preset's.
+            ...(chatMode === "conversation"
+              ? [
+                  typeof chatMeta.customSystemPrompt === "string" && chatMeta.customSystemPrompt.trim()
+                    ? chatMeta.customSystemPrompt
+                    : resolvedPreset
+                      ? resolvePresetModePrompt(resolvedPreset as Record<string, unknown>, "conversation")
+                      : "",
+                ]
+              : []),
+            ...(chatMode === "game"
+              ? gameGmPromptDecisionTexts(
+                  chatMeta,
+                  resolvedPreset && presetId
+                    ? resolvePresetModePrompt(resolvedPreset as Record<string, unknown>, "game")
+                    : "",
+                )
+              : []),
+          ],
+          lorebookEntries: decisionActiveLorebookEntries as Array<{ content?: unknown }>,
+        });
+        // Every decision read before the reply is keyed to the newest message, id and text.
+        const preReplyDecisionTurnId = latestTurnDecisionId(chatMessages);
+        const promptDecisionPlan = planPromptDecisions(
+          [{ texts: promptDecisionTexts, ctx: promptMacroContext }],
+          promptDecisionLimit,
+        );
+        if (promptDecisionTexts.length > 0) {
+          promptMacroContext.decisions = await answerDecisionPlan(
+            promptDecisionPlan,
+            decisionMessages(),
+            preReplyDecisionTurnId,
+          );
+        }
+        // Lorebook entries activated by a decision (#6570), asked like the prompt's
+        // statements and keyed to the same turn, within what the per-turn limit has left.
+        const lorebookDecisions = createLorebookDecisionResolver({
+          macroContext: promptMacroContext,
+          limit: Math.max(0, promptDecisionLimit - promptDecisionPlan.decisions.length),
+          freeKeys: new Set(promptDecisionPlan.decisions.filter((d) => d.kind === "noul").map((d) => d.key)),
+          answer: (plan) => answerDecisionPlan(plan, decisionMessages(), preReplyDecisionTurnId),
+        });
         const resolveHistoryMessageMacros = <T extends { content: string; characterId?: string | null }>(
           messages: T[],
         ): T[] => resolvePromptMessageMacros(messages, promptMacroContext, historyMacroProfilesById);
@@ -3141,6 +3313,7 @@ export async function generateRoutes(app: FastifyInstance) {
           const lorebookResult = await processLorebooks(app.db, toLorebookScanMessages(), null, {
             fullContext: useFullLorebookContext,
             chatId: input.chatId,
+            random: lorebookGroupPickRandom(),
             characterIds: withIdentityLorebookScope(targetCharacterIds),
             personaId,
             activeLorebookIds: chatActiveLorebookIds,
@@ -3161,6 +3334,7 @@ export async function generateRoutes(app: FastifyInstance) {
             previewOnly: options.previewOnly,
             generationTriggers: lorebookGenerationTriggers,
             resolveContent: resolvePromptMacrosForLorebook,
+            resolveDecisions: lorebookDecisions,
           });
           if (useFullLorebookContext) {
             fullConversationLoreByCharacter.set([...targetCharacterIds].sort().join(","), lorebookResult);
@@ -3245,9 +3419,7 @@ export async function generateRoutes(app: FastifyInstance) {
             excludedLorebookIds: lorebookScopeExclusions.excludedLorebookIds,
             excludedSourceAgentIds: lorebookScopeExclusions.excludedSourceAgentIds,
           };
-          const activeEntries = (await lorebooksStore.listActiveEntries({
-            ...lorebookScopeFilters,
-          })) as LorebookEntry[];
+          const activeEntries = decisionActiveLorebookEntries as LorebookEntry[];
           const hasVectorizedEntries = activeEntries.some(
             (entry) => Array.isArray(entry.embedding) && entry.embedding.length > 0,
           );
@@ -3280,11 +3452,14 @@ export async function generateRoutes(app: FastifyInstance) {
         if (presetId && resolvedPreset && chatMode !== "conversation" && chatMode !== "game") {
           const preset = resolvedPreset;
           wrapFormat = (preset.wrapFormat as "xml" | "markdown" | "none") || "xml";
-          const [sections, groups, choiceBlocks] = await Promise.all([
-            presets.listSections(presetId),
-            presets.listGroups(presetId),
-            presets.listChoiceBlocksForPreset(presetId),
-          ]);
+          // Read once above, under the same condition, for decision statements.
+          const [sections, groups, choiceBlocks] =
+            decisionPresetParts ??
+            (await Promise.all([
+              presets.listSections(presetId),
+              presets.listGroups(presetId),
+              presets.listChoiceBlocksForPreset(presetId),
+            ]));
           for (const section of sections) {
             if (section.enabled !== "true" || section.isMarker !== "true" || !section.markerConfig) continue;
             try {
@@ -3376,6 +3551,8 @@ export async function generateRoutes(app: FastifyInstance) {
             impersonate: input.impersonate === true,
             preserveImpersonatePresetSections: input.impersonate === true && presetSource === "impersonate",
             deferCharacterMacros,
+            decisions: promptMacroContext.decisions,
+            lorebookDecisions,
           };
 
           const assembled = await assemblePrompt(assemblerInput);
@@ -3504,6 +3681,7 @@ export async function generateRoutes(app: FastifyInstance) {
           conversationCharacterNames = convoCharNames;
           conversationRespondingCharacterIds = new Set(presenceRuntime.respondingCharacterIds);
           conversationResponderDelays = new Map(Object.entries(presenceRuntime.responderDelays));
+          conversationMentionResponderDelays = new Map(Object.entries(presenceRuntime.mentionResponderDelays ?? {}));
           conversationPresenceDelayStartedAt = presenceRuntime.presenceDelayStartedAt;
           conversationCharacterPresenceById = new Map(
             convoCharInfo.map((character) => [
@@ -3924,6 +4102,7 @@ export async function generateRoutes(app: FastifyInstance) {
           const lorebookResult = await processLorebooks(app.db, toLorebookScanMessages(), null, {
             fullContext: useFullLorebookContext,
             chatId: input.chatId,
+            random: lorebookGroupPickRandom(),
             characterIds: withIdentityLorebookScope(promptCharacterIds),
             personaId,
             activeLorebookIds: chatActiveLorebookIds,
@@ -3942,6 +4121,7 @@ export async function generateRoutes(app: FastifyInstance) {
             entryTimingStates: (chatMeta.entryTimingStates as Record<string, LorebookEntryTimingState>) ?? undefined,
             generationTriggers: lorebookGenerationTriggers,
             resolveContent: resolvePromptMacrosForLorebook,
+            resolveDecisions: lorebookDecisions,
           });
           lorebookPromptScanResult = lorebookResult;
           lorebookScanSnapshot = toLorebookScanSnapshot(lorebookResult);
@@ -4542,6 +4722,7 @@ export async function generateRoutes(app: FastifyInstance) {
               {
                 fullContext: useFullLorebookContext,
                 chatId: input.chatId,
+                random: lorebookGroupPickRandom(),
                 characterIds: withIdentityLorebookScope(characterIds),
                 personaId,
                 activeLorebookIds: chatActiveLorebookIds,
@@ -4561,6 +4742,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   (chatMeta.entryTimingStates as Record<string, LorebookEntryTimingState>) ?? undefined,
                 generationTriggers: lorebookGenerationTriggers,
                 resolveContent: resolvePromptMacrosForLorebook,
+                resolveDecisions: lorebookDecisions,
               },
             );
             lorebookPromptScanResult = lorebookResult;
@@ -4807,6 +4989,7 @@ export async function generateRoutes(app: FastifyInstance) {
               hasSceneModel,
               hudWidgets: gmCtx.hudWidgets,
               enableCustomWidgets: gmCtx.enableCustomWidgets,
+              enableExtendedWidgets: gmCtx.enableExtendedWidgets,
               turnNumber: gameTurnNumber,
               gameActiveState: gameActiveState as import("@marinara-engine/shared").GameActiveState,
               sessionNumber,
@@ -5219,6 +5402,7 @@ export async function generateRoutes(app: FastifyInstance) {
 
         const agentContext: AgentContext = {
           sequentialExecution: chatMode === "game" && chatMeta.gameSequentialAgents === true,
+          decisions: promptMacroContext.decisions,
           chatId: input.chatId,
           chatMode,
           wrapFormat,
@@ -5386,6 +5570,7 @@ export async function generateRoutes(app: FastifyInstance) {
                       (charInfo.length === 1 ? charInfo[0]!.name : "Narrator")),
               })),
               maxStateTokens: backend.maxStateTokens,
+              defaultThreshold: backend.calibration.defaultThreshold,
               ask: backend.ask,
             });
             for (const candidate of candidates) {
@@ -6310,6 +6495,31 @@ export async function generateRoutes(app: FastifyInstance) {
           if (imagePromptInstructions) memory._imagePromptInstructions = imagePromptInstructions;
           return { ...trackerContext, memory };
         };
+        // Decision statements in agent prompt templates (#6569), planned from the agents
+        // that will actually run, with the templates they run with, once activation,
+        // cadence and named-template choices have settled. Planned together with the
+        // prompt's statements, which this turn has already answered, so only new ones are
+        // asked and the per-turn limit covers both. Post-processing agents are asked
+        // after the reply.
+        const preReplyAgentDecisionTexts = collectDecisionTexts(
+          pipelineAgents
+            .filter((agent) => agent.phase !== "post_processing")
+            .map((agent) => [effectiveAgentPromptTemplate(agent), agent.settings]),
+        );
+        if (preReplyAgentDecisionTexts.length > 0) {
+          const agentDecisions = await answerDecisionPlan(
+            planPromptDecisions(
+              [
+                { texts: promptDecisionTexts, ctx: promptMacroContext },
+                { texts: preReplyAgentDecisionTexts, ctx: agentShapedDecisionContext(promptMacroContext) },
+              ],
+              promptDecisionLimit,
+            ),
+            decisionMessages(),
+            preReplyDecisionTurnId,
+          );
+          if (agentDecisions) agentContext.decisions = agentDecisions;
+        }
         let preparedCapabilityPostContext: AgentContext | null = null;
         const pipeline = createAgentPipeline(
           pipelineAgents,
@@ -7015,16 +7225,23 @@ export async function generateRoutes(app: FastifyInstance) {
           return chatMode === "conversation" ? "another group member" : "the narrator";
         };
 
-        const getExplicitlyMentionedCharacterIds = (): string[] => {
+        const getExplicitlyMentionedCharacterIds = (assistantText?: string): string[] => {
           const latestUserText =
-            typeof input.userMessage === "string" && input.userMessage.trim()
+            assistantText ??
+            (typeof input.userMessage === "string" && input.userMessage.trim()
               ? input.userMessage
-              : String([...chatMessages].reverse().find((message: any) => message.role === "user")?.content ?? "");
+              : String([...chatMessages].reverse().find((message: any) => message.role === "user")?.content ?? ""));
           const requestedNames = new Set(
-            (input.mentionedCharacterNames ?? []).map((name: string) => normalizeTextForMatch(name)),
+            (assistantText === undefined ? (input.mentionedCharacterNames ?? []) : []).map((name: string) =>
+              normalizeTextForMatch(name),
+            ),
           );
 
-          return availableGroupCharacters
+          const candidates =
+            assistantText !== undefined && chatMode === "conversation"
+              ? charInfo.filter((character) => conversationMentionResponderDelays.has(character.id))
+              : availableGroupCharacters;
+          return candidates
             .filter((character) => {
               const names = [character.name, conversationCharacterPresenceById.get(character.id)?.displayName].filter(
                 (name): name is string => typeof name === "string" && name.trim().length > 0,
@@ -7032,7 +7249,9 @@ export async function generateRoutes(app: FastifyInstance) {
               if (names.some((name) => requestedNames.has(normalizeTextForMatch(name)))) return true;
               return names.some((name) => {
                 const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-                return new RegExp(`@${escaped}(?=$|[\\s\\p{P}\\p{S}])`, "iu").test(latestUserText);
+                return new RegExp(`(?:^|[\\s\\p{P}\\p{S}])@${escaped}(?=$|[\\s\\p{P}\\p{S}])`, "iu").test(
+                  latestUserText,
+                );
               });
             })
             .map((character) => character.id);
@@ -7082,9 +7301,91 @@ export async function generateRoutes(app: FastifyInstance) {
           return selected;
         };
 
+        const findLastSpeakerId = (): string | null =>
+          ([...chatMessages]
+            .reverse()
+            .find((message: any) => message.role === "assistant" && typeof message.characterId === "string")
+            ?.characterId as string | undefined) ?? null;
+
+        /**
+         * Smart order answered by the Decision model, when the user turned that on.
+         *
+         * Null means "ask the chat model as before": the switch is off, no decision
+         * model is chosen, it did not answer, or it is a reasoning model that would hold
+         * up the reply. The chat-model selector stays the floor, so this can only save a
+         * call, never lose a turn.
+         */
+        const selectSmartGroupRespondersByDecision = async (): Promise<string[] | null> => {
+          try {
+            if ((await appSettings.get(DECISION_SETTINGS_KEYS.smartOrder)) !== "true") return null;
+            const backend = await resolveDecisionBackend(
+              {
+                getLocalDefault: () => appSettings.get(DECISION_SETTINGS_KEYS.localDefault),
+                getThinkingPreGeneration: async () =>
+                  (await appSettings.get(DECISION_SETTINGS_KEYS.thinkingPreGeneration)) === "true",
+                getDefaultConnection: () => connections.getDefaultForDecision(),
+                getConnectionWithKey: (id) => connections.getWithKey(id),
+                debugMode: requestDebug,
+              },
+              abortController.signal,
+            );
+            // Picking a speaker sits in front of the reply, exactly like a
+            // pre-generation gate, so a reasoning model defers here on the same terms.
+            if (!backend || backend.deferPreGeneration) return null;
+            const candidates: SmartOrderCandidate[] = availableGroupCharacters.map((character) => {
+              const presence = conversationCharacterPresenceById.get(character.id);
+              return {
+                id: character.id,
+                name: presence?.displayName ?? character.name,
+                status: presence?.status,
+                activity: presence?.activity,
+                talkativeness: presence?.talkativeness ?? Math.round(character.talkativeness * 100),
+                about: character.personality || character.description || undefined,
+              };
+            });
+            const transcript = chatMessages
+              .filter((message: any) => message.role === "user" || message.role === "assistant")
+              .map((message: any) => ({
+                role: message.role as string,
+                name: resolveMessageSpeakerName(message),
+                content: stripConversationPromptTimestamps(conversationPromptHistoryContent(message, chatMode)),
+              }));
+            const answers = await backend.ask(
+              smartOrderState(transcript, candidates, backend.maxStateTokens),
+              smartOrderQuestions(candidates),
+            );
+            if (!answers) return null;
+            const chosen = chooseSmartResponders({
+              answers,
+              candidateIds: candidates.map((candidate) => candidate.id),
+              lastSpeakerId: findLastSpeakerId(),
+              threshold: backend.calibration.defaultThreshold,
+              mode: chatMode === "conversation" ? "conversation" : "roleplay",
+            });
+            if (chosen)
+              logger.debug(
+                "[group-smart] Decision model chose %s for chat %s (%s)",
+                chosen.map((id) => charInfo.find((character) => character.id === id)?.name ?? id).join(", "),
+                input.chatId,
+                candidates.map((candidate) => `${candidate.name}=${answers.get(candidate.id)?.toFixed(3)}`).join(" "),
+              );
+            return chosen;
+          } catch (error) {
+            logger.warn(
+              { err: error, chatId: input.chatId },
+              "[group-smart] Decision model failed; asking the chat model",
+            );
+            return null;
+          }
+        };
+
         const selectSmartGroupResponders = async (): Promise<string[]> => {
           const explicitMentionIds = getExplicitlyMentionedCharacterIds();
           if (explicitMentionIds.length > 0) return explicitMentionIds;
+
+          const decided = await selectSmartGroupRespondersByDecision();
+          if (abortController.signal.aborted) return [];
+          if (decided && decided.length > 0) return decided;
 
           const recentTranscript = chatMessages
             .filter((message: any) => message.role === "user" || message.role === "assistant")
@@ -7235,10 +7536,7 @@ export async function generateRoutes(app: FastifyInstance) {
         };
 
         const selectFallbackSmartGroupResponder = (): string[] => {
-          const lastAssistantCharacterId = [...chatMessages]
-            .reverse()
-            .find((message: any) => message.role === "assistant" && typeof message.characterId === "string")
-            ?.characterId as string | undefined;
+          const lastAssistantCharacterId = findLastSpeakerId();
           const fallback =
             availableGroupCharacters.find((character) => character.id !== lastAssistantCharacterId)?.id ??
             availableGroupCharacters[0]?.id ??
@@ -7407,7 +7705,10 @@ export async function generateRoutes(app: FastifyInstance) {
           // regeneration). The scene timeline is evidence-based and follows active swipes, so
           // use only its latest present roster to repair an empty/stale snapshot. Names must map
           // uniquely to a known NPC or library character; ambiguity fails closed.
-          const timeline = await readSceneTimeline(app.db, input.chatId, { allowedMessageIds });
+          // Scene timeline OFF: an empty timeline is incomplete, so presence uses the snapshot IDs.
+          const timeline = isGameSceneTimelineEnabled(chatMeta)
+            ? await readSceneTimeline(app.db, input.chatId, { allowedMessageIds })
+            : { scenes: [], remaining: 0 };
           const eligibleScenes = timeline.scenes;
           const timelineIsComplete = timeline.remaining === 0 && eligibleScenes.length > 0;
           const latestPresentNames = timelineIsComplete ? (eligibleScenes.at(-1)?.present ?? []) : [];
@@ -11178,6 +11479,8 @@ export async function generateRoutes(app: FastifyInstance) {
           // Individual group mode: generate one response per character
           sendProgress("generating");
           let runningMessages = [...finalMessages];
+          const routeCharacterMentions =
+            !input.continueMessageId && (chatMode === "conversation" || chatMode === "roleplay");
 
           if (generationGuideInstruction) {
             runningMessages.push({ role: "system", content: generationGuideInstruction });
@@ -11264,6 +11567,14 @@ export async function generateRoutes(app: FastifyInstance) {
             if (charInstruction) {
               messagesWithInstruction.push({ role: "system", content: charInstruction });
             }
+            if (routeCharacterMentions && groupTurnPromptEnabled) {
+              messagesWithInstruction.push({
+                role: "system",
+                contextKind: "injection",
+                content:
+                  "You may address another group member with @Name to invite their next reply. Each available character can reply once in this turn.",
+              });
+            }
 
             const genResult = await generateForCharacter(
               charId,
@@ -11294,6 +11605,32 @@ export async function generateRoutes(app: FastifyInstance) {
               });
             }
             collectedOocMessages.push(...genResult.oocMessages);
+
+            if (routeCharacterMentions) {
+              // Reuse this turn's queue: prioritize mentions, but never revisit a speaker.
+              const visited = new Set(respondingCharIds.slice(0, ci + 1));
+              const mentioned = getExplicitlyMentionedCharacterIds(genResult.response).filter((id) => !visited.has(id));
+              if (mentioned.length > 0) {
+                for (const id of mentioned) {
+                  const delay = conversationMentionResponderDelays.get(id);
+                  if (delay && !conversationResponderDelays.has(id)) conversationResponderDelays.set(id, delay);
+                }
+                const remaining = respondingCharIds.slice(ci + 1).filter((id) => !mentioned.includes(id!));
+                respondingCharIds.splice(ci + 1, respondingCharIds.length, ...mentioned, ...remaining);
+                const pending = respondingCharIds.slice(ci + 1);
+                sendSseEvent(reply, {
+                  type: "response_queue",
+                  data: {
+                    characterIds: pending,
+                    characters: pending.map((id, index) => ({
+                      id,
+                      name: groupResponderName(id!),
+                      order: index + 1,
+                    })),
+                  },
+                });
+              }
+            }
 
             // Add this character's response to the running context for the next character
             const inTurnMessage = {
@@ -11862,8 +12199,41 @@ export async function generateRoutes(app: FastifyInstance) {
             );
           }
 
+          // Agents that run after the reply read it as the latest message, so their
+          // decision statements are asked with it included, not with the answers taken
+          // before it existed (#6569). That is the post-processing pipeline, plus the
+          // text-rewrite agents and the Lorebook Keeper, which run outside it.
+          const postAgentDecisionTexts = collectDecisionTexts(
+            [
+              ...pipelineAgents.filter((agent) => agent.phase === "post_processing"),
+              ...activatedTextRewriteRunAgents,
+              ...(lorebookKeeperAgent ? [lorebookKeeperAgent] : []),
+            ].map((agent) => [effectiveAgentPromptTemplate(agent), agent.settings]),
+          );
+
+          const postAgentDecisions =
+            postAgentDecisionTexts.length > 0
+              ? await answerDecisionPlan(
+                  planPromptDecisions(
+                    [{ texts: postAgentDecisionTexts, ctx: agentShapedDecisionContext(promptMacroContext) }],
+                    promptDecisionLimit,
+                  ),
+                  [
+                    ...decisionMessages(),
+                    {
+                      role: "assistant",
+                      name: charInfo.length === 1 ? charInfo[0]!.name : "Narrator",
+                      content: completedResponse,
+                    },
+                  ],
+                  replyDecisionTurnId(latestAssistantMessageId, completedResponse),
+                  true,
+                )
+              : undefined;
+          const postReplyDecisionContext = postAgentDecisionTexts.length > 0 ? { decisions: postAgentDecisions } : {};
           const postAgentContext: AgentContext = {
             ...agentContext,
+            ...postReplyDecisionContext,
             mainResponse: completedResponse,
             preGenInjections: contextInjections,
             parallelResults,
@@ -11927,6 +12297,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 ...(await pipeline.postGenerate(completedResponse, {
                   preGenInjections: contextInjections,
                   parallelResults,
+                  ...postReplyDecisionContext,
                 })),
                 ...parallelResults,
               ]
@@ -11938,7 +12309,7 @@ export async function generateRoutes(app: FastifyInstance) {
             );
             const lorebookKeeperContext = historicalLorebookTarget
               ? buildHistoricalLorebookKeeperContext(agentContext, lorebookKeeperMessages, historicalLorebookTarget.id)
-              : { ...agentContext, mainResponse: completedResponse };
+              : { ...agentContext, ...postReplyDecisionContext, mainResponse: completedResponse };
             const processedMessageId = historicalLorebookTarget?.id ?? (lastSavedMsg as any)?.id ?? "";
 
             if (lorebookKeeperContext && processedMessageId) {
@@ -14047,6 +14418,7 @@ export async function generateRoutes(app: FastifyInstance) {
 
                 const editorContext: AgentContext = {
                   ...agentContext,
+                  ...postReplyDecisionContext,
                   mainResponse: currentResponseForRewrite,
                   preGenInjections:
                     textRewriteAgent.settings.includePreGenInjections === true ? contextInjections : undefined,
@@ -14620,12 +14992,13 @@ export async function generateRoutes(app: FastifyInstance) {
               );
           })
           .catch((error) => logger.warn(error, "[npc-biographer] Automatic post-turn sync failed"));
-        await queueAutomaticGameMedia(app, {
-          chatId: input.chatId,
-          messageId: lastSavedMsg.id,
-          swipeIndex: lastSavedMsg.activeSwipeIndex ?? 0,
-          headers: req.headers,
-        });
+        if (isGameAutoSceneMediaEnabled(chatMeta))
+          await queueAutomaticGameMedia(app, {
+            chatId: input.chatId,
+            messageId: lastSavedMsg.id,
+            swipeIndex: lastSavedMsg.activeSwipeIndex ?? 0,
+            headers: req.headers,
+          });
       }
       dispatchAutomaticTranslations();
 
@@ -14634,7 +15007,12 @@ export async function generateRoutes(app: FastifyInstance) {
       // still arrive without holding the chat's generation lock hostage.
       sendSseEvent(reply, { type: "done", data: "" });
       releaseActiveGeneration();
-      if (chatMode === "game" && !input.impersonate && !abortController.signal.aborted) {
+      if (
+        chatMode === "game" &&
+        !input.impersonate &&
+        !abortController.signal.aborted &&
+        isGameSceneTimelineEnabled(chatMeta)
+      ) {
         queueSceneTimeline(app.db, input.chatId, () => activeGenerations.has(input.chatId));
       }
 

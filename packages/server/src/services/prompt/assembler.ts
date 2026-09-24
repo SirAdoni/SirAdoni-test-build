@@ -15,6 +15,7 @@ import type {
   GenerationParameters,
   LorebookEntryTimingState,
   MacroContext,
+  MacroDecisionAnswers,
   ResolveMacroOptions,
 } from "@marinara-engine/shared";
 import { DEFAULT_GENERATION_PARAMS, generationParametersSchema, resolveMacros } from "@marinara-engine/shared";
@@ -32,7 +33,7 @@ import {
   type AdvancedMemoryPlacement,
   type AdvancedMemoryPromptParts,
 } from "./advanced-memory-prompt.js";
-import type { LorebookScanResult } from "../lorebook/index.js";
+import type { LorebookDecisionResolver, LorebookScanResult } from "../lorebook/index.js";
 import {
   buildReferencedCharacterContext,
   buildReferencedPersonaContext,
@@ -201,6 +202,10 @@ export interface AssemblerInput {
   preserveImpersonatePresetSections?: boolean;
   /** Preserve character-scoped macros for a later known-speaker finalization pass. */
   deferCharacterMacros?: boolean;
+  /** This turn's answers for `decision:` and `decision_choice:` conditions (#6569). */
+  decisions?: MacroDecisionAnswers;
+  /** Answers lorebook entries' decision statements for activation (#6570). */
+  lorebookDecisions?: LorebookDecisionResolver;
 }
 
 /** Output of the assembler. */
@@ -353,6 +358,9 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
       ...input.chatMessages.map((message) => message.content),
     ],
   });
+  // Answered before assembly by the route; every context derived from this one,
+  // including each character's in a group block, carries them.
+  if (input.decisions) macroCtx.decisions = input.decisions;
   const personaReferenceSources = Object.values(input.personaFields ?? {}).filter(
     (value): value is string => typeof value === "string",
   );
@@ -522,6 +530,7 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
       setLorebookEntryCounts(macroCtx, lorebookEntryCounts);
       return resolveMacrosWithVariableSnapshot(value, macroCtx, deferNameMacroOptions);
     },
+    resolveLorebookDecisions: input.lorebookDecisions,
     onLorebookScan: addActivatedLorebookCardReferences,
     groupScenarioOverrideText: input.groupScenarioOverrideText ?? null,
     includeExampleDialogueInCharacterMarker: !hasDialogueExamplesMarker,

@@ -812,6 +812,8 @@ interface UIState {
   showMessageNumbers: boolean;
   /** When true, linked character names in chats and Game narration show a quick reference popover. */
   npcQuickReference: boolean;
+  /** Settings > Features: send browser errors to the server log. Off = nothing is reported. */
+  clientErrorReports: boolean;
   /** When true, character cards are available in Persona pickers. */
   showCharactersInPersonaPickers: boolean;
   guideGenerations: boolean;
@@ -1172,6 +1174,7 @@ interface UIState {
   setShowContextUsage: (v: boolean) => void;
   setShowMessageNumbers: (v: boolean) => void;
   setNpcQuickReference: (v: boolean) => void;
+  setClientErrorReports: (v: boolean) => void;
   setShowCharactersInPersonaPickers: (v: boolean) => void;
   setGuideGenerations: (v: boolean) => void;
   setShowQuickRepliesMenu: (v: boolean) => void;
@@ -1411,6 +1414,7 @@ export function pickSyncedSettings(state: UIState) {
     showContextUsage: state.showContextUsage,
     showMessageNumbers: state.showMessageNumbers,
     npcQuickReference: state.npcQuickReference,
+    clientErrorReports: state.clientErrorReports,
     showCharactersInPersonaPickers: state.showCharactersInPersonaPickers,
     guideGenerations: state.guideGenerations,
     showQuickRepliesMenu: state.showQuickRepliesMenu,
@@ -1620,6 +1624,7 @@ export function pickPersistedUIState(state: UIState) {
     showContextUsage: state.showContextUsage,
     showMessageNumbers: state.showMessageNumbers,
     npcQuickReference: state.npcQuickReference,
+    clientErrorReports: state.clientErrorReports,
     showCharactersInPersonaPickers: state.showCharactersInPersonaPickers,
     guideGenerations: state.guideGenerations,
     showQuickRepliesMenu: state.showQuickRepliesMenu,
@@ -1869,6 +1874,7 @@ export const useUIStore = create<UIState>()(
         showContextUsage: true,
         showMessageNumbers: false,
         npcQuickReference: false,
+        clientErrorReports: true,
         showCharactersInPersonaPickers: false,
         guideGenerations: false,
         showQuickRepliesMenu: false,
@@ -2663,6 +2669,7 @@ export const useUIStore = create<UIState>()(
         setShowContextUsage: (v) => set({ showContextUsage: v }),
         setShowMessageNumbers: (v) => set({ showMessageNumbers: v }),
         setNpcQuickReference: (v) => set({ npcQuickReference: v }),
+        setClientErrorReports: (v) => set({ clientErrorReports: v }),
         setShowCharactersInPersonaPickers: (v) => set({ showCharactersInPersonaPickers: v }),
         setGuideGenerations: (v) => set({ guideGenerations: v }),
         setShowQuickRepliesMenu: (v) => set({ showQuickRepliesMenu: v }),

@@ -16,6 +16,7 @@ import {
   type MacroContext,
   type SessionSummary,
 } from "@marinara-engine/shared";
+import { isGameExtendedWidgetsEnabled } from "@marinara-engine/shared";
 import { buildGmSystemPromptParts, type GmPromptContext } from "../game/gm-prompts.js";
 import { listPartySprites } from "../game/sprite.service.js";
 import { generatePerceptionHints, formatPerceptionHints, type PerceptionContext } from "../game/perception.service.js";
@@ -277,6 +278,30 @@ export function resolveGameGmPromptTemplate(
     ...normalizeAgentPromptTemplateOptions(chatMetadata.gameGmPromptTemplates),
   ];
   return options.find((option) => option.id === selectedId)?.promptTemplate.trim() || null;
+}
+
+/**
+ * The authored text the GM prompt resolves macros in, so decision statements in it can
+ * be asked before the prompt is built (#6569): the GM prompt template, or the preset's
+ * Game prompt when the chat chose none (as generation applies it), special instructions
+ * and the custom GM prompt.
+ */
+export function gameGmPromptDecisionTexts(chatMetadata: Record<string, unknown>, presetGamePrompt: string): string[] {
+  const setupConfig =
+    chatMetadata.gameSetupConfig &&
+    typeof chatMetadata.gameSetupConfig === "object" &&
+    !Array.isArray(chatMetadata.gameSetupConfig)
+      ? (chatMetadata.gameSetupConfig as Record<string, unknown>)
+      : null;
+  const template = resolveGameGmPromptTemplate(chatMetadata, setupConfig);
+  const chosenNone =
+    !(typeof chatMetadata.gameSystemPrompt === "string" && chatMetadata.gameSystemPrompt.trim()) &&
+    !(typeof chatMetadata.gameGmPromptTemplateId === "string" && chatMetadata.gameGmPromptTemplateId.trim());
+  return [
+    (chosenNone && presetGamePrompt ? presetGamePrompt : template) ?? "",
+    typeof chatMetadata.gameSpecialInstructions === "string" ? chatMetadata.gameSpecialInstructions : "",
+    typeof chatMetadata.customGmPrompt === "string" ? chatMetadata.customGmPrompt : "",
+  ];
 }
 
 export function appendGameCardDetails(
@@ -798,6 +823,7 @@ export async function injectGameGmPromptRuntime(args: {
       args.chatMetadata.enableCustomWidgets !== false &&
       (args.chatMetadata.gameSetupConfig as { enableCustomWidgets?: boolean } | undefined)?.enableCustomWidgets !==
         false,
+    enableExtendedWidgets: isGameExtendedWidgetsEnabled(args.chatMetadata),
     hudWidgets: Array.isArray(args.chatMetadata.gameWidgetState)
       ? (args.chatMetadata.gameWidgetState as any[])
       : Array.isArray(gameBlueprint?.hudWidgets)

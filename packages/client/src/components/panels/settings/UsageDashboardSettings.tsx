@@ -23,6 +23,7 @@ import {
   type UsageRangePreset,
 } from "../../../lib/usage-dashboard";
 import { cn } from "../../../lib/utils";
+import { useFeatureEnabled } from "../../../hooks/use-feature-settings";
 
 type RangeChoice = UsageRangePreset | "custom";
 
@@ -248,7 +249,21 @@ function PriceEditor({
   );
 }
 
+/** Settings > Features "Usage and activation stats" off: nothing is recorded, so the dashboard is hidden. */
 export function UsageDashboardSettings() {
+  const { t } = useTranslation();
+  const enabled = useFeatureEnabled("usageAndActivationStats");
+  if (!enabled) {
+    return (
+      <p className="px-1.5 text-xs leading-relaxed text-[var(--muted-foreground)]">
+        {t("settings.features.usageAndActivationStats.offNotice")}
+      </p>
+    );
+  }
+  return <UsageDashboardView />;
+}
+
+function UsageDashboardView() {
   const { t } = useTranslation();
   const [choice, setChoice] = useState<RangeChoice>("30d");
   const [custom, setCustom] = useState(() => presetUsageRange(30));

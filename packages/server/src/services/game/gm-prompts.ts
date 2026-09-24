@@ -10,7 +10,12 @@ import type {
   SessionSummary,
   HudWidget,
 } from "@marinara-engine/shared";
-import { DEFAULT_GAME_SYSTEM_PROMPT, describeExtendedWidgetForPrompt, wrapGameInstructions } from "@marinara-engine/shared";
+import {
+  DEFAULT_GAME_SYSTEM_PROMPT,
+  describeExtendedWidgetForPrompt,
+  wrapGameInstructions,
+} from "@marinara-engine/shared";
+import { upstreamHudWidgets } from "@marinara-engine/shared";
 import type { CharacterSpriteInfo } from "./sprite.service.js";
 
 /**
@@ -79,6 +84,8 @@ export interface GmPromptContext {
   /** Active HUD widgets the model designed (so it can update them) */
   hudWidgets?: HudWidget[];
   enableCustomWidgets?: boolean;
+  /** Per-game "Extended HUD widgets" switch. Only `false` changes the prompt: upstream widget block, upstream types. */
+  enableExtendedWidgets?: boolean;
   /** Content rating: sfw or nsfw */
   rating?: "sfw" | "nsfw";
   /** Whether the GM may emit timed reaction prompts. Defaults to true. */
@@ -651,6 +658,21 @@ function buildWidgetSummaryLines(widgets: HudWidget[]): string[] {
   });
 }
 
+/** Extended HUD widgets OFF: upstream's widget block verbatim (no extra types, no create/delete). */
+function buildUpstreamWidgetLines(widgets: HudWidget[]): string[] {
+  if (widgets.length === 0) return [];
+  return [
+    ``,
+    `HUD WIDGETS:`,
+    ...buildWidgetSummaryLines(widgets),
+    `- Widget usage: emit widget commands for every real change to these visible HUD widgets. Do not skip a changed widget just because another system tracks related player or party stats.`,
+    `- HUD widgets are visual UI state only. Player stats, inventory, party member HP, party relationships, and other durable game facts remain in their own canonical systems; use [widget:] only to mirror a visible widget when that widget's displayed value should change.`,
+    `- Command mapping: value = bars/gauges, count = counters, stat = one stat_block entry, add/remove = rotating list items, running/seconds = timers.`,
+    `- Widget commands: [widget: id, value: n] [widget: id, stat: "Name", value: x] [widget: id, count: n] [widget: id, add: "Item"] [widget: id, remove: "Item"] [widget: id, running: true, seconds: 60]`,
+    `- List widgets: keep at most 5 short entries visible; remove stale items freely.`,
+  ];
+}
+
 export type GmSystemPromptParts = {
   stable: string;
   dynamic: string;
@@ -1131,6 +1153,7 @@ export function buildGmFormatReminder(
     | "artStylePrompt"
     | "hudWidgets"
     | "enableCustomWidgets"
+    | "enableExtendedWidgets"
     | "turnNumber"
     | "gameActiveState"
     | "sessionNumber"
@@ -1488,7 +1511,9 @@ export function buildGmFormatReminder(
     }
   }
 
-  if (ctx.enableCustomWidgets !== false) {
+  if (ctx.enableCustomWidgets !== false && ctx.enableExtendedWidgets === false) {
+    lines.push(...buildUpstreamWidgetLines(upstreamHudWidgets(hudWidgets)));
+  } else if (ctx.enableCustomWidgets !== false) {
     lines.push(
       ``,
       `<gm_only_hud_widgets>`,
@@ -1511,7 +1536,7 @@ export function buildGmFormatReminder(
       `  ledger: add: "+50 | Sold the ring" or "-20 | Bribe" (the balance updates), text: "gold". rumor_board: add: "Rumor", check: confirmed, uncheck: proven false.`,
       `  turn_order: add/remove: "Name", value: "Name" or next. scoreboard: stat: "Side", value: n. bars (named meters) and charges (named uses shown as pips): add: "Name | 3 / 10", then stat: "Name", value: n.`,
       `  calendar (in-game date with upcoming events; max: days per week, default 7): value: today's day number or next, text: "12 Frostfall 412", add: "Day 21 | Oriel strike", remove: "Oriel strike".`,
-      `- List widgets: keep at most 5 short entries visible. Remove resolved or genuinely stale items first; never evict an unresolved obligation, external response, deadline, or durable hook merely to display posture, symbolism, praise, or another transient relationship beat.`,
+      `- List widgets keep every entry you add (up to 100), so a long roster (arrivals, suspects, contacts) fits. Remove resolved or genuinely stale items first; never evict an unresolved obligation, external response, deadline, or durable hook merely to display posture, symbolism, praise, or another transient relationship beat.`,
       `</gm_only_hud_widgets>`,
     );
   }
@@ -1717,7 +1742,7 @@ export function buildSetupPrompt(ctx: SetupPromptContext = {}): string {
           `  scoreboard: config = { stats: [{ name: string, value: number }] }; bars / charges: config = { meters: [{ name: string, value: number, max: number }] }`,
           `  calendar: config = { value: number (today's day), max: number (days per week), text: "date label", entries: [{ when: "Day 21", text: string }] }`,
           ``,
-          `If you design a list widget, treat it as a compact rotating list with a hard cap of 5 entries. Choose items worth surfacing right now, and expect older entries to be swapped out as the situation changes.`,
+          `A list widget keeps every entry it is given (up to 100). Keep entries short and remove them once resolved.`,
           `Reserve those slots for actionable or unresolved continuity. Do not replace an open obligation, answer, deadline, or plot hook with a transient gesture, posture, praise, or symbolic interpretation.`,
           `Keep each list item concise and label-like when possible. Avoid long multi-clause sentences, because the same text may need to be referenced later for removal or swapping.`,
           ``,

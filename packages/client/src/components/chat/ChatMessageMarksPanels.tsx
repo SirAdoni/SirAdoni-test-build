@@ -1,18 +1,14 @@
 // ──────────────────────────────────────────────
 // Bookmarks and Trash lists shown inside the chat search panel
 // ──────────────────────────────────────────────
-import {
-  MESSAGE_TRASH_RETENTION_DAYS,
-  readMessageBookmark,
-  type Message,
-  type MessageTrashEntry,
-} from "@marinara-engine/shared";
+import { readMessageBookmark, type Message, type MessageTrashEntry } from "@marinara-engine/shared";
 import { Bookmark, Loader2, RotateCcw, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useCharacterSummaries } from "../../hooks/use-characters";
 import { useChat, useDeleteTrashedMessages, useMessageTrash, useRestoreTrashedMessages } from "../../hooks/use-chats";
+import { useFeatureNumber } from "../../hooks/use-feature-settings";
 import { cn } from "../../lib/utils";
 
 const ROW_CLASS =
@@ -121,6 +117,7 @@ export function ChatBookmarksList({
 export function ChatTrashList({ chatId, enabled }: { chatId: string; enabled: boolean }) {
   const { t: localizeUi } = useUiTranslation();
   const { data: entries, isLoading, isError, refetch } = useMessageTrash(chatId, enabled);
+  const retentionDays = useFeatureNumber("messageTrashDays");
   const restore = useRestoreTrashedMessages(chatId);
   const deleteForever = useDeleteTrashedMessages(chatId);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
@@ -180,9 +177,7 @@ export function ChatTrashList({ chatId, enabled }: { chatId: string; enabled: bo
       <div className={EMPTY_CLASS}>
         <Trash2 size="1rem" className="mx-auto mb-2 opacity-60" />
         <p>{localizeUi("ui.chat.messagetrash.empty")}</p>
-        <p className="mt-1 text-xs">
-          {localizeUi("ui.chat.messagetrash.retention", { count: MESSAGE_TRASH_RETENTION_DAYS })}
-        </p>
+        <p className="mt-1 text-xs">{localizeUi("ui.chat.messagetrash.retention", { count: retentionDays })}</p>
       </div>
     );
   }
@@ -190,7 +185,7 @@ export function ChatTrashList({ chatId, enabled }: { chatId: string; enabled: bo
     <div className="flex min-h-0 flex-col">
       <div className="flex items-center gap-2 border-b border-[var(--border)] px-3 py-1.5">
         <p className="min-w-0 flex-1 text-[0.6875rem] leading-4 text-[var(--muted-foreground)]">
-          {localizeUi("ui.chat.messagetrash.retention", { count: MESSAGE_TRASH_RETENTION_DAYS })}
+          {localizeUi("ui.chat.messagetrash.retention", { count: retentionDays })}
         </p>
         {entries.length > 1 && (
           <button

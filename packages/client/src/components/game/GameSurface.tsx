@@ -1,5 +1,6 @@
 import { assignCombatTactics, combatTacticsSchema, extractNamedRoleNpcNames } from "@marinara-engine/shared";
 import type { ChatMetadata } from "@marinara-engine/shared";
+import { isGameExtendedWidgetsEnabled, isGameSceneTimelineEnabled, upstreamHudWidgets } from "@marinara-engine/shared";
 // ──────────────────────────────────────────────
 // Game: Main Surface (rendered by ChatArea when mode === "game")
 // ──────────────────────────────────────────────
@@ -2473,7 +2474,7 @@ function GameSurfaceComponent({
     isSetupActive,
     diceRollResult,
     npcs,
-    hudWidgets,
+    hudWidgets: storedHudWidgets,
     blueprint,
     characterSheetOpen,
     characterSheetCharId,
@@ -2522,10 +2523,28 @@ function GameSurfaceComponent({
     () => libraryCharacters.filter((character) => gameCharacterIds.includes(character.id)),
     [gameCharacterIds, libraryCharacters],
   );
-  const sceneTimeline = useSceneTimeline(activeChatId);
+  // Per-game switches. Extended widgets OFF hides extended types (their saved state is kept).
+  const extendedWidgetsEnabled = isGameExtendedWidgetsEnabled(chatMeta);
+  const hudWidgets = useMemo(
+    () => (extendedWidgetsEnabled ? storedHudWidgets : upstreamHudWidgets(storedHudWidgets)),
+    [extendedWidgetsEnabled, storedHudWidgets],
+  );
+  // Scene timeline OFF: no timeline requests; scene presence comes from the tracker snapshot.
+  const sceneTimelineEnabled = isGameSceneTimelineEnabled(chatMeta);
+  const sceneTimeline = useSceneTimeline(sceneTimelineEnabled ? activeChatId : null);
+  const sessionPanelTabs: ReadonlyArray<"history" | "scenes" | "journal" | "tools"> = sceneTimelineEnabled
+    ? ["history", "scenes", "journal", "tools"]
+    : ["history", "journal", "tools"];
+  const scenePresentNames = useMemo(
+    () =>
+      sceneTimelineEnabled
+        ? (sceneTimeline.data?.scenes.at(-1)?.present ?? [])
+        : (gameSnapshot?.presentCharacters ?? []).map((character) => character.name).filter(Boolean),
+    [gameSnapshot?.presentCharacters, sceneTimeline.data, sceneTimelineEnabled],
+  );
   const sceneLibraryPresence = useMemo(
-    () => resolveScenePresence(sceneTimeline.data?.scenes.at(-1)?.present ?? [], [], libraryCharacters),
-    [libraryCharacters, sceneTimeline.data],
+    () => resolveScenePresence(scenePresentNames, [], libraryCharacters),
+    [libraryCharacters, scenePresentNames],
   );
   const gameMusicDjEnabled =
     chatMeta.gameUseMusicDj === true ||
@@ -5517,6 +5536,8 @@ function GameSurfaceComponent({
     // Widget updates always come from the GM model (not sidecar), apply them immediately
     let nextWidgetState: HudWidget[] | null = null;
     for (const wu of tags.widgetUpdates) {
+      // Extended widgets OFF: upstream has no widget create/delete commands.
+      if (wu.changes.action && !isGameExtendedWidgetsEnabled(chatMeta)) continue;
       nextWidgetState = applyWidgetUpdate(wu);
     }
     if (nextWidgetState) {
@@ -10156,7 +10177,7 @@ function GameSurfaceComponent({
   const { sceneMembers: resolvedSceneMembers, sceneExtras } = useMemo(
     () =>
       resolveScenePresence<GamePartyMemberInfo>(
-        sceneTimeline.data?.scenes.at(-1)?.present ?? [],
+        scenePresentNames,
         combatAvatarCandidates,
         sceneLibraryPresence.scopedLibraryCandidates.map((candidate) => ({
           id: candidate.id,
@@ -10167,7 +10188,7 @@ function GameSurfaceComponent({
           dialogueColor: candidate.dialogueColor,
         })),
       ),
-    [combatAvatarCandidates, sceneLibraryPresence.scopedLibraryCandidates, sceneTimeline.data],
+    [combatAvatarCandidates, sceneLibraryPresence.scopedLibraryCandidates, scenePresentNames],
   );
   const sceneMembers = useMemo(
     () => resolvedSceneMembers.map((member) => ({ ...member, canRemove: false }) as GamePartyMemberInfo),
@@ -12297,7 +12318,7 @@ function GameSurfaceComponent({
         </div>
 
         <div className="flex gap-1 border-b border-[var(--marinara-chat-chrome-panel-divider)] p-2">
-          {(["history", "scenes", "journal", "tools"] as const).map((tab) => (
+          {sessionPanelTabs.map((tab) => (
             <button
               key={tab}
               type="button"
@@ -12400,7 +12421,7 @@ function GameSurfaceComponent({
               />
             </Suspense>
           </div>
-        ) : sessionPanelTab === "scenes" ? (
+        ) : sessionPanelTab === "scenes" && sceneTimelineEnabled ? (
           <div className="min-h-0 flex-1 overflow-y-auto p-3">
             <Suspense fallback={null}>
               <GameSceneTimeline chatId={activeChatId} />

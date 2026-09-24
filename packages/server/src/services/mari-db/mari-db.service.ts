@@ -61,6 +61,8 @@ import {
   type MariDbValidationIssue,
   type MariDbValidationResult,
   MARI_PERMISSIONS_MODE_SETTINGS_KEY,
+  lorebookDecisionModeSchema,
+  parseLorebookDecisionActivation,
 } from "@marinara-engine/shared";
 import { computePersonalExtensionHash } from "../extensions/personal-extension-hash.js";
 import { HomeWidgetCatalogConflictError, replaceHomeWidgetCatalog } from "../home-widget-catalog.service.js";
@@ -72,6 +74,8 @@ import {
   getWorkspaceShellSandboxStatus,
   spawnWorkspaceSandboxedShell,
 } from "../professor-mari/workspace-shell-sandbox.js";
+import { reloadFeatureSettingsIfTouched } from "../features/feature-settings.js";
+import { createAppSettingsStorage } from "../storage/app-settings.storage.js";
 
 type Row = Record<string, unknown>;
 type Table = AnyFileTable;
@@ -1362,6 +1366,10 @@ export function buildLorebookEntryCreateRow(
     excludeRecursion: "false",
     delayUntilRecursion: "false",
     excludeFromVectorization: "false",
+    ...parseLorebookDecisionActivation({
+      decisionStatement: firstString(data, ["decisionStatement", "decision_statement"]),
+      decisionMode: firstString(data, ["decisionMode", "decision_mode"]),
+    }),
     locked: "false",
     // Message provenance: rows Mari creates are human-directed, so they are
     // born unattributed (and cascade-immune) with an empty source-refs array.
@@ -3290,6 +3298,22 @@ export class MariDbService {
     changed = assignNumberField(target, source, ["depth"], "depth") || changed;
     changed = assignStringField(target, source, ["role"], "role") || changed;
     changed = assignStringField(target, source, ["group"], "group") || changed;
+    // Decision activation (#6570), limited and validated like the entry API. An empty
+    // statement clears it; an unknown mode is refused rather than turned off.
+    const statementKey = ["decisionStatement", "decision_statement"].find((key) => typeof source[key] === "string");
+    if (statementKey !== undefined) {
+      target.decisionStatement = parseLorebookDecisionActivation({
+        decisionStatement: source[statementKey],
+      }).decisionStatement;
+      changed = true;
+    }
+    const decisionMode = firstString(source, ["decisionMode", "decision_mode"]);
+    if (decisionMode !== undefined) {
+      const parsedMode = lorebookDecisionModeSchema.safeParse(decisionMode.toLowerCase());
+      if (!parsedMode.success) throw new Error(`decisionMode must be off, require or trigger, not "${decisionMode}"`);
+      target.decisionMode = parsedMode.data;
+      changed = true;
+    }
     changed = assignBooleanTextField(target, source, ["selective"], "selective") || changed;
     const selectiveLogic = normalizeSelectiveLogic(source);
     if (selectiveLogic !== undefined) {
@@ -3888,6 +3912,8 @@ export class MariDbService {
             "excludeRecursion",
             "delayUntilRecursion",
             "excludeFromVectorization",
+            "decisionStatement",
+            "decisionMode",
             "locked",
             "characterFilterMode",
             "characterFilterIds",
@@ -3959,6 +3985,8 @@ export class MariDbService {
             "excludeRecursion",
             "delayUntilRecursion",
             "excludeFromVectorization",
+            "decisionStatement",
+            "decisionMode",
             "locked",
             "characterFilterMode",
             "characterFilterIds",
@@ -8409,6 +8437,8 @@ export class MariDbService {
       );
     }
     await flushDB();
+    // A Settings > Features row written here bypasses app-settings storage; refresh its cache.
+    await reloadFeatureSettingsIfTouched(plan.changes, createAppSettingsStorage(this.db));
     return journalPath;
   }
 
@@ -8512,6 +8542,7 @@ export class MariDbService {
       );
     }
     await flushDB();
+    await reloadFeatureSettingsIfTouched(changes, createAppSettingsStorage(this.db));
   }
 
   private async writeJournal(operationId: string, plan: Plan): Promise<string> {

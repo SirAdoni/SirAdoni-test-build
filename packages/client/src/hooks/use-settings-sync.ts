@@ -266,6 +266,10 @@ export function useSettingsSync() {
                 parsed.settings.trackerPanelDockedThoughtsAlwaysVisible =
                   parsed.settings.trackerPanelDockedThoughtsAlwaysVisible === true;
               }
+              if ("clientErrorReports" in parsed.settings) {
+                // Default on: only an explicit false turns browser error reports off.
+                parsed.settings.clientErrorReports = parsed.settings.clientErrorReports !== false;
+              }
               if ("trackerTemperatureUnit" in parsed.settings) {
                 parsed.settings.trackerTemperatureUnit = normalizeTrackerTemperatureUnit(
                   parsed.settings.trackerTemperatureUnit,

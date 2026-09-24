@@ -207,8 +207,8 @@ try {
   const surface = read("../../packages/client/src/components/game/GameSurface.tsx");
   assert.match(
     surface,
-    /\["history", "scenes", "journal", "tools"\] as const/,
-    "the Tools tab is in the Session panel",
+    /sessionPanelTabs[\s\S]*?\["history", "scenes", "journal", "tools"\][\s\S]*?\["history", "journal", "tools"\]/,
+    "the Tools tab is in the Session panel, with and without the scene timeline",
   );
   assert.match(surface, /<GameToolsPanel chatId=\{activeChatId\} \/>/);
   assert.match(

@@ -16,6 +16,9 @@ import {
   STORAGE_MIGRATION_NOTICE_SETTINGS_KEY,
   VIDEO_GENERATION_SETTINGS_KEY,
   appSettingsUpdateSchema,
+  FEATURE_SETTINGS_KEY,
+  featureSettingsSchema,
+  type FeatureSettingsResponse,
   impersonatePromptTemplateCatalogSchema,
 } from "@marinara-engine/shared";
 import { logger } from "../lib/logger.js";
@@ -25,6 +28,12 @@ import {
   replaceHomeWidgetCatalog,
 } from "../services/home-widget-catalog.service.js";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
+import {
+  featureEnvEffective,
+  featureEnvOverrides,
+  getFeatureSettings,
+  loadFeatureSettings,
+} from "../services/features/feature-settings.js";
 
 const ALLOWED_KEYS = new Set([
   "ui",
@@ -37,6 +46,24 @@ const ALLOWED_KEYS = new Set([
 
 export async function appSettingsRoutes(app: FastifyInstance) {
   const storage = createAppSettingsStorage(app.db);
+  // Prime the in-memory feature switches; storage writes keep them current from here on.
+  await loadFeatureSettings(storage);
+
+  app.get(
+    `/${FEATURE_SETTINGS_KEY}`,
+    (): FeatureSettingsResponse => ({
+      settings: getFeatureSettings(),
+      envOverrides: featureEnvOverrides(),
+      effective: featureEnvEffective(),
+    }),
+  );
+
+  // Replaces the whole object: omit a key to return it to its default (on).
+  app.put(`/${FEATURE_SETTINGS_KEY}`, async (req): Promise<FeatureSettingsResponse> => {
+    const settings = featureSettingsSchema.parse(req.body ?? {});
+    await storage.set(FEATURE_SETTINGS_KEY, JSON.stringify(settings));
+    return { settings: getFeatureSettings(), envOverrides: featureEnvOverrides(), effective: featureEnvEffective() };
+  });
 
   app.get(`/${HOME_CUSTOM_WIDGETS_SETTINGS_KEY}`, () => readHomeWidgetCatalog(app.db));
 

@@ -44,7 +44,9 @@ import type {
   MessageTrashEntry,
   ChatChapterSummary,
 } from "@marinara-engine/shared";
+import { resolveFeatureEnabled, type FeatureSettingsResponse } from "@marinara-engine/shared";
 import { translate } from "../localization/i18n";
+import { featureSettingsKeys, useFeatureSettings } from "./use-feature-settings";
 
 import { useRollingBackfillStore } from "../stores/backfill.store";
 import { homeFeedKeys } from "./use-home-feed";
@@ -1331,6 +1333,8 @@ export function useCreateMessage(chatId: string | null) {
  */
 export function useDeleteMessage(chatId: string | null) {
   const qc = useQueryClient();
+  // Loads the Features switches so the "moved to Trash" toast matches what the server did.
+  useFeatureSettings();
   return useMutation({
     mutationFn: (target: string | { messageId: string; skipTrash?: boolean }) => {
       const { messageId, skipTrash } = typeof target === "string" ? { messageId: target, skipTrash: false } : target;
@@ -1356,6 +1360,7 @@ export function useDeleteMessage(chatId: string | null) {
 
 export function useDeleteMessages(chatId: string | null) {
   const qc = useQueryClient();
+  useFeatureSettings();
   return useMutation({
     mutationFn: (messageIds: string[]) => api.post(`/chats/${chatId}/messages/bulk-delete`, { messageIds }),
     onSuccess: (_data, messageIds) => {
@@ -1376,8 +1381,13 @@ export function useDeleteMessages(chatId: string | null) {
   });
 }
 
-/** Game chats keep permanent deletes (the server skips their trash; there is no Trash view). */
+/**
+ * Game chats keep permanent deletes (the server skips their trash; there is no Trash view), and so
+ * does every chat when Settings > Features "Message trash" is off.
+ */
 function chatUsesMessageTrash(qc: ReturnType<typeof useQueryClient>, chatId: string) {
+  const features = qc.getQueryData<FeatureSettingsResponse>(featureSettingsKeys.all);
+  if (!resolveFeatureEnabled(features?.settings, "messageTrash")) return false;
   return qc.getQueryData<Chat>(chatKeys.detail(chatId))?.mode !== "game";
 }
 
@@ -1674,6 +1684,7 @@ export function usePeekPrompt() {
         } | null;
         gameToolPlanning?: GameToolPlanningInfo | null;
         agentNote?: string;
+        decisions?: { unanswered: string[]; decisionModelSet: boolean };
       }>(`/chats/${chatId}/peek-prompt`, messageId ? { messageId } : {});
     },
   });

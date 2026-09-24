@@ -73,6 +73,7 @@ const DIR_ORDER = [
   "noodle",
   "appearance",
   "settings",
+  "configuration",
   "data",
   "extending",
   "integrations",
@@ -93,6 +94,7 @@ const DOC_ORDER: Record<string, string[]> = {
     "subscription-clis.md",
     "local-self-hosted.md",
     "local-model.md",
+    "decision-models.md",
     "organizing-connections.md",
   ],
   conversation: [
@@ -193,6 +195,7 @@ const DOC_ORDER: Record<string, string[]> = {
     "custom-css-themes.md",
     "card-css-theming.md",
   ],
+  configuration: ["features.md"],
   data: ["importing-from-sillytavern.md", "backup-and-restore.md", "where-data-is-stored.md", "clearing-data.md"],
   extending: [
     "personal-extensions.md",

@@ -376,18 +376,23 @@ export function selectHistoryBreakpointIndex(messages: readonly ChatMessage[]): 
   }
 
   const nonSystem = messages.filter((message) => message.role !== "system");
-  if (nonSystem.length < 2 || nonSystem.at(-1)?.role !== "user" || nonSystem.at(-1)?.contextKind !== "history") {
-    return null;
-  }
-  const currentIndex = nonSystem.length - 1;
-  for (let index = currentIndex - 1; index >= 0; index -= 1) {
+  if (nonSystem.length < 2 || nonSystem.at(-1)?.role !== "user") return null;
+  // The mutable tail is everything after the last completed assistant turn: per-turn injections and the current
+  // user turn, in whatever order the prompt builder placed them. Game turns sometimes end on an injection (a
+  // player canon check after the user turn); requiring the user turn to be last left those requests without a
+  // history marker, so the next turn re-wrote the whole history (61% cache on a 520k-token game prompt).
+  const lastIndex = nonSystem.length - 1;
+  for (let index = lastIndex - 1; index >= 0; index -= 1) {
     const candidate = nonSystem[index]!;
     if (candidate.role !== "assistant" || candidate.contextKind !== "history" || !candidate.content.trim()) continue;
-    const tail = nonSystem.slice(index + 1, currentIndex);
+    const tail = nonSystem.slice(index + 1);
+    const tailUserTurns = tail.filter((message) => message.contextKind === "history").length;
     if (
+      tailUserTurns === 1 &&
       tail.every(
         (message) =>
-          message.role === "user" && (message.contextKind === "injection" || message.contextKind === undefined),
+          message.role === "user" &&
+          (message.contextKind === "injection" || message.contextKind === undefined || message.contextKind === "history"),
       )
     ) {
       return index;
