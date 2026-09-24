@@ -287,6 +287,11 @@ Features:
 
 ## 2026-09-24
 
+### Agent guide: Claude Code runtime section and a required UI consistency rule
+- **Files:** `AGENTS.md` (new sections "Claude Code Runtime and Models" and "UI Consistency").
+- **Why:** Opus 5.5 falls back on its own default UI styles (cream backgrounds, italic accent words, "01/02/03" labels, monospace labels, pill buttons) when not given a precedent, and a vague "make it consistent" only swaps one default for another.
+- **Behaviour:** every agent must base client UI on the closest existing feature (named in the PR description), reuse `components/ui/` pieces, use theme tokens where no precedent exists, and check both visual themes in light and dark mode at phone, tablet and desktop widths. The Claude section lists current model IDs, a task-to-model table and delegation guidance. Documentation only; no code change.
+
 ### Stat block widget: one aligned label/value table
 - **Commit(s):** this commit
 - **Files:** `packages/client/src/components/game/GameWidgetPanel.tsx` (`StatBlockWidget`, `isCompactStatBlock`, `COMPACT_STAT_VALUE_CHARS`, `COMPACT_STAT_LABEL_CHARS`, the stat block natural width), `scripts/regressions/game-widget-stat-grid.browser.mjs`.
