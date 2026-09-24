@@ -13214,6 +13214,7 @@ function GameSurfaceComponent({
                             setMobileRetryMenuOpen(false);
                           }}
                           className={GAME_MOBILE_ROOT_BUTTON}
+                          data-floating-widget-avoid
                           title={t("game.toolbar.actions")}
                           aria-label={t("game.toolbar.actions")}
                         >
