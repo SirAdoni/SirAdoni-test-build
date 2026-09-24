@@ -18,12 +18,13 @@ const types = new Set<HudWidgetType>([
   ...EXTENDED_HUD_WIDGET_TYPES,
 ]);
 
-export const LIST_WIDGET_DEFAULT_MAX = 5;
-export const LIST_WIDGET_MAX_LIMIT = 30;
+/** Safety bound for list widgets; below it a list keeps everything it is given. */
+export const LIST_WIDGET_MAX_LIMIT = 100;
+export const LIST_WIDGET_DEFAULT_MAX = LIST_WIDGET_MAX_LIMIT;
 
 /**
- * How many entries a list widget keeps: its config.max (1-30), else 5. A long roster (expected arrivals,
- * suspects) needs a raised limit; with the default 5, adding an 18-name list kept only the last five.
+ * How many entries a list widget keeps: its config.max if one was set (1-100), else the full 100. Lists used
+ * to keep only 5 by default, so adding an 18-name roster silently kept the last five.
  */
 export function listWidgetCapacity(config: { max?: unknown } | null | undefined): number {
   const max = Number(config?.max);
