@@ -130,7 +130,7 @@ Memory panel and related:
 - Custom widget bookmarks show their icon and move along the chosen edge in Edit layout.
 - Status widget (Persona Stats and custom RPG fields) and Contact Book widget. Files: `GameStatusWidget.tsx`, `game-status-widget.ts`, `GameContactBookWidget.tsx`.
 
-### Game Mode UI and layout (34)
+### Game Mode UI and layout (36)
 
 Edit layout (`GameLayoutEditToolbar.tsx`, `GameLayoutPopover.tsx`, `lib/game-layout-editor-store.ts`, `game-layout-geometry.ts`, `game-layout-snapshots.ts`, `game-layout-tidy.ts`; no switch yet):
 
@@ -163,6 +163,8 @@ Layout and phones:
 - Tablets: panels can report a minimum height, so narration keeps its composer in view on crowded 1024px and wider screens; the tablet narration column below 1024 stops at 48rem; touch tablets (768px wide and 32rem tall and up) get 36px Game controls. Files: `lib/game-panel-layout.ts`, `styles/globals.css`.
 - Tablets keep the tablet layout with the on-screen keyboard up: phone versus tablet is decided by the device screen short side (under 600px is a phone), exposed as `data-game-short-landscape` / `data-game-short-tablet` on the root and Tailwind variants of the same names. File: `lib/game-short-landscape.ts`.
 - Full names: map, place, widget, presence, contact, journal, sheet, speaker, storyboard and inventory names wrap instead of truncating (no ellipsis or clamp); package-drawn map names are left for upstream.
+- Grown panels are never covered: a panel whose content grows after load reflows movable neighbours (Collisions on) or scrolls; API `autoGrow`, `autoGrowOverridesManual`, `autoGrowMaxHeight` on `FloatingGamePanel`, used by widget Auto expand.
+- Maps package text wraps through a host stylesheet scoped to `marinara-capability-hierarchical-maps` (`styles/capability-hierarchical-maps.css`); the map picker shows the full selected map name.
 
 Scene, combat and server guards:
 
@@ -555,6 +557,40 @@ Features:
 - Not changed (drawn by the hierarchical-maps package UI; listed for upstream): breadcrumb chips (`max-w-24 truncate`), the place title (`truncate text-xs font-bold`), the in-view "Story location" line, place descriptions (`line-clamp-2`), destination names (`max-w-32 truncate`), and the "STORY LOCATION" runtime row above the composer. Also still truncated and outside Game HUD names: the app chrome chat title, storyboard status text, and the closed native map picker select (opening it shows full names).
 - Settings: none.
 - Tests: `scripts/regressions/game-hud-full-names.browser.mjs` (map card, popover, node tooltip, widgets, contact book, inventory, journal, character sheet and storyboard with long invented names at 390x844, 820x1180, 1024x768, 1023x461 and 1440x900: no ellipsis, no clamp, no clipping or sideways overflow, no short word split, tooltip inside its box, loaded map card full width). Live sweep of three chats at the five sizes found no truncated host names.
+
+### Nothing cut off: maps package text, chat list title, storyboard label, map picker
+
+- Commit: `1819d10ed`.
+- Files: `packages/client/src/styles/capability-hierarchical-maps.css` (new, imported from `globals.css`), `packages/client/src/components/game/GameMap.tsx`, `packages/client/src/components/game/GameStoryboardViewer.tsx`, `packages/client/src/components/layout/ChatSidebar.tsx`.
+- Behaviour:
+  - The hierarchical-maps package renders into light DOM inside `<marinara-capability-hierarchical-maps>` (no shadow root, no parts), so a host stylesheet whose every selector starts with that element makes its truncated and clamped text wrap: breadcrumb chips (`max-w-24 truncate`), place title, the in-view story location line, the description (`line-clamp-2`), destinations (`max-w-32 truncate`) and the STORY LOCATION runtime row above the composer. Only text properties change; emoji icons keep their size; no package file is edited.
+  - The chat list row title in the sidebar wraps (the TopBar and chat header are untouched; the phone TopBar stays one 51px row).
+  - The desktop storyboard section label ("Sections 5-6") is no longer hidden under the close button; the phone tab status wraps.
+  - The map picker shows the full selected map name as wrapped text, with the native select invisible on top so tapping and the keyboard still open the normal picker.
+- Settings: none.
+- Tests: `scripts/regressions/game-hud-full-names.browser.mjs` (adds a stand-in maps package with the real classes, the map picker and the storyboard label; checks nothing covers a name) and `scripts/regressions/game-hud-full-names.live.mjs` (new: real chats at 390x844, 820x1180, 1024x768, 1023x461 with a 1024x768 screen and 1440x900, map popover open on phone and tablet; asserts the phone TopBar stays one 51px row and chat header touch buttons stay at least 36px and on screen at 360x740 and 390x844; lengthens names in GET responses only).
+
+### Conversation header presence names wrap
+
+- Commit: `33a9000cb`.
+- Files: `packages/client/src/components/chat/ConversationPresenceCard.tsx`.
+- Behaviour: the conversation presence pill (a single character's name and activity line, the group names line) and the names in its popover wrap in full instead of ending in an ellipsis. Header buttons are not squeezed.
+- Settings: none.
+- Tests: live check in a conversation chat at 360x740, 390x844 and 1440x900 (no cut names, header buttons on screen, no page overflow); client tsc.
+
+### Grown panels are never covered; concluded-session dock stays in view
+
+- Commit: `21d7b584e`.
+- Files: `packages/client/src/components/game/FloatingGamePanel.tsx`, `packages/client/src/lib/game-panel-layout.ts`.
+- Cause (grown panels): the desktop map card first mounts as a loading placeholder without `autoGrow`, then React reuses that panel for the real map (`autoGrow`, `height={420}`); the placeholder's fixed growth stuck, so the layout believed the card was 420px while it rendered 512px and placed neighbours over its last 90px, reporting no overflow.
+- Cause (keyboard, concluded session): a concluded session shows a taller dock ("Session concluded", New Session, story location). The self-capped narration card scrolled it below an inner fold with the keyboard up, while the panel still measured as fitting, so the layout never limited the panel or pinned the dock.
+- Behaviour:
+  - Panels report the height their box actually renders. With Collisions on, a panel that grows after load reflows its movable neighbours; when they cannot move, the grown panel becomes a scrolling window, so its content stays reachable and uncovered. Narration, map and storyboard keep priority; narration never goes below its minimum height. With Collisions off nothing moves. Pinned panels (bottom-locked, top-centre, tucked) never move and scroll instead. Reflow never saves positions or heights.
+  - Among panels of equal priority the higher one claims its place first, so a growing widget pushes the one below it down.
+  - A composer or dock hidden below an inner scroll fold counts toward the panel's natural height, so a short surface limits the narration panel and the dock stays pinned in view.
+- API (used by the widget Auto expand setting): `autoGrow?: boolean` (default false; grows to content, a manual height still wins, can change at runtime), `autoGrowOverridesManual?: boolean` (default false; grows past a stored manual height, which applies again when turned off), `autoGrowMaxHeight?: number` in px (default the surface height; content scrolls past it).
+- Settings: none of its own.
+- Tests: `scripts/regressions/game-panel-grow-after-load.browser.mjs` (new; the map placeholder turning into the real map, a widget growing after load, manual height kept, override growing past it, frame stability, nothing written to storage by reflow, Collisions off untouched, the self-capped narration card on a short surface); `game-panel-crowded-layout.regression.ts` case 7 (a pinned panel that grows); `game-tablet-layout.live.mjs` passes on the concluded session including the keyboard checks.
 
 ### Job tracking setting moved into Feature switches
 
