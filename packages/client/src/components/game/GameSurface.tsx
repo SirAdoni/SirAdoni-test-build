@@ -217,6 +217,8 @@ import { formatNarration } from "./game-narration-format";
 import { GameInput } from "./GameInput";
 import { GameMapPanel, MobileMapButton } from "./GameMap";
 import { GamePartyBar } from "./GamePartyBar";
+import { GameHudListToggles } from "./GameHudListToggles";
+import { resolveGameHudScope, useGameHudListVisible } from "../../hooks/use-game-hud-lists";
 import { ensureSceneCharacterCards, resolveCharacterSheetCard } from "./game-scene-character-cards";
 import { addUniqueLibrarySpeakerAvatars, type SpeakerAvatarEntry } from "./game-speaker-avatar";
 import { GameCharacterReferences } from "@/components/characters/CharacterReferences";
@@ -3050,6 +3052,22 @@ function GameSurfaceComponent({
     });
   }, [statusWidgetPreferenceKey]);
   const toggleContactBook = useCallback(() => setContactBookVisible((current) => !current), []);
+  // The player can hide the party bar and the Currently present strip per game; narration takes the room.
+  const gameHudScopeId = resolveGameHudScope(chatMeta.gameId, chat.groupId, activeChatId);
+  const [partyBarVisible] = useGameHudListVisible(gameHudScopeId, "partyBar");
+  const [scenePresenceVisible] = useGameHudListVisible(gameHudScopeId, "presence");
+  const shortGameViewport = useMediaMatch("(max-height: 32rem)");
+  // Portrait phones: with the party bar gone, the strip moves up into the top row beside the map button.
+  const scenePresenceInTopRow = !partyBarVisible && scenePresenceVisible && phoneGameViewport && !shortGameViewport;
+  const narrationTopReserveStyle = useMemo(
+    () =>
+      !scenePresenceVisible
+        ? ({ "--game-narration-top-reserve": "4rem" } as CSSProperties)
+        : scenePresenceInTopRow
+          ? ({ "--game-narration-top-reserve": "5.5rem" } as CSSProperties)
+          : undefined,
+    [scenePresenceInTopRow, scenePresenceVisible],
+  );
   const [layoutEditing, setLayoutEditing] = useState(false);
   // Bumped when the layout editor applies a whole layout (undo, saved layout, reset) so panels remount.
   const [layoutRevision, setLayoutRevision] = useState(0);
@@ -12767,7 +12785,8 @@ function GameSurfaceComponent({
     return mobile ? renderGameMobilePortal(panel) : panel;
   };
 
-  const hasScenePresence = sceneMembers.length > 0 || sceneExtras.length > 0 || !!campaignWikiSceneTargets.location;
+  const hasScenePresence =
+    scenePresenceVisible && (sceneMembers.length > 0 || sceneExtras.length > 0 || !!campaignWikiSceneTargets.location);
   const scenePresenceBody = (
     <div
       data-floating-widget-avoid
@@ -12931,6 +12950,7 @@ function GameSurfaceComponent({
               {!replayActive && !shortLandscapeGame && hasScenePresence && (
                 <div
                   data-component="GameSurface.ScenePresence"
+                  style={scenePresenceInTopRow ? { top: "0.75rem", left: "4rem", right: "4rem" } : undefined}
                   className="pointer-events-none absolute inset-x-3 top-16 z-20 lg:contents"
                 >
                   <FloatingGamePanel
@@ -13148,6 +13168,7 @@ function GameSurfaceComponent({
                             buttonClass={getChatToolbarButtonClass}
                           />
                         </Suspense>
+                        <GameHudListToggles scopeId={gameHudScopeId} buttonClass={getChatToolbarButtonClass} />
                         <div className="relative" ref={volumePopoverRef}>
                           <button
                             data-chat-help="volume"
@@ -13565,6 +13586,10 @@ function GameSurfaceComponent({
                                 <ArrowRightLeft size={14} />
                               </button>
                             ) : null}
+                            <GameHudListToggles
+                              scopeId={gameHudScopeId}
+                              buttonClass={(options) => getChatToolbarButtonClass({ compact: true, ...options })}
+                            />
                             <button
                               data-chat-help="settings"
                               data-chat-toolbar-panel-action="settings"
@@ -13591,6 +13616,7 @@ function GameSurfaceComponent({
                   <div
                     ref={attachHudSurface}
                     data-chat-resource-drop-surface
+                    style={narrationTopReserveStyle}
                     className={cn("relative flex min-h-0 flex-1 flex-col overflow-hidden", experienceSurfaceClass)}
                   >
                     {/* Main mount. pointer-events-none lets clicks fall through empty regions to the
@@ -13665,7 +13691,7 @@ function GameSurfaceComponent({
                       </div>
 
                       {/* Party portraits — right of map */}
-                      {partyMembers.length > 0 && (
+                      {partyBarVisible && partyMembers.length > 0 && (
                         <div
                           data-tour="game-party"
                           className="min-w-0 flex-1 md:flex-none max-lg:[@media(max-height:32rem)]:flex-none"

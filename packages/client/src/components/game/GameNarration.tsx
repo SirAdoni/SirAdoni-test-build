@@ -4853,7 +4853,10 @@ export function GameNarration({
   };
 
   return (
-    <div className="pointer-events-none relative flex min-h-0 flex-1 flex-col justify-end px-3 pb-[max(0.75rem,var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))] pt-32 lg:pt-24 sm:px-6 md:pb-4 max-lg:[@media(max-height:32rem)]:pb-2 max-lg:[@media(max-height:32rem)]:pt-16">
+    <div
+      data-component="GameNarration.Stage"
+      className="pointer-events-none relative flex min-h-0 flex-1 flex-col justify-end px-3 pb-[max(0.75rem,var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))] pt-[var(--game-narration-top-reserve,8rem)] lg:pt-24 sm:px-6 md:pb-4 max-lg:[@media(max-height:32rem)]:pb-2 max-lg:[@media(max-height:32rem)]:pt-16"
+    >
       {/* Readability scrim. It darkens the whole scene, not just the panel, so it has to fade
           out with the panel — otherwise collapsing hides the text but keeps the art dimmed. */}
       <div

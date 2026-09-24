@@ -80,6 +80,8 @@ import { ActiveChatBackgroundPicker } from "../panels/settings/BackgroundPicker"
 import { AdvancedParametersSection } from "../../features/chat-settings/sections/AdvancedParametersSection";
 import { ChatNameSection } from "../../features/chat-settings/sections/ChatNameSection";
 import { CombatStyleSection } from "../../features/chat-settings/sections/CombatStyleSection";
+import { GameHudListsSettings } from "../../features/chat-settings/sections/GameHudListsSettings";
+import { resolveGameHudScope } from "../../hooks/use-game-hud-lists";
 import { useGameRuleset } from "../../hooks/use-game-ruleset";
 import { isRulesetCombatFight } from "../../lib/ruleset-combat-bridge";
 import { ConnectionSection } from "../../features/chat-settings/sections/ConnectionSection";
@@ -5168,6 +5170,7 @@ export function ChatSettingsDrawer({
               count={chatCharacterCount + (chat.personaId ? 1 : 0)}
               help={localizeUi("ui.chat.chatsettingsdrawer.yourInGamePartyPickAPersonaToPlay")}
             >
+              <GameHudListsSettings scopeId={resolveGameHudScope(metadata.gameId, chat.groupId, chat.id)} />
               <div className="space-y-1.5">
                 <label className="text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
                   {localizeUi("ui.characters.cardlibrarydetailcard.persona")}
