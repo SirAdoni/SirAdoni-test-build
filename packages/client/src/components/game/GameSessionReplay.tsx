@@ -39,7 +39,11 @@ import { findReplayableGameSessionChat } from "../../lib/game-session-resolution
 import { findReplayStoryboardKeyframe } from "../../lib/game-storyboard-keyframes";
 import type { AvatarCrop } from "@marinara-engine/shared";
 import type { CharacterMap, PersonaInfo } from "../chat/chat-area.types";
-import { buildGameSessionReplayTurns, type GameReplayPresentationCue } from "../../lib/game-session-replay";
+import {
+  buildGameSessionReplayTurns,
+  visibleReplayMessages,
+  type GameReplayPresentationCue,
+} from "../../lib/game-session-replay";
 import { useGameAssetStore } from "../../stores/game-asset.store";
 import { useChatStore } from "../../stores/chat.store";
 import { useUIStore } from "../../stores/ui.store";
@@ -437,7 +441,11 @@ export function GameSessionReplay({
     enabled: !!sessionChat?.id,
     staleTime: 60_000,
   });
-  const messages = replayMessagesQuery.data ?? EMPTY_REPLAY_MESSAGES;
+  // Hidden and command-only turns stay out of the replay and the sprite feed it hands to the game surface.
+  const messages = useMemo(
+    () => (replayMessagesQuery.data ? visibleReplayMessages(replayMessagesQuery.data) : EMPTY_REPLAY_MESSAGES),
+    [replayMessagesQuery.data],
+  );
   const turns = useMemo(() => buildGameSessionReplayTurns(messages), [messages]);
   const [turnIndex, setTurnIndex] = useState(0);
   // Bumped by Watch again, so a replay that restarts on the same turn still remounts and narrates it.

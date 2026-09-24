@@ -73,7 +73,9 @@ try {
   assert.ok(markdown.endsWith("\n") && !markdown.endsWith("\n\n"));
   const spilled = renderTranscriptMarkdown({
     title: "T",
-    entries: [{ speakerKey: "n", speaker: "N", role: "narrator", content: "x", thinking: "a </details> b </SUMMARY >" }],
+    entries: [
+      { speakerKey: "n", speaker: "N", role: "narrator", content: "x", thinking: "a </details> b </SUMMARY >" },
+    ],
   });
   assert.equal(spilled.match(/<\/details>/gu)?.length, 1, "reasoning cannot close the details block early");
   assert.ok(spilled.includes("a &lt;/details&gt; b &lt;/SUMMARY&gt;"));
@@ -185,6 +187,8 @@ try {
 
   const text = await app.inject({ method: "GET", url: "/api/chats/chat-story/export?format=text" });
   assert.ok(text.body.startsWith("Chat: Moon Road"), "existing text export is unchanged");
+  assert.ok(text.body.includes("We ride at dawn."));
+  assert.ok(!text.body.includes("HIDDEN TURN"), "text export leaves out turns hidden from the user");
 
   await app.close();
   await db._fileStore.close();

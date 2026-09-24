@@ -4576,7 +4576,9 @@ export async function chatsRoutes(app: FastifyInstance) {
 
     if (format === "text") {
       const header = `Chat: ${chat.name}\nDate: ${chat.createdAt}\n${"─".repeat(50)}\n`;
-      const body = msgs
+      // Turns hidden from the user stay out of the readable text transcript, as in the markdown and HTML exports.
+      const textMessages = msgs.filter((msg) => parseExportMetadata(msg.extra).hiddenFromUser !== true);
+      const body = textMessages
         .map((msg) => {
           const name = getDisplayName(msg);
           const ts = msg.createdAt ? new Date(msg.createdAt).toLocaleString() : "";
@@ -4593,7 +4595,7 @@ export async function chatsRoutes(app: FastifyInstance) {
         content: header + body,
         extension: "txt",
         contentType: "text/plain; charset=utf-8",
-        messageCount: msgs.length,
+        messageCount: textMessages.length,
         branchName,
       };
     }

@@ -111,7 +111,16 @@ function replayPlayerMessage(message: Message | undefined): Message | null {
   return choice ? { ...message, content: choice } : message;
 }
 
-export function buildGameSessionReplayTurns(messages: readonly Message[]): GameSessionReplayTurn[] {
+/** Turns the player cannot see in the game (hidden or command-only) never reach the replay. */
+export function visibleReplayMessages(messages: readonly Message[]): Message[] {
+  return messages.filter((message) => {
+    const extra = messageExtra(message);
+    return extra.hiddenFromUser !== true && extra.commandOnly !== true;
+  });
+}
+
+export function buildGameSessionReplayTurns(allMessages: readonly Message[]): GameSessionReplayTurn[] {
+  const messages = visibleReplayMessages(allMessages);
   const assistantIndexes = messages.flatMap((message, index) => (isReplayAssistantMessage(message) ? [index] : []));
 
   return assistantIndexes.map((messageIndex, turnIndex) => {

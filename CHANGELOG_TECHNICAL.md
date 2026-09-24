@@ -287,6 +287,13 @@ Features:
 
 ## 2026-09-24
 
+### Hidden turns stay out of Session Replay and the text export
+- **Files:** `packages/client/src/lib/game-session-replay.ts` (new `visibleReplayMessages`), `packages/client/src/components/game/GameSessionReplay.tsx`, `packages/server/src/routes/chats.routes.ts` (text export), regressions `scripts/regressions/game-session-replay-hidden.regression.ts` (new) and `chat-story-export.regression.ts` (text export assertions).
+- **Bug:** Session Replay (Game session history, Replay) built its turns from the raw `/chats/:id/messages` list, so turns flagged `extra.hiddenFromUser` (GM nudges, hidden narration) and command-only anchors (`extra.commandOnly`) showed as replay turns, player lines and recorded choices. The plain text chat export (`GET /api/chats/:id/export?format=text`) also listed hidden turns.
+- **Fix:** `buildGameSessionReplayTurns` filters through `visibleReplayMessages` first (object or JSON-string `extra`), and the replay component hands only visible messages to the game surface's sprite feed. The text export drops `hiddenFromUser` turns and its `messageCount` counts what it wrote. AI-hidden turns (`hiddenFromAI`) stay readable everywhere.
+- **Already correct, checked:** the campaign log reader (`services/game/campaign-log.ts` via `isReaderVisibleMessage`), the markdown and HTML story exports (`isStoryTranscriptMessage`), reading mode and global search. The JSONL export is a full re-importable backup and still carries hidden turns with their flag.
+- **Switch:** none (bug fix).
+
 ### Agent instruction audit for Opus 5.5 (five fixes)
 - **Files:** `.claude/skills/impeccable/SKILL.md`, `AGENTS.md`, `packages/client/.instructions.md`, `.github/agents/chai-workflow.md`. Report: `review-2026-09-22/prompt-audit-agent-files_v1.0.md` (outside the repo).
 - **Behaviour:**
