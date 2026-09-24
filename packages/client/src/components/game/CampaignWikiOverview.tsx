@@ -288,7 +288,7 @@ export function CampaignWikiOverview({
                   </p>
                 )}
                 {topPeople.length > 0 && (
-                  <ul className="grid grid-cols-2 gap-2 @xl:grid-cols-3">
+                  <ul className="grid grid-cols-[repeat(auto-fill,minmax(10.5rem,1fr))] gap-2 @xl:grid-cols-3">
                     {topPeople.map((entity, index) => {
                       const name = displayEntityName(t, entity);
                       return (
@@ -716,7 +716,7 @@ function PromiseRow({ item, onSelect }: { item: CampaignMemoryCommitmentItem; on
             <button
               type="button"
               onClick={() => onSelect(participant.entityId)}
-              className={cn("min-h-6 rounded font-medium text-foreground/90 hover:text-primary")}
+              className={cn("min-h-6 rounded font-medium text-foreground/90 hover:text-primary pointer-coarse:min-h-9")}
             >
               {participant.alias}
             </button>

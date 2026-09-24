@@ -578,7 +578,7 @@ export function LorebookEntryRow({
         <button
           type="button"
           className={cn(
-            "flex h-6 w-4 shrink-0 items-center justify-center rounded p-0 text-[var(--muted-foreground)] transition-colors sm:h-auto sm:w-auto sm:p-0.5",
+            "relative flex h-6 w-4 shrink-0 items-center justify-center rounded p-0 pointer-coarse:before:absolute pointer-coarse:before:-inset-2 pointer-coarse:before:content-[''] text-[var(--muted-foreground)] transition-colors sm:h-auto sm:w-auto sm:p-0.5",
             compact && "hidden",
             draggable
               ? "cursor-grab hover:bg-[var(--accent)] hover:text-[var(--foreground)] active:cursor-grabbing"
@@ -642,7 +642,7 @@ export function LorebookEntryRow({
               ? localizeUi("ui.lorebooks.lorebookentryrow.collapseEntry")
               : localizeUi("ui.lorebooks.lorebookentryrow.expandEntry")
           }
-          className="flex h-6 w-4 shrink-0 items-center justify-center rounded p-0 text-[var(--muted-foreground)] transition-transform hover:bg-[var(--accent)] hover:text-[var(--foreground)] sm:h-auto sm:w-auto sm:p-0.5"
+          className="relative flex h-6 w-4 shrink-0 items-center justify-center rounded p-0 pointer-coarse:before:absolute pointer-coarse:before:-inset-2 pointer-coarse:before:content-[''] text-[var(--muted-foreground)] transition-transform hover:bg-[var(--accent)] hover:text-[var(--foreground)] sm:h-auto sm:w-auto sm:p-0.5"
           onClick={(e) => {
             e.stopPropagation();
             onToggleExpand();

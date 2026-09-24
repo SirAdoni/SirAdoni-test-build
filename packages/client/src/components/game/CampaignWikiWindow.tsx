@@ -211,7 +211,7 @@ export function CampaignWikiWindow({ chatId, onClose, target = null }: CampaignW
     >
       <div ref={setWrapper} className="flex h-full min-h-0 flex-col">
         <nav
-          className="mb-3 flex flex-wrap items-center gap-1.5 border-b border-border pb-3"
+          className="mb-3 flex flex-wrap items-center gap-1.5 border-b border-border pb-3 [@media(max-height:500px)]:mb-2 [@media(max-height:500px)]:pb-2"
           aria-label={t("ui.game.campaignWiki.nav.label")}
           data-campaign-wiki-nav
         >

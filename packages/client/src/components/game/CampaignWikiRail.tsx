@@ -546,7 +546,7 @@ export function CampaignWikiRail({
           onClick={onCollapse}
           aria-label={t("ui.game.campaignWiki.navCollapse")}
           title={t("ui.game.campaignWiki.navCollapse")}
-          className="hidden min-h-9 items-center rounded-lg border border-border px-2 text-muted-foreground hover:bg-secondary md:inline-flex"
+          className="hidden min-h-9 min-w-9 items-center justify-center rounded-lg border border-border px-2 text-muted-foreground hover:bg-secondary md:inline-flex"
         >
           <PanelLeftClose size={14} />
         </button>
@@ -587,7 +587,7 @@ export function CampaignWikiRail({
                 onClick={() => onKind(item)}
                 aria-pressed={kind === item}
                 className={cn(
-                  "inline-flex min-h-8 pointer-coarse:min-h-9 shrink-0 items-center gap-1 rounded-full border px-2 text-[0.6875rem] font-semibold transition-colors",
+                  "inline-flex min-h-8 pointer-coarse:min-h-9 pointer-coarse:min-w-9 shrink-0 justify-center items-center gap-1 rounded-full border px-2 text-[0.6875rem] font-semibold transition-colors",
                   kind === item
                     ? "border-primary/60 bg-primary/15 text-foreground"
                     : "border-border text-muted-foreground hover:bg-secondary hover:text-foreground",

@@ -554,7 +554,7 @@ function PersonaGalleryTab({
               onClick={() => setMediaTab(tab.id)}
               aria-pressed={active}
               className={cn(
-                "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors",
+                "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors pointer-coarse:min-h-9",
                 active
                   ? "bg-[var(--primary)] text-[var(--primary-foreground)] shadow-sm"
                   : "text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]",
@@ -1974,7 +1974,7 @@ export function PersonaEditor() {
           {/* Avatar */}
           <div
             className={cn(
-              "mari-editor-avatar-tile group relative h-8 w-auto gap-1 overflow-visible md:h-9",
+              "mari-editor-avatar-tile group relative h-8 w-auto gap-1 overflow-visible md:h-9 pointer-coarse:h-9 pointer-coarse:[&>button[title]]:relative pointer-coarse:[&>button[title]]:before:absolute pointer-coarse:[&>button[title]]:before:-inset-1.5 pointer-coarse:[&>button[title]]:before:content-['']",
               !avatarPreview && "mari-avatar-placeholder mari-avatar-placeholder--persona",
               mutationBusy && "pointer-events-none opacity-60",
             )}
@@ -1984,7 +1984,7 @@ export function PersonaEditor() {
               <CharacterPhoto
                 src={avatarPreview}
                 name={formData.name}
-                className="block h-8 w-8 shrink-0 md:h-9 md:w-9"
+                className="block h-8 w-8 shrink-0 md:h-9 md:w-9 pointer-coarse:h-9 pointer-coarse:w-9"
                 onUpdate={() => {
                   if (!mutationBusy) fileInputRef.current?.click();
                 }}
@@ -2003,7 +2003,7 @@ export function PersonaEditor() {
             ) : (
               <button
                 type="button"
-                className="flex h-8 w-8 items-center justify-center md:h-9 md:w-9"
+                className="flex h-8 w-8 items-center justify-center md:h-9 md:w-9 pointer-coarse:h-9 pointer-coarse:w-9"
                 onClick={() => {
                   if (!mutationBusy) fileInputRef.current?.click();
                 }}
@@ -2265,7 +2265,7 @@ function PersonaSpritesTab({
           onClick={() => setCategory(tab.id)}
           aria-pressed={category === tab.id}
           className={cn(
-            "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+            "rounded-md px-3 py-1.5 text-xs font-medium transition-colors pointer-coarse:min-h-9",
             category === tab.id
               ? "bg-[var(--primary)]/15 text-[var(--primary)]"
               : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
@@ -2797,7 +2797,7 @@ function PersonaSpritesTab({
                   type="button"
                   key={expr}
                   onClick={() => startUpload(expr)}
-                  className="rounded-lg bg-[var(--secondary)] px-2.5 py-1 text-[0.6875rem] font-medium text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+                  className="rounded-lg bg-[var(--secondary)] px-2.5 py-1 text-[0.6875rem] font-medium pointer-coarse:min-h-9 text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
                 >
                   {expr}
                 </button>
