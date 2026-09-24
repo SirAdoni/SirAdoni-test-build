@@ -18,6 +18,7 @@ import {
   getTrackerPanelWidthForProfile,
   type ConversationAvatarShape,
   type ConversationMessageStyle,
+  type TouchMessageActionsMode,
   type GameDialogueDisplayMode,
   type ChatListBackgroundMode,
   type RoleplayAvatarStyle,
@@ -1155,6 +1156,14 @@ const SETTINGS_SEARCHABLE_CONTROLS: readonly SettingsSearchableControlMeta[] = [
     label: "Chat Layout",
     description: "Switch Conversation messages between linear rows and bubbles.",
     aliases: ["conversation", "bubbles", "linear"],
+    kind: "Button group",
+  },
+  {
+    id: "touch-message-actions",
+    sectionId: "chat-display",
+    label: "Message actions on touch screens",
+    description: "Show message actions as an inline row or behind one ⋯ button on touch screens.",
+    aliases: ["message actions", "menu", "touch", "phone", "tablet", "inline row"],
     kind: "Button group",
   },
   {
@@ -4946,6 +4955,8 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
   const setChatFontSize = useUIStore((s) => s.setChatFontSize);
   const conversationMessageStyle = useUIStore((s) => s.conversationMessageStyle);
   const setConversationMessageStyle = useUIStore((s) => s.setConversationMessageStyle);
+  const touchMessageActionsMode = useUIStore((s) => s.touchMessageActionsMode);
+  const setTouchMessageActionsMode = useUIStore((s) => s.setTouchMessageActionsMode);
   const alwaysDisplayConversationSwipeMenu = useUIStore((s) => s.alwaysDisplayConversationSwipeMenu);
   const setAlwaysDisplayConversationSwipeMenu = useUIStore((s) => s.setAlwaysDisplayConversationSwipeMenu);
   const alwaysDisplayRoleplaySwipeMenu = useUIStore((s) => s.alwaysDisplayRoleplaySwipeMenu);
@@ -5651,6 +5662,54 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
             {...getSettingsSectionAnchorProps("chat-display")}
           >
             <div className="flex flex-col gap-3">
+              <div
+                id={getSettingsControlAnchorId("touch-message-actions")}
+                className="flex scroll-mt-3 flex-col gap-2 rounded-lg border border-[var(--border)]/70 bg-[var(--secondary)]/25 p-3"
+              >
+                <span className="text-xs font-medium">{localizeUi("settings.controls.touchMessageActions.label")}</span>
+                <div
+                  className="grid grid-cols-2 gap-2"
+                  role="radiogroup"
+                  aria-label={localizeUi("settings.controls.touchMessageActions.label")}
+                >
+                  {(
+                    [
+                      {
+                        id: "inline" as TouchMessageActionsMode,
+                        label: "settings.controls.touchMessageActions.inline",
+                        desc: "settings.controls.touchMessageActions.inlineDescription",
+                      },
+                      {
+                        id: "menu" as TouchMessageActionsMode,
+                        label: "settings.controls.touchMessageActions.menu",
+                        desc: "settings.controls.touchMessageActions.menuDescription",
+                      },
+                    ] as const
+                  ).map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={touchMessageActionsMode === opt.id}
+                      onClick={() => setTouchMessageActionsMode(opt.id)}
+                      className={cn(
+                        "flex min-h-11 flex-col items-start gap-1 rounded-lg border p-3 text-left text-xs transition-all",
+                        touchMessageActionsMode === opt.id
+                          ? "border-[var(--primary)] bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]"
+                          : "border-[var(--border)] bg-[var(--background)]/35 hover:border-[var(--primary)]/40",
+                      )}
+                    >
+                      <span className="font-semibold">{localizeUi(opt.label)}</span>
+                      <span className="text-[0.6875rem] leading-tight text-[var(--muted-foreground)]">
+                        {localizeUi(opt.desc)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[0.6875rem] leading-snug text-[var(--muted-foreground)]">
+                  {localizeUi("settings.controls.touchMessageActions.help")}
+                </p>
+              </div>
               <ToggleSetting
                 anchorId={getSettingsControlAnchorId("conversation-always-display-swipe-menu")}
                 label={localizeUi("settings.controls.alwaysDisplaySwipeMenu.label")}
@@ -8459,7 +8518,12 @@ function AdvancedSettings() {
     channelSwitch?: boolean;
     updatesApplyEnabled?: boolean;
     applyUnavailableReason?:
-      "disabled" | "hard-disabled" | "dev-branch" | "unsupported-install" | "container-install" | null;
+      | "disabled"
+      | "hard-disabled"
+      | "dev-branch"
+      | "unsupported-install"
+      | "container-install"
+      | null;
     manualUpdateCommand?: string | null;
     manualUpdateHint?: string | null;
   }>({

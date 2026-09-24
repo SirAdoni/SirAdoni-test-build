@@ -68,6 +68,8 @@ function normalizeConnectionPanelSort(value: unknown): ConnectionPanelSort {
 type FontSize = 12 | 14 | 16 | 17 | 19 | 22 | 26 | 30 | 34;
 export type VisualTheme = "default" | "sillytavern";
 export type ConversationMessageStyle = "classic" | "bubble";
+/** How message actions appear on touch screens: the inline row (default) or one ⋯ button that opens a menu. */
+export type TouchMessageActionsMode = "inline" | "menu";
 export type ConversationAvatarShape = "circle" | "square";
 export type TrackerPanelSide = "left" | "right";
 export type TrackerThoughtBubbleDisplay = "inline" | "floating";
@@ -515,6 +517,10 @@ export function normalizeConversationMessageStyle(value: unknown): ConversationM
   return value === "bubble" || value === "classic" ? value : "classic";
 }
 
+export function normalizeTouchMessageActionsMode(value: unknown): TouchMessageActionsMode {
+  return value === "menu" ? "menu" : "inline";
+}
+
 export function normalizeConversationAvatarShape(value: unknown): ConversationAvatarShape {
   return value === "square" ? "square" : "circle";
 }
@@ -804,6 +810,7 @@ interface UIState {
   conversationMessageStyle: ConversationMessageStyle;
   alwaysDisplayConversationSwipeMenu: boolean;
   alwaysDisplayRoleplaySwipeMenu: boolean;
+  touchMessageActionsMode: TouchMessageActionsMode;
   conversationAvatarShape: ConversationAvatarShape;
   showTimestamps: boolean;
   showModelName: boolean;
@@ -1167,6 +1174,7 @@ interface UIState {
   setConversationMessageStyle: (v: ConversationMessageStyle) => void;
   setAlwaysDisplayConversationSwipeMenu: (v: boolean) => void;
   setAlwaysDisplayRoleplaySwipeMenu: (v: boolean) => void;
+  setTouchMessageActionsMode: (v: TouchMessageActionsMode) => void;
   setConversationAvatarShape: (v: ConversationAvatarShape) => void;
   setShowTimestamps: (v: boolean) => void;
   setShowModelName: (v: boolean) => void;
@@ -1407,6 +1415,7 @@ export function pickSyncedSettings(state: UIState) {
     conversationMessageStyle: state.conversationMessageStyle,
     alwaysDisplayConversationSwipeMenu: state.alwaysDisplayConversationSwipeMenu,
     alwaysDisplayRoleplaySwipeMenu: state.alwaysDisplayRoleplaySwipeMenu,
+    touchMessageActionsMode: state.touchMessageActionsMode,
     conversationAvatarShape: state.conversationAvatarShape,
     showTimestamps: state.showTimestamps,
     showModelName: state.showModelName,
@@ -1617,6 +1626,7 @@ export function pickPersistedUIState(state: UIState) {
     conversationMessageStyle: state.conversationMessageStyle,
     alwaysDisplayConversationSwipeMenu: state.alwaysDisplayConversationSwipeMenu,
     alwaysDisplayRoleplaySwipeMenu: state.alwaysDisplayRoleplaySwipeMenu,
+    touchMessageActionsMode: state.touchMessageActionsMode,
     conversationAvatarShape: state.conversationAvatarShape,
     showTimestamps: state.showTimestamps,
     showModelName: state.showModelName,
@@ -1867,6 +1877,7 @@ export const useUIStore = create<UIState>()(
         conversationMessageStyle: "classic" as ConversationMessageStyle,
         alwaysDisplayConversationSwipeMenu: true,
         alwaysDisplayRoleplaySwipeMenu: true,
+        touchMessageActionsMode: "inline" as TouchMessageActionsMode,
         conversationAvatarShape: "circle" as ConversationAvatarShape,
         showTimestamps: false,
         showModelName: false,
@@ -2662,6 +2673,7 @@ export const useUIStore = create<UIState>()(
         setConversationMessageStyle: (v) => set({ conversationMessageStyle: normalizeConversationMessageStyle(v) }),
         setAlwaysDisplayConversationSwipeMenu: (v) => set({ alwaysDisplayConversationSwipeMenu: v }),
         setAlwaysDisplayRoleplaySwipeMenu: (v) => set({ alwaysDisplayRoleplaySwipeMenu: v }),
+        setTouchMessageActionsMode: (v) => set({ touchMessageActionsMode: normalizeTouchMessageActionsMode(v) }),
         setConversationAvatarShape: (v) => set({ conversationAvatarShape: normalizeConversationAvatarShape(v) }),
         setShowTimestamps: (v) => set({ showTimestamps: v }),
         setShowModelName: (v) => set({ showModelName: v }),
@@ -3353,6 +3365,8 @@ export const useUIStore = create<UIState>()(
         }
         // v39 -> v40: selectable Conversation message layout.
         persisted.conversationMessageStyle = normalizeConversationMessageStyle(persisted.conversationMessageStyle);
+        // Touch message actions: inline row unless the user picked the ⋯ menu.
+        persisted.touchMessageActionsMode = normalizeTouchMessageActionsMode(persisted.touchMessageActionsMode);
         // v82 -> v83: selectable Conversation avatar corners, circular by default.
         persisted.conversationAvatarShape = normalizeConversationAvatarShape(persisted.conversationAvatarShape);
         // v40 -> v41: reconcile parallel v40 UI preference additions.

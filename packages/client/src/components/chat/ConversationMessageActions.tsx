@@ -23,6 +23,7 @@ import { MsgAction } from "./ConversationMessageShared";
 import { MESSAGE_ACTION_ICON_SIZE } from "./MessageActionButton";
 import { ReactionAddButton } from "./ReactionAddButton";
 import { MessageMarksAction } from "./MessageMarks";
+import { MessageActionsSurface } from "./MessageActionsMenu";
 
 export interface ConversationMessageActionsProps {
   message: Pick<Message, "id" | "chatId" | "content"> & { extra?: unknown };
@@ -94,15 +95,19 @@ export function ConversationMessageActions({
   const { t } = useTranslation();
   const visible = showActions || forceShowActions;
   return (
-    <div
-      className={cn(
-        "mari-message-actions flex w-full min-w-0 flex-wrap items-center justify-between gap-1 px-1 transition-all md:justify-start md:gap-x-2",
-        visible
-          ? "visible pointer-events-auto opacity-100"
-          : "invisible pointer-events-none opacity-0 max-md:hidden max-md:group-hover:flex max-md:group-focus-within:flex group-hover:visible group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:visible group-focus-within:pointer-events-auto group-focus-within:opacity-100",
-        thinkingOnly && "max-sm:[&>*:not(.mari-message-thinking-action)]:hidden",
-      )}
-      data-component="ConversationMessage.Actions"
+    <MessageActionsSurface
+      revealed={!!visible}
+      menuDisabled={!!thinkingOnly}
+      rowProps={{
+        className: cn(
+          "mari-message-actions flex w-full min-w-0 flex-wrap items-center justify-between gap-1 px-1 transition-all md:justify-start md:gap-x-2",
+          visible
+            ? "visible pointer-events-auto opacity-100"
+            : "invisible pointer-events-none opacity-0 max-md:hidden max-md:group-hover:flex max-md:group-focus-within:flex group-hover:visible group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:visible group-focus-within:pointer-events-auto group-focus-within:opacity-100",
+          thinkingOnly && "max-sm:[&>*:not(.mari-message-thinking-action)]:hidden",
+        ),
+        "data-component": "ConversationMessage.Actions",
+      }}
     >
       <MsgAction
         icon={copied ? "✓" : <Copy size={MESSAGE_ACTION_ICON_SIZE} />}
@@ -189,6 +194,6 @@ export function ConversationMessageActions({
           title={localizeUi("lorebook.editor.batch.delete")}
         />
       )}
-    </div>
+    </MessageActionsSurface>
   );
 }

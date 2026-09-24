@@ -35,6 +35,7 @@ export function ReactionAddButton({ onPick, className, tabIndex }: ReactionAddBu
         tabIndex={tabIndex}
         className={className}
         stopPropagation
+        keepMenuOpen
       />
       {/* Mounted only while open: this button renders once per speaker segment
           across the whole transcript, so a closed instance must cost nothing —

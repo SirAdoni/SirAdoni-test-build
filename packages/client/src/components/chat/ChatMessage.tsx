@@ -111,6 +111,7 @@ import { ChatImageLightbox } from "./ChatImageLightbox";
 import { SwipeJumpControl } from "./SwipeJumpControl";
 import { toast } from "sonner";
 import { MessageThinkingModal } from "./MessageThinkingModal";
+import { MessageActionsSurface } from "./MessageActionsMenu";
 import { MESSAGE_ACTION_ICON_SIZE, MessageActionButton, useMessageActionMenu } from "./MessageActionButton";
 import { MessageMarkIndicators, MessageMarksAction, readMessageMarks } from "./MessageMarks";
 import { RoleplayStoryboardMessageMedia } from "./RoleplayStoryboardMessageMedia";
@@ -3902,24 +3903,28 @@ export const ChatMessage = memo(function ChatMessage({
             )}
 
             {/* Hover actions (tap to toggle on mobile) */}
-            <div
-              onClickCapture={(event) => {
-                if (!matchMedia("(pointer: coarse)").matches) return;
-                // A tap on the still-invisible row only reveals it; it must not fire the
-                // hidden Regenerate/Delete/etc. button underneath the finger.
-                const wasHidden = Number.parseFloat(getComputedStyle(event.currentTarget).opacity) < 0.5;
-                setShowActions(true);
-                if (wasHidden) {
-                  event.preventDefault();
-                  event.stopPropagation();
-                }
+            <MessageActionsSurface
+              revealed={showActions || editing}
+              menuDisabled={!!showStreamingThinkingAction}
+              rowProps={{
+                onClickCapture: (event) => {
+                  if (!matchMedia("(pointer: coarse)").matches) return;
+                  // A tap on the still-invisible row only reveals it; it must not fire the
+                  // hidden Regenerate/Delete/etc. button underneath the finger.
+                  const wasHidden = Number.parseFloat(getComputedStyle(event.currentTarget).opacity) < 0.5;
+                  setShowActions(true);
+                  if (wasHidden) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }
+                },
+                className: cn(
+                  "mari-message-actions flex w-full min-w-0 flex-wrap items-center justify-between gap-1 px-1 opacity-0 transition-all [@media(pointer:fine)]:focus-within:opacity-100 group-hover:opacity-100 md:justify-start md:gap-x-2",
+                  (showActions || editing) && "opacity-100",
+                  showStreamingThinkingAction &&
+                    "opacity-100 [&>button:not([data-message-thinking-action])]:hidden [&>div]:hidden",
+                ),
               }}
-              className={cn(
-                "mari-message-actions flex w-full min-w-0 flex-wrap items-center justify-between gap-1 px-1 opacity-0 transition-all [@media(pointer:fine)]:focus-within:opacity-100 group-hover:opacity-100 md:justify-start md:gap-x-2",
-                (showActions || editing) && "opacity-100",
-                showStreamingThinkingAction &&
-                  "opacity-100 [&>button:not([data-message-thinking-action])]:hidden [&>div]:hidden",
-              )}
             >
               <ActionBtn
                 icon={copied ? <Check size={MESSAGE_ACTION_ICON_SIZE} /> : <Copy size={MESSAGE_ACTION_ICON_SIZE} />}
@@ -4029,7 +4034,7 @@ export const ChatMessage = memo(function ChatMessage({
                 title={localizeUi("lorebook.editor.batch.delete")}
               />
               {roleplayTtsControls}
-            </div>
+            </MessageActionsSurface>
           </div>
         </div>
 
@@ -4358,24 +4363,28 @@ export const ChatMessage = memo(function ChatMessage({
           )}
 
           {/* Hover actions (tap to toggle on mobile) */}
-          <div
-            onClickCapture={(event) => {
-              if (!matchMedia("(pointer: coarse)").matches) return;
-              // A tap on the still-invisible row only reveals it; it must not fire the
-              // hidden Regenerate/Delete/etc. button underneath the finger.
-              const wasHidden = Number.parseFloat(getComputedStyle(event.currentTarget).opacity) < 0.5;
-              setShowActions(true);
-              if (wasHidden) {
-                event.preventDefault();
-                event.stopPropagation();
-              }
+          <MessageActionsSurface
+            revealed={showActions || editing}
+            menuDisabled={!!showStreamingThinkingAction}
+            rowProps={{
+              onClickCapture: (event) => {
+                if (!matchMedia("(pointer: coarse)").matches) return;
+                // A tap on the still-invisible row only reveals it; it must not fire the
+                // hidden Regenerate/Delete/etc. button underneath the finger.
+                const wasHidden = Number.parseFloat(getComputedStyle(event.currentTarget).opacity) < 0.5;
+                setShowActions(true);
+                if (wasHidden) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }
+              },
+              className: cn(
+                "mari-message-actions flex w-full min-w-0 flex-wrap items-center justify-between gap-1 px-1 opacity-0 transition-all [@media(pointer:fine)]:focus-within:opacity-100 group-hover:opacity-100 md:justify-start md:gap-x-2",
+                (showActions || editing) && "opacity-100",
+                showStreamingThinkingAction &&
+                  "opacity-100 [&>button:not([data-message-thinking-action])]:hidden [&>div]:hidden",
+              ),
             }}
-            className={cn(
-              "mari-message-actions flex w-full min-w-0 flex-wrap items-center justify-between gap-1 px-1 opacity-0 transition-all [@media(pointer:fine)]:focus-within:opacity-100 group-hover:opacity-100 md:justify-start md:gap-x-2",
-              (showActions || editing) && "opacity-100",
-              showStreamingThinkingAction &&
-                "opacity-100 [&>button:not([data-message-thinking-action])]:hidden [&>div]:hidden",
-            )}
           >
             <ActionBtn
               icon={copied ? <Check size={MESSAGE_ACTION_ICON_SIZE} /> : <Copy size={MESSAGE_ACTION_ICON_SIZE} />}
@@ -4548,7 +4557,7 @@ export const ChatMessage = memo(function ChatMessage({
                 <TTSLineVolumeSlider volume={ttsLineVolume} onVolumeChange={handleTTSLineVolumeChange} />
               </MessageAudioMenu>
             )}
-          </div>
+          </MessageActionsSurface>
         </div>
       </div>
 
