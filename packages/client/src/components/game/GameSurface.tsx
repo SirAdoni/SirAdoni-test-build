@@ -13766,7 +13766,7 @@ function GameSurfaceComponent({
                       <div
                         data-game-asset-retry-line
                         // Phones: an in-flow compact line at the column foot, never over narration or the composer.
-                        className="pointer-events-auto absolute bottom-32 left-1/2 z-30 -translate-x-1/2 max-lg:static max-lg:order-last max-lg:mx-3 max-lg:mb-2 max-lg:shrink-0 max-lg:translate-x-0 max-lg:[@media(max-height:32rem)]:hidden"
+                        className="pointer-events-auto absolute bottom-32 left-1/2 z-30 -translate-x-1/2 lg:z-[55] max-lg:static max-lg:order-last max-lg:mx-3 max-lg:mb-2 max-lg:shrink-0 max-lg:translate-x-0 max-lg:[@media(max-height:32rem)]:hidden"
                       >
                         <div className="flex items-center gap-3 rounded-xl bg-black/80 px-4 py-2.5 shadow-lg backdrop-blur-sm max-lg:gap-2 max-lg:px-3 max-lg:py-1">
                           <AlertTriangle size={14} className="shrink-0 text-amber-400" />
@@ -13797,7 +13797,8 @@ function GameSurfaceComponent({
 
                     {/* Scene analysis failed — retry banner (only when narration is still blocked) */}
                     {!replayActive && sceneAnalysisFailed && introPresented && (
-                      <div className="pointer-events-auto absolute bottom-32 left-1/2 z-30 -translate-x-1/2">
+                      // Above the floating HUD panels (layers 30 to 49 while dragged), which share this stacking context.
+                      <div className="pointer-events-auto absolute bottom-32 left-1/2 z-30 -translate-x-1/2 lg:z-[55]">
                         <div className="flex items-center gap-3 rounded-xl bg-black/80 px-4 py-2.5 shadow-lg backdrop-blur-sm">
                           <AlertTriangle size={14} className="shrink-0 text-amber-400" />
                           <span className="text-xs text-white/70">
