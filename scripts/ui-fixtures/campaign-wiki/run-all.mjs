@@ -14,6 +14,7 @@ const DEFAULT_RUNNERS = [
   ["run-tests.mjs", "results.json"],
   ["run-editor.mjs", "editor-results.json"],
   ["run-create-evidence-owner.mjs", "create-evidence-owner-results.json"],
+  ["run-lore-owner.mjs", "lore-owner-results.json"],
   ["run-pulse8-scrolled.mjs", "pulse8-scrolled-results.json"],
   ["run-commitment-conflict.mjs", "commitment-conflict-results.json"],
   ["run-branch-proof.mjs", "branch-results.json"],

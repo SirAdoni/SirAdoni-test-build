@@ -61,7 +61,7 @@ A standing list of everything this fork carries over upstream `Pasta-Devs/Marina
 - Chat (Chat settings > Advanced Parameters): **Warn before a low-cache send** (`cacheSendGuard`, on, 80%).
 - Plus **Keep generating when the tab is closed** (generation job tracking, own app setting `generationJobTracking`, **off**), in this section since 2026-09-24.
 
-### Memory, continuity and Campaign Wiki (42)
+### Memory, continuity and Campaign Wiki (43)
 
 Campaign memory:
 
@@ -119,6 +119,7 @@ Memory panel and related:
 - NPC Biographer recovery of missing characters from current and earlier transcripts. Files: `npc-backfill.ts`, `npc-retroactive.ts`.
 - Stable NPC ids shared by client and server (`shared/src/utils/game-npc-id.ts`), with the legacy slug id as a lookup fallback.
 - Isolated NPC knowledge (per game, off) and NPC auto-create (per game, on). Files: `game-isolated-turn.ts`, `isolated-game-presence.ts`, `npc-character-sync.ts`.
+- Lore pages link to their lorebook entry (or the whole lorebook) from the page header, instead of "Linked page unavailable". File: `components/game/CampaignWikiOwnerLink.tsx`.
 
 ### HUD widgets (9)
 
@@ -287,6 +288,36 @@ Features:
 - `contrib/dev-foundations` (local only, not pushed; 7 commits on top of `upstream/staging`, head `4a2b7f968`): a separate upstream contribution that re-packages parts of this work as opt-in changes (stable lorebook group winners and compact stored lorebook scans, robustness settings with runtime diagnostics, the startup inject gate, a Dev MCP, and a docs note). Nothing on it is part of the fork's main; the rest of this file describes main only.
 
 ## 2026-09-24
+
+### Campaign Wiki: pages whose owner was deleted can be edited and archived
+- **Files:** `packages/server/src/services/storage/campaign-memory.storage.ts` (`updateEntity`), `scripts/regressions/campaign-memory-deleted-owner-update.regression.ts` (new).
+- **Bug:** `updateEntity` re-resolved the entity's owner through `assertOwner` on every update, although owner and kind cannot change after registration. When the owning library card or Keeper lorebook entry had been deleted, every edit or archive of that page failed with 404 `CAMPAIGN_MEMORY_INVALID_REFERENCE`.
+- **Behaviour:** the owner is resolved against its store only when the patch changes it; a changed owner or kind is still rejected as immutable, `validateOwner` still checks the shape, and `createEntity` still resolves owners fully. No schema or API change.
+- **Tests:** `campaign-memory-deleted-owner-update` (lore and character pages edited, renamed and archived after their owners were deleted; a new nonexistent owner rejected; creation with a deleted owner rejected).
+
+### Continuity: no duplicate fallback fact on batch pages when some subjects resolved
+- **Files:** `packages/server/src/services/game/continuity-memory-publication.ts` (`publishContinuityMemory`, relink `supersedeResolvedFallback`), `scripts/regressions/continuity-memory-partial-fallback.regression.ts` (new), `continuity-memory-publication.regression.ts` and `continuity-memory-transitions.regression.ts` (expectations).
+- **Bug:** the legacy lore fallback fact (predicate `continuity.<kind>` on the batch's lorebook-mirror page, shown as "Game continuity N") was written whenever any subject was unresolved, so partly resolved records were stored twice; about 93% of batch-page facts in a long campaign duplicated facts on real pages.
+- **Behaviour:** the fallback is written only when no subject resolves. Per-subject facts carry `value.unresolvedSubjects` (name and reason) when some subject is unresolved; `comparableFactValue` ignores the field, so older facts republish without conflict. Fact, knowledge and operation ids are unchanged; knowledge attaches to the first per-subject fact when there is no fallback. Relink supersedes an existing verified, unlocked, non-user fallback once at least one subject resolves, and restores it if all subjects stop resolving. Ordinary republishing leaves old fallbacks alone; running relink cleans existing duplicates.
+- **Tests:** `continuity-memory-partial-fallback` (one fact on the resolved subject carrying the unknown name, no fallback, knowledge attached, republish unchanged, relink supersedes and is stable); updated `continuity-memory-publication` (2 facts / 3 journal rows instead of 3 / 4) and `continuity-memory-transitions` (9 facts instead of 10); named-characters, keeper-later-session and knowledge-publication regressions pass.
+
+### Continuity: retiring a batch archives its page copies in the campaign's other sessions
+- **Files:** `packages/server/src/services/game/continuity-retirement.ts` (`retireContinuityReceipt`, new `metadataObject`, `otherCampaignSessionChatIds`), `scripts/regressions/continuity-retirement-campaign-copies.regression.ts` (new).
+- **Bug:** retirement archived the batch's lorebook-mirror page only in the batch's own chat; the legacy import had copied the Keeper lorebook into every session, leaving orphan copies after the entry was deleted.
+- **Behaviour:** in the same transaction, before the entry is deleted, retirement archives active, unlocked lore pages owned by the same `lorebook-entries:<entryId>` in every other game chat of the campaign (selected by `campaignIdentity`, branches included), skipping any page that is the subject of a verified or proposed fact there. Each archive is a normal journaled entity update (`continuity-retire:<receipt>:entity:<chat>:<entity>:<revision>`); nothing is deleted; chats without a game or group are unaffected.
+- **Tests:** `continuity-retirement-campaign-copies` (archived in its own and another session, a copy with its own live fact kept, another campaign untouched); game-continuity-source-retirement and game-continuity-small-edit pass.
+
+### Campaign Wiki: imported lore pages list only the sessions they appear in
+- **Files:** `packages/server/src/services/game/campaign-memory-campaign-scope.ts` (`buildCampaignMemoryProjection` session numbers; new `LEGACY_IMPORT_SOURCE`, `isLegacyImportCopy`, `referencedEntityIds`), `scripts/regressions/campaign-memory-imported-session-numbers.regression.ts` (new).
+- **Bug:** a projected entity's `sessionNumbers` counted every session holding a copy; the legacy importer (`campaign-memory-legacy-v1`) copied the whole lorebook into every session, so imported pages showed "Sessions 1-12".
+- **Behaviour:** a session counts when its copy was not created by the legacy import, or when that session's facts, knowledge or events refer to the copy; with no qualifying copy only the earliest session is shown. Read-only; no stored data or API shape changes. The source is a local constant to avoid an import cycle with `campaign-memory-import.ts`.
+- **Tests:** `campaign-memory-imported-session-numbers` (imported-only page shows [1]; imported copy with a fact in session 2 shows [2]; event reference plus a played registration shows [2, 3]; played pages keep every session); campaign-memory-campaign-scope, bughunt-projection-*, codex and wiki regressions pass.
+
+### Campaign Wiki: lore pages link to their lorebook entry
+- **Files:** `packages/client/src/components/game/CampaignWikiOwnerLink.tsx` (new `useLorebookOwner`), `packages/client/src/localization/locales/en.json` (`ui.game.campaignWiki.owner.loadingLorebook`, `ui.game.campaignWiki.owner.openLorebook`), `scripts/ui-fixtures/campaign-wiki/entry.tsx` (`?lore=1` fixture mode), `scripts/ui-fixtures/campaign-wiki/run-lore-owner.mjs` (new), `scripts/ui-fixtures/campaign-wiki/run-all.mjs`.
+- **Bug:** the owner link had no target for `lorebook-entries` or `lorebooks` owners, so every lore page showed "Linked page unavailable".
+- **Behaviour:** the owning lorebook is found the way the server validates lore owners: first lorebooks tied to the page's chat and the chat's active lorebooks, then, only on a miss, the other chat-tied lorebooks (earlier sessions' Keeper books). It reuses the lorebook list and entry caches and fetches nothing for other owners. A found entry shows the standard owner button ("Lorebook entry" plus its name) and opens through `openLorebookEntry` (the editor's Entries tab with the entry focused); a lorebook owner shows "Open lorebook" through `openLorebookDetail`; a truly missing entry keeps the "unavailable" notice. No new visual pattern.
+- **Tests:** `run-lore-owner.mjs` (13 checks: entry in the chat's lorebook, entry in an earlier session's lorebook, whole-lorebook owner, missing entry, the near match never loads other sessions' lorebooks, two phone widths without horizontal scroll); the full campaign-wiki fixture suite passes (206 checks across 9 runners).
 
 ### Stat block values keep their text
 - **Commit(s):** this commit

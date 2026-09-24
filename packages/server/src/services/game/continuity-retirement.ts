@@ -1,13 +1,14 @@
 import type { CampaignMemoryActor, GameContinuityReceipt, GameContinuitySource } from "@marinara-engine/shared";
 import type { DB } from "../../db/connection.js";
 import { eq } from "../../db/file-query.js";
-import { lorebookEntries } from "../../db/schema/index.js";
+import { chats, lorebookEntries } from "../../db/schema/index.js";
 import { logger } from "../../lib/logger.js";
 import { createCampaignMemoryStorage } from "../storage/campaign-memory.storage.js";
 import { createGameContinuityStorage } from "../storage/game-continuity.storage.js";
 import { applyCampaignMemoryMutation } from "./campaign-memory-mutations.js";
 import { readCampaignMemorySources } from "./campaign-memory-sources.js";
 import { validateContinuityManifest } from "./continuity-sources.js";
+import { campaignIdentity } from "./game-keeper-lorebook.js";
 
 /**
  * A published receipt stops being true when the player edits, deletes, hides or swipes away a message it was
@@ -222,6 +223,37 @@ function receiptIdOf(value: unknown): string | null {
   return typeof receiptId === "string" ? receiptId : null;
 }
 
+function metadataObject(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (typeof value !== "string") return {};
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The other game chats of the receipt's campaign (every session and branch, earlier or later), excluding the
+ * receipt's own chat. Campaign identity is the chat's gameId, else its group, as the Keeper book uses it.
+ */
+async function otherCampaignSessionChatIds(tx: DB, chatId: string): Promise<string[]> {
+  const current = (await tx.select().from(chats).where(eq(chats.id, chatId)).limit(1))[0];
+  if (!current || current.mode !== "game") return [];
+  const identity = campaignIdentity(current.id, metadataObject(current.metadata), current.groupId);
+  if (!identity || identity === current.id) return [];
+  const rows = await tx.select().from(chats).where(eq(chats.groupId, identity));
+  return rows
+    .filter(
+      (row) =>
+        row.id !== chatId &&
+        row.mode === "game" &&
+        campaignIdentity(row.id, metadataObject(row.metadata), row.groupId) === identity,
+    )
+    .map((row) => row.id);
+}
+
 /** Retire one published receipt and take its memory back out. Locked or player-authored facts are left alone. */
 export async function retireContinuityReceipt(
   db: DB,
@@ -292,6 +324,43 @@ export async function retireContinuityReceipt(
           expectedRevision: entity.revision,
           patch: { status: "archived" },
         });
+      }
+      // The legacy import copied every Keeper lorebook entry, these batch pages included, into every session of the
+      // campaign. Archive those copies too so no orphan "Game continuity" page outlives its batch, but only where
+      // the copy holds no live fact of its own (a fact written in that session is not this receipt's to retract).
+      if (entryIds.size) {
+        for (const otherChatId of await otherCampaignSessionChatIds(tx, receipt.chatId)) {
+          const otherScope = { chatId: otherChatId };
+          const copies = (await memory.listEntities(otherScope)).filter(
+            (entity) =>
+              entity.status !== "archived" &&
+              entity.kind === "lore" &&
+              entity.owner.type === "existing" &&
+              entity.owner.store === "lorebook-entries" &&
+              entryIds.has(entity.owner.recordId) &&
+              !entity.manualLock,
+          );
+          if (!copies.length) continue;
+          const liveSubjects = new Set(
+            (await memory.listFacts(otherScope))
+              .filter((fact) => fact.status === "verified" || fact.status === "proposed")
+              .map((fact) => fact.subjectEntityId),
+          );
+          for (const entity of copies) {
+            if (liveSubjects.has(entity.entityId)) continue;
+            await applyCampaignMemoryMutation(tx, {
+              chatId: otherChatId,
+              operationId: `continuity-retire:${receipt.id}:entity:${otherChatId}:${entity.entityId}:${entity.revision}`,
+              actor,
+              reason,
+              recordType: "entity",
+              action: "update",
+              recordId: entity.entityId,
+              expectedRevision: entity.revision,
+              patch: { status: "archived" },
+            });
+          }
+        }
       }
       for (const entryId of entryIds) {
         const rows = await tx.select().from(lorebookEntries).where(eq(lorebookEntries.id, entryId)).limit(1);

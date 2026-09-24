@@ -651,7 +651,8 @@ export function createCampaignMemoryStorage(
         };
         oneOf(next.kind, ENTITY_KINDS, "entity.kind");
         oneOf(next.status, ["active", "archived"], "entity.status");
-        if (next.kind !== entityFrom(row).kind || JSON.stringify(next.owner) !== JSON.stringify(entityFrom(row).owner))
+        const ownerChanged = JSON.stringify(next.owner) !== JSON.stringify(entityFrom(row).owner);
+        if (next.kind !== entityFrom(row).kind || ownerChanged)
           fail("CAMPAIGN_MEMORY_INVALID_REFERENCE", "Entity kind and owner are immutable after registration");
         validateOwner(next.owner, entityId);
         if (next.owner.type === "registry" && next.kind !== "organization" && next.kind !== "note")
@@ -659,7 +660,13 @@ export function createCampaignMemoryStorage(
             "CAMPAIGN_MEMORY_INVALID_REFERENCE",
             "Registry owners are allowed only for organization and note entities",
           );
-        await assertOwner({ chatId: scope.chatId, kind: next.kind, owner: next.owner, aliases: next.aliases });
+        // The owner was resolved when the entity was registered and cannot
+        // change afterwards. Re-resolving it on every update made a page whose
+        // library card or lorebook entry was later deleted impossible to edit
+        // or archive, so only a changed owner (already rejected above) would
+        // be re-resolved here.
+        if (ownerChanged)
+          await assertOwner({ chatId: scope.chatId, kind: next.kind, owner: next.owner, aliases: next.aliases });
         listOfStrings(next.aliases, "aliases");
         listOfStrings(next.tags, "tags");
         provenance(next.provenance);

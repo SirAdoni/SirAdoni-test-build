@@ -103,7 +103,9 @@ try {
   const outcomeFor = (recordId: string) => [...result.transitions.applied, ...result.transitions.pending, ...result.transitions.skipped].find((item) => item.recordId === recordId);
   assert.equal(result.transitions.skipped.length, 0, "no transition derivation failed");
   const first = await rows();
-  assert.equal(first.facts.length, 10, "facts are unchanged by transitions: one per resolved subject plus one fallback for the unresolved inviter");
+  // Was 10: the invitation also published a lore fallback because "Rowan Mercer" is unresolved. The fallback is now
+  // written only when no subject resolves; the unresolved inviter rides on Tilda's per-subject fact instead.
+  assert.equal(first.facts.length, 9, "facts are unchanged by transitions: one per resolved subject, no fallback beside them");
 
   // Event: one row with both participants and the exact-alias location, ordered by the evidence message.
   const pact = outcomeFor(pactRecord.id)!;

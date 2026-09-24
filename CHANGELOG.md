@@ -4,6 +4,11 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Campaign Wiki pages can be edited and archived again after their library card or lorebook entry was deleted.
+- "Game continuity" batch pages no longer repeat facts that are already on a character or place page. A fact that names one known and one unknown person is stored once, on the known person, and lists the unknown name.
+- Retiring a continuity batch now also archives its "Game continuity" page in the campaign's other sessions, where the old import had copied it.
+- Imported lore pages in the Campaign Wiki no longer claim to appear in every session; they list only the sessions where something happened to them.
+- Lore pages in the Campaign Wiki now link straight to their lorebook entry (or open the whole lorebook) instead of saying the linked page is unavailable.
 - Fixed Game mode stat widgets showing only the leading number of a value: a stat such as "23 h 52 min" or "540 km circuit" now shows in full, as the GM wrote it. Plain numbers still show as numbers, and bars, gauges and counters are unchanged.
 - Game Mode NPC descriptions no longer come out garbled (for example `" : "Name.`) when a speaker-tagged dialogue line names someone, and a line where another character speaks to an NPC by name no longer becomes that NPC's description; the NPC gets "Name appears in the current scene." until real narration describes them. Companions and onboard AIs listed in the chat metadata key `gameNarrationExcludedNpcNames` are never picked up as new NPCs. The NPC Biographer's identity check now accepts a first name or surname (titles such as Captain are ignored) and curly or straight quotes, and one weak confirmation is treated as uncertain instead of failing every character in the batch.
 - Game Mode NPCs no longer stay stuck at their starting location forever: a session conclusion can now mark a known NPC as dead (or missing) and record where they were last seen, the journal drops outdated "Tracked at" lines instead of piling them up (and never writes a status such as "Deceased" as a place), and the NPC list shows a small **Deceased** label. Journal notes from a turn you delete, bulk delete or regenerate are removed with it, and two journal updates arriving at the same time no longer overwrite each other.

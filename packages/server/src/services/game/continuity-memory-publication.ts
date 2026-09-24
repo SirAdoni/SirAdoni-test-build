@@ -745,16 +745,17 @@ export async function publishContinuityMemory(
             : "unresolved";
     const subjects = await resolveSubjects(record);
     const fallbackFactId = `cmf_${hash({ chatId: receipt.chatId, receiptId: receipt.id, recordId: record.id, sourceRevision }).slice(0, 32)}`;
-    if (options.supersedeResolvedFallback && subjects.resolved.length > 0 && subjects.unresolved.length === 0) {
-      // Every subject now resolves to a registered person or place, so the per-subject facts published below carry
-      // this record. The lore-entity fallback written while they were unknown would only repeat it.
+    if (options.supersedeResolvedFallback && subjects.resolved.length > 0) {
+      // At least one subject now resolves to a registered person or place, so the per-subject facts published below
+      // carry this record (with any still-unresolved names). The lore-entity fallback written while no subject, or
+      // not every subject, was known would only repeat it on the batch's "Game continuity" page.
       const fallback = await memoryStorage.getFact({ chatId: receipt.chatId }, fallbackFactId);
       if (fallback && fallback.status === "verified" && !fallback.manualLock && fallback.author !== "user") {
         await applyCampaignMemoryMutation(tx, {
           chatId: receipt.chatId,
           operationId: `continuity-relink:${receipt.id}:fallback:${fallbackFactId}:${fallback.revision}`,
           actor: publicationActor,
-          reason: "Every subject of this record now resolves; its per-subject facts replace the fallback.",
+          reason: "A subject of this record now resolves; its per-subject facts replace the fallback.",
           recordType: "fact",
           action: "update",
           recordId: fallbackFactId,
@@ -804,12 +805,19 @@ export async function publishContinuityMemory(
           receiptId: receipt.id,
           historical,
           recordId: record.id,
+          // Names in the same record that did not resolve (no candidate or ambiguous) ride on each per-subject
+          // fact instead of a duplicate fallback. comparableFactValue ignores this field, so a later
+          // resolution never turns a republish into a conflict.
+          ...(subjects.unresolved.length
+            ? { unresolvedSubjects: subjects.unresolved.map((unresolved) => ({ ...unresolved })) }
+            : {}),
         },
       });
     }
-    // The lore-entity fallback keeps the legacy shape and ID. It is published when any
-    // subject is unresolved or ambiguous (or the record names no subject) and reports them.
-    if (subjects.unresolved.length || !subjects.resolved.length) {
+    // The lore-entity fallback keeps the legacy shape and ID. It is published only when no
+    // subject resolved (every subject unresolved or ambiguous, or the record names none).
+    // A fallback beside per-subject facts repeated the record on the batch page.
+    if (!subjects.resolved.length) {
       publishedFacts.push({
         ...baseFact,
         factId: legacyFactId,
