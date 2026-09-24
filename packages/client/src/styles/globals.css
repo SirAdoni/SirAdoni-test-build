@@ -6363,6 +6363,11 @@ strong {
     order: 9;
   }
 
+  /* Portrait phones: the overflow menu button always closes the row. */
+  .mari-topbar-action[data-topbar-more] {
+    order: 11;
+  }
+
   .mari-topbar-action[data-topbar-hover-key="home"] > svg {
     width: clamp(15px, 4.4vw, 18px);
     height: clamp(15px, 4.4vw, 18px);
@@ -7810,5 +7815,31 @@ strong {
 
   :is([data-panel-key="settings"], [data-panel-key="connections"]) input[type="range"] {
     min-height: 2.25rem;
+  }
+}
+
+/* Landscape phones: the chat sidebar's fixed controls (mode tabs, create row,
+   search) took the whole height and left no room for the chat list. Scroll the
+   sidebar as one column instead, with its header (and close button) pinned. */
+@media (max-height: 500px) and (orientation: landscape) {
+  .mari-chat-sidebar {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .mari-chat-sidebar > * {
+    flex-shrink: 0;
+  }
+
+  .mari-chat-sidebar > .mari-sidebar-header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+
+  .mari-chat-sidebar > [data-chat-root-drop-zone] {
+    flex: 1 0 auto;
+    min-height: 12rem;
+    overflow-y: visible;
   }
 }

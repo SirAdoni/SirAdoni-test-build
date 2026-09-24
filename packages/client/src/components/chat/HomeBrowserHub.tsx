@@ -584,7 +584,7 @@ function HomeWidgetFrame({
         aria-label={dragLabel}
         title={dragLabel}
         className={cn(
-          "mari-home-widget__drag-handle mari-chrome-accent-text-muted absolute right-2 top-2 z-20 flex h-7 w-5 cursor-grab touch-none select-none items-center justify-center opacity-100 transition-[opacity,color,transform] hover:text-[var(--foreground)] active:cursor-grabbing active:scale-95 focus-visible:outline-none focus-visible:text-[var(--marinara-app-accent-solid)] [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-focus-within:opacity-100 [@media(pointer:fine)]:group-hover:opacity-100",
+          "mari-home-widget__drag-handle mari-chrome-accent-text-muted absolute right-2 top-2 z-20 flex h-7 w-5 cursor-grab [@media(pointer:coarse)]:right-0.5 [@media(pointer:coarse)]:top-0.5 [@media(pointer:coarse)]:h-9 [@media(pointer:coarse)]:w-9 touch-none select-none items-center justify-center opacity-100 transition-[opacity,color,transform] hover:text-[var(--foreground)] active:cursor-grabbing active:scale-95 focus-visible:outline-none focus-visible:text-[var(--marinara-app-accent-solid)] [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-focus-within:opacity-100 [@media(pointer:fine)]:group-hover:opacity-100",
           dragging && "!cursor-grabbing !text-[var(--marinara-app-accent-solid)]",
         )}
         onClick={(event) => event.stopPropagation()}
@@ -1485,7 +1485,7 @@ function FloatingProfessorMari({
         <button
           type="button"
           onClick={minimize}
-          className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)]"
+          className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-foreground)] [@media(pointer:coarse)]:right-0.5 [@media(pointer:coarse)]:top-0.5 [@media(pointer:coarse)]:h-9 [@media(pointer:coarse)]:w-9 hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)]"
           aria-label={t("home.assistant.dismiss")}
         >
           <X size="0.72rem" />
@@ -1510,12 +1510,12 @@ function FloatingProfessorMari({
               }}
               aria-label={t("home.assistant.searchPlaceholder")}
               placeholder={t(mobile ? "home.assistant.searchPlaceholderMobile" : "home.assistant.searchPlaceholder")}
-              className="mari-chrome-field h-9 w-full rounded-lg pl-3 pr-9 text-xs"
+              className="mari-chrome-field h-9 w-full rounded-lg pl-3 pr-9 text-xs [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:pr-11"
             />
             <button
               type="submit"
               disabled={!query.trim()}
-              className="absolute right-1 top-1 flex h-7 w-7 items-center justify-center rounded-md text-[var(--marinara-app-accent-solid)] transition-colors hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-app-accent-solid)] disabled:opacity-35"
+              className="absolute right-1 top-1 flex h-7 w-7 items-center justify-center rounded-md [@media(pointer:coarse)]:h-9 [@media(pointer:coarse)]:w-9 text-[var(--marinara-app-accent-solid)] transition-colors hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-app-accent-solid)] disabled:opacity-35"
               aria-label={t("home.assistant.searchAction")}
             >
               <Search size="0.8rem" />
