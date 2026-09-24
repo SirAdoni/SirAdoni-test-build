@@ -119,9 +119,23 @@ export function computeStoryboardSheetPlacement(input: {
   };
 }
 
-/** True while the player is typing in the Game composer (the on-screen keyboard is usually up). */
+/**
+ * True while the player types in the Game composer with an on-screen keyboard up. Focus alone is not
+ * enough: hiding the tab on every focus shifted the column by its height on each focus and send, even
+ * where no keyboard takes the room (hardware keyboards, tablets). The keyboard shows as a visual
+ * viewport noticeably shorter than the layout viewport.
+ */
 function useGameComposerFocused() {
-  const [focused, setFocused] = useState(false);
+  const [composerFocused, setFocused] = useState(false);
+  const [keyboardUp, setKeyboardUp] = useState(false);
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const update = () => setKeyboardUp(viewport.height < window.innerHeight * 0.8);
+    update();
+    viewport.addEventListener("resize", update);
+    return () => viewport.removeEventListener("resize", update);
+  }, []);
   useEffect(() => {
     const isComposer = (target: EventTarget | null) =>
       target instanceof HTMLTextAreaElement && !!target.closest(".mari-chat-input-box");
@@ -136,7 +150,7 @@ function useGameComposerFocused() {
       document.removeEventListener("focusout", onFocusOut);
     };
   }, []);
-  return focused;
+  return composerFocused && keyboardUp;
 }
 
 function useStoryboardSheetPlacement(
