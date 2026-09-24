@@ -5,12 +5,13 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Settings > Features "Cache-friendly prompt layout" (cacheFriendlyPromptLayout): stable lore order for selectively
-// activated lorebook entries. On: the first order is lorebook id, entry order, position, id; later turns keep the
-// entries sent last turn in place, append new ones at the end and let dropped ones linger (chat metadata
-// `stableLoreLingerTurns`, default 2) while they pass every non-keyword gate and the budget has room. An entry whose
-// linger ran out is held until a turn whose order changes anyway. The state is per chat and scope in
-// `stableLoreOrder`, keyed by the turn, so a regenerate of the same turn sends the same order, and a branch drops it.
+// Settings > Features "Stable lore order" (stableLoreOrder): stable lore order for selectively activated lorebook
+// entries. On: the first order is lorebook id, entry order, position, id; later turns keep the entries sent last
+// turn in place, append new ones at the end and let dropped ones linger (Features number `stableLoreLingerTurns`,
+// default 2; chat metadata `stableLoreLingerTurns` wins) while they pass every non-keyword gate and the budget has
+// room. An entry whose linger ran out is held until a turn whose order changes anyway. The state is per chat and
+// scope in `stableLoreOrder`, keyed by the turn, so a regenerate of the same turn sends the same order, and a branch
+// drops it.
 // Off: entry order with scan order as the tie breaker, as upstream.
 //
 // The fixture chat scans only the current player message, so keywords flicker in and out from turn to turn. Each
@@ -353,7 +354,7 @@ try {
   const preamble = filler("system prompt and character", 4000);
 
   const runChat = async (label: string, switchOn: boolean, meta: Record<string, unknown> = {}) => {
-    resetFeatureSettingsForTests(switchOn ? {} : { cacheFriendlyPromptLayout: false });
+    resetFeatureSettingsForTests(switchOn ? {} : { stableLoreOrder: false });
     const chat = await chats.create({ name: `Fixture ${label}`, mode: "roleplay", characterIds: [] });
     assert.ok(chat);
     await chats.patchMetadata(chat.id, { activeLorebookIds, ...meta });

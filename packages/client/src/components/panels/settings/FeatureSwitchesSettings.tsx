@@ -22,6 +22,7 @@ const SERVER_SWITCHES: ReadonlyArray<{ name: FeatureSwitchName; number?: Feature
   { name: "chatgptHistoryReplay" },
   { name: "cacheFriendlyPromptLayout" },
   { name: "stableLorebookGroupPicks" },
+  { name: "stableLoreOrder", number: "stableLoreLingerTurns" },
   { name: "providerRetry" },
   { name: "backgroundCallCap", number: "backgroundCallsPerHour" },
   { name: "messageTrash", number: "messageTrashDays" },

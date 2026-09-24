@@ -1286,7 +1286,7 @@ export async function processLorebooks(
     /** Optional random source for probability and weighted group selection. */
     random?: () => number;
     /**
-     * Previous order for this chat and scan scope (stable-lore-order.ts). With the "Cache-friendly prompt layout"
+     * Previous order for this chat and scan scope (stable-lore-order.ts). With the "Stable lore order"
      * switch on, kept entries stay in place, new ones are appended and dropped ones may linger; the result carries
      * `stableLoreOrderUpdate` for the caller to persist. Omitted, the entries use the stable key order only.
      */
@@ -1713,7 +1713,7 @@ export async function processLorebooks(
       ? serializeTimingStateMap(updatedTimingMap)
       : undefined;
 
-  // Settings > Features "Cache-friendly prompt layout": a deterministic, append-only order for the selected
+  // Settings > Features "Stable lore order": a deterministic, append-only order for the selected
   // entries (stable-lore-order.ts). Timing, ephemeral counters and budgets above saw only the real activations.
   const stableOrder = isStableLoreOrderEnabled();
   let sentActivated = finalActivated;

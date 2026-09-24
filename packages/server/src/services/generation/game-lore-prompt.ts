@@ -46,7 +46,7 @@ export function splitGameLorePrompt(
   const orderParts = (parts: Array<{ order: number; index: number; content: string }>): string =>
     parts
       .slice()
-      // A scan in stable lore order (cache-friendly layout) already put the entries where they stay; keep it.
+      // A scan in stable lore order (Stable lore order switch) already put the entries where they stay; keep it.
       .sort((left, right) => (scan.stableOrder ? 0 : left.order - right.order) || left.index - right.index)
       .map((part) => part.content)
       .join("\n\n");

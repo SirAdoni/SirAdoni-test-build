@@ -3170,7 +3170,7 @@ export async function generateRoutes(app: FastifyInstance) {
         });
         // Every decision read before the reply is keyed to the newest message, id and text.
         const preReplyDecisionTurnId = latestTurnDecisionId(chatMessages);
-        // Stable lore order (cache-friendly layout): state is keyed to the newest message before the reply, so a
+        // Stable lore order switch: state is keyed to the newest message before the reply, so a
         // regenerate or swipe of this turn starts from the same previous order.
         const stableLoreTurn = stableLoreTurnKey(chatMessages);
         const stableLoreOrderFor = (targetCharacterIds: readonly string[]) =>

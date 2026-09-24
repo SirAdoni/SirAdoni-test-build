@@ -50,6 +50,7 @@ try {
   for (const name of FEATURE_SWITCH_NAMES) assert.equal(isFeatureEnabled(name), true, `${name} defaults on`);
   assert.equal(getFeatureNumber("backgroundCallsPerHour"), 600);
   assert.equal(getFeatureNumber("messageTrashDays"), 30);
+  assert.equal(getFeatureNumber("stableLoreLingerTurns"), 2);
 
   // ── env precedence: set wins both ways, unset falls through ──
   resetFeatureSettingsForTests({ stableLorebookGroupPicks: false, providerRetry: true });

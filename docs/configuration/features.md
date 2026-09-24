@@ -11,6 +11,7 @@ Changes apply straight away. You do not need to restart the server or reload the
 | **ChatGPT history replay**                  | On           | App           | Settings > Advanced > Features      |                                      |
 | **Cache-friendly prompt layout**            | On           | App           | Settings > Advanced > Features      |                                      |
 | **Stable lorebook picks**                   | On           | App           | Settings > Advanced > Features      | `LOREBOOK_STABLE_GROUP_WINNERS`      |
+| **Stable lore order**                       | On, 2 turns  | App           | Settings > Advanced > Features      |                                      |
 | **Retry failed provider calls**             | On           | App           | Settings > Advanced > Features      | `PROVIDER_RETRY_TRANSIENT_ERRORS`    |
 | **Background call cap**                     | On, 600/h    | App           | Settings > Advanced > Features      | `MARINARA_BACKGROUND_CALLS_PER_HOUR` |
 | **Message trash**                           | On, 30 days  | App           | Settings > Advanced > Features      |                                      |
@@ -47,24 +48,40 @@ Off: the prompt is rebuilt every turn. No session header and no cache key are se
 
 Setting key: `cacheFriendlyPromptLayout`.
 
-On: World Maps and other changing runtime blocks move next to the current turn, the full-lore prefix leads the prompt, subscription providers use the full-lore layout by default, and lorebook entries picked by the keyword or semantic scan keep a stable order from turn to turn (see **Stable lore order** below).
+On: World Maps and other changing runtime blocks move next to the current turn, the full-lore prefix leads the prompt, and subscription providers use the full-lore layout by default. The order of the lorebook entries the keyword or semantic scan picks has its own switch, **Stable lore order**.
 
-Off: the prompt is sent in the order it was assembled. Chats use the keyword lore scan unless a chat explicitly turned full lore on, and scanned entries are sorted by entry order with scan order breaking ties.
+Off: the prompt is sent in the order it was assembled. Chats use the keyword lore scan unless a chat explicitly turned full lore on.
 
-#### Stable lore order
+Game chats on a subscription provider can also opt in to **stable final checks** with the chat metadata key `gameCacheStableFinalChecks` set to `true` (no settings control yet; default off). The player-canon and prose checks that close every Game prompt never change within a chat, but anything after the last finished exchange is written to the prompt cache again on the next turn. With the opt-in, their full text (about 5,100 characters) moves into the cached part of the prompt, just before the history, and a short `<final_checks>` reminder (about 230 characters) stays at the end. Each Game turn then writes about 4,900 fewer characters to the cache. The trade-off is that the full checks are no longer the last thing the model reads; the reminder names them and keeps the rule that the current player input has the highest authority. The opt-in only works while this switch is on. Turning it on or off in a running chat rewrites the cached history once.
 
-Full lore on a subscription provider already sends every entry in one fixed `<lore>` prefix. Everything else still picks entries per turn: the keyword and semantic scan on other providers, subscription chats with full lore turned off, depth entries and Outlets. Those entries used to be sorted by entry order, so a keyword that appeared or disappeared could change the middle of the lore block and make the provider re-read everything after it. With the switch on:
+### Stable lorebook picks
+
+Setting key: `stableLorebookGroupPicks`.
+
+On: a lorebook inclusion group keeps the same winner in a chat while its candidates stay the same.
+
+Off: the winner is re-rolled on every scan.
+
+### Stable lore order
+
+Setting keys: `stableLoreOrder` and `stableLoreLingerTurns` (**Linger turns**, default 2, 0 to 8).
+
+Full lore on a subscription provider already sends every entry in one fixed `<lore>` prefix. Everything else still picks entries per turn: the keyword and semantic scan on other providers, subscription chats with full lore turned off, depth entries and Outlets. Those entries used to be sorted by entry order, so a keyword that appeared or disappeared could change the middle of the lore block and make the provider re-read everything after it.
+
+On:
 
 - **First order.** Lorebook id, then entry order, then position, then entry id. Activation score and scan order never decide it.
 - **Append only.** Each turn keeps the entries it sent last turn in the same order. Entries that are no longer active are removed. New ones go at the end, sorted the same way. The block before the first new entry stays the same as last turn.
-- **Linger.** An entry that a keyword, semantic or recursive match brought in and that stops matching can stay for a few more turns, so a keyword that flickers in and out does not rewrite the block every turn. Each turn it lingers, it must still pass every check the scan runs apart from the keyword itself: enabled, character, tag and trigger filters, game-state activation conditions and the schedule (time, date and location), all against this turn's game state. So an entry scheduled for night, or for one location, or with a condition such as `location equals ...`, leaves as soon as the game state stops matching it. It also needs room in the chat and lorebook token budgets and entry limits, and nothing lingers on a turn where the budget already turned a new match away. Entries the current location brought in never linger (after travel they leave at once), and neither do constant, always-loaded, decision, probability, inclusion-group, cooldown, delay, macro or limited-use (ephemeral) entries. A limited-use entry is only sent on turns that count toward its limit. Lingering entries show as sticky in the activation list and do not start timers. The chat metadata key `stableLoreLingerTurns` sets the number of turns: default 2, `0` turns linger off, the maximum is 8. There is no settings control for it yet.
+- **Linger.** An entry that a keyword, semantic or recursive match brought in and that stops matching can stay for a few more turns, so a keyword that flickers in and out does not rewrite the block every turn. Each turn it lingers, it must still pass every check the scan runs apart from the keyword itself: enabled, character, tag and trigger filters, game-state activation conditions and the schedule (time, date and location), all against this turn's game state. So an entry scheduled for night, or for one location, or with a condition such as `location equals ...`, leaves as soon as the game state stops matching it. It also needs room in the chat and lorebook token budgets and entry limits, and nothing lingers on a turn where the budget already turned a new match away. Entries the current location brought in never linger (after travel they leave at once), and neither do constant, always-loaded, decision, probability, inclusion-group, cooldown, delay, macro or limited-use (ephemeral) entries. A limited-use entry is only sent on turns that count toward its limit. Lingering entries show as sticky in the activation list and do not start timers. **Linger turns** under the switch (setting key `stableLoreLingerTurns`) sets the number of turns: default 2, `0` turns linger off, the maximum is 8. A chat can override it with the chat metadata key `stableLoreLingerTurns` (a number from 0 to 8; larger numbers count as 8). The chat's own value wins over **Linger turns**; a chat without one, or with a value that is not a number of 0 or more, uses **Linger turns**. There is no chat settings control for the override yet.
 - **Held until the block changes.** When an entry's linger turns run out, taking it out of a block that is otherwise the same as last turn would make the provider read everything after it again, the whole history included. So it is held, and removed on the next turn whose lore changes anyway (a new entry, or another entry leaving). It is held for at most 4 turns, and only while it still passes the same checks and budgets. Once the 4 turns are up it is removed even from an unchanged block, and that one turn rewrites the history as before.
 - **Depth and position.** An entry's position and explicit depth always decide where it goes (before or after the character, a given depth, or an Outlet). The stable order only decides the order inside one place. Entries at the same depth follow it instead of entry order.
-- **Where the block sits.** A keyword lore block that is its own system message sits before the history, as before. In the subscription Game layout with full lore off, keyword lore travels with the per-turn blocks next to the current turn, and it now goes first there, before weather, map and turn state.
+- **Where the block sits.** A keyword lore block that is its own system message sits before the history, as before. In the subscription Game layout with full lore off, keyword lore travels with the per-turn blocks next to the current turn, and it now goes first there, before weather, map and turn state. Moving those blocks is the job of **Cache-friendly prompt layout**, so this part needs both switches on.
 - **Cache marker.** On the Anthropic API, a stable lore block that is its own system message gets one more cache marker on the system block just before it. When new entries are added, the system prompt and character text before the block are still read from the cache. That is the third of Anthropic's four markers; the other two are the end of the system prompt and one history message. The Claude subscription gets no extra marker, because the Agent SDK already uses all four. OpenAI-style providers cache prefixes on their own and get none either.
 - **State.** Each chat stores the order it sent in the chat metadata key `stableLoreOrder`: entry ids plus linger counters, one entry per character scope, at most 8 scopes. The state is tied to the newest message before the reply, so a regenerate or swipe of the same turn starts from the same order and sends the same block. A branch starts without it. Prompt previews read it but never write it.
 
-The stable lore order does not have its own switch. It uses **Cache-friendly prompt layout** because it is part of the same job: keeping the start of the prompt the same for providers that cache by prefix. With the switch off, you get the upstream order back exactly. A separate switch would also need a change to the shared settings schema and the settings screen.
+Off: scanned entries are sorted by entry order with scan order breaking ties, exactly as upstream: the lore blocks, depth entries and Outlets are byte for byte what they were before the stable order existed. Nothing is lingered or held, the `stableLoreOrder` chat metadata is neither read nor written (an order a chat stored earlier is left alone and used again if the switch comes back on), and no extra Anthropic cache marker is set. **Linger turns** and the chat override have no effect while the switch is off.
+
+The switch is independent of **Cache-friendly prompt layout**: either can be on without the other.
 
 Measured on a fixture chat whose keywords flicker (12 turns, 7 keyword entries of about 700 characters in 2 lorebooks, one depth entry, 1,500-character replies), counting the characters of each prompt after the part it shares with the previous one:
 
@@ -76,21 +93,11 @@ Measured on a fixture chat whose keywords flicker (12 turns, 7 keyword entries o
 
 The costs of linger, stated plainly:
 
-- **More lore in each prompt.** Lingering and held entries are sent on turns where the scan did not pick them, so each prompt is larger (10.1% more characters on the fixture). On a provider that caches by prefix, most of that is read from the cache. On a provider or local model without a prefix cache, linger only adds tokens and saves nothing; set `stableLoreLingerTurns` to `0` for those chats.
-- **Lore about things no longer mentioned.** An entry can stay up to 2 turns after its keyword was last seen, plus up to 4 held turns, as long as it still passes its game-state checks. It is lore the scan picked a few turns ago, not lore that contradicts the current state.
+- **More lore in each prompt.** Lingering and held entries are sent on turns where the scan did not pick them, so each prompt is larger (10.1% more characters on the fixture). On a provider that caches by prefix, most of that is read from the cache. On a provider or local model without a prefix cache, linger only adds tokens and saves nothing; set **Linger turns** to `0`, or set the chat metadata key `stableLoreLingerTurns` to `0` for just those chats.
+- **Lore about things no longer mentioned.** With the default of 2, an entry can stay up to 2 turns after its keyword was last seen, plus up to 4 held turns, as long as it still passes its game-state checks. It is lore the scan picked a few turns ago, not lore that contradicts the current state.
 - **Some turns can be a little worse.** When the block changes and held entries leave at the same time, the part of the block from the first entry that left is rewritten. On the fixture one turn rewrote 702 more characters than with the switch off (one entry). An entry that reaches the end of its 4 held turns on an otherwise unchanged turn rewrites the history once, as the switch off would.
 
 The fixture numbers repeat from run to run: the first order sorts by lorebook id, and the regression gives the lower id the same role every time.
-
-Game chats on a subscription provider can also opt in to **stable final checks** with the chat metadata key `gameCacheStableFinalChecks` set to `true` (no settings control yet; default off). The player-canon and prose checks that close every Game prompt never change within a chat, but anything after the last finished exchange is written to the prompt cache again on the next turn. With the opt-in, their full text (about 5,100 characters) moves into the cached part of the prompt, just before the history, and a short `<final_checks>` reminder (about 230 characters) stays at the end. Each Game turn then writes about 4,900 fewer characters to the cache. The trade-off is that the full checks are no longer the last thing the model reads; the reminder names them and keeps the rule that the current player input has the highest authority. The opt-in only works while this switch is on. Turning it on or off in a running chat rewrites the cached history once.
-
-### Stable lorebook picks
-
-Setting key: `stableLorebookGroupPicks`.
-
-On: a lorebook inclusion group keeps the same winner in a chat while its candidates stay the same.
-
-Off: the winner is re-rolled on every scan.
 
 ### Retry failed provider calls
 

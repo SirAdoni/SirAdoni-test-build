@@ -38,7 +38,7 @@ function buildAnthropicCacheControl(options: ChatOptions): AnthropicCacheControl
 }
 
 /**
- * Cache marker for the stable lore block (stable-lore-order.ts, "Cache-friendly prompt layout"). A keyword lore
+ * Cache marker for the stable lore block (stable-lore-order.ts, "Stable lore order" switch). A keyword lore
  * block that is its own system message is marked `marinaraStableLoreBlock`; when new entries are appended to it,
  * the system-end marker misses, so one more marker goes on the system block just before it and the preamble
  * (system prompt and character text) is still read from the cache. Anthropic allows 4 markers per request; this

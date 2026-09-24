@@ -12,6 +12,7 @@ export const FEATURE_SWITCH_NAMES = [
   "chatgptHistoryReplay",
   "cacheFriendlyPromptLayout",
   "stableLorebookGroupPicks",
+  "stableLoreOrder",
   "providerRetry",
   "backgroundCallCap",
   "messageTrash",
@@ -23,6 +24,8 @@ export type FeatureSwitchName = (typeof FEATURE_SWITCH_NAMES)[number];
 export const FEATURE_NUMBER_SETTINGS = {
   backgroundCallsPerHour: { defaultValue: 600, min: 1, max: 100_000 },
   messageTrashDays: { defaultValue: MESSAGE_TRASH_RETENTION_DAYS, min: 1, max: 365 },
+  /** Turns a stopped keyword match may stay in the lore block (stableLoreOrder); 0 turns lingering off. */
+  stableLoreLingerTurns: { defaultValue: 2, min: 0, max: 8 },
 } as const;
 export type FeatureNumberName = keyof typeof FEATURE_NUMBER_SETTINGS;
 export const FEATURE_NUMBER_NAMES = Object.keys(FEATURE_NUMBER_SETTINGS) as FeatureNumberName[];
@@ -39,6 +42,7 @@ export const featureSettingsSchema = z
     chatgptHistoryReplay: z.boolean().optional(),
     cacheFriendlyPromptLayout: z.boolean().optional(),
     stableLorebookGroupPicks: z.boolean().optional(),
+    stableLoreOrder: z.boolean().optional(),
     providerRetry: z.boolean().optional(),
     backgroundCallCap: z.boolean().optional(),
     messageTrash: z.boolean().optional(),
@@ -46,6 +50,7 @@ export const featureSettingsSchema = z
     consoleTray: z.boolean().optional(),
     backgroundCallsPerHour: numberSchema("backgroundCallsPerHour").optional(),
     messageTrashDays: numberSchema("messageTrashDays").optional(),
+    stableLoreLingerTurns: numberSchema("stableLoreLingerTurns").optional(),
   })
   .strict();
 

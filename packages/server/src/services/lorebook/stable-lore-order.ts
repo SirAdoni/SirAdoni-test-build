@@ -4,7 +4,7 @@
 // order from turn to turn so providers that cache by prompt prefix can reuse
 // the part of the lore block that did not change.
 // ──────────────────────────────────────────────
-// Settings > Features "Cache-friendly prompt layout" (cacheFriendlyPromptLayout). On:
+// Settings > Features "Stable lore order" (stableLoreOrder). On:
 //   1. The first order is a stable key: lorebook id, then entry order, then position, then entry id.
 //      Activation score and scan order never decide the order.
 //   2. Every later turn keeps the entries it sent last turn in the order it sent them, removes the
@@ -12,7 +12,8 @@
 //      stable key. The block only grows at its tail, so the prefix before the first new entry is
 //      byte-identical to the previous request.
 //   3. An entry that a keyword, semantic or recursive match activated and that stops matching may
-//      linger for a few turns (chat metadata `stableLoreLingerTurns`, default 2, 0 turns it off)
+//      linger for a few turns (Settings > Features number `stableLoreLingerTurns`, default 2, 0 turns it
+//      off; a chat's own metadata `stableLoreLingerTurns` wins over the global number)
 //      while it still passes every non-keyword gate (filters, game-state conditions, schedule) and
 //      the lore budgets have room, so a keyword that flickers does not rewrite the block every turn.
 //      Entries activated by the current location, constants, decisions or timing never linger.
@@ -23,15 +24,17 @@
 // The state is small (entry ids, linger counters, ids that may not linger), lives in chat metadata
 // under `stableLoreOrder`, is keyed by the turn it was built for (regenerate and swipe of the same
 // turn start from the same previous order and so send the same order) and is dropped on branch.
-// Off: entries are ordered by entry order with scan order as the tie breaker, as upstream.
+// Off: entries are ordered by entry order with scan order as the tie breaker, as upstream, and no
+// `stableLoreOrder` state is read or written.
 import type { LorebookActivationSource, LorebookEntry } from "@marinara-engine/shared";
-import { isFeatureEnabled } from "../features/feature-settings.js";
+import { FEATURE_NUMBER_SETTINGS } from "@marinara-engine/shared";
+import { getFeatureNumber, isFeatureEnabled } from "../features/feature-settings.js";
 import type { ActivatedEntry } from "./keyword-scanner.js";
 
 export const STABLE_LORE_ORDER_METADATA_KEY = "stableLoreOrder";
 export const STABLE_LORE_LINGER_METADATA_KEY = "stableLoreLingerTurns";
-export const DEFAULT_STABLE_LORE_LINGER_TURNS = 2;
-const MAX_STABLE_LORE_LINGER_TURNS = 8;
+export const DEFAULT_STABLE_LORE_LINGER_TURNS = FEATURE_NUMBER_SETTINGS.stableLoreLingerTurns.defaultValue;
+const MAX_STABLE_LORE_LINGER_TURNS = FEATURE_NUMBER_SETTINGS.stableLoreLingerTurns.max;
 /**
  * Turns an entry whose linger ran out may still be held while the rest of the order stays the same. A held entry is
  * stored with a linger counter of -1 after its first held turn, down to -MAX_STABLE_LORE_HELD_TURNS after its last.
@@ -85,7 +88,7 @@ export interface StableLoreOrderRequest {
 }
 
 export function isStableLoreOrderEnabled(): boolean {
-  return isFeatureEnabled("cacheFriendlyPromptLayout");
+  return isFeatureEnabled("stableLoreOrder");
 }
 
 type StableKeyFields = Pick<LorebookEntry, "id" | "lorebookId" | "order" | "position">;
@@ -137,9 +140,13 @@ export function stableLoreScopeKey(characterIds: readonly string[] | undefined, 
   return `${characters}|${personaId ?? ""}`;
 }
 
+/**
+ * Linger turns for one chat. Precedence: a valid number in the chat's own metadata `stableLoreLingerTurns`, then
+ * the Settings > Features number `stableLoreLingerTurns` (default 2). Both are clamped to 0..8.
+ */
 export function resolveStableLoreLingerTurns(meta: Record<string, unknown>): number {
   const raw = meta[STABLE_LORE_LINGER_METADATA_KEY];
-  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) return DEFAULT_STABLE_LORE_LINGER_TURNS;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) return getFeatureNumber("stableLoreLingerTurns");
   return Math.min(MAX_STABLE_LORE_LINGER_TURNS, Math.floor(raw));
 }
 
