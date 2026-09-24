@@ -12,6 +12,7 @@ import {
   combineChatSummaryEntryHistory,
   compileChatSummaryEntries,
   resolveMacros,
+  scopeCharacterSummary,
   parseTrackerHiddenFields,
   isTrackerFieldHidden,
   worldTrackerLockKey,
@@ -77,6 +78,7 @@ export interface AdvancedMemoryOperationOptions {
   debugMode?: boolean;
   onProgress?: (progress: AdvancedMemoryJob) => void;
   blocking?: boolean;
+  agentProgress?: Parameters<typeof completeAgentCall>[0]["agentProgress"];
 }
 
 export interface AdvancedMemorySceneCheck {
@@ -99,7 +101,6 @@ type SceneCheckOptions = AdvancedMemoryOperationOptions & {
   /** Largest provider-reported input in this main turn, including cache, excluding output and summed tool usage. */
   maxRequestInputTokens?: number | null;
   batchedCheck?: { request: AdvancedMemorySceneCheck; result: unknown };
-  agentProgress?: Parameters<typeof completeAgentCall>[0]["agentProgress"];
 };
 
 export interface PrepareAdvancedMemoryInput extends AdvancedMemoryOperationOptions {
@@ -909,7 +910,7 @@ export function createAdvancedMemoryService(db: DB, { includeExcerptsInStatus = 
     const narratorName = ctx.settings.narratorCharacterId ? ctx.names.get(ctx.settings.narratorCharacterId) : null;
     const knowledgeInstruction =
       ctx.individual && ctx.characterIds.length > 1
-        ? `Keep character knowledge separate when POVs switch. Put facts known only to specific characters in separate {{#if char == "Exact Name"}}...{{/if}} sections; use {{#if char == "Name A" || "Name B"}} only when both know those facts. Use the actual character names: ${JSON.stringify(ctx.characterIds.flatMap((id) => (ctx.names.has(id) ? [ctx.names.get(id)!] : [])))}. Mere presence, being mentioned, or appearing elsewhere in the source range does not grant knowledge of private thoughts, secrets, or off-screen events. Preserve existing character conditions when combining summaries; never merge different knowledge into an unrestricted section.${narratorName ? ` The narrator is ${JSON.stringify(narratorName)} and knows every section: include that exact name in each condition using ||.` : " Do not invent a narrator character."}${cacheOwner.kind === "continuity" && cacheOwner.audienceCharacterIds.length ? ` This constant summary is limited to these readers: ${JSON.stringify(cacheOwner.audienceCharacterIds.flatMap((id) => (ctx.names.has(id) ? [ctx.names.get(id)!] : [])))}; do not grant its facts to other characters.` : ""}`
+        ? `Keep character knowledge separate when POVs switch. Cover every POV and separate arc in the supplied range, not just the latest speaker. Put facts known only to specific characters in separate {{#if char == "Exact Name"}}...{{/if}} sections; use {{#if char == "Name A" || "Name B"}} only when both know those facts. Use the actual character names: ${JSON.stringify(ctx.characterIds.flatMap((id) => (ctx.names.has(id) ? [ctx.names.get(id)!] : [])))}. Mere presence, being mentioned, or appearing elsewhere in the source range does not grant knowledge of private thoughts, secrets, or off-screen events. Preserve existing character conditions when combining summaries; never merge different knowledge into an unrestricted section.${narratorName ? ` The narrator is ${JSON.stringify(narratorName)} and knows every section: include that exact name in each condition using ||.` : " Do not invent a narrator character."}${cacheOwner.kind === "continuity" && cacheOwner.audienceCharacterIds.length ? ` This constant summary is limited to these readers: ${JSON.stringify(cacheOwner.audienceCharacterIds.flatMap((id) => (ctx.names.has(id) ? [ctx.names.get(id)!] : [])))}; do not grant its facts to other characters.` : ""}`
         : "";
     // The automatic append prompt contradicts a standalone scene recap. Keep authored templates intact.
     const prompt = audienceOnly
@@ -1008,12 +1009,15 @@ export function createAdvancedMemoryService(db: DB, { includeExcerptsInStatus = 
         )
           text = undefined;
         if (!text) {
-          const result = await resolved.provider.chatComplete(
+          const result = await completeAgentCall(
+            { signal: options.signal, agentProgress: options.agentProgress },
+            [{ id: "advanced-recall", type: "advanced-recall", name: "Advanced Recall", phase: "post_processing" }],
+            resolved.provider,
             [
               { role: "system", content: instruction },
               { role: "user", content: batchText },
             ],
-            completionOptions,
+            { ...completionOptions, stream: false },
           );
           const helperContent = normalizeGemma4Delimiters(extractLeadingThinkingBlocks(result.content ?? "").content)
             .trim()
@@ -1162,11 +1166,7 @@ export function createAdvancedMemoryService(db: DB, { includeExcerptsInStatus = 
   /** Keep generated constants editable with the same character conditions as manual summaries. */
   function scopeConstantSummary(ctx: Context, content: string, audience: string[]): string {
     const names = [...new Set(audience.map((id) => ctx.names.get(id) ?? "Character"))];
-    if (!names.length) return content;
-    const condition = names
-      .map((name) => `"${name.replace(/\\/gu, "\\\\").replace(/["\u201c\u201d\u201e\u201f]/gu, "\\$&")}"`)
-      .join(" || ");
-    return `{{#if char == ${condition}}}\n${content}\n{{/if}}`;
+    return names.length ? scopeCharacterSummary(content, names) : content;
   }
 
   function renderEntry(ctx: Context, text: string, audience: string[]): string {
@@ -1601,9 +1601,7 @@ export function createAdvancedMemoryService(db: DB, { includeExcerptsInStatus = 
           );
           const inputs = [
             logMessages(ctx, source),
-            ...entries.map(
-              (entry) => `User-corrected summary:\n${renderEntry(ctx, entry.content, audienceView(ctx, []))}`,
-            ),
+            ...entries.map((entry) => `User-corrected summary (preserve every character condition):\n${entry.content}`),
             ...corrections.map((item) => `User-corrected scene summary (honor its corrections):\n${item.content}`),
           ];
           if (!record) {
@@ -2466,7 +2464,8 @@ export function createAdvancedMemoryService(db: DB, { includeExcerptsInStatus = 
       // Keep shared entries intact until their range is archived for every
       // reader; replacing only one character's section would lose the others.
       if (!(ctx.individual ? audience : [""]).every((id) => outsideLive(entry, id))) continue;
-      if (new Set(audience.map((id) => rendered.get(id)!.get(entry.id))).size > 1) {
+      const readers = ctx.individual ? audience : ctx.characterIds;
+      if (new Set(readers.map((id) => renderEntry(ctx, entry.content, [id]))).size > 1) {
         // ponytail: preserve audience-dependent templates; combining them safely
         // requires Chat Summary entries with explicit per-audience content.
         continue;

@@ -1,6 +1,14 @@
 // ──────────────────────────────────────────────
 // Routes: Lorebooks
 // ──────────────────────────────────────────────
+import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
+import { DECISION_SETTINGS_KEYS } from "../services/decision/decision-default.js";
+import {
+  cachedPromptDecisionAnswers,
+  createLorebookDecisionResolver,
+  latestTurnDecisionId,
+  promptDecisionCacheKey,
+} from "../services/decision/prompt-decisions.js";
 import type { FastifyInstance } from "fastify";
 import { existsSync } from "fs";
 import { mkdir, readFile, writeFile } from "fs/promises";
@@ -20,6 +28,7 @@ import {
   canReparentFolder,
   collectEffectivelyDisabledFolderIds,
   estimateTextTokens,
+  parseLorebookDecisionActivation,
   type CreateLorebookEntryInput,
   type LorebookEntryTimingState,
   type Lorebook,
@@ -349,6 +358,8 @@ function buildCompatibleLorebookExport(lb: Record<string, unknown>, entries: Arr
         excludeRecursion: entry.excludeRecursion === true,
         delayUntilRecursion: entry.delayUntilRecursion === true,
         vectorized: entry.excludeFromVectorization !== true,
+        // Marinara extension, ignored by SillyTavern and read back on import (#6570).
+        ...parseLorebookDecisionActivation(entry),
       },
     ]),
   );
@@ -416,6 +427,8 @@ function buildTransferredEntryInput(
     dynamicState: entry.dynamicState,
     activationConditions: entry.activationConditions,
     schedule: entry.schedule,
+    decisionStatement: entry.decisionStatement,
+    decisionMode: entry.decisionMode,
   };
 }
 
@@ -1128,11 +1141,26 @@ export async function lorebooksRoutes(app: FastifyInstance) {
           lastGenerationType: "lorebook_scan",
           idleDuration: resolvePromptIdleDuration(scanSourceMessages),
         });
+        // Decision-activated entries (#6570) read the answers the scanned turn already
+        // has; this preview never asks the Decision model.
+        const decisionModelId =
+          (await createAppSettingsStorage(app.db).get(DECISION_SETTINGS_KEYS.localDefault)) ??
+          (await createConnectionsStorage(app.db).getDefaultForDecision())?.id ??
+          null;
         return {
           resolveContent: (value: string, lorebookEntryCounts?: Readonly<Record<string, number>>) => {
             setLorebookEntryCounts(macroContext, lorebookEntryCounts);
             return resolveMacrosWithVariableSnapshot(value, macroContext);
           },
+          resolveDecisions: createLorebookDecisionResolver({
+            macroContext,
+            limit: Number.POSITIVE_INFINITY,
+            answer: async (plan) =>
+              cachedPromptDecisionAnswers(
+                plan,
+                promptDecisionCacheKey(chatId, latestTurnDecisionId(scanSourceMessages), decisionModelId),
+              ),
+          }),
         };
       } catch {
         return undefined;
@@ -1224,6 +1252,7 @@ export async function lorebooksRoutes(app: FastifyInstance) {
       previewOnly: true,
       generationTriggers: scanGenerationTriggers,
       resolveContent: lorebookMacroResolvers?.resolveContent,
+      resolveDecisions: lorebookMacroResolvers?.resolveDecisions,
       random: previewRandom,
     });
 

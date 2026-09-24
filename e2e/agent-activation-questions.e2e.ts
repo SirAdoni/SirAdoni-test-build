@@ -100,9 +100,20 @@ test("Decision settings, test errors and custom-agent questions survive reload",
     await expect(primary).toHaveCount(1);
     await expect(primary).toBeDisabled();
     await expect(primary).toContainText("No model downloaded");
-    // The managed decision sidecar has no runtime in this build, and says so.
-    await expect(decisionModel.locator("option[value='decision-sidecar:local']")).toContainText("Not installed");
+    // The managed decision sidecar is listed too, disabled, with whichever reason
+    // applies to this machine: it has not been turned on, nothing is installed, or
+    // the platform cannot run it. Each is a different fix, so the text is not
+    // pinned to one of them.
+    const decisionSidecar = decisionModel.locator("option[value='decision-sidecar:local']");
+    await expect(decisionSidecar).toHaveCount(1);
+    await expect(decisionSidecar).toBeDisabled();
+    await expect(decisionSidecar).toContainText(/Not enabled|Not installed|Requires/u);
     await decisionModel.selectOption(connection.id);
+    // Offered once a model is chosen: with None there is nothing to ask.
+    const smartOrder = page.getByLabel(/pick who speaks in Smart response order/u);
+    await expect(smartOrder).not.toBeChecked();
+    await smartOrder.check();
+    await expect.poll(async () => (await (await request.get("/api/decision/smart-order")).json()).enabled).toBe(true);
     await page.getByRole("button", { name: "Test", exact: true }).click();
     await expect(page.getByRole("status").filter({ hasText: "Probability of yes: 0.800" })).toBeVisible();
     reject = true;
@@ -137,11 +148,15 @@ test("Decision settings, test errors and custom-agent questions survive reload",
     await screenshot("activation-configured-light");
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await openDefaults();
+    await expect(page.getByLabel(/pick who speaks in Smart response order/u)).toBeChecked();
     await page.getByLabel("Decision model", { exact: true }).selectOption("");
+    await expect(page.getByLabel(/pick who speaks in Smart response order/u)).toHaveCount(0);
     await openAgent();
     await expect(question).toBeDisabled();
     await expect(question).toHaveValue("Did {{char}} enter a new location?");
   } finally {
+    // A global setting, so it is put back for the specs that run after this one.
+    await request.post("/api/decision/smart-order", { data: { enabled: false } });
     await request.delete(`/api/agents/${agent.id}`);
     await request.delete(`/api/connections/${connection.id}`);
     server.closeAllConnections();

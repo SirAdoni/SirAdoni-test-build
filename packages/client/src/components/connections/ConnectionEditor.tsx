@@ -1,7 +1,10 @@
 import {
+  DECISION_CONNECTION_TIMEOUT_BOUNDS_MS,
   DECISION_SOURCES,
   DECISION_SOURCE_BASE_URLS,
+  DECISION_TIMEOUT_MS,
   defaultDecisionStateTokens,
+  resolveDecisionConnectionTimeoutMs,
   type DecisionSource,
 } from "@marinara-engine/shared";
 import { isLanguageGenerationConnection } from "../../lib/connection-filters";
@@ -74,6 +77,7 @@ import { useEditorLeaveSave } from "../../hooks/use-editor-leave-save";
 import { leaveWithoutSaving } from "../../lib/editor-leave";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 import { translate } from "../../localization/i18n";
+import { decisionConnectionTestMessage } from "../../lib/decision-test-message";
 import { AtlasCloudModelOptions } from "./AtlasCloudModelOptions";
 import { HelpTooltip } from "../ui/HelpTooltip";
 import { SettingsCheckbox, SettingsSwitch } from "../panels/settings/SettingControls";
@@ -398,6 +402,7 @@ export function ConnectionEditor() {
   const [localDecisionSource, setLocalDecisionSource] = useState<DecisionSource>("typesafe");
   const [localCredentialsFrom, setLocalCredentialsFrom] = useState("");
   const [localMaxStateTokens, setLocalMaxStateTokens] = useState(30000);
+  const [localDecisionTimeoutMs, setLocalDecisionTimeoutMs] = useState<number>(DECISION_TIMEOUT_MS.systemOne);
   const [localAudioSource, setLocalAudioSource] = useState("elevenlabs");
   const [localAudioVoice, setLocalAudioVoice] = useState("");
   const [localAudioSoundEffects, setLocalAudioSoundEffects] = useState(false);
@@ -576,6 +581,7 @@ export function ConnectionEditor() {
     setLocalDecisionSource((c.decisionSource as DecisionSource) ?? "typesafe");
     setLocalCredentialsFrom((c.credentialsFromConnectionId as string) ?? "");
     setLocalMaxStateTokens(Number(c.maxStateTokens ?? defaultDecisionStateTokens(c.decisionSource as string)));
+    setLocalDecisionTimeoutMs(resolveDecisionConnectionTimeoutMs(c.decisionTimeoutMs));
     setLocalAudioSource((c.audioSource as string) || "elevenlabs");
     setLocalAudioVoice((c.audioVoice as string) ?? "");
     setLocalAudioSoundEffects(c.audioSoundEffects === "true" || c.audioSoundEffects === true);
@@ -966,6 +972,11 @@ export function ConnectionEditor() {
       decisionSource: localProvider === "decision" ? localDecisionSource : null,
       credentialsFromConnectionId: localProvider === "decision" ? localCredentialsFrom || null : null,
       maxStateTokens: localProvider === "decision" ? localMaxStateTokens : null,
+      // The default is stored as null, so a connection that never chose a limit follows it.
+      decisionTimeoutMs:
+        localProvider === "decision" && localDecisionTimeoutMs !== DECISION_TIMEOUT_MS.systemOne
+          ? localDecisionTimeoutMs
+          : null,
       audioSource: isAudioProvider ? localAudioSource || null : null,
       audioVoice: isAudioProvider ? localAudioVoice || null : null,
       // Only ElevenLabs can generate game sound effects / music today.
@@ -1084,6 +1095,7 @@ export function ConnectionEditor() {
     localDecisionSource,
     localCredentialsFrom,
     localMaxStateTokens,
+    localDecisionTimeoutMs,
     localAudioSource,
     localAudioVoice,
     localAudioSoundEffects,
@@ -1198,6 +1210,13 @@ export function ConnectionEditor() {
           : false,
       cachingAtDepth: localCachingAtDepth,
       defaultForAgents: localDefaultForAgents,
+      // The Decision fields as edited, so exporting before saving writes what is on screen.
+      decisionSource: localProvider === "decision" ? localDecisionSource : null,
+      maxStateTokens: localProvider === "decision" ? localMaxStateTokens : null,
+      decisionTimeoutMs:
+        localProvider === "decision" && localDecisionTimeoutMs !== DECISION_TIMEOUT_MS.systemOne
+          ? localDecisionTimeoutMs
+          : null,
       embeddingModel: supportsDirectEmbeddings ? localEmbeddingModel : existingEmbeddingModel,
       embeddingBaseUrl: supportsDirectEmbeddings ? embeddingBaseUrlValidation.value : existingEmbeddingBaseUrl,
       embeddingConnectionId: localEmbeddingConnectionId || null,
@@ -1234,6 +1253,9 @@ export function ConnectionEditor() {
   }, [
     conn,
     localProvider,
+    localDecisionSource,
+    localMaxStateTokens,
+    localDecisionTimeoutMs,
     localName,
     localBaseUrl,
     localModel,
@@ -1292,23 +1314,17 @@ export function ConnectionEditor() {
     testConnection.mutate(connectionDetailId, {
       onSuccess: (data) => {
         if (testScopeRef.current !== requestScope) return;
+        if (localProvider === "decision") {
+          const decision = decisionConnectionTestMessage(t, data);
+          setTestResult({ ...data, success: decision.ok, message: decision.message });
+          return;
+        }
         setTestResult({
           ...data,
           message:
-            localProvider === "decision"
-              ? data.success
-                ? t("connections.decision.testSuccess", {
-                    probability: data.decisionProbability?.toFixed(3),
-                    latency: data.latencyMs,
-                  })
-                : t("connections.decision.testFailed", {
-                    reason: t(`connections.decision.errors.${data.errorCode ?? "network"}`, {
-                      defaultValue: t("connections.decision.errors.network"),
-                    }),
-                  })
-              : selectedImageService === "fal" && data.success
-                ? t("connections.mediaSources.fal.configured")
-                : data.message,
+            selectedImageService === "fal" && data.success
+              ? t("connections.mediaSources.fal.configured")
+              : data.message,
         });
       },
       onError: (err) => {
@@ -1774,6 +1790,7 @@ export function ConnectionEditor() {
                       setLocalDecisionSource("typesafe");
                       setLocalCredentialsFrom("");
                       setLocalMaxStateTokens(30000);
+                      setLocalDecisionTimeoutMs(DECISION_TIMEOUT_MS.systemOne);
                       setLocalModel("jev-latest");
                     }
                     if (key === "audio") {
@@ -2080,6 +2097,29 @@ export function ConnectionEditor() {
                 }}
                 className="w-32 rounded-lg bg-[var(--secondary)] px-3 py-2 text-sm ring-1 ring-[var(--border)]"
               />
+              <label className="block text-xs" htmlFor="decision-time-limit">
+                {t("connections.decision.timeLimit")}
+              </label>
+              <DraftNumberInput
+                id="decision-time-limit"
+                integer={false}
+                min={DECISION_CONNECTION_TIMEOUT_BOUNDS_MS.min / 1000}
+                max={DECISION_CONNECTION_TIMEOUT_BOUNDS_MS.max / 1000}
+                value={localDecisionTimeoutMs / 1000}
+                ariaDescribedBy="decision-time-limit-help"
+                onCommit={(seconds) => {
+                  setLocalDecisionTimeoutMs(resolveDecisionConnectionTimeoutMs(seconds * 1000));
+                  markDirty();
+                }}
+                className="w-32 rounded-lg bg-[var(--secondary)] px-3 py-2 text-sm ring-1 ring-[var(--border)]"
+              />
+              <p id="decision-time-limit-help" className="text-xs text-[var(--muted-foreground)]">
+                {t("connections.decision.timeLimitHelp", {
+                  min: DECISION_CONNECTION_TIMEOUT_BOUNDS_MS.min / 1000,
+                  max: DECISION_CONNECTION_TIMEOUT_BOUNDS_MS.max / 1000,
+                  default: DECISION_TIMEOUT_MS.systemOne / 1000,
+                })}
+              </p>
             </section>
           )}
 

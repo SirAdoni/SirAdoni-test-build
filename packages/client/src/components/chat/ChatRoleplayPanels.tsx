@@ -79,7 +79,15 @@ function formatSemanticScore(score: number | null | undefined) {
 }
 
 function formatActivationSource(
-  source: "current_location" | "keyword" | "semantic" | "constant" | "always_loaded" | "sticky" | "recursive",
+  source:
+    | "current_location"
+    | "keyword"
+    | "semantic"
+    | "constant"
+    | "always_loaded"
+    | "sticky"
+    | "recursive"
+    | "decision",
   t: TFunction,
 ) {
   return t(`chat.activeContext.source.${source}`);
@@ -99,10 +107,10 @@ function ActiveLorebookEntryRow({
     lorebookId: string;
     lorebookName: string;
     activationSources: Array<
-      "current_location" | "keyword" | "semantic" | "constant" | "always_loaded" | "sticky" | "recursive"
+      "current_location" | "keyword" | "semantic" | "constant" | "always_loaded" | "sticky" | "recursive" | "decision"
     >;
     matchedKeys?: string[];
-    matchType?: "keyword" | "semantic" | "constant" | "always_loaded" | "sticky";
+    matchType?: "keyword" | "semantic" | "constant" | "always_loaded" | "sticky" | "decision";
     semanticScore?: number;
   };
 }) {

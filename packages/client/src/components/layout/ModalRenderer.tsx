@@ -6,6 +6,7 @@ import { useUIStore } from "../../stores/ui.store";
 import { openEditorFromPalette } from "../command-palette/palette-navigation";
 import {
   normalizeAvatarCrop,
+  type APIProvider,
   type LorebookCategory,
   type LorebookScope,
   type ScenePromptPreferences,
@@ -144,7 +145,13 @@ export function ModalRenderer() {
       content = <ImportPersonaModal open onClose={closeModal} />;
       break;
     case "create-connection":
-      content = <CreateConnectionModal open onClose={closeModal} />;
+      content = (
+        <CreateConnectionModal
+          open
+          onClose={closeModal}
+          initialProvider={(modal?.props?.provider as APIProvider | undefined) ?? undefined}
+        />
+      );
       break;
     case "import-connection":
       content = <ImportConnectionModal open onClose={closeModal} />;

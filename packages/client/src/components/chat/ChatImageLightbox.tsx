@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useBackdropDismiss } from "../../hooks/use-backdrop-dismiss";
 import { Camera, ChevronLeft, ChevronRight, Download, Pin, X } from "lucide-react";
 import type { GeneratedSceneVideo } from "@marinara-engine/shared";
 import type { ChatImage } from "../../hooks/use-gallery";
@@ -80,6 +81,7 @@ export function ChatImageLightbox({
   onClose,
 }: ChatImageLightboxProps) {
   const { t: localizeUi } = useUiTranslation();
+  const backdropDismiss = useBackdropDismiss(onClose);
   const pinImage = useGalleryStore((s) => s.pinImage);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const portalRoot = typeof document !== "undefined" ? document.body : null;
@@ -132,9 +134,7 @@ export function ChatImageLightbox({
       tabIndex={-1}
       onPointerDown={(event) => event.stopPropagation()}
       onMouseDown={(event) => event.stopPropagation()}
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
+      {...backdropDismiss}
       onKeyDown={(event) => {
         if (event.key === "Tab") {
           // A portrait viewer may sit above a modal with its own document-level focus trap.
@@ -292,6 +292,7 @@ export function ChatVideoLightbox({
   onClose,
 }: ChatVideoLightboxProps) {
   const { t: localizeUi } = useUiTranslation();
+  const backdropDismiss = useBackdropDismiss(onClose);
   const pinVideo = useGalleryStore((s) => s.pinVideo);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const portalRoot = typeof document !== "undefined" ? document.body : null;
@@ -312,9 +313,7 @@ export function ChatVideoLightbox({
       aria-modal="true"
       aria-label={localizeUi("ui.chat.chatvideolightbox.videoPreview")}
       tabIndex={-1}
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
+      {...backdropDismiss}
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           event.stopPropagation();

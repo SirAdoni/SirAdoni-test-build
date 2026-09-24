@@ -12,7 +12,8 @@ import { logSuppressed } from "../../lib/best-effort.js";
 export interface ActivationQuestionCandidate {
   agentId: string;
   question: string;
-  threshold: number;
+  /** Undefined when the agent never chose one; the backend's default applies. */
+  threshold: number | undefined;
   scanDepth: number;
 }
 export interface DecisionMessage {
@@ -38,7 +39,10 @@ export function activationQuestionSettings(settings: Record<string, unknown>) {
   if (!parsed.success || !parsed.data.activationQuestion) return null;
   return {
     question: parsed.data.activationQuestion,
-    threshold: parsed.data.activationThreshold ?? DEFAULT_CUSTOM_AGENT_ACTIVATION_THRESHOLD,
+    // Deliberately not collapsed to a constant here. Probabilities are not comparable
+    // across decision models, so an unset threshold has to reach the resolved backend
+    // and take that model's operating point rather than a global 0.5.
+    threshold: parsed.data.activationThreshold,
     maxSkip: parsed.data.activationMaxSkip,
     scanDepth: normalizeAgentActivationScanDepth(parsed.data.activationScanDepth),
   };
@@ -73,8 +77,11 @@ export async function evaluateActivationQuestions(args: {
   candidates: ActivationQuestionCandidate[];
   messages: DecisionMessage[];
   maxStateTokens: number;
+  /** The selected model's operating point, for agents that never chose one. */
+  defaultThreshold?: number;
   ask: (state: unknown, questions: NoulQuestion[]) => Promise<Map<string, number> | null>;
 }): Promise<{ skip: Set<string>; results: Map<string, number | "failed"> }> {
+  const fallbackThreshold = args.defaultThreshold ?? DEFAULT_CUSTOM_AGENT_ACTIVATION_THRESHOLD;
   const groups = new Map<number, ActivationQuestionCandidate[]>();
   for (const candidate of args.candidates) {
     const group = groups.get(candidate.scanDepth) ?? [];
@@ -105,7 +112,7 @@ export async function evaluateActivationQuestions(args: {
           results.set(candidate.agentId, "failed");
         } else {
           results.set(candidate.agentId, probability);
-          if (probability < candidate.threshold) skip.add(candidate.agentId);
+          if (probability < (candidate.threshold ?? fallbackThreshold)) skip.add(candidate.agentId);
         }
       }
     }),

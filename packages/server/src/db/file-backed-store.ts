@@ -2504,6 +2504,63 @@ function membershipSet(condition: { values: unknown[] }): Set<unknown> | null {
   return set;
 }
 
+/**
+ * The equality between a column of the table being joined and a column of a
+ * table already in the context, if the join condition carries one.
+ */
+function equiJoinKey(
+  condition: Condition,
+  joinTable: string,
+  boundTables: ReadonlySet<string>,
+): { probe: Column; buildKey: string } | null {
+  // Rejoining a table replaces its row in the context; it is not a bound probe.
+  if (boundTables.has(joinTable)) return null;
+  if (!condition || !isFileCondition(condition)) return null;
+  if (condition.kind === "file-logical") {
+    if (condition.operator !== "and") return null;
+    for (const entry of condition.conditions) {
+      const key = equiJoinKey(entry, joinTable, boundTables);
+      if (key) return key;
+    }
+    return null;
+  }
+  if (condition.kind !== "file-comparison" || condition.operator !== "eq") return null;
+  const sides = [condition.left, condition.right];
+  for (const [side, other] of [sides, [sides[1], sides[0]]]) {
+    if (!isColumn(side) || !isColumn(other) || !side.table || !other.table) continue;
+    if (tableNameOf(side.table) !== joinTable || !boundTables.has(tableNameOf(other.table))) continue;
+    const meta = getColumnMeta(side);
+    if (meta) return { probe: other, buildKey: meta.key };
+  }
+  return null;
+}
+
+/**
+ * Rows of the joined table worth testing against each context. With an
+ * equality key the rows are bucketed by that column once, so a join costs
+ * one lookup per context instead of one pass over the whole table; the full
+ * join condition is still evaluated on every candidate. Without a key every
+ * row is a candidate.
+ */
+function joinCandidates(
+  join: JoinSpec,
+  joinRows: readonly Row[],
+  boundTables: ReadonlySet<string>,
+): (ctx: RowContext) => readonly Row[] {
+  const key = equiJoinKey(join.condition, join.table.name, boundTables);
+  if (!key) return () => joinRows;
+  const buckets = new Map<unknown, Row[]>();
+  for (const row of joinRows) {
+    const value = row[key.buildKey];
+    if (typeof value === "number" && Number.isNaN(value)) continue;
+    const bucket = buckets.get(value);
+    if (bucket) bucket.push(row);
+    else buckets.set(value, [row]);
+  }
+  const none: Row[] = [];
+  return (ctx) => buckets.get(valueForColumn(ctx, key.probe)) ?? none;
+}
+
 function evaluateCondition(condition: Condition, ctx: RowContext): boolean {
   if (!condition) return true;
   if (!isFileCondition(condition)) return false;
@@ -2597,27 +2654,6 @@ function conditionTableNames(condition: Condition, names = new Set<string>()): S
     default:
       return null;
   }
-}
-
-/**
- * For an eq(column, column) join where one side belongs to the joined table
- * and the other to a table already in the context, the joined table's row key
- * and the other column. Any other join shape returns null (nested loop).
- */
-function hashJoinColumns(join: JoinSpec): { joinKey: string; other: Column } | null {
-  const condition = join.condition;
-  if (!condition || !isFileCondition(condition)) return null;
-  if (condition.kind !== "file-comparison" || condition.operator !== "eq") return null;
-  const left = condition.left;
-  const right = condition.right;
-  if (!isColumn(left) || !left.table || !isColumn(right) || !right.table) return null;
-  const leftTable = tableNameOf(left.table);
-  const rightTable = tableNameOf(right.table);
-  const joinName = join.table.name;
-  if ((leftTable === joinName) === (rightTable === joinName)) return null;
-  const [joinColumn, other] = leftTable === joinName ? [left, right] : [right, left];
-  const meta = getColumnMeta(joinColumn);
-  return meta ? { joinKey: meta.key, other } : null;
 }
 
 function orderSpec(ordering: Ordering, ctx: RowContext): { value: unknown; direction: "asc" | "desc" } {
@@ -6318,42 +6354,25 @@ class SelectQuery implements SelectQueryBuilder<any> {
       }
     }
 
+    const boundTables = new Set([this.fromMeta.name]);
     for (const join of this.joins) {
       const joinedContexts: RowContext[] = [];
       const joinRows = this.store.rows(join.table.name);
-      const pushIfJoined = (ctx: RowContext, row: Row) => {
-        const candidate: RowContext = {
-          rows: { ...ctx.rows, [join.table.name]: row },
-          baseTable: ctx.baseTable,
-          joined: true,
-        };
-        if (evaluateCondition(join.condition, candidate)) {
-          joinedContexts.push(candidate);
-        }
-      };
-      const hashKeys = hashJoinColumns(join);
-      if (hashKeys) {
-        // Equality join: bucket the join side by its key once instead of
-        // scanning every join row for every base context. Buckets keep
-        // joinRows order and each pair is still re-checked with the real
-        // condition, so the output matches the nested loop exactly.
-        const index = new Map<unknown, Row[]>();
-        for (const row of joinRows) {
-          const key = row[hashKeys.joinKey];
-          const bucket = index.get(key);
-          if (bucket) bucket.push(row);
-          else index.set(key, [row]);
-        }
-        for (const ctx of contexts) {
-          const bucket = index.get(valueForColumn(ctx, hashKeys.other));
-          if (bucket) for (const row of bucket) pushIfJoined(ctx, row);
-        }
-      } else {
-        for (const ctx of contexts) {
-          joinRows.forEach((row) => pushIfJoined(ctx, row));
+      const candidatesFor = joinCandidates(join, joinRows, boundTables);
+      for (const ctx of contexts) {
+        for (const row of candidatesFor(ctx)) {
+          const candidate: RowContext = {
+            rows: { ...ctx.rows, [join.table.name]: row },
+            baseTable: ctx.baseTable,
+            joined: true,
+          };
+          if (evaluateCondition(join.condition, candidate)) {
+            joinedContexts.push(candidate);
+          }
         }
       }
       contexts = joinedContexts;
+      boundTables.add(join.table.name);
     }
 
     contexts = contexts.filter((ctx) => evaluateCondition(this.condition, ctx));

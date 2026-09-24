@@ -88,6 +88,7 @@ export type CreateConnectionPayload = {
   decisionSource?: "typesafe" | "openrouter" | "custom" | null;
   credentialsFromConnectionId?: string | null;
   maxStateTokens?: number | null;
+  decisionTimeoutMs?: number | null;
   audioVoice?: string | null;
   audioSoundEffects?: boolean;
   audioMusic?: boolean;
