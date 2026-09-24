@@ -16,6 +16,7 @@ assert.deepEqual(openAi, {
   cacheRead: 40,
   cacheWrite: 0,
   cacheHitRatio: 0.4,
+  effort: null,
 });
 
 const claude = normalizeGenerationTokenUsage({
@@ -59,5 +60,10 @@ assert.equal(
   normalizeGenerationTokenUsage({ provider: "openai", tokensPrompt: 0, tokensCachedPrompt: 0 })?.cacheHitRatio,
   null,
 );
+
+// The usage line names the effort the turn actually resolved to, when generation info stored one.
+assert.equal(normalizeGenerationTokenUsage({ provider: "claude_subscription", reasoningEffort: "low" })?.effort, "low");
+assert.equal(normalizeGenerationTokenUsage({ provider: "openai", reasoningEffort: null })?.effort, null);
+assert.equal(normalizeGenerationTokenUsage({ provider: "openai", reasoningEffort: " " })?.effort, null);
 
 console.info("Generation token usage regressions passed.");

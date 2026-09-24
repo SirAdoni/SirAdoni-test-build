@@ -2,6 +2,7 @@ import {
   isClaudeAdaptiveOnlyNoSamplingModel,
   normalizeThinkingTagPairs,
   resolveManagedGenerationParameters,
+  resolveGameGmReasoningEffort,
   resolveProviderReasoningEffort,
   type GenerationParameterSendMap,
   type ManagedGenerationParameterDefinition,
@@ -55,6 +56,8 @@ type GenerationProviderRuntimeArgs = {
   managedParameterDefinitions: ManagedGenerationParameterDefinition[];
   modelAccessPolicy: Parameters<typeof mergeModelContextLimit>[0];
   initialSources?: Record<string, string>;
+  /** Game chats only: the per-game GM reasoning effort (chat metadata gameGmReasoningEffort) for the narration turn. */
+  gameGmReasoningEffort?: unknown;
   initial: {
     temperature: number | undefined;
     maxTokens: number;
@@ -169,6 +172,15 @@ export function resolveGenerationProviderRuntime(args: GenerationProviderRuntime
       maxTokensOverride: args.connection.maxTokensOverride,
     });
     if (capped < runtime.maxTokens) forceParameters("outputCap", { maxTokens: capped });
+  }
+
+  if (args.chatMode === "game" && !args.isSceneChat && args.gameGmReasoningEffort !== undefined) {
+    const gmEffort = resolveGameGmReasoningEffort({
+      provider: args.connection.provider,
+      model: args.connection.model,
+      setting: args.gameGmReasoningEffort,
+    });
+    if (gmEffort !== undefined) forceParameters("gameGm", { reasoningEffort: gmEffort });
   }
 
   const modelLower = (args.connection.model ?? "").toLowerCase();

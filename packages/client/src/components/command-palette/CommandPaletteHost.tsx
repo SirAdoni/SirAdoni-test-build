@@ -38,7 +38,11 @@ import { openRandomTables } from "../../lib/open-random-tables";
 import { openPrepBoard } from "../../lib/open-prep-board";
 import { openInitiativeTracker } from "../../lib/open-initiative-tracker";
 import { openGameCalendar } from "../../lib/open-game-calendar";
-import { chatKeys, useChat, useChatChapters, useExportChat } from "../../hooks/use-chats";
+import { chatKeys, useChat, useChatChapters, useExportChat, useUpdateChatMetadata } from "../../hooks/use-chats";
+import { useConnections, useModelParameterCapabilities } from "../../hooks/use-connections";
+import { gameGmReasoningEffortOptions, normalizeGameGmReasoningEffort } from "@marinara-engine/shared";
+import { GM_REASONING_EFFORT_LABEL_KEYS } from "../../lib/gm-reasoning-effort";
+import { parseChatMetadata } from "../../lib/chat-display";
 import { textSnippetKeys } from "../../hooks/use-text-snippets";
 import { useLaunchNewChat } from "../chat/HomeNewChatLauncher";
 import { useCommandPaletteStore } from "../../stores/command-palette.store";
@@ -419,6 +423,7 @@ export function CommandPaletteHost() {
   return (
     <>
       {paletteOpen && <ChapterPaletteCommands />}
+      {paletteOpen && <GmReasoningEffortPaletteCommands />}
       {paletteLoaded && (
         <Suspense fallback={null}>
           <CommandPalette />
@@ -458,6 +463,52 @@ function ChapterPaletteCommands() {
     );
     return () => unregisters.forEach((unregister) => unregister());
   }, [chapters, chatId, isGame, t]);
+
+  return null;
+}
+
+/** While the palette is open in a game, one "Set GM reasoning effort: <level>" command per level the model supports. */
+function GmReasoningEffortPaletteCommands() {
+  const { t } = useTranslation();
+  const chatId = useChatStore((s) => s.activeChatId);
+  const { data: chat } = useChat(chatId);
+  const { data: connections } = useConnections();
+  const isGame = chat?.mode === "game";
+  const connection = isGame
+    ? ((connections ?? []) as Array<{ id?: string; provider?: string; model?: string }>).find(
+        (candidate) => candidate?.id === chat?.connectionId,
+      )
+    : undefined;
+  const capabilities = useModelParameterCapabilities(connection);
+  const updateMeta = useUpdateChatMetadata();
+  const mutateRef = useRef(updateMeta.mutate);
+  mutateRef.current = updateMeta.mutate;
+  const selected = normalizeGameGmReasoningEffort(parseChatMetadata(chat?.metadata).gameGmReasoningEffort);
+  const provider = connection?.provider ?? null;
+  const model = connection?.model ?? null;
+
+  useEffect(() => {
+    if (!chatId || !isGame) return;
+    const options = provider
+      ? gameGmReasoningEffortOptions({ provider, model, capabilities, selected })
+      : gameGmReasoningEffortOptions({ selected });
+    const unregisters = options.map((effort) => {
+      const level = t(GM_REASONING_EFFORT_LABEL_KEYS[effort]);
+      return registerCommand({
+        id: `action:gm-reasoning-effort:${effort}`,
+        section: "actions",
+        title: t("palette.actions.setGmReasoningEffort", { level }),
+        subtitle: effort === selected ? t("palette.actions.gmReasoningEffortCurrent") : undefined,
+        keywords: ["set gm reasoning effort", "game master", "thinking", "effort", "reasoning"],
+        run: () =>
+          mutateRef.current(
+            { id: chatId, gameGmReasoningEffort: effort },
+            { onSuccess: () => toast.success(t("palette.actions.gmReasoningEffortSaved", { level })) },
+          ),
+      });
+    });
+    return () => unregisters.forEach((unregister) => unregister());
+  }, [capabilities, chatId, isGame, model, provider, selected, t]);
 
   return null;
 }

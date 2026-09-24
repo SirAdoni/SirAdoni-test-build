@@ -4,6 +4,8 @@ export interface GenerationTokenUsageInput {
   tokensCompletion?: number | null;
   tokensCachedPrompt?: number | null;
   tokensCacheWritePrompt?: number | null;
+  /** The reasoning effort the turn resolved to, as stored in generation info. */
+  reasoningEffort?: string | null;
 }
 
 export interface NormalizedGenerationTokenUsage {
@@ -14,6 +16,7 @@ export interface NormalizedGenerationTokenUsage {
   cacheRead: number | null;
   cacheWrite: number | null;
   cacheHitRatio: number | null;
+  effort: string | null;
 }
 
 function isClaudeSubscription(provider: string | null | undefined): boolean {
@@ -60,5 +63,9 @@ export function normalizeGenerationTokenUsage(
     cacheRead,
     cacheWrite,
     cacheHitRatio,
+    effort:
+      typeof generationInfo.reasoningEffort === "string" && generationInfo.reasoningEffort.trim()
+        ? generationInfo.reasoningEffort.trim()
+        : null,
   };
 }

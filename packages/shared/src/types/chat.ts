@@ -656,6 +656,8 @@ export interface ChatMetadata {
   gameNpcs?: import("./game.js").GameNpc[];
   /** How separate NPC replies receive character-specific knowledge; absent keeps legacy shared GM dialogue. */
   gameNpcKnowledgeMode?: "legacy" | "isolated";
+  /** Reasoning effort for the GM narration turn. Absent or "default" keeps the resolved parameters unchanged. */
+  gameGmReasoningEffort?: import("../constants/game-gm-reasoning-effort.js").GameGmReasoningEffort;
   /** Create a linked Character-library card when Game Mode confirms a named NPC. Defaults to true. */
   gameAutoCreateNpcCharacters?: boolean;
   /** Scene timeline review, recap and timeline-based presence. Absent = on; false = upstream (snapshot presence). */

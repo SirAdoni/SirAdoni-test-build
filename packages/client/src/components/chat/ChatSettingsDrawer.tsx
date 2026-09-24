@@ -79,6 +79,7 @@ import { ChatSettingsSection as Section } from "../../features/chat-settings/Cha
 import { ActiveChatBackgroundPicker } from "../panels/settings/BackgroundPicker";
 import { AdvancedParametersSection } from "../../features/chat-settings/sections/AdvancedParametersSection";
 import { ChatNameSection } from "../../features/chat-settings/sections/ChatNameSection";
+import { GmReasoningEffortSection } from "../../features/chat-settings/sections/GmReasoningEffortSection";
 import { CombatStyleSection } from "../../features/chat-settings/sections/CombatStyleSection";
 import { GameHudListsSettings } from "../../features/chat-settings/sections/GameHudListsSettings";
 import { resolveGameHudScope } from "../../hooks/use-game-hud-lists";
@@ -626,6 +627,7 @@ const CHAT_SETTINGS_ORDER = {
   modeIntro: -1500,
   chatName: -1400,
   connection: -1300,
+  gmReasoningEffort: -1290,
   promptPreset: -1200,
   advancedParameters: -1100,
   combatStyle: -475,
@@ -5067,6 +5069,16 @@ export function ChatSettingsDrawer({
               onConnectionChange={setConnection}
             />
           </div>
+
+          {/* GM reasoning effort, game mode only */}
+          {isGame && (
+            <GmReasoningEffortSection
+              style={{ order: CHAT_SETTINGS_ORDER.gmReasoningEffort }}
+              value={metadata.gameGmReasoningEffort}
+              connection={chatGenerationConnectionsList.find((connection) => connection.id === chat.connectionId)}
+              onChange={(gameGmReasoningEffort) => updateMeta.mutate({ id: chat.id, gameGmReasoningEffort })}
+            />
+          )}
 
           {/* Roleplay prompt preset */}
           {modeSettingsSurfaces.promptSettingsSurface === "roleplay" && (

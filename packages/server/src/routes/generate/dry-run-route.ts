@@ -17,6 +17,7 @@ import {
   isBuiltInAgentRuntimeDisabled,
   normalizeAdvancedMemorySettings,
   applyContextMessageLimitWithPins,
+  resolveGameGmReasoningEffort,
 } from "@marinara-engine/shared";
 import {
   appendRoleplayPromptTail,
@@ -1652,6 +1653,15 @@ export async function registerDryRunRoute(app: FastifyInstance) {
     if (modePresetParameters) applyParameterOverrides(modePresetParameters);
     applyParameterOverrides(connectionParams);
     applyParameterOverrides(chatParams);
+    // Mirror /api/generate: the per-game GM reasoning effort overrides the resolved effort for the narration turn.
+    if (chatMode === "game") {
+      const gmEffort = resolveGameGmReasoningEffort({
+        provider: conn.provider,
+        model: conn.model,
+        setting: chatMeta.gameGmReasoningEffort,
+      });
+      if (gmEffort !== undefined) reasoningEffort = gmEffort;
+    }
 
     if (!finalMessages.length) {
       // No (or skipped) preset: fall back to raw mapped messages without any agent/tool behavior.

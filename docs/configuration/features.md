@@ -146,6 +146,14 @@ On: after each GM turn the automatic scene media queue may generate scene images
 
 Off: nothing is queued automatically. Media you ask for still works.
 
+### GM reasoning effort (a setting, not a switch)
+
+Metadata key: `gameGmReasoningEffort`. In the chat settings drawer of a Game chat, **GM Reasoning Effort** (just below the connection), or from the command palette (Ctrl+K, **Set GM reasoning effort**).
+
+This is a per-game setting, not a feature switch. Its **Default** equals upstream: the GM narration turn uses the effort the connection, chat parameters and built-in defaults resolve to, and the provider request is byte for byte what it was before the setting existed. No switch is needed to get upstream behaviour.
+
+The other choices (None, Low, Medium, High, Extra high, Max; only those the selected model supports are listed) override the resolved effort for the GM narration turn, including regenerate and continue of that turn. A level the model cannot use is sent as the nearest level it supports (Opus 5.5 cannot turn thinking off, so None is sent as low). Side calls that set their own effort, such as scene analysis, planners, continuity and agents, are not affected. New sessions of the same game keep the choice. The token usage line under a GM turn shows the effort the turn used.
+
 ## Chat switch
 
 ### Warn before a low-cache send

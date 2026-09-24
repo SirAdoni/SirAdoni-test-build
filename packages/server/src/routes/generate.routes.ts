@@ -4263,6 +4263,7 @@ export async function generateRoutes(app: FastifyInstance) {
           chatMode,
           isSceneChat,
           chatParameters: chatMeta.chatParameters,
+          gameGmReasoningEffort: chatMeta.gameGmReasoningEffort,
           managedParameterDefinitions,
           modelAccessPolicy,
           initial: {

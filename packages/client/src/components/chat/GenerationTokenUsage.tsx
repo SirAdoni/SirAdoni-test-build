@@ -30,6 +30,7 @@ export function GenerationTokenUsage({ generationInfo, className }: GenerationTo
       : null,
     usage.output != null ? `${t("ui.generationtokenusage.outputShort")} ${count(usage.output, notReported)}` : null,
     usage.cacheHitRatio != null ? `${percent(usage.cacheHitRatio, notReported)}` : null,
+    usage.effort ? t("ui.generationtokenusage.effortShort", { effort: usage.effort }) : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -65,6 +66,12 @@ export function GenerationTokenUsage({ generationInfo, className }: GenerationTo
         <span className="tabular-nums">{count(usage.cacheWrite, notReported)}</span>
         <span className="text-[var(--muted-foreground)]">{t("ui.generationtokenusage.hitRatio")}</span>
         <span className="tabular-nums">{percent(usage.cacheHitRatio, notReported)}</span>
+        {usage.effort && (
+          <>
+            <span className="text-[var(--muted-foreground)]">{t("ui.generationtokenusage.effort")}</span>
+            <span data-generation-usage-effort="true">{usage.effort}</span>
+          </>
+        )}
       </div>
     </details>
   );
