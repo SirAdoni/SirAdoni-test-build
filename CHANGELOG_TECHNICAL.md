@@ -110,7 +110,7 @@ Campaign Wiki reader (`client/src/components/game/CampaignWiki*.tsx`, `campaign-
 
 Memory panel and related:
 
-- Memory panel: health headline, progress, filtered batch list, "How the GM uses memory" (Keeper hand-off, recap limit, campaign or session scope, memory budget). Files: `GameMemorySettings.tsx`, `GameContinuityPanel.tsx`.
+- Memory panel: health headline, progress, filtered batch list, "How the GM uses memory" with Replace the Lorebook Keeper (`gameContinuity.ownership`), recaps of earlier sessions (`gamePromptRecentSessionLimit`, All by default, or last 1, 2, 3, 5, 10), memory scope (`gameCampaignMemoryScope`, campaign by default) and GM memory budget (`gameCampaignMemoryMaxCharacters`, default 10,000, clamped 1,000 to 100,000). Files: `GameMemorySettings.tsx`, `GameContinuityPanel.tsx`.
 - Scene timeline: background scene review after each GM turn feeding presence, the Scenes tab and the recap scene index. Files: `services/game/scene-timeline.service.ts`, `scene-timeline-model.ts`, `GameSceneTimeline.tsx`. Switch **Scene timeline**.
 - NPC Biographer recovery of missing characters from current and earlier transcripts. Files: `npc-backfill.ts`, `npc-retroactive.ts`.
 - Stable NPC ids shared by client and server (`shared/src/utils/game-npc-id.ts`), with the legacy slug id as a lookup fallback.
@@ -135,10 +135,10 @@ Edit layout (`GameLayoutEditToolbar.tsx`, `GameLayoutPopover.tsx`, `lib/game-lay
 - Drag a panel from anywhere; resize from every edge and corner with a live size readout.
 - Snapping to screen edges, centres and neighbours with guide lines; hold Alt to place freely.
 - Collisions switch: on, a dropped panel settles into the nearest free space; off, panels overlap on purpose and a click brings one to the front.
-- Undo and redo: Ctrl+Z and Ctrl+Shift+Z (AltGr chords ignored).
-- Keyboard nudge: arrow keys move a focused panel (Shift+Arrow in larger steps; Ctrl, Alt and Meta ignored); move and resize handles carry the panel name for screen readers.
+- Undo and redo: Ctrl+Z, and Ctrl+Shift+Z or Ctrl+Y, 50 steps (AltGr chords ignored).
+- Keyboard nudge: arrow keys on the name tag move a panel 10px (40px with Shift; Ctrl, Alt and Meta ignored); move and resize handles carry the panel name for screen readers.
 - Lock all and unlock all; Panels menu to hide and bring back panels.
-- Saved layouts: name, apply, rename (Esc cancels), delete, share as JSON, reuse in any game; imports over 512K characters refused; storage failures roll back instead of half-applying.
+- Saved layouts: name, apply, rename (Esc cancels), delete, share as JSON, reuse in any game (stored globally in localStorage `marinara-game-layouts:v1`; Snap and Collisions default on); imports over 512K characters refused; storage failures roll back instead of half-applying.
 - Reset all to defaults.
 - Tidy: packs panels into non-overlapping columns keeping their rough side and order.
 - Shift+click selection with align left, right, top and match width; each action is one undo step.
@@ -147,7 +147,7 @@ Edit layout (`GameLayoutEditToolbar.tsx`, `GameLayoutPopover.tsx`, `lib/game-lay
 
 Layout and phones:
 
-- Layouts follow the campaign across sessions (edge bookmarks, collapsed state, stacks, pins). Files: `lib/game-panel-layout.ts`, `hooks/use-map-layout.ts`.
+- Layouts follow the campaign across sessions (edge bookmarks, collapsed state, stacks, pins). Layout state is device-local in localStorage (`marinara-game-panel:<scopeId>:...`, `marinara-game-panel-stacks:<scopeId>`), never in chat metadata. Files: `lib/game-panel-layout.ts`, `hooks/use-map-layout.ts`.
 - Phone widget tray: one horizontally scrolling row of widget tabs with 44px targets, fading edge, Game status as a tray tab that opens a sheet (`GameMobileStatus.tsx`).
 - Phone Arrange sheet: reorder, hide and show widgets, stored per device under its own key prefix. Files: `GameMobileArrange.tsx`, `lib/game-mobile-panel-arrangement.ts`.
 - Phone presence strip: Currently Present as one row of whole-name chips with the Campaign Wiki button; joins the top row on landscape phones while the toolbar folds into the actions menu.
@@ -294,6 +294,117 @@ Features:
 - game-dice-roll-log: the Session panel tab check accepts the conditional tab list (scene timeline switch).
 - open-issues: the journal timeline check accepts the search-filtered entries prop.
 
+### Phone widget tray, Game status sheet, readable Currently Present, landscape stacking
+- Commit: eee40df22.
+- Files: `components/game/GameMobileArrange.tsx` (new `MobileWidgetTray`), `components/game/GameMobileStatus.tsx` (new), `components/game/GameSurface.tsx`, `components/game/GameWidgetPanel.tsx`, `components/game/GameSpecialPanels.tsx`, `components/game/GameNarration.tsx`, `localization/locales/en.json` (`ui.game.mobilewidgetarrange.showFirstWidgets`, `showMoreWidgets`).
+- Behaviour below 1024px:
+  - The widget tray hides its scrollbar, snaps tab by tab and only shows whole tabs. It fades the edge where more tabs wait, and a chevron with a "+N" count pages through the rest. Arrange sits outside the scroller, so it is always on screen.
+  - "Game status" becomes a tray tab that opens the stats in a sheet, instead of rendering inline across the top half. Desktop and tablet keep the normal panel.
+  - Currently Present uses a people icon (with the text kept for screen readers) and whole-word name chips that scroll sideways, in one 62px row.
+- Test: `scripts/regressions/game-mobile-layout.live.mjs` (live, against a dev server): both test chats at 360x740, 390x844, 412x915, 844x390 and 915x412. It checks page width, clipped tabs, readable labels, and that narration plus composer get at least 50% of the height.
+
+### Storyboard never covers the composer on phones; debug details folded everywhere
+- Commit: f5cd40182.
+- Files: `components/game/GameStoryboardViewer.tsx`, `components/game/GameNarration.tsx`, `components/game/GameSurface.tsx`, `localization/locales/en.json` (`game.storyboard.details`, `friendlyDegraded`, `friendlyFailure`, `hideViewer`, `ui.game.gamesurfacecomponent.dismiss`).
+- Cause: below 1024px the viewer rendered inline after the narration as a non-shrinking flex item (up to 40% of the column), pushing the composer under it.
+- Behaviour:
+  - On phones the storyboard is a slim tab under the narration, closed by default, with status and a small X. Opening it shows a sheet in the largest free space that excludes the composer, with a close button and Esc. The tab steps aside while typing.
+  - On every screen size, timings, request errors, ready counts and generation details sit in one "Details" disclosure, closed by default. A failure shows one friendly line ("Couldn't draw this scene.") with Retry.
+  - The composer is pinned to the bottom of the narration panel on phones.
+  - The "Image generation failed" retry banner becomes a compact line at the bottom of the Game column, clear of narration and composer, with a labelled dismiss.
+- Tests:
+  - `scripts/regressions/game-storyboard-phone.browser.mjs` (new): 360, 390 and 412 wide, landscape, and the keyboard simulated. elementFromPoint at the composer centre must hit the textarea.
+  - Updated: `storyboard-error-details.browser.mjs`, `storyboard-fullscreen.browser.mjs` (CSS built from source), `storyboard-request-error.browser.regression.mjs`.
+
+### Music bubble keeps clear of Game controls
+- Commits: 854989034, fa8ddf74b, plus the storyboard tab and sheet in f5cd40182.
+- Files: `components/game/GameSurface.tsx`, `components/game/GameStoryboardViewer.tsx`.
+- Behaviour: the phone Currently Present strip, the widget tray, the phone "Game actions" (...) button, and the storyboard phone tab and sheet carry the inert `data-floating-widget-avoid` attribute. The floating music bubble moves off any element that has it.
+
+### GM prep board touch targets on phones
+- Commit: d1ec31bbc.
+- Files: `components/game/GamePrepBoard.tsx`.
+- Behaviour:
+  - On touch screens every control is at least 36px: buttons, inputs, menu items, drag handle, done box, search clear, link chips and tags. Small labels step up to 11px.
+  - Controls under 36px went from 24-50 per view to 0. Desktop is pixel-identical.
+- Test: `scripts/regressions/prep-board-touch-targets.browser.mjs` (needs a dev URL and a game chat id): 360x740, 390x844, 412x915, 844x390 and 1440x900. Probe writes are blocked.
+
+### Landscape phones: one top row, narration keeps the room
+- Commit: 5bf5ff31f.
+- Files: `components/game/GameSurface.tsx`, `components/game/GameInput.tsx`, `components/game/GameNarration.tsx`, `components/game/GameMobileArrange.tsx`, `components/game/GameMobileStatus.tsx`, `components/game/GameStoryboardViewer.tsx`.
+- Applies below 1024px wide and 32rem tall. Portrait and desktop are unchanged.
+- Behaviour:
+  - Map, party, the tab tray, a storyboard icon (with warning or spinner state) and a 44px actions button share one top row.
+  - Currently Present becomes a tray tab with a count badge that opens the strip in a sheet. The image-retry line becomes an amber tab whose sheet has Retry and Dismiss.
+  - The actions menu opens as a row.
+  - The composer stays one line until focused, and the story-location row appears on focus.
+  - The narration column gets 67% of the height at 844x390, 69% at 915x412 and 65% at 740x360 (it was about 74px).
+  - The Logs, Inventory and Combat row stays visible, because it carries the narration segment navigation.
+- Tests: `scripts/regressions/game-mobile-landscape.live.mjs` (new, 6/6); `game-mobile-layout.live.mjs` and `game-storyboard-phone.browser.mjs` updated.
+
+### Edit layout keyboard test race
+- Commit: 92528c1c1.
+- File: `scripts/regressions/game-layout-edit-mode.browser.mjs`.
+- Applying a saved layout remounts every panel. On a loaded machine the remount could land after the test's Shift+Arrow press, so the step failed intermittently. The test now waits for the panel to hold still before nudging. This was a test-only fix; there was no product bug.
+
+### Mobile music widget dock and floating-widget avoidance
+- Commits: afbfb69bc, 7d83a801c, 16c55356f, d9e519954.
+- Files: `stores/ui.store.ts`, `lib/ui-persistence.ts`, `hooks/use-settings-sync.ts`, `components/chat/YouTubePlayer.tsx`, `LocalMusicPlayer.tsx`, `components/spotify/SpotifyMiniPlayer.tsx`, `lib/floating-widget-avoid.ts` (new), `hooks/use-floating-widget-avoid.ts` (new); regressions `scripts/regressions/ui-store-music-widget-migration.regression.ts` and `floating-widget-avoid.regression.ts` (new).
+- Behaviour:
+  - Phones: the collapsed YouTube, local music and Spotify bubble docks to the right edge instead of covering left-aligned message avatars; `resolveMobileWidgetX` makes the open panel and drag start use the real on-screen x.
+  - The bubble is clamped inside the screen with room for the composer and re-positions on rotation and keyboard changes.
+  - It avoids any element marked `data-floating-widget-avoid` (Game mode marks its phone Currently Present strip with the Campaign Wiki button, the widget tray and the Game actions button): an overlapping spot moves to the nearest free spot on the right edge, else the left; a free spot, including one the user dragged to, only gets clamped; no free spot keeps the clamped position; the saved position is never rewritten.
+  - At 768px and wider the player sits in the top bar instead; on touch its buttons and volume slider get 36px hit areas.
+- Settings and defaults: `DEFAULT_MOBILE_MUSIC_WIDGET_POSITION` = `{x: 10000, y: 144}` (clamped to the right edge). UI persistence version 101 to 102 moves only the untouched old default `{16, 144}`; the server-synced copy (no version, replaces local state on load) gets the same move in settings sync and is written back (`staleSyncedShape`). Positions the user dragged stay.
+- Tests: regressions `ui-store-music-widget-migration`, `floating-widget-avoid`, `music-dj-and-floating-ui`.
+
+### Mobile and tablet: top nav and shell
+- Commits: a4049498b, e82a2d1f8.
+- Files: `components/layout/TopBar.tsx`, `PersonalExtensionContributionsMenu.tsx`, `RightPanel.tsx`, `ChatSidebar.tsx`, `components/ui/Modal.tsx`, `TouchDragHandle.tsx`, `MacroTextarea.tsx`, `EmojiPicker.tsx`, `components/chat/HomeBrowserHub.tsx` (widget drag handles), `components/command-palette/CommandPalette.tsx`, `KeyboardShortcutsOverlay.tsx`, `lib/markdown.tsx`, `styles/globals.css`.
+- Behaviour:
+  - Top nav below 640px: Home, Chats, Characters and Settings as 38px buttons plus a labelled More menu (Search and commands, Personas, Lorebooks, Presets, Connections, Agents, Generation jobs, extension buttons) with 44px rows, active check, jobs dot, arrow, Home and End keys, Escape and focus return, closes on rotate; an item opened from the menu shows on the bar. At 640px and wider (landscape phones, tablets) the full bar stays, 38px on touch. Top bar height unchanged (51px).
+  - Touch: modal and side panel close buttons, drag handles, editor actions (38px), section jumps and chat message actions reach 36px or more; textarea tool icons get an invisible 37px hit area; markdown links get an invisible vertical hit extension without changing line spacing.
+  - Short landscape screens (height 500px or less): the chat list sidebar scrolls as one column with a pinned header; the editor header is one compact row (lorebook, preset and persona header 107 to 48px at 740x360); the command palette opens at the top with its list capped to fit and hides shortcut hints on touch.
+  - The emoji picker is opaque on phones and touch.
+  - The update toast on touch sits below the chat and editor headers (phones and tablets); Refresh 38px and close 36px hit area on touch.
+- How to reach: any screen on a phone or touch tablet.
+- Tests: Playwright probes at 360x740, 390x844, 412x915 portrait and landscape, tablets 768x1024, 820x1180, 1024x768, 1180x820, 1366x1024 (touch and mouse), and 1280 desktop; no horizontal overflow anywhere.
+
+### Mobile and tablet: chat and composer
+- Commits: 7d83a801c, 4909d11f7, d9e519954.
+- Files: `components/chat/ChatInput.tsx`, `ConversationInput.tsx`, `ChatMessage.tsx`, `SwipeJumpControl.tsx`, `ChatToolbarControls.tsx` (new `getChatTouchToolbarButtonClass`), `ActiveLorebookEntriesButton.tsx`, `ChatMessageSearch.tsx`, `ChatRoleplaySurface.tsx`, `PrivateNotebookPanel.tsx`, `ConversationView.tsx`, `RoleplayHUD.tsx`, `ChatBranchSelector.tsx`, `ConversationPresenceCard.tsx`, `QuickConnectionSwitcher.tsx`, `QuickPersonaSwitcher.tsx`, `ChatSettingsDrawer.tsx`.
+- Behaviour:
+  - Composer caps at 30% of the screen height on short screens (roleplay max 200px, conversation max 160px) and re-sizes on keyboard or rotation, so long drafts no longer cover the header or hide send, attach and emoji.
+  - The conversation emoji, GIF and sticker picker is opaque on phones.
+  - Touch tablets (768px and wider get the desktop layout): chat header buttons, composer buttons, quick connection and persona switchers, swipe arrows and chat settings controls are 36px or more on touch; the shared default toolbar size is untouched, so Game mode's buttons are unchanged.
+  - Roleplay timestamps and the player subtitle read 11px on touch; branch count badges read 11px on touch through a local class (the shared badge style is untouched).
+  - Undersized controls on tablets: conversation 23 to 25 down to 8 to 9, roleplay 20 to 22 down to 2 to 3.
+- Tests: Playwright probes at phone and tablet sizes with a simulated keyboard (55% height); no overflow.
+- Known, not changed: on portrait phones the roleplay message action row (11 buttons) squeezes each to 32 to 36px wide. A wrapping grid was tried and rejected because it reserved about 41px of empty space under every message.
+
+### Mobile and tablet: side panels, settings and editors
+- Commits: 0b05da7f2, e8c42afc9.
+- Files: `components/panels/panel-phone-floor.ts` (new), `AgentsPanel.tsx`, `CharactersPanel.tsx`, `ConnectionsPanel.tsx`, `LorebooksPanel.tsx`, `PanelLoadMoreBar.tsx`, `PersonasPanel.tsx`, `PresetsPanel.tsx`, `SettingsPanel.tsx`, `library/LibraryCampaignBadges.tsx`, `library/LibraryFolderTree.tsx`, `settings/SettingControls.tsx`, `settings/BackgroundPicker.tsx`, `components/connections/ConnectionEditor.tsx`, `components/agents/AgentEditor.tsx`, `RegexScriptEditor.tsx`, `ToolEditor.tsx`, `FeatureAgentDetailHost.tsx`.
+- Behaviour:
+  - `panel-phone-floor.ts`: shared classes on each panel and editor root give buttons, selects and inputs a 36px minimum and small text 11px on narrow and touch screens (opt out with `data-touch-compact`; `!important` is needed because the app's chrome classes otherwise win). Toggle switches (38x21 labels around hidden checkboxes) get an invisible 38x38 hit area.
+  - List rows (lorebooks, presets, personas, connections, characters, agents): actions sit beside the text instead of over it and wrap to a second line when narrow, so names are no longer cut to a few letters.
+  - Settings on short landscape screens: one row of six text tabs beside Quick Access and a compact search header; content area about 35px to about 170px at 740x360.
+  - Load more bar sits at the end of the list on short screens; selection checkboxes and campaign badges get 36px hit areas; library folder header actions 36px (folder drag and Move to... stay usable on touch); selection bar labels unchanged.
+  - Connection and agent editors: 11 small controls and 32 small labels at 390 in the connection editor are gone; settings description text and background picker chips read 11px on touch.
+- Tests: regression `selection-action-bar-compact` and all regressions referencing the panel files; Playwright probes at phone and tablet sizes; desktop unchanged.
+
+### Mobile and tablet: modals, tools, editors and wiki window
+- Commit: ad7a61ad1 (55 files).
+- Files: `components/modals/*` (About me, Activity, Agent write approval, Character card update, Chat stats, Create character, connection, lorebook, persona, preset, Decision model, Docs viewer, Game log, Global search, Import character, lorebook, persona, preset, Model download, Reading mode, SillyTavern bulk import, What's new), `components/tools/GameCalendarTool.tsx`, `InitiativeTracker.tsx`, `NameGenerator.tsx`, `RandomTablesTool.tsx`, `components/characters/*`, `components/personas/PersonaEditor.tsx`, `components/presets/ChoiceSelectionModal.tsx`, `PresetEditor.tsx`, `components/lorebooks/*`, `components/game/CampaignWiki*.tsx`, `campaign-wiki-ui.tsx`.
+- Behaviour: touch-only readability and target fixes. Text at 0.5625 to 0.625rem reads 0.6875rem on touch; small icon buttons and h-7 or h-8 buttons and inputs reach 36px (overriding chrome control sizes where needed). The initiative tracker encounter select no longer clips its label. At 360px, flagged small text 1547 down to 511 and small targets 1021 down to 342 across the compared modals; no modal overflowed.
+- Tests: Playwright probes at six phone sizes and desktop.
+
+### Tablets and landscape phones: editor targets, category bar, wiki fit
+- Commit: 795b87b66.
+- Files: `components/characters/CharacterEditor.tsx`, `components/personas/PersonaEditor.tsx`, `components/lorebooks/LorebookEntryRow.tsx`, `LorebookFolderRow.tsx`, `components/game/CampaignWikiOverview.tsx`, `CampaignWikiRail.tsx`, `CampaignWikiWindow.tsx`.
+- Behaviour: Generate avatar with AI gets a 36px hit area on touch (added from the editors; the shared button file is unchanged); avatar tile, Upload, sprite tabs, Images tab and expression quick-add chips are 36px on touch. The character editor Library category bar is a single slim row below 500px screen height (about 56 to 44px at 740x360). Lorebook entry and folder row chevrons get 36px hit areas on touch. Campaign Wiki: Hide navigation 36px wide, filter chips at least 36px on touch, Latest in the story entity links 36px on touch, tighter top bar below 500px height, People cards wrap to fit (names were cut at 768).
+- Tests: Playwright probes at 768x1024, 820x1180, 1024x768, 1180x820, 1366x1024 and 740x360; no overflow; dialogs sized sensibly.
+
 ### Upstream sync 2 (Pasta-Devs `60ed7ec80`)
 
 - Commits: `97d306088` (merge of 67 upstream commits), `d5e6ef88f` (fork branch into `integrate/upstream-staging-2`), `abace0b87` (make the sync green).
@@ -315,123 +426,14 @@ Features:
 - Behaviour: the job tracking switch moves from its own Settings > Advanced row into Settings > Advanced > Features as **Keep generating when the tab is closed**, with the Generation jobs button under it.
 - Setting: app setting `generationJobTracking` (`"true"` or `"false"`), default off; key and default unchanged, so no migration.
 
-### Phones: top navigation with a More menu
+### Built-in helper popup left unchanged
 
-- Commits: `a4049498b`, `d2a7e9094`.
-- Files: `packages/client/src/components/layout/TopBar.tsx`, `PersonalExtensionContributionsMenu.tsx`, `ChatSidebar.tsx`, `RightPanel.tsx`, `packages/client/src/components/ui/Modal.tsx`, `TouchDragHandle.tsx`, `HomeBrowserHub.tsx`, `styles/globals.css`.
-- Behaviour: below 640px the top nav keeps Home, Chats, Characters and Settings as 38px buttons and moves Search, Personas, Lorebooks, Presets, Connections, Agents, Generation jobs and extension buttons into a labelled More menu (44px rows, active check, jobs dot, closes on rotate). An active item from the menu shows on the bar. Landscape phones keep all buttons at 38px. Top bar height unchanged (51px); desktop unchanged.
-- Keys: arrow keys, Home and End move through the More menu; Escape closes it and returns focus.
-- Also: modal and side-panel close buttons, home widget drag handles and row drag handles reach 36px on touch.
-- `d2a7e9094` reverts this commit's size changes to the built-in helper popup at the user's request; the home widget drag-handle fix in the same file is kept.
+- Commit: `d2a7e9094`.
+- Behaviour: reverts the helper minimize and search size changes that `a4049498b` made, at the user's request; the helper popup, its position and behaviour stay as they were. The home widget drag-handle fix in the same file is kept.
 
-### Phones: landscape chat list
+### Changelog note for the job tracking move
 
-- Commit: `a4049498b`.
-- Behaviour: on short landscape screens the chat list sidebar scrolls as one column with its header pinned, so chats are visible at 740x360.
-
-### Touch: readable text and 36px targets in modals, tools and editors
-
-- Commit: `ad7a61ad1`.
-- Behaviour (pointer-coarse only, desktop unchanged): text at 0.5625 to 0.625rem becomes 0.6875rem; small icon buttons and h-7/h-8 buttons and inputs reach 36px, overriding `mari-chrome-control` sizes where set.
-- Covered: Create and Import dialogs, character card update, Create Connection providers, possible duplicates, chat stats, docs, activity, SillyTavern import, Search All Chats, random tables, name generator (chips and surname), initiative tracker (encounter select no longer clipped), calendar, the character, persona, lorebook and preset editors, and the Campaign Wiki window (chips, See all, Retry, Tools).
-- Measured at 360px: flagged small text 1547 to 511 and small targets 1021 to 342 across the compared modals; no horizontal overflow.
-
-### Phones: music bubble, composer caps and emoji picker
-
-- Commit: `7d83a801c`.
-- Behaviour: the collapsed YouTube or local music bubble is clamped inside the screen with room kept for the composer and re-positions on rotation and when the on-screen keyboard opens (it sat on Send at 740x360 with the keyboard up).
-- Behaviour: on wide-but-short screens the roleplay composer caps at 30% of screen height (max 200px) and the conversation composer at 30% (max 160px), re-sizing on keyboard or rotation, so long drafts no longer hide attach, emoji and send.
-- Behaviour: the conversation emoji, GIF and sticker picker is opaque on phones; the swipe number box is 36px tall with 12px text on touch; roleplay timestamps are 11px below 768px.
-
-### Phones: side panel touch floor and Settings in landscape
-
-- Commit: `0b05da7f2`.
-- Files: new `packages/client/src/components/panels/panel-phone-floor.ts`; panel roots for lorebooks, presets, personas, connections, characters and agents; `SettingsPanel.tsx`.
-- Behaviour: shared classes give buttons, selects and inputs a 36px minimum and small text 11px on narrow and touch screens; opt out with `data-touch-compact`.
-- Behaviour: list-row actions sit beside the text instead of over it and wrap to a second line when narrow, so names are no longer cut or covered.
-- Behaviour: Settings on short landscape screens shows one row of six text tabs beside Quick Access and a compact search header (settings area about 35 to 170px at 740x360).
-- Behaviour: the Load more bar sits at the end of the list on short screens; selection checkboxes, campaign badges and library folder header actions get 36px hit areas.
-
-### Phones and tablets: compact editor header, touch targets, palette fit
-
-- Commit: `e82a2d1f8`.
-- Behaviour: on short landscape screens the editor header stays on one row (lorebook, preset and persona header 107 to 48px at 740x360); on portrait phones the section picker shrinks first.
-- Behaviour (touch): editor actions 38px; section jumps and chat message actions 36px; textarea tool icons get an invisible 37px hit area; markdown links get an invisible vertical hit extension with no line-spacing change.
-- Behaviour: the command palette (Ctrl+K) opens at the top on short screens with its list capped to fit; shortcut hints are hidden on touch; its small text is 11px.
-- Behaviour: the update toast sits below chat and editor headers on touch; Refresh 38px, close 36px hit area.
-- Checked at 360 to 915px phone sizes and tablets 768x1024, 820x1180, 1024x768, 1180x820, 1366x1024.
-
-### Touch tablets: 36px chat controls and readable timestamps
-
-- Commit: `4909d11f7`.
-- Behaviour: at 768px and wider, touch tablets get the desktop chat layout with larger controls on coarse pointers only. Chat header buttons use the new `getChatTouchToolbarButtonClass` (search, active lorebook entries, notebook, roleplay surface, conversation view, roleplay HUD, branch selector, identity pill); the shared default size is untouched, so Game Mode buttons are unchanged.
-- Behaviour: composer buttons, quick connection switcher, swipe arrows and chat settings profile and close buttons stay at 36px or more; top-bar music player buttons get invisible 36px hit areas; its subtitle and roleplay timestamps are 11px on touch.
-- Measured: undersized controls on tablets fell from 23 to 25 to 8 to 9 (conversation) and from 20 to 22 to 2 to 3 (roleplay); no overflow at the five tablet sizes.
-
-### Touch: persona switcher, volume sliders and branch badges
-
-- Commit: `d9e519954`.
-- Behaviour: Quick Persona Switcher is 36px or taller on touch; YouTube and custom-music volume sliders get a 36px touch height that wins over the generic range-input rule (visible track stays slim); branch count badges read 11px through a local class. The shared `mari-chrome-muted-badge` rule is untouched because the built-in helper uses it.
-
-### Phones and tablets: connection and agent editors, switches, settings text
-
-- Commit: `e8c42afc9`.
-- Behaviour: the panel phone floor now wraps the connection editor, agent editor, regex script editor, tool editor and feature agent detail host (11 small controls and 32 small labels gone from the connection editor at 390px).
-- Behaviour: toggle switches (38x21 labels around hidden checkboxes) get an invisible 38x38 hit area; the track looks the same.
-- Behaviour: the Settings quick replies checkbox label reaches 36px on touch; section and switch descriptions, the sound status chip and background picker chips read 11px on narrow and touch screens (also in the chat drawer).
-- Checked on phones and the five tablet sizes: no overflow, no text under 11px, desktop unchanged.
-
-### Game Mode on phones: widget tray, status sheet and presence strip
-
-- Commit: `eee40df22`.
-- Files: `packages/client/src/components/game/GameSurface.tsx`, `GameWidgetPanel.tsx`, `GameMobileStatus.tsx`, `GameNarration.tsx`.
-- Behaviour: the widget tray scrolls tab by tab without a visible scrollbar or clipped tabs, fades where more tabs wait and keeps Arrange on screen.
-- Behaviour: Game status becomes a tray tab that opens a sheet instead of filling the top half.
-- Behaviour: Currently Present uses an icon and whole-name chips in one row; on landscape phones it joins the top row while the toolbar folds into the actions menu, so narration keeps most of the height. Desktop unchanged.
-
-### Game Mode on phones: storyboard sheet and pinned composer
-
-- Commit: `f5cd40182`.
-- Files: `GameStoryboardViewer.tsx`, `GameStoryboardTimings.tsx`, `GameNarration.tsx`, `GameSurface.tsx`.
-- Behaviour: on phones the storyboard is a slim tab under the narration, closed by default, that opens a sheet in the free space above the composer, with a close button; Escape closes it.
-- Behaviour: timings, request errors, counts and generation details fold into one Details disclosure on every screen size; a failure shows one line with Retry.
-- Behaviour: the composer is pinned to the bottom of the narration on phones; the image retry banner becomes a compact line clear of narration and composer.
-
-### Floating music widget avoids marked controls
-
-- Commits: `854989034`, `fa8ddf74b`, `16c55356f`.
-- Files: new `packages/client/src/lib/floating-widget-avoid.ts` (placement math) and `hooks/use-floating-widget-avoid.ts`; `LocalMusicPlayer.tsx`, `YouTubePlayer.tsx`, `SpotifyMiniPlayer.tsx`.
-- Behaviour: the collapsed YouTube or local music bubble and the Spotify mini player avoid any element marked `data-floating-widget-avoid` (Game Mode marks the Currently Present strip with its Campaign Wiki button, the widget tray, the storyboard tab and the Game actions button). A free spot, including one the user dragged to, is only clamped; an overlapping spot moves to the nearest free spot on the right edge, else the left; with no free spot the clamped position stays. The saved position is never rewritten. The Spotify bubble gets the composer clearance too.
-- Performance: measurement runs on mount, resize, rotation, keyboard, marker add and remove, and a light 1.5 s check, at most once per frame, only while a phone bubble is mounted.
-- Tests: `scripts/regressions/floating-widget-avoid.regression.ts`.
-
-### Landscape phones: one top row for Game chrome
-
-- Commit: `5bf5ff31f`.
-- Files: `packages/client/src/components/game/GameSurface.tsx`, `GameMobileStatus.tsx`, `GameMobileArrange.tsx`, `GameInput.tsx`, `GameNarration.tsx`, `GameStoryboardViewer.tsx`.
-- Behaviour: below 1024px wide and 32rem tall, the map, party, the tab tray, a storyboard icon and the actions button share one top row. Currently Present and the image retry line become tray tabs that open sheets, the actions menu opens as a row, and the composer stays one line until focused. The narration column gets 65 to 69% of the height at 740x360 to 915x412. Portrait and desktop unchanged.
-- Tests: new `scripts/regressions/game-mobile-landscape.live.mjs`; `game-mobile-layout.live.mjs` and `game-storyboard-phone.browser.mjs` updated.
-
-### Tablets and landscape phones: editor targets, category bar, wiki fit
-
-- Commit: `795b87b66`.
-- Files: `packages/client/src/components/characters/CharacterEditor.tsx`, `personas/PersonaEditor.tsx`, `lorebooks/LorebookEntryRow.tsx`, `LorebookFolderRow.tsx`, `game/CampaignWikiOverview.tsx`, `CampaignWikiRail.tsx`, `CampaignWikiWindow.tsx`.
-- Behaviour (touch): Generate avatar with AI gets a 36px hit area from the editors (the shared button file is unchanged); avatar tile, Upload, sprite tabs, Images tab and expression quick-add chips are 36px.
-- Behaviour: the character editor Library category bar is a single slim row below 500px screen height (about 56 to 44px at 740x360).
-- Behaviour (touch): lorebook entry and folder row drag and expand chevrons get 36px hit areas.
-- Behaviour: Campaign Wiki Hide navigation is 36px wide; filter chips and Latest in the story entity links are at least 36px on touch; the top bar is tighter below 500px height; People cards wrap to fit instead of a fixed two columns (names were cut at 768px).
-- Checked at 768x1024, 820x1180, 1024x768, 1180x820, 1366x1024 and 740x360: no overflow.
-- `bcb5006ea` updates `CHANGELOG.md` for the job tracking setting's new place.
-
-### GM prep board on phones
-
-- Commit: `d1ec31bbc`.
-- Behaviour: on touch screens every prep board control (buttons, inputs, menu items, drag handle, done box, search clear, link chips, tags) is at least 36px and small labels step up to 11px. Desktop pixel-identical.
-
-### Edit layout fixture stabilised
-
-- Commit: `92528c1c1`.
-- Tests: applying a saved layout remounts every panel; on a loaded machine the remount could land after the Shift+Arrow press and put the panel back. The fixture now waits until the panel holds still before nudging.
+- Commit: `bcb5006ea`. `CHANGELOG.md` now says the job tracking setting lives in Settings > Advanced > Features.
 
 ### Validation boundary for the 2026-09-24 phone and tablet work
 
@@ -653,6 +655,255 @@ Features:
 - Contacts (`GameContactBookWidget.tsx`): no invisible categories after deleting the chosen parent; category actions reachable on touch and keyboard.
 - Tests: `scripts/regressions/game-map-validate.regression.ts` (new); dice-log, inventory-identity, continuity-inventory pass.
 
+### Edit layout rebuild (desktop Game mode HUD)
+- Commits: f72a47763 (new modules), 7b19cd5d2 (wiring).
+- Files: `components/game/FloatingGamePanel.tsx`, `components/game/DraggablePanel.tsx`, `components/game/GameLayoutEditToolbar.tsx` (new), `components/game/GameLayoutPopover.tsx` (new), `components/game/GameStoryboardViewer.tsx`, `components/game/GameSurface.tsx` (toolbar mount next to the Edit layout button, `layoutRevision` in GamePanelContext), `lib/game-panel-layout.ts`, `lib/game-layout-editor-store.ts` (new), `lib/game-layout-geometry.ts` (new), `lib/game-layout-snapshots.ts` (new), `localization/locales/en.json` (`ui.game.layoutEditor.*`).
+- How to reach it: Game mode on desktop (1024px wide and up), the "Edit layout" button in the game toolbar. Esc leaves edit mode unless a popover is open.
+- Behaviour:
+  - Edit mode shows a 16px grid, a dashed outline and a name tag on every panel. Locked panels show a muted outline and a lock icon.
+  - A hint with "Unlock all" appears when every panel is locked. It dismisses itself after 12 s.
+  - Drag a panel from anywhere on it. A transparent drag layer keeps content clicks from firing. Arrow keys on the name tag move the panel 10px, or 40px with Shift.
+  - Snapping to surface edges and centres and to other panels' edges, centres and adjacency lines, within 8px, with guide lines. Alt disables snapping. The 16px grid is the fallback.
+  - Collisions switch:
+    - On (default): a dropped panel that overlaps another shows a hatched overlap and a landing preview, then glides to the nearest free spot. It never moves another panel.
+    - Off: panels overlap freely ("phase through"), the automatic reflow leaves intentional overlaps alone, and clicking a panel brings it to the front.
+  - Resize from 8 handles (all edges and corners) with a live W x H readout, minimum sizes and snapping. A height drag switches the panel's growth mode to Fixed, so content growth cannot undo it.
+  - The per-panel "..." popover on the name tag holds: lock, reset, growth (Grow down / Grow up / Fixed), collapse to edge with edge choice, widget stacks (stack with, new stack), narration bottom pin, toolbar top-centre pin, and Hide.
+  - The Layout toolbar sits in the header strip above the HUD surface. It holds:
+    - Done;
+    - Undo and Redo (Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y, 50 steps);
+    - the Snap and Collisions switches;
+    - Lock all and Unlock all;
+    - a Panels menu to show or hide panels, with a hidden count (narration and toolbar cannot be hidden);
+    - a Layouts menu to save, apply, rename, delete, export or import JSON, and Reset all.
+  - The storyboard viewer fills the box it is given, so its 16:9 picture no longer drives the panel height or spills into neighbours.
+- Settings and defaults:
+  - Snap on and Collisions on by default. Both are stored globally in localStorage.
+  - Saved layouts are global, in localStorage `marinara-game-layouts:v1`, so they are reusable across game chats.
+  - Snapshots, undo and saved layouts copy every localStorage key under the chat's panel prefix plus the stacks key. Applying one remounts the panels through `layoutRevision`.
+- Tests:
+  - `scripts/regressions/game-layout-editor.regression.ts`: snapping, resize, settling, overlap mode, snapshots, undo, saved layouts.
+  - `scripts/regressions/game-layout-edit-mode.browser.mjs` (Playwright fixture): edit chrome, unlock-all hint, drag anywhere, snap guides, overlap settle, collisions off, 8-way resize, options popover, undo/redo, hide/show, saved layouts, keyboard, Esc.
+  - Updated: `floating-panel-layout.regression.mjs`, `game-panel-autogrow.browser.mjs`, `game-panel-bottom-lock.browser.mjs`, `game-widget-stack.browser.mjs`, `game-widget-tuck.browser.mjs` (these take an optional layout scope argument), `scripts/ui-fixtures/game-hud/run.mjs`.
+
+### HUD panels crushed to 64px after the rebuild: fix and recovery
+- Commit: 67967f940.
+- Files: `lib/game-panel-layout.ts`, `components/game/FloatingGamePanel.tsx`, `components/game/DraggablePanel.tsx`.
+- Symptom: at 1440x900 every HUD panel, narration included, rendered 64px tall.
+- Cause: the crowded-screen reflow places panels one at a time and shrank every panel by the same step whenever any panel did not fit. One wide widget (727px) always failed to fit, so everything dropped to the 64px floor.
+- Behaviour:
+  - Stranded panels are retried first, then widgets are packed, before anything shrinks. Widgets shrink before reading panels do.
+  - Narration, map and storyboard never go below a third of the screen height.
+  - A width that cannot fit keeps its spot instead of crushing the rest.
+- Recovery:
+  - Stored heights below the 64px minimum are treated as unset.
+  - Positions saved while panels were crushed recover to a non-overlapping layout.
+  - Automatic reflow never writes sizes or positions. Only manual drag, resize and keyboard moves persist.
+- Tests:
+  - `scripts/regressions/game-panel-crowded-layout.regression.ts`
+  - `scripts/regressions/game-panel-crowded-reflow.browser.mjs`: an 11-panel crowded HUD at 1440x900 keeps readable heights, a layout saved before the rebuild renders at its old size, crushed-era positions recover, and reflow writes nothing.
+
+### Edit layout bug-hunt fixes
+- Commit: 681fd2d1d.
+- Files: `components/game/FloatingGamePanel.tsx`, `components/game/GameLayoutEditToolbar.tsx`, `components/game/GameStoryboardViewer.tsx`, `lib/game-panel-layout.ts`, `localization/locales/en.json` (`ui.game.layoutEditor.thisWidgetStack`).
+- Fixes:
+  - The crowded layout no longer flips between two solutions every frame. Anchors stay absolute until the screen resizes, and a height-limited storyboard uses its last unlimited height.
+  - "Fixed height" captures the content's real height, and Lock keeps the saved position.
+  - The 900px game toolbar is placed right after narration, alongside the map, instead of last.
+  - Name tags move inside the panel's top edge when a neighbour is within 12px above.
+  - Esc during a drag or resize cancels it and restores size and growth. Leaving edit mode mid-drag cancels it too.
+  - Undo or a chat switch mid-drag resumes reflow and clears guides.
+  - The edit session (the undo scope) ends whenever editing stops, including on a chat switch.
+  - Edit mode ends below 1024px wide, and the Edit layout button is hidden there.
+  - Stack siblings no longer block a resize.
+  - The value-change reveal of a tucked widget gets its own timer, so changing the tuck edge cannot leave it open for good.
+  - The "This widget stack" label is localized.
+  - The storyboard reserves 192px for header and footer when height-limited.
+- Tests:
+  - `scripts/regressions/game-layout-edit-hunt.browser.mjs` (new): tags, Esc and undo mid-drag, composer undo, chat switch, tablets.
+  - `game-widget-tuck.browser.mjs` uses a stateful mock and clears keys under the layout scope.
+
+### Readable accent fills and on-screen popovers
+- Commit: eff73f52b.
+- Files: `components/game/GameLayoutEditToolbar.tsx`, `components/game/GameLayoutPopover.tsx`, `components/game/FloatingGamePanel.tsx`.
+- Behaviour:
+  - The Done button, the Save button, the hidden-count badge and the W x H badge use `--primary-foreground` on the accent fill. White on #ec4b97 was about 3.5:1.
+  - Popovers that would open below the viewport flip up.
+  - Menu icons are one size (12).
+- Test: `scripts/regressions/game-layout-visual-polish.regression.mjs`.
+
+### Storage failures never half-apply a layout
+- Commit: 5e57cd705.
+- Files: `lib/game-layout-snapshots.ts`, `lib/game-layout-editor-store.ts`, `components/game/GameLayoutEditToolbar.tsx`, `localization/locales/en.json` (`ui.game.layoutEditor.storageFull`, `ui.game.layoutEditor.importStorageFull`).
+- Behaviour:
+  - Apply, undo, redo, reset and import roll back when browser storage is full or blocked, and the undo history stays in step with the layout.
+  - A clear storage message replaces the generic "not a Marinara layout" text.
+  - Saving a layout reports a failed write.
+  - Imports over 512K characters are refused before parsing.
+  - Applying a layout saved in another chat rewrites the key prefixes to the current chat.
+- Test: `scripts/regressions/game-layout-snapshots-hardening.regression.ts`.
+
+### Keyboard, screen reader and rename fixes
+- Commit: 06fd3ca19.
+- Files: `components/game/FloatingGamePanel.tsx`, `components/game/GameLayoutEditToolbar.tsx`, `localization/locales/en.json` (`ui.game.floatingPanel.moveNamed`, `ui.game.floatingPanel.resizeNamed`).
+- Behaviour:
+  - Move and resize handles include the panel name in their accessible label.
+  - Arrow nudges ignore Ctrl, Alt and Meta.
+  - The undo and redo shortcuts ignore AltGr chords (Ctrl+Alt).
+  - Esc in the layout rename field cancels without saving and returns focus to the rename button. Enter also returns focus there.
+- Test: `scripts/regressions/game-layout-edit-focus.browser.mjs`.
+
+### Tidy and Shift+click align
+- Commit: 6015b7172.
+- Files: `lib/game-layout-tidy.ts` (new), `lib/game-layout-arrange.ts` (new), `lib/game-layout-editor-store.ts` (selection state), `components/game/FloatingGamePanel.tsx`, `components/game/GameLayoutEditToolbar.tsx`, `localization/locales/en.json` (`ui.game.layoutEditor.tidy`, `alignLeft`, `alignRight`, `alignTop`, `matchWidth`).
+- How to reach it: in Edit layout, the Tidy button is always shown. Shift+click panels to select them; Align left, Align right, Align top and Match width appear when two or more are selected. The first Esc or a click on empty surface clears the selection.
+- Behaviour:
+  - Tidy packs panels into non-overlapping columns, keeping each panel's left, centre or right side and its top-to-bottom order.
+  - Locked and tucked panels stay put and act as obstacles. Stacks move as one block.
+  - Reading panels keep at least a third of the screen height.
+  - Each action is one undo step.
+  - With collisions off, alignment is applied exactly.
+- Tests: `scripts/regressions/game-layout-tidy.regression.ts`, `scripts/regressions/game-layout-tidy.browser.mjs`.
+
+### Arrange widgets on phones
+- Commit: 753ed582a.
+- Files: `components/game/GameMobileArrange.tsx` (new), `lib/game-mobile-panel-arrangement.ts` (new), `components/game/GameWidgetPanel.tsx` (MobileWidgetPanel applies the arrangement), `components/game/GameSurface.tsx` (the Arrange button at the end of the phone widget row), `localization/locales/en.json` (`ui.game.mobilewidgetarrange.*`).
+- How to reach it: in Game mode below 1024px, the Arrange button at the end of the widget row.
+- Behaviour:
+  - A sheet lists the left and right widgets in two groups, with up, down and hide/show buttons. Touch targets are at least 40px.
+  - Both widget rails stay in sync.
+  - The Arrange button stays visible even when every widget is hidden.
+- Settings: per device, in localStorage `marinara-game-panel-mobile:<scopeId>:arrangement` (order, hidden, expanded). Desktop layouts are unaffected. Default: server order, nothing hidden.
+- Tests: `scripts/regressions/game-mobile-panel-arrangement.regression.ts`, and `scripts/ui-fixtures/game-hud/run.mjs` at 390x844 (reorder persists, hidden stays hidden, targets at least 40px, no horizontal scroll).
+
+### Neutral fixture names
+- Commit: 0b3dea6a3.
+- Campaign-specific widget ids and session references in `scripts/regressions/game-panel-layout.regression.ts`, `game-panel-crowded-layout.regression.ts` and `game-panel-crowded-reflow.browser.mjs` are replaced with invented neutral names.
+
+### Campaign Wiki: article pages
+- Commits: 05d60f159 (wiki files only), c823be962, 327a18130, acca532f3, 12331af21.
+- Files: `components/game/CampaignWiki.tsx` (Detail), `CampaignWikiFacts.tsx`, `CampaignWikiInfobox.tsx`, `CampaignWikiReaderParts.tsx`, `CampaignWikiEditor.tsx` (initialFactId/initialTab props), `hooks/use-campaign-memory.ts` (useCampaignMemoryEntityFacts, useUpdateCampaignMemoryFact, fact filter params).
+- Behaviour: every entity page is a wiki article. Hero with an 88px portrait, name and one meta line (aliases, kind, sessions, fact and secret counts), Edit, Open character card and a "View as" perspective select. Main column plus a 16rem infobox that switches by container query (follows the reading pane, not the window).
+  - Pinned canon block at the top: facts with `manualLock === true` and `value.pinned === true`.
+  - Facts are compact one-line rows grouped by session, newest session open, older sessions collapsed with counts from the server's `factSessions`; per-session paging with Load more; search box sends `factQuery` (300ms debounce); kind chips from `factKinds` (top five, rest in "More kinds"); withdrawn (retracted) facts fold into one line per session.
+  - Clicking a row expands it: evidence quote with Show full message, conditions ("Only if"), co-holders ("Also known to"), status badges, and actions Pin as canon, Unpin, Correct (opens the editor on that fact), Wrong (inline confirm, then retract and lock).
+  - Infobox: Right now (current state; values that are page ids resolve to page names and link), Connections (one row per person with merged labels), Open promises, and "On this page" links that open Facts, What they know, Events, Connections, Timeline, Promises and quests, Details in the main column. The old tab bar is gone.
+  - Events tab leads with the text of a live fact that cites the same message and quote. An event summary made only of ids shows "Event recorded". No raw ids are shown anywhere (RAW_ID filter).
+- How to reach: open a game session chat, press the Campaign Wiki button, pick a page.
+- Settings and defaults: none. Writes go to the fact's origin session (`recordWriteChatId`). Pin sends `{value: {...value, pinned: true}, manualLock: true}`; Unpin restores the earlier lock (`value.lockedBeforePin`); Wrong sends `{status: "retracted", manualLock: true}`. A 409 revision conflict offers Reload.
+- Tests: `scripts/ui-fixtures/campaign-wiki/run-tests.mjs` (session groups, load more, pinned canon, kind filter, search, Wrong, Pin, Unpin, Correct, older-server fallback, error and retry, 390px overflow); regression `scripts/regressions/campaign-memory-wiki-reader-ui.regression.ts`.
+
+### Campaign Wiki: front page, grouped page list and campaign timeline
+- Commits: bc4beedf7, f66d35889 (new files), 856a5fc67 (title and desc timeline).
+- Files: `components/game/CampaignWikiOverview.tsx`, `CampaignWikiRail.tsx`, `CampaignWiki.tsx`, `campaign-wiki-ui.tsx` (EntityAvatar loading placeholder and error fallback), `hooks/use-campaign-memory.ts` (`sort` option, `kindTotals` type).
+- Behaviour:
+  - Page list with no search groups by kind: People, Player characters, Places, then Organizations, Items, Quests, Lore, Notes, each with its count. The first three start open; the rest load when opened; each section shows 8 rows, Show more, and See all (paged kind list). Pages with the same kind and name collapse into one row ("Lore, 17 pages"). Search ranks match tier first, then people and places before lore. Filter chips show counts and hide empty kinds.
+  - Portraits show initials (pulsing) until the image loads, fade in, and fall back to initials on error.
+  - Front page: hero with the campaign name (the chat name without a trailing "Session N" suffix) and counts, stat tiles that open each kind, a people grid (12, trimmed to 6 on phones; portraits and most sessions first), Latest in the story (5 newest events via one `order=desc&limit=10` request, with a cursor-walk fallback for older servers), Open promises, top places, recently changed, quick links; import tools behind a Tools disclosure.
+  - Campaign timeline: Story events and Promises and quests tabs; events grouped by session (from `originSessionNumber`) then by day, with a session jump bar; event cards show summary, place chip, people chips with portraits and state changes.
+- How to reach: Campaign Wiki window, front page (home icon in the rail) and the Timeline button.
+- Settings and defaults: none. Uses the server's `kindTotals` and `sort=kind` when present, else one count request per kind.
+- Tests: `run-tests.mjs` (grouping order and counts, show more, see all, search ranking, older-server fallback, portrait loading and fallback, front page sections, promises tab, timeline sessions and jump bar, phone front page and timeline without sideways scroll, duplicate-name collapsing, grouped connections).
+
+### Campaign Wiki: review duplicates, what links here, canon page
+- Commit: d02f0f881.
+- Files: `components/game/CampaignWikiReview.tsx`, `CampaignWikiLinksHere.tsx`, `CampaignWikiCanon.tsx` (all new), `CampaignWiki.tsx`, `CampaignWikiOverview.tsx`, `hooks/use-campaign-memory.ts`; fixtures `scripts/ui-fixtures/campaign-wiki/run-review-canon.mjs` (new), `entry.tsx`, `run-all.mjs`.
+- Behaviour:
+  - Review duplicates: reads `/memory/review/duplicates` for each session chat of the campaign (the route is per session), shows each group's versions side by side (text, subject, session, date, quote count, pinned or pending chips) and the reason they were grouped; preselects a pinned version, then the most quoted, then the newest; Resolve posts to that session chat with `expectedRevisions`; Skip hides a group, Show again restores. Conflict offers Reload; cross-session refusal shows its message; a missing fact reports it. Count badge on the front page Tools summary.
+  - What links here: a block at the end of each article listing pages connected through loaded connections and events, grouped by kind with portraits, plus a campaign-wide summary line from `/memory/entities/:id/references`.
+  - Canon: every pinned fact across the campaign from `GET /memory/facts?pinned=true`, grouped by page, with search, Load more and Unpin (written to the fact's own session).
+  - Older servers without these routes get "needs a server update" empty states.
+- How to reach: wiki front page, Tools (Review) and Quick links (Canon); What links here at the end of any article.
+- Settings and defaults: none.
+- Tests: `run-review-canon.mjs` (38 checks at desktop and 390px: review, resolve, conflict and reload, cross-session refusal, skip, canon, unpin, older-server states, links here, no overflow).
+
+### Campaign Wiki: write paths, cross-session references and fixes
+- Commits: 856a5fc67, 12331af21, 23eb00759, 8a55809e7.
+- Files: `campaign-wiki-ui.tsx` (cross-session error helpers), `CampaignWikiCommitments.tsx`, `CampaignWikiCreateRecord.tsx`, `CampaignWikiEditor.tsx`, `CampaignWikiEvidence.tsx`, `CampaignIndexDialog.tsx`, `CampaignWikiFacts.tsx`.
+- Behaviour:
+  - A write that references a person with no page in the write session (409 `CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE`) shows a specific message on every write path (editor preview and save, create record including knowledge, commitment transitions, Pin, Unpin, Wrong) instead of the reload banner.
+  - Pin, Unpin and Wrong send partial patches.
+  - The "who knows it" fact picker lists facts from the write session first and labels facts from other sessions.
+  - Fixes from two review passes: paging keeps the open tab and perspective; changing tabs resets the shared page offset; the editor diffs against a snapshot taken when editing starts (a refetch can no longer hide a concurrent change from the 409 check); evidence scrolls back to the quote when reopened; a failed Resume in the campaign index job view shows its error; commitments Reload after a 409 refetches; the create form waits for the owner check of the exact id; the editor rejects condition values that don't match their type.
+  - The create form uses the app safe-area inset variable (#5667).
+- Tests: `run-editor.mjs`, `run-create-evidence-owner.mjs`, `run-commitment-conflict.mjs` (new), `run-pulse8-scrolled.mjs`, `run-branch-proof.mjs`, `run-knowledge-setting-proof.mjs`; regressions `campaign-memory-authoring-ui`, `campaign-memory-commitments-ui`, `campaign-index-ui`, `mobile-safe-area-inset`.
+
+### Chat fixes (bug hunt)
+- Commits: 5e0ad5c4b, 648c75a56, 42180d981.
+- Files: `components/chat/ChatMessage.tsx`, `RoleplayCommandResults.tsx`, `MessageEditTextarea.tsx`, `ConversationMessageBubble.tsx`, `ConversationMessageLine.tsx`, `ConversationMessageGrouped.tsx`, `ConversationPresenceCard.tsx`, `ChatInput.tsx`, `ConversationInput.tsx`, `ChatRoleplaySurface.tsx`, `ChatMessageSearch.tsx`, `ChatBranchSelector.tsx`, `HomeBrowserHub.tsx`, `RecentChats.tsx`.
+- Behaviour:
+  - Touch: a tap on a hidden message action row only reveals it; it no longer presses the button underneath (Regenerate, Delete).
+  - Markdown tables in roleplay no longer raise React key warnings.
+  - The message editor carries `data-chat-message-editor` again, restoring mobile scroll-into-view, bottom spacing while editing and the unsaved-edit check in visual novel history; Save and Cancel scroll into view inside the chat scroller.
+  - Conversation edit box uses the full message width; the unrendered EditTextarea was removed.
+  - Send button labelled by its action; attachment remove buttons labelled, 38px, focus rings; conversation image attachments show a thumbnail.
+  - The transcript stays pinned to the latest message as the composer grows.
+  - Phones: search closes after jumping to a result; branch panel buttons 38px; missing avatars use AvatarImage everywhere.
+  - Home: recent chat cards open their chat (the feed module made only buttons and links clickable, so the card-wide "Open Chats tab" button caught the clicks); mode buttons stack icon over label below 640px.
+- Tests: regressions `open-issues` (editor controls assertion moved to the live editor), `assigned-issues-5474-5502`, `mari-polish`.
+
+### Characters and personas
+- Commits: db3d3ad8b, 889b5cb94, f9c274005, 00ea14412, a625e235e (restores a later accidental revert).
+- Files: `components/characters/AvatarImage.tsx` (new), `CharacterEditor.tsx`, `CardLibraryPreview.tsx`, `CharacterLibraryView.tsx`, `components/personas/PersonaEditor.tsx`, `components/panels/PersonasPanel.tsx`, `components/bot-browser/BotBrowserView.tsx`, `components/modals/ImportCharacterModal.tsx`.
+- Behaviour:
+  - Saving with an empty character name stops with a clear message.
+  - Bot browser tags on phones are an overlay drawer (backdrop and Escape close it).
+  - Library header shows "100+" while more pages exist.
+  - AvatarImage falls back to a placeholder when an avatar file is missing.
+  - Cropped avatars render in the library; Set as avatar from the gallery clears the previous crop; depth prompt depth clamps to 0 to 100; tags that differ only in case are one tag.
+  - Performance on large characters (memoized sections and greeting rows, off-screen rows skip layout, deferred library filtering): greeting typing about 127 to 50 ms per key, editor scroll 11 to 13 fps to 36 to 41 fps, library search up to 200 to about 33 ms per key (dev build).
+  - Clip labels localized.
+  - Personas panel shows an error with Retry when loading fails instead of "No personas yet".
+  - Import: closing the "Embedded lorebook found" prompt cancels with a toast; choices read Import with lorebook, Import without, Cancel.
+- Tests: regressions `assigned-issue-sweep`, `avatar-crop-contract`, `persona-client-contract`, `character-library-token-estimate`, `janny-character-import`.
+
+### Lorebook and preset editors
+- Commits: 7d8c56b2c, c176bebf6.
+- Files: `components/lorebooks/LorebookEditor.tsx`, `LorebookEntryRow.tsx`, `LorebookFormFields.tsx`, `components/presets/PresetEditor.tsx`, `components/agents/AgentEditor.tsx`, `components/panels/AgentsPanel.tsx`, `components/panels/PresetsPanel.tsx`.
+- Behaviour:
+  - Move and Copy entries start on "Choose a lorebook" and the confirm names the target (it used to preselect the first lorebook alphabetically).
+  - Entry rows: order box widens with its value and shows the saved value; aligned columns; Duplicate and Delete visible on keyboard focus; filter modes, matching sources, triggers, logic chips, vector status and empty states localized; header shows the category display name; sort options localized.
+  - Phones: Duplicate and Delete move into the row menu; toolbar lays out as search plus a 2x2 grid.
+  - Labels on keyword and tag remove, back and close buttons; preset overview card spacing; preset section buttons labelled with state; agents and presets folder-delete dialogs localized; agent editor save button labelled on mobile.
+- Tests: regressions `lorebook-entry-status`, `prompt-token-counters`, `assigned-issue-sweep`.
+
+### Lorebook editor performance
+- Commit: e5679fc90.
+- Files: `components/lorebooks/LorebookEditor.tsx`, `LorebookEntryListItem.tsx` (new); regression `scripts/regressions/lorebook-editor-memo-rows.regression.ts` (new).
+- Behaviour: entry rows render through a memoized wrapper with one shared handlers object (current state read through a ref refreshed after render; drag-over and drop rules, shift-click range selection, stale-only filter and activation stats unchanged). Search filtering and the grouped or flat switch use a deferred value. 400 entries, dev build: search keystroke to paint 440 to 686 ms down to 48 to 58 ms; clear search about 1100 ms down to 33 to 129 ms; expand 480 to 700 ms down to about 120 ms. Sort change unchanged (about 1.2 s).
+- Tests: regression `lorebook-editor-memo-rows`; browser checks of autosave, search, sort, drag at root and in a folder, range select with copy and move, menus on screen at 1280 and 390.
+
+### Shell: dialogs, connections, settings, onboarding, focus
+- Commits: 4e999d129, 0333d2ad0.
+- Files: `components/ui/Modal.tsx`, `ContextMenu.tsx`, `HelpTooltip.tsx`, `EmojiPicker.tsx`, `GifPicker.tsx`, `StatIconPicker.tsx`, `ExpandedTextarea.tsx`, `AppDialogRenderer.tsx`, `ExportFormatDialog.tsx`, `ImageUploadDropzone.tsx`, `ColorPicker.tsx`, `AvatarCropWidget.tsx`, `DraftTextarea.tsx`, `DraftNumberInput.tsx`, `PanelStates.tsx` (new), `hooks/use-dialog-focus-scope.ts`, `components/layout/AppShell.tsx`, `RightPanel.tsx`, `ChatSidebar.tsx`, `use-panel-keyboard-focus.ts` (new), `components/connections/ConnectionEditor.tsx`, `components/panels/ConnectionsPanel.tsx`, `SettingsPanel.tsx`, `settings/*`, `components/modals/*`, `components/onboarding/OnboardingTutorial.tsx`, `App.tsx`, `styles/globals.css`.
+- Behaviour:
+  - Only the topmost dialog traps Tab; Escape during IME composition doesn't close a dialog; menus and pickers render above dialogs; pinned help tooltips close on scroll; the avatar preview is its own labelled overlay.
+  - Connection editor keeps unsaved edits across background refetches and saves before switching; saving no longer reclaims the Agents default; image quality Extra high and Max round-trip; clearing Seed, Steps or Max tokens clears instead of saving 0; Create has no double submit; Import has no ghost rows or overlapping drops; load failures show Retry.
+  - Settings: chat list background select uses real options; backup delete asks first; labels for language selects; rows stack in the narrow panel.
+  - Opening a side panel moves focus into it; Escape closes it (unless a field has text or a menu or dialog is open) and returns focus to the toggle.
+  - PanelStates: shared loading skeleton and error with Retry; the chat list shows its retry state after two failures.
+  - Onboarding on phones: the tour card is opaque.
+- Tests: regressions `setup-escape-overlay-guard`, `backup-download-handoff`, `extension-security`, `update-apply-hardening`, `frozen-server-client-timeouts`, `music-dj-and-floating-ui`, `mobile-safe-area-inset`, `avatar-crop-contract`.
+
+### Settings localization and keyboard-reachable imports
+- Commit: 68018a4df.
+- Files: `components/panels/SettingsPanel.tsx`, `settings/TTSConfigCard.tsx`, `settings/PromptOverridesEditor.tsx`, `settings/SettingControls.tsx`, `settings/TrackerCardColorSettings.tsx`, `components/layout/ChatSidebar.tsx`, `components/modals/STBulkImportModal.tsx`, `components/ui/TrackerCardColorControls.tsx`, `localization/locales/en.json`.
+- Behaviour: settings option lists, help, toasts, update and build labels, tracker order labels (previously passed to t() as English) and settings search text resolve through en.json; TTS config, prompt overrides (with plurals), setting controls and tracker colour settings localized. Profile import and SillyTavern import controls are real buttons that open the file picker, reachable by keyboard.
+- Tests: `localization:ui-check`, `scripts/check-locales.mjs`.
+
+### Em dash cleanup in UI copy
+- Commit: 68018a4df.
+- Files: `localization/locales/en.json` (115 values), plus six hard-coded em dashes in `ChatSidebar.tsx`, `STBulkImportModal.tsx`, `TrackerCardColorControls.tsx`, `TTSConfigCard.tsx`.
+- Behaviour: every en.json value that contained an em dash is rewritten with commas, colons, periods, parentheses or "to"; interpolation variables kept; model suffixes read "Name (model)". No keys renamed or removed.
+- Tests: `scripts/check-locales.mjs`.
+
+### Accent animation performance
+- Commit: c125258c0.
+- Files: `App.tsx`.
+- Behaviour: each live accent tick (every 500 ms) rewrites root CSS variables, which restyles every element. Above 6000 DOM elements the tick now holds the current accent instead of restyling. Measured before the fix: a 190-entry lorebook (about 16k elements) idled at about 1.5 frames per second; with the writes blocked, 66 frames in 2 s.
+- Settings and defaults: `ACCENT_ANIMATION_MAX_ELEMENTS = 6000` (constant, not user-facing). Accent animation settings unchanged.
+- Tests: manual measurement only.
+
 ### World Maps spatial block out of the cached prefix on all providers
 
 - Commit: `0d9ba9004`.
@@ -747,107 +998,12 @@ Features:
 - Tests: `chat-cache-send-guard-settings`.
 - Game switches are copied into new sessions with the rest of the game's settings, and a branch keeps the choice of the chat it came from.
 
-### Campaign Wiki: article pages
-
-- Commits: `05d60f159` (with `95eac9867` and `f66d35889` as checkpoints so untracked components could not be lost to the launcher's `git clean`).
-- Files: `packages/client/src/components/game/CampaignWiki.tsx`, `CampaignWikiInfobox.tsx`, `CampaignWikiFacts.tsx`, `CampaignWikiReaderParts.tsx`, `campaign-wiki-ui.tsx`.
-- Behaviour: hero with large portrait and one meta line; main column plus an infobox (Right now, Connections, Open promises, On this page) that follows the reading pane width through container queries.
-- Behaviour: pinned canon block at the top; facts as compact rows grouped by session (server `factSessions` counts, per-session paging), search through `factQuery`, kind chips from `factKinds`, withdrawn facts folded.
-- Behaviour: row actions Pin as canon (`value.pinned` plus `manualLock`), Unpin, Correct (opens the editor on that fact), Wrong (retract and lock, reload on 409). Other sections (knowledge, events, connections, timeline, promises, details) open in the main column from the infobox; no tab bar.
-- Tests: fixture mock covers sessions, kinds, pinned and retracted facts, filters and an older server without `factSessions`; reader suite 49 checks.
-
-### Campaign Wiki: front page and grouped page list
-
-- Commit: `bc4beedf7`.
-- Files: `CampaignWikiOverview.tsx`, `CampaignWikiRail.tsx`.
-- Behaviour: the page list groups by kind (People, Player characters, Places, then Organizations, Items, Quests, Lore, Notes) with counts from `kindTotals` and `sort=kind`; big groups start collapsed and load on open; search ranks matches, then people and places before lore; identical names collapse into one row ("Lore, 17 pages").
-- Behaviour: portraits show initials until the image loads, fade in, and fall back to initials on error.
-- Behaviour: front page with hero, stat tiles, people grid, latest in the story, open promises, places, recently changed, quick links; tools behind a disclosure.
-- Behaviour: infobox connections show one row per person with merged labels.
-
-### Campaign Wiki: campaign timeline
-
-- Commit: `bc4beedf7`; newest-first request in `856a5fc67`.
-- Behaviour: Story events and Promises tabs grouped by session and day with a jump bar; event cards with place and people chips; "Latest in the story" uses one `order=desc` request.
-- Tests: 144 checks across 7 runners, including an older-server fallback (155 after `856a5fc67`).
-
-### Campaign Wiki: cross-session writes and partial patches (client)
-
-- Commit: `856a5fc67`.
-- Behaviour: a write referencing a person with no page in the write session (409 `CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE`) shows a specific message on every wiki write path instead of the reload banner. Pin, Unpin and Wrong send partial patches. The "who knows it" fact picker lists this session first and labels facts from other sessions. The front page title drops the session suffix.
-
-### Campaign Wiki: review duplicates
-
-- Commit: `d02f0f881`.
-- Files: `CampaignWikiReview.tsx`.
-- Behaviour: reads each session chat of the campaign (duplicates are per session), shows versions side by side with session, date and quote counts, preselects the pinned or best-evidenced version and resolves in that session chat with expected revisions; skip and show again; conflict, missing and cross-session errors handled; count badge on the front page Tools.
-
-### Campaign Wiki: what links here
-
-- Commit: `d02f0f881`.
-- Files: `CampaignWikiLinksHere.tsx`.
-- Behaviour: pages that mention this one, grouped by kind with portraits and a campaign-wide summary line.
-
-### Campaign Wiki: canon page
-
-- Commit: `d02f0f881`.
-- Files: `CampaignWikiCanon.tsx`; route `GET /api/game/:chatId/memory/facts?pinned=true`.
-- Behaviour: every pinned fact across the campaign grouped by page, with search, load more and unpin (written to the fact's own session). Older servers get "needs a server update" states.
-- Tests: new review and canon runner; 193 checks across 8 runners.
-
-### Campaign Wiki: create form safe area
-
-- Commit: `8a55809e7`. The wiki create form uses the app safe-area inset variable.
-
 ### HUD widget landing, enum repair and interim list capacity
 
 - `0f90ee405`: GM prompt summary line for extended widgets, the compact catalog of the 19 extra types, the setup JSON schema listing every type, and locale keys (`formatHint`, calendar day label). The widget engine and renderers had been swept into `05d60f159` from the shared index.
 - `2ceb4b780`: `0f90ee405` applied zero-context hunks at shifted offsets; the 19 type names landed outside both enums in `packages/server/src/routes/game.routes.ts` and HEAD did not compile (20 server tsc errors before, 0 after, checked on a clean checkout).
 - `857d874d5`: widgets created by the GM without an icon show their type's default icon in the phone tray, the tucked panel and the headers (19 identical buttons before).
 - `beeafe7c7`: interim per-widget list capacity (`config.max` 1 to 30, default 5), `[widget: id, max: N]`, eviction toast and branch replay parity, with `scripts/regressions/hud-widget-list-capacity.regression.ts`. Superseded on 2026-09-24 by list widget capacity 100.
-
-### Game Mode Edit layout: editor modules and rebuild
-
-- Commits: `f72a47763` (modules), `7b19cd5d2` (wiring).
-- Files: `packages/client/src/components/game/GameLayoutEditToolbar.tsx`, `GameLayoutPopover.tsx`, `FloatingGamePanel.tsx`, `packages/client/src/lib/game-layout-editor-store.ts`, `game-layout-geometry.ts`, `game-layout-snapshots.ts`.
-- Behaviour: edit mode shows a grid, outlines and name tags; panels drag from anywhere, snap to edges, centres and neighbours with guides, resize from every edge and corner, and settle into free space on drop. A collisions switch lets panels phase through each other. Per-panel options move into a menu on the name tag. The Layout toolbar adds undo and redo, lock all, show and hide panels, saved layouts and reset. Manual heights survive growth and crowded reflow, and the storyboard fills the box it is given.
-- Shortcuts: Ctrl+Z undo, Ctrl+Shift+Z redo, Alt to place freely, Esc leaves edit mode.
-- Setting: none yet (audit tier 3); layouts are stored per campaign in browser storage.
-- Tests: `scripts/regressions/game-layout-editor.regression.ts`; Edit layout browser fixture under `scripts/ui-fixtures/game-hud/`.
-
-### Game Mode Edit layout: crushed panels and reflow
-
-- Commits: `67967f940`, `681fd2d1d`.
-- Problem: the crowded-screen reflow shrank every panel, narration included, to the 64px floor after the rebuild.
-- Behaviour: reading panels keep readable heights; stored heights below the minimum count as unset; positions saved while panels were crushed recover without overlap; automatic reflow no longer persists sizes or positions.
-- Behaviour (`681fd2d1d`): stable crowded reflow with no frame-to-frame flipping and the wide toolbar placed early; name tags move inside the panel when a neighbour is directly above; Esc cancels a drag or resize; undo or a chat switch mid-drag resumes reflow; the edit session ends on chat switch and below desktop width; stack siblings no longer block resize; the value-change reveal timer survives tuck edge changes.
-
-### Game Mode Edit layout: contrast and popover placement
-
-- Commit: `eff73f52b`.
-- Behaviour: Done, Save, the hidden count and the resize badge use the primary foreground on the accent fill (white failed contrast); popovers near the bottom edge flip up to stay in the viewport; menu icons use one size.
-
-### Game Mode Edit layout: storage failures never half-apply a layout
-
-- Commit: `5e57cd705`.
-- Behaviour: applying, undoing, resetting or importing a layout rolls back when browser storage is full or blocked, keeps the undo history in step, and shows a clear storage message. Imports over 512K characters are refused before parsing.
-
-### Game Mode Edit layout: named handles, safer shortcuts, rename Esc
-
-- Commit: `06fd3ca19`.
-- Behaviour: move and resize handles include the panel name for screen readers; arrow nudges ignore Ctrl, Alt and Meta; undo shortcuts ignore AltGr chords; Esc in the layout rename field cancels without saving and returns focus to the rename button.
-
-### Game Mode Edit layout: Tidy and Shift+click align
-
-- Commit: `6015b7172`.
-- Files: `packages/client/src/lib/game-layout-tidy.ts`, `GameLayoutEditToolbar.tsx`.
-- Behaviour: Tidy packs panels into non-overlapping columns keeping their rough side and order. Shift+click selects panels for align left, align right, align top and match width. Each action is one undo step; locked and tucked panels stay put; stacks move as a block; reading panels keep a readable height.
-
-### Game Mode on phones: Arrange widgets
-
-- Commit: `753ed582a`.
-- Files: `packages/client/src/components/game/GameMobileArrange.tsx`, `packages/client/src/lib/game-mobile-panel-arrangement.ts`.
-- Behaviour: an Arrange button at the end of the phone widget row opens a sheet to reorder widgets and hide or show them, with 40px touch targets. The arrangement is stored per device under its own key prefix, so desktop layouts are unaffected, and both widget rails stay in sync.
 
 ### GameSurface parse repair
 
@@ -1138,88 +1294,12 @@ Features:
 - Files: `CharactersPanel.tsx`, `LorebooksPanel.tsx`, `use-auto-load-all-pages.ts`, `packages/server/src/routes/characters.routes.ts`.
 - Behaviour: `fetchAllCharacterPages` reads `/characters/catalog` rows (raw rows carry no tags, so tag delete never matched). `/characters/catalog` accepts `ids=`, so folder members beyond loaded pages are fetched. Folder counts go through the visibility check; character folders keep creation order; tag delete is one bulk-tags request; tag filters, the full tag list and folders holding unloaded lorebooks load every page; folder errors show a toast; deleting a lorebook drops it from folders; cropped avatars render in panel rows; "Load more (N loaded)" counts only paged rows.
 
-### Lorebook Move and Copy target, localized rows, phone row menu
-
-- Commit: `c176bebf6`.
-- Behaviour: Move and Copy entries start on "Choose a lorebook" and confirm names the target (it pre-selected the first lorebook alphabetically). Entry row labels, filter modes and sort options localized. Phones: Duplicate and Delete move into the row menu; the toolbar is search plus a 2x2 button grid. Agents and Presets folder-delete dialogs localized.
-
-### Character editor and library speed
-
-- Commit: `f9c274005`.
-- Behaviour: on a large character (60 greetings, 30k description, 200 embedded entries, 40 gallery images; dev build) typing in a greeting went from 127 to about 50 ms per key, description 112 to about 70 ms, editor scroll 11 to 13 up to 36 to 41 fps. Lorebook, sprites and gallery sections are memoized; each greeting is its own memoized row; off-screen rows skip layout and paint. Library search typing 88 to 200 down to about 33 ms per key. Clip labels localized.
-
-### Lorebook editor memoized rows and deferred search
-
-- Commit: `e5679fc90`.
-- Files: `LorebookEntryListItem.tsx`, `LorebookEditor.tsx`.
-- Behaviour: rows go through a memoized `LorebookEntryListItem` with one shared handlers object; search filtering and the grouped or flat switch use a deferred value. On 400 entries (dev build, 1280px): search keystroke to paint 440 to 686 ms down to 48 to 58 ms; typing 360 to 488 down to 40 ms; expand 480 to 700 down to 113 to 132 ms. Sort change unchanged (about 1.2 s).
-- Tests: `lorebook-editor-memo-rows`; browser checks at 1280 and 390px.
-
-### Live accent animation pauses on very large pages
-
-- Commit: `c125258c0`.
-- Files: `packages/client/src/App.tsx`.
-- Problem: each accent tick rewrites root CSS variables; with a 190-entry lorebook open (about 16k elements) the idle page ran about 1.5 fps and typing took 0.5 to 6 s.
-- Behaviour: above 6000 elements the tick holds the current accent instead of restyling the page.
-
-### Character and persona fixes
-
-- Commit `db3d3ad8b`: saving a character with an empty name stops with a clear message (also on auto-save when leaving); on phones the bot browser tag list is an overlay drawer (backdrop and Escape close it); the library header shows "100+" while more pages exist; `AvatarImage` falls back to a centred placeholder for missing avatar files.
-- Commit `889b5cb94`: cropped avatars render on library cards and the detail view; Set as avatar from the gallery clears the previous crop; depth prompt depth clamped to 0 to 100; tags differing only in case are one tag; persona folder-delete dialog localized.
-- Commit `00ea14412`: closing the "Embedded lorebook found" prompt during a JSON or PNG import shows "Import cancelled" with a count; choices read Import with lorebook, Import without, Cancel (36px targets).
-- Commits `1023cb356` and `a625e235e`: a failed Personas load shows an error with Retry instead of "No personas yet"; the TTS speed slider's 1.0x marker sits at 1.0 on the active range. `a625e235e` re-applied both after `fae3d5747` was committed from a stale copy.
-
-### Lorebook and preset editor layout and accessibility
-
-- Commit: `7d8c56b2c`.
-- Behaviour: the order box widens with its value and shows the saved value (12.9 displays 12); the name column keeps a fixed minimum width; the token estimate is computed once per row; Duplicate and Delete appear on keyboard focus; keyword, tag, back and close buttons are labelled; long keywords wrap; preset editor buttons report their open or enabled state.
-
 ### Selection bar labels on phones and narrow panels
 
 - Commit: `fae3d5747`.
 - Files: `packages/client/src/components/ui/selection-action-classes.ts`, `LibrarySelectionExtraActions.tsx`.
 - Behaviour: Export and Delete are inline-size containers and hide their label only when too narrow to show it whole; panel extras (Tags, Move, Campaign, Enable, Disable) are icon-only on phones and in right panels under 28rem. All buttons carry `title` and `aria-label`.
 - Tests: `lorebook-scan-compaction` now pins `FILE_STORAGE_DIR` to its temp directory.
-
-### Chat touch and editor fixes
-
-- Commit: `5e0ad5c4b`.
-- Behaviour: a tap on a hidden message action row only reveals it (no accidental Regenerate or Delete); markdown tables raise no React key warnings; the message editor carries `data-chat-message-editor` again (mobile scroll-into-view, bottom spacing, unsaved-edit check); the conversation edit box uses the full width; attachment remove buttons have labels, 38px targets and focus rings; the transcript stays pinned to the latest message as the composer grows.
-
-### Chat search jump, branch targets and avatar fallbacks
-
-- Commit: `648c75a56`.
-- Behaviour: on phones the search panel closes after jumping to a result; branch panel rename, delete and close targets are 38px on mobile; message, header and presence avatars use `AvatarImage`; Home mode buttons stack icon over label below 640px.
-
-### Home recent chat cards
-
-- Commit: `42180d981`.
-- Behaviour: recent chat cards (role=button) open their chat again instead of the card-wide "Open Chats tab" button catching the click; card avatars use `AvatarImage`.
-
-### Dialogs, connections and settings shell fixes
-
-- Commit: `4e999d129`.
-- Behaviour: only the topmost dialog traps Tab; Escape during IME composition does not close a dialog; menus and pickers render above dialogs; `DraftTextarea` keeps committed text after blur; `DraftNumberInput` supports empty-means-off.
-- Behaviour: the connection editor keeps unsaved edits across refetches and saves before switching; image quality Extra high and Max round-trip; clearing Seed, Steps or Max tokens clears instead of saving 0; create has no double submit; import has no ghost rows.
-- Behaviour: chat list backgrounds select uses real options; backup delete asks first; settings rows stack in the narrow panel through container queries; panel resize handles work with touch and pen.
-
-### Onboarding, panel focus and shared panel states
-
-- Commit: `0333d2ad0`.
-- Files: new `packages/client/src/components/layout/use-panel-keyboard-focus.ts`, `packages/client/src/components/ui/PanelStates.tsx`.
-- Behaviour: the onboarding helper renders at page level so Home widgets no longer cover Skip and Get Started on phones; opening a side panel moves focus in and Escape closes it (unless a field has text or a menu is open) and returns focus to the toggle; shared loading skeleton and error with Retry (Connections, and the chat list after two failures); 36px phone targets in Settings, Connections and the chat list; toasts sit below the chat header and above the composer.
-
-### Settings localization, keyboard-reachable imports, no em dashes in UI copy
-
-- Commit: `68018a4df`.
-- Behaviour: settings option lists, help, toasts, update and build labels, tracker order labels and search text resolve through `en.json`; profile import and SillyTavern import are real buttons; all 115 `en.json` values with em dashes rewritten; six hard-coded em dashes in TSX removed or localized.
-
-### Music widget docks right on phones
-
-- Commit: `afbfb69bc`.
-- Files: `LocalMusicPlayer.tsx`, `YouTubePlayer.tsx`, `SpotifyMiniPlayer.tsx`, UI store and settings sync.
-- Behaviour: the YouTube or local music widget defaulted to x=16, y=144 and covered message avatars; the default now docks right, and `resolveMobileWidgetX` makes the panel and drag start use the real on-screen x. UI persist v101 to v102 moves only the untouched old default; dragged positions stay; the server-synced copy gets the same move and is written back.
-- Tests: `ui-store-music-widget-migration`; browser checks at 390, 360 and 1280px.
 
 ### Startup inject gate
 
@@ -1303,7 +1383,7 @@ Features:
 - `f81aa3a07`: `scripts/run-regressions.mjs` gives every file its own temporary `DATA_DIR`, `FILE_STORAGE_DIR` and an empty `MARINARA_ENV_FILE`, so no regression can open (or be blocked by) the live store named in `.env`; new silent catches log (`logSuppressed`, or a process warning); `robustness-boot-performance` spawns PowerShell hidden; stale tests updated where the code was verified correct.
 - `0623ac08e`: six regressions registered fixture agents into the repo-relative shared `dist` while the server resolves `@marinara-engine/shared` through its own `node_modules`; new `fixtures/server-shared.ts` imports the server's instance, so worktrees pass too.
 - `18875cd1f`: the open-issues check accepts a search-filtered journal timeline list.
-- `792b58081`, `367dba6a8`, `7be167a69`, `a478a8b5f`, `0b3dea6a3`, `1610c3e17`, `f8d405382`, `20167a05b`: fixtures and comments use invented neutral names mapped one to one; assertions unchanged apart from renamed strings.
+- `792b58081`, `367dba6a8`, `7be167a69`, `a478a8b5f`, `1610c3e17`, `f8d405382`, `20167a05b`: fixtures and comments use invented neutral names mapped one to one; assertions unchanged apart from renamed strings.
 - `c664bb44d`: the game log session name and random table scope render without template strings (the localization check flags them).
 - `847beb80a`: locale keys for the game journal, party bar and state patcher.
 - `cba450807`: pending `CHANGELOG.md` entries from the day's sessions.
@@ -1510,40 +1590,28 @@ Features:
 - Icons: `widgetIcon()` falls back to the type's default icon, so GM-created widgets (which carry no icon) are distinguishable in the phone tray, tucked panels and headers.
 - Verified: all 19 types at 390px, 1024px and 1600px in the sandbox and on a live example campaign (no errors, no overflow).
 
+### Memory panel and "How the GM uses memory" settings
+- Commits: d33b9e631, 5c596f053, 12331af21.
+- Files: `components/game/GameContinuityPanel.tsx`, `components/game/GameMemorySettings.tsx` (new), `components/game/GameSurface.tsx` (two edits); regression `scripts/regressions/game-memory-settings-ui.regression.ts` (new).
+- Behaviour:
+  - The continuity panel now renders in the game Session panel (GameSurface passes `chatId` and `chatMetadata` to GameSessionHistory; without them the panel never appeared).
+  - The desktop Session panel is clamped on screen when the toolbar sits at the left (module-level ref, `translate`, re-clamps on resize).
+  - Health headline, progress, filtered batch list, and continuity mode can be turned on from Off. With no memory connection the headline reads "Paused: no memory connection".
+  - "How the GM uses memory" block: Replace the Lorebook Keeper switch, recaps of earlier sessions, memory scope, and GM memory budget. Each control saves on change.
+- How to reach: game chat, Session panel, Memory settings.
+- Settings and defaults (chat metadata):
+  - `gameContinuity.ownership` `{lorebook: "continuity" | "keeper", fromSession}`; the switch sends `{lorebook: "continuity", fromSession: <current session>}`. No saved ownership while memory is On already means the Keeper is off (server legacy gate), so the switch shows on.
+  - `gamePromptRecentSessionLimit`: All (null, default) or last 1, 2, 3, 5, 10.
+  - `gameCampaignMemoryScope`: "campaign" (default) or "session".
+  - `gameCampaignMemoryMaxCharacters`: empty (null) means the default 10000; clamped 1000 to 100000; half-typed input restores the saved value.
+- Tests: regression `game-memory-settings-ui` (panel wiring, PATCH contracts, clamping, locale keys).
+
 ### Campaign Wiki reader redesign (client)
 
 - Commit: `d33b9e631`.
 - Files: `packages/client/src/components/game/CampaignWiki.tsx`, `CampaignWikiWindow.tsx`, new shared kit `campaign-wiki-ui.tsx` (used by the editor, create form, commitments, evidence, owner link and campaign index dialog).
 - Behaviour: searchable page rail, overview with people and places, entity pages with tabs, readable fact cards, evidence per origin session, and a day-grouped timeline.
 - Fixes: commitments reload after a 409 refetches; create-record waits for the owner check of the exact id; the editor rejects condition values that do not match their type instead of saving null or false.
-
-### Memory panel: "How the GM uses memory"
-
-- Commits: `d33b9e631`, `5c596f053`.
-- Files: `packages/client/src/components/game/GameMemorySettings.tsx`, `GameContinuityPanel.tsx`, `GameSurface.tsx`, `GameSessionHistory.tsx`.
-- Behaviour: the continuity panel shows a health headline, progress and a filtered batch list, plus a "How the GM uses memory" block (Keeper hand-off, recap limit, campaign or session scope, memory budget). It shows "no memory connection" when the server reports `connectionAvailable=false`.
-- Fix: the continuity panel never rendered in the game because `GameSurface` did not pass `chatId` to `GameSessionHistory`. The desktop Session panel no longer runs off the left edge when the toolbar sits on the left.
-- Tests: `5c596f053` adds a regression guarding the `chatId` prop and the memory block's PATCH contracts.
-
-### Campaign Wiki: real-data fixes
-
-- Commits: `c823be962`, `327a18130`, `acca532f3`.
-- Behaviour: kind filter chips show counts and hide kinds with no pages; overview tiles include Persona and Note so they add up to All pages; overview grids size to their container, so names are no longer cut in a narrow window.
-- Behaviour: a state value that is itself a page id (for example a character's location) shows as a link with the page name, fetched when not loaded, instead of the raw id.
-- Behaviour: retracted facts move into a collapsed "Withdrawn by the memory check" group at the end of the Story tab; the co-holder line reads "Also known to".
-- Behaviour: an event with no summary reads "Event recorded" instead of its first transition id; the Events tab leads with the text of a live fact citing the same message and quote, with the quote underneath.
-
-### Campaign Wiki: fixture coverage for conflicts and owner checks
-
-- Commit: `23eb00759`.
-- Tests: new `run-commitment-conflict.mjs` (a stale transition gets 409, Reload refetches, the retry sends the fresh `expectedRevision`); `run-create-evidence-owner.mjs` (preview and apply stay blocked until the owner check covers the exact owner id); `run-tests.mjs` selectors tolerate the count badge. Client: an event summary made only of ids reads "Event recorded".
-
-### Campaign Wiki and memory panel: 14 review fixes
-
-- Commit: `12331af21`.
-- Wiki reader: paging keeps the open tab and perspective and changing tabs resets the page offset; no raw ids in the Details tab, timeline location chips, state changes or the perspective list; blank event cards read "Event recorded"; evidence without a quote keeps its source link.
-- Memory panel and editors: the Keeper switch matches the server (no saved ownership with memory On already replaces the Keeper) and waits for status; a half-typed budget (`1e`, `-`) restores the saved value; mutation errors and the open batch reset on chat change; the Session panel clamp uses a stable ref and translate and re-clamps on resize; the editor diffs against a snapshot taken when editing starts, so a refetch cannot hide a concurrent change from the 409 check; evidence scrolls back to the quote when reopened; a failed Resume in the campaign index job view shows its error.
-- Settings and schema impact of the wiki and panel work: none; client only.
 
 ### Dev MCP v2.0 and sandbox (outside the repo)
 
