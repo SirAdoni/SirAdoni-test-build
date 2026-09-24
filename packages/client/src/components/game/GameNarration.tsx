@@ -4857,7 +4857,7 @@ export function GameNarration({
   return (
     <div
       data-component="GameNarration.Stage"
-      className="pointer-events-none relative flex min-h-0 flex-1 flex-col justify-end px-3 pb-[max(0.75rem,var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))] pt-[var(--game-narration-top-reserve,8rem)] lg:pt-24 sm:px-6 md:pb-4 max-lg:[@media(max-height:32rem)]:pb-2 max-lg:[@media(max-height:32rem)]:pt-16"
+      className="pointer-events-none relative flex min-h-0 flex-1 flex-col justify-end px-3 pb-[max(0.75rem,var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))] pt-[var(--game-narration-top-reserve,8rem)] lg:pt-24 sm:px-6 md:pb-4 game-short-landscape:pb-2 game-short-landscape:pt-16"
     >
       {/* Readability scrim. It darkens the whole scene, not just the panel, so it has to fade
           out with the panel — otherwise collapsing hides the text but keeps the art dimmed. */}
@@ -5391,7 +5391,7 @@ export function GameNarration({
               {!scenePreparing && active && active.type === "narration" && (
                 <>
                   {/* Narration: centered, no avatar. Landscape phones drop the label row for reading room. */}
-                  <div className="mb-2 flex items-center justify-between gap-2 max-lg:[@media(max-height:32rem)]:hidden">
+                  <div className="mb-2 flex items-center justify-between gap-2 game-short-landscape:hidden">
                     <span className="rounded-full bg-[var(--muted)]/30 px-2 py-0.5 text-[0.625rem] font-semibold uppercase tracking-wide text-[var(--foreground)]/90 dark:bg-white/10 dark:text-white/90">
                       {localizeUi("ui.game.gamenarration.narration")}
                     </span>

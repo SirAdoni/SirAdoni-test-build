@@ -18,18 +18,25 @@ const health = await fetch(new URL("/api/health", url))
 
 /** Comfortable reading measure for narration prose below the floating layout, in CSS pixels (48rem column). */
 const MAX_NARRATION_MEASURE = 800;
-/** Landscape phones: max-height 32rem, covered by game-mobile-layout.live.mjs. */
-const LANDSCAPE_PHONE_MAX_HEIGHT = 512;
 /** Minimum touch target edge on touch tablets. */
 const MIN_TARGET = 36;
 
-async function newGameContext(browser, chatId) {
+async function newGameContext(browser, chatId, [screenWidth, screenHeight]) {
   const context = await browser.newContext({
-    viewport: { width: 1024, height: 768 },
+    viewport: { width: screenWidth, height: screenHeight },
     isMobile: true,
     hasTouch: true,
     serviceWorkers: "block",
   });
+  // The tablet's screen, which its on-screen keyboard does not shrink. Playwright resets window.screen to the
+  // viewport on every resize, so it is pinned here; the Game layout tells a tablet from a phone by it.
+  await context.addInitScript(
+    ([w, h]) => {
+      Object.defineProperty(screen, "width", { get: () => w, configurable: true });
+      Object.defineProperty(screen, "height", { get: () => h, configurable: true });
+    },
+    [screenWidth, screenHeight],
+  );
   await context.addInitScript(
     ({ id, version }) => {
       localStorage.setItem("marinara-active-chat-id", id);
@@ -118,6 +125,9 @@ function measure(minTarget) {
       found: true,
       shown,
       covered,
+      // Cut off by the viewport or a scrolling ancestor although it has room to show whole.
+      clipped: v.height < r.height - 1,
+      hit,
       coveredBy: covered ? describe(hit) : null,
       rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
       visibleHeight: Math.round(v.height),
@@ -129,6 +139,10 @@ function measure(minTarget) {
   const prose = panel ? [...panel.querySelectorAll(".game-narration-prose")].find(visible) ?? null : null;
   // Narration must show at least a couple of lines of text, not a sliver.
   const narrationProbe = probe(prose, 40, "first-line");
+  const location = [...document.querySelectorAll("[data-game-input-location]")].find(visible) ?? null;
+  const locationOverNarration = !!location && !!narrationProbe.hit && location.contains(narrationProbe.hit);
+  delete composerProbe.hit;
+  delete narrationProbe.hit;
   const measureWidth = prose ? prose.getBoundingClientRect().width : 0;
 
   // Headings and labels cut by an ellipsis although they are visible.
@@ -182,6 +196,8 @@ function measure(minTarget) {
     bodyScrollWidth: document.body.scrollWidth,
     composer: composerProbe,
     narration: narrationProbe,
+    locationOverNarration,
+    shortLandscape: document.documentElement.hasAttribute("data-game-short-landscape"),
     measureWidth: Math.round(measureWidth),
     truncated,
     small,
@@ -202,9 +218,10 @@ const browser = await chromium.launch({ headless: true });
 let checks = 0;
 try {
   for (const chatId of chatIds) {
-    const { context, page } = await newGameContext(browser, chatId);
-    try {
-      for (const [width, height] of sizes) {
+    for (const [width, height] of sizes) {
+      // A fresh context per size: the screen is the device's, fixed for the context's lifetime.
+      const { context, page } = await newGameContext(browser, chatId, [width, height]);
+      try {
         const tag = `${chatId} ${width}x${height}`;
         await openGame(page, width, height);
         let result = await page.evaluate(measure, MIN_TARGET);
@@ -226,14 +243,11 @@ try {
           check(result.column && Math.abs(result.column.leftGap - result.column.rightGap) <= 2, `${tag}: narration column and tray are centred ${JSON.stringify(result.column)}`);
         }
 
+        check(!result.shortLandscape, `${tag}: a tablet screen never gets the landscape phone layout`);
+
         // A software keyboard takes roughly 40 percent of the height; the composer and narration must survive it.
-        // Below 1024px a height of 32rem or less is a landscape phone, whose layout has its own regression.
+        // The screen stays the tablet's, so even 1023x461 keeps the tablet layout, not the landscape phone one.
         const keyboardHeight = Math.round(height * 0.6);
-        if (width < 1024 && keyboardHeight <= LANDSCAPE_PHONE_MAX_HEIGHT) {
-          checks++;
-          console.log(`ok ${tag} (keyboard height ${keyboardHeight}px is the landscape phone layout, skipped)`);
-          continue;
-        }
         await page.setViewportSize({ width, height: keyboardHeight });
         await page.waitForTimeout(900);
         let keyboard = await page.evaluate(measure, MIN_TARGET);
@@ -245,11 +259,14 @@ try {
         check(keyboard.composer.found && keyboard.composer.shown && !keyboard.composer.covered, `${tag} keyboard: composer visible and uncovered ${JSON.stringify(keyboard.composer)}`);
         check(keyboard.narration.found && keyboard.narration.shown && !keyboard.narration.covered, `${tag} keyboard: narration visible and uncovered ${JSON.stringify(keyboard.narration)}`);
         check(keyboard.scrollWidth <= keyboard.vw, `${tag} keyboard: no page-level horizontal overflow`);
+        check(!keyboard.shortLandscape, `${tag} keyboard: the tablet layout stays with the keyboard up`);
+        check(!keyboard.composer.clipped, `${tag} keyboard: composer not clipped ${JSON.stringify(keyboard.composer)}`);
+        check(!keyboard.locationOverNarration, `${tag} keyboard: the story location card clears the narration text`);
         checks++;
         console.log(`ok ${tag}`, JSON.stringify({ ...result, keyboard: { composer: keyboard.composer, narration: keyboard.narration } }));
+      } finally {
+        await context.close();
       }
-    } finally {
-      await context.close();
     }
   }
 } finally {

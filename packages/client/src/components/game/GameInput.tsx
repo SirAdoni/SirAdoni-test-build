@@ -31,7 +31,7 @@ import { SnippetPicker } from "../chat/SnippetPicker";
 import { useComposerOverlayGrowth } from "./game-composer-stability";
 import { useSnippetExpansion } from "../../hooks/use-snippet-expansion";
 import { CARD_ASSET_INSERT_EVENT, type CardAssetInsertDetail } from "../../lib/card-asset-links";
-import { SHORT_LANDSCAPE_GAME_QUERY } from "./GameMobileStatus";
+import { isShortLandscapeGame } from "../../lib/game-short-landscape";
 
 interface Attachment {
   type: string;
@@ -574,9 +574,9 @@ export function GameInput({
         // composer stays one line. Its taps keep the text box focused so the row cannot vanish mid-tap.
         <div
           data-game-input-location
-          className="max-lg:[@media(max-height:32rem)]:hidden max-lg:[@media(max-height:32rem)]:group-focus-within/gameinput:block"
+          className="game-short-landscape:hidden game-short-landscape:group-focus-within/gameinput:block"
           onMouseDown={(event) => {
-            if (window.matchMedia(SHORT_LANDSCAPE_GAME_QUERY).matches) event.preventDefault();
+            if (isShortLandscapeGame()) event.preventDefault();
           }}
         >
           <CapabilityElement

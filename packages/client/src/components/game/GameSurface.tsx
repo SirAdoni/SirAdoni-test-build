@@ -261,11 +261,11 @@ import { GameLayoutEditToolbar } from "./GameLayoutEditToolbar";
 import { GAME_PANEL_INTERACTIVE_LAYER } from "../../lib/game-panel-layout";
 import { GameWidgetPanel, GameWidgetSessionPrepModal, MobileWidgetPanel } from "./GameWidgetPanel";
 import { MobileWidgetArrangeButton, MobileWidgetTray } from "./GameMobileArrange";
+import { useShortGameViewport } from "../../lib/game-short-landscape";
 import {
   hasGameStatus,
   MobileGameStatusTab,
   MobileTraySheetTab,
-  SHORT_LANDSCAPE_GAME_QUERY,
   useGameStatusProjection,
   useMediaMatch,
 } from "./GameMobileStatus";
@@ -387,7 +387,7 @@ const GAME_ACTION_MENU = cn(NEUTRAL_PANEL_SHELL, "flex w-72 max-w-[calc(100vw-2r
 // Landscape phones are too short for the icon column, so the menu opens as a row instead.
 const GAME_MOBILE_ACTIONS_MENU = cn(
   CHAT_TOOLBAR_OVERFLOW_MENU_CLASS,
-  "absolute right-0 top-9 max-lg:[@media(max-height:32rem)]:top-12 max-lg:[@media(max-height:32rem)]:w-auto max-lg:[@media(max-height:32rem)]:flex-row",
+  "absolute right-0 top-9 game-short-landscape:top-12 game-short-landscape:w-auto game-short-landscape:flex-row",
 );
 const GAME_MOBILE_CHOICE_STAGE_HEIGHT =
   "min-h-[clamp(8rem,30svh,14rem)] max-h-[clamp(8rem,30svh,14rem)] sm:min-h-[clamp(9rem,36svh,20rem)] sm:max-h-[clamp(9rem,36svh,20rem)]";
@@ -3028,7 +3028,8 @@ function GameSurfaceComponent({
   const phoneGameViewport = useMediaMatch("(max-width: 767px)");
   const belowFloatingGameLayout = useMediaMatch("(max-width: 1023px)");
   // Landscape phones: presence, widgets, storyboard and retry fold into one top row.
-  const shortLandscapeGame = useMediaMatch(SHORT_LANDSCAPE_GAME_QUERY);
+  const shortGameState = useShortGameViewport();
+  const shortLandscapeGame = shortGameState === "phone";
   const [contactBookVisible, setContactBookVisible] = useState(false);
   const statusWidgetPreferenceKey = `marinara-game-status:${activeChatId}:visible`;
   useEffect(() => {
@@ -3055,8 +3056,10 @@ function GameSurfaceComponent({
   // The player can hide the party bar and the Currently present strip per game; narration takes the room.
   const gameHudScopeId = resolveGameHudScope(chatMeta.gameId, chat.groupId, activeChatId);
   const [partyBarVisible] = useGameHudListVisible(gameHudScopeId, "partyBar");
-  const [scenePresenceVisible] = useGameHudListVisible(gameHudScopeId, "presence");
-  const shortGameViewport = useMediaMatch("(max-height: 32rem)");
+  const [scenePresenceSetting] = useGameHudListVisible(gameHudScopeId, "presence");
+  // A tablet with its on-screen keyboard up: the strip steps aside so narration and the composer fit.
+  const scenePresenceVisible = scenePresenceSetting && shortGameState !== "tablet";
+  const shortGameViewport = shortLandscapeGame;
   // Portrait phones: with the party bar gone, the strip moves up into the top row beside the map button.
   const scenePresenceInTopRow = !partyBarVisible && scenePresenceVisible && phoneGameViewport && !shortGameViewport;
   const narrationTopReserveStyle = useMemo(
@@ -13006,7 +13009,7 @@ function GameSurfaceComponent({
                     >
                       <div
                         className={cn(
-                          "pointer-events-auto hidden items-center md:flex max-lg:[@media(max-height:32rem)]:hidden",
+                          "pointer-events-auto hidden items-center md:flex game-short-landscape:hidden",
                           CHAT_TOOLBAR_ICON_GAP_CLASS,
                         )}
                       >
@@ -13287,7 +13290,7 @@ function GameSurfaceComponent({
                     </FloatingGamePanel>
 
                     {/* Mobile controls, also on landscape phones where the full row would crowd the top. */}
-                    <div className="pointer-events-auto md:hidden max-lg:[@media(max-height:32rem)]:block">
+                    <div className="pointer-events-auto md:hidden game-short-landscape:block">
                       <div className="relative">
                         <button
                           onClick={() => {
@@ -13309,7 +13312,7 @@ function GameSurfaceComponent({
                           }}
                           className={cn(
                             GAME_MOBILE_ROOT_BUTTON,
-                            "max-lg:[@media(max-height:32rem)]:h-11 max-lg:[@media(max-height:32rem)]:w-11",
+                            "game-short-landscape:h-11 game-short-landscape:w-11",
                           )}
                           data-floating-widget-avoid
                           title={t("game.toolbar.actions")}
@@ -13633,7 +13636,7 @@ function GameSurfaceComponent({
                     {/* Top-left: Map + Party portraits side by side */}
                     <div
                       className={cn(
-                        "pointer-events-auto absolute left-3 right-14 z-20 flex min-w-0 items-start gap-2 md:right-auto max-lg:[@media(max-height:32rem)]:right-[6.75rem]",
+                        "pointer-events-auto absolute left-3 right-14 z-20 flex min-w-0 items-start gap-2 md:right-auto game-short-landscape:right-[6.75rem]",
                         tacticalCombatActive ? "top-14" : topOverlayOffsetClass,
                         replayActive && "hidden",
                         // The package draws its own header and party bar, so the built-in ones would collide.
@@ -13694,7 +13697,7 @@ function GameSurfaceComponent({
                       {partyBarVisible && partyMembers.length > 0 && (
                         <div
                           data-tour="game-party"
-                          className="min-w-0 flex-1 md:flex-none max-lg:[@media(max-height:32rem)]:flex-none"
+                          className="min-w-0 flex-1 md:flex-none game-short-landscape:flex-none"
                         >
                           <GamePartyBar
                             partyMembers={partyMembers}
@@ -13766,7 +13769,7 @@ function GameSurfaceComponent({
                       <div
                         data-game-asset-retry-line
                         // Phones: an in-flow compact line at the column foot, never over narration or the composer.
-                        className="pointer-events-auto absolute bottom-32 left-1/2 z-30 -translate-x-1/2 lg:z-[55] max-lg:static max-lg:order-last max-lg:mx-3 max-lg:mb-2 max-lg:shrink-0 max-lg:translate-x-0 max-lg:[@media(max-height:32rem)]:hidden"
+                        className="pointer-events-auto absolute bottom-32 left-1/2 z-30 -translate-x-1/2 lg:z-[55] max-lg:static max-lg:order-last max-lg:mx-3 max-lg:mb-2 max-lg:shrink-0 max-lg:translate-x-0 game-short-landscape:hidden game-short-tablet:hidden"
                       >
                         <div className="flex items-center gap-3 rounded-xl bg-black/80 px-4 py-2.5 shadow-lg backdrop-blur-sm max-lg:gap-2 max-lg:px-3 max-lg:py-1">
                           <AlertTriangle size={14} className="shrink-0 text-amber-400" />

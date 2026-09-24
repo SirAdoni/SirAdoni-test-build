@@ -1,6 +1,8 @@
 import type { PointerEvent as ReactPointerEvent, ReactNode, RefObject } from "react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+// Sets the root attribute behind the game-short-landscape: variant used below.
+import "../../lib/game-short-landscape";
 import {
   ChevronLeft,
   ChevronRight,
@@ -315,12 +317,14 @@ function GameStoryboardPhoneViewer(props: Parameters<typeof GameStoryboardInline
       className={cn(
         "pointer-events-auto shrink-0 px-3 pb-[max(0.5rem,var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))]",
         // Landscape phones: the tab becomes one icon in the Game top row, left of the actions menu.
-        "max-lg:[@media(max-height:32rem)]:absolute max-lg:[@media(max-height:32rem)]:right-[3.75rem] max-lg:[@media(max-height:32rem)]:top-3 max-lg:[@media(max-height:32rem)]:z-30 max-lg:[@media(max-height:32rem)]:p-0",
+        "game-short-landscape:absolute game-short-landscape:right-[3.75rem] game-short-landscape:top-3 game-short-landscape:z-30 game-short-landscape:p-0",
+        // Tablets with the on-screen keyboard up: the tab steps aside so narration and the composer fit.
+        "game-short-tablet:hidden",
         composerFocused && "hidden",
       )}
       onClick={(event) => event.stopPropagation()}
     >
-      <div className="mx-auto flex w-full max-w-4xl items-center gap-1 rounded-xl border border-white/15 bg-black/70 pr-1 shadow-lg backdrop-blur-md max-lg:[@media(max-height:32rem)]:w-auto max-lg:[@media(max-height:32rem)]:pr-0">
+      <div className="mx-auto flex w-full max-w-4xl items-center gap-1 rounded-xl border border-white/15 bg-black/70 pr-1 shadow-lg backdrop-blur-md game-short-landscape:w-auto game-short-landscape:pr-0">
         <button
           type="button"
           data-storyboard-phone-tab
@@ -328,16 +332,16 @@ function GameStoryboardPhoneViewer(props: Parameters<typeof GameStoryboardInline
           aria-expanded={open}
           aria-controls={sheetId}
           onClick={() => setOpen((value) => !value)}
-          className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-xl px-3 text-left text-[0.6875rem] font-semibold uppercase tracking-wide text-white/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--primary)] max-lg:[@media(max-height:32rem)]:h-11 max-lg:[@media(max-height:32rem)]:w-11 max-lg:[@media(max-height:32rem)]:flex-none max-lg:[@media(max-height:32rem)]:justify-center max-lg:[@media(max-height:32rem)]:relative max-lg:[@media(max-height:32rem)]:px-0 max-lg:[@media(max-height:32rem)]:[&>svg:last-child]:hidden"
+          className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-xl px-3 text-left text-[0.6875rem] font-semibold uppercase tracking-wide text-white/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--primary)] game-short-landscape:h-11 game-short-landscape:w-11 game-short-landscape:flex-none game-short-landscape:justify-center game-short-landscape:relative game-short-landscape:px-0 game-short-landscape:[&>svg:last-child]:hidden"
         >
           <PanelsTopLeft size={13} className="shrink-0 text-[var(--primary)]" />
-          <span className="shrink-0 max-lg:[@media(max-height:32rem)]:sr-only">
+          <span className="shrink-0 game-short-landscape:sr-only">
             {localizeUi("ui.game.gamesurfacecomponent.storyboard")}
           </span>
-          <span className="flex min-w-0 items-center gap-1 truncate text-[0.625rem] font-normal normal-case tracking-normal text-white/50 max-lg:[@media(max-height:32rem)]:absolute max-lg:[@media(max-height:32rem)]:right-1 max-lg:[@media(max-height:32rem)]:top-1">
+          <span className="flex min-w-0 items-center gap-1 truncate text-[0.625rem] font-normal normal-case tracking-normal text-white/50 game-short-landscape:absolute game-short-landscape:right-1 game-short-landscape:top-1">
             {status.busy ? <Loader2 size={11} className="shrink-0 animate-spin" /> : null}
             {status.problem ? <TriangleAlert size={11} className="shrink-0 text-amber-200" /> : null}
-            <span className="truncate max-lg:[@media(max-height:32rem)]:sr-only">{status.shortLabel}</span>
+            <span className="truncate game-short-landscape:sr-only">{status.shortLabel}</span>
           </span>
           <ChevronUp
             size={14}
@@ -346,7 +350,7 @@ function GameStoryboardPhoneViewer(props: Parameters<typeof GameStoryboardInline
         </button>
         <StoryboardCloseButton
           onClose={props.onClose}
-          className="h-8 w-8 shrink-0 max-lg:[@media(max-height:32rem)]:hidden"
+          className="h-8 w-8 shrink-0 game-short-landscape:hidden"
         />
       </div>
       {open

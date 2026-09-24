@@ -54,9 +54,6 @@ export function useMediaMatch(query: string) {
   );
 }
 
-/** Short landscape phones: the Game chrome folds into one top row so narration keeps the height. */
-export const SHORT_LANDSCAPE_GAME_QUERY = "(max-width: 1023px) and (max-height: 32rem)";
-
 const TRAY_TAB_CLASS =
   "marinara-chat-toolbar-button relative flex h-11 w-11 shrink-0 snap-start items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-[var(--marinara-chat-chrome-button-text)] backdrop-blur-md transition-all hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] active:scale-95";
 

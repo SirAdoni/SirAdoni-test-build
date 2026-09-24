@@ -44,6 +44,8 @@ function measure() {
   return {
     vw: window.innerWidth,
     vh: window.innerHeight,
+    screenShortSide: Math.min(screen.width, screen.height),
+    shortLandscape: document.documentElement.hasAttribute("data-game-short-landscape"),
     scrollWidth: document.scrollingElement.scrollWidth,
     topRowTops: topRow.map((b) => Math.round(b.top)),
     topRowBottom: Math.max(0, ...topRow.map((b) => b.bottom)),
@@ -121,6 +123,9 @@ try {
 
         const idle = await page.evaluate(measure);
         if (shots) await page.screenshot({ path: `${shots}/landscape-${chatId}-${width}x${height}.png` });
+        // Playwright reports the viewport as the screen, so these report phone screens.
+        assert.ok(idle.screenShortSide < 600, `${tag}: a phone screen (${idle.screenShortSide}px short side)`);
+        assert.equal(idle.shortLandscape, true, `${tag}: the landscape phone layout is on`);
         assert.equal(idle.scrollWidth, idle.vw, `${tag}: no page-level horizontal overflow`);
         assert.ok(
           idle.topRowTops.every((top) => Math.abs(top - idle.topRowTops[0]) <= 2),

@@ -66,7 +66,7 @@ function App({ scenario }) {
         <div style={{ height: 51, flexShrink: 0 }} />
         {/* A HUD layer in its own stacking context above the column, like Currently Present. Landscape
             phones fold that strip into the Game top row, where the storyboard tab then sits as an icon. */}
-        {window.matchMedia("(max-width: 1023px) and (max-height: 32rem)").matches ? null : (
+        {document.documentElement.hasAttribute("data-game-short-landscape") ? null : (
           <div data-fixture-hud style={{ position: 'absolute', top: 51, left: 0, right: 0, height: 60, zIndex: 20, background: 'rgba(80,0,80,0.4)' }} />
         )}
         <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" style={{ zIndex: 10 }} data-fixture-column>
