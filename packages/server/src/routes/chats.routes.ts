@@ -114,6 +114,7 @@ import {
 } from "../services/spatial-context/projection.js";
 import { createSpatialContextStorage } from "../services/storage/spatial-context.storage.js";
 import { restoreBranchHudLists, trimJournalForBranch } from "../services/game/branch-state.js";
+import { STABLE_LORE_ORDER_METADATA_KEY } from "../services/lorebook/stable-lore-order.js";
 import { projectCampaignMemoryBranch } from "../services/game/campaign-memory-branch.js";
 import { formatCampaignMemoryMessageOrder } from "../services/game/campaign-memory-order.js";
 import { recordLegacyPresence, resolveLegacySourceMessageId } from "../services/game/campaign-memory-legacy-writers.js";
@@ -4893,6 +4894,8 @@ export async function chatsRoutes(app: FastifyInstance) {
         "lastAutomaticSummaryMessageId",
         "daySummaries",
         "weekSummaries",
+        // The stable lore order is keyed to the source chat's message ids; a branch starts its own.
+        STABLE_LORE_ORDER_METADATA_KEY,
       ]) {
         delete settingsToKeep[key];
       }

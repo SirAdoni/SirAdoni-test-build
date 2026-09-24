@@ -2,6 +2,7 @@
 // Marker Expander — Resolves special marker
 // sections into actual content at assembly time.
 // ──────────────────────────────────────────────
+import type { StableLoreOrderRequest } from "../lorebook/stable-lore-order.js";
 import type { DB } from "../../db/connection.js";
 import { logger } from "../../lib/logger.js";
 import {
@@ -92,6 +93,8 @@ export interface MarkerContext {
   entryStateOverrides?: Record<string, { ephemeral?: number | null; enabled?: boolean }>;
   /** Per-chat sticky/cooldown/delay timing state for lorebook entries. */
   entryTimingStates?: Record<string, LorebookEntryTimingState>;
+  /** Previous stable lore order for this chat and scope (stable-lore-order.ts); omitted, no sticky order. */
+  stableLoreOrder?: StableLoreOrderRequest;
   /** Global lorebook token budget for this chat/generation. */
   lorebookTokenBudget?: number;
   /** Current game state for lorebook conditions and schedules. */
@@ -424,6 +427,7 @@ export async function ensureLorebookScan(ctx: MarkerContext): Promise<LorebookSc
         semanticSimilarityBaseline: ctx.semanticSimilarityBaseline,
         entryStateOverrides: ctx.entryStateOverrides,
         entryTimingStates: ctx.entryTimingStates,
+        stableLoreOrder: ctx.stableLoreOrder,
         generationTriggers: ctx.generationTriggers ?? ["chat"],
         previewOnly: ctx.previewOnly === true,
         resolveContent: ctx.resolveLorebookContent,

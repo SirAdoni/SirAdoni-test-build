@@ -37,6 +37,23 @@ function buildAnthropicCacheControl(options: ChatOptions): AnthropicCacheControl
   return options.anthropicExtendedCacheTtl ? { type: "ephemeral", ttl: "1h" } : { type: "ephemeral" };
 }
 
+/**
+ * Cache marker for the stable lore block (stable-lore-order.ts, "Cache-friendly prompt layout"). A keyword lore
+ * block that is its own system message is marked `marinaraStableLoreBlock`; when new entries are appended to it,
+ * the system-end marker misses, so one more marker goes on the system block just before it and the preamble
+ * (system prompt and character text) is still read from the cache. Anthropic allows 4 markers per request; this
+ * provider otherwise sets at most 2 (the end of the system prompt and one history message), so this is the third.
+ * Returns -1 when there is no such block, it is the first block, or the block before it is already marked.
+ */
+export function resolveStableLoreSystemBreakpoint(
+  systemMessages: ReadonlyArray<Pick<ChatMessage, "providerMetadata">>,
+): number {
+  const loreIndex = systemMessages.findIndex((message) => message.providerMetadata?.marinaraStableLoreBlock === true);
+  if (loreIndex <= 0) return -1;
+  const before = loreIndex - 1;
+  return before === systemMessages.length - 1 ? -1 : before;
+}
+
 function resolveCacheControlMessageIndex(messages: ArrayLike<unknown>, cachingAtDepth: number): number {
   if (messages.length === 0) return -1;
   return Math.max(0, messages.length - 1 - cachingAtDepth);
@@ -461,10 +478,12 @@ export class AnthropicProvider extends BaseLLMProvider {
     const systemField =
       systemMessages.length > 0
         ? enableCaching
-          ? systemMessages.map((m, i) => ({
+          ? systemMessages.map((m, i, all) => ({
               type: "text" as const,
               text: m.content,
-              ...(i === systemMessages.length - 1 ? { cache_control: cacheControl } : {}),
+              ...(i === all.length - 1 || i === resolveStableLoreSystemBreakpoint(all)
+                ? { cache_control: cacheControl }
+                : {}),
             }))
           : systemMessages.map((m) => m.content).join("\n\n")
         : undefined;
@@ -794,10 +813,11 @@ export class AnthropicProvider extends BaseLLMProvider {
     if (systemMessages.length > 0) {
       if (enableCaching) {
         // Array of content blocks with cache_control on the last one
+        const stableLoreBreakpoint = resolveStableLoreSystemBreakpoint(systemMessages);
         const blocks = systemMessages.map((m, i) => ({
           type: "text" as const,
           text: m.content,
-          ...(i === systemMessages.length - 1 && { cache_control: cacheControl }),
+          ...((i === systemMessages.length - 1 || i === stableLoreBreakpoint) && { cache_control: cacheControl }),
         }));
         systemField = blocks;
       } else {

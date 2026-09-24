@@ -67,6 +67,8 @@ import {
 } from "../../services/generation/prompt-cache-layout.js";
 import { buildImpersonateInstruction } from "../../services/conversation/impersonate-prompt.js";
 import { processLorebooks } from "../../services/lorebook/index.js";
+import { stableLoreTurnKey } from "../../services/lorebook/stable-lore-order.js";
+import { buildStableLoreOrderRequest } from "../../services/generation/lorebook-generation-runtime.js";
 import { resolveLorebookScopeExclusions } from "../../services/lorebook/game-lorebook-scope.js";
 import { injectAtDepth } from "../../services/lorebook/prompt-injector.js";
 import { createLLMProvider } from "../../services/llm/provider-registry.js";
@@ -1341,6 +1343,13 @@ export async function registerDryRunRoute(app: FastifyInstance) {
               previewOnly: true,
               resolveContent: resolvePromptMacrosForLorebook,
               resolveDecisions: lorebookDecisions,
+              // Read-only: the preview shows the order the next request would send and persists nothing.
+              stableLoreOrder: buildStableLoreOrderRequest({
+                chatMeta,
+                turnKey: stableLoreTurnKey(chatMessages),
+                characterIds: withIdentityLorebookScope(promptCharacterIds),
+                personaId,
+              }),
             });
             ({ stable: fullLorebookContext, dynamic: dynamicFullLorebookContext } =
               splitFullLorebookContext(lorebookResult));
@@ -1598,6 +1607,12 @@ export async function registerDryRunRoute(app: FastifyInstance) {
         lorebookTokenBudget,
         generationTriggers: lorebookGenerationTriggers,
         previewOnly: true,
+        stableLoreOrder: buildStableLoreOrderRequest({
+          chatMeta,
+          turnKey: stableLoreTurnKey(chatMessages),
+          characterIds: withIdentityLorebookScope(promptCharacterIds),
+          personaId,
+        }),
         groupScenarioOverrideText:
           typeof chatMeta.groupScenarioText === "string" && (chatMeta.groupScenarioText as string).trim()
             ? (chatMeta.groupScenarioText as string).trim()
@@ -1799,6 +1814,12 @@ export async function registerDryRunRoute(app: FastifyInstance) {
         previewOnly: true,
         resolveContent: resolvePromptMacrosForLorebook,
         resolveDecisions: lorebookDecisions,
+        stableLoreOrder: buildStableLoreOrderRequest({
+          chatMeta,
+          turnKey: stableLoreTurnKey(chatMessages),
+          characterIds: withIdentityLorebookScope(promptCharacterIds),
+          personaId,
+        }),
       });
       ({ stable: fullLorebookContext, dynamic: dynamicFullLorebookContext } = splitFullLorebookContext(lorebookResult));
       const loreContent = [lorebookResult.worldInfoBefore, lorebookResult.worldInfoAfter]

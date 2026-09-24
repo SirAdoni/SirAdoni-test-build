@@ -8,6 +8,7 @@ export { resolveChoiceVariableValue, type ChoiceOptionValue } from "@marinara-en
 // ──────────────────────────────────────────────
 import type { DB } from "../../db/connection.js";
 import { logger } from "../../lib/logger.js";
+import type { StableLoreOrderRequest } from "../lorebook/stable-lore-order.js";
 import type {
   ChatMLMessage,
   MarkerConfig,
@@ -178,6 +179,8 @@ export interface AssemblerInput {
   entryStateOverrides?: Record<string, { ephemeral?: number | null; enabled?: boolean }>;
   /** Per-chat sticky/cooldown/delay timing state for lorebook entries. */
   entryTimingStates?: Record<string, LorebookEntryTimingState>;
+  /** Previous stable lore order for this chat and scope (stable-lore-order.ts); omitted, no sticky order. */
+  stableLoreOrder?: StableLoreOrderRequest;
   /** Global lorebook token budget for this chat/generation. */
   lorebookTokenBudget?: number;
   /** Current game state for lorebook conditions and schedules. */
@@ -522,6 +525,7 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
     semanticSimilarityBaseline: input.semanticSimilarityBaseline,
     entryStateOverrides: input.entryStateOverrides,
     entryTimingStates: input.entryTimingStates,
+    stableLoreOrder: input.stableLoreOrder,
     lorebookTokenBudget: input.lorebookTokenBudget,
     gameState: input.gameState ?? null,
     generationTriggers: input.generationTriggers ?? ["chat"],

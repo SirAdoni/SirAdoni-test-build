@@ -148,6 +148,7 @@ export type EventName =
   | "config.reload"
   | "prompt.debug"
   | "prompt.layout.final_checks"
+  | "lorebook.stable_order"
   | "sse.unreferenced_error";
 
 /**

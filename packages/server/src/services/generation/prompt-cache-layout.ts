@@ -182,6 +182,13 @@ export function normalizePromptCacheLayout<T extends PromptCacheLayoutMessage>(
     index += 1;
   }
   if (leadingInjections.length > 0) {
+    // The keyword lore block in stable lore order goes first among the moved blocks, ahead of the per-turn
+    // volatile ones (weather, spatial, turn state), so a swipe whose volatile blocks differ still shares it.
+    leadingInjections.sort(
+      (left, right) =>
+        Number(right.providerMetadata?.marinaraStableLoreBlock === true) -
+        Number(left.providerMetadata?.marinaraStableLoreBlock === true),
+    );
     const movable = new Set(leadingInjections);
     const retainedPrefix = next.slice(0, index).filter((message) => !movable.has(message));
     next.splice(0, index, ...retainedPrefix);

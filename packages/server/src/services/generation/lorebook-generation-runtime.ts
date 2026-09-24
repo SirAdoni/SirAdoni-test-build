@@ -5,6 +5,14 @@ import { inArray } from "../../db/file-query.js";
 import { lorebookEntries } from "../../db/schema/index.js";
 import type { createChatsStorage } from "../storage/chats.storage.js";
 import { parseExtra } from "../../routes/generate/generate-route-utils.js";
+import type { LorebookScanResult } from "../lorebook/index.js";
+import {
+  nextStableLoreOrderMetadata,
+  resolveStableLoreLingerTurns,
+  stableLoreScopeKey,
+  STABLE_LORE_ORDER_METADATA_KEY,
+  type StableLoreOrderRequest,
+} from "../lorebook/stable-lore-order.js";
 
 type LorebookScanMessage = { role: "user" | "assistant" | "system"; content: string };
 
@@ -72,8 +80,16 @@ export async function persistLorebookRuntimeState(args: {
   fallbackMeta: Record<string, unknown>;
   entryStateOverrides?: Record<string, { ephemeral?: number | null; enabled?: boolean }>;
   entryTimingStates?: Record<string, LorebookEntryTimingState>;
+  /** The order a scan sent (stable lore order); merged into the chat's `stableLoreOrder` by scope. */
+  stableLoreOrder?: LorebookScanResult["stableLoreOrderUpdate"];
 }): Promise<Record<string, unknown>> {
-  if (args.entryStateOverrides === undefined && args.entryTimingStates === undefined) return {};
+  if (
+    args.entryStateOverrides === undefined &&
+    args.entryTimingStates === undefined &&
+    args.stableLoreOrder === undefined
+  ) {
+    return {};
+  }
   type Overrides = NonNullable<typeof args.entryStateOverrides>;
   type TimingStates = NonNullable<typeof args.entryTimingStates>;
   const beforeOverrides = (args.fallbackMeta.entryStateOverrides ??
@@ -134,6 +150,14 @@ export async function persistLorebookRuntimeState(args: {
     return {
       ...(args.entryStateOverrides !== undefined ? { entryStateOverrides: overrides } : {}),
       ...(args.entryTimingStates !== undefined ? { entryTimingStates: timing } : {}),
+      ...(args.stableLoreOrder
+        ? {
+            [STABLE_LORE_ORDER_METADATA_KEY]: nextStableLoreOrderMetadata(
+              current[STABLE_LORE_ORDER_METADATA_KEY],
+              args.stableLoreOrder,
+            ),
+          }
+        : {}),
     };
   });
   if (!updated) return {};
@@ -141,6 +165,7 @@ export async function persistLorebookRuntimeState(args: {
   return {
     ...(args.entryStateOverrides !== undefined ? { entryStateOverrides: metadata.entryStateOverrides } : {}),
     ...(args.entryTimingStates !== undefined ? { entryTimingStates: metadata.entryTimingStates } : {}),
+    ...(args.stableLoreOrder ? { [STABLE_LORE_ORDER_METADATA_KEY]: metadata[STABLE_LORE_ORDER_METADATA_KEY] } : {}),
   };
 }
 
@@ -159,4 +184,22 @@ export function rememberKnowledgeRouterActivatedLorebookIds(
   for (const entry of result.budgetSkippedEntries) {
     targetExcludedFromKeywordScan.add(entry.id);
   }
+}
+
+/**
+ * The stable lore order request for one generation scan (stable-lore-order.ts): the chat's stored order, the turn
+ * this generation answers and the character scope of the scan.
+ */
+export function buildStableLoreOrderRequest(args: {
+  chatMeta: Record<string, unknown>;
+  turnKey: string;
+  characterIds: readonly string[] | undefined;
+  personaId?: string | null;
+}): StableLoreOrderRequest {
+  return {
+    state: args.chatMeta[STABLE_LORE_ORDER_METADATA_KEY],
+    turnKey: args.turnKey,
+    scopeKey: stableLoreScopeKey(args.characterIds, args.personaId),
+    lingerTurns: resolveStableLoreLingerTurns(args.chatMeta),
+  };
 }

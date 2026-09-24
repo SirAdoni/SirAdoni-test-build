@@ -648,8 +648,10 @@ import {
   parsePromptPresetChoices,
 } from "../services/generation/conversation-context-utils.js";
 import { recoverImplicitSelfieCommand } from "../services/generation/selfie-command-recovery.js";
+import { stableLoreBlockMetadata, stableLoreTurnKey } from "../services/lorebook/stable-lore-order.js";
 import {
   buildLorebookScanMessagesWithGenerationGuide,
+  buildStableLoreOrderRequest,
   persistLorebookRuntimeState,
   rememberKnowledgeRouterActivatedLorebookIds,
   resolveLorebookGenerationTriggers,
@@ -3168,6 +3170,16 @@ export async function generateRoutes(app: FastifyInstance) {
         });
         // Every decision read before the reply is keyed to the newest message, id and text.
         const preReplyDecisionTurnId = latestTurnDecisionId(chatMessages);
+        // Stable lore order (cache-friendly layout): state is keyed to the newest message before the reply, so a
+        // regenerate or swipe of this turn starts from the same previous order.
+        const stableLoreTurn = stableLoreTurnKey(chatMessages);
+        const stableLoreOrderFor = (targetCharacterIds: readonly string[]) =>
+          buildStableLoreOrderRequest({
+            chatMeta,
+            turnKey: stableLoreTurn,
+            characterIds: targetCharacterIds,
+            personaId,
+          });
         const promptDecisionPlan = planPromptDecisions(
           [{ texts: promptDecisionTexts, ctx: promptMacroContext }],
           promptDecisionLimit,
@@ -3336,6 +3348,7 @@ export async function generateRoutes(app: FastifyInstance) {
             generationTriggers: lorebookGenerationTriggers,
             resolveContent: resolvePromptMacrosForLorebook,
             resolveDecisions: lorebookDecisions,
+            stableLoreOrder: stableLoreOrderFor(withIdentityLorebookScope(targetCharacterIds)),
           });
           if (useFullLorebookContext) {
             fullConversationLoreByCharacter.set([...targetCharacterIds].sort().join(","), lorebookResult);
@@ -3358,6 +3371,19 @@ export async function generateRoutes(app: FastifyInstance) {
                 fallbackMeta: chatMeta,
                 entryStateOverrides: lorebookResult.updatedEntryStateOverrides,
                 entryTimingStates: lorebookResult.updatedEntryTimingStates,
+                stableLoreOrder: lorebookResult.stableLoreOrderUpdate,
+              }),
+            );
+          } else if (lorebookResult.stableLoreOrderUpdate) {
+            // A responder's own scan leaves timing alone but is the lore that responder is sent, so its order is kept.
+            Object.assign(
+              chatMeta,
+              await persistLorebookRuntimeState({
+                db: app.db,
+                chats,
+                chatId: input.chatId,
+                fallbackMeta: chatMeta,
+                stableLoreOrder: lorebookResult.stableLoreOrderUpdate,
               }),
             );
           }
@@ -3528,6 +3554,7 @@ export async function generateRoutes(app: FastifyInstance) {
             activeAgentIds: chatActiveAgentIds,
             activeLorebookIds: chatActiveLorebookIds,
             forcedLorebookEntryIds: ownerSpatialProjection?.lorebookEntryIds ?? [],
+            stableLoreOrder: stableLoreOrderFor(withIdentityLorebookScope(promptCharacterIds)),
             excludedLorebookIds: lorebookScopeExclusions.excludedLorebookIds,
             excludedLorebookSourceAgentIds: lorebookScopeExclusions.excludedSourceAgentIds,
             lorebookTokenBudget: resolveLorebookTokenBudget(chatMeta),
@@ -3633,6 +3660,7 @@ export async function generateRoutes(app: FastifyInstance) {
               fallbackMeta: chatMeta,
               entryStateOverrides: assembled.updatedEntryStateOverrides,
               entryTimingStates: assembled.updatedEntryTimingStates,
+              stableLoreOrder: assembled.lorebookScanResult?.stableLoreOrderUpdate,
             }),
           );
         }
@@ -4082,7 +4110,11 @@ export async function generateRoutes(app: FastifyInstance) {
                   // Inject before the awareness block (or before first user/assistant message)
                   const firstUserIdx = finalMessages.findIndex((m) => m.role === "user" || m.role === "assistant");
                   const insertAt = firstUserIdx >= 0 ? firstUserIdx : finalMessages.length;
-                  finalMessages.splice(insertAt, 0, { role: "system" as const, content: loreBlock });
+                  finalMessages.splice(insertAt, 0, {
+                    role: "system" as const,
+                    content: loreBlock,
+                    ...stableLoreBlockMetadata(lorebookResult),
+                  });
                 }
               } else if (conversationContextMacroSlots.lorebook) {
                 replaceConversationContextMacro(finalMessages, "lorebook", "");
@@ -4109,6 +4141,7 @@ export async function generateRoutes(app: FastifyInstance) {
             activeLorebookIds: chatActiveLorebookIds,
             forcedEntryIds:
               ownerSpatialProjection?.ownerMode === "roleplay" ? ownerSpatialProjection.lorebookEntryIds : [],
+            stableLoreOrder: stableLoreOrderFor(withIdentityLorebookScope(promptCharacterIds)),
             excludedLorebookIds: lorebookScopeExclusions.excludedLorebookIds,
             excludedSourceAgentIds: lorebookScopeExclusions.excludedSourceAgentIds,
             tokenBudget: resolveLorebookTokenBudget(chatMeta),
@@ -4142,6 +4175,7 @@ export async function generateRoutes(app: FastifyInstance) {
               fallbackMeta: chatMeta,
               entryStateOverrides: lorebookResult.updatedEntryStateOverrides,
               entryTimingStates: lorebookResult.updatedEntryTimingStates,
+              stableLoreOrder: lorebookResult.stableLoreOrderUpdate,
             }),
           );
           const loreContent = [lorebookResult.worldInfoBefore, lorebookResult.worldInfoAfter]
@@ -4151,7 +4185,11 @@ export async function generateRoutes(app: FastifyInstance) {
             const loreBlock = `<lore>\n${loreContent}\n</lore>`;
             const firstUserIdx = finalMessages.findIndex((m) => m.role === "user" || m.role === "assistant");
             const insertAt = firstUserIdx >= 0 ? firstUserIdx : finalMessages.length;
-            finalMessages.splice(insertAt, 0, { role: "system" as const, content: loreBlock });
+            finalMessages.splice(insertAt, 0, {
+              role: "system" as const,
+              content: loreBlock,
+              ...stableLoreBlockMetadata(lorebookResult),
+            });
           }
           if (lorebookResult.depthEntries.length > 0) {
             finalMessages = injectAtDepth(finalMessages, lorebookResult.depthEntries);
@@ -4730,6 +4768,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 activeLorebookIds: chatActiveLorebookIds,
                 forcedEntryIds:
                   ownerSpatialProjection?.ownerMode === "game" ? ownerSpatialProjection.lorebookEntryIds : [],
+                stableLoreOrder: stableLoreOrderFor(withIdentityLorebookScope(characterIds)),
                 excludedLorebookIds: lorebookScopeExclusions.excludedLorebookIds,
                 excludedSourceAgentIds: lorebookScopeExclusions.excludedSourceAgentIds,
                 tokenBudget: resolveLorebookTokenBudget(chatMeta),
@@ -4765,6 +4804,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 fallbackMeta: chatMeta,
                 entryStateOverrides: lorebookResult.updatedEntryStateOverrides,
                 entryTimingStates: lorebookResult.updatedEntryTimingStates,
+                stableLoreOrder: lorebookResult.stableLoreOrderUpdate,
               }),
             );
             const loreContent = [lorebookResult.worldInfoBefore, lorebookResult.worldInfoAfter]
@@ -4807,7 +4847,11 @@ export async function generateRoutes(app: FastifyInstance) {
                     role: "system" as const,
                     content: `<lore>\n${runtime}\n</lore>`,
                     contextKind: "injection" as const,
-                    providerMetadata: { marinaraRuntimeContext: true, marinaraDynamicLoreContext: true },
+                    providerMetadata: {
+                      marinaraRuntimeContext: true,
+                      marinaraDynamicLoreContext: true,
+                      ...stableLoreBlockMetadata(lorebookResult).providerMetadata,
+                    },
                   });
                 }
               } else {
@@ -7681,6 +7725,7 @@ export async function generateRoutes(app: FastifyInstance) {
             prepared.splice(firstUserIdx >= 0 ? firstUserIdx : prepared.length, 0, {
               role: "system" as const,
               content: loreBlock,
+              ...stableLoreBlockMetadata(lorebookResult),
             });
           }
           if (lorebookResult.depthEntries.length > 0) {
