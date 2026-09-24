@@ -9147,6 +9147,8 @@
   "ui.game.mobilewidgetarrange.moveDownValue1": "Move {{value1}} down",
   "ui.game.mobilewidgetarrange.moveUpValue1": "Move {{value1}} up",
   "ui.game.mobilewidgetarrange.secondGroup": "Second group",
+  "ui.game.mobilewidgetarrange.showFirstWidgets": "Back to the first widgets",
+  "ui.game.mobilewidgetarrange.showMoreWidgets": "Show more widgets",
   "ui.game.mobilewidgetarrange.showValue1": "Show {{value1}}",
   "ui.game.mobilewidgetpanel.collapseWidget": "Collapse widget",
   "ui.game.mobilewidgetpanel.editValue1": "Edit {{value1}}",

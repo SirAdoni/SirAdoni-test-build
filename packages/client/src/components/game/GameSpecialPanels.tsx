@@ -1,7 +1,6 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense } from "react";
 import { FloatingGamePanel } from "./FloatingGamePanel";
-import { usePersona } from "../../hooks/use-characters";
-import type { GameStatusProjection } from "./game-status-widget";
+import { useGameStatusProjection } from "./GameMobileStatus";
 
 const GameStatusWidget = lazy(async () => ({ default: (await import("./GameStatusWidget")).GameStatusWidget }));
 const GameContactBookWidget = lazy(async () => ({
@@ -13,6 +12,7 @@ export function GameSpecialPanels({
   personaStats,
   playerStats,
   statusVisible,
+  inlineStatus = true,
   contactsVisible,
   chatId,
   campaignKey,
@@ -24,6 +24,8 @@ export function GameSpecialPanels({
   personaStats?: unknown;
   playerStats?: unknown;
   statusVisible: boolean;
+  /** False on phones, where the status lives in the widget tray as a tab. */
+  inlineStatus?: boolean;
   contactsVisible: boolean;
   chatId: string;
   campaignKey: string;
@@ -31,27 +33,10 @@ export function GameSpecialPanels({
   onCloseContacts: () => void;
   onOpenCharacter: (characterId: string) => void;
 }) {
-  const selectedPersonaQuery = usePersona(personaId ?? null);
-  const [projection, setProjection] = useState<GameStatusProjection>({ bars: [], attributes: [] });
-  useEffect(() => {
-    let current = true;
-    void import("./game-status-widget").then(({ projectGameStatusStats }) => {
-      if (current)
-        setProjection(
-          projectGameStatusStats({
-            personaStats,
-            rpgStats: playerStats,
-            config: selectedPersonaQuery.data?.personaStats,
-          }),
-        );
-    });
-    return () => {
-      current = false;
-    };
-  }, [personaStats, playerStats, selectedPersonaQuery.data?.personaStats]);
+  const projection = useGameStatusProjection(personaId, personaStats, playerStats);
   return (
     <>
-      {statusVisible && (projection.bars.length > 0 || projection.attributes.length > 0) && (
+      {statusVisible && inlineStatus && (projection.bars.length > 0 || projection.attributes.length > 0) && (
         <FloatingGamePanel
           id="game-status"
           width={248}

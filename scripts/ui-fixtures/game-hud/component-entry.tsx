@@ -6,7 +6,10 @@ import { activateLocale } from "../../../packages/client/src/localization/i18n";
 import { FloatingGamePanel, GamePanelContext } from "../../../packages/client/src/components/game/FloatingGamePanel";
 import { GameContactBookWidget } from "../../../packages/client/src/components/game/GameContactBookWidget";
 import { GameWidgetPanel, MobileWidgetPanel } from "../../../packages/client/src/components/game/GameWidgetPanel";
-import { MobileWidgetArrangeButton } from "../../../packages/client/src/components/game/GameMobileArrange";
+import {
+  MobileWidgetArrangeButton,
+  MobileWidgetTray,
+} from "../../../packages/client/src/components/game/GameMobileArrange";
 import { CharacterPhoto } from "../../../packages/client/src/components/ui/CharacterPhoto";
 import { EditorAvatarTileActions } from "../../../packages/client/src/components/ui/EditorAvatarTileActions";
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -38,15 +41,13 @@ const mobileFixtureWidgets: HudWidget[] = [
 ];
 
 function MobileWidgetFixture() {
-  const tray = useRef<HTMLDivElement>(null);
   return (
     <QueryClientProvider client={queryClient}>
       <main style={{ minHeight: "100vh", padding: 16, background: "#101217", color: "white" }}>
         <h1>Mobile widget fixture</h1>
-        <div
-          ref={tray}
+        <MobileWidgetTray
           data-mobile-widget-tray
-          style={{ display: "flex", minWidth: 0, maxWidth: "100%", overflowX: "auto", gap: 4, paddingBottom: 4 }}
+          trailing={<MobileWidgetArrangeButton widgets={mobileFixtureWidgets} chatId="mobile-hud" />}
         >
           <MobileWidgetPanel
             widgets={mobileFixtureWidgets}
@@ -60,8 +61,7 @@ function MobileWidgetFixture() {
             chatId="mobile-hud"
             layout="horizontal"
           />
-          <MobileWidgetArrangeButton widgets={mobileFixtureWidgets} chatId="mobile-hud" />
-        </div>
+        </MobileWidgetTray>
       </main>
     </QueryClientProvider>
   );

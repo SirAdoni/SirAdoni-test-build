@@ -422,7 +422,7 @@ export function MobileWidgetPanel({ widgets, position, chatId, layout = "vertica
             <button
               key={w.id}
               onClick={() => setExpandedId(w.id)}
-              className="marinara-chat-toolbar-button flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-base text-[var(--marinara-chat-chrome-button-text)] backdrop-blur-md transition-all hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] active:scale-95"
+              className="marinara-chat-toolbar-button flex h-11 w-11 shrink-0 snap-start items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-base text-[var(--marinara-chat-chrome-button-text)] backdrop-blur-md transition-all hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] active:scale-95"
               aria-haspopup={layout === "horizontal" ? "dialog" : undefined}
               aria-expanded={isExpanded}
               aria-label={w.label}

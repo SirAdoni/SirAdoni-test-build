@@ -19,7 +19,7 @@ async function runMobileWidgetAssertions(page, base) {
     await page.goto(`${base}/?mobile=1`);
     const tray = page.locator("[data-mobile-widget-tray]");
     await tray.waitFor();
-    const buttons = tray.locator("button:not([data-mobile-arrange-button])");
+    const buttons = tray.locator("button:not([data-mobile-arrange-button]):not([data-mobile-tray-scroll])");
     assert.equal(await buttons.count(), 6, `${viewport.width}: all mobile widget buttons render`);
     const firstBox = await buttons.nth(0).boundingBox();
     const lastBox = await buttons.nth(5).boundingBox();
@@ -77,8 +77,76 @@ async function runMobileWidgetAssertions(page, base) {
     await lastDialog.waitFor({ state: "hidden" });
   }
   await runMobileArrangeAssertions(page, base);
+  await runMobileTrayFitAssertions(page, base);
   await page.setViewportSize({ width: 1440, height: 900 });
   console.log("mobile widget fixture passed: horizontal row, 44px targets, scroll reachability, bounded modal");
+}
+
+/** Tabs fully inside the tray's scroll window or fully outside it; none is cut mid-button. */
+function clippedTrayTabs() {
+  const tray = document.querySelector("[data-mobile-widget-tray]");
+  const box = tray.querySelector("[data-mobile-tray-scroller]").getBoundingClientRect();
+  return [...tray.querySelectorAll("button")].flatMap((button) => {
+    const rect = button.getBoundingClientRect();
+    const visible = Math.min(rect.right, box.right, innerWidth) - Math.max(rect.left, box.left, 0);
+    return visible > 1 && visible < rect.width - 1
+      ? [`${button.getAttribute("aria-label")} ${Math.round(visible)}`]
+      : [];
+  });
+}
+
+async function runMobileTrayFitAssertions(page, base) {
+  for (const [width, height] of [
+    [320, 568],
+    [360, 740],
+    [390, 844],
+    [412, 915],
+    [844, 390],
+    [915, 412],
+  ]) {
+    await page.setViewportSize({ width, height });
+    await page.goto(`${base}/?mobile=1`);
+    await page.evaluate(() => localStorage.clear());
+    await page.reload();
+    const tray = page.locator("[data-mobile-widget-tray]");
+    await tray.waitFor();
+    await page.waitForTimeout(100);
+    const tag = `${width}x${height}`;
+    assert.equal(
+      await page.evaluate(() => document.scrollingElement.scrollWidth),
+      width,
+      `${tag}: no page-level horizontal overflow`,
+    );
+    const scrollbar = await tray
+      .locator("[data-mobile-tray-scroller]")
+      .evaluate((node) => node.offsetHeight - node.clientHeight);
+    assert.equal(scrollbar, 0, `${tag}: the tray draws no scrollbar`);
+    assert.deepEqual(await page.evaluate(clippedTrayTabs), [], `${tag}: no clipped tab at rest`);
+    const arrange = tray.locator("[data-mobile-arrange-button]");
+    const arrangeBox = await arrange.boundingBox();
+    assert.ok(arrangeBox && arrangeBox.x + arrangeBox.width <= width, `${tag}: Arrange is on screen without scrolling`);
+    const pager = tray.locator("[data-mobile-tray-scroll]");
+    const overflowing = await page.evaluate(() => {
+      const node = document.querySelector("[data-mobile-tray-scroller]");
+      return node.scrollWidth > node.clientWidth + 1;
+    });
+    assert.equal(await pager.count(), overflowing ? 1 : 0, `${tag}: the pager shows only when tabs overflow`);
+    if (!overflowing) continue;
+    assert.match((await pager.textContent()) ?? "", /\+\d/, `${tag}: the pager counts the hidden tabs`);
+    const mask = await tray.locator("[data-mobile-tray-scroller]").evaluate((node) => node.style.maskImage);
+    assert.match(mask, /transparent\)$/, `${tag}: the trailing edge fades while more tabs wait`);
+    for (let step = 0; step < 6 && (await pager.getAttribute("aria-label")) === "Show more widgets"; step++) {
+      await pager.click();
+      await page.waitForTimeout(600);
+      assert.deepEqual(await page.evaluate(clippedTrayTabs), [], `${tag}: no clipped tab after paging`);
+    }
+    assert.equal(await pager.getAttribute("aria-label"), "Back to the first widgets", `${tag}: paging reaches the end`);
+    const last = tray.locator("button:not([data-mobile-arrange-button]):not([data-mobile-tray-scroll])").last();
+    const lastBox = await last.boundingBox();
+    assert.ok(lastBox && lastBox.x + lastBox.width <= width, `${tag}: the last tab is reachable by paging`);
+    await page.screenshot({ path: `${screenshotDir}/mobile-tray-paged-${tag}.png` });
+  }
+  console.log("mobile tray fit passed: whole tabs, no scrollbar, edge fade, pager, Arrange on screen");
 }
 
 async function runMobileArrangeAssertions(page, base) {
@@ -88,7 +156,7 @@ async function runMobileArrangeAssertions(page, base) {
   await page.reload();
   const tray = page.locator("[data-mobile-widget-tray]");
   await tray.waitFor();
-  const pills = tray.locator("button:not([data-mobile-arrange-button])");
+  const pills = tray.locator("button:not([data-mobile-arrange-button]):not([data-mobile-tray-scroll])");
   const labels = async () => pills.evaluateAll((items) => items.map((item) => item.getAttribute("aria-label")));
   assert.deepEqual(await labels(), ["Left 1", "Left 2", "Left 3", "Left 4", "Left 5", "Right 1"]);
   const arrange = tray.getByRole("button", { name: "Arrange widgets" });
