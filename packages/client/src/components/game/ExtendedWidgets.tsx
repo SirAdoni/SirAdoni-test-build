@@ -168,7 +168,11 @@ function ExtendedWidgetView({ widget }: { widget: HudWidget }) {
                 <span className={cn("min-w-0 flex-1", task.done ? cn(MUTED, "line-through") : TEXT)}>
                   <Linked>{text}</Linked>
                 </span>
-                {terms && <span className={cn("shrink-0 tabular-nums", MUTED)}>{terms}</span>}
+                {terms && (
+                  <span className={cn("min-w-0 max-w-[45%] text-right tabular-nums [overflow-wrap:anywhere]", MUTED)}>
+                    {terms}
+                  </span>
+                )}
               </div>
             );
           })}

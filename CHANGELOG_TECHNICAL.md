@@ -331,6 +331,15 @@ Features:
 - game-dice-roll-log: the Session panel tab check accepts the conditional tab list (scene timeline switch).
 - open-issues: the journal timeline check accepts the search-filtered entries prop.
 
+### Stat block widget: pair columns that fit, no squeezed labels
+
+- Files: `packages/client/src/components/game/GameWidgetPanel.tsx` (`StatBlockWidget`, `isLongStatPair`, the stat block natural width), `packages/client/src/components/game/ExtendedWidgets.tsx` (obligations terms).
+- Bug: stat block pairs sat in a fixed two-column grid with the value on one unbreakable line (`shrink-0 whitespace-nowrap`). A long value squeezed its label to one letter per line (the label had become `min-w-0 break-words` with the full-names change) and ran past the widget edge, where it was cut off. The widget's natural width also grew with the full length of the longest pairs, so a few long values made the desktop widget as wide as the screen.
+- Behaviour: the grid has as many pair columns as fit, each at least 8.5rem (`repeat(auto-fill, minmax(min(8.5rem, 100%), 1fr))`). A label keeps its words whole and only wraps at spaces. The value takes the rest of the row, wraps anywhere, and drops under the label when fewer than about 3.5rem are left. A pair whose value is longer than 18 characters, or whose name and value together are longer than 28, spans the whole row. The natural width caps each pair at 220px and the widget at 448px, since values now wrap. Nothing is truncated.
+- Obligations: long terms after `|` no longer squeeze the obligation text; terms take at most 45% of the row and wrap.
+- Applies to the desktop HUD panel and the phone and tablet widget tray (same component). No setting.
+- Tests: `scripts/regressions/game-widget-stat-grid.browser.mjs` (new; real panel and tray with long values at 390x844, 820x1180, 1024x768 and 1440x900: no label word split across lines, values inside the widget and not clipped, long pairs span the row, obligations text keeps its room); `game-hud-full-names.browser.mjs` passes.
+
 ### Phone widget tray, Game status sheet, readable Currently Present, landscape stacking
 - Commit: eee40df22.
 - Files: `components/game/GameMobileArrange.tsx` (new `MobileWidgetTray`), `components/game/GameMobileStatus.tsx` (new), `components/game/GameSurface.tsx`, `components/game/GameWidgetPanel.tsx`, `components/game/GameSpecialPanels.tsx`, `components/game/GameNarration.tsx`, `localization/locales/en.json` (`ui.game.mobilewidgetarrange.showFirstWidgets`, `showMoreWidgets`).

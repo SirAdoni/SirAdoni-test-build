@@ -513,14 +513,21 @@ function WidgetCard({
     ].map((label) => (label == null ? "" : String(label)));
     const longest = labels.reduce((length, label) => Math.max(length, Array.from(label).length), 0);
     if (widget.type === "stat_block") {
+      // Values wrap inside their pair, so a long one no longer needs the widget to be as wide as the whole value.
       const columnWidths = [0, 0];
       for (const [index, stat] of stats.entries()) {
         columnWidths[index % 2] = Math.max(
           columnWidths[index % 2],
-          Array.from(String(stat?.name ?? "")).length * 6.2 + String(stat?.value ?? "").length * 6.2 + 32,
+          Math.min(
+            220,
+            Array.from(String(stat?.name ?? "")).length * 6.2 + Array.from(String(stat?.value ?? "")).length * 6.2 + 32,
+          ),
         );
       }
-      return Math.max(176, Math.ceil(columnWidths[0] + columnWidths[1] + 36), widget.label.length * 6.2 + 64);
+      return Math.min(
+        448,
+        Math.max(176, Math.ceil(columnWidths[0] + columnWidths[1] + 36), widget.label.length * 6.2 + 64),
+      );
     }
     return Math.max(176, Math.min(384, Math.ceil(longest * 6.2 + 64)));
   }, [widget]);
@@ -1285,21 +1292,38 @@ function CounterWidget({ widget }: { widget: HudWidget }) {
   );
 }
 
+function isLongStatPair(name: unknown, value: unknown): boolean {
+  const valueLength = String(value ?? "").length;
+  return valueLength > 18 || String(name ?? "").length + valueLength > 28;
+}
+
 function StatBlockWidget({ widget }: { widget: HudWidget }) {
   const rawStats = widget.config.stats;
   const stats = Array.isArray(rawStats) ? rawStats : [];
   const accent = widget.accent ?? "#6366f1";
 
+  // As many pair columns as the width allows (at least 8.5rem each). A pair with a long value spans the whole row,
+  // the label keeps its words whole and the value wraps under it rather than squeezing it or running off the panel.
   return (
-    <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(min(8.5rem,100%),1fr))] gap-x-3 gap-y-1">
       {stats.map((s, i) => (
-        <div key={s.name ?? i} className="flex items-center justify-between gap-1 text-[0.5625rem]">
-          <span className={cn("min-w-0 break-words", GAME_WIDGET_MUTED_CLASS)}>
+        <div
+          key={s.name ?? i}
+          data-stat-row
+          className={cn(
+            "flex min-w-0 flex-wrap items-baseline justify-between gap-x-1.5 text-[0.5625rem]",
+            isLongStatPair(s.name, s.value) && "col-span-full",
+          )}
+        >
+          <span className={cn("max-w-full shrink-0 [overflow-wrap:break-word]", GAME_WIDGET_MUTED_CLASS)}>
             <CharacterLinkedContent currentNames showAvatar>
               {s.name}
             </CharacterLinkedContent>
           </span>
-          <span className="shrink-0 whitespace-nowrap font-mono font-bold" style={{ color: accent }}>
+          <span
+            className="min-w-0 max-w-full flex-[1_1_3.5rem] text-right font-mono font-bold [overflow-wrap:anywhere]"
+            style={{ color: accent }}
+          >
             <CharacterLinkedContent currentNames>{s.value}</CharacterLinkedContent>
           </span>
         </div>
