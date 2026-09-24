@@ -1158,7 +1158,7 @@ export function MobileMapButton({
             onClick={(e) => e.stopPropagation()}
           >
             {/* Header */}
-            <div className={cn("flex items-center gap-2 border-b px-2.5 py-2", GAME_MAP_DIVIDER_CLASS)}>
+            <div data-floating-widget-avoid className={cn("flex items-center gap-2 border-b px-2.5 py-2", GAME_MAP_DIVIDER_CLASS)}>
               <StateIcon size={14} className={stateCfg?.color ?? "text-[var(--marinara-chat-chrome-panel-muted)]"} />
               <DayTimeIndicator
                 day={day}
