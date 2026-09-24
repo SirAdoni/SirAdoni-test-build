@@ -96,7 +96,7 @@ export function SwipeJumpControl({
           event.stopPropagation();
           if (event.key === "Enter") event.currentTarget.blur();
         }}
-        className="h-[1.375rem] w-9 rounded-full border border-[var(--marinara-chat-message-action-bg-hover)] bg-[color-mix(in_srgb,var(--marinara-chat-chrome-text)_5%,transparent)] px-1.5 py-0.5 text-center tabular-nums text-[0.625rem] font-medium text-[var(--marinara-chat-message-action-text-hover)] outline-none transition-[background-color,border-color,box-shadow,color] focus:border-[var(--marinara-chat-chrome-button-border-active)] focus:bg-[var(--marinara-chat-chrome-button-bg-active)]"
+        className="h-[1.375rem] w-9 rounded-full pointer-coarse:h-9 pointer-coarse:w-11 pointer-coarse:text-[0.75rem] border border-[var(--marinara-chat-message-action-bg-hover)] bg-[color-mix(in_srgb,var(--marinara-chat-chrome-text)_5%,transparent)] px-1.5 py-0.5 text-center tabular-nums text-[0.625rem] font-medium text-[var(--marinara-chat-message-action-text-hover)] outline-none transition-[background-color,border-color,box-shadow,color] focus:border-[var(--marinara-chat-chrome-button-border-active)] focus:bg-[var(--marinara-chat-chrome-button-bg-active)]"
         aria-label={localizeUi("ui.chat.swipejumpcontrol.jumpToSwipe1ThroughValue1", { value1: displaySwipeCount })}
         title={localizeUi("ui.chat.swipejumpcontrol.jumpToSwipe1Value1", { value1: displaySwipeCount })}
       />

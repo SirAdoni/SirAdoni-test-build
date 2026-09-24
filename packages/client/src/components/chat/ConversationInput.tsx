@@ -150,6 +150,13 @@ const CONVERSATION_STATUS_COMPLETIONS = [
   { value: "clear", description: "Clear a manual status override" },
 ] as const;
 
+/** Composer growth cap: 160px on tall screens, less on short ones (landscape phones, keyboard up). */
+function getConversationTextareaMaxHeightPx(): number {
+  if (typeof window === "undefined") return 160;
+  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+  return Math.max(48, Math.min(160, Math.floor(viewportHeight * 0.3)));
+}
+
 function isConversationHiddenSlashCommand(command: SlashCommand): boolean {
   return CONVERSATION_HIDDEN_SLASH_COMMANDS.has(command.name);
 }
@@ -598,7 +605,7 @@ export function ConversationInput({
       el.value = nextValue;
       el.selectionStart = el.selectionEnd = cursor;
       el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+      el.style.height = `${Math.min(el.scrollHeight, getConversationTextareaMaxHeightPx())}px`;
       syncInputState(nextValue);
       setInputDraft(activeChatId, nextValue);
       el.focus();
@@ -635,7 +642,7 @@ export function ConversationInput({
             const text = `Create it - ${summary}`;
             el.value = text;
             el.style.height = "auto";
-            el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+            el.style.height = `${Math.min(el.scrollHeight, getConversationTextareaMaxHeightPx())}px`;
             syncInputState(text);
             setInputDraft(activeChatId, text);
             el.focus();
@@ -649,7 +656,7 @@ export function ConversationInput({
       const next = current.trim() ? `${current.trimEnd()} ${chip.prompt}` : chip.prompt;
       el.value = next;
       el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+      el.style.height = `${Math.min(el.scrollHeight, getConversationTextareaMaxHeightPx())}px`;
       syncInputState(next);
       setInputDraft(activeChatId, next);
       el.focus();
@@ -811,7 +818,7 @@ export function ConversationInput({
         textareaRef.current.value = draft;
         syncInputState(draft);
         textareaRef.current.style.height = "auto";
-        textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 160)}px`;
+        textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, getConversationTextareaMaxHeightPx())}px`;
       }
       if (activeChatId) {
         const restoredAttachments = pendingAttachmentDraftsRef.current.get(activeChatId) ?? [];
@@ -1463,7 +1470,7 @@ export function ConversationInput({
       if (!el || !activeChatId || isSendBlocked || isReadingAttachments) return;
       el.value = content;
       el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+      el.style.height = `${Math.min(el.scrollHeight, getConversationTextareaMaxHeightPx())}px`;
       syncInputState(content);
       setInputDraft(activeChatId, content);
       await handleSend();
@@ -1684,7 +1691,7 @@ export function ConversationInput({
       resizeTimerRef.current = setTimeout(() => {
         if (!el) return;
         el.style.height = "auto";
-        el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+        el.style.height = `${Math.min(el.scrollHeight, getConversationTextareaMaxHeightPx())}px`;
       }, 150);
       syncInputState(formatted);
 
@@ -1792,7 +1799,7 @@ export function ConversationInput({
       el.value = value.slice(0, start) + emoji + value.slice(end);
       el.selectionStart = el.selectionEnd = start + emoji.length;
       el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+      el.style.height = `${Math.min(el.scrollHeight, getConversationTextareaMaxHeightPx())}px`;
       syncInputState(el.value);
       if (activeChatId) setInputDraft(activeChatId, el.value);
       el.focus();
@@ -1819,7 +1826,7 @@ export function ConversationInput({
       // Grow the textarea now — programmatic value changes don't fire the input-event auto-resize,
       // so without this the newline'd sticker line stays hidden until the user types.
       el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+      el.style.height = `${Math.min(el.scrollHeight, getConversationTextareaMaxHeightPx())}px`;
       syncInputState(el.value);
       if (activeChatId) setInputDraft(activeChatId, el.value);
       el.focus();
@@ -1908,7 +1915,7 @@ export function ConversationInput({
       const formatted = formatTextQuotes(translated, quoteFormat);
       textareaRef.current.value = formatted;
       textareaRef.current.style.height = "auto";
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 160)}px`;
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, getConversationTextareaMaxHeightPx())}px`;
       syncInputState(formatted);
       setInputDraft(activeChatId, formatted);
       textareaRef.current.focus();
@@ -1933,13 +1940,31 @@ export function ConversationInput({
       el.value = nextValue;
       el.setSelectionRange(nextCursor, nextCursor);
       el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+      el.style.height = `${Math.min(el.scrollHeight, getConversationTextareaMaxHeightPx())}px`;
       syncInputState(nextValue);
       if (activeChatId) setInputDraft(activeChatId, nextValue);
       el.focus();
     },
     [activeChatId, quoteFormat, setInputDraft, syncInputState],
   );
+
+  // The growth cap depends on the viewport height, which changes when the on-screen
+  // keyboard opens or the phone rotates; re-apply it so a tall draft cannot cover the chat.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onViewportResize = () => {
+      const el = textareaRef.current;
+      if (!el || !el.value) return;
+      el.style.height = "auto";
+      el.style.height = `${Math.min(el.scrollHeight, getConversationTextareaMaxHeightPx())}px`;
+    };
+    window.addEventListener("resize", onViewportResize);
+    window.visualViewport?.addEventListener("resize", onViewportResize);
+    return () => {
+      window.removeEventListener("resize", onViewportResize);
+      window.visualViewport?.removeEventListener("resize", onViewportResize);
+    };
+  }, []);
 
   const ensureInputVisible = useCallback(() => {
     if (typeof window === "undefined" || !window.matchMedia("(max-width: 767px)").matches) return;
@@ -2179,7 +2204,7 @@ export function ConversationInput({
           onEmojiSelect={handleEmojiSelect}
           onGifSelect={handleGifSelect}
           onStickerSelect={handleStickerSelect}
-          className="absolute bottom-full left-0 right-0 z-20 mb-3 sm:hidden"
+          className="absolute bottom-full left-0 right-0 z-20 mb-3 bg-[var(--background)] bg-[image:linear-gradient(var(--card),var(--card))] sm:hidden"
           toolsContent={mediaPickerToolsContent}
         />
       )}

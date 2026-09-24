@@ -3691,7 +3691,9 @@ export const ChatMessage = memo(function ChatMessage({
                     <NameColorText color={msgNameColor}>{displayName}</NameColorText>
                   )}
                 </span>
-                <span className="text-[0.625rem] text-white/30">{formatTime(message.createdAt)}</span>
+                <span className="text-[0.6875rem] text-white/30 md:text-[0.625rem]">
+                  {formatTime(message.createdAt)}
+                </span>
                 {genLabel && (
                   <span className="text-[0.5625rem] text-white/25 italic truncate max-w-[15.625rem]" title={genLabel}>
                     {genLabel}

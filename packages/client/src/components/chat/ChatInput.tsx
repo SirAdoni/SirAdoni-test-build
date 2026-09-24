@@ -145,8 +145,10 @@ function isSupportedChatAttachment(file: File): boolean {
 function getChatInputTextareaMaxHeightPx() {
   if (typeof window === "undefined") return 200;
   const isMobile = window.matchMedia("(max-width: 767px)").matches;
-  if (!isMobile) return 200;
   const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+  // Wide but short viewports (a phone in landscape, or any phone with the keyboard up)
+  // must not let the composer grow over the chat header; desktop heights keep 200px.
+  if (!isMobile) return Math.max(56, Math.min(200, Math.floor(viewportHeight * 0.3)));
   return Math.max(56, Math.min(128, Math.floor(viewportHeight * 0.24)));
 }
 
@@ -1859,6 +1861,22 @@ export const ChatInput = memo(function ChatInput({
     },
     [activeChatId, quoteFormat, setInputDraft, syncInputState],
   );
+
+  // The growth cap depends on the viewport height, which changes when the on-screen
+  // keyboard opens or the phone rotates; re-apply it so a tall draft cannot cover the chat.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onViewportResize = () => {
+      const el = textareaRef.current;
+      if (el && el.value) resizeChatInputTextarea(el);
+    };
+    window.addEventListener("resize", onViewportResize);
+    window.visualViewport?.addEventListener("resize", onViewportResize);
+    return () => {
+      window.removeEventListener("resize", onViewportResize);
+      window.visualViewport?.removeEventListener("resize", onViewportResize);
+    };
+  }, []);
 
   const ensureInputVisible = useCallback(() => {
     if (typeof window === "undefined" || !window.matchMedia("(max-width: 767px)").matches) return;
