@@ -7843,3 +7843,112 @@ strong {
     overflow-y: visible;
   }
 }
+
+/* Short landscape screens (phones on their side): the editor header wrapped its
+   actions onto a second row and ate a third of the height. Keep it on one row
+   with tighter padding so the editor content gets the screen. */
+@media (max-height: 500px) and (orientation: landscape) {
+  .mari-editor-header,
+  .mari-editor-header--with-nav {
+    height: auto;
+    min-height: 0;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    gap: 0.5rem;
+    padding-block: 0.25rem;
+  }
+
+  .mari-editor-header .mari-editor-header-main,
+  .mari-editor-header--with-nav .mari-editor-header-main {
+    width: auto;
+    min-width: 0;
+    min-height: 0;
+    flex: 1 1 auto;
+    gap: 0.5rem;
+  }
+
+  .mari-editor-header .mari-editor-actions,
+  .mari-editor-header--with-nav .mari-editor-actions {
+    width: auto;
+    margin-left: 0;
+    flex-wrap: nowrap;
+    border-top: 0;
+    padding-top: 0;
+  }
+
+  .mari-editor-header .mari-editor-action--primary {
+    margin-right: 0;
+  }
+
+  .mari-editor-header .mari-editor-byline,
+  .mari-editor-header .mari-editor-save-label {
+    display: none;
+  }
+
+  .mari-editor-content {
+    padding-block: 0.75rem;
+  }
+}
+
+/* Touch screens: shared editor and chat controls get a 36px target. Fine
+   pointers (desktop) keep their compact sizes. */
+@media (pointer: coarse) {
+  .mari-editor-action,
+  .mari-editor-action--compact,
+  .mari-editor-header--with-nav .mari-editor-action {
+    min-height: 2.25rem;
+    min-width: 2.25rem;
+  }
+
+  .mari-editor-header--with-nav .mari-editor-action {
+    height: auto;
+  }
+
+  .mari-editor-section-jump {
+    display: inline-flex;
+    min-height: 2.25rem;
+    align-items: center;
+  }
+
+  .mari-message-actions > button,
+  .mari-message-actions > div > button {
+    min-height: 2.25rem;
+  }
+}
+
+/* Touch phones in portrait: the larger actions must still share one row with
+   the section picker, so the picker gives up width first. */
+@media (pointer: coarse) and (max-width: 767px) {
+  .mari-editor-header--with-nav .mari-editor-navigation {
+    min-width: 4.25rem;
+    flex: 1 1 0;
+  }
+
+  .mari-editor-header--with-nav .mari-editor-actions {
+    gap: 0.25rem;
+  }
+}
+
+/* Touch: toast action buttons (for example the update prompt's Refresh) grow to
+   36px, and the small corner close button gets an invisible 36px hit area.
+   The extra toaster attribute outranks sonner's own injected styles. */
+@media (pointer: coarse) {
+  [data-sonner-toaster] [data-sonner-toast] [data-button] {
+    height: auto;
+    min-height: 2.25rem;
+    padding-inline: 0.75rem;
+  }
+
+  [data-sonner-toaster] [data-sonner-toast] [data-close-button]::after {
+    position: absolute;
+    inset: -0.5rem;
+    content: "";
+  }
+
+  /* Tablets (sonner's non-mobile layout) used the 4rem desktop offset, which put
+     top toasts over the chat header and editor header under the top bar. Match
+     the phone offset from App.tsx instead. Inline --offset-top needs !important. */
+  [data-sonner-toaster][data-y-position="top"] {
+    --offset-top: calc(env(safe-area-inset-top) + 6.75rem) !important;
+  }
+}

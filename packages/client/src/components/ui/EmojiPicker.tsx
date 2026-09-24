@@ -1003,7 +1003,7 @@ export function EmojiPicker({
   return createPortal(
     <div
       ref={panelRef}
-      className="fixed z-[10050] flex h-[22rem] w-[21rem] max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-xl border border-foreground/10 bg-[var(--card)] shadow-xl"
+      className="fixed z-[10050] flex h-[22rem] w-[21rem] max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-xl border border-foreground/10 bg-[var(--card)] shadow-xl max-md:bg-[linear-gradient(var(--card),var(--card)),linear-gradient(var(--background),var(--background))] max-md:bg-[var(--background)] [@media(pointer:coarse)]:bg-[linear-gradient(var(--card),var(--card)),linear-gradient(var(--background),var(--background))] [@media(pointer:coarse)]:bg-[var(--background)]"
       style={{
         ...(pos.top != null ? { top: pos.top } : {}),
         ...(pos.left != null ? { left: pos.left } : {}),

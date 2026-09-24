@@ -453,7 +453,12 @@ export function MacroTextarea({
           />
         )}
         {(showExpand || showMacroReference || showMarkdownPreview || toolbarExtra) && (
-          <div className={cn("absolute right-1.5 top-1.5 flex flex-col gap-0.5", toolbarClassName)}>
+          <div
+            className={cn(
+              "absolute right-1.5 top-1.5 flex flex-col gap-0.5 [@media(pointer:coarse)]:gap-3.5 [@media(pointer:coarse)]:[&>button]:relative [@media(pointer:coarse)]:[&>button]:before:absolute [@media(pointer:coarse)]:[&>button]:before:-inset-2 [@media(pointer:coarse)]:[&>button]:before:content-['']",
+              toolbarClassName,
+            )}
+          >
             {showMarkdownPreview ? (
               <button
                 type="button"
