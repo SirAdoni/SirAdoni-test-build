@@ -309,7 +309,7 @@ export function GameContactBookWidget({ chatId, campaignKey, refreshKey, open, o
               <div className="min-w-0 flex-1">
                 <button
                   type="button"
-                  className="truncate text-left font-semibold hover:underline"
+                  className="block max-w-full break-words text-left font-semibold hover:underline"
                   onClick={() => {
                     if (!contact.characterId) return;
                     onClose();

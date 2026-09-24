@@ -1772,7 +1772,7 @@ function GamePanelOptions(props: OptionsProps) {
       width={272}
     >
       <div className="flex items-center gap-2 px-1 pb-2 pt-0.5">
-        <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
+        <span className="min-w-0 flex-1 break-words text-[0.8125rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
           {props.label}
         </span>
         <button

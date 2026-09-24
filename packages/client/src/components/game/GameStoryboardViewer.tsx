@@ -603,7 +603,7 @@ function GameStoryboardViewerCard({
           </p>
         ) : null}
         <div className="flex items-start justify-between gap-2">
-          <p className="min-w-0 truncate text-xs font-semibold text-white/90">
+          <p className="min-w-0 break-words text-xs font-semibold text-white/90">
             {frame?.title || storyboard?.title || localizeUi("ui.game.gamesurfacecomponent.storyboardTurn")}
           </p>
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">

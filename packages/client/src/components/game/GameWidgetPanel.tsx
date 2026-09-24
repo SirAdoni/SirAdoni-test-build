@@ -67,7 +67,7 @@ const GAME_WIDGET_SHELL_CLASS =
 const GAME_WIDGET_HEADER_CLASS =
   "flex w-full cursor-pointer items-center gap-1.5 px-2.5 py-1.5 text-left transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)]";
 const GAME_WIDGET_TITLE_CLASS =
-  "flex-1 overflow-x-auto scrollbar-hide whitespace-nowrap text-[0.6875rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]";
+  "min-w-0 flex-1 break-words text-[0.6875rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]";
 const GAME_WIDGET_MUTED_CLASS = "text-[var(--marinara-chat-chrome-panel-muted)]";
 const GAME_WIDGET_BODY_DIVIDER_CLASS = "border-t border-[var(--marinara-chat-chrome-panel-divider)]";
 const GAME_WIDGET_ICON_BUTTON_CLASS =
@@ -389,7 +389,7 @@ export function MobileWidgetPanel({ widgets, position, chatId, layout = "vertica
               >
                 <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-left">
                   <span className="text-xs">{widgetIcon(w)}</span>
-                  <span className="flex-1 truncate text-[0.6875rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
+                  <span className="min-w-0 flex-1 break-words text-[0.6875rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
                     <CharacterLinkedContent currentNames>{w.label}</CharacterLinkedContent>
                   </span>
                   <button
@@ -439,7 +439,7 @@ export function MobileWidgetPanel({ widgets, position, chatId, layout = "vertica
             <div className={cn(GAME_WIDGET_SHELL_CLASS, "max-h-[min(60vh,28rem)] overflow-y-auto")}>
               <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-left">
                 <span className="text-xs">{widgetIcon(expandedWidget)}</span>
-                <span className="min-w-0 flex-1 truncate text-[0.6875rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
+                <span className="min-w-0 flex-1 break-words text-[0.6875rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
                   <CharacterLinkedContent currentNames>{expandedWidget.label}</CharacterLinkedContent>
                 </span>
               </div>
@@ -1085,7 +1085,9 @@ export function GameWidgetSessionPrepModal({
                   <div className="min-w-0 space-y-1">
                     <div className="flex items-center gap-2">
                       <span className="text-sm">{widgetIcon(widget)}</span>
-                      <span className="truncate text-sm font-medium text-[var(--foreground)]">{widget.label}</span>
+                      <span className="min-w-0 break-words text-sm font-medium text-[var(--foreground)]">
+                        {widget.label}
+                      </span>
                       <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[0.6875rem] uppercase tracking-wide text-[var(--muted-foreground)]">
                         {formatWidgetTypeLabel(widget.type)}
                       </span>
@@ -1291,8 +1293,8 @@ function StatBlockWidget({ widget }: { widget: HudWidget }) {
   return (
     <div className="grid grid-cols-2 gap-x-3 gap-y-1">
       {stats.map((s, i) => (
-        <div key={s.name ?? i} className="flex items-center justify-between text-[0.5625rem]">
-          <span className={GAME_WIDGET_MUTED_CLASS}>
+        <div key={s.name ?? i} className="flex items-center justify-between gap-1 text-[0.5625rem]">
+          <span className={cn("min-w-0 break-words", GAME_WIDGET_MUTED_CLASS)}>
             <CharacterLinkedContent currentNames showAvatar>
               {s.name}
             </CharacterLinkedContent>

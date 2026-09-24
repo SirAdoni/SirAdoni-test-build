@@ -12709,7 +12709,7 @@ function GameSurfaceComponent({
             <div className="border-b border-[var(--marinara-chat-chrome-panel-divider)] p-3">
               <div className="mb-3 flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <h3 className="truncate text-sm font-semibold text-[var(--marinara-chat-chrome-panel-text)]">
+                  <h3 className="break-words text-sm font-semibold text-[var(--marinara-chat-chrome-panel-text)]">
                     {latestTurnStoryboard?.title || "Storyboard turn"}
                   </h3>
                   <p className="mt-0.5 text-[0.6875rem] uppercase tracking-wide text-[var(--marinara-chat-chrome-panel-muted)]">
@@ -12815,9 +12815,7 @@ function GameSurfaceComponent({
         />
       )}
       {sceneExtras.length > 0 && (
-        <div className="min-w-0 truncate text-xs text-white/60 max-lg:hidden lg:mt-1 lg:whitespace-normal">
-          {sceneExtras.join(", ")}
-        </div>
+        <div className="min-w-0 break-words text-xs text-white/60 max-lg:hidden lg:mt-1">{sceneExtras.join(", ")}</div>
       )}
       {/* Phones: whole names as chips that scroll sideways, never cut mid-word. */}
       {sceneExtras.length > 0 && (
@@ -12826,7 +12824,7 @@ function GameSurfaceComponent({
           className="scrollbar-hide flex min-w-0 flex-1 touch-pan-x items-center gap-1 overflow-x-auto text-xs text-white/75 lg:hidden"
         >
           {sceneExtras.map((name) => (
-            <span key={name} className="shrink-0 whitespace-nowrap rounded-md bg-white/10 px-1.5 py-0.5">
+            <span key={name} className="max-w-full shrink-0 break-words rounded-md bg-white/10 px-1.5 py-0.5">
               {name}
             </span>
           ))}

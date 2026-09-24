@@ -259,7 +259,9 @@ export function MobileWidgetArrangeButton({ widgets, chatId }: { widgets: HudWid
                       className="flex items-center gap-1 rounded-lg border border-[var(--marinara-chat-chrome-panel-divider)] pl-2"
                     >
                       <span className="w-6 shrink-0 text-center text-sm">{widgetIcon(widget)}</span>
-                      <span className={cn("min-w-0 flex-1 truncate text-xs", isHidden && "opacity-50 line-through")}>
+                      <span
+                        className={cn("min-w-0 flex-1 break-words py-1 text-xs", isHidden && "opacity-50 line-through")}
+                      >
                         {widget.label}
                       </span>
                       <button

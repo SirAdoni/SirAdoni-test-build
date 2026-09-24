@@ -727,10 +727,7 @@ export function GameCharacterSheet({
                 card.level == null && (isEditing ? "pr-40" : "pr-24"),
               )}
             >
-              <h2
-                className="scrollbar-hide max-w-full touch-pan-x overflow-x-auto whitespace-nowrap text-lg font-bold text-[var(--foreground)] [-webkit-overflow-scrolling:touch] sm:truncate sm:overflow-hidden"
-                title={card.title}
-              >
+              <h2 className="max-w-full break-words text-lg font-bold text-[var(--foreground)]" title={card.title}>
                 {card.title}
               </h2>
               {previewGameCard?.class && (

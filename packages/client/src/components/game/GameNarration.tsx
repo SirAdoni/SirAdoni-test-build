@@ -4734,7 +4734,7 @@ export function GameNarration({
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 flex-wrap items-center">
               <span
-                className="min-w-0 truncate text-[0.6875rem] font-bold"
+                className="min-w-0 break-words text-[0.6875rem] font-bold"
                 style={
                   nameColorStyle(findNamedMapValue(speakerNameColors, seg.speaker ?? "") ?? seg.color) ?? {
                     color: "rgb(186 230 253)",
