@@ -1,6 +1,7 @@
 // ──────────────────────────────────────────────
 // Panel: Settings (polished)
 // ──────────────────────────────────────────────
+import { PANEL_PHONE_FLOOR_CLASS } from "./panel-phone-floor";
 import {
   TRACKER_DATA_PANEL_SECTIONS,
   TRACKER_PANEL_DEFAULT_BACKGROUND_COLOR,
@@ -2399,7 +2400,7 @@ function ImageStyleProfilesEditor({
       </div>
 
       <details className="mt-3 rounded-md bg-[var(--secondary)]/55 p-2.5 ring-1 ring-[var(--border)]">
-        <summary className="cursor-pointer text-xs font-medium text-[var(--foreground)]">
+        <summary className="cursor-pointer text-xs font-medium text-[var(--foreground)] max-md:py-2.5 pointer-coarse:py-2.5">
           {localizeUi("ui.panels.imagestyleprofileseditor.perImageTags")}
         </summary>
         <div className="mt-2 grid gap-2">
@@ -2419,7 +2420,7 @@ function ImageStyleProfilesEditor({
       </details>
 
       <details className="mt-2 rounded-md bg-[var(--secondary)]/55 p-2 ring-1 ring-[var(--border)]">
-        <summary className="cursor-pointer text-xs font-medium text-[var(--foreground)]">
+        <summary className="cursor-pointer text-xs font-medium text-[var(--foreground)] max-md:py-2.5 pointer-coarse:py-2.5">
           {localizeUi("ui.panels.imagestyleprofileseditor.testBench")}
         </summary>
         <div className="mt-2 grid gap-2 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
@@ -2978,8 +2979,8 @@ export function SettingsPanel() {
   }, [jumpToSearchResult, setSettingsTargetControlId, settingsTargetControlId]);
 
   return (
-    <div className="mari-settings-panel-chrome flex h-full flex-col overflow-hidden">
-      <div className="mari-editor-header mari-settings-search-header">
+    <div className={cn("mari-settings-panel-chrome flex h-full flex-col overflow-hidden", PANEL_PHONE_FLOOR_CLASS)}>
+      <div className="mari-editor-header mari-settings-search-header [@media(max-height:500px)]:h-auto! [@media(max-height:500px)]:flex-none! [@media(max-height:500px)]:py-1.5!">
         <div className="flex w-full items-center gap-2">
           <label className="relative min-w-0 flex-1">
             <Search
@@ -3044,11 +3045,11 @@ export function SettingsPanel() {
         )}
       </div>
 
-      <div className="flex shrink-0 flex-col gap-1.5 border-b border-[var(--border)]/70 px-2.5 py-1.5">
+      <div className="flex shrink-0 flex-col gap-1.5 border-b border-[var(--border)]/70 px-2.5 py-1.5 [@media(max-height:500px)]:flex-row [@media(max-height:500px)]:items-center">
         <div
           role="tablist"
           aria-label={localize("Settings categories")}
-          className="grid grid-cols-3 gap-x-1.5 gap-y-1 rounded-xl border border-[var(--border)]/70 bg-[var(--background)]/32 p-1 shadow-[inset_0_1px_0_color-mix(in_srgb,var(--foreground)_7%,transparent)]"
+          className="grid grid-cols-3 gap-x-1.5 gap-y-1 rounded-xl border [@media(max-height:500px)]:min-w-0 [@media(max-height:500px)]:flex-1 [@media(max-height:500px)]:grid-cols-6 border-[var(--border)]/70 bg-[var(--background)]/32 p-1 shadow-[inset_0_1px_0_color-mix(in_srgb,var(--foreground)_7%,transparent)]"
         >
           {TABS.map((tab) => {
             const Icon = tab.icon;
@@ -3064,7 +3065,7 @@ export function SettingsPanel() {
                 tabIndex={settingsTab === tab.id ? 0 : -1}
                 onClick={() => setSettingsTab(tab.id)}
                 className={cn(
-                  "group relative isolate flex min-h-8 min-w-0 flex-col items-center justify-center gap-0.5 overflow-hidden rounded-md border px-1 py-0.5 text-center text-[0.625rem] font-semibold leading-tight transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/40",
+                  "group relative isolate flex min-h-8 min-w-0 flex-col items-center justify-center gap-0.5 overflow-hidden rounded-md border [@media(max-height:500px)]:flex-row [@media(max-height:500px)]:gap-1 px-1 py-0.5 text-center text-[0.625rem] font-semibold leading-tight transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/40",
                   active
                     ? "border-[var(--primary)]/35 bg-[var(--primary)]/10 text-[var(--foreground)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--foreground)_11%,transparent)]"
                     : "border-transparent text-[var(--muted-foreground)] hover:border-[var(--border)]/80 hover:bg-[var(--secondary)]/60 hover:text-[var(--foreground)]",
@@ -3079,7 +3080,7 @@ export function SettingsPanel() {
                 )}
                 <span
                   className={cn(
-                    "flex h-4 w-4 shrink-0 items-center justify-center rounded-md border transition-colors",
+                    "flex h-4 w-4 shrink-0 items-center justify-center rounded-md border transition-colors [@media(max-height:500px)]:hidden",
                     active
                       ? "border-[var(--primary)]/35 bg-[var(--primary)]/16 text-[var(--primary)]"
                       : "border-[var(--border)]/55 bg-[var(--secondary)]/45 text-[var(--muted-foreground)] group-hover:text-[var(--foreground)]",
@@ -3087,14 +3088,16 @@ export function SettingsPanel() {
                 >
                   <Icon size="0.6875rem" />
                 </span>
-                <span className="w-full min-w-0 break-words px-0.5">{t(tab.labelKey)}</span>
+                <span className="w-full min-w-0 break-words px-0.5 [@media(max-height:500px)]:w-auto [@media(max-height:500px)]:break-normal">
+                  {t(tab.labelKey)}
+                </span>
               </button>
             );
           })}
         </div>
 
         {activeSections.length > 1 && (
-          <div className="min-w-0 rounded-xl border border-[var(--border)]/60 bg-[var(--background)]/24 p-0.5 shadow-[inset_0_1px_0_color-mix(in_srgb,var(--foreground)_6%,transparent)]">
+          <div className="min-w-0 rounded-xl border border-[var(--border)]/60 bg-[var(--background)]/24 p-0.5 shadow-[inset_0_1px_0_color-mix(in_srgb,var(--foreground)_6%,transparent)] [@media(max-height:500px)]:max-w-[40%] [@media(max-height:500px)]:shrink-0">
             <div className="flex max-w-full flex-wrap items-center gap-1">
               <button
                 type="button"
@@ -3170,7 +3173,7 @@ export function SettingsPanel() {
                             activePanelRef.current?.scrollTo({ top: 0 });
                           }}
                           className={cn(
-                            "min-h-11 min-w-0 whitespace-nowrap px-0.5 py-2 font-semibold transition-colors",
+                            "min-h-11 min-w-0 whitespace-nowrap px-0.5 py-2 font-semibold transition-colors max-md:whitespace-normal max-md:leading-tight pointer-coarse:leading-tight max-md:text-[0.6875rem]! max-md:[overflow-wrap:anywhere] pointer-coarse:whitespace-normal pointer-coarse:text-[0.6875rem]! pointer-coarse:[overflow-wrap:anywhere]",
                             appearanceGroup === mode
                               ? "bg-[var(--primary)]/15 text-[var(--primary)]"
                               : "text-[var(--muted-foreground)] hover:bg-[var(--accent)]",

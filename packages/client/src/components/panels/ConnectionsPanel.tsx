@@ -1,4 +1,5 @@
 import { DecisionDefaultControl } from "../connections/DecisionDefaultControl";
+import { PANEL_PHONE_FLOOR_CLASS, PANEL_ROW_NAME_WRAP_CLASS } from "./panel-phone-floor";
 import { DecisionModelModal } from "../modals/DecisionModelModal";
 // ──────────────────────────────────────────────
 // Panel: API Connections (polished, with folders)
@@ -1302,7 +1303,7 @@ function ConnectionRow({
       }}
       onDrop={onDropOnRow}
       className={cn(
-        "group relative flex touch-pan-y cursor-pointer items-center gap-3 rounded-xl p-2.5 transition-all hover:bg-[var(--sidebar-accent)]",
+        "group relative flex touch-pan-y cursor-pointer items-center gap-3 rounded-xl p-2.5 transition-all hover:bg-[var(--sidebar-accent)] max-md:flex-wrap max-md:gap-2 pointer-coarse:flex-wrap pointer-coarse:gap-2",
         isSelected && `ring-1 ${colors.ring} bg-[var(--sidebar-accent)]/50`,
         selectionMode && isBulkSelected && "ring-1 ring-[var(--border)] bg-[var(--sidebar-accent)]/70",
         isDragging && "opacity-50",
@@ -1368,15 +1369,15 @@ function ConnectionRow({
           </div>
         )}
       </button>
-      <div className="min-w-0 flex-1 pr-0 max-md:pr-32 [@media(pointer:coarse)]:pr-32">
-        <div className="truncate text-sm font-medium leading-5" title={conn.name}>
+      <div className="min-w-0 flex-1 pr-0 max-md:min-w-[8.5rem] pointer-coarse:min-w-[8.5rem]">
+        <div className={cn("truncate text-sm font-medium leading-5", PANEL_ROW_NAME_WRAP_CLASS)} title={conn.name}>
           {conn.name}
         </div>
         <div className="truncate text-[0.6875rem] leading-4 text-[var(--muted-foreground)]">
           {conn.provider} • {conn.model || localizeUi("ui.panels.connectiondefaultssection.noModelSet")}
         </div>
       </div>
-      <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 flex shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-foreground/10 transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
+      <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 flex shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-foreground/10 transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:static max-md:translate-y-0 [@media(pointer:coarse)]:static [@media(pointer:coarse)]:translate-y-0 max-md:ml-auto [@media(pointer:coarse)]:ml-auto max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
         <ChatResourceActionButton
           payload={{
             version: 1,
@@ -2073,7 +2074,7 @@ export function ConnectionsPanel() {
   };
 
   return (
-    <div className="flex min-h-full flex-col gap-2 p-3">
+    <div className={cn("flex min-h-full flex-col gap-2 p-3", PANEL_PHONE_FLOOR_CLASS)}>
       <input
         ref={connectionImageInputRef}
         type="file"

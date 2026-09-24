@@ -51,6 +51,9 @@ export function LibraryCampaignBadges({ campaigns, hideCampaignId, onSelect, cla
           "mari-chrome-muted-badge inline-flex min-w-0 max-w-[7.5rem] items-center gap-0.5 px-1.5 py-px text-[0.5625rem] leading-tight",
           onSelect &&
             "cursor-pointer transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]",
+          // Phones get an invisible 36px hit area around the small badge.
+          onSelect &&
+            "relative max-md:before:absolute max-md:before:-inset-x-2 max-md:before:-inset-y-2.5 max-md:before:content-[''] pointer-coarse:before:absolute pointer-coarse:before:-inset-x-2 pointer-coarse:before:-inset-y-2.5 pointer-coarse:before:content-['']",
         )}
       >
         <Swords size="0.5rem" className="shrink-0" />

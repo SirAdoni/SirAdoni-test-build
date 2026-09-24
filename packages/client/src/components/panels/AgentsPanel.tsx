@@ -1,6 +1,7 @@
 // ──────────────────────────────────────────────
 // Panel: Agents
 // ──────────────────────────────────────────────
+import { PANEL_PHONE_FLOOR_CLASS, PANEL_ROW_NAME_WRAP_CLASS } from "./panel-phone-floor";
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import {
   Sparkles,
@@ -1247,7 +1248,7 @@ export function AgentsPanel() {
   );
 
   return (
-    <div className="flex min-h-full flex-col gap-2 p-3">
+    <div className={cn("flex min-h-full flex-col gap-2 p-3", PANEL_PHONE_FLOOR_CLASS)}>
       <input
         ref={agentImageInputRef}
         type="file"
@@ -1523,7 +1524,7 @@ export function AgentsPanel() {
                     value2: folder.name,
                   })}
                   title={localizeUi("ui.panels.backgroundpicker.doubleClickDoubleTapOrPressF2ToRename")}
-                  className="group relative flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 transition-all hover:bg-[var(--sidebar-accent)]/40 max-md:pr-12 [@media(pointer:coarse)]:pr-12"
+                  className="group relative flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 transition-all hover:bg-[var(--sidebar-accent)]/40"
                   onClick={(event) =>
                     handleFolderRenameGesture(folder.id, event, {
                       onSingleClick: () => setExpandedFolderId(isExpanded ? null : folder.id),
@@ -1582,7 +1583,7 @@ export function AgentsPanel() {
                   )}
                   <div
                     data-folder-actions
-                    className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
+                    className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:static max-md:translate-y-0 [@media(pointer:coarse)]:static [@media(pointer:coarse)]:translate-y-0 max-md:ml-auto [@media(pointer:coarse)]:ml-auto max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
                   >
                     {(agentFilterActive ? folderAgents.length : folder.itemIds.length) > 0 && (
                       <span
@@ -2071,7 +2072,7 @@ function renderAgentCard({
         if (selectionMode && onToggleSelected) onToggleSelected();
       }}
       className={cn(
-        "group relative flex touch-pan-y cursor-pointer items-center gap-2.5 rounded-xl p-2 transition-all hover:bg-[var(--sidebar-accent)]",
+        "group relative flex touch-pan-y cursor-pointer items-center gap-2.5 rounded-xl p-2 transition-all hover:bg-[var(--sidebar-accent)] max-md:flex-wrap max-md:gap-2 pointer-coarse:flex-wrap pointer-coarse:gap-2",
         selectionMode &&
           selected &&
           "bg-[var(--marinara-chat-chrome-highlight-bg)] ring-1 ring-[var(--marinara-chat-chrome-button-border-active)]",
@@ -2133,11 +2134,8 @@ function renderAgentCard({
       </button>
       <button
         className={cn(
-          "min-w-0 flex-1 text-left",
-          !selectionMode &&
-            (onDelete
-              ? "pr-0 max-md:pr-24 [@media(pointer:coarse)]:pr-24"
-              : "pr-0 max-md:pr-16 [@media(pointer:coarse)]:pr-16"),
+          "min-w-0 flex-1 text-left max-md:min-w-[8.5rem] pointer-coarse:min-w-[8.5rem]",
+          !selectionMode && "pr-0",
         )}
         onClick={(event) => {
           event.stopPropagation();
@@ -2149,7 +2147,7 @@ function renderAgentCard({
           openAgentDetail(custom ? id : type);
         }}
       >
-        <div className="truncate text-sm font-medium">{name}</div>
+        <div className={cn("truncate text-sm font-medium", PANEL_ROW_NAME_WRAP_CLASS)}>{name}</div>
         <div className="mt-0.5 text-[0.625rem] text-[var(--muted-foreground)] line-clamp-2">
           {description || localizeUi("ui.panels.agentcard.noDescription")}
         </div>
@@ -2158,7 +2156,7 @@ function renderAgentCard({
         </div>
       </button>
       {!selectionMode && (
-        <div className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
+        <div className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:static max-md:translate-y-0 [@media(pointer:coarse)]:static [@media(pointer:coarse)]:translate-y-0 max-md:ml-auto [@media(pointer:coarse)]:ml-auto max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
           <ChatResourceActionButton payload={{ version: 1, kind: "agent", ids: [type], label: name }} />
           <button
             className="mari-chrome-control mari-chrome-control--small p-1.5"

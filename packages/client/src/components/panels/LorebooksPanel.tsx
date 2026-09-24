@@ -2,6 +2,7 @@
 // Panel: Lorebooks (overhauled)
 // Category tabs, search, click-to-edit, AI generate
 // ──────────────────────────────────────────────
+import { PANEL_PHONE_FLOOR_CLASS, PANEL_ROW_NAME_WRAP_CLASS } from "./panel-phone-floor";
 import {
   useState,
   useMemo,
@@ -335,10 +336,7 @@ export function LorebooksPanel() {
   }, [filtered, sort]);
 
   const lorebookById = useMemo(() => new Map(sorted.map((lorebook) => [lorebook.id, lorebook])), [sorted]);
-  const lorebookOrder = useMemo(
-    () => new Map(sorted.map((lorebook, index) => [lorebook.id, index])),
-    [sorted],
-  );
+  const lorebookOrder = useMemo(() => new Map(sorted.map((lorebook, index) => [lorebook.id, index])), [sorted]);
   const sortedFolders = useMemo(() => {
     const folders = sortPanelFolders(lorebookFolders, sort === "tokens" ? "name-asc" : sort);
     if (sort !== "tokens") return folders;
@@ -878,7 +876,7 @@ export function LorebooksPanel() {
   ]);
 
   return (
-    <div className="flex min-h-full flex-col gap-2 p-3">
+    <div className={cn("flex min-h-full flex-col gap-2 p-3", PANEL_PHONE_FLOOR_CLASS)}>
       <input
         ref={lorebookImageInputRef}
         type="file"
@@ -1253,7 +1251,9 @@ export function LorebooksPanel() {
                 disabled={selectedLorebookIds.size === 0}
                 onMove={folderNodes.length > 0 ? handleMoveSelected : undefined}
                 onCampaigns={
-                  organizer.campaignsAvailable ? () => organizer.openCampaignPicker([...selectedLorebookIds]) : undefined
+                  organizer.campaignsAvailable
+                    ? () => organizer.openCampaignPicker([...selectedLorebookIds])
+                    : undefined
                 }
               />
             </>
@@ -1325,7 +1325,7 @@ function LorebookRow({
     <div
       data-touch-drag-card="lorebook"
       className={cn(
-        "group relative flex touch-pan-y cursor-pointer items-center gap-3 rounded-xl p-2.5 transition-all hover:bg-[var(--sidebar-accent)]",
+        "group relative flex touch-pan-y cursor-pointer items-center gap-3 rounded-xl p-2.5 transition-all hover:bg-[var(--sidebar-accent)] max-md:flex-wrap max-md:gap-2 pointer-coarse:flex-wrap pointer-coarse:gap-2",
         selectionMode &&
           isSelected &&
           "bg-[var(--marinara-chat-chrome-highlight-bg)] ring-1 ring-[var(--marinara-chat-chrome-button-border-active)]",
@@ -1338,13 +1338,15 @@ function LorebookRow({
     >
       {selectionMode && (
         <button
+          data-touch-compact
           type="button"
           onClick={(e) => {
             e.stopPropagation();
             onToggleSelect?.();
           }}
           className={cn(
-            "flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors",
+            // The 20px check box keeps its size; the pseudo element gives it a 36px hit area.
+            "relative flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors before:absolute before:-inset-2 before:content-['']",
             isSelected
               ? "border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-button-bg-active)] text-[var(--marinara-chat-chrome-button-text-active)]"
               : "border-[var(--muted-foreground)]/40 bg-[var(--secondary)] text-transparent",
@@ -1396,9 +1398,11 @@ function LorebookRow({
           </span>
         </button>
       )}
-      <div className={cn("min-w-0 flex-1", !selectionMode && "pr-0 max-md:pr-24 [@media(pointer:coarse)]:pr-24")}>
+      <div
+        className={cn("min-w-0 flex-1 max-md:min-w-[8.5rem] pointer-coarse:min-w-[8.5rem]", !selectionMode && "pr-0")}
+      >
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className="min-w-0 truncate text-sm font-medium">{lorebook.name}</span>
+          <span className={cn("min-w-0 truncate text-sm font-medium", PANEL_ROW_NAME_WRAP_CLASS)}>{lorebook.name}</span>
           {inChat && <LorebookInChatDot />}
           {!lorebook.enabled && (
             <span className="shrink-0 rounded bg-[var(--muted)]/50 px-1 py-0.5 text-[0.5625rem] text-[var(--muted-foreground)]">
@@ -1433,7 +1437,7 @@ function LorebookRow({
         )}
       </div>
       {!selectionMode && (
-        <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 flex shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
+        <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 flex shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:static max-md:translate-y-0 [@media(pointer:coarse)]:static [@media(pointer:coarse)]:translate-y-0 max-md:ml-auto [@media(pointer:coarse)]:ml-auto max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
           <ChatResourceActionButton
             payload={{ version: 1, kind: "lorebook", ids: [lorebook.id], label: lorebook.name }}
           />
