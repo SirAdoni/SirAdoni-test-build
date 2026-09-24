@@ -383,6 +383,8 @@ function resolvePanelPositions(
 ): string[] {
   const gap = bounds.gap ?? 8;
   const placed: GamePanelLayoutItem[] = [];
+  const anchorTop = (item: GamePanelLayoutItem) =>
+    Math.round(Number.isFinite(item.preferredY) ? item.preferredY! : item.y);
   const ordered = items
     .map((item) => ({ ...item, height: Math.min(item.height, bounds.height) }))
     .sort(
@@ -391,6 +393,9 @@ function resolvePanelPositions(
         // Reading panels claim their anchors before same-priority widgets.
         Number(!!b.reading) - Number(!!a.reading) ||
         Number(promoted.has(b.id)) - Number(promoted.has(a.id)) ||
+        // Higher anchors claim first, so a panel that grows pushes the one below it down
+        // instead of being pushed aside itself.
+        anchorTop(a) - anchorTop(b) ||
         a.id.localeCompare(b.id),
     );
 
@@ -452,6 +457,17 @@ function resolvePanelPositions(
       }
       if (best) current = best;
       else overflowIds.push(source.id);
+    } else if (source.fixed && !bounds.allowOverlap && source.setHeightLimit && !source.firmHeight) {
+      // A pinned panel never moves. When it grew into a panel placed before it, it becomes a
+      // scrolling window that ends above that panel, so its content is never covered.
+      let height = current.height;
+      for (const item of placed)
+        if (intersects(current, item, gap) && item.y > current.y) height = Math.min(height, item.y - gap - current.y);
+      const floor = Math.max(source.reading ? readingFloor : gapFloor, source.minHeight ?? 0, 64);
+      if (height < current.height) {
+        if (height >= Math.min(floor, current.height)) current = { ...current, height };
+        else overflowIds.push(source.id);
+      }
     }
     source.setHeightLimit?.(current.height);
     placed.push(current);
