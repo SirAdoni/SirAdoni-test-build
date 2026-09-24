@@ -4,7 +4,7 @@
 
 A standing list of everything this fork carries over upstream `Pasta-Devs/Marinara-Engine` `staging`, so no feature is forgotten. Every user-visible feature, shortcut, route, setting and behaviour gets its own bullet. Update this list whenever a feature lands, changes its switch or is dropped.
 
-- Baseline (2026-09-24): branch `memory-system-finish` at `bcb5006ea`; merge base with `upstream/staging` is `60ed7ec80` (upstream sync 2). `git log upstream/staging..HEAD` lists 159 fork commits (154 without merges). Most of the Game Mode base (storyboards, Contact Book, scene timeline, continuity, first Campaign Wiki) arrived in one large commit, `44fba2b25` (2026-09-20, 770 files).
+- Baseline (2026-09-24): branch `memory-system-finish` at `1f04fede6`; merge base with `upstream/staging` is `60ed7ec80` (upstream sync 2). `git log upstream/staging..HEAD` lists 163 fork commits (158 without merges). Most of the Game Mode base (storyboards, Contact Book, scene timeline, continuity, first Campaign Wiki) arrived in one large commit, `44fba2b25` (2026-09-20, 770 files).
 - Switch rule: every addition can be turned off. On (the default) is this build's behaviour; Off restores upstream's. Generation job tracking and a few older opt-ins start off. Pure bug fixes carry no switch. Reference: `docs/configuration/features.md`; audit of what still lacks a switch: `review-2026-09-22/optional-settings-audit_v1.0.md` (outside the repo).
 - User-facing wording for most items is in `CHANGELOG.md` `[Unreleased]`; the dated sections below hold the technical detail.
 
@@ -25,7 +25,7 @@ A standing list of everything this fork carries over upstream `Pasta-Devs/Marina
 - Provider retry of transient failures (connection refused, 502, 503) up to twice before any output, on the next DNS address; nothing replayed after the upstream accepted. Switch **Retry failed provider calls** (`providerRetry`, default on; env `PROVIDER_RETRY_TRANSIENT_ERRORS` wins).
 - Background call cap: hourly cap on automatic model calls; continuity backfill uses a share and pauses on its own, live turns keep running, local endpoints exempt. File: `services/generation/background-call-budget.ts`. Switch **Background call cap** (`backgroundCallCap`, `backgroundCallsPerHour` default 600; env `MARINARA_BACKGROUND_CALLS_PER_HOUR` wins).
 - Lorebook scan compaction: full scan text only on the newest message row; swipes store ids, keys and scores; Active Context and agent retries fall back to the stored entry text. Files: `services/lorebook/lorebook-scan-compaction.ts`, `services/storage/chats.storage.ts`, `routes/generate/retry-agents-route.ts`. Always on (no switch yet; listed in the audit).
-- Reviewed server bug fixes from the 2026-09-22 whole-fork review and the 2026-09-23 non-game server review, each batch with a `server-hunt-b<N>` or `bughunt-*` regression: runtime-config `.env` reload diff, fatal-error flush, IP allowlist CIDR and IPv6, per-route rate limits, SSRF reserved-address checks, background uploads, export name collisions, backup central directory cap, storage pre-shard restore and writer lease, importers, providers, textual tool-call parsing, sidecar downloads, deleted built-in regex scripts staying deleted. Always on.
+- Reviewed server bug fixes from the 2026-09-22 whole-fork review (39 files) and the 2026-09-23 non-game server review (batches 0 to 57, one dated entry each on 2026-09-23), each batch with a `server-hunt-b<N>` or `bughunt-*` regression: runtime-config `.env` reload diff, fatal-error flush, IP allowlist CIDR and IPv6, per-route rate limits, SSRF reserved-address checks, background uploads, export name collisions, backup central directory cap, storage pre-shard restore and writer lease, importers, providers, textual tool-call parsing, sidecar downloads, deleted built-in regex scripts staying deleted. Always on.
 - Launcher safety: `scripts/preserve-untracked-src.mjs` runs from `start.bat`, `start.sh` and `start-termux.sh` before their `git clean -fd -- packages/*/src`, backing up untracked source to `.tmp/untracked-src-backups/`; `scripts/pnpm.cmd` keeps the pinned package manager for nested Windows builds; `scripts/open-when-ready.cmd`, `scripts/verify-installed-build.mjs`. Always on.
 - Regression runner isolation: `scripts/run-regressions.mjs` gives each file its own temporary `DATA_DIR`, `FILE_STORAGE_DIR` and an empty `MARINARA_ENV_FILE`; `fixtures/server-shared.ts` shares the server's `@marinara-engine/shared` instance; all fixtures use invented names.
 
@@ -127,7 +127,7 @@ Memory panel and related:
 - Custom widget bookmarks show their icon and move along the chosen edge in Edit layout.
 - Status widget (Persona Stats and custom RPG fields) and Contact Book widget. Files: `GameStatusWidget.tsx`, `game-status-widget.ts`, `GameContactBookWidget.tsx`.
 
-### Game Mode UI and layout (27)
+### Game Mode UI and layout (28)
 
 Edit layout (`GameLayoutEditToolbar.tsx`, `GameLayoutPopover.tsx`, `lib/game-layout-editor-store.ts`, `game-layout-geometry.ts`, `game-layout-snapshots.ts`, `game-layout-tidy.ts`; no switch yet):
 
@@ -153,6 +153,7 @@ Layout and phones:
 - Phone presence strip: Currently Present as one row of whole-name chips with the Campaign Wiki button; joins the top row on landscape phones while the toolbar folds into the actions menu.
 - Phone storyboard: a slim closed tab under narration that opens a sheet above the composer; the composer is pinned to the bottom of narration.
 - Landscape phones (below 1024px wide and 32rem tall): map, party, the tab tray, a storyboard icon and the actions button share one top row; Currently Present and the image retry line become tray tabs that open sheets; the composer stays one line until focused; narration gets 65 to 69% of the height.
+- World map popover on phones and tablets sizes to the visible viewport (browser bars, keyboard, safe area) instead of a 68dvh cap; its header is marked so the music bubble avoids it.
 - Floating music widget docks to the right edge on phones (UI persist v101 to v102 moves only the untouched old default) and avoids elements marked `data-floating-widget-avoid` without rewriting the saved position. Files: `lib/floating-widget-avoid.ts`, `hooks/use-floating-widget-avoid.ts`, `LocalMusicPlayer.tsx`, `YouTubePlayer.tsx`, `SpotifyMiniPlayer.tsx`.
 
 Scene, combat and server guards:
@@ -264,6 +265,10 @@ Features:
 - Sandbox (`marinara-sandbox`, port 7862): sanitized copy of the live store with keys blanked, remote URLs closed and subscription logins absent, so it cannot spend quota or post anywhere.
 - Safety: shared engine lock (`.dev-mcp\engine.lock`), quiet wait of 150 s before live restarts, dist backup and rollback on failed builds, backups of every edited card and chat setting.
 - Journal `.dev-mcp\journal.jsonl` for every write, build and restart; launches run `run-server.mjs` directly instead of `start.bat`.
+
+### Not in main (local branches)
+
+- `contrib/dev-foundations` (local only, not pushed; 7 commits on top of `upstream/staging`, head `4a2b7f968`): a separate upstream contribution that re-packages parts of this work as opt-in changes (stable lorebook group winners and compact stored lorebook scans, robustness settings with runtime diagnostics, the startup inject gate, a Dev MCP, and a docs note). Nothing on it is part of the fork's main; the rest of this file describes main only.
 
 ## 2026-09-24
 
@@ -425,6 +430,13 @@ Features:
 - Files: `packages/client/src/components/panels/settings/FeatureSwitchesSettings.tsx`, `GenerationJobTrackingSettings.tsx`, `packages/client/src/components/panels/SettingsPanel.tsx`, `docs/configuration/features.md`, `docs/development/generation-jobs.md`.
 - Behaviour: the job tracking switch moves from its own Settings > Advanced row into Settings > Advanced > Features as **Keep generating when the tab is closed**, with the Generation jobs button under it.
 - Setting: app setting `generationJobTracking` (`"true"` or `"false"`), default off; key and default unchanged, so no migration.
+
+### Game map popover fits the visible viewport on phones and tablets
+
+- Commits: `b5741831d`, `1f04fede6`.
+- Behaviour: below 1024px the World map popover was capped at min(68dvh, 26rem), which cut the capability map view (place details, linked places, travel buttons) in half. It now sizes from its top to the bottom of the visual viewport, following browser bars, the on-screen keyboard and the bottom safe area, with the body as the scroll container. Desktop unchanged.
+- Behaviour (`1f04fede6`): the phone map popover header (title and close button) carries `data-floating-widget-avoid`, so the floating music bubble moves off it.
+- Boundary: package-side layout issues in the maps capability are reported upstream, not patched.
 
 ### Built-in helper popup left unchanged
 
@@ -904,13 +916,563 @@ Features:
 - Settings and defaults: `ACCENT_ANIMATION_MAX_ELEMENTS = 6000` (constant, not user-facing). Accent animation settings unchanged.
 - Tests: manual measurement only.
 
-### World Maps spatial block out of the cached prefix on all providers
+Paths are relative to the repository root; `server/` means `packages/server/src/`. Every commit named here is on main. Regression files live in `scripts/regressions/` and run through `node scripts/run-regressions.mjs --filter <name>`.
 
-- Commit: `0d9ba9004`.
-- Files: `packages/server/src/services/generation/prompt-cache-layout.ts` (`keepGameDialogueAdjacent`).
-- Problem: on providers without the subscription cache layout, the location-dependent `<spatial_context>` block sat right after the system prompt, so every move rewrote the whole history behind it.
-- Behaviour: leading runtime and dynamic-lore system injections, including the World Maps block, move to just before the current user turn in Game Mode.
-- Setting: part of **Cache-friendly prompt layout** (`cacheFriendlyPromptLayout`, default on) since `8aa93818b`.
+### Launcher backs up untracked source files before `git clean`
+- **Commit(s):** 962e36777
+- **Files:** `scripts/preserve-untracked-src.mjs` (new), `start.bat`, `start.sh`, `start-termux.sh`
+- **Behaviour:** all three launchers run `git clean -fd -- packages/shared/src packages/server/src packages/client/src` to remove leftovers of failed checkouts. On a development checkout that also deleted source files that had never been committed. Each launcher now runs `node scripts/preserve-untracked-src.mjs` first. The script lists untracked, non-ignored files in those three trees (`git ls-files --others --exclude-standard -z`) and copies each one to `.tmp/untracked-src-backups/<ISO timestamp>/<same relative path>`, printing `[..] Backed up N untracked source file(s) to <dir> before cleanup.` Any failure prints a `[WARN]` line and exits 0, so a backup problem never blocks startup. The clean itself is unchanged.
+- **Settings / env and defaults:** none. Backups are never pruned automatically.
+- **Tests:** none.
+
+### World Maps spatial context kept out of the cached prompt prefix on non-subscription providers
+- **Commit(s):** 0d9ba9004; fixture rename a478a8b5f
+- **Files:** `server/services/generation/prompt-cache-layout.ts`, `scripts/regressions/prompt-cache-layout.regression.ts`
+- **Behaviour:** on providers without the subscription cache layout, the location-dependent `<spatial_context>` block (and any other app-owned runtime system block) sat directly after the system prompt, so every move between locations rewrote the whole history behind it and broke prefix caching. `keepGameDialogueAdjacent` now first runs `moveLeadingRuntimeSystemContextToCurrentTurn`: leading system messages with `contextKind: "injection"` and `providerMetadata.marinaraRuntimeContext` or `marinaraDynamicLoreContext` set move to just before the current user turn, the position the subscription layout already used. User-authored prompt sections keep their place. Nothing moves when the only non-system message is the current turn. a478a8b5f replaced the regression fixture names with invented ones; no behaviour change.
+- **Settings / env and defaults:** none in these commits. (On current main the reordering is gated by the later `cacheFriendlyPromptLayout` feature switch, default on.)
+- **Tests:** `prompt-cache-layout.regression.ts` (extended).
+
+### Startup inject gate
+- **Commit(s):** 5209aa6d4
+- **Files:** `server/app.ts`, `server/lib/fastify-inject-gate.ts` (new), `scripts/regressions/startup-inject-gate.regression.ts` (new)
+- **Behaviour:** Fastify boots the whole instance on the first `app.inject()`. Capability package activation registers routes for minutes at startup, and background work started in that window (continuity workers, package timers calling internal routes) could call `inject()`, freeze registration half way and make later packages fail with "Root plugin has already booted"; the scheduler's `addHook` then threw "already listening" and killed startup. `buildApp` now wraps `app.inject` with `holdInjectUntilRegistered(app)` right after creating the instance and releases it at the end of `buildApp`. Held calls (promise or callback form) run once registration ends. A call still held after 60 s logs a warning with the caller's stack. (The logging pass later renamed these lines to `startup.inject_held` / `startup.inject_released`.)
+- **Settings / env and defaults:** none (warning delay 60 000 ms, internal parameter).
+- **Tests:** `startup-inject-gate.regression.ts`.
+
+### Capability packages: host-lifecycle failures no longer roll back or persist "error"
+- **Commit(s):** 2489691ae; one-time data repair `review-2026-09-22/restore-capability-packages_v1.0.mjs` (outside the repo, run in a deploy window with the engine stopped)
+- **Files:** `server/services/capability-packages/capability-module-runtime.service.ts`, `scripts/regressions/startup-inject-gate.regression.ts`
+- **Behaviour:** the startup race above made three healthy packages (hierarchical-maps, conversation-calls, long-term-memory) fail activation. The runtime then rolled each back one version and persisted status `error`, so every later boot skipped them. New `isHostLifecycleActivationError` recognises errors from the host's own Fastify lifecycle (codes `FST_ERR_INSTANCE_ALREADY_LISTENING`, `AVV_ERR_ROOT_PLG_BOOTED`, or the messages "Root plugin has already booted" / "Fastify instance is already listening"). For those, activation cleans up, logs a warning that the package will be retried on the next start, and leaves the installed version and status untouched: no rollback, no persisted error. The restore script repaired the registry already damaged by the race: it backs up `data/capability-packages/installed.json` to `installed.json.before-race-restore-<time>`, then puts each of the three packages back on its pre-race version (1.4.29, 1.0.17, 1.3.10) with `status: "active"`, `readiness: "pending"`, `error: null`, keeping the rolled-back version as `previousVersion`. It skips a package that is not installed or whose stored manifest does not match.
+- **Settings / env and defaults:** none.
+- **Tests:** `startup-inject-gate.regression.ts` (extended with the no-rollback case).
+
+### Lorebook scan compaction
+- **Commit(s):** ec5e6cd79 (server); one-time data compaction `review-2026-09-22/compact-lorebook-scans_v1.0.mjs` (outside the repo, run during deploy 5 with the engine stopped)
+- **Files:** `server/services/lorebook/lorebook-scan-compaction.ts` (new), `server/services/storage/chats.storage.ts`, `server/routes/lorebooks.routes.ts`, `server/routes/generate/retry-agents-route.ts`, `scripts/regressions/lorebook-scan-compaction.regression.ts` (new)
+- **Behaviour:** every generated message stored `extra.lorebookScan` with the full resolved text of every activated entry, on the message row and again on every swipe. In one long game chat that was 184 MB of a 192 MB message shard, and because loaded chats stay resident it pushed the server towards its heap limit. Only the newest generated message's scan is ever read with text (Active Context, agent retries), so:
+  - Swipe writes (`updateMessageExtra`, `updateMessageExtraForSwipe`, the roleplay interruption swipe patch) store a compact scan: `activatedEntries` keep ids, names, keys, match type and scores but no `content`, and the scan gets `contentStripped: true`.
+  - After a scan with text is saved on a message (`updateMessageExtra`, `updateMessageExtraForSwipe`, `commitRoleplayInterruption`), `compactStaleLorebookScans` strips the text from every other message row and every swipe in that chat. It takes one message queue at a time (never nested), pre-filters serialized extras cheaply, and only logs on failure (a scan that keeps its text is harmless and is compacted on the next generation).
+  - Readers fall back to stored entry text: the Active Context route merges text from the message row's scan and treats `content` as optional; agent retries load missing entry text from the lorebooks store by id.
+  - The one-time script applied the same rule to existing data (newest message row with a full scan per chat keeps it; everything else compacted), dry run by default, `--apply` refuses while port 7860 answers, backs up both tables to `data/backups/lorebook-scan-compaction-<time>/`, and rewrites each changed shard through a temp file and rename. Result: message and swipe shards 1502 MB to 213 MB; boot private memory about 4.1 GB to about 1.3 GB. The store's `.bak` copies of each shard still hold the old large content until that shard's next write refreshes them.
+- **Settings / env and defaults:** none in this commit. The script reads `MARINARA_DATA_DIR` and `MARINARA_ENGINE_PORT` (default 7860) and needs `--max-old-space-size=8192`. (On current main compaction is wrapped by a later feature switch; not part of this session.)
+- **Tests:** `lorebook-scan-compaction.regression.ts`.
+
+### 2026-09-22 whole-fork bug-hunt merge (39 files)
+- **Commit(s):** 660d992fa (fixes from bughunt branch 7380e6a8d that had been applied to the working tree but never committed; six further files had already landed with other commits; the deferred game.routes.ts, GameSurface.tsx, GameWidgetPanel.tsx, game-gm-prompt-runtime.ts and generation-lifecycle.regression.ts fixes were left to another session)
+- **Files:** client: `components/characters/CharacterReferences.tsx`, `components/chat/ChatNotificationBubbles.tsx`, `components/game/GameCharacterSheet.tsx`, `GameCombatUI.tsx`, `GamePartyBar.tsx`, `TacticalCombatUI.tsx`, `game-asset-generation-payload.ts`, `game-inventory-identity.ts`, `components/ui/GenerationParametersEditor.tsx`, `SpriteGenerationModal.tsx`, `hooks/use-generate.ts`, `lib/game-npc-character-sync-policy.ts`, `lib/generation-token-usage.ts`. Server: `routes/generate.routes.ts`, `routes/sprites.routes.ts`, `routes/tts.routes.ts`, `services/capability-packages/automatic-legacy-game-map-migration.ts`, `services/game/game-asset-generation.ts`, `game-contact-book.ts`, `game-isolated-turn.ts`, `game-keeper-lorebook.ts`, `npc-avatar-utils.ts`, `npc-character-sync.ts`, `scene-timeline.service.ts`, `services/generation/connection-admission.ts`, `generation-jobs.ts`, `services/professor-mari/workspace-agent.service.ts`, `workspace-shell-sandbox.ts`, `services/spatial-context/narration-reconciliation.ts`, `services/storage/game-storyboards.storage.ts`, `inventory-item-identity.ts`.
+- **Behaviour:**
+  - Generation route: adjacent-message merging no longer merges an assistant message that carries `providerMetadata`; the cache send guard always fingerprints the narrator request (so planner turns record a baseline) and only skips the hold check once tool-planner work has begun, with the planner condition computed once (`toolPlannerWillRun`); character-tracker automatic NPC avatar generation is restored for non-game chat modes (game mode still leaves portraits to the queued `/game/generate-assets` pipeline), writing to `NPC_AVATAR_DIR/<chatId>/<slug>.png` and re-persisting through the tracker field locks.
+  - Generation jobs store: bounded disk retention. A throttled prune (at most every 10 min, after finished jobs, and once at startup) keeps metadata of the newest 200 terminal jobs and result files of the newest 50, never touches running or in-memory jobs or anything updated in the last 24 h, and removes stray `.tmp` files and orphaned result files older than 10 min.
+  - Media and cancellation: TTS game audio (ElevenLabs) now passes the job's abort signal to the provider request (combined with its timeout); game asset generation rethrows when its request was aborted instead of continuing; sprite routes return 504 for a job timeout that surfaces as the generation-jobs `AbortError` or `ME_TIMEOUT`, not only the legacy timeout class.
+  - Connection admission: group membership only lets batch members share a connection; quarantine, foreground priority and the post-foreground cooldown now apply to every background caller.
+  - Game services: legacy map migration keeps the user's `enableAgents` switch and only switches the start mode to hierarchical when agents are on; the contact book scopes library cards to the campaign (cast, party, linked NPCs) with the rest of the library only as a fallback, and memoises relationship ordering; isolated-turn quoting no longer backslash-escapes (the client only strips the outer quotes); the Keeper lorebook adopts an existing book with its deterministic id instead of inserting a duplicate key; NPC avatar ignore checks pass the known NPC names; NPC character sync treats a tracker "ID or name" only as a lookup hint and no longer truncates appearance and creative additions to 4000 characters; scene timeline throws when a review or timeline write finds no swipe or makes no progress, instead of looping; narration reconciliation only matches places inside the chosen parent path; storyboards gain `remove(id)` (deletes keyframes first); inventory identity reserves explicit item ids before name matching.
+  - Professor Mari workspace: directory listing counts and truncation use only entries inside the workspace; the shell sandbox judges a dangling or looping link by its lexical path instead of throwing.
+  - Client: character reference click works when the reference itself is a button; notification bubbles are real `<button>`s; the party bar portrait opens the character sheet directly (also the initial-letter fallback); tactical combat and selectable combat sprites no longer open the photo lightbox; the character sheet keeps an empty attribute list empty; NPC asset payloads fall back to name keys and honour name-keyed failure sets; inventory name matching picks the first row only when no match has an item id, and merges id-less rows into the same-name row; Generation Parameters shows the post-processing select (apply / none / single user message) and an optional custom headers editor; sprite reference images over the connection's limit stay in state (dimmed) instead of being dropped; a cache-guard resend keeps the turn's regenerate/continue/target parameters and drops only the one-shot user-turn fields; an unreachable server (status 0) counts as offline for NPC sync; token usage treats the Anthropic API provider like the Claude subscription (separate uncached input, missing cache fields count as 0).
+- **Settings / env and defaults:** none. Job retention constants: 200 jobs, 50 results, 24 h minimum age, 10 min stray age, 10 min prune interval.
+- **Tests:** `automatic-legacy-game-map-migration.regression.ts`, `cache-send-guard-route.regression.ts`, `game-contact-book.regression.ts`, `game-inventory-identity.regression.ts`, `generation-token-usage.regression.ts`, `inventory-item-identity.regression.ts`, `narration-location.regression.ts`, `open-issues.regression.ts` (all extended or updated).
+
+### Server-hunt fixes (2026-09-23 review of the non-game server): overview
+- **Commit(s):** be4c94289 (chunk 1: batches 0, 3, 4, 6, 7, 9, 11, 13, 14, 17, 24, 27), cc144f9c9 (chunk 2: batches 2, 5, 8, 20, 21, 22, 25, 26, 28 to 38, 41 to 43, 45 to 48, 50 to 56), 2b2ca2f29 (second-review follow-ups for batches 3, 6, 27), 3354c1c89 (the 13 parked batches 1, 10, 12, 15, 16, 18, 19, 23, 39, 40, 44, 49, 57, re-applied onto current main with every problem the first review found fixed and an adversarial re-review passed). Some chunk 2 batches had hunks in files only 3354c1c89 touched (`chats.storage.ts`, `generate.routes.ts`, `import.routes.ts`, `auto-summary.service.ts`, `sidecar-speech.service.ts`, `sidecar-download.ts`); those hunks landed with 3354c1c89 and are noted per batch.
+- **Behaviour:** 58 batches, one per file group; each finding was verified by an independent reviewer before fixing, and each fix passed a second review. Batches whose findings were all skipped: none. Single skipped finding: batch 0, `.env` hot reload overriding launcher-provided variables (a product decision about launcher env versus `.env` edits, left for a maintainer).
+- **Settings / env and defaults:** none unless stated per batch.
+- **Tests:** one `server-hunt-b<N>.regression.ts` per batch (batch 3 is `server-hunt-b3.slow-regression.ts`).
+
+### Server-hunt batch 0: `.env` reload reports only real changes
+- **Commit(s):** be4c94289
+- **Files:** `server/config/runtime-config.ts`
+- **Behaviour:** saved request timeouts (`.env.timeouts.json`) made every `.env` reload report those keys as changed and raise a false restart-required warning. `reloadRuntimeEnv` now applies `.env` values, removals, `applySavedRequestTimeouts()` and TZ normalisation first, then classifies each key as added, updated or unchanged by comparing its value before the reload with its final value. Added and removed keys report as before; a launcher value that differs from `.env` still reports as updated so the LOG_LEVEL and ENABLE_EXTERNAL_EXTENSIONS handling stays in step. The skipped finding (launcher env versus `.env` on reload) is unchanged.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b0.regression.ts` (existing `env-watcher.regression.ts` still passes).
+
+### Server-hunt batch 1: storage pre-shard restore, Windows writer lease, joined selects, backgrounds seed
+- **Commit(s):** 3354c1c89
+- **Files:** `server/db/file-backed-store.ts`, `server/db/seed-backgrounds.ts`, `server/lib/log-events.ts`
+- **Behaviour:**
+  - Pre-shard auto-restore: `migrateShardedTables` restores the `.pre-shard` backup only when the shard directory itself is missing. An empty directory is what a deliberately emptied table leaves (saveShardedTable unlinks files, never the directory), so a crash before the manifest rewrite no longer revives deleted rows; that case logs `storage.migrate` warn `reason: "shard-dir-empty"` and asks for a manual restore. The restored-profile case (#4845) still recovers.
+  - Windows writer lease: Windows boot ids are LastBootUpTime timestamps that move with every clock step, so a live writer's lease could be reclaimed as "from an earlier boot". New `writerLeaseFromEarlierBoot` compares timestamp-shaped boot ids as times: the lease is from an earlier boot only when the current boot started more than 5 min after the lease's `acquiredAt`; opaque ids (Linux boot_id) still compare exactly. A shifted id falls through to the same-host PID proofs. (The first attempt, disabling the boot shortcut on win32, was rejected because it could refuse to start after a real reboot.)
+  - Joined selects: `SelectQuery.run` pre-filters base rows with the top-level AND conjuncts that read only base-table columns (skipped for self-joins; full WHERE still runs) and hash-joins `eq(column, column)` joins, keeping row order and re-checking every pair. Results are identical; two 3000x3000 joins went from 14 s to about 40 ms.
+  - Backgrounds seed: an unreadable or non-object `meta.json` (including JSON `null`, which used to throw) is renamed to `meta.json.corrupt-<ts>` (event `storage.json_corrupt`) and rebuilt; if the rename fails nothing is written. `meta.json` is written only when new, rebuilt or changed, atomically (temp file and rename).
+- **Settings / env and defaults:** none (boot-id slack 5 min, constant).
+- **Tests:** `server-hunt-b1.regression.ts`.
+
+### Server-hunt batch 2: deleted built-in regex scripts stay deleted
+- **Commit(s):** cc144f9c9
+- **Files:** `server/db/seed-regex.ts`, `server/routes/admin.routes.ts`
+- **Behaviour:** `seedDefaultRegexScripts` re-inserted any missing built-in regex script, enabled, on every start. It now keeps the app setting `regexDefaultsSeeded` (exported `REGEX_DEFAULTS_SEEDED_KEY`, a JSON array of default ids already seeded) and inserts a default only when it is missing from both the table and that list. Migration: when the key is absent and the table already has rows, every current default counts as seeded. A fresh install still gets the defaults. Expunge marker: the admin expunge that deletes regex scripts also deletes the `regexDefaultsSeeded` row (`regex_defaults_marker` step), so built-ins return on the next start as on a fresh install.
+- **Settings / env and defaults:** new app setting key `regexDefaultsSeeded` (no UI).
+- **Tests:** `server-hunt-b2.regression.ts`.
+
+### Server-hunt batch 3: fatal errors flush the store before exiting
+- **Commit(s):** be4c94289; 2b2ca2f29 (test made opt-in slow)
+- **Files:** `server/index.ts`
+- **Behaviour:** `uncaughtException` and `unhandledRejection` exited without flushing the file store's debounced writes. Both now go through one `fatalExit`: log, stamp the `crash` exit kind, reap the sidecar, set the shared `isShuttingDown` guard, `armShutdownDeadline(app, "crash", { exitCode: 1 })` (connections severed at 4 s, forced exit(1) at 8 s), stop the env watcher, memory monitor and freeze detector, then `app.close()` (which flushes the store) and `process.exit(1)`. A second fatal error, or one during a signal shutdown, returns instead of cutting the running close short. (The robustness pass later made sure a crash always keeps its nonzero exit code.)
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b3.slow-regression.ts` (boots the server twice, about 50 s, past the runner's 30 s limit, so it is run directly and not by the suite).
+
+### Server-hunt batch 4: IP allowlist CIDR and IPv6, per-route rate limits
+- **Commit(s):** be4c94289
+- **Files:** `server/middleware/ip-allowlist.ts`, `server/middleware/rate-limit.ts`
+- **Behaviour:** an IPv4 CIDR with a prefix over 32 was accepted unshifted and matched almost every client; `parseCIDR` now returns null for it (logged as invalid; the allowlist fails closed if nothing valid is left). `isLocalInferenceBaseUrl` treated every IPv6 literal as local; IPv6 hosts are now judged by `isNonRoutableNetworkIp` (::1, ULA and link-local still local). Per-route `config.rateLimit` (Beholder, sprite rename, utility sidecar) was never read; `rateLimitHook` now uses it when no `ROUTE_RULES` pattern matches, keyed `route:<method>:<url>`.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b4.regression.ts`.
+
+### Server-hunt batch 5: admin and agent route bodies, agent image cleanup
+- **Commit(s):** cc144f9c9
+- **Files:** `server/routes/admin.routes.ts`, `server/routes/agents.routes.ts`
+- **Behaviour:** `/expunge` and `/clear-all` with no body now return the intended 400 instead of a 500 TypeError. Agent image upload returns 400 for a missing, null or non-string image. Replacing an agent image now deletes the previous file, and deleting an agent deletes its image, through `removeAgentImageIfUnreferenced` (only `/api/agents/images/file/` paths, resolved through `getSafeAgentImagePath`, deleted only when no agent row, including soft-deleted built-ins and duplicates, still references it). Called on image upload (old image, or the new file if the update fails), `DELETE /:id` (hard removals only), `PATCH /:id` and `PATCH /type/:agentType` when `imagePath` changes.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b5.regression.ts`.
+
+### Server-hunt batch 6: background uploads, renames and meta.json
+- **Commit(s):** be4c94289; 2b2ca2f29
+- **Files:** `server/routes/backgrounds.routes.ts`
+- **Behaviour:** a non-ASCII filename sanitised to a hidden, unlisted file; the stem is now sanitised on its own, leading dots stripped, fallback `background`, and a rename to `...` returns 400. Parallel uploads with the same name overwrote each other; the name is chosen after the body is read and written with flag `wx`, retrying on EEXIST up to 50 times. `writeMeta` is atomic (temp file and rename). `uniqueFilename` also treats a same-stem file with another allowed extension as taken (the asset manifest tags by stem), ignoring the file being renamed. Follow-up (2b2ca2f29): a rename whose suffix search lands back on the file's own name (renaming `forest_2.jpg` to "forest" while `forest.png` exists) returns early instead of deleting the file's tags.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b6.regression.ts` (tag-survival check added in 2b2ca2f29).
+
+### Server-hunt batch 7: compatible export names, full backup size, package uninstall
+- **Commit(s):** be4c94289
+- **Files:** `server/routes/backup.routes.ts`, `server/routes/capability-packages.routes.ts`
+- **Behaviour:** the compatible profile export silently dropped characters, personas and lorebooks whose names collided; entry names now get ` (2)`, ` (3)` suffixes (case-insensitive). Full and automatic backups failed once the zip central directory passed 8 MiB; uncapped archives now allow 256 MiB (`FULL_BACKUP_CENTRAL_DIRECTORY_LIMIT_BYTES`) and the profile zip reader accepts the same, so such backups can be imported. Package uninstall cleaned chat metadata from a stale snapshot, overwriting concurrent agent changes; it now passes `patchMetadata` an updater that recomputes the cleanup patch from the metadata read inside the per-chat queue.
+- **Settings / env and defaults:** none (central directory limits 256 MiB uncapped, 8 MiB capped).
+- **Tests:** `server-hunt-b7.regression.ts`.
+
+### Server-hunt batch 8: character routes
+- **Commit(s):** cc144f9c9
+- **Files:** `server/routes/characters.routes.ts`
+- **Behaviour:** the fallback PNG for avatar-less card export had invalid zlib IDAT data; it now uses a valid stream. Embedded-lorebook import wrote back a stale copy of all extensions outside the per-character queue; it now runs in `enqueueUpdate`, re-reads the row and patches only `extensions.importMetadata.embeddedLorebook`. Deleting a character or persona now removes its gallery videos (`removeGalleryVideoDir`, under the manifest lock). The gallery video manifest read-modify-write is serialised (`withGalleryVideoManifestLock`) and written atomically. Gallery image uploads unlink the partial file on pipeline failure, return 413 on multipart truncation, and the character route rolls back a failed row create like the persona route. `injectTextChunk` no longer throws RangeError on trailing bytes or a truncated chunk; a failed injection re-encodes the avatar through sharp, then falls back to the minimal PNG, instead of a 500. `PATCH /groups/:id` and `/persona-groups/:id` return 404 for unknown ids instead of 200 with a null body.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b8.regression.ts`.
+
+### Server-hunt batch 9: chat preset duplicate name validation
+- **Commit(s):** be4c94289
+- **Files:** `server/routes/chat-presets.routes.ts`
+- **Behaviour:** the duplicate route stored an unvalidated name. The body is now parsed with `duplicateChatPresetSchema` (`name`: trimmed string, 1 to 120 characters, optional); a bad name gives 400. No body or no name keeps the `<source> Copy` fallback.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b9.regression.ts`.
+
+### Server-hunt batch 10: chat routes (scene pointer, bodies, branches, summaries)
+- **Commit(s):** 3354c1c89
+- **Files:** `server/routes/chats.routes.ts`
+- **Behaviour:** deleting any scene chat wiped the origin chat's active-scene pointer outside the per-chat patch queue; `DELETE /chats/:id` now uses `patchMetadata` and clears `activeSceneChatId` / `sceneBusyCharIds` only when they still name the deleted chat. Missing bodies no longer give 500 in `/:id/connect`, bulk-delete, edit message, bulk-hidden, swipes/bulk and active-swipe; `POST swipes` returns 400 when content is not a string; `PATCH /:id/metadata` returns 400 for a missing, non-object or array body. Branch creation now covers message copy, remap, metadata and folder steps with the existing cleanup, so a failure no longer leaves a half-built branch and a changed source `groupId`. A concurrent edit while combining summaries returns 409 instead of 500. Manual summary backfill passes the chat time zone.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b10.regression.ts`.
+
+### Server-hunt batch 11: connection image cleanup
+- **Commit(s):** be4c94289
+- **Files:** `server/routes/connections.routes.ts`
+- **Behaviour:** connection image uploads never deleted the previous image and deleting a connection left its image. New `removeConnectionImageIfUnreferenced` (safe path, skipped while any connection, including duplicates, still references the file) runs on upload (old image, or the new file if the update fails), on `DELETE /:id` and on `PATCH` when `imagePath` changes.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b11.regression.ts`.
+
+### Server-hunt batch 12: conversation routes write only what they change
+- **Commit(s):** 3354c1c89
+- **Files:** `server/routes/conversation.routes.ts`, `server/routes/chats.routes.ts`
+- **Behaviour:** `/schedule/generate` wrote a stale copy of the whole `extensions` object after a slow LLM call, and the status sync in `/status` and `/autonomous/check` did whole-object read-modify-write; all now patch only their own keys (`conversationStatus`, `conversationSchedule`, `conversationActivity`) and rely on the extensions merge. `/autonomous/exchange` no longer reloads the full transcript on every call (shared once-per-process `ensureAutonomousActivitySeeded`). Presence was recorded before the chat-exists check and recreated state for deleted chats; `/autonomous/check` and `/activity/presence` now 404 first, and chat deletion calls `clearChatActivity` after removal.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b12.regression.ts` (path fixed for the runner's cwd in f81aa3a07).
+
+### Server-hunt batch 13: AVIF dimensions, emoji and sticker import, custom tool rename
+- **Commit(s):** be4c94289
+- **Files:** `server/utils/image-metadata.ts`, `server/routes/custom-emojis.routes.ts`, `server/routes/custom-stickers.routes.ts`, `server/services/storage/custom-tools.storage.ts`, `packages/client/src/hooks/use-custom-tools.ts`
+- **Behaviour:** AVIF emojis and stickers were exported but always skipped on import; new `readAvifDimensions` walks the ISO-BMFF boxes (ftyp avif/avis, meta, iprp, ipco, ispe, largest ispe for grids). A null entry in an import list crashed with 500 after a partial import; it is now skipped. Renaming a custom tool left agents' `enabledTools` pointing at the old name; the rename now rewrites it in one transaction, and the client invalidates agent queries on update.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b13.regression.ts`.
+
+### Server-hunt batch 14: fonts metadata lock, gallery selfie cleanup
+- **Commit(s):** be4c94289
+- **Files:** `server/routes/fonts.routes.ts`, `server/routes/gallery.routes.ts`
+- **Behaviour:** concurrent Google font downloads dropped each other's `font-metadata.json` entries; writes are serialised (`withFontMetadataLock`) and re-read inside the lock. `POST /google/download` with no body returns the 400 "Font family name is required". The selfie job left orphaned shared gallery files and partial rows when a later save step failed; each variant's save is wrapped, an uncommitted file is removed, and the job throws only when no variant saved.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b14.regression.ts`.
+
+### Server-hunt batch 15: generate route and agent retry
+- **Commit(s):** 3354c1c89
+- **Files:** `server/routes/generate.routes.ts`, `server/routes/generate/retry-agents-route.ts`, `server/services/storage/chats.storage.ts`
+- **Behaviour:**
+  - The eager game-state snapshot promise had no rejection handler, so a rejection on a turn that never awaited it killed the process; it is now marked handled.
+  - Cross-chat awareness paired character ids with names by index; it now keys by each entry's own id.
+  - Streamed textual tool-call markup (a local model's `<tool_call>{...}</tool_call>`) was saved with the reply; when a round returns tool calls with empty content after streaming, that round's text is cut and a `content_replace` is sent.
+  - Content is written conventionally only when nothing streamed in that round (the `endsWith` check could drop or duplicate text).
+  - A continuation that returns only commands or GM verbs anchors to the continued message instead of adding a hidden message; it keeps its prose and flags and records only the new command content (appended), scene request and encrypted reasoning.
+  - NPC avatar auto-generation skips an NPC whose name slug is empty (it wrote a shared `<chatId>/.png` after a paid call).
+  - Illustrator result fields are type-checked before `.trim()` (array style joined with ", "; also in the retry route); a non-string reason no longer turns success into failure.
+  - New `appendSwipeAttachmentAndActiveMirror` writes a swipe attachment and, if that swipe is still active, the message mirror in one critical section, so a swipe switch cannot erase or misplace illustration or roleplay sound attachments; a message with no swipe rows still gets the mirror write.
+  - The conversation summary provider now gets the connection's `claudeFastMode`, `treatAsLocalEndpoint` and `defaultParameters`.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b15.regression.ts` (import path fixed in f81aa3a07).
+
+### Server-hunt batch 16: connected conversations, OOC influences, summary aborts
+- **Commit(s):** 3354c1c89
+- **Files:** `server/routes/generate/connected-conversation-injections.ts`, `server/routes/generate.routes.ts`, `server/routes/generate/conversation-connected-context.ts`, `server/routes/generate/conversation-history-runtime.ts`, `server/services/conversation/auto-summary.service.ts`, `server/lib/log-events.ts`
+- **Behaviour:** OOC influences were marked consumed at prompt-build time, before the generation succeeded; the injector now returns `consumedInfluenceIds` and the route marks them only after a message for the turn (or its hidden command anchor) is saved, once, logging failures as `generation.influence_consume`. Failed or stopped turns leave them pending. Each conversation turn loaded the whole connected roleplay or game chat for its last 20 messages; it now uses `listMessagesPaginated(chatId, 20)` when available. Conversation auto-summary calls ignored the request abort; the signal is threaded through to `chatComplete`, checked before each day bucket and call, aborts are never recorded as failures or backoff, and `withTimeout` clears its timer and rejects on abort.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b16.regression.ts`.
+
+### Server-hunt batch 17: dry-run aborts, expression agent entries
+- **Commit(s):** be4c94289
+- **Files:** `server/routes/generate/dry-run-route.ts`, `server/routes/generate/expression-agent-utils.ts`
+- **Behaviour:** dry-run listened for `req.raw` "close", which had already fired, so a disconnect never aborted the provider call; it now listens on `reply.raw` with a completion flag. Regenerate dry-run now drops the target message in every mode. A mid-stream abort reports `aborted` (with partial content) instead of a normal result. `validateSpriteExpressionEntries` skips null or non-object entries with a warning instead of throwing.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b17.regression.ts`.
+
+### Server-hunt batch 18: output-format injection and Lorebook Keeper merge
+- **Commit(s):** 3354c1c89
+- **Files:** `server/routes/generate/generate-route-utils.ts`, `server/routes/generate/lorebook-keeper-utils.ts`
+- **Behaviour:** `injectIntoOutputFormatOrLastUser` used a string replacement, so `$&`, `$'`, `` $` `` and `$$` in names were expanded; it now uses a replacer function. Keeper paragraph dedupe dropped punctuation-only paragraphs (`---`, `***`); they are now kept (the #488 duplicate cleanup still works). The novel-fact check used a substring test, so a fact contained in longer existing text was discarded; it now compares against whole lines (bullets stripped) and sentences (ending punctuation may be followed by a closing quote or bracket), and a multi-sentence fact made only of known sentences counts as known. Whole lines are included so a multi-sentence bullet the Keeper appended matches itself on the next pass (the first attempt re-appended it every pass).
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b18.regression.ts`.
+
+### Server-hunt batch 19: raw route aborts, retry map sync, backfill cursor
+- **Commit(s):** 3354c1c89
+- **Files:** `server/routes/generate/raw-route.ts`, `server/routes/generate/retry-agents-route.ts`, `server/routes/generate/lorebook-keeper-utils.ts`, `server/routes/chats.routes.ts`
+- **Behaviour:** `/raw` never aborted on client disconnect (listener on `req.raw`); it now listens on `reply.raw` behind a completion flag. An explicit `/raw/abort` after partial output is reported as `aborted` (streaming event or `{ aborted: true, content, runId }`). The retry game-map sync wrote back the whole stale metadata blob; it is now a queued `patchMetadata` writing only `gameMap`, `gameMaps`, `activeGameMapId` (and sends `game_map_update` only on change). The custom lorebook backfill cursor never advanced when agent write approval was on; a pending `lorebook_update` proposal carries `payload.backfillCursor`, and committing it advances the cursor, only forward and only onto a message that still exists (`readCustomLorebookBackfillCursorPayload`, `shouldAdvanceCustomLorebookBackfillCursor`).
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b19.regression.ts`.
+
+### Server-hunt batch 20: import routes
+- **Commit(s):** cc144f9c9 (regression); code in 3354c1c89
+- **Files:** `server/routes/import.routes.ts`
+- **Behaviour:** the folder-picker timeout resolved null but left the dialog process running; the 60 s timer now kills the current child (osascript, powershell, zenity or kdialog) and the zenity fallback does not spawn kdialog after the timeout. A corrupt avatar entry in a `.marinara` package returns 400 "Could not read package avatar" instead of 500. `/marinara`, `/st-preset` and `/st-lorebook` return 400 "Expected a JSON object body" for null, primitive or array bodies (`isJsonObjectBody`).
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b20.regression.ts`.
+
+### Server-hunt batch 21: knowledge sources and lorebook export and move
+- **Commit(s):** cc144f9c9
+- **Files:** `server/routes/knowledge-sources.routes.ts`, `server/routes/lorebooks.routes.ts`
+- **Behaviour:** a failed or oversized knowledge-source upload left a partial file (and @fastify/multipart ends a truncated stream rather than failing, so the old route returned 200 with a cut file); failures and truncation now unlink the file, truncation returns 413, and a failed meta write removes the file. A corrupt `meta.json` was treated as empty and then overwritten; writes use a strict read that renames it to `meta.json.corrupt-<ts>` and fails. Bulk lorebook export dropped same-named books; names get ` (n)` suffixes. A failed entry move rolled back the copies after the source entries were already deleted; copies are kept once removal has started and both books' character books are resynced.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b21.regression.ts`.
+
+### Server-hunt batch 22: personal extension storage, sidecar setup streams, Whisper delete
+- **Commit(s):** cc144f9c9; `sidecar-speech.service.ts` hunk in 3354c1c89
+- **Files:** `server/services/extensions/personal-extension-settings.service.ts`, `server/services/extensions/personal-extension-storage.service.ts`, `server/routes/sidecar.routes.ts`, `server/services/sidecar/sidecar-speech.service.ts`
+- **Behaviour:** extension storage PATCH was an unlocked read-modify-write; `patch` and `remove` now run under a per-extension lock. A stale-hash approve returns 409 and an unknown-revision rollback 404 instead of 500. `DELETE /speech/model` now waits for an in-flight load of that same model before deleting. A disconnect on any sidecar setup SSE stream cancelled all sidecar downloads and stopped the sidecar; `handleDownloadSse` now has a single owner, a second setup stream gets 409, and the owner releases the slot on finish or close.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b22.regression.ts` (import path and fake load state fixed in f81aa3a07).
+
+### Server-hunt batch 23: sprite uploads and cleanup
+- **Commit(s):** 3354c1c89
+- **Files:** `server/routes/sprites.routes.ts`
+- **Behaviour:** a sprite upload with a new extension left the old file as a second sprite, and cleanup-saved then overwrote the other file with no backup. Upload now writes inside `withSpriteRenameLock` and, after the write succeeds, deletes other sprite files for the same expression. Uploads whose type is outside `SPRITE_FILE_RE` (bmp, tiff, heic and so on) return 400 before writing, so the working sprite is never deleted for an invisible file. `isSameSpriteFile` compares `ino` and `dev` as bigints (NTFS 64-bit ids lose precision as Numbers), falling back to realpath. cleanup-saved refuses ("Another file for this expression already exists") instead of overwriting a different file, and only unlinks the original when it is not the same file. Sheet background cleanup skips the per-cell pass when the whole sheet was already cleaned by the AI remover. Every sprite POST handler defaults a missing body, so validation returns 400 instead of 500.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b23.regression.ts`.
+
+### Server-hunt batch 24: translate, utility sidecar model ids
+- **Commit(s):** be4c94289
+- **Files:** `server/routes/translate.routes.ts`, `server/routes/utility-sidecar.routes.ts`, `server/services/utility-sidecar/utility-sidecar.service.ts`
+- **Behaviour:** Google translate put up to 5000 characters in a GET query string; `q` is now a form-encoded POST body. A non-JSON 200 from DeepLX, DeepL or Google gave an opaque 500; `parseProviderJson` throws a 502 "<provider> returned a non-JSON response". Model ids equal to `Object.prototype` member names counted as installed; `__proto__`, `constructor`, `prototype`, `.` and `..` are rejected and installed models are looked up with `Object.hasOwn`.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b24.regression.ts`.
+
+### Server-hunt batch 25: advanced memory import and performance
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/advanced-memory.ts`
+- **Behaviour:** `importMemory` reused the scene id for scaffold records and hit a primary-key violation, leaving a half-finished import; same-id and existing scaffold rows (including hidden summaryWork rows) now resolve to the local record. `put()` reloaded the whole chat on every record write (O(n^2) preparation); it reuses a validated snapshot per scene, cleared around paid summarize calls. The temporary-prefix search is a binary search (same result). `status()` validation uses a per-context index instead of a full-chat scan per record.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b25.regression.ts`.
+
+### Server-hunt batch 26: agent executor
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/agents/agent-executor.ts`
+- **Behaviour:** the custom music folder was walked recursively with sync fs on every Music DJ turn; the walk stops at depth 8 and 2000 directories and results are cached per folder for 60 s (at most 32 folders). CYOA anti-repetition and haptic device/settings blocks were injected into every agent's prompt; they now require the `cyoa` or `haptic` agent. Stored `cyoaChoices` are validated (null elements no longer throw). `extractJson` no longer cuts at a ``` inside a JSON string of an unfenced response.
+- **Settings / env and defaults:** none (music cache 60 s, depth 8, 2000 dirs, 32 folders).
+- **Tests:** `server-hunt-b26.regression.ts`.
+
+### Server-hunt batch 27: Beholder state
+- **Commit(s):** be4c94289; 2b2ca2f29
+- **Files:** `server/services/agents/beholder-state.ts`
+- **Behaviour:** a `__proto__` (or `constructor`, `prototype`) key in Beholder lane or repair deltas could pollute prototypes; unsafe keys are skipped and accumulators are read with `Object.hasOwn`. The worn-item merge appended past the 12-item cap and normalisation then dropped the new garment; bounding now keeps touched items and evicts the oldest untouched ones (the same for characters at the character cap). Follow-up (2b2ca2f29): garments coming off a slot are removed before the cap is applied, so a swap on a full slot no longer evicts another garment.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b27.regression.ts` (swap case added in 2b2ca2f29).
+
+### Server-hunt batch 28: capability package runtime and registry
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/capability-packages/capability-module-runtime.service.ts`, `server/services/capability-packages/package-manager.service.ts`
+- **Behaviour:** install reported "restored X" even when the rollback activation also failed; it now throws "Could not activate id@new, and rolling back to old also failed". Runtime snapshot directories were never swept after an unclean exit; `start()` removes `DATA_DIR/capability-runtime-snapshots` first. Legacy availability migration aborted permanently on an entry this Engine cannot install; it skips entries already at or above the catalog version and, with a warning, incompatible ones (network and checksum errors still retry next start). `installed.json` read-modify-write is serialised (`withRegistryLock`) and temp names use `randomUUID()`.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b28.regression.ts`.
+
+### Server-hunt batch 29: conversation summary timeout, awareness, schedules
+- **Commit(s):** cc144f9c9; `auto-summary.service.ts` hunk in 3354c1c89
+- **Files:** `server/services/conversation/auto-summary.service.ts`, `awareness.service.ts`, `schedule.service.ts`, `intent.service.ts`
+- **Behaviour:** the summary timeout never aborted the LLM request; `summarizeTranscript` now owns an AbortController (caller aborts forwarded) and aborts it on timeout, still reporting "Summary timeout". Cross-chat awareness loaded every sibling message and every sibling chat; messages are filtered by `createdAt >=` the earliest window start minus 60 s in the query, and siblings whose `lastMessageAt` is older than the window are skipped. `resolveIntent` tolerates stored schedule blocks without an activity. The lenient `parseScheduleResponse` normalisation from this batch was superseded by the upstream staging merge (strict schedule parsing that raises a visible "invalid schedule" error); the test was updated to match in f81aa3a07.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b29.regression.ts`.
+
+### Server-hunt batch 30: autonomous scheduler fairness and delayed sends
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/conversation/server-autonomous-scheduler.service.ts`
+- **Behaviour:** the concurrency cap starved every eligible chat after the first two in list order; sweeps now walk eligible chats round-robin (`orderAutonomousSweepCandidates`, persistent cursor), and busy-delay timers are tracked in `delayedChats` instead of holding a running slot. A delayed autonomous generation fired on stale state after its claim expired; at fire time the chat is re-read and the send is aborted (claim cleared) when the claim changed, a user message arrived after the claim, or the chat is gone or no longer eligible (`getDelayedAutonomousAbortReason`).
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b30.regression.ts`.
+
+### Server-hunt batch 31: Discord webhook 429 retry
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/discord-webhook.ts`
+- **Behaviour:** a Discord 429 dropped the message. The queued task retries up to 3 attempts (`MAX_RATE_LIMIT_ATTEMPTS`), sleeping for Retry-After (2 s when missing, zero or invalid); other failures are logged once. Order per webhook is kept.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b31.regression.ts`.
+
+### Server-hunt batch 32: personal extension lock scope and startup rejection
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/extensions/personal-extension-settings.service.ts`, `server/services/extensions/personal-server-extension-runtime.ts`
+- **Behaviour:** the batch 22 lock lived inside each storage wrapper, and the runtime and routes build separate wrappers, so writes were still unordered; the lock map is now module-scoped (one chain per extension id). An early child spawn error rejected `startup` before a handler was attached, triggering the process-fatal unhandledRejection exit; `startup` is marked handled at once, and the start send and timeout creation moved into the guarded block.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b32.regression.ts`.
+
+### Server-hunt batch 33: agent fallbacks, cache guard memory, schedule and selfie commands
+- **Commit(s):** cc144f9c9; `generate.routes.ts` hunk in 3354c1c89
+- **Files:** `server/services/generation/agent-resolution.ts`, `cache-send-guard.ts`, `conversation-schedule-command-runtime.ts`, `conversation-selfie-command-runtime.ts`, `server/routes/generate.routes.ts`
+- **Behaviour:** the built-in fallback loop re-ran agents that were deliberately skipped (unavailable local model, dead connection) on the default connection; built-ins with a config row are no longer fallen back. The cache send guard's `lastSent` map grew without bound; it is an LRU of 200 (`LAST_SENT_MAX`), evicted entries reload from `DATA_DIR/cache-guard`. `schedule_update` rewrote the whole chat metadata outside the patch queue; it now uses `patchMetadata` returning only `characterSchedules`. The selfie command now honours the generation abort signal (prompt call, image request, persistence), and the route stops the command loop after a Stop.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b33.regression.ts` (import path fixed in f81aa3a07).
+
+### Server-hunt batch 34: memory command versions, trimming, empty wrapper pruning
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/generation/conversation-side-effect-command-runtime.ts`, `generation-text-utils.ts`, `runtime-agent-sections.ts`, `prompt-message-scope.ts`
+- **Behaviour:** each AI `[memory]` command bumped the card version and stored a full version snapshot; it now patches only `characterMemories` with `skipVersionSnapshot`. `trimIncompleteModelEnding` deleted complete final sentences wrapped in markdown emphasis; `*`, `_`, `~` and backtick now count as closers. `pruneEmptyPromptWrappers` deleted image-only history turns and single-line headings; messages with images or files are never dropped and history messages only when truly empty; group scoping keeps attachment-only messages.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b34.regression.ts`.
+
+### Server-hunt batch 35: video fallback permit
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/video/video-generation.ts`
+- **Behaviour:** a nested video fallback held a shared permit while waiting on another connection's queue. The fallback hop moved out of `generateVideoUnqueued` into a catch around the queued request, so it runs after the primary releases its permit and takes its own queue turn; failures during the queue wait (timeout, abort) still skip the fallback.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b35.regression.ts`.
+
+### Server-hunt batch 36: sharp loading, ComfyUI placeholders and cancel, ChatGPT image SSE
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/image/image-generation.ts`, `server/services/image/openai-chatgpt-image.ts`
+- **Behaviour:** concurrent first use of `tryLoadSharp` returned null while sharp was loading; loading is one memoised promise. ComfyUI/SwarmUI placeholder substitution expanded `$` patterns and re-scanned inserted text; it is one regex pass with a function replacer. A queued ComfyUI prompt was never cancelled on abort or timeout; `cancelComfyUiPrompt` (own 5 s timeout) interrupts a running prompt or deletes a queued one. The ChatGPT image SSE reader re-split the growing multi-MB buffer on every chunk; it only joins when a separator arrives.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b36.regression.ts`.
+
+### Server-hunt batch 37: RunPod ComfyUI cancel and prompt escaping
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/image/runpod-comfyui.service.ts`
+- **Behaviour:** a RunPod job kept running (and billing) after abort or poll timeout; any non-terminal exit sends a best-effort, non-awaited `POST {base}/{endpoint}/cancel/{jobId}` (5 s timeout). Prompt text was used as a replacement pattern and control characters were not escaped; values are escaped with `JSON.stringify(...).slice(1, -1)` and inserted with function replacers.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b37.regression.ts`.
+
+### Server-hunt batch 38: native character import and profile assets
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/import/marinara.importer.ts`, `server/services/import/profile-import-assets.ts`
+- **Behaviour:** native character import threw after the row was created (so a retry duplicated it); avatar, sprite and gallery restore are each guarded and logged, and an avatar file whose attach failed is removed. Preset import crashed on a non-array `sectionOrder` or `groupOrder`; they fall back to `[]`. Case-variant asset paths destroyed the rollback backup; they are skipped with a message, and an existing rollback backup is never overwritten.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b38.regression.ts`.
+
+### Server-hunt batch 39: SillyTavern bulk scan
+- **Commit(s):** 3354c1c89
+- **Files:** `server/services/import/st-bulk.importer.ts`
+- **Behaviour:** the preset scan listed every preset twice on case-insensitive filesystems; preset folders are deduplicated by directory identity (bigint `dev:ino`, realpath when ino is 0) and missing folders are skipped. The chat scan read every chat JSONL in full to parse its first line; `readFirstLine` streams chunks and cuts at the first LF only (readline was rejected because it also splits at U+2028/U+2029, which JSON.stringify leaves raw), decoding once so split multibyte characters survive.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b39.regression.ts`.
+
+### Server-hunt batch 40: SillyTavern and RisuAI card and chat import
+- **Commit(s):** 3354c1c89
+- **Files:** `server/services/import/st-character.importer.ts`, `server/services/import/st-chat.importer.ts`, `server/services/import/st-bulk.importer.ts`, `server/routes/import.routes.ts`
+- **Behaviour:** RisuAI regex scripts were never imported (read from `raw.data.extensions`); they are read from the normalised extensions. CharX import errors (zip or JSON) returned 500; the branch now returns `{ success: false, error }` like PNG and JSON. Outlet position 7 (or "outlet") and `outletName` were lost on card re-import; both are kept. An invalid or null JSONL header threw; `importSTChat` returns `{ error: "Invalid JSONL: ..." }`, and the bulk importer now counts such results as errors instead of imported (`throwIfChatImportFailed`).
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b40.regression.ts`.
+
+### Server-hunt batch 41: connection fallback streaming, Codex auth write
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/llm/connection-fallback-provider.ts`, `server/services/llm/openai-chatgpt-auth.ts`
+- **Behaviour:** the `chatComplete` fallback re-streamed a second reply after the primary had already streamed partial text; once non-whitespace text reached the caller, a primary failure is rethrown instead of falling back, and an empty result after usable streamed text is returned as primary. The Codex `auth.json` was rewritten in place after a token refresh; it is written to a 0600 temp file and renamed.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b41.regression.ts`.
+
+### Server-hunt batch 42: Anthropic top_k, Gemini parts after edits, Grok CLI
+- **Commit(s):** cc144f9c9; `chats.storage.ts` hunk in 3354c1c89
+- **Files:** `server/services/llm/providers/anthropic.provider.ts`, `server/services/storage/chats.storage.ts`, `server/services/llm/providers/grok-subscription.provider.ts`
+- **Behaviour:** `top_k` was still sent with extended or adaptive thinking; it is deleted in all four thinking branches. Stored Gemini parts replaced edited message text on later turns; a content edit now sets `extra.geminiParts` to null on the message and the active swipe. Grok CLI output was decoded per chunk, corrupting split multibyte characters; streams use `setEncoding("utf8")`. The Grok scratch directory was cached forever; it is re-checked and recreated if the OS removed it, with a clear error when it went missing.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b42.regression.ts`.
+
+### Server-hunt batch 43: OpenAI stream capture and Responses readers
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/llm/providers/openai-stream-inspection.ts`, `server/services/llm/providers/openai.provider.ts`
+- **Behaviour:** stream capture re-measured the whole buffer (up to 2 MB) on every chunk; a running byte count is passed in and appends stop once truncated. Responses API streaming never cancelled or released its SSE reader on early exit or error; the finally blocks now cancel and release it, closing the upstream connection.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b43.regression.ts`.
+
+### Server-hunt batch 44: textual tool-call parser duplicates
+- **Commit(s):** 3354c1c89
+- **Files:** `server/services/llm/textual-tool-call-parser.ts`
+- **Behaviour:** a tool call in a ```json fence inside `<tool_call>` tags was parsed twice, so the tool ran twice. Snippets now carry their source ranges and a range is claimed only once it actually yields a call; an overlapping snippet is not parsed whole, but its recovery may still find a separate call outside the claimed span, and an unclosed tag claims only its recovered JSON. So a tag that fails to parse never hides a valid fence inside it, and later fenced calls after an unclosed tag still parse (both were regressions in the first attempt).
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b44.regression.ts`.
+
+### Server-hunt batch 45: lorebook recursion and regex contexts
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/lorebook/index.ts`, `keyword-scanner.ts`, `regex-timeout.ts`
+- **Behaviour:** with recursion enabled the ordinary keyword scan ran twice with separate probability rolls; the outer scan is skipped when any book is recursive. Recursion passes re-ran semantic matching; they now pass no chat embedding and an empty semantic map. `recursiveScan` re-activated inclusion-group losers; groups with a winner are excluded. A new V8 vm context was created for every regex key test; one module-level context with precompiled scripts is reused.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b45.regression.ts`.
+
+### Server-hunt batch 46: memory recall prune
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/memory-recall.ts`
+- **Behaviour:** the stale-chunk prune rescanned every message for every chunk on each generation (O(n^2)); it uses first and last index maps by `createdAt` (same counts, O(chunks + messages)).
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b46.regression.ts`.
+
+### Server-hunt batch 47: prompt assembly
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/prompt/assembler.ts`, `macro-context.ts`, `marker-expander.ts`, `format-engine.ts`, `packages/shared/src/utils/xml-wrapper.ts`
+- **Behaviour:** the final empty-content filter dropped image or file only history messages; they are kept (as are assistant messages with provider metadata). Per-character depth and post-history prompts resolved `{{charPhonetic}}` to the first character; each uses its own phonetic name. Referenced-character extraction capped at 8 ids before excluding active ones; exclusion now happens first. Wrapper tags became empty for non-ASCII names and a missing name threw; tag and heading slugs keep Unicode letters and digits and fall back to `section` / `Section`.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b47.regression.ts`.
+
+### Server-hunt batch 48: regex application vm context
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/lorebook/regex-timeout.ts`
+- **Behaviour:** a new vm context was created for every message and script pair on every prompt build; the shared context from batch 45 serves both `createTimeoutRegexExecutor` and `createTimeoutRegexReplaceGuard`, clearing the text global after each run so large prompts are not retained. A fresh RegExp is still built per call.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b48.regression.ts`.
+
+### Server-hunt batch 49: local sidecar downloads, model switch, runtime fallback, Whisper loads
+- **Commit(s):** 3354c1c89
+- **Files:** `server/services/sidecar/sidecar-download.ts`, `sidecar-model.service.ts`, `sidecar-process.service.ts`, `sidecar-speech.service.ts`
+- **Behaviour:** `downloadFileWithProgress` deleted the installed file before the new download succeeded; the verified temp file now replaces it by rename only. A model switch failed after a full download when the old model's llama-server held the file; the new config is committed first and the old file's unlink is best effort, and auto-start is skipped while a model download runs (unless forced). A working fallback runtime was killed and restarted on every sync and a failed one was never remembered; every attempt is recorded under the requested runtime's signature. Whisper: loads are serialised with a generation counter; a superseded load disposes its pipeline; delete waits only for a load of the same model; and transcription during a model download fails fast ("Local Whisper is downloading a model. Try again when the download finishes.") instead of stalling for minutes and then writing the old model back over the user's new choice.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b49.regression.ts`.
+
+### Server-hunt batch 50: app settings upsert
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/storage/app-settings.storage.ts`
+- **Behaviour:** `set()` did an exists-check then insert, so concurrent first writes failed with a duplicate key; it is one `insert ... onConflictDoUpdate`.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b50.regression.ts`.
+
+### Server-hunt batch 51: chats and connections storage
+- **Commit(s):** cc144f9c9 (connections and regression); `chats.storage.ts` hunks in 3354c1c89
+- **Files:** `server/services/storage/chats.storage.ts`, `server/services/storage/connections.storage.ts`
+- **Behaviour:** `isValidLegacySchedule` had an operator-precedence bug (a null block threw, a block without time passed); the status alternatives are grouped. `setActiveSwipe` to the already active index dropped message-only extra such as attachments; it returns early. Note pruning could delete the just-created note on a `createdAt` tie; note ids are time-sortable and the new note is always kept. A media-provider connection could keep or get `isDefault` and become the chat default; only language providers can be default, and `getDefault()` ignores media rows already flagged.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b51.regression.ts`.
+
+### Server-hunt batch 52: lorebook embeddings, preset default, active theme
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/storage/lorebooks.storage.ts`, `server/services/lorebook/embeddings.ts`, `server/routes/lorebooks.routes.ts`, `server/services/storage/prompts.storage.ts`, `server/services/storage/themes.storage.ts`
+- **Behaviour:** `updateEntryEmbedding` wrote a vector computed from stale text and bumped `updatedAt`; it takes an optional `expectedUpdatedAt` in the WHERE and no longer bumps `updatedAt` (both callers pass it). `setDefault` bumped `updatedAt` on every preset; it only touches the old and new default. Theme `setActive` could leave two active themes; it runs in one transaction and also repairs duplicates already on disk.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b52.regression.ts`.
+
+### Server-hunt batch 53: Spotify playlists
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/tools/tool-executor.ts`
+- **Behaviour:** `spotify_get_playlists` crashed on playlists without `tracks.total` (Development Mode); null items are skipped, the count falls back to `items.total` or null, and a null description is handled.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b53.regression.ts`.
+
+### Server-hunt batch 54: utility sidecar install and start
+- **Commit(s):** be4c94289 (service); `sidecar-download.ts` hunk in 3354c1c89; regression in cc144f9c9
+- **Files:** `server/services/utility-sidecar/utility-sidecar.service.ts`, `server/services/sidecar/sidecar-download.ts`
+- **Behaviour:** reinstalling or updating a model deleted the working copy before the download succeeded and the process could restart on it mid-install; install downloads to `<dest>.staged`, stops the process only just before the swap, rejects a concurrent install and refuses to start a model being installed. `ensureRunning` retried a failed start up to 3 times; a failed start of the same model is final for that call. A spawn error still waited the full 120 s health timeout; the error handler clears the child so the wait ends with the real error. The config write is atomic.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b54.regression.ts`.
+
+### Server-hunt batch 55: Gemini Omni video size cap
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/video/video-generation.ts`
+- **Behaviour:** the Gemini Omni JSON response carrying base64 video was capped at the raw video limit; the fetch cap is now `MAX_VIDEO_JSON_RESPONSE_BYTES` (room for base64 overhead) and the decoded MP4 is still checked against `MAX_VIDEO_RESPONSE_BYTES`.
+- **Settings / env and defaults:** none.
+- **Tests:** `server-hunt-b55.regression.ts`.
+
+### Server-hunt batch 56: taskbar shortcut migration on non-ASCII paths
+- **Commit(s):** cc144f9c9
+- **Files:** `server/services/setup/taskbar-shortcut-migration.ts`
+- **Behaviour:** PowerShell output was decoded as UTF-8 without asking PowerShell for UTF-8, so shortcut targets with non-ASCII paths never matched and the migration was silently skipped. Reads now set `[Console]::OutputEncoding` to UTF-8 and decode the collected buffers once.
+- **Settings / env and defaults:** `MARINARA_B56_E2E=1` enables the regression's opt-in end-to-end block (test only).
+- **Tests:** `server-hunt-b56.regression.ts`.
+
+### Server-hunt batch 57: SSRF reserved addresses and redirect handling
+- **Commit(s):** 3354c1c89
+- **Files:** `server/utils/security.ts`
+- **Behaviour:** Google and Horde keys (`x-goog-api-key`, `apikey`) were forwarded on cross-origin redirects; both are stripped. The SSRF private-range block depended on `TRUSTED_PRIVATE_NETWORKS`, so a narrowed list let 169.254/10/172.16/fd00 addresses through; `isReservedIp` now checks loopback, the built-in non-routable ranges and the operator's trusted list, so a narrowed list cannot unblock built-ins and a widened one keeps its internal hosts blocked. The redirect-limit throw left the response body and per-request dispatcher open; the body is cancelled first on every hop.
+- **Settings / env and defaults:** `TRUSTED_PRIVATE_NETWORKS` (existing) no longer weakens outbound SSRF checks.
+- **Tests:** `server-hunt-b57.regression.ts`.
+
+### Server logging pass
+- **Commit(s):** 750e67ff3
+- **Files:** `docs/development/logging.md` (v1.0, new), `LOGGING.md`, `CHANGELOG.md`, `packages/server/scripts/build.mjs`, `write-build-meta.mjs`, new `server/lib/best-effort.ts`, `build-integrity.ts`, `child-process-diagnostics.ts`, `http-diagnostics.ts`, `log-events.ts`, `startup-timeline.ts`, `worker-gauges.ts`, plus about 90 changed server files (app, index, config, db, lib, middleware, routes, agents, capability packages, continuity, generation, image, import, llm providers, sidecar, storage, video, `utils/runtime-memory.ts`).
+- **Behaviour:** implements the logging guide, whose vocabulary (`event`, `outcome`, `state`, `kind`, `errorCode`, `elapsedMs` plus the DiagnosticContext fields) is shared with the generation-jobs work.
+  - Request trail: every line carries `bootId`; request ids are UUIDs, bound again at preValidation so POST routes keep them, and echoed in `x-request-id`. One `request.end` per request (debug; info on 5xx or when request logging is on), `request.slow` warn, `request.stream.end`, `request.aborted` at info, `request.error`.
+  - Startup: `startup.build` first line; every `buildApp` step timed as `startup.phase` (debug, info over 1 s, warn over 5 s, error on failure); `startup.early_boot` (`ME_EARLY_BOOT`) when Fastify boots early; `startup.inject_held` / `startup.inject_released`; `startup.build_check` compares the running dist with a source inventory written at build time (`ME_BUILD_STALE`); one `startup.ready` summary with activated, failed and skipped packages, slowest phases, storage and memory, also returned by `/api/health` as `startup`. The build fails if compiled output is missing for a source module.
+  - One failure, one error line: `reportDiagnosticError`, `replyWithDiagnostic`, `emitSseFailure`; no duplicate "Diagnostic failure" line; cause chains (8 deep, AggregateError members, errno/syscall/exit code) kept; cancellations at info, client errors at warn.
+  - Rate limiting: `logRepeated` / `logRecovered` (15 min window, `suppressedCount` summary); `logSuppressed` / `orFallback` / `bestEffort` replace silent catches (once per minute per event, chat and stage); an empty-catch ratchet test stops the count rising.
+  - Runtime: `runtime.memory` (heap, external, array buffers, event-loop p99, worker gauges, peaks) at debug every 5 min and info every 30 min; `runtime.memory_pressure` once per episode with a recovered line; shutdown times each service.
+  - Privacy: prompt debug output goes only to `DATA_DIR/logs/prompt-debug/` and the console, never the main files; debug level no longer unredacts prompts; secrets, prompt text, full URLs and raw bodies stay out of lines.
+- **Settings / env and defaults:** `MARINARA_SLOW_REQUEST_MS` (default 5000) for `request.slow`; `MARINARA_RSS_WARN_MIB` (default: the heap limit) for `runtime.memory_pressure` (also fires at 85% heap or p99 loop delay over 1 s); `MARINARA_CACHE_DIAGNOSTICS=1` raises the Claude and OpenAI per-item cache diagnostic lines from debug to info (default off, read per call). Fixed thresholds: `operation.slow` 10 s, `storage.flush.slow` 1 s, `storage.lazy.full_residency` 250 ms. Existing LOG_* settings unchanged.
+- **Tests:** `logging-b0.regression.ts` to `logging-b14.regression.ts`, `logging-infrastructure.regression.ts`, `empty-catch-ratchet.regression.ts`.
+
+### Server robustness pass
+- **Commit(s):** f4f547396
+- **Files:** `server/db/file-backed-store.ts`, `server/db/writer-host-identity.ts`, `server/db/connection.ts`, `server/index.ts`, `server/app.ts`, `scripts/run-server.mjs`, new `server/lib/shutdown-steps.ts`, `server/lib/shutdown-signals.ts`, `server/lib/runtime-diagnostics.ts`, `server/services/generation/background-call-budget.ts`, `server/routes/admin.routes.ts`, `server/services/capability-packages/capability-module-runtime.service.ts`, `server/services/game/continuity-runtime.ts`, `continuity-provider.ts`, `server/services/generation/connection-admission.ts`, `server/services/llm/rate-limit-aware-provider.ts`, `packages/shared/src/constants/generation-parameter-relevance.ts`, `packages/client/src/components/game/GameContinuityPanel.tsx`, `packages/client/src/localization/locales/en.json`, plus one-line test environment pins in about 40 regressions.
+- **Behaviour:**
+  - Storage writes: a flush skips any shard or `manifest.json` whose serialized content is byte-identical to this process's last durable write, while the file still has the recorded size and mtime (no tmp, fsync, rename or `.bak` refresh; `filesSkipped` on `storage.flush`). Large shards serialize row by row in slices that yield the event loop, with the fingerprint hashed incrementally (output byte-identical).
+  - Windows boot id: the PowerShell LastBootUpTime probe (about 1.5 to 2 s, blocking at module load) is cached per boot in `%LOCALAPPDATA%/MarinaraEngine/writer-boot-id.json` with a boot-time estimate (now minus uptime); a later start within 10 s of the estimate reuses the exact string; any mismatch or corrupt cache probes again; a null probe is never cached.
+  - Shutdown: runtime stops run as bounded, timed steps so a hung `stop()` cannot keep `closeDB()` from flushing; a timed-out step logs `outcome: "failed"`, `reason: "timeout"`, and its late error is still logged; the store close keeps a reserve. Windows console close (SIGHUP) and Ctrl+Break (SIGBREAK) now reach graceful shutdown (with a tighter budget for the console close); duplicate stop signals within the grace window are ignored; a deliberate second Ctrl+C or Ctrl+Break after it forces exit 130; repeated SIGHUP/SIGTERM are ignored; a fatal-error close keeps its nonzero exit code; the launcher also handles SIGBREAK so it keeps the server's exit status; pending saves start writing while `app.close()` waits on connections.
+  - Admin runtime diagnostics: `GET /api/admin/runtime-diagnostics` (privileged access, `Cache-Control: no-store`) returns what `/api/health` does not: memory peaks, storage residency and dirty tables, last flush failure, quarantine count, whether each capability package runtime is live (`skipped` for a recorded early-boot failure, `failed`, `pending`), worker gauges and continuity queue and breaker detail. Counts and states only; each section fails independently to `{ error }`.
+  - Continuity pacing: a global rolling-hour cap on automatic model calls (interactive requests never count); a refusal sends no request and pauses workers until a slot frees. Historical backfill may fill only 75% of the cap and pauses on its own (re-checked every 60 s) while live turns keep running on the rest (live before backfill). Stages whose connection is a local inference endpoint are exempt unless their fallback is remote. A rejected API key (401, or 403 and some 400 prose with credential wording; moderation 403s excluded) parks only that chat without spending attempts, with Retry in the panel and a 10 min unpark timer. A batch's own failures back off per item: 60 s then 120 s, plus or minus 20% jitter, three attempts. Connection admission books the cap only once the connection is free. The continuity panel shows "Paused: hourly call cap reached" and "Paused: API key rejected" states.
+  - Provider transient retry: before any token reaches the caller, connect-phase failures, fast socket drops (ECONNRESET, EPIPE, UND_ERR_SOCKET within 1.5 s) and HTTP 502/503 are retried at most 2 times with jittered exponential backoff (1 s base, 60 s cap, Retry-After honoured). 504, header and body timeouts, body-phase "terminated" errors and user aborts are never retried; nothing is replayed after output started. Rate limits keep their own budget of 6 retries (2 s base).
+  - Also: the Generation Parameters relevance table hides topK while Anthropic thinking is on; stale source-shape checks updated for the logging pass (backup failure state, fatal handlers, `startup.ready`); regressions pin `FILE_STORAGE_DIR` next to `DATA_DIR`.
+- **Settings / env and defaults:** `MARINARA_BACKGROUND_CALLS_PER_HOUR`: positive integer sets the cap, `0` / `off` / `false` / `disabled` turns it off, anything else means 600; default 600. Fixed: backfill share 0.75, backfill recheck 60 s, continuity retry 60 s then 120 s with 20% jitter, unpark 10 min; transient retries 2 (1 s base), rate-limit retries 6 (2 s base), backoff cap 60 s, stale-socket window 1.5 s; runtime stop budget 2000 ms (1000 ms on a Windows console close), store close reserve 1500 ms, repeated-signal grace 1500 ms; serialize yield slice 12 ms; boot id cache tolerance 10 s. Later main-tree switches (commit 8aa93818b, Settings > Features, all default on; off restores upstream behaviour): `stableLorebookGroupPicks`, `providerRetry`, `backgroundCallCap`, `backgroundCallsPerHour` (default 600, 1 to 100000). When set, `MARINARA_BACKGROUND_CALLS_PER_HOUR`, `LOREBOOK_STABLE_GROUP_WINNERS` and `PROVIDER_RETRY_TRANSIENT_ERRORS` win over the saved switches (confirmed in `server/services/features/feature-settings.ts` and `background-call-budget.ts`).
+- **Tests:** `robustness-storage-write.regression.ts`, `robustness-boot-performance.regression.ts`, `robustness-shutdown-safety.regression.ts`, `robustness-health-endpoint.regression.ts`, `robustness-continuity-backoff.regression.ts`, `robustness-provider-resilience.regression.ts`; updated `server-signal-shutdown`, `shutdown-deadline`, `termux-postmortem`, `diagnostic-foundation`, `open-issues`.
+
+### Regression suite green: isolated storage per file, logged catches, stale tests
+- **Commit(s):** f81aa3a07
+- **Files:** `scripts/run-regressions.mjs`; product: `server/db/file-backed-store.ts`, `server/db/writer-host-identity.ts`, `server/lib/shutdown-steps.ts`, `server/routes/import.routes.ts`, `server/services/generation/agent-activation-questions.ts`; tests and fixtures listed below.
+- **Behaviour:**
+  - Runner: every regression file gets its own temp dir (`marinara-regression-*`) with `DATA_DIR=<tmp>/data`, `FILE_STORAGE_DIR=<tmp>/data/storage` and `MARINARA_ENV_FILE=<tmp>/.env` (empty), removed afterwards, so no test can open (or be blocked by the writer lease of) the live store named in the repo `.env`. This fixed the environment failures of experience-generation, experience-lore-entries, mari-workspace-context, checkpoint-retention and game-metadata-race without test changes.
+  - Real fixes: the robustness pass had added 4 empty catches (ratchet 231 against 224); they now call `logSuppressed` at debug (flush fingerprint, writer boot id cache read and temp cleanup), and a late shutdown step whose logging itself throws emits a `MarinaraShutdownWarning` process warning; two more silent catches in import (picker kill, ST chat character link) and agent activation questions now log. `robustness-boot-performance` spawns PowerShell with `windowsHide: true` (windows-process-launch guard).
+  - Stale tests updated (code verified correct):
+    - capability-gm-verb-runtime: lookup string missed the `...emptyRef` added to the empty-response SSE error by the logging pass.
+    - capability-gm-verbs: opaque metadata writer count 15 to 14 (retry map sync became a readable `patchMetadata`), and the key regex no longer counts `chat.metadata.includes(...)` as a key.
+    - claude-cache-diagnostics and openai-cache-diagnostics: per-item lines now need `MARINARA_CACHE_DIAGNOSTICS=1`; OpenAI transport failures are wrapped as `LLMTransportError` with the original on `cause`.
+    - experience-state and game-checkpoint-engine-state: register fixture engines through the server's own `@marinara-engine/shared` instance, not a second module copy.
+    - game-background-assets: the copied GameSurface branch now needs the `resultStillCurrent` parameter.
+    - game-sequential-tasks: the fake map needs one node since generated maps are validated.
+    - game-journal-edit and generate-agent-abort: isolate storage in a temp `DATA_DIR`.
+    - generation-job-tracking: lifecycle checks limited to tracker-built lines (`sourceKind`), since the store now logs `job.state` itself.
+    - gm-skill-check-resolution: anchor on the post-processing `content_replace`, not the new tool-loop one.
+    - maintenance-lifecycle: anchor changed to `let anchoredMsg = savedMsg`.
+    - open-issues: automatic-backup catch now sets the stage first; notification help text moved to locale keys; folder headers render through `LibraryFolderTree.tsx`.
+    - roleplay-streaming: looks for `appendSwipeAttachmentAndActiveMirror` instead of the old two-step write.
+    - floating-panel-layout and scene-portrait-sheet: UI locators follow the named resize handle and the button-wrapped party portrait.
+    - pnpm-runner: the fake pnpm fails at once on `install` instead of idling to a timeout.
+    - server-hunt-b12: source path resolved from the test file, not cwd.
+    - server-hunt-b15 and b33: import shared by relative dist path (the runner's cwd is `packages/server`).
+    - server-hunt-b22: same import fix, and the fake in-flight load names the model being deleted.
+    - server-hunt-b29: keeps the event loop alive during the unref'd timeout, and expects the upstream strict schedule error.
+    - storyboard-source-sections.browser: esbuild shim exports `game-narration-text` and `hud-widget-extended`.
+    - windows-console-shutdown.ps1 fixture: re-enables Ctrl+C before spawning the server, so a host that launched it with Ctrl+C ignored does not break the test.
+- **Settings / env and defaults:** runner-only `DATA_DIR`, `FILE_STORAGE_DIR`, `MARINARA_ENV_FILE` per file.
+- **Tests:** the files listed above.
+
+### Generation job failure lines drop echoed prompt text
+- **Commit(s):** 62fb57271
+- **Files:** `server/services/generation/generation-jobs.ts`, `scripts/regressions/generation-job-tracking.regression.ts`
+- **Behaviour:** provider errors often quote the request back, so a `job.state` failed line could carry prompt text in `err.message`. `withoutEchoedPrompt` keeps the error's name, `code`, `status`, `statusCode`, `errorCode`, `cause` and stack frames, replaces quoted spans of 12 or more characters in the message (and the stack's first line) with `[quoted text removed]`, and caps the message at 300 characters.
+- **Settings / env and defaults:** none.
+- **Tests:** `generation-job-tracking.regression.ts` now checks the whole line, `err` included, for the planted prompt.
+
+### Regressions seed the server's shared agent registry
+- **Commit(s):** 0623ac08e
+- **Files:** `scripts/regressions/fixtures/server-shared.ts` (new), `agent-registry-hydration.regression.ts`, `assigned-chat-sweep.regression.ts`, `illustrator-disconnect.regression.ts`, `manual-agent-retry-resolution.regression.ts`, `prompt.regression.ts`, `tracker-sections.regression.ts`
+- **Behaviour:** six regressions registered fixture agent manifests into the repo-relative `packages/shared/dist`, while server code resolves `@marinara-engine/shared` through `packages/server/node_modules`. In any checkout where that link points elsewhere (every worktree) those are two module instances and the server saw no fixtures, so they passed only from the main tree. The new fixture imports the server's instance. No assertions changed.
+- **Settings / env and defaults:** none.
+- **Tests:** the six files above.
+
+### Peek-prompt live preview shows the next-turn layout
+- **Commit(s):** bd402ac7c
+- **Files:** `server/routes/chats.routes.ts`, `server/services/generation/prompt-cache-layout.ts`, `scripts/regressions/peek-prompt-next-turn-layout.regression.ts` (new)
+- **Behaviour:** the live preview (and the dev MCP's `get_prompt which=next`) had no pending player message, so it showed runtime blocks such as the World Maps spatial context right after the system prompt, while a real game turn on a non-subscription provider carries them at the current turn. New `layoutAsNextTurn` adds a placeholder user turn, applies the same reordering as generation for the chat mode and provider (`normalizePromptCacheLayout` for full-lorebook-context providers, `keepGameDialogueAdjacent` for game mode), then removes it. The response carries `layout: "next-turn"` and the preview note says the next player message would follow the last line.
+- **Settings / env and defaults:** none.
+- **Tests:** `peek-prompt-next-turn-layout.regression.ts`.
 
 ### Stable lorebook inclusion-group winner per chat
 
@@ -920,14 +1482,6 @@ Features:
 - Behaviour: the winner is seeded by chat id, group and candidate set: stable across turns, still varied across chats and when the activated candidates change. Injected random sources keep their behaviour.
 - Setting: **Stable lorebook picks** (`stableLorebookGroupPicks`, default on; env `LOREBOOK_STABLE_GROUP_WINNERS` wins).
 - Tests: `scripts/regressions/feature-switch-lorebook-picks.regression.ts`.
-
-### Peek Prompt shows the layout a real turn sends
-
-- Commit: `bd402ac7c`.
-- Files: `packages/server/src/routes/chats.routes.ts`, `prompt-cache-layout.ts`.
-- Problem: the live preview (and the Dev MCP `get_prompt which=next`) had no pending player message, so runtime blocks such as the World Maps context showed right after the system prompt, unlike a real game turn on a non-subscription provider.
-- Behaviour: new `layoutAsNextTurn` applies the same reordering as generation around a placeholder turn, then removes it; the response is labelled `layout: "next-turn"`.
-- Tests: `scripts/regressions/peek-prompt-next-turn-layout.regression.ts`.
 
 ### Feature switches: mechanism
 
@@ -1270,7 +1824,7 @@ Features:
 - Commit: `077e055ee` (feat/generation-jobs); logging follow-ups `1094acd08`, `62fb57271`, `1d35147fc`.
 - Files: `packages/server/src/services/generation/generation-job-tracker.ts`, observer seam in `generation-jobs.ts` (fires after saves, never throws), `routes/generation-job-records.routes.ts` (prefix `/api/generation-job-records`), `db/schema/generation-job-records.ts`, client `GenerationJobsModal.tsx`, `generation-jobs/GenerationJobsActivityDot.tsx`, `GenerationJobsRecoveryHost.tsx`, `TrackedJobDetails.tsx`, `docs/development/generation-jobs.md`.
 - Behaviour: while tracking is on, image, sprite and video jobs keep a saved status, result link and short log; refreshing, closing the tab or losing the connection does not stop them while the server runs; results that finished while away are announced on return. The viewer shows kind, chat, age, run time, error code and log trail; the top bar shows a dot while jobs run; "Open generation jobs" is in the palette. A restart marks running jobs interrupted (not retried). Finished jobs kept 7 days, up to 300; deleting a chat deletes its jobs.
-- Logging: each transition is logged once (the store's `logJobState` is canonical for accepted, running and settled); `withoutEchoedPrompt` keeps the error's name, code, status and stack frames, replaces quoted spans with "[quoted text removed]" and caps the message at 300 characters.
+- Logging: each transition is logged once (the store's `logJobState` is canonical for accepted, running and settled); failure lines drop echoed prompt text (see "Generation job failure lines drop echoed prompt text").
 - Setting: `generationJobTracking`, default off (moved into Features on 2026-09-24). Schema: new table `generation_job_records`.
 - Tests: `generation-job-tracking` (checks the whole failure line, error included, for a planted prompt).
 
@@ -1301,76 +1855,6 @@ Features:
 - Behaviour: Export and Delete are inline-size containers and hide their label only when too narrow to show it whole; panel extras (Tags, Move, Campaign, Enable, Disable) are icon-only on phones and in right panels under 28rem. All buttons carry `title` and `aria-label`.
 - Tests: `lorebook-scan-compaction` now pins `FILE_STORAGE_DIR` to its temp directory.
 
-### Startup inject gate
-
-- Commit: `5209aa6d4`.
-- Files: new `packages/server/src/lib/fastify-inject-gate.ts`, `packages/server/src/app.ts`.
-- Problem: a background `app.inject()` during the minutes-long capability package activation booted Fastify early; later packages failed with "Root plugin has already booted" and the scheduler's `addHook` threw "already listening", killing startup.
-- Behaviour: `buildApp` holds such calls until registration ends; the logging pass adds a `startup.inject_held` line. Regression included.
-
-### Capability packages survive host lifecycle errors
-
-- Commit: `2489691ae`.
-- Files: `packages/server/src/services/capability-packages/capability-module-runtime.service.ts`.
-- Problem: the startup race made three healthy packages fail activation; the runtime rolled each back a version and persisted status error, so every later boot skipped them.
-- Behaviour: errors from the host's own Fastify lifecycle leave the installed version and status untouched so the next start retries. Regression extended.
-
-### Launcher backup of untracked source
-
-- Commit: `962e36777`.
-- Files: new `scripts/preserve-untracked-src.mjs`; `start.bat`, `start.sh`, `start-termux.sh`.
-- Problem: the launchers run `git clean -fd -- packages/*/src` on every launch (even `--skip-update`); on 2026-09-22 a relaunch deleted other sessions' untracked source files.
-- Behaviour: every untracked source file is copied to `.tmp/untracked-src-backups/<timestamp>/` before the clean.
-
-### Lorebook scan text only on the newest message row
-
-- Commit: `ec5e6cd79`.
-- Files: new `packages/server/src/services/lorebook/lorebook-scan-compaction.ts`; `services/storage/chats.storage.ts`, `routes/lorebooks.routes.ts`, `routes/generate/retry-agents-route.ts`.
-- Problem: stored scans carried every activated entry's full text on every message and again in every swipe (184 MB of one 192 MB chat shard).
-- Behaviour: swipes store a compact scan (ids, keys, scores); saving a new scan compacts all older ones in the chat; Active Context and agent retries fall back to the stored entry text.
-- Data: the journal records the live compaction of messages and swipes JSON from 1502 MB to 213 MB, with a backup taken first.
-- Tests: `lorebook-scan-compaction`.
-
-### Whole-fork review fixes (2026-09-22 review)
-
-- Commit: `660d992fa` (39 files).
-- Behaviour: the verified fixes from the 2026-09-22 whole-fork review (branch `fix/bug-hunt-2026-09-22`) that had been applied to the working tree but not committed. Deferred `game.routes.ts`, `GameSurface.tsx`, `GameWidgetPanel.tsx`, `game-gm-prompt-runtime.ts` and `generation-lifecycle` hunks landed with the memory work; other sessions' uncommitted edits were excluded.
-- Tests: the `bughunt-*` regressions.
-
-### Server review fixes, chunk 1
-
-- Commit: `be4c94289` (12 batches, each with a `server-hunt-b<N>` regression).
-- Behaviour: runtime-config `.env` reload diff; fatal-error flush in `index.ts`; IP allowlist CIDR and IPv6 and per-route rate limits; background uploads and `meta.json`; compatible export name collisions and backup central directory cap; capability uninstall race; chat preset name validation; connection image cleanup; AVIF dimensions; custom emoji, sticker and tool handling; fonts and gallery routes; dry-run and expression agent utilities; translate and utility sidecar; Beholder state.
-
-### Server review fixes, chunk 2 and follow-ups
-
-- Commits: `cc144f9c9`, `2b2ca2f29`.
-- Behaviour: storage and seeding; character, chat, conversation, import, knowledge source, lorebook, personal extension, sidecar and sprite routes; agents; conversation services; image and video generation; importers; LLM providers; lorebook scanning and storage; prompt assembly; regex; tools; deleted built-in regex scripts stay deleted (the reset automation clears the seed marker so built-ins return after a reset).
-- Follow-ups (`2b2ca2f29`): a background rename whose suffix search lands back on its own name returns early instead of deleting the file's tags (b6); Beholder garments leave before the worn cap applies, so a swap on a full slot no longer evicts another garment (b27); the fatal-flush test that boots the server twice (about 50 s) became an opt-in `*.slow-regression.ts`.
-
-### Server review fixes, parked batches
-
-- Commit: `3354c1c89` (batches 1, 10, 12, 15, 16, 18, 19, 23, 39, 40, 44, 49, 57, re-applied onto current main after an adversarial re-review).
-- Behaviour: storage pre-shard restore, Windows writer lease and joined selects; chats, conversation and branch routes; generate route and agent retry; Lorebook Keeper merge and backfill cursor; raw route aborts; sprites upload; SillyTavern importers; textual tool-call parsing; local sidecar runtime and downloads; SSRF reserved-address checks.
-
-### Server logging pass
-
-- Commit: `750e67ff3`.
-- Files: `packages/server/src/lib/log-events.ts`, `http-diagnostics.ts`, `startup-timeline.ts`, `build-integrity.ts`, `runtime-diagnostics.ts`, `worker-gauges.ts`, `best-effort.ts`, `app.ts`, `index.ts`, `config/runtime-config.ts`, `config/env-watcher.ts`, `db/file-backed-store.ts`, `server/scripts/build.mjs`, `write-build-meta.mjs`; spec `docs/development/logging.md` v1.0, `LOGGING.md`.
-- Behaviour: every line in a request carries `requestId` (also on POST bodies), echoed as `x-request-id`; `request.slow`, `request.aborted` and `request.error` lines; `startup.phase` timing and a `startup.ready` summary with activated, failed and skipped packages; `build.integrity` check; `startup.inject_held`; one error line per failure with cause chains; cancellations at info; repeated warnings rate-limited; runtime memory telemetry; silent catches replaced with logged best-effort helpers; secrets and prompt text kept out of lines. Shares its vocabulary (event, state, kind, errorCode, outcome, elapsedMs) with the generation jobs work.
-
-### Server robustness pass
-
-- Commit: `f4f547396` (each item passed an adversarial review, with a regression).
-- Storage: a flush skips shards and `manifest.json` byte-identical to this process's last write (`filesSkipped` on `storage.flush`); large shards serialize in slices that yield the event loop.
-- Startup: Windows caches the OS boot id per boot (about 1.5 to 2 s).
-- Shutdown: bounded, per-step timed stops; a timed-out step logs `outcome failed / reason timeout` and its late error is logged; a crash keeps its nonzero exit code.
-- Diagnostics: admin runtime diagnostics endpoint reusing the startup, build-integrity, memory and worker-gauge data.
-- Continuity pacing: global hourly cap on automatic calls (backfill uses a share and pauses on its own, live turns keep running, local endpoints exempt), per-chat parking on rejected API keys with Retry, jittered per-item backoff.
-- Providers: small jittered retry budget for transport failures and 502 or 503 before any output streams; nothing replayed after the upstream accepted.
-- Also: regressions pin `FILE_STORAGE_DIR` next to `DATA_DIR`; the parameter panel hides topK while Anthropic budget thinking is on.
-- Deployment (journal): live deploys at 09:38 on `7e5fdccb8` and 11:11 on `f4f547396`, each ready in about 22.5 s with 13 packages active.
-
 ### Upstream sync 1 (Pasta-Devs `1d30a562c`)
 
 - Commits: `90fd2894e` (merge of 145 upstream commits), `acef9788e`, `1efb58035`, `7e5fdccb8`.
@@ -1380,8 +1864,6 @@ Features:
 
 ### Regression suite isolation and fixture hygiene
 
-- `f81aa3a07`: `scripts/run-regressions.mjs` gives every file its own temporary `DATA_DIR`, `FILE_STORAGE_DIR` and an empty `MARINARA_ENV_FILE`, so no regression can open (or be blocked by) the live store named in `.env`; new silent catches log (`logSuppressed`, or a process warning); `robustness-boot-performance` spawns PowerShell hidden; stale tests updated where the code was verified correct.
-- `0623ac08e`: six regressions registered fixture agents into the repo-relative shared `dist` while the server resolves `@marinara-engine/shared` through its own `node_modules`; new `fixtures/server-shared.ts` imports the server's instance, so worktrees pass too.
 - `18875cd1f`: the open-issues check accepts a search-filtered journal timeline list.
 - `792b58081`, `367dba6a8`, `7be167a69`, `a478a8b5f`, `1610c3e17`, `f8d405382`, `20167a05b`: fixtures and comments use invented neutral names mapped one to one; assertions unchanged apart from renamed strings.
 - `c664bb44d`: the game log session name and random table scope render without template strings (the localization check flags them).
