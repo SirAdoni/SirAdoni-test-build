@@ -32,6 +32,12 @@ const NAMES = {
   npc: `${TOKEN} Theodorabellawinterbournequicksilver Fairweather`,
   sheet: `${TOKEN} Seraphinaevangelinemoonwhisperstarling Vale`,
   storyboard: `${TOKEN} Theprocessionbeneaththeamberlanternsofthecity Scene`,
+  section: `${TOKEN} Sections 5-6 of the Lanternlit Procession`,
+  mapTwo: `${TOKEN} Catacombsbeneaththeoldcathedralofsaintsandbells Map`,
+  pkgPlace: `${TOKEN} Receivingchamberofthecountessofmarovskahall Suite`,
+  pkgCrumb: `${TOKEN} Kingdomofvaldenmoorandthecountedcontinent Realm`,
+  pkgDest: `${TOKEN} Candidateswingupperfloorofthewilliamsmanor Hall`,
+  pkgDescription: `${TOKEN} A private receiving room with tall windows over the gardens and a long table of pale oak.`,
 };
 
 // Pure check of the node map label helpers first: nothing is dropped and no line runs long.
@@ -75,10 +81,38 @@ import { GameInventory } from '${game("GameInventory.tsx")}';
 import { GameJournal } from '${game("GameJournal.tsx")}';
 import { GameCharacterSheet } from '${game("GameCharacterSheet.tsx")}';
 import { GameStoryboardInlineViewer } from '${game("GameStoryboardViewer.tsx")}';
+import { CapabilityElement } from '${resolve("packages/client/src/components/capabilities/CapabilityElement.tsx").replaceAll("\\", "/")}';
 
 const NAMES = ${JSON.stringify(NAMES)};
+// Fixture World Maps package: light DOM markup with the same classes the real package ships
+// (truncate, max-w-24 breadcrumb chips, line-clamp-2 description, max-w-32 destinations, runtime row).
+// The host stylesheet (styles/capability-hierarchical-maps.css) must make every name wrap.
+const crumbs = [NAMES.region, NAMES.pkgCrumb, NAMES.town, NAMES.place];
+const pkgWorld = '<section class="min-w-0"><div class="border-b px-1 pb-2"><div class="flex items-center">' +
+  '<button type="button" class="flex h-11 w-11 shrink-0 items-center justify-center">&lt;</button>' +
+  '<div class="min-w-0 flex-1 text-center"><p class="truncate text-xs font-bold">' +
+  '<span class="inline-block shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-center align-middle mr-1 max-w-[2.5em]">H</span>' +
+  NAMES.pkgPlace + '</p><p class="truncate text-[0.625rem]">Story location: ' + crumbs.join(' \u203a ') + '</p></div>' +
+  '<button type="button" class="flex h-11 w-11 shrink-0 items-center justify-center">+</button></div>' +
+  '<div class="flex min-w-0 items-center justify-center gap-0.5 overflow-hidden">' +
+  crumbs.map((crumb) => '<span class="flex min-w-0 items-center"><button type="button" class="max-w-24 truncate rounded px-1 py-0.5 text-[0.625rem]">' + crumb + '</button><span>\u203a</span></span>').join('') +
+  '</div></div><div class="min-h-0 py-2 overflow-auto overscroll-contain max-h-[40dvh]">' +
+  '<button type="button" class="flex min-h-11 w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left">' +
+  '<span class="min-w-0 flex-1"><span class="block truncate text-xs font-semibold">' + NAMES.pkgPlace + '</span>' +
+  '<span class="block truncate text-[0.625rem] capitalize">District</span></span></button>' +
+  '<div class="min-w-0 flex-1"><p class="truncate text-xs font-bold">' + NAMES.pkgDest + '</p>' +
+  '<p class="line-clamp-2 text-[0.6875rem] leading-4">' + NAMES.pkgDescription + ' ' + NAMES.pkgDescription + '</p></div>' +
+  '<button type="button" class="flex items-center gap-2"><span class="block max-w-32 truncate font-semibold">' + NAMES.pkgDest + '</span></button>' +
+  '</div></section>';
+const pkgRuntime = '<section class="relative mb-2 ml-auto h-11 w-11 overflow-visible sm:ml-0 sm:h-auto sm:w-full sm:rounded-xl sm:border">' +
+  '<div class="flex items-center gap-1"><button type="button" class="flex min-h-11 min-w-0 flex-1 items-center gap-1.5 rounded-lg px-1 text-left max-sm:w-11 max-sm:flex-none">' +
+  '<span class="shrink-0 text-[0.625rem] uppercase max-sm:hidden">Story location</span>' +
+  '<span class="min-w-0 flex-1 truncate text-xs font-medium max-sm:hidden">' + crumbs.join(' \u203a ') + '</span></button>' +
+  '<button type="button" class="flex h-11 w-11 shrink-0 items-center justify-center">&gt;</button></div></section>';
 class FixtureWorldMap extends HTMLElement {
-  connectedCallback() { this.innerHTML = '<p style="padding:8px">Package view</p>'; }
+  connectedCallback() {
+    this.innerHTML = this.getAttribute('view') === 'runtime' ? pkgRuntime : pkgWorld;
+  }
 }
 customElements.define('marinara-capability-hierarchical-maps', FixtureWorldMap);
 
@@ -90,6 +124,7 @@ const nodeMap = {
   ],
   edges: [{ from: 'here', to: 'there' }],
 };
+const otherMap = { ...nodeMap, id: 'fixture-map-two', name: NAMES.mapTwo };
 const spatialContext = {
   definition: { enabled: true, locations: [{ id: 'loc-a', name: NAMES.place, status: 'active' }] },
   currentLocationId: 'loc-a',
@@ -143,7 +178,17 @@ function LoadingThenMap() {
 function Part({ part }) {
   switch (part) {
     case 'map-panel':
-      return <Surface><GameMapPanel chatId="fixture-chat" map={nodeMap} onMove={noop} selectedPosition={null} /></Surface>;
+      return <Surface><GameMapPanel chatId="fixture-chat" map={nodeMap} maps={[nodeMap, otherMap]} activeMapId="fixture-map"
+        viewedMapId="fixture-map" onMove={noop} selectedPosition={null} /></Surface>;
+    case 'map-panel-world':
+      return <Surface><GameMapPanel chatId="fixture-world" map={null} onMove={noop} selectedPosition={null}
+        spatialContext={spatialContext} spatialContextLoading={false} /></Surface>;
+    case 'package-runtime':
+      return (
+        <div style={{ padding: 12, maxWidth: 720 }}>
+          <CapabilityElement packageId="hierarchical-maps" view="runtime" capabilityProps={{ chatId: 'fixture-chat' }} />
+        </div>
+      );
     case 'map-panel-loading':
       return <Surface><LoadingThenMap /></Surface>;
     case 'map-panel-narrow':
@@ -161,7 +206,8 @@ function Part({ part }) {
       return (
         <div style={{ position: 'fixed', inset: 0, overflow: 'hidden', background: '#123' }}>
           <div className="pointer-events-auto absolute left-3 right-14 top-[6.5rem] z-20 flex min-w-0 items-start gap-2">
-            <MobileMapButton chatId="fixture-chat" map={nodeMap} onMove={noop} selectedPosition={null}
+            <MobileMapButton chatId="fixture-chat" map={nodeMap} maps={[nodeMap, otherMap]} activeMapId="fixture-map"
+              viewedMapId="fixture-map" onMove={noop} selectedPosition={null}
               spatialContext={part === 'popover-world' ? spatialContext : null} spatialContextLoading={false} />
           </div>
         </div>
@@ -186,7 +232,7 @@ function Part({ part }) {
     case 'storyboard':
       return (
         <Surface>
-          <GameStoryboardInlineViewer storyboard={storyboard} frame={frame} frameSectionLabel="1/2"
+          <GameStoryboardInlineViewer storyboard={storyboard} frame={frame} frameSectionLabel={NAMES.section}
             generating={false} position={{ x: 0, y: 0 }} width={360} size="medium" playing={false} muted
             videoRef={{ current: null }} dragHandlers={{}} resizeHandlers={{}} onSelectFrame={noop} onClose={noop}
             onReplay={noop} onTogglePlayback={noop} onToggleMute={noop} onChangeSize={noop} onResizeByKeyboard={noop}
@@ -278,6 +324,16 @@ function inspectNames({ token, boxed }) {
     range.selectNodeContents(text);
     let rect = range.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) continue; // not rendered (collapsed menu, hidden layout variant)
+    // Screen-reader-only text (an icon-only control's label) is hidden on purpose, not cut off.
+    let srOnly = false;
+    for (let node = el; node && !srOnly; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      srOnly =
+        style.position === "absolute" &&
+        node.clientWidth <= 1 &&
+        /rect\(0px|inset\(50%/.test(style.clip + style.clipPath);
+    }
+    if (srOnly) continue;
     checked += 1;
     const label = text.data.trim().slice(0, 40);
     // A bordered tile (inventory slot) must grow to hold its name, not let it spill over the border.
@@ -291,6 +347,28 @@ function inspectNames({ token, boxed }) {
         problems.push(`${label}: spills out of its tile (${Math.round(rect.bottom)} > ${Math.round(box.bottom)})`);
     }
     if (text.data.includes("…")) problems.push(`${label}: cut with an ellipsis character`);
+    // Nothing sits on top of the name (a close button over a section label, for one).
+    if (!(el instanceof SVGElement)) {
+      const lines = [...range.getClientRects()].filter((r) => r.width > 0);
+      for (const line of [lines[0], lines[lines.length - 1]]) {
+        const x = Math.min(line.right - 2, innerWidth - 1);
+        const y = line.top + line.height / 2;
+        if (x < 0 || y < 0 || y >= innerHeight) continue;
+        const hit = document.elementFromPoint(x, y);
+        const transparentControl = hit instanceof HTMLSelectElement && getComputedStyle(hit).opacity === "0";
+        if (hit && !el.contains(hit) && !hit.contains(el) && !transparentControl) {
+          let scroller = el.parentElement;
+          while (
+            scroller &&
+            !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY + getComputedStyle(scroller).overflowX)
+          )
+            scroller = scroller.parentElement;
+          const view = scroller?.getBoundingClientRect();
+          const scrolledAway = view && (y < view.top || y > view.bottom || x < view.left || x > view.right);
+          if (!scrolledAway) problems.push(`${label}: covered by ${describe(hit)}`);
+        }
+      }
+    }
     // A squeezed name breaks inside short words ("Worl / d map"); only words too long for any line may break.
     for (const match of text.data.matchAll(/\S+/g)) {
       if (match[0].length > 12) continue;
@@ -361,12 +439,20 @@ const openPill = (name) => async (page, width) => {
 };
 const PARTS = {
   // Legacy node map in the desktop card: hovering a node shows its full name as a wrapped tooltip.
-  "map-panel": [{ names: ["map"], tooltip: NAMES.here, act: async (page) => page.locator("svg g").first().hover() }],
+  "map-panel": [
+    {
+      names: ["map"],
+      picker: NAMES.map,
+      tooltip: NAMES.here,
+      act: async (page) => page.locator("svg g").first().hover(),
+    },
+  ],
   "map-panel-narrow": [{ names: ["map"] }],
   "map-panel-loading": [{ names: ["map"], desktopMapWidth: 320 }],
   "popover-local": [
     {
       names: ["map", "here", "there"],
+      picker: NAMES.map,
       tooltip: NAMES.there,
       act: async (page) => {
         await openMap(page);
@@ -377,7 +463,11 @@ const PARTS = {
       },
     },
   ],
-  "popover-world": [{ names: ["region", "town", "place"], act: openMap }],
+  "popover-world": [
+    { names: ["region", "town", "place", "pkgPlace", "pkgCrumb", "pkgDest", "pkgDescription"], act: openMap },
+  ],
+  "map-panel-world": [{ names: ["pkgPlace", "pkgCrumb", "pkgDest", "pkgDescription"], desktopOnly: true }],
+  "package-runtime": [{ names: ["pkgCrumb"], minWidth: 640 }],
   widgets: [
     { names: ["widget", "stat"], act: openPill(NAMES.widget) },
     { names: ["gridItem"], act: openPill("Pack"), boxed: ".aspect-square" },
@@ -392,7 +482,7 @@ const PARTS = {
   sheet: [{ names: ["sheet"] }],
   storyboard: [
     {
-      names: ["storyboard"],
+      names: ["storyboard", "section"],
       act: async (page, width) => {
         if (width >= 1024) return;
         const toggle = page.locator("button[aria-expanded=false]").first();
@@ -426,6 +516,7 @@ try {
       await page.goto(`http://fixture.test/?part=${part}`);
       for (const [index, step] of steps.entries()) {
         const label = `${width}x${height} ${part}#${index + 1}`;
+        if ((step.desktopOnly && width < 1024) || (step.minWidth && width < step.minWidth)) continue;
         if (step.act) await step.act(page, width);
         await page
           .getByText(NAMES[step.names[0]].split(" ")[1], { exact: false })
@@ -455,6 +546,27 @@ try {
             .locator("[data-game-panel-content='map']")
             .evaluate((box) => box.getBoundingClientRect().width);
           assert.ok(boxWidth >= step.desktopMapWidth - 1, `${label}: the loaded map card is full width (${boxWidth})`);
+        }
+        if (step.picker) {
+          // Map picker: the chosen map is shown in full beside the transparent native select.
+          const picker = await page.evaluate(() => {
+            const select = document.querySelector("select");
+            const label = select?.parentElement?.querySelector("[data-game-map-name]");
+            const box = select?.getBoundingClientRect();
+            const labelBox = label?.getBoundingClientRect();
+            return {
+              text: label?.textContent ?? "",
+              covers: !!box && !!labelBox && box.top <= labelBox.top + 1 && box.bottom >= labelBox.bottom - 1,
+              height: box?.height ?? 0,
+              options: select ? select.options.length : 0,
+            };
+          });
+          assert.ok(
+            normalize(picker.text).startsWith(normalize(step.picker)),
+            `${label}: picker shows the whole map name`,
+          );
+          assert.ok(picker.covers && picker.height >= 20, `${label}: the select covers its label, so a tap opens it`);
+          assert.equal(picker.options, 2, `${label}: both maps are offered`);
         }
         if (step.tooltip) {
           const tooltip = await page.locator("[data-game-node-label]").first().textContent();

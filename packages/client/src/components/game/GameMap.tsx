@@ -667,6 +667,61 @@ function GameMapViewTabs({ value, onChange }: GameMapViewTabsProps) {
   );
 }
 
+/**
+ * Map picker: a native select (keyboard and the phone picker keep working) laid transparently over a
+ * wrapped label, because a closed select can only show one clipped line of the chosen map's name.
+ */
+function GameMapPicker({
+  maps,
+  value,
+  activeMapId,
+  onChange,
+  className,
+}: {
+  maps: GameMap[];
+  value: string | null | undefined;
+  activeMapId?: string | null;
+  onChange: (id: string) => void;
+  className?: string;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  const options = maps.map((option, index) => {
+    const id = getMapId(option, index) ?? `map-${index + 1}`;
+    const label = `${option.name || `Map ${index + 1}`}${id === activeMapId ? localizeUi("ui.game.gamemappanel.current") : ""}`;
+    return { id, label };
+  });
+  const selected = options.find((option) => option.id === value) ?? options[0];
+  return (
+    <div className={cn("relative min-w-0", className)}>
+      <select
+        value={value ?? ""}
+        onChange={(event) => onChange(event.target.value)}
+        className="peer absolute inset-0 h-full w-full cursor-pointer opacity-0"
+        title={localizeUi("ui.game.gamemappanel.viewMap")}
+        aria-label={localizeUi("ui.game.gamemappanel.viewMap")}
+      >
+        {options.map((option) => (
+          <option key={option.id} value={option.id}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <div
+        aria-hidden="true"
+        className={cn(
+          GAME_MAP_FIELD_CLASS,
+          "pointer-events-none flex items-center gap-1 px-1.5 py-1 text-[0.625rem] peer-focus-visible:border-[var(--primary)]/50",
+        )}
+      >
+        <span data-game-map-name className="min-w-0 flex-1 break-words">
+          {selected?.label}
+        </span>
+        <ChevronDown size={10} className="shrink-0 opacity-70" />
+      </div>
+    </div>
+  );
+}
+
 interface MapGenerateButtonProps {
   onGenerateMap: () => void;
   disabled?: boolean;
@@ -861,24 +916,12 @@ export function GameMapPanel({
           <GameMapViewTabs value={effectiveMapView} onChange={setMapViewMode} />
         )}
         {!collapsed && effectiveMapView === "local" && mapOptions.length > 1 && (
-          <div className="flex items-center gap-1">
-            <select
-              value={selectedMapId ?? ""}
-              onChange={(event) => onViewedMapChange?.(event.target.value)}
-              className={cn(GAME_MAP_FIELD_CLASS, "min-w-0 flex-1 px-1.5 py-1 text-[0.625rem]")}
-              title={localizeUi("ui.game.gamemappanel.viewMap")}
-            >
-              {mapOptions.map((option, index) => {
-                const id = getMapId(option, index) ?? `map-${index + 1}`;
-                return (
-                  <option key={id} value={id}>
-                    {option.name || `Map ${index + 1}`}
-                    {id === activeMapId ? localizeUi("ui.game.gamemappanel.current") : ""}
-                  </option>
-                );
-              })}
-            </select>
-          </div>
+          <GameMapPicker
+            maps={mapOptions}
+            value={selectedMapId}
+            activeMapId={activeMapId}
+            onChange={(id) => onViewedMapChange?.(id)}
+          />
         )}
         {!collapsed &&
           (effectiveMapView === "local" && map?.type === "node" && hasWorldMap ? (
@@ -1189,25 +1232,16 @@ export function MobileMapButton({
                   </p>
                 ) : null}
                 {effectiveMapView === "local" && mapOptions.length > 1 && (
-                  <select
-                    value={selectedMapId ?? ""}
-                    onChange={(event) => {
-                      onViewedMapChange?.(event.target.value);
+                  <GameMapPicker
+                    className="mt-1"
+                    maps={mapOptions}
+                    value={selectedMapId}
+                    activeMapId={activeMapId}
+                    onChange={(id) => {
+                      onViewedMapChange?.(id);
                       setSelectedNode(null);
                     }}
-                    className={cn(GAME_MAP_FIELD_CLASS, "mt-1 w-full px-1.5 py-1 text-[0.625rem]")}
-                    title={localizeUi("ui.game.gamemappanel.viewMap")}
-                  >
-                    {mapOptions.map((option, index) => {
-                      const id = getMapId(option, index) ?? `map-${index + 1}`;
-                      return (
-                        <option key={id} value={id}>
-                          {option.name || `Map ${index + 1}`}
-                          {id === activeMapId ? localizeUi("ui.game.gamemappanel.current") : ""}
-                        </option>
-                      );
-                    })}
-                  </select>
+                  />
                 )}
               </div>
               {hasWorldMap && (

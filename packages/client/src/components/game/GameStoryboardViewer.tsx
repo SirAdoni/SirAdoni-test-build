@@ -338,10 +338,10 @@ function GameStoryboardPhoneViewer(props: Parameters<typeof GameStoryboardInline
           <span className="shrink-0 game-short-landscape:sr-only">
             {localizeUi("ui.game.gamesurfacecomponent.storyboard")}
           </span>
-          <span className="flex min-w-0 items-center gap-1 truncate text-[0.625rem] font-normal normal-case tracking-normal text-white/50 game-short-landscape:absolute game-short-landscape:right-1 game-short-landscape:top-1">
+          <span className="flex min-w-0 items-center gap-1 break-words text-[0.625rem] font-normal normal-case tracking-normal text-white/50 game-short-landscape:absolute game-short-landscape:right-1 game-short-landscape:top-1">
             {status.busy ? <Loader2 size={11} className="shrink-0 animate-spin" /> : null}
             {status.problem ? <TriangleAlert size={11} className="shrink-0 text-amber-200" /> : null}
-            <span className="truncate game-short-landscape:sr-only">{status.shortLabel}</span>
+            <span className="min-w-0 break-words game-short-landscape:sr-only">{status.shortLabel}</span>
           </span>
           <ChevronUp
             size={14}
@@ -484,12 +484,13 @@ function GameStoryboardViewerCard({
       <div
         className={cn(
           "flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2",
-          phone && "min-h-12 pr-14",
+          // Desktop: the close button overlaps the card's top-right corner; keep the section label clear of it.
+          phone ? "min-h-12 pr-14" : "pr-7",
         )}
       >
         <div className="flex min-w-0 items-center gap-2 text-[0.6875rem] font-semibold uppercase tracking-wide text-white/75">
           <PanelsTopLeft size={13} className="shrink-0 text-[var(--primary)]" />
-          <span className="truncate">{localizeUi("ui.game.gamesurfacecomponent.storyboard")}</span>
+          <span className="break-words">{localizeUi("ui.game.gamesurfacecomponent.storyboard")}</span>
         </div>
         <span className="shrink-0 text-[0.625rem] text-white/45">
           {frame ? frameSectionLabel : failed ? null : localizeUi("ui.game.gamesurfacecomponent.rendering")}

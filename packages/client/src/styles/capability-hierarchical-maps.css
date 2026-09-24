@@ -1,0 +1,32 @@
+/* World Maps (hierarchical-maps) package views render in light DOM inside
+   <marinara-capability-hierarchical-maps> and use the host's Tailwind classes.
+   The player's rule is that no place, region or location name is ever cut off, so
+   inside this package's mount only, text that the package truncates or clamps wraps
+   instead. Only text properties change; layout, icons and the package's own
+   stylesheets stay as shipped. */
+marinara-capability-hierarchical-maps :is(.truncate, [class*="line-clamp-"]) {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: break-word;
+  -webkit-line-clamp: none;
+  line-clamp: none;
+}
+
+/* line-clamp sets display: -webkit-box; show the whole text as a plain block. */
+marinara-capability-hierarchical-maps [class*="line-clamp-"] {
+  display: block;
+}
+
+/* Breadcrumb chips (max-w-24) and destination names (max-w-32) keep their size
+   until a name needs more room, then use the full line. */
+marinara-capability-hierarchical-maps :is(.max-w-24, .max-w-32):is(.truncate, :has(> .truncate)) {
+  max-width: 100%;
+}
+
+/* The breadcrumb row is a single clipped flex line; let its chips wrap onto more lines. */
+marinara-capability-hierarchical-maps .overflow-hidden:has(> * > .truncate.max-w-24) {
+  flex-wrap: wrap;
+  overflow: visible;
+  row-gap: 0.125rem;
+}

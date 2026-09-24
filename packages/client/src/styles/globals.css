@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @source "./capability-package-safelist.html";
 @import "./themes/sillytavern.css";
+@import "./capability-hierarchical-maps.css";
 
 /* World state & tracker widgets: equal flex sizing on mobile */
 @media (max-width: 767px) {

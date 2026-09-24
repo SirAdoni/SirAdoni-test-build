@@ -1234,7 +1234,7 @@ export function ChatSidebar() {
         <div className="min-w-0 flex-1">
           <span
             className={cn(
-              "block truncate text-sm",
+              "block break-words text-sm",
               isActive ? "mari-chrome-text-strong font-medium" : "mari-chrome-text",
             )}
           >
