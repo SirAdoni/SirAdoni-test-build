@@ -98,6 +98,7 @@ import { useTranslation as useUiTranslation } from "react-i18next";
 import { CharacterPhoto } from "../ui/CharacterPhoto";
 import { formatNarration } from "./game-narration-format";
 import { FloatingGamePanel } from "./FloatingGamePanel";
+import { useComposerDockReserve } from "./game-composer-stability";
 import {
   CroppedAvatar,
   ExpressionReaction,
@@ -3993,6 +3994,7 @@ export function GameNarration({
   // While reviewing the past (messageOffset > 0), interrupt controls are hidden and
   // the Next button is forced visible so the player can see and press "Return".
   const reviewingPast = messageOffset > 0;
+  const composerDock = useComposerDockReserve();
   const playerInputAvailable =
     !scenePreparing &&
     !reviewingPast &&
@@ -5556,6 +5558,7 @@ export function GameNarration({
                 // Phones: keep the composer pinned inside the scrolling panel so a short column
                 // (landscape, on-screen keyboard, crowded HUD) can never scroll it out of view.
                 <div
+                  ref={composerDock.dockRef}
                   data-game-composer-dock
                   className="mt-2 max-lg:sticky max-lg:-bottom-3 max-lg:z-10 max-lg:-mx-3 max-lg:-mb-3 max-lg:bg-[var(--card)]/95 max-lg:px-3 max-lg:pb-3 max-lg:pt-1 max-lg:backdrop-blur-md dark:max-lg:bg-black/70"
                 >
@@ -5566,6 +5569,7 @@ export function GameNarration({
               {/* Also show input when no narration at all (start of scene) */}
               {!scenePreparing && !active && !isStreaming && !sceneAnalysisFailed && inputSlot && (
                 <div
+                  ref={composerDock.dockRef}
                   data-game-composer-dock
                   className="mt-2 max-lg:sticky max-lg:-bottom-3 max-lg:z-10 max-lg:-mx-3 max-lg:-mb-3 max-lg:bg-[var(--card)]/95 max-lg:px-3 max-lg:pb-3 max-lg:pt-1 max-lg:backdrop-blur-md dark:max-lg:bg-black/70"
                 >
@@ -5585,7 +5589,15 @@ export function GameNarration({
                 </div>
               )}
 
-              {isStreaming && <GameGenerationStatus />}
+              {isStreaming && (
+                // Holds the composer's height while the turn generates, so sending never drops the panel.
+                <div
+                  className={cn(composerDock.reserved > 0 && "max-lg:-mb-3")}
+                  style={{ minHeight: composerDock.reserved || undefined }}
+                >
+                  <GameGenerationStatus />
+                </div>
+              )}
             </div>
           )}
         </FloatingGamePanel>

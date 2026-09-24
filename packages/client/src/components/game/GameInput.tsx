@@ -28,6 +28,7 @@ import type { PendingSpatialTransitionDraft } from "../../stores/chat.store";
 import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
 import { applyTextareaQuoteFormat } from "../../lib/textarea-quotes";
 import { SnippetPicker } from "../chat/SnippetPicker";
+import { useComposerOverlayGrowth } from "./game-composer-stability";
 import { useSnippetExpansion } from "../../hooks/use-snippet-expansion";
 import { CARD_ASSET_INSERT_EVENT, type CardAssetInsertDetail } from "../../lib/card-asset-links";
 import { SHORT_LANDSCAPE_GAME_QUERY } from "./GameMobileStatus";
@@ -181,6 +182,8 @@ export function GameInput({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const emojiButtonRef = useRef<HTMLButtonElement>(null);
   const inputBarRef = useRef<HTMLDivElement>(null);
+  const inputSlotRef = useRef<HTMLDivElement>(null);
+  useComposerOverlayGrowth(inputSlotRef, inputBarRef, inputRef);
   const addressButtonRef = useRef<HTMLButtonElement>(null);
   const addressMenuRef = useRef<HTMLDivElement>(null);
   // Game mode has no quick menu, so the snippet picker opens from the command palette.
@@ -563,7 +566,7 @@ export function GameInput({
   return (
     <div
       data-chat-resource-drop-exclude
-      className={cn("group/gameinput", inline ? "" : "px-3 pt-2 pb-3")}
+      className={cn("group/gameinput relative", inline ? "" : "px-3 pt-2 pb-3")}
       style={inline ? undefined : { minHeight: 61 }}
     >
       {spatialCapabilityEnabled && draftKey ? (
@@ -693,11 +696,15 @@ export function GameInput({
         </div>
       )}
 
-      {/* Main input */}
+      {/* Main input. The slot keeps its one-line height; a long turn grows the bar upward over the
+          narration instead of pushing the narration, the panels and the scroll position around. */}
+      <div ref={inputSlotRef} aria-hidden="true" />
       <div
         ref={inputBarRef}
         className={getChatInputShellClass({
           className: cn(
+            "absolute z-10",
+            inline ? "inset-x-0 bottom-0" : "inset-x-3 bottom-3",
             riskyInterrupt && "ring-1 ring-red-500/40 bg-red-500/5 shadow-[0_0_18px_-6px_rgba(248,113,113,0.55)]",
             forceInterrupt && "ring-1",
           ),
@@ -834,7 +841,8 @@ export function GameInput({
           disabled={draftDisabled}
           rows={1}
           className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm leading-normal text-foreground outline-none placeholder:text-foreground/30 disabled:opacity-50"
-          style={{ minHeight: 36, maxHeight: 120 }}
+          // Short (landscape) screens cap lower, so the risen bar stays inside the narration panel.
+          style={{ minHeight: 36, maxHeight: "min(120px, 22dvh)" }}
         />
 
         {sessionConcluded && onStartNewSession && (
