@@ -114,7 +114,8 @@ export function MobileWidgetTray({
       let width: number | null = null;
       if (step > 0 && full > available + 0.5) {
         // Reserve the chevron, then show as many whole tabs as fit.
-        const room = available - 28 - gap;
+        const pagerWidth = 2.25 * (Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16);
+        const room = available - pagerWidth - gap;
         const count = Math.max(1, Math.floor((room + gap) / step));
         width = count * step - gap;
       }
@@ -185,7 +186,7 @@ export function MobileWidgetTray({
               behavior: "smooth",
             });
           }}
-          className="marinara-chat-toolbar-button relative flex h-11 w-7 shrink-0 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-[var(--marinara-chat-chrome-button-text)] backdrop-blur-md transition-colors hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]"
+          className="marinara-chat-toolbar-button relative flex h-11 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-[var(--marinara-chat-chrome-button-text)] backdrop-blur-md transition-colors hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]"
           aria-label={pageLabel}
           title={pageLabel}
         >

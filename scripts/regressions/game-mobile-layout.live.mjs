@@ -50,12 +50,14 @@ async function openGame(page, width, height) {
   }
   await page.waitForTimeout(4000);
   // App-level prompts and toasts are not part of the Game layout under test.
-  const notNow = page.getByRole("button", { name: "Not now" });
-  if (await notNow.count())
-    await notNow
-      .first()
-      .click({ timeout: 5000 })
-      .catch(() => {});
+  for (const name of ["Got it", "Not now", "Skip Tutorial"]) {
+    const button = page.getByRole("button", { name });
+    if (await button.count())
+      await button
+        .first()
+        .click({ timeout: 5000 })
+        .catch(() => {});
+  }
   await page.addStyleTag({ content: "[data-sonner-toaster]{display:none!important}" });
 }
 

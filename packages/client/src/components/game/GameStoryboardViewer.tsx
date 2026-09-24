@@ -300,11 +300,13 @@ function GameStoryboardPhoneViewer(props: Parameters<typeof GameStoryboardInline
       data-storyboard-phone
       className={cn(
         "pointer-events-auto shrink-0 px-3 pb-[max(0.5rem,var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))]",
+        // Landscape phones: the tab becomes one icon in the Game top row, left of the actions menu.
+        "max-lg:[@media(max-height:32rem)]:absolute max-lg:[@media(max-height:32rem)]:right-[3.75rem] max-lg:[@media(max-height:32rem)]:top-3 max-lg:[@media(max-height:32rem)]:z-30 max-lg:[@media(max-height:32rem)]:p-0",
         composerFocused && "hidden",
       )}
       onClick={(event) => event.stopPropagation()}
     >
-      <div className="mx-auto flex w-full max-w-4xl items-center gap-1 rounded-xl border border-white/15 bg-black/70 pr-1 shadow-lg backdrop-blur-md">
+      <div className="mx-auto flex w-full max-w-4xl items-center gap-1 rounded-xl border border-white/15 bg-black/70 pr-1 shadow-lg backdrop-blur-md max-lg:[@media(max-height:32rem)]:w-auto max-lg:[@media(max-height:32rem)]:pr-0">
         <button
           type="button"
           data-storyboard-phone-tab
@@ -312,21 +314,26 @@ function GameStoryboardPhoneViewer(props: Parameters<typeof GameStoryboardInline
           aria-expanded={open}
           aria-controls={sheetId}
           onClick={() => setOpen((value) => !value)}
-          className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-xl px-3 text-left text-[0.6875rem] font-semibold uppercase tracking-wide text-white/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--primary)]"
+          className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-xl px-3 text-left text-[0.6875rem] font-semibold uppercase tracking-wide text-white/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--primary)] max-lg:[@media(max-height:32rem)]:h-11 max-lg:[@media(max-height:32rem)]:w-11 max-lg:[@media(max-height:32rem)]:flex-none max-lg:[@media(max-height:32rem)]:justify-center max-lg:[@media(max-height:32rem)]:relative max-lg:[@media(max-height:32rem)]:px-0 max-lg:[@media(max-height:32rem)]:[&>svg:last-child]:hidden"
         >
           <PanelsTopLeft size={13} className="shrink-0 text-[var(--primary)]" />
-          <span className="shrink-0">{localizeUi("ui.game.gamesurfacecomponent.storyboard")}</span>
-          <span className="flex min-w-0 items-center gap-1 truncate text-[0.625rem] font-normal normal-case tracking-normal text-white/50">
+          <span className="shrink-0 max-lg:[@media(max-height:32rem)]:sr-only">
+            {localizeUi("ui.game.gamesurfacecomponent.storyboard")}
+          </span>
+          <span className="flex min-w-0 items-center gap-1 truncate text-[0.625rem] font-normal normal-case tracking-normal text-white/50 max-lg:[@media(max-height:32rem)]:absolute max-lg:[@media(max-height:32rem)]:right-1 max-lg:[@media(max-height:32rem)]:top-1">
             {status.busy ? <Loader2 size={11} className="shrink-0 animate-spin" /> : null}
             {status.problem ? <TriangleAlert size={11} className="shrink-0 text-amber-200" /> : null}
-            <span className="truncate">{status.shortLabel}</span>
+            <span className="truncate max-lg:[@media(max-height:32rem)]:sr-only">{status.shortLabel}</span>
           </span>
           <ChevronUp
             size={14}
             className={cn("ml-auto shrink-0 text-white/60 transition-transform", open ? "" : "rotate-180")}
           />
         </button>
-        <StoryboardCloseButton onClose={props.onClose} className="h-8 w-8 shrink-0" />
+        <StoryboardCloseButton
+          onClose={props.onClose}
+          className="h-8 w-8 shrink-0 max-lg:[@media(max-height:32rem)]:hidden"
+        />
       </div>
       {open
         ? createPortal(

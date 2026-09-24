@@ -259,7 +259,14 @@ import { GameLayoutEditToolbar } from "./GameLayoutEditToolbar";
 import { GAME_PANEL_INTERACTIVE_LAYER } from "../../lib/game-panel-layout";
 import { GameWidgetPanel, GameWidgetSessionPrepModal, MobileWidgetPanel } from "./GameWidgetPanel";
 import { MobileWidgetArrangeButton, MobileWidgetTray } from "./GameMobileArrange";
-import { hasGameStatus, MobileGameStatusTab, useGameStatusProjection, useMediaMatch } from "./GameMobileStatus";
+import {
+  hasGameStatus,
+  MobileGameStatusTab,
+  MobileTraySheetTab,
+  SHORT_LANDSCAPE_GAME_QUERY,
+  useGameStatusProjection,
+  useMediaMatch,
+} from "./GameMobileStatus";
 import { WeatherEffects } from "../chat/WeatherEffects";
 import { GameInventory, type InventoryItem as GameInventoryItem } from "./GameInventory";
 import { addInventoryQuantity, renameInventoryIdentity, updateInventoryQuantity } from "./game-inventory-identity";
@@ -378,8 +385,7 @@ const GAME_ACTION_MENU = cn(NEUTRAL_PANEL_SHELL, "flex w-72 max-w-[calc(100vw-2r
 // Landscape phones are too short for the icon column, so the menu opens as a row instead.
 const GAME_MOBILE_ACTIONS_MENU = cn(
   CHAT_TOOLBAR_OVERFLOW_MENU_CLASS,
-  // It opens below the Currently present strip, which shares the top row there.
-  "absolute right-0 top-9 max-lg:[@media(max-height:32rem)]:top-[3.75rem] max-lg:[@media(max-height:32rem)]:w-auto max-lg:[@media(max-height:32rem)]:flex-row",
+  "absolute right-0 top-9 max-lg:[@media(max-height:32rem)]:top-12 max-lg:[@media(max-height:32rem)]:w-auto max-lg:[@media(max-height:32rem)]:flex-row",
 );
 const GAME_MOBILE_CHOICE_STAGE_HEIGHT =
   "min-h-[clamp(8rem,30svh,14rem)] max-h-[clamp(8rem,30svh,14rem)] sm:min-h-[clamp(9rem,36svh,20rem)] sm:max-h-[clamp(9rem,36svh,20rem)]";
@@ -3019,6 +3025,8 @@ function GameSurfaceComponent({
   );
   const phoneGameViewport = useMediaMatch("(max-width: 767px)");
   const belowFloatingGameLayout = useMediaMatch("(max-width: 1023px)");
+  // Landscape phones: presence, widgets, storyboard and retry fold into one top row.
+  const shortLandscapeGame = useMediaMatch(SHORT_LANDSCAPE_GAME_QUERY);
   const [contactBookVisible, setContactBookVisible] = useState(false);
   const statusWidgetPreferenceKey = `marinara-game-status:${activeChatId}:visible`;
   useEffect(() => {
@@ -3443,7 +3451,7 @@ function GameSurfaceComponent({
   const compactHudWidgetsRef = useRef(compactHudWidgets);
   const statusInMobileTray =
     belowFloatingGameLayout &&
-    (compactHudWidgets || phoneGameViewport) &&
+    (compactHudWidgets || phoneGameViewport || shortLandscapeGame) &&
     statusWidgetVisible &&
     hasGameStatus(gameStatusProjection);
   const compactHudReleaseWidthRef = useRef<number | null>(null);
@@ -12759,6 +12767,116 @@ function GameSurfaceComponent({
     return mobile ? renderGameMobilePortal(panel) : panel;
   };
 
+  const hasScenePresence = sceneMembers.length > 0 || sceneExtras.length > 0 || !!campaignWikiSceneTargets.location;
+  const scenePresenceBody = (
+    <div
+      data-floating-widget-avoid
+      className="pointer-events-auto flex w-full min-w-0 items-center gap-2 rounded-xl border border-white/10 bg-black/45 p-1.5 text-white/80 shadow-xl backdrop-blur-md lg:block lg:p-2"
+    >
+      <div className="contents text-[0.65rem] font-semibold uppercase tracking-wide text-white/60 lg:mb-1 lg:flex lg:flex-wrap lg:items-center lg:justify-between lg:gap-2">
+        <Users size={14} className="ml-1 shrink-0 lg:hidden" aria-hidden="true" />
+        <span className="truncate max-lg:sr-only">{localizeUi("sceneTimeline.present")}</span>
+        <button
+          type="button"
+          onClick={handleOpenCampaignWiki}
+          className="order-last ml-auto flex h-11 w-11 shrink-0 items-center justify-center rounded px-1.5 py-0.5 hover:bg-white/10 lg:order-none lg:ml-0 lg:h-auto lg:w-auto"
+        >
+          <BookOpen size={14} className="lg:hidden" aria-hidden="true" />
+          <span className="sr-only lg:not-sr-only">{localizeUi("ui.game.campaignWiki.hud.menu")}</span>
+        </button>
+      </div>
+      {sceneMembers.length > 0 && (
+        <GamePartyBar
+          partyMembers={sceneMembers}
+          partyCards={sceneCharacterCards}
+          mobileMenuLabel={localizeUi("sceneTimeline.present")}
+        />
+      )}
+      {sceneExtras.length > 0 && (
+        <div className="min-w-0 truncate text-xs text-white/60 max-lg:hidden lg:mt-1 lg:whitespace-normal">
+          {sceneExtras.join(", ")}
+        </div>
+      )}
+      {/* Phones: whole names as chips that scroll sideways, never cut mid-word. */}
+      {sceneExtras.length > 0 && (
+        <div
+          data-scene-presence-names
+          className="scrollbar-hide flex min-w-0 flex-1 touch-pan-x items-center gap-1 overflow-x-auto text-xs text-white/75 lg:hidden"
+        >
+          {sceneExtras.map((name) => (
+            <span key={name} className="shrink-0 whitespace-nowrap rounded-md bg-white/10 px-1.5 py-0.5">
+              {name}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+  const assetRetryPending = !replayActive && assetGenerationFailed && !!pendingAssetGeneration;
+
+  // Phones: the widget tray. `topRow` is the landscape-phone variant that also carries presence and retry.
+  const renderMobileWidgetTray = (topRow: boolean) => (
+    <MobileWidgetTray
+      data-component="GameSurface.MobileWidgetTray"
+      data-floating-widget-avoid
+      className={cn(topRow ? "min-w-0 flex-1" : "mb-2 shrink-0", !compactHudWidgets && !topRow && "md:hidden")}
+      trailing={
+        hudWidgets.length > 0 ? (
+          <MobileWidgetArrangeButton widgets={normalizedWidgets} chatId={activeChatId} />
+        ) : undefined
+      }
+    >
+      {topRow && hasScenePresence && (
+        <MobileTraySheetTab
+          data-mobile-presence-tab
+          icon={<Users size={16} aria-hidden="true" />}
+          label={localizeUi("sceneTimeline.present")}
+          badge={sceneMembers.length + sceneExtras.length || undefined}
+        >
+          <div className="[&_[data-scene-presence-names]]:flex-wrap">{scenePresenceBody}</div>
+        </MobileTraySheetTab>
+      )}
+      {topRow && assetRetryPending && (
+        <MobileTraySheetTab
+          data-mobile-retry-tab
+          icon={<AlertTriangle size={16} className="text-amber-400" aria-hidden="true" />}
+          label={localizeUi("ui.game.gamesurfacecomponent.imageGenerationFailed")}
+        >
+          {(close) => (
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  close();
+                  setAssetGenerationFailed(false);
+                  setPendingAssetGeneration(null);
+                  setAssetGenerationBlocksScene(false);
+                }}
+                className="inline-flex min-h-11 items-center rounded-lg border border-[var(--border)] px-3 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--accent)]"
+              >
+                {localizeUi("ui.game.gamesurfacecomponent.dismiss")}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  close();
+                  retryAssetGeneration();
+                }}
+                className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-[var(--primary)] px-3 text-xs text-[var(--primary-foreground)] transition-colors hover:opacity-90"
+              >
+                <RefreshCw size={12} />
+                {localizeUi("ui.game.gamesurfacecomponent.retry")}
+              </button>
+            </div>
+          )}
+        </MobileTraySheetTab>
+      )}
+      {statusInMobileTray && <MobileGameStatusTab projection={gameStatusProjection} />}
+      <MobileWidgetPanel widgets={normalizedWidgets} position="hud_left" chatId={activeChatId} layout="horizontal" />
+      <MobileWidgetPanel widgets={normalizedWidgets} position="hud_right" chatId={activeChatId} layout="horizontal" />
+    </MobileWidgetTray>
+  );
+
   return (
     <div
       className={cn(
@@ -12810,68 +12928,23 @@ function GameSurfaceComponent({
                   />
                 </Suspense>
               )}
-              {!replayActive &&
-                (sceneMembers.length > 0 || sceneExtras.length > 0 || campaignWikiSceneTargets.location) && (
-                  <div
-                    data-component="GameSurface.ScenePresence"
-                    // Landscape phones lift the strip into the top row, beside the compact actions menu.
-                    className="pointer-events-none absolute inset-x-3 top-16 z-20 lg:contents max-lg:[@media(max-height:32rem)]:top-3 max-lg:[@media(max-height:32rem)]:left-auto max-lg:[@media(max-height:32rem)]:right-16 max-lg:[@media(max-height:32rem)]:w-[min(50%,26rem)]"
+              {!replayActive && !shortLandscapeGame && hasScenePresence && (
+                <div
+                  data-component="GameSurface.ScenePresence"
+                  className="pointer-events-none absolute inset-x-3 top-16 z-20 lg:contents"
+                >
+                  <FloatingGamePanel
+                    id="scene-presence"
+                    width={Math.max(320, Math.min(420, sceneMembers.length * 64))}
+                    side="hud_right"
+                    bottom
+                    autoGrow
+                    autoWidth
                   >
-                    <FloatingGamePanel
-                      id="scene-presence"
-                      width={Math.max(320, Math.min(420, sceneMembers.length * 64))}
-                      side="hud_right"
-                      bottom
-                      autoGrow
-                      autoWidth
-                    >
-                      <div data-floating-widget-avoid className="pointer-events-auto flex w-full min-w-0 items-center gap-2 rounded-xl border border-white/10 bg-black/45 p-1.5 text-white/80 shadow-xl backdrop-blur-md lg:block lg:p-2">
-                        <div className="contents text-[0.65rem] font-semibold uppercase tracking-wide text-white/60 lg:mb-1 lg:flex lg:flex-wrap lg:items-center lg:justify-between lg:gap-2">
-                          <Users size={14} className="ml-1 shrink-0 lg:hidden" aria-hidden="true" />
-                          <span className="truncate max-lg:sr-only">{localizeUi("sceneTimeline.present")}</span>
-                          <button
-                            type="button"
-                            onClick={handleOpenCampaignWiki}
-                            className="order-last ml-auto flex h-11 w-11 shrink-0 items-center justify-center rounded px-1.5 py-0.5 hover:bg-white/10 lg:order-none lg:ml-0 lg:h-auto lg:w-auto"
-                          >
-                            <BookOpen size={14} className="lg:hidden" aria-hidden="true" />
-                            <span className="sr-only lg:not-sr-only">
-                              {localizeUi("ui.game.campaignWiki.hud.menu")}
-                            </span>
-                          </button>
-                        </div>
-                        {sceneMembers.length > 0 && (
-                          <GamePartyBar
-                            partyMembers={sceneMembers}
-                            partyCards={sceneCharacterCards}
-                            mobileMenuLabel={localizeUi("sceneTimeline.present")}
-                          />
-                        )}
-                        {sceneExtras.length > 0 && (
-                          <div className="min-w-0 truncate text-xs text-white/60 max-lg:hidden lg:mt-1 lg:whitespace-normal">
-                            {sceneExtras.join(", ")}
-                          </div>
-                        )}
-                        {/* Phones: whole names as chips that scroll sideways, never cut mid-word. */}
-                        {sceneExtras.length > 0 && (
-                          <div
-                            data-scene-presence-names
-                            className="scrollbar-hide flex min-w-0 flex-1 touch-pan-x items-center gap-1 overflow-x-auto text-xs text-white/75 lg:hidden"
-                          >
-                            {sceneExtras.map((name) => (
-                              <span
-                                key={name}
-                                className="shrink-0 whitespace-nowrap rounded-md bg-white/10 px-1.5 py-0.5"
-                              >
-                                {name}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </FloatingGamePanel>
-                  </div>
-                )}
+                    {scenePresenceBody}
+                  </FloatingGamePanel>
+                </div>
+              )}
 
               {/* Underlay mount — the part of the surface that belongs BEHIND the narration, such as a
               standing sprite. The main layer is stacked above it, where a sprite would cover the box. */}
@@ -13213,7 +13286,10 @@ function GameSurfaceComponent({
                             });
                             setMobileRetryMenuOpen(false);
                           }}
-                          className={GAME_MOBILE_ROOT_BUTTON}
+                          className={cn(
+                            GAME_MOBILE_ROOT_BUTTON,
+                            "max-lg:[@media(max-height:32rem)]:h-11 max-lg:[@media(max-height:32rem)]:w-11",
+                          )}
                           data-floating-widget-avoid
                           title={t("game.toolbar.actions")}
                           aria-label={t("game.toolbar.actions")}
@@ -13531,7 +13607,7 @@ function GameSurfaceComponent({
                     {/* Top-left: Map + Party portraits side by side */}
                     <div
                       className={cn(
-                        "pointer-events-auto absolute left-3 right-14 z-20 flex min-w-0 items-start gap-2 md:right-auto",
+                        "pointer-events-auto absolute left-3 right-14 z-20 flex min-w-0 items-start gap-2 md:right-auto max-lg:[@media(max-height:32rem)]:right-[6.75rem]",
                         tacticalCombatActive ? "top-14" : topOverlayOffsetClass,
                         replayActive && "hidden",
                         // The package draws its own header and party bar, so the built-in ones would collide.
@@ -13590,7 +13666,10 @@ function GameSurfaceComponent({
 
                       {/* Party portraits — right of map */}
                       {partyMembers.length > 0 && (
-                        <div data-tour="game-party" className="min-w-0 flex-1 md:flex-none">
+                        <div
+                          data-tour="game-party"
+                          className="min-w-0 flex-1 md:flex-none max-lg:[@media(max-height:32rem)]:flex-none"
+                        >
                           <GamePartyBar
                             partyMembers={partyMembers}
                             partyCards={partyCards}
@@ -13599,6 +13678,10 @@ function GameSurfaceComponent({
                           />
                         </div>
                       )}
+                      {shortLandscapeGame &&
+                        !combatUiActive &&
+                        (hudWidgets.length > 0 || statusInMobileTray || hasScenePresence || assetRetryPending) &&
+                        renderMobileWidgetTray(true)}
                     </div>
 
                     {/* Dynamic weather effects from tracked game state */}
@@ -13657,7 +13740,7 @@ function GameSurfaceComponent({
                       <div
                         data-game-asset-retry-line
                         // Phones: an in-flow compact line at the column foot, never over narration or the composer.
-                        className="pointer-events-auto absolute bottom-32 left-1/2 z-30 -translate-x-1/2 max-lg:static max-lg:order-last max-lg:mx-3 max-lg:mb-2 max-lg:shrink-0 max-lg:translate-x-0"
+                        className="pointer-events-auto absolute bottom-32 left-1/2 z-30 -translate-x-1/2 max-lg:static max-lg:order-last max-lg:mx-3 max-lg:mb-2 max-lg:shrink-0 max-lg:translate-x-0 max-lg:[@media(max-height:32rem)]:hidden"
                       >
                         <div className="flex items-center gap-3 rounded-xl bg-black/80 px-4 py-2.5 shadow-lg backdrop-blur-sm max-lg:gap-2 max-lg:px-3 max-lg:py-1">
                           <AlertTriangle size={14} className="shrink-0 text-amber-400" />
@@ -13739,35 +13822,13 @@ function GameSurfaceComponent({
 
                       // Mobile widget slot — rendered inside GameNarration to sit above the narration box
                       const mobileWidgetSlot =
+                        !shortLandscapeGame &&
                         !combatUiActive &&
                         !experienceOwnsGame &&
                         (hudWidgets.length > 0 || statusInMobileTray) &&
-                        !(compactHudWidgets && choicesVisible) ? (
-                          <MobileWidgetTray
-                            data-component="GameSurface.MobileWidgetTray"
-                            data-floating-widget-avoid
-                            className={cn("mb-2 shrink-0", !compactHudWidgets && "md:hidden")}
-                            trailing={
-                              hudWidgets.length > 0 ? (
-                                <MobileWidgetArrangeButton widgets={normalizedWidgets} chatId={activeChatId} />
-                              ) : undefined
-                            }
-                          >
-                            {statusInMobileTray && <MobileGameStatusTab projection={gameStatusProjection} />}
-                            <MobileWidgetPanel
-                              widgets={normalizedWidgets}
-                              position="hud_left"
-                              chatId={activeChatId}
-                              layout="horizontal"
-                            />
-                            <MobileWidgetPanel
-                              widgets={normalizedWidgets}
-                              position="hud_right"
-                              chatId={activeChatId}
-                              layout="horizontal"
-                            />
-                          </MobileWidgetTray>
-                        ) : undefined;
+                        !(compactHudWidgets && choicesVisible)
+                          ? renderMobileWidgetTray(false)
+                          : undefined;
 
                       // Choice cards slot — rendered inside GameNarration above the narration box.
                       // An experience that declares `providesChoices` is checked FIRST: it offers the turn's
@@ -13775,7 +13836,11 @@ function GameSurfaceComponent({
                       // win would unmount the anchor its menu is portaled into.
                       const choicesSlot =
                         activeChoices && narrationDone && !activeExperienceChrome?.providesChoices ? (
-                          compactHudWidgets && !combatUiActive && !experienceOwnsGame && hudWidgets.length > 0 ? (
+                          compactHudWidgets &&
+                          !shortLandscapeGame &&
+                          !combatUiActive &&
+                          !experienceOwnsGame &&
+                          hudWidgets.length > 0 ? (
                             <div
                               data-component="GameSurface.MobileChoiceStage"
                               className={cn(

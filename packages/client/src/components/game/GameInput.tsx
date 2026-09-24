@@ -30,6 +30,7 @@ import { applyTextareaQuoteFormat } from "../../lib/textarea-quotes";
 import { SnippetPicker } from "../chat/SnippetPicker";
 import { useSnippetExpansion } from "../../hooks/use-snippet-expansion";
 import { CARD_ASSET_INSERT_EVENT, type CardAssetInsertDetail } from "../../lib/card-asset-links";
+import { SHORT_LANDSCAPE_GAME_QUERY } from "./GameMobileStatus";
 
 interface Attachment {
   type: string;
@@ -562,28 +563,40 @@ export function GameInput({
   return (
     <div
       data-chat-resource-drop-exclude
-      className={cn(inline ? "" : "px-3 pt-2 pb-3")}
+      className={cn("group/gameinput", inline ? "" : "px-3 pt-2 pb-3")}
       style={inline ? undefined : { minHeight: 61 }}
     >
       {spatialCapabilityEnabled && draftKey ? (
-        <CapabilityElement
-          packageId="hierarchical-maps"
-          view="runtime"
-          capabilityProps={{
-            chatId: draftKey,
-            chatMode: "game",
-            disabled,
-            pendingTransition: pendingSpatialTransition,
-            onPendingTransitionChange: (pending: unknown) => {
-              if (pending && typeof pending === "object") {
-                useChatStore.getState().setPendingSpatialTransition(draftKey, pending as PendingSpatialTransitionDraft);
-                onClearPendingMove?.();
-              } else {
-                useChatStore.getState().clearPendingSpatialTransition(draftKey);
-              }
-            },
+        // Landscape phones: the story-location row shows only while the player is writing, so the
+        // composer stays one line. Its taps keep the text box focused so the row cannot vanish mid-tap.
+        <div
+          data-game-input-location
+          className="max-lg:[@media(max-height:32rem)]:hidden max-lg:[@media(max-height:32rem)]:group-focus-within/gameinput:block"
+          onMouseDown={(event) => {
+            if (window.matchMedia(SHORT_LANDSCAPE_GAME_QUERY).matches) event.preventDefault();
           }}
-        />
+        >
+          <CapabilityElement
+            packageId="hierarchical-maps"
+            view="runtime"
+            capabilityProps={{
+              chatId: draftKey,
+              chatMode: "game",
+              disabled,
+              pendingTransition: pendingSpatialTransition,
+              onPendingTransitionChange: (pending: unknown) => {
+                if (pending && typeof pending === "object") {
+                  useChatStore
+                    .getState()
+                    .setPendingSpatialTransition(draftKey, pending as PendingSpatialTransitionDraft);
+                  onClearPendingMove?.();
+                } else {
+                  useChatStore.getState().clearPendingSpatialTransition(draftKey);
+                }
+              },
+            }}
+          />
+        </div>
       ) : null}
 
       {/* Dice picker */}
