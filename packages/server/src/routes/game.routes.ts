@@ -206,6 +206,7 @@ import {
   isAutoCreatedGameNpcCharacterData,
   isVerifiedNpcCharacterData,
   isGameNpcCharacterSyncTargetCurrent,
+  cleanNarrationNpcDescription,
   mergeNarrationNpcObservations,
   removeUntouchedAutoNpcCharacter,
   resolveGameNpcSyncState,
@@ -5644,30 +5645,38 @@ function isLikelyNarrationNpcName(rawName: string): boolean {
   return isPlausibleNarrationNpcName(rawName);
 }
 
-function extractNarrationSnippetForName(narration: string, name: string): string {
-  const cleaned = narration
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\[[^\]]+]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!cleaned) return `${name} appears in the current scene.`;
+// Whole dialogue lines: `[Speaker] [side]: "..."`, `Speaker: "..."` or a <speaker="..."> tag.
+const NARRATION_SPEAKER_LINE_PATTERNS = [
+  /^\s*(?:\[[^\]\r\n]*\]\s*)+(?::|["\u201C\u00AB\u300C])/u,
+  /^\s*[\p{Lu}][\p{L}'\u2019-]*(?:\s+[\p{Lu}][\p{L}'\u2019-]*)?\s*:\s*["\u201C\u00AB\u300C]/u,
+  /<speaker=/iu,
+];
 
+function extractNarrationSnippetForName(narration: string, name: string): string {
   const namePattern = escapeRegExp(name).replace(/\s+/g, "\\s+");
   const nameRe = new RegExp(`(?<![\\p{L}\\p{N}])${namePattern}(?![\\p{L}\\p{N}])`, "iu");
-  const sentenceMatches = cleaned.match(/[^.!?\n]+[.!?]?/g) ?? [];
-  for (const rawSentence of sentenceMatches) {
-    const sentence = rawSentence.trim();
-    if (sentence && nameRe.test(sentence)) {
+  const vocativeRe = new RegExp(`(?:^|[,;]\\s*)${namePattern}\\s*[.!?]*$|^${namePattern}\\s*[!?]`, "iu");
+  // Split per line so a quote on one line never glues onto the next line's sentence.
+  for (const rawLine of narration.split(/\r?\n/)) {
+    if (NARRATION_SPEAKER_LINE_PATTERNS.some((pattern) => pattern.test(rawLine))) continue;
+    const line = rawLine
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\[[^\]]+]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    for (const rawSentence of line.match(/[^.!?]+[.!?]*["\u201D\u2019\u00BB\u300D)]*/gu) ?? []) {
+      const sentence = cleanNarrationNpcDescription(rawSentence);
+      if (!sentence) continue;
+      // The name must appear in narration, not only inside someone's quoted speech,
+      // and a sentence that merely addresses the NPC by name is not a description.
+      const outsideSpeech = sentence
+        .replace(/"[^"]*"|\u201C[^\u201D]*\u201D|\u00AB[^\u00BB]*\u00BB|\u300C[^\u300D]*\u300D/gu, " ")
+        .trim();
+      if (!nameRe.test(outsideSpeech) || vocativeRe.test(outsideSpeech)) continue;
       return sentence.slice(0, 280);
     }
   }
-
-  const matchIndex = cleaned.search(nameRe);
-  if (matchIndex === -1) return `${name} appears in the current scene.`;
-
-  const start = Math.max(0, matchIndex - 100);
-  const end = Math.min(cleaned.length, matchIndex + 220);
-  return cleaned.slice(start, end).trim();
+  return `${name} appears in the current scene.`;
 }
 
 export function extractNarrationNpcCandidates(
@@ -14862,6 +14871,7 @@ export async function gameRoutes(app: FastifyInstance) {
             const sceneNpcExcludedNames = [
               ...(npcSanitizationOptions.protectedCharacterNames ?? []),
               ...(npcSanitizationOptions.locationNames ?? []),
+              ...(npcSanitizationOptions.narrationExcludedNames ?? []),
               ...(typeof latestState?.location === "string" && latestState.location.trim()
                 ? [latestState.location.trim()]
                 : []),
@@ -15298,6 +15308,7 @@ export async function gameRoutes(app: FastifyInstance) {
       const narrationExcludedNames = [
         ...(npcIdentityBoundary.protectedCharacterNames ?? []),
         ...(npcIdentityBoundary.locationNames ?? []),
+        ...(npcIdentityBoundary.narrationExcludedNames ?? []),
         ...(currentLocationName ? [currentLocationName] : []),
       ];
       const presentCharacters =

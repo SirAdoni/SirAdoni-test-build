@@ -672,6 +672,8 @@ export interface ChatMetadata {
   cacheSendGuard?: { enabled?: boolean; thresholdPercent?: number; ttlMinutes?: number };
   /** NPC identities the user removed and does not want automatically re-created. */
   gameIgnoredNpcIds?: string[];
+  /** Names (companions, onboard AIs) that narration must never turn into new NPCs. */
+  gameNarrationExcludedNpcNames?: string[];
   /** Current-session turn number when the last rare generated scene illustration was created. */
   gameLastIllustrationTurn?: number;
   /** Session number where the last rare generated scene illustration was created. */

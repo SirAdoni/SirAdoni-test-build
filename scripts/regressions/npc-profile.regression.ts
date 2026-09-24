@@ -91,13 +91,88 @@ const verify = (decisions: unknown[]) =>
 assert.equal(verify([decision]).get(candidate.npcId), "confirmed");
 assert.throws(() => verify([]));
 assert.throws(() => verify([decision, decision]));
-assert.throws(() => verify([{ ...decision, quote: "Mereth Drummond is an imaginary quote." }]));
-assert.throws(() => verify([{ ...decision, messageId: "invented" }]));
+// Unsupported evidence downgrades that one decision to uncertain instead of failing the batch.
+assert.equal(
+  verify([{ ...decision, quote: "Mereth Drummond is an imaginary quote." }]).get(candidate.npcId),
+  "uncertain",
+);
+assert.equal(verify([{ ...decision, messageId: "invented" }]).get(candidate.npcId), "uncertain");
 assert.throws(() => verify([{ ...decision, name: "Another Person" }]));
 assert.equal(
   verify([{ ...decision, status: "uncertain", quote: "", messageId: "" }]).get(candidate.npcId),
   "uncertain",
 );
+{
+  // Identity verifier: alias tokens, title stripping, quote normalization and per-decision downgrade.
+  const captain = { ...candidate, npcId: "npc:captain-rhosyn-vell", name: "Captain Rhosyn Vell" };
+  const pilot = { ...candidate, npcId: "npc:tamsin-vell", name: "Tamsin Vell" };
+  const clerk = { ...candidate, npcId: "npc:odo-marsh", name: "Odo Marsh" };
+  const batch = [captain, pilot, clerk];
+  const batchContext = buildNpcProfileContext(
+    batch,
+    [
+      {
+        id: "m1",
+        role: "assistant",
+        content:
+          "Rhosyn asked for the charts.\n\u201CHold  the line,\u201D Tamsin Vell told the crew.\nOdo Marsh stamped the manifest.",
+      },
+      { id: "m2", role: "assistant", content: "Vell asked the harbor master for a berth." },
+      { id: "m3", role: "assistant", content: "The quartermaster counted every crate twice." },
+    ],
+    [],
+  );
+  const confirm = (target: typeof captain, messageId: string, quote: string) => ({
+    npcId: target.npcId,
+    name: target.name,
+    status: "confirmed",
+    messageId,
+    quote,
+    reason: "Named in narration",
+  });
+  const verifyBatch = (decisions: unknown[]) =>
+    parseNpcIdentityDecisions(JSON.stringify({ decisions }), batch, batchContext);
+
+  // A first-name token (title dropped) confirms; curly quotes, doubled spaces and case are normalized.
+  const normalized = verifyBatch([
+    confirm(captain, "m1", "rhosyn asked for the charts."),
+    confirm(pilot, "m1", '"Hold the line," Tamsin Vell told the crew.'),
+    confirm(clerk, "m1", "Odo Marsh stamped the manifest."),
+  ]);
+  assert.deepEqual([...normalized.values()], ["confirmed", "confirmed", "confirmed"]);
+
+  // "Vell" is shared by two targets, so it proves neither; that one decision is uncertain,
+  // it does not throw, and the rest of the batch is still processed.
+  const shared = verifyBatch([
+    confirm(captain, "m2", "Vell asked the harbor master for a berth."),
+    confirm(pilot, "m1", '"Hold the line," Tamsin Vell told the crew.'),
+    { ...confirm(clerk, "", ""), status: "rejected" },
+  ]);
+  assert.equal(shared.get(captain.npcId), "uncertain");
+  assert.equal(shared.get(pilot.npcId), "confirmed");
+  assert.equal(shared.get(clerk.npcId), "rejected");
+
+  // Alone in the batch, the surname is an unambiguous token for the full stored name.
+  assert.equal(
+    parseNpcIdentityDecisions(
+      JSON.stringify({ decisions: [confirm(captain, "m2", "Vell asked the harbor master for a berth.")] }),
+      [captain],
+      batchContext,
+    ).get(captain.npcId),
+    "confirmed",
+  );
+
+  // A quote with no name token at all is uncertain, not a batch failure.
+  const nameless = verifyBatch([
+    confirm(captain, "m3", "The quartermaster counted every crate twice."),
+    confirm(pilot, "m1", '"Hold the line," Tamsin Vell told the crew.'),
+    confirm(clerk, "m1", "Odo Marsh stamped the manifest."),
+  ]);
+  assert.deepEqual([...nameless.values()], ["uncertain", "confirmed", "confirmed"]);
+
+  // Structural problems (unknown target, omitted target) still reject the whole response.
+  assert.throws(() => verifyBatch([confirm(captain, "m1", "Rhosyn asked for the charts.")]));
+}
 const fragment = { ...candidate, npcId: "npc:unfortunately", name: "Unfortunately" };
 const fragmentContext = buildNpcProfileContext(
   [fragment],
