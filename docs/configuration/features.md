@@ -1,31 +1,33 @@
 # Feature Switches
 
-This build adds a number of features on top of the original Marinara Engine. Every one of them can be switched off. Switched on (the default), you get today's behaviour. Switched off, you get the original upstream behaviour, as if the addition was never there.
+This build adds a number of features on top of the original Marinara Engine. Every one of them can be switched off. Switched on (the default), you get today's behaviour. The one exception is **Keep generating when the tab is closed**, which starts off. Switched off, you get the original upstream behaviour, as if the addition was never there.
 
 Changes apply straight away. You do not need to restart the server or reload the page.
 
 ## Overview
 
-| Switch                           | Default     | Scope         | Where to find it                    | Environment variable                 |
-| -------------------------------- | ----------- | ------------- | ----------------------------------- | ------------------------------------ |
-| **ChatGPT history replay**       | On          | App           | Settings > Advanced > Features      |                                      |
-| **Cache-friendly prompt layout** | On          | App           | Settings > Advanced > Features      |                                      |
-| **Stable lorebook picks**        | On          | App           | Settings > Advanced > Features      | `LOREBOOK_STABLE_GROUP_WINNERS`      |
-| **Retry failed provider calls**  | On          | App           | Settings > Advanced > Features      | `PROVIDER_RETRY_TRANSIENT_ERRORS`    |
-| **Background call cap**          | On, 600/h   | App           | Settings > Advanced > Features      | `MARINARA_BACKGROUND_CALLS_PER_HOUR` |
-| **Message trash**                | On, 30 days | App           | Settings > Advanced > Features      |                                      |
-| **Usage and activation stats**   | On          | App           | Settings > Advanced > Features      |                                      |
-| **Send client error reports**    | On          | App (browser) | Settings > Advanced > Features      |                                      |
-| **Scene timeline**               | On          | Game          | Chat settings > Agents (Game mode)  |                                      |
-| **Extended HUD widgets**         | On          | Game          | Chat settings > Agents (Game mode)  |                                      |
-| **Automatic scene media**        | On          | Game          | Chat settings > Agents (Game mode)  |                                      |
-| **Warn before a low-cache send** | On, 80%     | Chat          | Chat settings > Advanced Parameters |                                      |
+| Switch                                     | Default     | Scope         | Where to find it                    | Environment variable                 |
+| ------------------------------------------ | ----------- | ------------- | ----------------------------------- | ------------------------------------ |
+| **ChatGPT history replay**                 | On          | App           | Settings > Advanced > Features      |                                      |
+| **Cache-friendly prompt layout**           | On          | App           | Settings > Advanced > Features      |                                      |
+| **Stable lorebook picks**                  | On          | App           | Settings > Advanced > Features      | `LOREBOOK_STABLE_GROUP_WINNERS`      |
+| **Retry failed provider calls**            | On          | App           | Settings > Advanced > Features      | `PROVIDER_RETRY_TRANSIENT_ERRORS`    |
+| **Background call cap**                    | On, 600/h   | App           | Settings > Advanced > Features      | `MARINARA_BACKGROUND_CALLS_PER_HOUR` |
+| **Message trash**                          | On, 30 days | App           | Settings > Advanced > Features      |                                      |
+| **Usage and activation stats**             | On          | App           | Settings > Advanced > Features      |                                      |
+| **Send client error reports**              | On          | App (browser) | Settings > Advanced > Features      |                                      |
+| **Keep generating when the tab is closed** | **Off**     | App           | Settings > Advanced > Features      |                                      |
+| **Scene timeline**                         | On          | Game          | Chat settings > Agents (Game mode)  |                                      |
+| **Extended HUD widgets**                   | On          | Game          | Chat settings > Agents (Game mode)  |                                      |
+| **Automatic scene media**                  | On          | Game          | Chat settings > Agents (Game mode)  |                                      |
+| **Warn before a low-cache send**           | On, 80%     | Chat          | Chat settings > Advanced Parameters |                                      |
 
 Searching settings for `features` also takes you to the app-wide section.
 
 ## Where the settings are stored
 
 - The app-wide server switches are saved together in the `features` app setting, a JSON object of booleans and numbers. A missing key, an empty object or an unreadable value all mean on, with the default numbers.
+- **Keep generating when the tab is closed** (generation job tracking) keeps its own app setting, `generationJobTracking` (`"true"` or `"false"`). It starts off. When on, image, sprite and video jobs keep running after the tab closes, their status and a short log are saved, and finished results wait in **Generation jobs** (the button under the switch, or the command palette). See [Generation jobs](../development/generation-jobs.md).
 - **Send client error reports** is a browser preference (`clientErrorReports`) that syncs with your other UI settings.
 - The game switches are chat metadata keys on every session chat of the game. Starting a new session copies them along with the rest of the game's settings, and a branch keeps the choice of the chat it came from.
 - The cache warning is the chat metadata object `cacheSendGuard`.

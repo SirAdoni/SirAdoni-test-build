@@ -13,6 +13,7 @@ import { useFeatureSettings, useSaveFeatureSettings } from "../../../hooks/use-f
 import { useUIStore } from "../../../stores/ui.store";
 import { DraftNumberInput } from "../../ui/DraftNumberInput";
 import { ToggleSetting } from "./SettingControls";
+import { GenerationJobTrackingSettings } from "./GenerationJobTrackingSettings";
 
 export const FEATURE_SWITCHES_CONTROL_ID = "feature-switches";
 
@@ -106,6 +107,8 @@ export function FeatureSwitchesSettings({ anchorId }: { anchorId?: string }) {
           </div>
         );
       })}
+      {/* Job tracking (E02) is the one switch here that starts off; it keeps its own app setting. */}
+      <GenerationJobTrackingSettings />
       <ToggleSetting
         label={t("settings.features.clientErrorReports.label")}
         checked={clientErrorReports}
