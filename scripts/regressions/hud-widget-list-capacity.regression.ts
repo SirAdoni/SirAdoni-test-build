@@ -8,7 +8,8 @@ import {
 import { restoreBranchHudLists } from "../../packages/server/src/services/game/branch-state.js";
 
 // A GM turn that adds eighteen names to an "Expected Arrivals" list widget. With the old fixed cap of five,
-// only the last five survived while the narration said all eighteen were added.
+// only the last five survived while the narration said all eighteen were added. Lists now keep everything
+// up to a safety bound of 100; an explicit max still limits a list on purpose.
 const names = Array.from({ length: 18 }, (_, i) => `Guest ${i + 1}`);
 const addTags = names.map((name) => `[widget: arrivals, add: "${name}"]`).join("\n");
 const list = (config: HudWidget["config"] = { items: [] }): HudWidget => ({
@@ -19,14 +20,19 @@ const list = (config: HudWidget["config"] = { items: [] }): HudWidget => ({
   config,
 });
 
-assert.equal(listWidgetCapacity(undefined), LIST_WIDGET_DEFAULT_MAX);
+assert.equal(LIST_WIDGET_DEFAULT_MAX, 100);
+assert.equal(listWidgetCapacity(undefined), 100);
 assert.equal(listWidgetCapacity({ max: 18 }), 18);
-assert.equal(listWidgetCapacity({ max: 500 }), 30, "capped at 30");
-assert.equal(listWidgetCapacity({ max: "x" }), 5);
+assert.equal(listWidgetCapacity({ max: 500 }), 100, "safety bound 100");
+assert.equal(listWidgetCapacity({ max: "x" }), 100);
 
-// Default list: the oldest entries leave, as before.
+// Default list: all eighteen stay.
 const defaultList = restoreBranchHudLists({ gameWidgetState: [list()] }, [{ content: addTags }]);
-assert.deepEqual(defaultList[0]!.config.items, names.slice(-5));
+assert.deepEqual(defaultList[0]!.config.items, names);
+
+// A list limited on purpose still drops its oldest entries.
+const limited = restoreBranchHudLists({ gameWidgetState: [list({ items: [], max: 5 })] }, [{ content: addTags }]);
+assert.deepEqual(limited[0]!.config.items, names.slice(-5));
 
 // Raised with a max command first, the whole roster stays.
 const raised = restoreBranchHudLists({ gameWidgetState: [list()] }, [
@@ -53,4 +59,4 @@ const createdDefault = applyHudWidgetLifecycle([], {
 });
 assert.deepEqual(createdDefault[0]!.config, { items: [] });
 
-console.log("List widgets keep their configured capacity (default 5, up to 30) in live play and branch replay.");
+console.log("List widgets keep every entry (safety bound 100) unless limited on purpose, in live play and branch replay.");

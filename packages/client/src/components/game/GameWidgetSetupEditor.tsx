@@ -5,7 +5,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Copy, Download, Plus, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import {
-  LIST_WIDGET_DEFAULT_MAX,
   LIST_WIDGET_MAX_LIMIT,
   listWidgetCapacity,
   EXTENDED_HUD_WIDGET_TYPES,
@@ -273,9 +272,9 @@ function normalizeConfig(
           .filter(Boolean)
           .slice(0, LIST_WIDGET_MAX_LIMIT)
       : [];
-    // The limit grows to fit the entries typed here, so a hand-made roster is not trimmed on the next add.
-    const max = Math.max(listWidgetCapacity(source), items.length);
-    return { ...source, items, ...(max > LIST_WIDGET_DEFAULT_MAX ? { max } : {}) };
+    // A stored max below the typed entries grows to fit, so a hand-made roster is not trimmed on the next add.
+    const max = source.max === undefined ? undefined : Math.max(listWidgetCapacity(source), items.length);
+    return { ...source, items, ...(max === undefined ? {} : { max }) };
   }
 
   if (type === "inventory_grid") {
