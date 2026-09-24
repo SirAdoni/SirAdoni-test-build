@@ -127,7 +127,7 @@ Memory panel and related:
 - Custom widget bookmarks show their icon and move along the chosen edge in Edit layout.
 - Status widget (Persona Stats and custom RPG fields) and Contact Book widget. Files: `GameStatusWidget.tsx`, `game-status-widget.ts`, `GameContactBookWidget.tsx`.
 
-### Game Mode UI and layout (28)
+### Game Mode UI and layout (31)
 
 Edit layout (`GameLayoutEditToolbar.tsx`, `GameLayoutPopover.tsx`, `lib/game-layout-editor-store.ts`, `game-layout-geometry.ts`, `game-layout-snapshots.ts`, `game-layout-tidy.ts`; no switch yet):
 
@@ -155,6 +155,9 @@ Layout and phones:
 - Landscape phones (below 1024px wide and 32rem tall): map, party, the tab tray, a storyboard icon and the actions button share one top row; Currently Present and the image retry line become tray tabs that open sheets; the composer stays one line until focused; narration gets 65 to 69% of the height.
 - World map popover on phones and tablets sizes to the visible viewport (browser bars, keyboard, safe area) instead of a 68dvh cap; its header is marked so the music bubble avoids it.
 - Floating music widget docks to the right edge on phones (UI persist v101 to v102 moves only the untouched old default) and avoids elements marked `data-floating-widget-avoid` without rewriting the saved position. Files: `lib/floating-widget-avoid.ts`, `hooks/use-floating-widget-avoid.ts`, `LocalMusicPlayer.tsx`, `YouTubePlayer.tsx`, `SpotifyMiniPlayer.tsx`.
+- Hide the party bar and Currently Present: two toggles in the desktop game toolbar, the phone Game actions menu and the Party section of game settings; per game and per device in localStorage `marinara-game-hud:<gameId>:party-bar:hidden` and `...:scene-presence:hidden`; default shown. Files: `hooks/use-game-hud-lists.ts`, `GameHudListToggles.tsx`, `features/chat-settings/sections/GameHudListsSettings.tsx`.
+- Long turns never move the layout: the composer grows upward from a fixed one-line slot (textarea capped at min(120px, 22dvh), scrolls inside) and the generating status keeps its height, so typing, pasting and sending move narration and floating panels 0px. Files: `game-composer-stability.ts`, `GameInput.tsx`, `GameNarration.tsx`.
+- Tablets: panels can report a minimum height, so narration keeps its composer in view on crowded 1024px and wider screens; the tablet narration column below 1024 stops at 48rem; touch tablets (768px wide and 32rem tall and up) get 36px Game controls. Files: `lib/game-panel-layout.ts`, `styles/globals.css`.
 
 Scene, combat and server guards:
 
@@ -432,6 +435,35 @@ Features:
 - Behaviour: below 1024px the World map popover was capped at min(68dvh, 26rem), which cut the capability map view (place details, linked places, travel buttons) in half. It now sizes from its top to the bottom of the visual viewport, following browser bars, the on-screen keyboard and the bottom safe area, with the body as the scroll container. Desktop unchanged.
 - Behaviour (`1f04fede6`): the phone map popover header (title and close button) carries `data-floating-widget-avoid`, so the floating music bubble moves off it.
 - Boundary: package-side layout issues in the maps capability are reported upstream, not patched.
+
+### Hide the party bar and Currently Present
+
+- Commit: `6fb7d8b8f`.
+- Files: `packages/client/src/hooks/use-game-hud-lists.ts` (new), `packages/client/src/components/game/GameHudListToggles.tsx` (new), `packages/client/src/features/chat-settings/sections/GameHudListsSettings.tsx` (new), `packages/client/src/components/chat/ChatSettingsDrawer.tsx`, `packages/client/src/components/game/GameSurface.tsx`, `packages/client/src/components/game/GameNarration.tsx`, `packages/client/src/localization/locales/en.json` (`ui.game.hudLists.*`).
+- How to reach it: desktop game toolbar (two icon toggles beside the status and contact book toggles); phones, the "..." Game actions menu; everywhere, two switches ("Party bar", "Currently present") at the top of the Party section of game settings. All three stay in sync through one store.
+- Behaviour: the party portrait bar and the Currently Present strip hide independently. On portrait phones the narration top reserve (CSS variable `--game-narration-top-reserve`) drops from 8rem to 4rem when presence is hidden, or to 5.5rem when only the party bar is hidden and presence moves into the top row. On desktop the widgets reflow into the freed corner (narration already had priority). The landscape presence tray tab follows the same setting, because `hasScenePresence` includes it.
+- Settings and defaults: per game and per device in localStorage `marinara-game-hud:<gameId>:party-bar:hidden` and `marinara-game-hud:<gameId>:scene-presence:hidden`, shared by every session of the game; nothing is written to the server. Default: both shown (upstream behaviour).
+- Tests: `scripts/regressions/game-hud-lists.live.mjs` (47 checks at 390x844 and 1440x900: default shown, each toggle hides, stored per game, survives reload, restore clears the key, narration gains room on phones and is never squeezed on desktop).
+
+### Long turns never move the Game layout
+
+- Commits: `32fbf045f`, `cce862f29`.
+- Files: `packages/client/src/components/game/GameInput.tsx`, `packages/client/src/components/game/GameNarration.tsx`, `packages/client/src/components/game/game-composer-stability.ts` (new), `packages/client/src/components/game/GameStoryboardViewer.tsx`.
+- Cause: the composer textarea auto-grew from 36px to 120px in normal flow, so on phones and tablets the bottom-anchored narration rose 82 to 84px and on desktop the narration text scrolled 84px; on send the composer was swapped for a one-line "writing" status, collapsing the panel about 110px and reflowing every floating widget. On phones the storyboard tab also hid on every composer focus, shifting the column 53px.
+- Behaviour: the input bar sits at the bottom of a slot that keeps its one-line height (set directly on the element from a resize observer, never through React state, so no re-measure loop) and grows upward over the narration; the textarea caps at min(120px, 22dvh) and scrolls inside. While a turn generates, the status line keeps the composer's last height. The storyboard phone tab steps aside only while the composer is focused and an on-screen keyboard makes the visual viewport shorter than 80% of the layout viewport.
+- Measured: 0.0px movement of the narration panel, the floating panels, the first narration line and scroll position while pasting 2,000 characters, typing and sending, at 390x844, 820x1180 and 1440x900 (before: up to 84px).
+- Settings: none.
+- Tests: `scripts/regressions/game-composer-growth.browser.mjs` (real GameInput, FloatingGamePanel and the reserve hook, short and long narration at three sizes).
+
+### Game Mode on tablets
+
+- Commit: `61753173c`.
+- Files: `packages/client/src/lib/game-panel-layout.ts` (panel `minHeight`), `packages/client/src/components/game/FloatingGamePanel.tsx`, `packages/client/src/components/game/GameNarration.tsx`, `packages/client/src/components/game/GameWidgetPanel.tsx`, `packages/client/src/styles/globals.css`.
+- Cause: at 1024px and wider a crowded HUD shrank the floating narration to a third of the height (239px at 1024x768), scrolling the composer out of view at 1024x768, 1025x768 and 1180x820, and at 1366x1024 with the keyboard up. Just below 1024 the phone column ran 952px wide (about 110 characters a line). Most Game controls were 20 to 34px on touch tablets.
+- Behaviour: panels can report a minimum height; narration asks for its composer area plus 272px, so widgets give way first, and the composer sticks to the panel bottom when the box is still short (`data-game-panel-keep`). Below 1024 the narration column stops at 48rem, centred, with the tray inside it (landscape phones excluded). On touch tablets (at least 768px wide and 32rem tall) toolbar, narration, composer, party, presence, storyboard, map, retry-line and widget header controls get a 36px minimum. Phones, landscape phones and mouse desktops are unchanged.
+- Settings: none.
+- Tests: `scripts/regressions/game-tablet-layout.live.mjs` (768x1024, 820x1180, 1024x768, 1180x820, 1366x1024, 1023x768, 1025x768: no horizontal overflow, composer visible and on top with and without a simulated keyboard, narration visible, no cut-off headings, 36px targets, column width below 1024); new case in `scripts/regressions/game-panel-crowded-layout.regression.ts`.
+- Known limits: map place titles truncate in the 320px desktop map card; the image-retry banner at 1024px and wider sits behind the narration panel; at 1023x461 with a keyboard the landscape-phone rules apply and the composer is partly clipped.
 
 ### Job tracking setting moved into Feature switches
 
