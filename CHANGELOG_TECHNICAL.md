@@ -288,6 +288,13 @@ Features:
 
 ## 2026-09-24
 
+### Stat block values keep their text
+- **Commit(s):** this commit
+- **Files:** `packages/client/src/stores/game-mode.store.ts` (`applyWidgetUpdate`, stat_block branch), `packages/server/src/services/game/branch-state.ts` (`restoreBranchHudLists`, stat_block branch), `scripts/regressions/hud-widget-stat-text-values.regression.ts` (new).
+- **Bug:** stat block values were cut down to their leading number ("23 h 52 min" showed as 23, "540 km circuit" as 540). The tag parser already kept text (`coerceWidgetValue`), but the live store and branch restoration ran `leadingWidgetNumber` (a `parseFloat`) over stat values afterwards.
+- **Behaviour:** stat values go through `coerceWidgetValue`: a wholly numeric value ("42", "-1.5") becomes a number, and anything else stays text exactly as the GM wrote it. Numeric widgets (progress bar, gauge, relationship meter, counter) still read a leading number from their `value`. Live play and branch restoration give the same result. Values already stored as bare numbers are not repaired; the next GM update restores the text.
+- **Tests:** `hud-widget-stat-text-values.regression.ts` (the store after the tag parser and `restoreBranchHudLists`: "23 h 52 min" and "540 km circuit" stay strings, "42" becomes 42, "-1.5" becomes -1.5, a progress bar's "70 percent" becomes 70; the old code fails it); hud-widget-lifecycle, hud-widget-extended, hud-widget-list-capacity and game-switch-extended-widgets pass.
+
 ### Hidden turns stay out of Session Replay and the text export
 - **Files:** `packages/client/src/lib/game-session-replay.ts` (new `visibleReplayMessages`), `packages/client/src/components/game/GameSessionReplay.tsx`, `packages/server/src/routes/chats.routes.ts` (text export), regressions `scripts/regressions/game-session-replay-hidden.regression.ts` (new) and `chat-story-export.regression.ts` (text export assertions).
 - **Bug:** Session Replay (Game session history, Replay) built its turns from the raw `/chats/:id/messages` list, so turns flagged `extra.hiddenFromUser` (GM nudges, hidden narration) and command-only anchors (`extra.commandOnly`) showed as replay turns, player lines and recorded choices. The plain text chat export (`GET /api/chats/:id/export?format=text`) also listed hidden turns.

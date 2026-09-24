@@ -137,7 +137,8 @@ export function restoreBranchHudLists(
           const stat = readWidgetParam(body, "stat");
           const rawValue = readWidgetParam(body, "value");
           if (stat && widget.type === "stat_block" && rawValue !== null) {
-            const value = leadingWidgetNumber(rawValue) ?? rawValue;
+            // Same rule as live play: a stat value stays text unless it is wholly numeric.
+            const value = coerceWidgetValue(rawValue);
             const stats = [...(config.stats ?? [])];
             const index = stats.findIndex((s) => s.name.toLowerCase() === stat.toLowerCase());
             if (index < 0) stats.push({ name: stat, value });
