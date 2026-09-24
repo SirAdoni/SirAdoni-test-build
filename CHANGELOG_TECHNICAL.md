@@ -4,7 +4,7 @@
 
 A standing list of everything this fork carries over upstream `Pasta-Devs/Marinara-Engine` `staging`, so no feature is forgotten. Every user-visible feature, shortcut, route, setting and behaviour gets its own bullet. Update this list whenever a feature lands, changes its switch or is dropped.
 
-- Baseline (2026-09-24): branch `memory-system-finish` at `1f04fede6`; merge base with `upstream/staging` is `60ed7ec80` (upstream sync 2). `git log upstream/staging..HEAD` lists 163 fork commits (158 without merges). Most of the Game Mode base (storyboards, Contact Book, scene timeline, continuity, first Campaign Wiki) arrived in one large commit, `44fba2b25` (2026-09-20, 770 files).
+- Baseline (2026-09-24): branch `memory-system-finish` at `490265ab7`; merge base with `upstream/staging` is `60ed7ec80` (upstream sync 2). `git log upstream/staging..HEAD` lists 164 fork commits (159 without merges). Most of the Game Mode base (storyboards, Contact Book, scene timeline, continuity, first Campaign Wiki) arrived in one large commit, `44fba2b25` (2026-09-20, 770 files).
 - Switch rule: every addition can be turned off. On (the default) is this build's behaviour; Off restores upstream's. Generation job tracking and a few older opt-ins start off. Pure bug fixes carry no switch. Reference: `docs/configuration/features.md`; audit of what still lacks a switch: `review-2026-09-22/optional-settings-audit_v1.0.md` (outside the repo).
 - User-facing wording for most items is in `CHANGELOG.md` `[Unreleased]`; the dated sections below hold the technical detail.
 
@@ -166,8 +166,9 @@ Scene, combat and server guards:
 - Legacy node maps convert to World Maps at startup when the package is available, originals kept. Files: `services/capability-packages/automatic-legacy-game-map-migration.ts`, `shared/src/utils/legacy-game-map.ts`.
 - In-game help: chaptered features guide to layouts, widgets, maps, memory, Status and the Contact Book (`GameFeaturesGuide.tsx`).
 
-### Game tools (Session panel Tools tab and command palette) (10)
+### Game tools (Session panel Tools tab and command palette) (11)
 
+- Session panel **Tools** tab (wrench icon) beside Session history, Scenes and Journal, holding the tools below. File: `GameToolsPanel.tsx`.
 - Dice log: every roll from the dice tray, GM narration and skill checks with dice, total and crit or fumble flags; summary strip, per-face distribution, session or whole-game view; logging never blocks a roll. Files: `GameDiceLog.tsx`, `services/game/dice-roll-log.ts`, table `game_dice_rolls`, `routes/game-tools.routes.ts`.
 - Initiative tracker: combatants from cards, lorebook entries or typed names, initiative rolls into the Dice Log, rounds, HP and conditions, saved encounters per game, **To input** drops the current turn into the chat input as an OOC note. Files: `tools/InitiativeTracker.tsx`, `routes/game-initiative.routes.ts`, `shared/src/utils/initiative-tracker.ts`.
 - GM prep board: private per-game board (strong start, scenes, secrets and clues, threads, NPCs, locations, treasure, notes), used checkboxes, tags, links to cards and entries, drag or arrow-key reordering, carry-over to the next session, never sent to the model, JSON import and export. Files: `GamePrepBoard.tsx`, `routes/game-prep-board.routes.ts`, `shared/src/utils/prep-board.ts`.
@@ -179,9 +180,10 @@ Scene, combat and server guards:
 - Campaign log reader: every session in order as a story, campaign-wide search, session and speaker filters, chapter list; `/goto` and global search results open it. Files: `modals/GameLogModal.tsx`, `services/game/campaign-log.ts`, `GET /api/game-tools/log/:chatId`.
 - Contact Book: full-screen book of encountered characters with numeric opinions, relationship statuses and local nested categories. Files: `GameContactBookWidget.tsx`, `services/game/game-contact-book.ts`, `game-contact-book-state.ts`.
 
-### Library (17)
+### Library (18)
 
 - Nested folders up to six levels for lorebooks and characters (server support for presets and agents): drag onto a folder, New subfolder, Move folder to, remembered open state, search opens matching folders. Files: `panels/library/LibraryFolderTree.tsx`, `shared/src/utils/library-folder-tree.ts`, `services/storage/character-folders.ts`; `parentId` on `library_folders` and `character_groups`.
+- Character tag filter and tag list cover the whole library: the Characters panel keeps fetching catalog pages while a tag filter is active or the tag list is open (safety cap 50 pages). File: `panels/library/use-auto-load-all-pages.ts`.
 - Campaign picker and campaign sections above the Characters and Lorebooks lists; campaign badges that filter on click. Files: `LibraryCampaignBar.tsx`, `LibraryCampaignSections.tsx`, `LibraryCampaignBadges.tsx`.
 - Manual campaign links from selection mode or the row button. Route `routes/library-campaigns.routes.ts`, table `library_campaign_links`.
 - Campaign roster: GM, party and linked NPC chips when filtering Characters to one campaign. File: `LibraryCampaignRoster.tsx`.
@@ -424,13 +426,6 @@ Features:
 - A list widget that the old 5-entry cap had emptied was restored to 24 entries through the Dev MCP `set_chat_metadata` (key `gameWidgetState`), after approval, with a backup under `.dev-mcp\backups`.
 - The coordinating session reports example widgets set up in a science-fiction test game, as live data only.
 
-### Generation job tracking moved into Features
-
-- Commit: `d91c5d395`.
-- Files: `packages/client/src/components/panels/settings/FeatureSwitchesSettings.tsx`, `GenerationJobTrackingSettings.tsx`, `packages/client/src/components/panels/SettingsPanel.tsx`, `docs/configuration/features.md`, `docs/development/generation-jobs.md`.
-- Behaviour: the job tracking switch moves from its own Settings > Advanced row into Settings > Advanced > Features as **Keep generating when the tab is closed**, with the Generation jobs button under it.
-- Setting: app setting `generationJobTracking` (`"true"` or `"false"`), default off; key and default unchanged, so no migration.
-
 ### Game map popover fits the visible viewport on phones and tablets
 
 - Commits: `b5741831d`, `1f04fede6`.
@@ -438,14 +433,22 @@ Features:
 - Behaviour (`1f04fede6`): the phone map popover header (title and close button) carries `data-floating-widget-avoid`, so the floating music bubble moves off it.
 - Boundary: package-side layout issues in the maps capability are reported upstream, not patched.
 
+### Job tracking setting moved into Feature switches
+
+- **Commit:** `d91c5d395` (2026-09-24 10:00 +0300). Follow-up to 077e055ee; the CHANGELOG.md line was corrected in bcb5006ea.
+- **Files:** `packages/client/src/components/panels/SettingsPanel.tsx`, `packages/client/src/components/panels/settings/FeatureSwitchesSettings.tsx`, `packages/client/src/components/panels/settings/GenerationJobTrackingSettings.tsx`, `packages/client/src/localization/locales/en.json`, `docs/configuration/features.md`, `docs/development/generation-jobs.md`.
+- **What it does:** removes the separate Settings > Advanced section **Generation job tracking** (toggle "Track generation jobs") and renders the same control as a row inside Settings > Advanced > Features (`FeatureSwitchesSettings`), relabelled **Keep generating when the tab is closed (job tracking)**, placed after the server switches and before **Send client error reports**. Adds the note "Unlike the switches above, this one starts off." before the retention line. The **Open generation jobs** button stays under the toggle.
+- **How to reach it:** Settings > Advanced > Features. The former section's search aliases (`jobs`, `generation jobs`, `job tracking`, `tab closed`, `keep generating`, `background`, `recover`, `reconnect`) now point at the Features section; the old `generation-job-tracking` settings section id was removed.
+- **Settings and defaults:** unchanged: app setting `generationJobTracking`, default off, still separate from the `features` JSON object. `docs/configuration/features.md` lists it in the switch table as default **Off**, scope App, no environment variable.
+- **Storage:** None (no new keys; same `generationJobTracking` app setting).
+- **User changelog:** the matching CHANGELOG.md Unreleased line was updated in follow-up commit bcb5006ea (2026-09-24) to name **Keep generating when the tab is closed (job tracking)** (Settings > Advanced > Features, off by default).
+- **Tests:** `scripts/regressions/generation-job-tracking-settings-placement.regression.ts`.
+- **Known limits:** i18n keys `settings.generationJobTracking.title` and `settings.generationJobTracking.searchDescription` were removed (`en.json` is the only locale file, so no other locale needed changes).
+
 ### Built-in helper popup left unchanged
 
 - Commit: `d2a7e9094`.
 - Behaviour: reverts the helper minimize and search size changes that `a4049498b` made, at the user's request; the helper popup, its position and behaviour stay as they were. The home widget drag-handle fix in the same file is kept.
-
-### Changelog note for the job tracking move
-
-- Commit: `bcb5006ea`. `CHANGELOG.md` now says the job tracking setting lives in Settings > Advanced > Features.
 
 ### Validation boundary for the 2026-09-24 phone and tablet work
 
@@ -1474,6 +1477,736 @@ Paths are relative to the repository root; `server/` means `packages/server/src/
 - **Settings / env and defaults:** none.
 - **Tests:** `peek-prompt-next-turn-layout.regression.ts`.
 
+### Search All Chats (global message search)
+
+- **Commit:** `786bda8dd` (2026-09-23 00:34 +0300).
+- **Files:** `packages/client/src/components/modals/GlobalSearchModal.tsx` (new), `packages/client/src/hooks/use-chat-insights.ts` (new, `useGlobalChatSearch`), `packages/client/src/lib/chat-insights.ts` (new, `openGlobalSearch`, `openChatAtMessage`), `packages/server/src/routes/chat-insights.routes.ts` (new), `packages/server/src/services/chat-insights/chat-insights.service.ts` (new, `searchAllChats`), `packages/shared/src/utils/chat-search-query.ts` (new: query parser, matcher, snippet builder), `packages/shared/src/types/chat-insights.ts` (new), `packages/client/src/components/layout/ChatSidebar.tsx`, `packages/client/src/components/layout/ModalRenderer.tsx` (modal id `global-chat-search`), `packages/client/src/components/chat/ChatArea.tsx`.
+- **What it does:** searches message text across every chat (internal Professor Mari assistant chats excluded), newest-active chats first and newest matches first inside each chat. Every needle must match, case-insensitively; `"quoted phrases"` stay together (curly quotes accepted, an unclosed quote takes the rest of the query as a phrase), and whitespace inside a phrase matches any run of whitespace. Results show chat name, mode, speaker, message number and a highlighted snippet; clicking one (or Enter on the first result) switches to that chat and scrolls to the message via the existing goto request (closes open detail panels, closes the sidebar under 768px width).
+- **What it does (filters and visibility):** filters for Mode (Conversation, Roleplay, Game), Character (chats that include the character), Sent by (You, Characters, Narrator, System) and a From/To date range (a bare `YYYY-MM-DD` To date includes the whole day). Hidden messages (`hiddenFromUser`, `commandOnly`, `roleplayPrivateOnly`) and empty messages never match. Since ab891fb41, Game Mode narration is searched with the player's segment edits and deletions applied, so replaced or removed text neither matches nor appears in snippets.
+- **How to reach it:** the "Search all chats" button (text-search icon) beside the chat list search field, which pre-fills the modal with the sidebar's current search text. Later additions (8e4a1ccff): Ctrl+Shift+F (Cmd+Shift+F on Mac) when no other dialog is open, and the command palette action "Search all chats" (typing anything in the palette also offers a search inside messages). Keyboard shortcuts list entries: "Search all chats (when no other dialog is open)" and "Open the first Search all chats result".
+- **API:** `GET /api/chat-insights/search?q=&mode=&characterId=&role=&from=&to=&offset=&limit=` (400 when `q` is empty; `q` truncated to 500 characters). Response carries `results`, `hasMore`, `partial`, `scannedChats`, `totalChats`.
+- **Settings and defaults:** None. Client page size 30, input debounced 300 ms, results cached 30 s. Not feature-switch gated in this commit.
+- **Storage:** None (read-only). Scans one chat at a time through a chatId-scoped query so the lazy file store only loads the chat unit being read.
+- **Game chats:** as merged, opening a result in a Game Mode chat showed the toast `chatInsights.gotoUnavailableInGame` instead of paging the whole history, because the Game surface has no per-message anchors. 7a7a44b11 replaced this: a jump to a game message now opens the campaign log at that turn (covered in the campaign log entry).
+- **Tests:** `scripts/regressions/chat-global-search.regression.ts`; `scripts/regressions/chat-insights-display.regression.ts` (display helpers). Later: `scripts/regressions/integration-seams.regression.ts` (ab891fb41) covers the segment-edit reading.
+- **Known limits:** at most 12 needles of up to 200 characters each; `limit` capped at 100 per page and `offset` capped at 1,000 (later pages return empty); an 8 second scan budget per request, after which the response is marked `partial` and the modal says "Some older chats were not searched yet; narrow the search to reach them." Plain substring matching only (no fuzzy, stemming or regex). Chats whose last message predates the From date are skipped without being read.
+
+### Markdown and HTML story exports
+
+- **Commit:** `786bda8dd` (2026-09-23 00:34 +0300).
+- **Files:** `packages/server/src/services/chat-insights/transcript-document.ts` (new: `renderTranscriptMarkdown`, `renderTranscriptHtml`, `isStoryTranscriptMessage`), `packages/server/src/services/chat-insights/transcript-avatars.ts` (new: `readSmallAvatarDataUri`), `packages/server/src/routes/chats.routes.ts` (`serializeChatTranscript`, export route), `packages/client/src/hooks/use-chats.ts` (`useExportChat`, `ChatExportFormat`), `packages/client/src/components/chat/ChatBranchSelector.tsx`.
+- **What it does:** adds two export formats beside JSONL and Text. Markdown (`.md`) writes a titled transcript with speaker headings; Story (`.html`) writes a standalone page with embedded CSS: light and dark styling (`prefers-color-scheme`), a phone layout under 480px, print styles, and a round avatar per speaker. Avatars are embedded as `data:` URIs for the persona and each character when the stored file is a local png/jpeg/gif/webp/avif of at most 96 KB; otherwise a coloured initial is drawn. The title is the chat name plus the branch name when on a branch.
+- **What it does (content rules):** exports follow the active swipe (per CHANGELOG), leave out hidden (`hiddenFromUser`, `commandOnly`, `roleplayPrivateOnly`), system and empty messages, and resolve prompt macros in message text. The user speaker is the persona snapshot name stored on the message, else the chat persona name, else "User"; assistant turns named "Narrator" are shown as narration. Reasoning is included only when the existing "Include reasoning in exports" setting is on (HTML puts it in a collapsible `details`, hidden in print).
+- **How to reach it:** the branch menu (branch selector in the chat header) now has "Markdown" (tooltip "Export as Markdown") and "Story" (tooltip "Export as a styled HTML story you can open, share or print") buttons next to Import. Later (8e4a1ccff): command palette actions "Export this chat as Markdown" and "Export this chat as a story" for the open chat.
+- **API:** `GET /api/chats/:id/export?format=markdown|md|html&includeReasoning=true&includeAvatars=false`. `includeAvatars` defaults to on; unknown formats still fall back to JSONL.
+- **Settings and defaults:** "Include reasoning in exports" (Settings > Advanced > Message Tools; existing client UI setting `includeReasoningInExports`) applies to these formats too. Not feature-switch gated.
+- **Storage:** None (read-only).
+- **Later changes:** 2f9737914 (chapters) added a chapter table of contents to the documents (`listTranscriptChapters`, `.toc` styles).
+- **Tests:** `scripts/regressions/chat-story-export.regression.ts`.
+- **Known limits:** avatars over 96 KB, remote avatar URLs or unknown image types are not embedded; the HTML story has no images other than avatars. Bulk chat export is not extended by this commit (single chat only).
+
+### Chat stats
+
+- **Commit:** `786bda8dd` (2026-09-23 00:34 +0300).
+- **Files:** `packages/client/src/components/modals/ChatStatsModal.tsx` (new, modal id `chat-stats`), `packages/shared/src/utils/chat-stats.ts` (new: `computeChatStats`, `computeChatPlayTime`, `CHAT_SITTING_GAP_MS`, day keying), `packages/server/src/services/chat-insights/chat-insights.service.ts` (`computeStoredChatStats`), `packages/server/src/routes/chat-insights.routes.ts`, `packages/client/src/hooks/use-chat-insights.ts` (`useChatStats`), `packages/client/src/lib/chat-insights-display.ts` (new, formatting helpers), `packages/client/src/components/chat/ChatBranchSelector.tsx`.
+- **What it does:** a "Stats: <chat name>" modal with the date range of the chat, Messages, Words, Active days, Average reply and Your average (words), Play time with sitting count, Longest sitting, Generation tokens ("N in, N out", or "Not reported"), Words per speaker (words, messages, average), a Messages per active day bar chart with the busiest day, and the Longest message with a "Jump to message" link.
+- **What it does (counting rules):** system and hidden messages are excluded. Play time adds up sittings, and a gap of more than 30 minutes between messages starts a new sitting. Tokens are summed from `generationInfo.tokensPrompt` / `tokensCompletion` stored in message `extra` (only providers that reported usage count). In Game Mode all assistant turns count as Narrator; elsewhere each character is its own speaker. The user is named from the chat's persona identity, else "You". Since ab891fb41, game narration word counts use the segment-edited text.
+- **How to reach it:** "Stats" button in the branch menu (tooltip "Chat statistics"). Later (8e4a1ccff): command palette action "Stats for this chat".
+- **API:** `GET /api/chat-insights/chats/:id/stats?tz=<IANA zone>&tzOffset=<minutes>` (404 for missing chats and the internal assistant chat). The browser's IANA zone wins over the fixed offset so days follow DST; offsets are clamped to plus or minus 14 hours.
+- **Settings and defaults:** None. Not feature-switch gated.
+- **Storage:** None (read-only).
+- **Tests:** `scripts/regressions/chat-stats-activity.regression.ts`, `scripts/regressions/chat-insights-display.regression.ts`.
+- **Known limits:** the per-day chart shows the last 60 active days only ("Messages per active day (last 60)"). Token totals depend on providers reporting usage; older messages without `generationInfo` add nothing. Play time is inferred from message timestamps, not measured.
+
+### Activity overview
+
+- **Commit:** `786bda8dd` (2026-09-23 00:34 +0300).
+- **Files:** `packages/client/src/components/modals/ActivityOverviewModal.tsx` (new, modal id `activity-overview`), `packages/server/src/services/chat-insights/chat-insights.service.ts` (`buildActivityOverview`, `createActivityOverviewCache`, `createChatActivitySummaryCache`), `packages/shared/src/utils/chat-stats.ts` (`computeDayStreaks`, `createLocalDayKeyer`), `packages/client/src/lib/chat-insights-display.ts` (`buildHeatmapGrid`, `heatmapRange`), `packages/client/src/components/layout/ChatSidebar.tsx` (`UserStatusFooter`).
+- **What it does:** a GitHub-style heatmap of messages per day across all chats, with a range picker for the last 12 months or any calendar year that has activity; stat cards for current streak (plus longest), total messages (plus words), active chats, active days and total play time; and "Most played chats" (top 8 by play time, then message count) that open the chat. Play time here uses one global timeline, so two chats played side by side are not counted twice.
+- **How to reach it:** the pulse (Activity) button beside the custom status field in the user status footer at the bottom of the chat sidebar (label "Activity overview"). Later (8e4a1ccff): command palette action "Activity overview".
+- **API:** `GET /api/chat-insights/activity?tz=&tzOffset=&refresh=true`.
+- **Settings and defaults:** None. Not feature-switch gated.
+- **Storage:** None persisted. Server keeps an in-memory overview cache per time zone for 60 s (at most 32 zones, one shared in-flight scan) and per-chat summaries that are reused while the chat's `updatedAt`/`lastMessageAt` are unchanged and no message write happened (or the chat unit is not resident), re-read at least hourly. The client caches for 60 s.
+- **Tests:** `scripts/regressions/chat-stats-activity.regression.ts`.
+- **Known limits:** internal assistant chats, system and hidden messages are excluded. First build walks every chat's messages. Heatmap on narrow screens scrolls horizontally and starts at the newest weeks.
+
+### Game Mode Session panel: Tools tab
+
+- **Commit:** `36f8f452e` (2026-09-23 00:45 +0300).
+- **Files:** `packages/client/src/components/game/GameSurface.tsx`, `packages/client/src/components/game/GameToolsPanel.tsx` (new).
+- **What it does:** adds a fourth "Tools" tab (wrench icon) to the Game Mode Session panel beside Session history, Scenes and Journal. As merged it holds the Dice log, the Name generator (with an "Open in a window" button) and the Campaign codex download. On phones the four tabs stack the icon over a label that may wrap.
+- **How to reach it:** Game Mode, Session panel, Tools tab.
+- **Settings and defaults:** None.
+- **Storage:** None (the tab choice is component state, not persisted).
+- **Later changes:** the tab gained the campaign log (7a7a44b11) and further tools from later merges (random tables and oracle in a03fe63a5; initiative tracker and others in 2f9737914).
+- **Tests:** none specific to the tab.
+- **Known limits:** the tab only exists on the Game Mode surface.
+
+### Dice roll log (Game Mode)
+
+- **Commit:** `36f8f452e` (2026-09-23 00:45 +0300).
+- **Files:** `packages/server/src/db/schema/game-dice-rolls.ts` (new), `packages/server/src/db/schema/index.ts`, `packages/server/src/db/file-backed-store.ts`, `scripts/protect-launcher-data.mjs`, `packages/server/src/services/storage/game-dice-rolls.storage.ts` (new), `packages/server/src/services/game/dice-roll-log.ts` (new), `packages/server/src/routes/game-tools.routes.ts` (new), `packages/server/src/routes/generate.routes.ts`, `packages/server/src/routes/index.ts`, `packages/client/src/hooks/use-game-tools.ts` (new), `packages/client/src/hooks/use-game.ts`, `packages/client/src/components/game/GameDiceLog.tsx` (new).
+- **What it does:** an append-only history of every roll for a game: dice tray rolls (`player`), GM rolls from `[dice:]` tags and the `roll_dice` tool during generation (`gm`, tied to the saved message id) and skill checks (`skill_check`, with actor and skill label). Each row keeps notation, every die, modifier, total, and crit/fumble flags. A GM roll that a skill check adopted is logged once, as the check. Logging is fire and forget: never awaited by the roll, and a failed write is only a server warning.
+- **What it does (panel):** a "Show rolls from" toggle (Session or Whole game), stat cards (Rolls, Average total vs expected, Natural 20s, Natural 1s, criticals and fumbles), a per-face distribution chart per die size with a dashed fair-share line (d20 by default), and the latest rolls with source badges (Player, GM, Check), crit/fumble markers and time. The panel refreshes every 15 s while open because GM rolls land server-side. 524d6dbca added a one-line summary (most rolled die with its average vs a fair die, nat 20 / nat 1 rates for d20s) and 390px layout fixes. Later merges added `table` (random tables and oracle, a03fe63a5) and `initiative` (initiative tracker, 2f9737914) sources.
+- **How to reach it:** Game Mode, Session panel, Tools tab. Later (8e4a1ccff): command palette action "Open the dice log" when a game is open.
+- **API:** `GET /api/game-tools/dice-log?chatId=&scope=session|game&limit=` (default 60 recent, max 500; 404 for unknown chat) returns `total`, `stats`, `recent`. `POST /api/game-tools/dice-log` with a discriminated body (`source: "player"` with `result` and optional `context`, or `source: "skill_check"` with `result` and optional `messageId`); returns `{ recorded }`.
+- **Settings and defaults:** None. Not feature-switch gated.
+- **Storage:** new file-backed table `game_dice_rolls` (`id` time-sortable, `chatId`, `gameId` stamped at write time from the chat's effective game id, `messageId`, `source`, `actor`, `label`, `notation`, `rolls` JSON, `modifier`, `total`, `critical`, `fumble`, `createdAt`). Registered in `packages/server/src/db/schema/index.ts`, `BUILT_IN_FILE_BACKED_TABLES` and `SHARD_KEY_COLUMNS` (sharded by `chatId`) in `packages/server/src/db/file-backed-store.ts`, a `chats` to `game_dice_rolls` entry in `CASCADES`, and `SHARDED_TABLES` in `scripts/protect-launcher-data.mjs`.
+- **Tests:** `scripts/regressions/game-dice-roll-log.regression.ts`.
+- **Known limits:** it is a history, not game state: rewinds, swipes and regenerations do not remove rows; rows go away only with their chat (the storage has a `clear` helper but no route or UI uses it). Expected-average comparison is skipped for skill checks; face statistics only track dice of 2 to 100 sides. `game_dice_rolls` is not in the file store's `LAZY_UNIT_TABLES`, so it stays fully resident.
+
+### Offline fantasy name generator
+
+- **Commit:** `36f8f452e` (2026-09-23 00:45 +0300).
+- **Files:** `packages/client/src/lib/name-generator.ts` (new), `packages/client/src/components/tools/NameGenerator.tsx` (new), `packages/client/src/components/modals/NameGeneratorModal.tsx` (new, modal id `name-generator`), `packages/client/src/lib/open-name-generator.ts` (new), `packages/client/src/components/layout/ModalRenderer.tsx`, `packages/client/src/components/game/GameToolsPanel.tsx`.
+- **What it does:** generates 8 names at a time entirely in the browser. Styles: Harsh northern, Flowing elvish, Desert, Imperial (hand-tuned syllable sets), plus "Learn from a lorebook" and "Learn from characters", which train a small order-2 character Markov model on capitalised words taken from the chosen lorebook's entry names or the character library's names (stopwords removed, verbatim training names avoided). Options: Name feel (Any, Feminine, Masculine), Surname on or off, and an editable Seed; the same seed and options always give the same list.
+- **What it does (controls):** each name can be locked (kept across regenerations), copied to the clipboard, and "Regenerate" draws a new seed while locked names stay. Learned styles show "Learned from N names" and ask for a source with at least three names.
+- **How to reach it:** Game Mode, Session panel, Tools tab (inline, with "Open in a window" to open the modal). Later (8e4a1ccff): command palette action "Name generator", available anywhere.
+- **Settings and defaults:** default style Harsh northern, Name feel Any, Surname on, random seed. None persisted. Not feature-switch gated.
+- **Storage:** None (read-only; reads lorebook entries and characters through existing client queries).
+- **Tests:** `scripts/regressions/name-generator.regression.ts`.
+- **Known limits:** locks reset when the source or lorebook changes; no settings are remembered between openings. Training only picks capitalised words of 3 to 14 letters.
+
+### Campaign codex export (original version, reworked as codex v2)
+
+- **Commit:** `36f8f452e` (2026-09-23 00:45 +0300).
+- **Files:** `packages/server/src/services/game/campaign-codex.ts` (new), `packages/server/src/routes/game-tools.routes.ts`, `packages/client/src/hooks/use-game-tools.ts` (`downloadCampaignCodex`), `packages/client/src/components/game/GameToolsPanel.tsx`.
+- **What it does:** as merged, downloads a game's campaign memory as readable Markdown or JSON (format `marinara-campaign-codex`, version 1): entities grouped by kind with aliases, newest summary and current state, facts, knowledge and relationships tagged by the session they came from, and a timeline across all sessions. Records of the same entity across session chats were folded into one entry and ids resolved to names. It only reads memory.
+- **How to reach it:** Game Mode, Session panel, Tools tab, "Campaign codex" section with Markdown and JSON buttons. Later (8e4a1ccff): command palette action "Download campaign codex (Markdown)".
+- **API:** `GET /api/game-tools/codex/:chatId?format=md|json` (attachment named from the game name; 404 for unknown chat).
+- **Settings and defaults:** None.
+- **Storage:** None (read-only).
+- **Later rework:** 7a7a44b11 rebuilt the codex on the merged campaign memory projection with a smaller output and JSON format version 2 (`knowledge` became `claims` and `heldBy`). See the codex v2 entry for current behaviour.
+- **Tests:** `scripts/regressions/campaign-codex-export.regression.ts` (adjusted by 7a7a44b11).
+- **Known limits:** the version 1 behaviour described here no longer ships; see codex v2.
+
+### Check lorebook (lorebook lint)
+
+- **Commit:** `a837cd319` (2026-09-23 00:58 +0300).
+- **Files:** new `packages/shared/src/utils/lorebook-lint.ts` (pure analyzer `lintLorebookEntries`, exported from `packages/shared/src/index.ts`), new `packages/client/src/components/lorebooks/LorebookLintPanel.tsx`; changed `packages/client/src/components/lorebooks/LorebookEditor.tsx` (panel mount plus shared `jumpToEntry`), `packages/client/src/localization/locales/en.json` (`lorebook.editor.lint.*`).
+- **What it does:** a collapsible panel that analyzes the entries the editor already holds (no server round trip; computed only while the panel is open). Rules and severities: `invalid_regex` (error: regex key that fails `new RegExp(source, "g")`, matched as plain text), `unsafe_regex` (warning: fails `isPatternSafe`, matched as plain text), `empty_content` (warning), `no_keys` (warning, skipped for constant or always-loaded entries), `overlong` (warning, estimated tokens above the limit), `short_key` (warning, literal key under 3 characters), `common_key` (warning, literal key on an English stop-word list), `duplicate_content` (warning, same whitespace-normalized, case-folded content), `duplicate_key` (info, same key in several entries; regex keys compared by exact source), `disabled` (info).
+- **What it does (UI):** header shows per-severity counts; filter chips All / Errors / Warnings / Notes; editable **Token limit** field (default 1000) for the overlong rule; issues sorted by severity, then entry order; clicking an issue ("Go to entry") clears the entry search and the Never fired filter, expands the entry's folder chain, expands the entry and scrolls to it. Results are paged 150 at a time ("Show N more").
+- **How to reach it:** Lorebooks panel > open a lorebook > entries section > **Check lorebook** (top of the section, above **Keyword test**). No API route, no palette command in this commit.
+- **Settings and defaults:** Token limit 1000 (`LOREBOOK_LINT_DEFAULT_MAX_ENTRY_TOKENS`), minimum key length 3 (`LOREBOOK_LINT_DEFAULT_MIN_KEY_LENGTH`, not exposed in the UI). Token limit is component state only (resets when the editor remounts). Not feature-switch gated.
+- **Storage:** None (read-only).
+- **Tests:** `scripts/regressions/lorebook-lint.regression.ts`.
+- **Known limits:** the common-word list is English only (other languages are only caught by the length rule, per code comment); short/common key rules skip regex keys and constant/always-loaded entries; the analyzer never modifies entries, it only reports.
+
+### Lorebook test tool (real scanner run)
+
+- **Commit:** `a837cd319` (2026-09-23 00:58 +0300).
+- **Files:** new `packages/server/src/services/lorebook/test-scan.ts` (`runLorebookTestScan`), new `packages/client/src/components/lorebooks/LorebookScanTest.tsx`; changed `packages/server/src/routes/lorebooks.routes.ts` (test route), `packages/client/src/hooks/use-lorebooks.ts` (`runLorebookTestScan` client call), `packages/client/src/components/lorebooks/LorebookEditor.tsx`.
+- **What it does:** extends the existing instant Keyword test with a **Run scanner** button that runs the real generation scanner (`scanForActivatedEntries` / `recursiveScan`) on this lorebook only, against either **Pasted text** or the **Current chat** (all its messages, the chat's character ids and their card tags, and the chat mode's generation triggers). It lists entries that would fire with the reason: Key: matched keys, Constant, Always loaded, Recursion from another entry (with the triggering entry names), plus a chance note when probability is below 100. It separately lists entries whose keys matched but were held back, with the first gate: `secondary_keys`, `filters` (character or trigger filter), `conditions` (activation condition or schedule), `group` (another entry in the group was picked), `probability` (0%), `recursion_only`, `folder_disabled`.
+- **What it does (editor):** while a scanner result is shown, the entry row highlights follow it instead of the instant keyword preview; editing the text or switching source discards the result as stale. Each result row jumps to its entry.
+- **How to reach it:** Lorebooks panel > open a lorebook > entries section > **Keyword test** > source toggle (**Pasted text** / **Chat: name**) > **Run scanner**. The chat source needs an open chat ("Open a chat to test against it."). API: `POST /api/lorebooks/:id/test` with body `{ text?, chatId? }`, returns `{ activated, blocked, recursive, scannedMessages }` (404 for unknown lorebook or chat).
+- **Settings and defaults:** uses the lorebook's own scan depth, recursion and max recursion depth settings; entries without a scan depth use `LIMITS.LOREBOOK_DEFAULT_SCAN_DEPTH`. Not feature-switch gated.
+- **Storage:** None (read-only).
+- **Tests:** `scripts/regressions/lorebook-test-scan.regression.ts`.
+- **Known limits:** timing state (sticky, cooldown, delay) is ignored and chance rolls always pass (stated in the UI hint); pasted text is capped at 200,000 characters and the request body at 1 MiB; only the edited lorebook is scanned, not every lorebook the chat would use; the chat-mode generation trigger `test_scan` is excluded.
+
+### Lorebook activation stats
+
+- **Commit:** `a837cd319` (2026-09-23 00:58 +0300).
+- **Files:** new `packages/server/src/services/lorebook/activation-stats.ts`, new `packages/server/src/db/schema/lorebook-activation-stats.ts`; changed `packages/server/src/db/schema/index.ts`, `packages/server/src/db/file-backed-store.ts`, `packages/server/src/routes/generate.routes.ts` (recording), `packages/server/src/routes/lorebooks.routes.ts` (read route), `packages/server/src/app.ts` (flush on shutdown), `scripts/protect-launcher-data.mjs`, `packages/client/src/hooks/use-lorebooks.ts` (`useLorebookActivationStats`), `packages/client/src/components/lorebooks/LorebookEditor.tsx`, `packages/client/src/components/lorebooks/LorebookEntryRow.tsx`.
+- **What it does:** after each saved generation the route reports the entries actually injected (`lorebookScanSnapshot.activatedEntries`); counts are queued in memory and written in one transaction about 2 seconds later (`FLUSH_DELAY_MS`), and flushed again in the app's onClose hook. Swipes and regenerations count; a Continue (`input.continueMessageId`) does not. Recording is synchronous, never throws, and failures are logged and dropped so a generation is never affected.
+- **What it does (editor):** entry rows show a small `N×` badge with a tooltip "Fired in N generations, last on date"; the sort menu gains **Fired ↓** (ties by order); the totals line gains a **Never fired (N)** toggle that shows only entries with no stats row (folder grouping is paused while it is on).
+- **How to reach it:** Lorebooks panel > open a lorebook > entries list (sort menu, totals line). API: `GET /api/lorebooks/:id/activation-stats` returns `{ entryId, lorebookId, count, lastActivatedAt, lastChatId }[]` (never-fired entries are absent). Client query stale time 60 s.
+- **Settings and defaults:** at this commit always on. Later gated by the feature switch **Usage and activation stats** (`usageAndActivationStats`, default ON, Settings > Advanced > Features, commit 8aa93818b): off records nothing and the editor does not fetch or show stats.
+- **Storage:** new file-backed table `lorebook_entry_activation_stats` (`entryId` primary key, `lorebookId`, `count`, `lastActivatedAt`, `lastChatId`), schema in `packages/server/src/db/schema/lorebook-activation-stats.ts`, registered in `BUILT_IN_FILE_BACKED_TABLES` and `SHARD_KEY_COLUMNS` (sharded by `lorebookId`) in `file-backed-store.ts`, cascade from `lorebook_entries` (by `entryId`), and in `SHARDED_TABLES` / `PRIMARY_KEY_COLUMNS` in `scripts/protect-launcher-data.mjs`.
+- **Tests:** `scripts/regressions/lorebook-activation-stats.regression.ts`.
+- **Known limits:** counting starts when the feature shipped (no history backfill; "Never fired" means since stats started); a hard exit can lose the last ~2 seconds of counts; a failed batch write drops those counts; entries deleted before the flush are skipped. Later commit e5679fc90 (memoized entry rows) kept the stats display.
+
+### Duplicate character finder
+
+- **Commit:** `a837cd319` (2026-09-23 00:58 +0300).
+- **Files:** new `packages/shared/src/utils/character-duplicates.ts` (`findDuplicateCharacters`, `normalizeCharacterName`, `jaccardSimilarity`), new `packages/client/src/components/characters/CharacterDuplicatesModal.tsx`; changed `packages/server/src/routes/characters.routes.ts`, `packages/client/src/hooks/use-characters.ts` (`useCharacterDuplicates`), `packages/client/src/components/panels/CharactersPanel.tsx`.
+- **What it does:** groups likely duplicate cards by two signals: an identical normalized name (accents stripped, case folded, bracketed notes and trailing copy / duplicate / imported / new / old / version / counter suffixes removed) or description plus personality overlap by 3-word-shingle Jaccard similarity of at least 0.5 (candidate pairs from an inverted shingle index; texts under 8 shingles are not compared; shingles shared by more than 40 cards are treated as boilerplate). Groups are sorted strongest first and show "Same name" or "N% similar text".
+- **What it does (UI):** "Possible duplicates" dialog with side-by-side basics (avatar, name, creator, updated date, tags, description preview), a **Compare** view that loads full cards and marks each field Same / Different / Empty (Name, Description, Personality, Scenario, First message, Creator, Version, Tags), and an **Open** button that opens the card detail. Nothing is changed or deleted.
+- **How to reach it:** Characters panel > **Duplicates** button (title "Find duplicate characters") in the toolbar next to New Folder. API: `GET /api/characters/duplicates` returns `{ scanned, groups[] }` with per-card previews (description 280 chars, personality 160 chars).
+- **Settings and defaults:** threshold 0.5, shingle size 3, minimum 8 shingles, boilerplate cutoff 40 (code options, not exposed in the UI). Not feature-switch gated.
+- **Storage:** None (read-only).
+- **Tests:** `scripts/regressions/character-duplicates.regression.ts`.
+- **Known limits:** detection only, deletion is manual; the built-in Professor Mari card is excluded; the whole library is parsed on each check (query stale time 0); content similarity uses only description and personality.
+
+### Bulk tag editing for characters
+
+- **Commit:** `a837cd319` (2026-09-23 00:58 +0300).
+- **Files:** new `packages/shared/src/utils/character-tag-edits.ts` (`normalizeCharacterTagEdit`, `applyCharacterTagEdit`, `summarizeCharacterTagEdit`, `characterTagListsEqual`), new `packages/client/src/components/characters/CharacterBulkTagsModal.tsx`, new `packages/server/src/utils/settle-with-concurrency.ts`; changed `packages/server/src/routes/characters.routes.ts`, `packages/client/src/hooks/use-characters.ts` (`useBulkEditCharacterTags`), `packages/client/src/components/panels/CharactersPanel.tsx`, `packages/client/src/components/ui/SelectionActionBar.tsx` (labels truncate instead of overflowing).
+- **What it does:** add tags (comma-separated), remove tags (tap existing tags to mark), and rename tags (from / to pairs) across the selected characters. Order per card: rename, then remove, then add; matching is case-insensitive, a rename keeps the tag's position, results never hold case-insensitive duplicates. A **Review changes** step shows how many of the selected cards will change and per-operation card counts, computed by the same shared functions the server applies.
+- **What it does (server):** each card goes through the normal character update path in its own queued transaction with an expected-revision check (up to 3 retries), 4 cards at a time, so version history records a snapshot with source `bulk-tags` and a reason like `+tag; -tag; old > new` (300 chars max). Returns `{ updatedIds, unchangedIds, failedIds }`; the UI reports success and partial failures.
+- **How to reach it:** Characters panel > selection mode > selection bar > **Tags** (title "Edit tags of the selected characters"). API: `POST /api/characters/bulk-tags` with `{ ids, add?, remove?, rename?: [{ from, to }] }` (400 for no ids, more than 5000 ids, or an empty edit).
+- **Settings and defaults:** None. Not feature-switch gated.
+- **Storage:** None new (writes existing character rows and character version history).
+- **Tests:** `scripts/regressions/character-bulk-tags.regression.ts`.
+- **Known limits:** 5000 cards per request (the client splits bigger selections into slices); the Professor Mari card is skipped; a card changed by another writer three times in a row is reported as failed. Later commit 97ab74c71 fixed the separate per-tag delete in the Characters panel reading raw rows without tags.
+
+### Command palette (Ctrl+K)
+
+- **Commit:** `4922158c0` (2026-09-23 01:06 +0300).
+- **Files:** new `packages/client/src/lib/command-palette.ts` (public `registerCommand` registry, fuzzy ranking, recents, key helpers), `packages/client/src/components/command-palette/CommandPalette.tsx`, `packages/client/src/components/command-palette/CommandPaletteHost.tsx` (global keydown plus built-in commands), `packages/client/src/components/command-palette/palette-navigation.ts` (confirm before leaving a dirty editor), `packages/client/src/stores/command-palette.store.ts`, `packages/client/src/lib/settings-targets.ts`; changed `packages/client/src/components/layout/AppShell.tsx`, `packages/client/src/components/layout/TopBar.tsx`, `packages/client/src/components/chat/HomeNewChatLauncher.tsx` (extracted `useLaunchNewChat`).
+- **What it does:** a lazy-loaded search box that jumps to chats (with mode label), characters, personas, lorebooks, presets and Settings tabs ("Settings: General / Appearance / Generations / Add-ons / Imports / Advanced", per `settings.tabs.*.label`), or runs registered actions. Ranking: exact > prefix > word start > substring > in-order subsequence, accent and case insensitive, keywords and subtitles searched at lower weight; up to 60 results. With an empty query it shows recent picks first, then actions. Arrow keys move, Enter runs, Esc closes. Navigation asks before leaving an editor with unsaved changes.
+- **Built-in commands at this commit (English labels):** New conversation; New roleplay; New game; Go home; Show or hide chats; Open settings; Switch light or dark mode; Keyboard shortcuts (hint `?`); Show chat guide (only with an open chat); Insert snippet (only with an open chat and at least one snippet); Manage text snippets (opens Settings > General > Text Snippets); Open usage dashboard (opens Settings > Advanced > Usage Dashboard); Browse character cards; Open character library; Open characters; Open personas; Open lorebooks; Open presets; Open connections; Open agents.
+- **How to reach it:** Ctrl+K (Cmd+K on macOS; the physical K key also works on non-Latin layouts; key repeats ignored; works while typing since nothing else binds it), or the search button in the top bar (tooltip "Search and commands (Ctrl+K)", hidden when the bar is squeezed below 21rem). Other features add commands through `registerCommand()`.
+- **Settings and defaults:** None. Not feature-switch gated.
+- **Storage:** localStorage `marinara-command-palette-recents` (up to 12 command ids).
+- **Tests:** `scripts/regressions/command-palette.regression.ts`.
+- **Known limits:** Ctrl+K toggles the palette. Later commits changed it: 8e4a1ccff added palette commands for later tools and Ctrl+Shift+F search, ab891fb41 stops Ctrl+K and `?` from opening over another open dialog and hides Show chat guide / Insert snippet while an editor is open, 52464c6a7 focuses the search box on mount.
+
+### Keyboard shortcuts overlay (?)
+
+- **Commit:** `4922158c0` (2026-09-23 01:06 +0300).
+- **Files:** new `packages/client/src/components/command-palette/KeyboardShortcutsOverlay.tsx`, new `packages/client/src/lib/keyboard-shortcuts.ts` (grouped shortcut list, `isApplePlatform`); changed `packages/client/src/components/command-palette/CommandPaletteHost.tsx`, `packages/client/src/localization/locales/en.json` (`shortcuts.*`).
+- **What it does:** a lazy-loaded dialog titled "Keyboard shortcuts" listing every app shortcut in groups: Everywhere (Ctrl/Cmd+K palette, ? this list, Esc close), Chat input (Enter send, Shift+Enter new line, Ctrl/Cmd+Enter send when Send on Enter is off, Up to edit the latest message when enabled, Up/Down and Tab/Enter for / command, @mention and :emoji: suggestions, Space or Tab to expand a snippet, Ctrl/Cmd+Z to undo an expansion), Messages (Left/Right swipes with Intuitive swipe navigation, Ctrl/Cmd+Enter save and Esc cancel an edit, Enter jump to the first search result, Left/Right in the image viewer), Game Mode (Up/Down or W/S and Enter/Space in combat, Left/Right chapters in the Game features guide), Editors and browsers (Tab/Shift+Tab indent, Ctrl/Cmd+S save in the Game Assets file editor, Ctrl/Cmd+A and Esc in the Game Assets browser, arrows/Home/End on a focused sidebar resize handle). Mod keys render as Cmd on Apple platforms.
+- **How to reach it:** press `?` while not typing in a text field (Shift is allowed, Ctrl/Cmd/Alt are not), or the command palette command **Keyboard shortcuts**.
+- **Settings and defaults:** None. The intro notes that setting-dependent shortcuts only work while that setting is on.
+- **Storage:** None.
+- **Tests:** covered by `scripts/regressions/command-palette.regression.ts` (key helpers `isShortcutsHelpKey`, `isTypingTarget`).
+- **Known limits:** the list is a static table in `keyboard-shortcuts.ts`, not generated from the handlers, so new shortcuts must be added by hand; opening the overlay closes the palette and vice versa (one at a time).
+
+### Text snippets
+
+- **Commit:** `4922158c0` (2026-09-23 01:06 +0300).
+- **Files:** new `packages/shared/src/schemas/text-snippets.schema.ts`, `packages/client/src/lib/text-snippets.ts`, `packages/client/src/hooks/use-text-snippets.ts`, `packages/client/src/hooks/use-snippet-expansion.ts`, `packages/client/src/components/chat/SnippetPicker.tsx`, `packages/client/src/components/panels/settings/TextSnippetsSettings.tsx`; changed `packages/client/src/lib/textarea-editing.ts` (`replaceTextareaRange`), `packages/client/src/components/chat/ChatInput.tsx`, `packages/client/src/components/chat/ConversationInput.tsx`, `packages/client/src/components/game/GameInput.tsx`, `packages/client/src/components/panels/SettingsPanel.tsx`, `packages/server/src/routes/app-settings.routes.ts`.
+- **What it does:** user-defined trigger to text expansions (for example `;ooc`). Typing a trigger then Space expands it in place (handled on input, so mobile keyboards work), and Tab right after a trigger expands it without inserting a tab. Triggers fire only as whole words (start of text or after whitespace). `{{cursor}}` marks where the caret lands (otherwise a trailing space is kept after a Space expansion); macros like `{{char}}` and `{{user}}` stay as written and are resolved when the message is sent.
+- **What it does (undo and picker):** expansions go through `execCommand("insertText")` so they land in the browser's native undo stack and Ctrl/Cmd+Z restores the typed trigger (older browsers that reject execCommand still expand but cannot undo). A searchable **Insert a snippet** picker (arrows, Enter, Esc) inserts at the caret, replacing any selection.
+- **How to reach it:** manage in Settings > General > **Text Snippets** (add, edit, delete with confirm). Use in the chat input of roleplay, conversation and game chats; the picker opens from the Quick replies menu item **Snippets** (roleplay/conversation composers; Game Mode has no quick menu) or the palette command **Insert snippet**; **Manage text snippets** in the palette opens the settings section. API: `GET /api/app-settings/text-snippets`, `PUT /api/app-settings/text-snippets` with `{ version: 1, snippets: [{ id, trigger, expansion }] }`.
+- **Settings and defaults:** empty list by default. Limits: 200 snippets, trigger 1 to 32 characters without spaces and unique, expansion non-blank and at most 10,000 characters. Not feature-switch gated.
+- **Storage:** app_settings key `text-snippets` (server-side JSON catalog, so snippets sync across devices); client query stale time 5 minutes.
+- **Tests:** `scripts/regressions/text-snippets.regression.ts`.
+- **Known limits:** an invalid stored catalog is ignored and read as empty (logged); only the composer currently on screen answers the palette's picker request; triggers are case-sensitive for uniqueness.
+
+### Usage dashboard
+
+- **Commit:** `4922158c0` (2026-09-23 01:06 +0300).
+- **Files:** new `packages/server/src/db/schema/generation-usage.ts`, `packages/server/src/services/storage/generation-usage.storage.ts`, `packages/server/src/services/usage/usage-aggregation.ts`, `packages/server/src/routes/usage.routes.ts`, `packages/shared/src/schemas/usage-dashboard.schema.ts`, `packages/client/src/hooks/use-usage-dashboard.ts`, `packages/client/src/lib/usage-dashboard.ts`, `packages/client/src/components/panels/settings/UsageDashboardSettings.tsx`; changed `packages/server/src/routes/generate.routes.ts` (recording), `packages/server/src/routes/index.ts`, `packages/server/src/db/schema/index.ts`, `packages/server/src/db/file-backed-store.ts`, `packages/server/src/routes/admin.routes.ts`, `scripts/protect-launcher-data.mjs`, `packages/client/src/components/panels/SettingsPanel.tsx`.
+- **What it does:** each completed main generation records one ledger row (chat, message, connection actually used including a fallback connection, provider, model, input, output and cached input tokens as the provider reported them), off the response path; a failure is logged and never affects the reply. The dashboard shows totals (Replies, Input tokens, Output tokens, Estimated cost), a Tokens per day bar chart with hover readout, and breakdowns By connection and By chat (deleted ones shown as "Deleted connection" / "Deleted chat"), over 7, 30 or 90 days or a Custom From/To range, in the viewer's local days.
+- **What it does (cost):** **Set prices** per connection (Input per 1M, Output per 1M, and a currency symbol) turns token totals into an estimated cost; with no price set it shows "No prices set".
+- **How to reach it:** Settings > Advanced > **Usage Dashboard**, or palette command **Open usage dashboard**. API: `GET /api/usage/summary?from=YYYY-MM-DD&to=YYYY-MM-DD&tzOffsetMinutes=N`, `GET /api/usage/settings`, `PUT /api/usage/settings`.
+- **Settings and defaults:** range default 30 days; currency default `$`; prices empty; price per 1M 0 to 100,000; range clamped to 366 days (reversed ranges are swapped); tz offset -840 to 840 minutes. At this commit always on; later gated by the feature switch **Usage and activation stats** (`usageAndActivationStats`, default ON, Settings > Advanced > Features, commit 8aa93818b): off records nothing and the dashboard shows an off notice.
+- **Storage:** new file-backed table `generation_usage` (schema `packages/server/src/db/schema/generation-usage.ts`), registered in `BUILT_IN_FILE_BACKED_TABLES` and `SHARD_KEY_COLUMNS` (sharded by UTC `day`) in `file-backed-store.ts`, and in `scripts/protect-launcher-data.mjs`; deliberately not cascaded from chats or connections; cleared with the "Chats & Messages" scope (`chats`) of the Danger Zone expunge (`POST /api/admin/expunge`). app_settings key `usage-dashboard` (version 1, currency, per-connection prices).
+- **Tests:** `scripts/regressions/usage-dashboard.regression.ts`.
+- **Known limits:** usage is recorded only from this version on (no backfill); only main replies are counted, agent and image calls are not; rows where the provider reported zero input and zero output tokens are skipped; for the Claude subscription provider only the fresh (uncached) prompt part is counted as input; cost is an estimate from entered prices and may differ from the provider's bill.
+
+### Message bookmarks
+
+- **Commit:** `8391f07d1` (2026-09-23 02:35 +0300).
+- **Files:** `packages/shared/src/utils/message-marks.ts` (new: `MessageBookmark`, `readMessageBookmark`, `normalizeMessageMarkPatch`, `MESSAGE_MARK_EXTRA_KEYS`, `MAX_BOOKMARK_LABEL_LENGTH`), `packages/shared/src/types/chat.ts`, `packages/client/src/components/chat/MessageMarks.tsx` (new: `MessageMarksAction`, `MessageMarkIndicators`), `packages/client/src/components/chat/ChatMessageMarksPanels.tsx` (new: `ChatBookmarksList`), `packages/client/src/components/chat/ChatMessageSearch.tsx`, `packages/client/src/components/chat/MessageActionButton.tsx` (shared `useMessageActionMenu` moved here from `ChatMessage.tsx`), `packages/client/src/components/chat/ChatMessage.tsx`, `packages/client/src/components/chat/ConversationMessage.tsx`, `packages/client/src/components/chat/ConversationMessageActions.tsx`, `packages/client/src/components/chat/ConversationMessageGrouped.tsx`, `packages/server/src/routes/chats.routes.ts`, `packages/server/src/services/storage/chats.storage.ts`.
+- **What it does:** any Roleplay or Conversation message can be bookmarked with an optional short label. A bookmark indicator ("Bookmarked" / "Bookmarked: {label}") shows on the message. Chat search gains a Bookmarks view listing every bookmark with speaker (You, character name, System), snippet and time; clicking one jumps to the message.
+- **What it does (details):** marks belong to the message, not one swipe: the PATCH handler copies every `MESSAGE_MARK_EXTRA_KEYS` key into all swipes' extra. `chats.storage.ts` preserves these keys when message extra is rewritten. In Game mode the list cannot jump ("Jumping to a message is not available in Game mode. Find it in the game log.").
+- **How to reach it:** the message action "Bookmark, pin or note" (bookmark icon) in the Roleplay message actions and the Conversation message actions, then "Bookmark message" / "Remove bookmark" with the "Label (optional)" field. List: chat toolbar button "Search, bookmarks and trash" (chat search panel), tab "Bookmarks" (tabs: Search, Bookmarks, Trash). API: `PATCH /api/chats/:chatId/messages/:messageId` with `bookmark` in the body (validated by `normalizeMessageMarkPatch`).
+- **Settings and defaults:** None. Not behind a feature switch.
+- **Storage:** message (and swipe) `extra.bookmark` (`{ label, ... }`, label capped at `MAX_BOOKMARK_LABEL_LENGTH` = 80). No new table.
+- **Tests:** `scripts/regressions/message-marks.regression.ts` (new).
+- **Known limits:** bookmarks are per message, no cross-chat bookmark list; jumping is unavailable in Game mode. The Bookmarks view loads the full message list of the chat (same query as chat search). A later commit (2f9737914, chapters) added `chapter` to the same `MESSAGE_MARK_EXTRA_KEYS` set.
+
+### Pin to context
+
+- **Commit:** `8391f07d1` (2026-09-23 02:35 +0300).
+- **Files:** `packages/shared/src/utils/message-marks.ts` (`applyContextMessageLimitWithPins`, `isMessagePinnedToContext`, `MAX_PINNED_CONTEXT_MESSAGES`, `PINNED_CONTEXT_MESSAGE_MARKER`), `packages/server/src/routes/generate.routes.ts`, `packages/server/src/routes/generate/conversation-presence-runtime.ts`, `packages/server/src/routes/generate/dry-run-route.ts`, `packages/server/src/routes/chats.routes.ts`, `packages/client/src/components/chat/MessageMarks.tsx`, `scripts/regressions/prompt.regression.ts`.
+- **What it does:** a message pinned to context stays in the prompt even when the chat's context message limit would drop it. When the limit cuts history, pinned messages from the dropped part (the newest 10 at most) are put back in front of the kept window in their original order, each prefixed with `[Pinned message from earlier in the chat]`. Pinned messages are added on top of the limit, so the prompt can hold up to limit + 10 messages.
+- **What it does (paths):** applied in the main generate path, the Conversation presence runtime and the dry run (Peek Prompt), so Peek Prompt shows the same result. Also applied where `chats.routes.ts` trims history with the context limit.
+- **How to reach it:** message action "Bookmark, pin or note" > "Pin to context" / "Unpin from context" (hint: "Always sent to the model, even past the history limit. Up to 10 per chat."). A pin indicator ("Pinned to context") shows on the message. API: `PATCH /api/chats/:chatId/messages/:messageId` with `pinnedToContext: true|false`.
+- **Settings and defaults:** None. Limit `MAX_PINNED_CONTEXT_MESSAGES` = 10 per chat (hard-coded).
+- **Storage:** message (and all swipes) `extra.pinnedToContext` (boolean). No new table.
+- **Tests:** `scripts/regressions/message-marks.regression.ts` (Peek Prompt includes a pinned message past the history limit), `scripts/regressions/prompt.regression.ts` (changed).
+- **Known limits:** pinning an 11th message returns HTTP 409 ("A chat can pin at most 10 messages. Unpin one first."). Pins only matter when a context message limit is set; with no limit (or history shorter than the limit) nothing changes.
+
+### Message trash
+
+- **Commit:** `8391f07d1` (2026-09-23 02:35 +0300).
+- **Files:** `packages/server/src/services/storage/message-trash.storage.ts` (new: `createMessageTrashStorage`, `sweepExpiredMessageTrash`), `packages/server/src/db/schema/chats.ts` (`messageTrash`), `packages/server/src/db/file-backed-store.ts`, `packages/server/src/routes/chats.routes.ts`, `packages/client/src/components/chat/ChatMessageMarksPanels.tsx` (`ChatTrashList`), `packages/client/src/components/chat/ChatMessageSearch.tsx`, `packages/client/src/hooks/use-chats.ts` (`useMessageTrash`, `useRestoreTrashedMessages`, `useDeleteTrashedMessages`), `packages/client/src/components/chat/ChatInput.tsx`, `packages/client/src/components/chat/HomeProfessorMariChat.tsx`, `scripts/protect-launcher-data.mjs`, `packages/shared/src/utils/message-marks.ts` (`MessageTrashEntry`, `MESSAGE_TRASH_RETENTION_DAYS`).
+- **What it does:** deleting Roleplay or Conversation messages (single or bulk) snapshots the exact message and swipe rows, then runs the normal delete path (so interruption undo, lore cascade and memory chunk invalidation still happen). Restore reinserts the rows under their original ids and `createdAt`, putting the message back in place with its swipes, bookmarks and notes. Entries whose message id exists again stay in the trash and are reported as conflicts. A toast says "Message moved to trash" with the hint to restore within 30 days.
+- **What it does (retention):** entries older than the retention window are purged whenever a chat's trash is read or written, by a background sweep 2 minutes after startup and then every 6 hours (timers are unref'd). Game mode deletes stay permanent (game turns carry state snapshots a restore cannot bring back).
+- **How to reach it:** chat search panel (toolbar button "Search, bookmarks and trash") > tab "Trash": per entry "Restore" and "Delete forever" (click again to confirm), plus "Restore all" and "Empty trash" ("Click again to empty"). API (prefix `/api/chats`): `DELETE /api/chats/:chatId/messages/:messageId` (now trashes; `?trash=false` skips the trash for rollbacks of rows that were never shown, used by failed sends and the Professor Mari chat), bulk delete also trashes, `GET /api/chats/:chatId/trash`, `POST /api/chats/:chatId/trash/restore` (`{ entryIds }`, 1 to 5000; 409 while a generation runs in that chat), `POST /api/chats/:chatId/trash/delete` (`{ entryIds }` or `{ all: true }`).
+- **Settings and defaults:** 30 day retention in this commit. Later, Feature switches (commit 8aa93818b) gated it: Settings > Features "Message trash" (`messageTrash`, default ON; off makes deletes permanent and hides the Trash tab) and "Days kept in Trash" (`messageTrashDays`, default 30, range 1 to 365). No environment override for either.
+- **Storage:** new file-backed table `message_trash` (`id`, `chat_id` FK to chats with cascade delete, `message_id`, `role`, `character_id`, `content`, `snapshot` JSON `{ message, swipes }`, `message_created_at`, `deleted_at`), declared in `packages/server/src/db/schema/chats.ts`, registered in `file-backed-store.ts` as a lazy per-chat unit table (shard key `chatId`) and as a child of `chats` for cascade, and added to the protected table list in `scripts/protect-launcher-data.mjs`. Client query key `chatKeys.trash(chatId)`.
+- **Tests:** `scripts/regressions/message-trash.regression.ts` (new).
+- **Known limits:** Game mode has no trash. Restore is refused while a generation is running in the chat. A delete addressed through a different chat id falls back to the old permanent delete. Entries are listed newest deletion first; list preview shows the active content only (swipe count shown).
+
+### Private message notes
+
+- **Commit:** `8391f07d1` (2026-09-23 02:35 +0300).
+- **Files:** `packages/shared/src/utils/message-marks.ts` (`readMessagePrivateNote`, `stripPrivateMessageNote`, `MAX_PRIVATE_NOTE_LENGTH`), `packages/client/src/components/chat/MessageMarks.tsx`, `packages/client/src/stores/ui.store.ts`, `packages/client/src/components/panels/SettingsPanel.tsx`, `packages/server/src/routes/chats.routes.ts`, `packages/client/src/localization/locales/en.json`.
+- **What it does:** attach a private note to any message; a small note icon on the message ("Show private note") reveals it. Notes are never sent to the model. Chat exports strip the note from message and swipe extra unless the export option is on; when on, text exports add a `[Private note]` block after the message.
+- **How to reach it:** message action "Bookmark, pin or note" > "Private note" field ("Only you can see this. It is never sent to the model."), "Save note" / "Remove note". Export option: Settings > Advanced > Message Tools > "Include private notes in exports". API: `PATCH /api/chats/:chatId/messages/:messageId` with `privateNote`; export routes accept `includePrivateNotes` (body for the bulk export, query string for the single chat export).
+- **Settings and defaults:** "Include private notes in exports" (`includePrivateNotesInExports` in the UI store), default off. Not behind a feature switch.
+- **Storage:** message (and all swipes) `extra.privateNote` (string, capped at `MAX_PRIVATE_NOTE_LENGTH` = 2000). `includePrivateNotesInExports` persisted in the client UI store (localStorage persisted state).
+- **Tests:** `scripts/regressions/message-marks.regression.ts` (notes never reach prompts or exports); later `scripts/regressions/integration-seams.regression.ts` (ab891fb41) checks notes never match global search.
+- **Known limits:** the export switch is per device (client store), sent with each export request. Notes are plain text only.
+
+### Nested library folders and Game Mode campaign view (Lorebooks and Characters)
+
+- **Commit:** `cc3d55b6c` (2026-09-23 02:47 +0300). Merged from the `feat/organize` branch, built in a separate session.
+- **Files:** merged from the `feat/organize` branch, which was built in a separate session and working copy. New: `packages/shared/src/utils/library-folder-tree.ts`, `packages/shared/src/schemas/library-campaign.schema.ts`, `packages/server/src/db/schema/library-campaign-links.ts`, `packages/server/src/routes/library-campaigns.routes.ts`, `packages/server/src/services/storage/library-campaigns.storage.ts`, `packages/server/src/services/storage/character-folders.ts`, `packages/client/src/hooks/use-library-campaigns.ts`, `packages/client/src/stores/library-organize.store.ts`, `packages/client/src/lib/library-campaign-filter.ts`, `packages/client/src/lib/library-folder-view.ts`, `packages/client/src/components/panels/library/` (`LibraryFolderTree.tsx`, `LibraryPickerModal.tsx`, `LibraryCampaignBar.tsx`, `LibraryCampaignSections.tsx`, `LibraryCampaignBadges.tsx`, `LibrarySelectionExtraActions.tsx`, `use-library-organizer.tsx`, `use-auto-load-all-pages.ts`). Changed: `packages/client/src/components/panels/CharactersPanel.tsx`, `packages/client/src/components/panels/LorebooksPanel.tsx`, `packages/server/src/services/storage/library-folders.storage.ts`, `packages/server/src/services/storage/characters.storage.ts`, `packages/server/src/services/storage/character-catalog.ts`, `packages/server/src/services/storage/lorebooks.storage.ts`, `packages/server/src/routes/{characters,lorebooks,library-folders,index}.routes.ts`, `packages/shared/src/schemas/{library-folder,character}.schema.ts`, `packages/shared/src/types/character.ts`, hooks `use-characters.ts`, `use-lorebooks.ts`, `use-library-folders.ts`, `en.json` (new `ui.panels.libraryorganize.*` keys).
+- **What it does (folders):** lorebook and character folders can nest up to six levels (`LIBRARY_FOLDER_MAX_DEPTH = 6`, root = depth 1). Shared tree rules (`checkLibraryFolderParent`) reject missing parent, self-parenting, cycles and over-depth moves; the server returns HTTP 400 with the reason (`LibraryFolderTreeError`), and parent check plus write run in one transaction so concurrent moves cannot form a loop. Folder counts include subfolders, open folders are remembered, and a search opens folders holding a match and shows each result's folder path. Deleting a lorebook (resource) folder moves its subfolders and items up one level (or to the top level); deleting a character folder moves subfolders up but its characters simply leave the folder (not merged into the parent), because character groups double as chat setup presets. Existing flat folders load unchanged at the root. Preset and agent folders (same `library_folders` store) get server-side nesting support too.
+- **What it does (campaigns):** a campaign is every Game Mode chat (`mode = "game"`) sharing a `gameId` (falling back to the chat group, then the chat itself). Membership is derived automatically: characters from chat `characterIds`, party, GM and linked NPC cards; personas from the chat and setup; lorebooks the chats activate or own, plus library lorebooks linked to those characters and personas. Manual changes are stored as `include` / `exclude` links (removing a derived item stores an exclusion). Campaign name comes from the latest session chat with the " Session N" suffix stripped; campaigns sort by last played. A campaign picker above each list filters to one campaign or "Not in any campaign" (filtering is resolved on the server); the group toggle splits the list into collapsible campaign sections; rows show a small campaign badge that filters on click.
+- **How to reach it:** Characters and Lorebooks panels. Folder rows get "New subfolder", "Move folder to..." and delete buttons; drag a folder onto another folder or onto the "Drop here to move the folder to the top level" zone; double-click, double-tap or F2 renames a folder. In selection mode, "Move to folder..." (opens a folder-tree picker, "Move N lorebooks/characters") and "Campaign" (Swords icon, "Add to or remove from a campaign", tick to add, untick to remove); a Swords button on a lorebook row does the same for one lorebook. Above the list: "Campaign" select ("All campaigns", "Not in any campaign", each campaign with session count) and the Layers button "Group by campaign". API: `GET /api/library/campaigns`, `POST /api/library/campaigns/:campaignId/items`, `POST /api/library/campaigns/:campaignId/items/remove` (body `{ itemType: "character"|"persona"|"lorebook", itemIds: [1..5000] }`, 404 for unknown campaign); `campaign=<id>` or `campaign=__none__` query on `GET /api/characters/catalog` and `GET /api/lorebooks`; `parentId` on `POST /api/library-folders/:scope`, `PATCH /api/library-folders/:scope/:id`, `POST /api/characters/groups`, `PATCH /api/characters/groups/:id`.
+- **Settings and defaults:** None (not feature-switch gated). Per-panel defaults: campaign filter "all", group by campaign off.
+- **Storage:** new file-backed table `library_campaign_links` (`id`, `campaign_id`, `item_type`, `item_id`, `mode`, `created_at`, unique on campaign+type+item), exported from `packages/server/src/db/schema/index.ts`, added to `BUILT_IN_FILE_BACKED_TABLES` in `packages/server/src/db/file-backed-store.ts` and to `SHARDED_TABLES` in `scripts/protect-launcher-data.mjs`. New nullable `parent_id` column on `library_folders` and `character_groups` (absent on old rows = root). localStorage key `marinara-library-organize-v1` (per panel: campaign filter, group by campaign, expanded folder ids, collapsed campaign ids; at most 500 remembered ids each). A later merge (ab891fb41) clears `library_campaign_links` in the Danger Zone chats expunge (`packages/server/src/routes/admin.routes.ts`).
+- **Tests:** `scripts/regressions/library-folder-tree.regression.ts`, `scripts/regressions/library-campaigns.regression.ts`, `scripts/regressions/library-organize-migration.regression.ts` (pre-feature data without `parentId` or the links table loads cleanly), `scripts/regressions/library-organize-unshard.regression.ts` (launcher unshard covers the new table and keeps `parentId`).
+- **Later changes:** e4098e218 fetches character folder members beyond loaded pages by id, fixes inflated folder counts and keeps character folder order stable; 80eaf5384 adds a lorebook folder power switch and a campaign roster (GM, party, NPC chips) when the Characters panel is filtered to one campaign; 8614962f1 adds a folder-view performance regression.
+- **Known limits:** six nesting levels; campaign list is cached server-side and recomputed when source tables change; grouped-by-campaign views load every page only up to a 50-page safety cap (`useAutoLoadAllPages`); manual links for deleted items linger harmlessly but are not counted; campaigns exist only for Game Mode chats.
+
+### Character tag filter now covers the whole library, not just loaded pages
+
+- **Commit:** `cc3d55b6c` (2026-09-23 02:47 +0300). Merged from the `feat/organize` branch, built in a separate session.
+- **Files:** `packages/client/src/components/panels/CharactersPanel.tsx`, `packages/client/src/components/panels/library/use-auto-load-all-pages.ts`.
+- **What it does:** character tags are matched in the browser, so previously an include/exclude tag filter (and the full tag list) only saw the catalog pages already loaded, missing matches further down. The panel now keeps fetching catalog pages while a tag filter is active or the tag list is expanded, so filtered results and the tag list reflect every character. Stops on a page fetch error.
+- **How to reach it:** Characters panel, tag filter chips / expanded tag list (clicking a tag on a character row also adds it to the filter).
+- **Settings and defaults:** None.
+- **Storage:** None (read-only).
+- **Tests:** none specific to this fix in the commit.
+- **Known limits:** loading stops at 50 pages (safety cap in `useAutoLoadAllPages`). The equivalent lorebook tag-filter paging fix landed later in e4098e218.
+
+### Command palette hub: commands for every tool
+
+- **Commit:** `8e4a1ccff` (2026-09-23 03:14 +0300).
+- **Files:** `packages/client/src/components/command-palette/CommandPaletteHost.tsx`, `packages/client/src/components/command-palette/CommandPalette.tsx`, `packages/client/src/lib/game-session-panel-events.ts` (new), `packages/client/src/lib/lorebook-editor-events.ts` (new), `packages/client/src/lib/open-character-duplicates.ts` (new), `packages/client/src/components/game/GameSurface.tsx`, `packages/client/src/components/lorebooks/LorebookEditor.tsx`, `packages/client/src/components/lorebooks/LorebookLintPanel.tsx`, `packages/client/src/components/layout/ModalRenderer.tsx`, `packages/client/src/localization/locales/en.json`.
+- **What it does:** registers palette commands for the newer tools. Commands added (exact English labels):
+  - "Search all chats" (shows the Ctrl/Cmd+Shift+F hint): opens the global search dialog.
+  - "Activity overview": opens the activity overview.
+  - "Name generator": opens the name generator.
+  - "Find duplicate characters": opens the new `character-duplicates` modal from any screen; opening a character from it goes through the usual unsaved-editor prompt.
+  - "Stats for this chat" (subtitle "Chat statistics"): chat stats for the open chat (any mode).
+  - "Export this chat as Markdown" and "Export this chat as a story" (styled HTML): export the open chat.
+  - "Open the dice log": opens the game Session panel on its Tools tab (on phones via the actions menu); only with a game chat open and no editor covering it.
+  - "Download campaign codex (Markdown)": downloads the open game's codex; error toast on failure.
+  - "Check this lorebook": in the open Lorebook Editor, opens and scrolls to the "Check lorebook" lint panel.
+  - "Test this lorebook's keywords": in the open Lorebook Editor, opens and scrolls to the keyword test.
+  - Dynamic "Search all chats for "{query}"": appended to every non-empty query so the palette never dead-ends; runs global search with that text and is not stored in recents.
+- **How to reach it:** command palette (Ctrl+K, Cmd+K on macOS), type the label or a keyword (e.g. "lint", "dice", "dedupe", "heatmap").
+- **Settings and defaults:** None. Context-dependent commands are hidden via `when` (active chat, game chat, open lorebook).
+- **Storage:** None (read-only). Palette recents unchanged except the per-query search is excluded.
+- **Tests:** `scripts/regressions/command-palette.regression.ts` (changed: each new command id registered, game tools need a game chat, lorebook tools need an open lorebook, new labels exist in `en.json` with no em dash, per-query search present).
+- **Known limits:** cross-screen commands work through window events (`marinara:game-session-panel-open`, `marinara:lorebook-editor-tool`), so they only act when the game screen or Lorebook Editor is mounted.
+
+### Ctrl+Shift+F opens Search all chats
+
+- **Commit:** `8e4a1ccff` (2026-09-23 03:14 +0300).
+- **Files:** `packages/client/src/lib/command-palette.ts` (`isGlobalSearchShortcut`, `canOpenGlobalSearchFromShortcut`), `packages/client/src/lib/modal-overlay-registry.ts` (`countModalOverlays`), `packages/client/src/components/command-palette/CommandPaletteHost.tsx`, `packages/client/src/lib/keyboard-shortcuts.ts`.
+- **What it does:** Ctrl+Shift+F (Cmd+Shift+F on macOS) opens Search all chats. Matched by `code === "KeyF"` on non-Latin layouts; Alt or key repeat do not trigger it; plain Ctrl+F is left to the browser. It does not open over another dialog; if only the palette is open, the palette closes and search opens.
+- **How to reach it:** the shortcut, anywhere (including while typing). Listed in the keyboard shortcuts overlay as "Search all chats (when no other dialog is open)".
+- **Settings and defaults:** None.
+- **Storage:** None.
+- **Tests:** `scripts/regressions/command-palette.regression.ts` (shortcut matching incl. a Hebrew-layout key with `code: "KeyF"`, and the overlay-count rule).
+- **Known limits:** ignored while any non-palette dialog is open.
+
+### Palette hub consistency fixes
+
+- **Commit:** `8e4a1ccff` (2026-09-23 03:14 +0300).
+- **Files:** `packages/client/src/components/command-palette/KeyboardShortcutsOverlay.tsx`, `packages/client/src/lib/keyboard-shortcuts.ts`, `packages/client/src/components/game/GameDiceLog.tsx`, `packages/client/src/components/panels/settings/UsageDashboardSettings.tsx`, `packages/client/src/localization/locales/en.json`.
+- **What it does:**
+  - Keyboard shortcuts overlay opens full screen on phones (`mobileFullscreen`).
+  - Shortcuts overlay lists previously undocumented keys: "Move through and run command palette results" (arrows, Enter), "Move through and insert from the snippet picker", "Open the first Search all chats result" (Enter), plus the new Ctrl/Cmd+Shift+F entry.
+  - Dice log load error now uses the destructive text colour and a standard styled Retry button.
+  - Usage Dashboard (Settings > Advanced) load error gains a "Retry" button that refetches the summary.
+- **How to reach it:** "?" or palette "Keyboard shortcuts"; game Session panel > Tools tab (dice log); Settings > Advanced > Usage Dashboard.
+- **Settings and defaults:** None.
+- **Storage:** None.
+- **Tests:** none specific beyond `scripts/regressions/command-palette.regression.ts`.
+- **Known limits:** cosmetic only.
+
+### Campaign log reader (Game Mode)
+
+- **Commit:** `7a7a44b11` (2026-09-23 04:00 +0300).
+- **Files:** new `packages/client/src/components/modals/GameLogModal.tsx`, `packages/client/src/lib/game-log.ts`, `packages/client/src/lib/open-game-log.ts`, `packages/server/src/services/game/campaign-log.ts`; changed `packages/server/src/routes/game-tools.routes.ts`, `packages/client/src/hooks/use-game-tools.ts` (`useCampaignLog`, `campaignLogKeys`), `packages/client/src/components/game/GameToolsPanel.tsx`, `packages/client/src/components/layout/ModalRenderer.tsx` (modal id `game-log`), `packages/client/src/components/command-palette/CommandPaletteHost.tsx`, `packages/client/src/components/chat/ChatArea.tsx`, `packages/client/src/components/modals/GlobalSearchModal.tsx`, `packages/client/src/localization/locales/en.json` (`ui.game.log.*`, `ui.game.tools.log*`, `palette.actions.openCampaignLog`; removed `chatInsights.gotoUnavailableInGame`).
+- **What it does:** a full-screen reader that lays out every session of a campaign in order as one story. The server (`loadCampaignLog`) returns only readable turns (roles user, assistant, system, narrator; hidden messages and the synthetic "[start the game]" user message left out) with each turn's /goto message number (1-based position among all stored messages of that session chat), timestamp, and each session's segment edits (`segmentEdit:<messageId>:<n>`) and deletions (`segmentDelete:<messageId>:<n>`) read from chat metadata, plus the player persona name per session. The client (`buildGameLogEntries`) parses assistant turns into narration, dialogue, readable and system lines, applies the edits, drops deleted segments, strips `[To the party]` / `[To the GM]` prefixes and turns inline `[dice: ...]` tags and emphasis markers into plain text so search matches what is shown.
+- **What it does (search and filters):** campaign-wide case-insensitive search (at least 2 characters, whitespace in the query matches any whitespace run) with highlighted matches, a "N of M" counter, previous/next buttons; filters by session ("All sessions" / "Session N") and by speaker ("Anyone", "Narration", the player, each named speaker). Opening at a target (message id or /goto number) scrolls to and briefly highlights that turn (about 2.6 s); a hidden target lands on the nearest readable turn with the notice "That message is not part of the readable log, so the log opened at the nearest turn."
+- **How to reach it:** Game Mode Session panel > Tools tab > "Campaign log" section > "Open campaign log" button; command palette "Open campaign log" (only offered when the active chat is a game chat; keywords game log, history, reread, session, transcript). Jumping to a game message from Search All Chats or /goto now opens the log at that turn instead of the old "not available in Game mode" toast. In the search box, Enter goes to the next match and Shift+Enter to the previous. API: `GET /api/game-tools/log/:chatId` (404 `Game chat not found` for an unknown or non-game chat).
+- **How it picks sessions:** shares `resolveCampaignSessionChats` (moved into `packages/server/src/services/game/campaign-codex.ts` by this commit) with the codex: game-mode chats of the same group whose `gameId` matches, following the canonical line; opened from inside a branch, the branch stands in for the chain it forked from, and canonical sessions after the fork are dropped unless they continue the branch.
+- **Settings and defaults:** None. Not behind a feature switch.
+- **Storage:** None (read-only). Client query key `["game-campaign-log", chatId]` with `staleTime` and `gcTime` of 30 s so a large payload is not kept after the reader closes.
+- **Transport:** responses of 64 KiB or more are gzipped when the request sends `Accept-Encoding: gzip` (`sendText` in `game-tools.routes.ts`, `Vary: Accept-Encoding`).
+- **Tests:** `scripts/regressions/campaign-log-reader.regression.ts` (new).
+- **Later changes:** `c664bb44d` renders the session name without template strings; `2f9737914` added a chapter picker and chapter marking/editing inside the log (chapters come from message `extra`, a chapter on a hidden turn shows on the next readable one); `ad7a61ad1` enlarged text and touch targets on phones.
+- **Known limits:** one response is capped at `CAMPAIGN_LOG_MAX_CHARS` = 12,000,000 characters of turn text; past that the oldest sessions (never the one the log was opened from) are emptied, marked `omitted`, and listed in a notice. The client renders a window of 60 turns (`LOG_WINDOW_SIZE`), grown with "Show earlier turns" / "Show later turns" up to 180 rendered at once (`LOG_MAX_RENDERED`), trimming the far side. Search stops at 5,000 hits (`LOG_SEARCH_MAX_HITS`, shown as "N of M+"). Read-only apart from the later chapter editing.
+
+### Campaign codex v2: projection based, each statement written once, gzip
+
+- **Commit:** `7a7a44b11` (2026-09-23 04:00 +0300).
+- **Files:** changed `packages/server/src/services/game/campaign-codex.ts` (new `resolveCampaignSessionChats`, `codexSessionsFromProjection`, `codexExcerpt`, `CODEX_MARKDOWN_VALUE_MAX`, `CODEX_JSON_VALUE_MAX`), `packages/server/src/routes/game-tools.routes.ts`, `CHANGELOG.md`; reads `readCampaignMemoryProjection` from `packages/server/src/services/game/campaign-memory-campaign-scope.ts`.
+- **What changed versus the first codex export (`36f8f452e`):** v1 read each session chat's memory separately through the campaign memory storage, merged entities by guessing from origin ids, owner records and names, and listed knowledge under every holder ("What they know", labelled Knows / Believes / Has heard, one line per holder), with no length limits. On a long campaign the same long statement was repeated under many holders, so the file grew to tens of MB. v2, on the canonical line, reads the campaign memory projection of the newest session (the same merge the game plays from), so a tracked NPC and the library character of the same name are one entry, presence comes only from the newest session, and facts re-read in later sessions appear once; `codexSessionsFromProjection` splits the projection back per session so every record keeps its session tag.
+- **What it does (statements):** each verified fact and each unverified claim is keyed by subject, predicate and value and written once under its subject. Who holds it is listed under the statement as `heldBy` groups ("Known by", "Believed by", "Heard by") instead of a copy under every holder. The same statement under another subject becomes an excerpt with `sameAs` pointing at the entry that has it in full (Markdown: "(as under <name>)"). The Markdown section "What they know" is replaced by "Unverified, as held in the story".
+- **Sizes:** values are cut at a word break with an ellipsis: 280 characters in the Markdown (`CODEX_MARKDOWN_VALUE_MAX`; timeline event summaries at 560), 4,000 in the JSON (`CODEX_JSON_VALUE_MAX`). The Markdown lists at most 12 holder names per state, then "and N more". The size regression builds a campaign shaped like a real 12-session one (about 1,400 entities, 14k facts with long values, 18k knowledge rows over 7.4k distinct statements, 1,500 events) and asserts the Markdown stays under 6 MiB and the JSON under 16 MiB.
+- **Format:** JSON `format` stays `marinara-campaign-codex`; `version` goes from 1 to 2. Per entity, `knowledge` is removed and replaced by `claims`; statements gain optional `sameAs` and `heldBy: [{ state, names }]`.
+- **Fallback:** a branch export, or a game whose sessions the projection does not cover exactly (for example a later branch of an earlier session), falls back to reading each session chat as before, keeping the branch-aware session list. Session selection now also excludes chats in the group that carry another game's id.
+- **How to reach it:** Game Mode Session panel > Tools tab > "Campaign codex" section, "Markdown" and "JSON" buttons; command palette "Download campaign codex (Markdown)" (palette command added later in `8e4a1ccff`). API: `GET /api/game-tools/codex/:chatId?format=md|json` (default `md`), sent as an attachment (`<game>.md` / `.json`); bodies of 64 KiB or more are gzipped when the client accepts gzip.
+- **Settings and defaults:** None. Not behind a feature switch.
+- **Storage:** None (read-only).
+- **Tests:** `scripts/regressions/campaign-codex-projection.regression.ts` (new), `scripts/regressions/campaign-codex-size.regression.ts` (new), `scripts/regressions/campaign-codex-export.regression.ts` (updated for `claims` / `heldBy`).
+- **Known limits:** long values are truncated in both formats (the JSON keeps up to 4,000 characters); holder lists in the Markdown are capped at 12 names per state.
+
+### Random tables and yes/no oracle (Game Mode tools)
+
+- **Commit:** `a03fe63a5` (2026-09-23 04:39 +0300).
+- **Files:** new `packages/client/src/components/tools/RandomTablesTool.tsx`, `packages/client/src/components/modals/RandomTablesModal.tsx`, `packages/client/src/hooks/use-random-tables.ts`, `packages/client/src/lib/open-random-tables.ts`, `packages/client/src/lib/chat-input-insert.ts`, `packages/shared/src/utils/random-tables.ts`, `packages/server/src/routes/random-tables.routes.ts`, `packages/server/src/services/storage/random-tables.storage.ts`, `packages/server/src/db/schema/random-tables.ts`; changed `packages/client/src/components/game/GameToolsPanel.tsx`, `packages/client/src/components/game/GameInput.tsx`, `packages/client/src/components/game/GameDiceLog.tsx`, `packages/client/src/hooks/use-game-tools.ts`, `packages/server/src/services/game/dice-roll-log.ts`, `packages/server/src/routes/index.ts`, `packages/client/src/components/command-palette/CommandPaletteHost.tsx`, `packages/client/src/components/layout/ModalRenderer.tsx` (modal id `random-tables`).
+- **What it does (tables):** GM roll tables rolled on dice (plain NdM, no modifier, up to 10 dice of up to 1000 faces, e.g. d6, d20, d100, 2d6 with row ranges such as 1-3) or by weight. Tables are edited by pasting a plain list, one row per line: a leading total or range ("1-3: Bandits", "4. Wolves", "05-10 Rain") makes a dice table (dice inferred from the covered span, e.g. 1-20 is d20, 2-12 is 2d6), a trailing "(x3)" weights a row, unranged or mixed lists roll by weight. `[[Table Name]]` in a row rolls another visible table, up to 5 levels deep (100 expansions total, cycles stopped). Tables can be global ("All games") or belong to one game ("This game"); a game table shadows a global one of the same name for references. Import and export as JSON, and "Build a table from a lorebook folder or tag" (rows are entry names, optional subfolders and disabled entries).
+- **What it does (oracle):** "Oracle" asks an optional yes/no question at five likelihoods (certain 90, likely 75, even 50, unlikely 25, impossible 10 percent yes on d100, a simplified Mythic fate chart). Outcomes: Yes, and / Yes / Yes, but / No, but / No / No, and; rolls within 5 of the line get the "but" twist, the outer fifth of each side is exceptional.
+- **What it does (output):** rolls happen on the server. "Log rolls to the dice log" records table and oracle rolls in the game's Dice Log with source "Table" (only for a Game Mode chat). "To input" drops the result line into the open chat input as `(OOC: ...)` via the card-asset insert event that ChatInput and GameInput listen to; nothing is sent automatically.
+- **How to reach it:** Game Mode Session panel > Tools tab > "Random tables" section (embedded tool, with "Open in a window"); command palette "Random tables and oracle" (available in any chat; keywords oracle, roll, table, random, yes no, dice, gm). Tables and the oracle are one tool in one window, not separately reachable. API under `/api/random-tables`: `GET /?chatId=` (game's plus global tables), `POST /`, `PUT /:id` (optionally moves scope), `DELETE /:id`, `POST /import` (`skipExisting` option), `POST /roll` (`tableId`, `chatId`, `log`), `POST /oracle` (`likelihood`, `question`, `chatId`, `log`), `GET /lorebook-sources/:lorebookId`, `POST /from-lorebook`.
+- **Settings and defaults:** not behind a feature switch. Scope defaults to "This game" in a Game Mode chat, otherwise "All games" (game scope needs a Game Mode chat, else 400). Logging to the dice log is off until toggled.
+- **Storage:** new table `random_tables` (`id`, `name`, `game_id` ("" for global), `dice`, `description`, `rows` JSON, `created_at`, `updated_at`), schema `packages/server/src/db/schema/random-tables.ts` exported from `packages/server/src/db/schema/index.ts`, registered in `BUILT_IN_FILE_BACKED_TABLES` (`packages/server/src/db/file-backed-store.ts`) and `SHARDED_TABLES` (`scripts/protect-launcher-data.mjs`). No foreign key to chats: a game table outlives any one session. Later (`ab891fb41`) the Danger Zone clear that deletes chats also deletes game-scoped random tables and keeps global ones (`packages/server/src/routes/admin.routes.ts`). localStorage key `marinara-random-tables-log` (log toggle). Dice log `source` gains `"table"`.
+- **Tests:** `scripts/regressions/random-tables.regression.ts` (new).
+- **Later changes:** `2f9737914` added table starter packs (`packages/client/src/lib/random-table-packs.ts`, added with `skipExisting` so a pack added twice adds nothing); `c664bb44d` scope rendering fix; `ad7a61ad1` phone sizing.
+- **Known limits:** at most 2,000 tables per scope (`MAX_RANDOM_TABLES`, 409 "Too many tables"), 1,000 rows per table, 2,000 characters per row, 120 characters per name, 2,000 tables per import; request bodies capped at 4 MB per table and 16 MB per import; nested rolls stop at depth 5.
+
+### Character usage lookup ("Used in" and Unused characters)
+
+- **Commit:** `a03fe63a5` (2026-09-23 04:39 +0300).
+- **Files:** new `packages/server/src/services/characters/character-usage.ts`, `packages/server/src/routes/character-usage.routes.ts`, `packages/client/src/hooks/use-character-usage.ts`, `packages/client/src/components/characters/CharacterUsageSection.tsx`, `packages/client/src/components/characters/CharacterUnusedModal.tsx`; changed `packages/client/src/components/characters/CharacterEditor.tsx`, `packages/client/src/components/panels/CharactersPanel.tsx`, `packages/server/src/routes/index.ts`, `packages/client/src/localization/locales/en.json` (`characters.usage.*`, `characters.unused.*`).
+- **What it does:** the character editor shows "Used in": every chat and game the card is in with its role (In chat, Persona, Party, NPC, GM), game sessions grouped per game, when each was last played, links to open the chat or the latest session, and, on request ("Count messages"), message counts per chat. "Unused characters" lists library cards that no chat uses as a member or persona and no game uses as a party member, NPC or GM, filterable by All / Characters / NPCs and by name, with "Open character"; nothing is deleted.
+- **How it works:** built from chat rows only (`characterIds`, `personaCharacterId`, Game Mode metadata `gamePartyCharacterIds`, `gameNpcs[].characterId`, `gameGmCharacterId` when `gameGmMode` is `character`), never messages. Each chat's contribution is cached in process against the row fields it came from and rebuilt only when a row changes, so edits, new sessions and deleted chats show up on the next request. Internal assistant chats, `npc:` ids and the built-in assistant character are ignored.
+- **How to reach it:** Character editor > Metadata section ("Used in"); Characters panel toolbar button "Unused" (title "Find cards that are not in any chat or game"). API under `/api/character-usage`: `GET /summary` (chat and game counts per character id), `GET /unused`, `GET /:characterId` (`?counts=1` or `true` adds `messageCounts`, 404 for an unknown character).
+- **Settings and defaults:** None. Not behind a feature switch. Message counts are opt-in per request.
+- **Storage:** None (read-only). In-memory index in the server process only.
+- **Tests:** `scripts/regressions/character-usage.regression.ts` (new).
+- **Later changes:** `ab891fb41` made cached message counts recount when the messages table write generation changes (deleting, trashing or restoring an earlier message does not touch the chat row).
+- **Known limits:** message counts cover at most the 50 most recent chats (`MESSAGE_COUNT_LIMIT`, shown as "Counted the 50 most recent"); client caches detail for 30 s and the unused list for 10 s.
+
+### Game log and random table labels without template strings
+
+- **Commit:** `c664bb44d` (2026-09-23 05:20 +0300).
+- **Files:** `packages/client/src/components/modals/GameLogModal.tsx`, `packages/client/src/components/tools/RandomTablesTool.tsx`.
+- **What it does:** the Campaign log header's session name (" · {session}") and the random table "(All games)" scope suffix are now rendered as separate JSX text nodes instead of JS template strings, so the translated label is not glued into a hard-coded string. No visible change in English.
+- **How to reach it:** palette "Open campaign log"; Random tables tool list.
+- **Settings and defaults:** None.
+- **Storage:** None.
+- **Tests:** none added.
+- **Known limits:** the separators (" · ", parentheses) remain literal punctuation.
+
+### Integration review: cross-feature fixes
+
+- **Commit:** `ab891fb41` (2026-09-23 07:57 +0300).
+- **Files:** `packages/client/src/components/command-palette/CommandPaletteHost.tsx`, `packages/client/src/lib/keyboard-shortcuts.ts`, `packages/server/src/services/chat-insights/chat-insights.service.ts`, `packages/server/src/services/game/segment-edits.ts` (exports `collectSegmentOverlays`), `packages/server/src/services/characters/character-usage.ts`, `packages/server/src/routes/admin.routes.ts`, `packages/client/src/components/panels/CharactersPanel.tsx`, `packages/client/src/components/panels/library/LibrarySelectionExtraActions.tsx`, `packages/client/src/localization/locales/en.json`.
+- **Search:** Search all chats in Game mode now matches the text the player sees: narration segment edits and deletions are applied before matching and snippets quote the edited text (new `createVisibleContentReader`). Trashed messages are not hits, restored ones are again, private notes never match.
+- **Stats:** Chat statistics read the same visible content, so longest-message previews and counts reflect Game mode segment edits; trashing or restoring a message moves the totals.
+- **Palette:** the palette shortcut no longer opens over another dialog (same rule as Ctrl+Shift+F), "?" (keyboard shortcuts) is ignored while any dialog is open, and "Show chat guide" and "Insert snippet" are hidden while an editor covers the chat screen.
+- **Danger Zone clears:** Settings > Danger Zone clearing "Chats & Messages" (`POST /api/admin/expunge` with the `chats` scope, and `POST /api/admin/clear-all`) now also deletes game-scoped random tables (`random_tables` where `gameId` is set; global tables stay) and all `library_campaign_links`. Message trash, dice log rows and lorebook activation stats are verified to go with their parents.
+- **Usage recounts:** character usage message counts were cached by chat row key only, so deleting, trashing or restoring an earlier message left a stale count. The cache now also stores the `messages` table write generation and recounts when it changes (unless the chat's unit is not resident).
+- **Narrow panels:** bulk action buttons in the Characters panel selection bar and the library selection bar (tag, move, campaign) collapse to icons when the panel is under 28rem wide (container query), not only under a 400px viewport.
+- **Locale cleanup:** removed seven unused keys from `en.json` (`ui.game.gamejournal.*` search and close strings, `ui.game.gamepartybar.value1HpValue2OfValue3`).
+- **How to reach it:** no new entry points; the fixes apply to Search all chats (Ctrl+Shift+F), Stats for this chat (branch menu), the command palette (Ctrl+K) and "?" overlay, Settings > Danger Zone, the Characters panel and library selection bars.
+- **Tests:** `scripts/regressions/integration-seams.regression.ts` (new: trash, bookmarks, pins, notes vs global search, chat stats and character usage; segment edits in search; chat delete clearing trash and dice rows), `scripts/regressions/integration-expunge.regression.ts` (new: Danger Zone clears), `scripts/regressions/command-palette.regression.ts` (changed: dialog guards, detail-open guards).
+- **Settings and defaults:** None.
+- **Storage:** no new storage; Danger Zone clear list gains `random_tables` (game-scoped) and `library_campaign_links`.
+- **Known limits:** the usage recount relies on the file-backed store exposing `getTableWriteGeneration`; without it (`-1`) the cache is bypassed.
+
+### Persistent, recoverable generation jobs (job tracking, E02)
+
+- **Commit:** `077e055ee` (2026-09-23 08:27 +0300). Follow-ups 1094acd08 (2026-09-23 13:40, one log line per job transition) and d91c5d395 (2026-09-24 10:00, moved into Feature switches) are folded in; this entry describes the current state.
+- **Files:** new `packages/server/src/services/generation/generation-job-tracker.ts`, `packages/server/src/db/schema/generation-job-records.ts`, `packages/server/src/services/storage/generation-job-records.storage.ts`, `packages/server/src/routes/generation-job-records.routes.ts`, `packages/client/src/components/generation-jobs/GenerationJobsRecoveryHost.tsx`, `packages/client/src/components/generation-jobs/GenerationJobsActivityDot.tsx`, `packages/client/src/components/generation-jobs/TrackedJobDetails.tsx`, `packages/client/src/components/panels/settings/GenerationJobTrackingSettings.tsx`, `packages/client/src/hooks/use-generation-job-tracking.ts`, `packages/client/src/lib/generation-job-tracking.ts`, `docs/development/generation-jobs.md`; changed `packages/server/src/services/generation/generation-jobs.ts` (observer seam `setObserver`/`notify`, plus the store's own `job.state` lines), `packages/server/src/routes/index.ts`, `packages/server/src/db/schema/index.ts`, `packages/server/src/db/file-backed-store.ts`, `packages/server/src/routes/admin.routes.ts`, `packages/client/src/components/modals/GenerationJobsModal.tsx`, `packages/client/src/components/layout/TopBar.tsx`, `packages/client/src/components/layout/AppShell.tsx`, `packages/client/src/components/panels/settings/FeatureSwitchesSettings.tsx`, `scripts/protect-launcher-data.mjs`.
+- **What it does:** when on, every media job that runs through the existing job store (`generationJobs.run`) gets a persisted record: gallery image and selfie, scene background, character avatar and sheet drafts (kind `image`), sprite sheet and animated expressions (kind `sprite`), gallery scene video (kind `video`). The record holds status, timestamps, `elapsedMs`, `errorCode`, `errorId`, `resultRef` (first same-origin asset path, else `/api/generation-jobs/:id/result`; never data or remote URLs), `seenAt` and a log trail. A job keeps running on the server after a refresh, a closed tab or a dropped connection.
+- **What it does (states and recovery):** statuses are `accepted`, `running`, `completed`, `failed` (includes timeout `ME_TIMEOUT`), `cancelled` (`ME_CANCELLED`) and `interrupted` (`ME_INTERRUPTED`). On reconnect, after a reload, or when a hidden or offline tab comes back, the client re-reads the records and shows a toast ("N generation jobs finished while you were away", with a count of those that did not complete) with a **View** button that opens the Generation jobs viewer; each job is announced once (`partitionFinishedJobs`), jobs that finished while watched are stamped silently. On server restart nothing is resumed or retried: a clean shutdown marks running jobs `interrupted`, and after a crash the tracker reconciles leftover `accepted`/`running` records at startup from the store metadata, else marks them `interrupted`. The Generation jobs viewer gains per-job kind, chat, age, run time, error code and a **Log trail** section; the top bar shows a small activity dot while tracked jobs run.
+- **What it does (logging):** structured `job.state` events (`state`: accepted, running, completed, failed, cancelled, recovered, expired) and throttled `job.progress` heartbeats every 30 s, with `operation: "generation.job"`, `jobId`, `chatId`, `kind`, `sourceKind`, `stage`, `elapsedMs`, `outcome` (`ok`/`failed`/`cancelled`/`skipped`) and `ME_*` `errorCode`. Since 1094acd08 each transition is logged exactly once: the store writes the accepted, running and settled lines whether or not tracking is on, and the tracker only adds them to the trail, logging its own lines just for progress, `recovered` (`stage: "server-restart"` or `"client-reattach"`) and `expired`. Events are built from an allow-list (`buildJobLogEvent`): no prompts, message text, provider error text or keys; non-`ME_*` codes become `ME_INTERNAL`. The store's failure line strips quoted spans of 12+ characters from the error message and caps it at 300 characters (`withoutEchoedPrompt`).
+- **How to reach it:** Settings > Advanced > Features, row **Keep generating when the tab is closed (job tracking)**, with an **Open generation jobs** button under it (searching settings for `jobs`, `job tracking`, `keep generating`, `tab closed`, `recover` or `reconnect` lands on the Features section). Command palette action **Open generation jobs** (registered only while tracking is on). Top bar activity dot. API (registered with prefix `/api/generation-job-records`): `GET /api/generation-job-records/settings`, `PUT /api/generation-job-records/settings` (`{ enabled: boolean }`), `GET /api/generation-job-records?chatId=&limit=` (newest first, no trails), `GET /api/generation-job-records/:id`, `GET /api/generation-job-records/:id/trail`, `POST /api/generation-job-records/seen` (`{ ids, recovered? }`). Cancel and full result still use `/api/generation-jobs/:id/cancel` and `/api/generation-jobs/:id/result`.
+- **Settings and defaults:** app setting `generationJobTracking` (`"true"`/`"false"`), default **off**; it is the only Features row that starts off and it is not part of the `features` JSON switch object. While off: the observer returns immediately, `/api/generation-jobs` is byte-identical, every `/api/generation-job-records` route except `/settings` returns the normal 404, no rows, files, log lines or timers, and the client makes one cached setting read (5 min) and renders nothing new. No environment variables.
+- **Storage:** new `generation_job_records` table (`DATA_DIR/storage/tables/generation_job_records/`, one file per job), registered in `packages/server/src/db/schema/index.ts`, `FILE_BACKED_TABLES` in `packages/server/src/db/file-backed-store.ts` (primary-key shards, always resident), the `chats` delete cascade, `scripts/protect-launcher-data.mjs` and the admin "clear chats" expunge in `packages/server/src/routes/admin.routes.ts`. App setting key `generationJobTracking`. Existing `DATA_DIR/generation-jobs/` files unchanged.
+- **Tests:** `scripts/regressions/generation-job-tracking.regression.ts` (added in 077e055ee, extended in 1094acd08 to assert one log line per job and transition): table wiring, helpers, byte-identical setting-off responses, persistence and progress, completion without a client, client reattach, restart reconcile, cancel racing settle, chat deleted mid-job, log redaction, retention and failure safety, throwing observer. `scripts/regressions/generation-jobs-ui.browser.regression.mjs` (viewer unchanged while off). `scripts/regressions/generation-job-tracking-settings-placement.regression.ts` (added in d91c5d395).
+- **Known limits:** not covered: TTS (synchronous routes), Illustrator agent images during a chat turn, Game Mode asset generation, and the text jobs `game-party-turn`, `game-npc-backfill`, `game-character-sheet-draft`. Nothing is resumed after a restart (providers are not idempotent, inputs are not persisted). The dialog that started a job does not re-attach; results come back through the viewer. Retention: finished records removed 7 days after last update, newest 300 kept per pass (startup, on enable, then hourly on an unref'd timer); unfinished records never expire. A record can outlive the store's own result file (store keeps 200 metadata / 50 result files). List route returns at most 200 (client asks for 100), `/seen` takes at most 100 ids, trail keeps 40 events. Client polls every 3 s while a tracked job runs, 30 s otherwise, paused while hidden. Turning it off keeps existing records until retention or chat deletion.
+
+### GM prep board
+
+- **Commit:** `2f9737914` (2026-09-23 09:06 +0300). One of nine features merged together in this commit.
+- **Files:** new `packages/shared/src/utils/prep-board.ts` (pure board logic, exported via `packages/shared/src/index.ts`), `packages/server/src/db/schema/game-prep-boards.ts`, `packages/server/src/services/storage/game-prep-boards.storage.ts`, `packages/server/src/routes/game-prep-board.routes.ts`, `packages/client/src/components/game/GamePrepBoard.tsx`, `packages/client/src/components/modals/PrepBoardModal.tsx`, `packages/client/src/hooks/use-prep-board.ts`, `packages/client/src/lib/open-prep-board.ts`; changed `packages/client/src/components/game/GameToolsPanel.tsx`, `packages/client/src/components/layout/ModalRenderer.tsx` (modal id `prep-board`), `packages/client/src/components/command-palette/CommandPaletteHost.tsx`, `packages/server/src/routes/index.ts`, `packages/server/src/services/mari-db/mari-db.service.ts`, `packages/server/src/services/professor-mari/workspace-change-review.service.ts`.
+- **What it does:** a private planning board per game (Lazy DM style). Default sections: Strong start, Scenes, Secrets and clues, Open threads, NPCs to feature, Locations, Treasure and rewards, Notes (`PREP_BOARD_DEFAULT_SECTIONS`); sections can be added, renamed (blank name restores the preset name), reordered and removed (their items move to another section; the last section cannot be removed). Items have text, a used checkbox (records the session it was used in), tags, an optional link to a character card or lorebook entry (opens it), and remember the session they were added in and how often they were carried over.
+- **What it does (cont.):** drag and drop within and across sections (dnd-kit), or ArrowUp/ArrowDown on an item's handle to step it (crossing into the neighbouring section, with a screen reader announcement). Search matches every word against item text, tags, link name and section name. "Archive used items", show/hide archived, and "Carry over" (moves unfinished items to the next session and archives used ones, after a confirm). "To input (OOC note)" inserts the item into the chat input via `formatOocNote` without sending. Export as JSON (`prep-board-<name>.json`, format `marinara-prep-board`, schema version 1) and Import JSON with Merge (sections match by id or name, items get fresh ids) or Replace. "Delete board" removes it on purpose.
+- **How to reach it:** the game Session panel > Tools tab > "GM prep board" section (inline), with an "Open the prep board full-screen" button; command palette "GM prep board" (only when the active chat is Game Mode; palette opens with Mod+K). In the item editor Ctrl/Cmd+Enter saves and Escape cancels; Escape closes menus and the link picker. API (prefix registered in `routes/index.ts`): `GET /api/prep-board?chatId=`, `PUT /api/prep-board` (body `{ chatId, revision, board }`, 16 MB body limit, 409 with the stored board on a stale revision), `DELETE /api/prep-board?chatId=`. All return 400 for a chat that is not Game Mode.
+- **Settings and defaults:** None. Not behind a feature switch.
+- **Storage:** new file-backed table `game_prep_boards` (id, game_id, board JSON, revision, created_at, updated_at), keyed by effective game id (`resolveEffectiveGameId`: metadata.gameId, else chat group, else chat), with no foreign key or cascade so it survives deleting every session. Registered in `packages/server/src/db/schema/index.ts`, `BUILT_IN_FILE_BACKED_TABLES` in `packages/server/src/db/file-backed-store.ts`, `SHARDED_TABLES` in `scripts/protect-launcher-data.mjs`, and cleared by the `chats` scope of `POST /api/admin/expunge` in `packages/server/src/routes/admin.routes.ts`. Excluded from Professor Mari: `MARI_PRIVATE_TABLES` in `mari-db.service.ts` (generic DB commands never list, count, read, search, validate or write it) and `isProfessorMariPrivateDataPath` covers its storage files. localStorage key `marinara-prep-board-collapsed` (collapsed section ids, last 200). Cleared by Settings > Danger Zone "Chats & Messages" (`POST /api/admin/expunge` scope `chats`) and by `POST /api/admin/clear-all` (`packages/server/src/routes/admin.routes.ts`).
+- **Saving model:** edits apply to the React Query cache through the pure helpers and save in the background, one save at a time per chat, each with the revision it started from; a 409 replaces the local board with the stored one and toasts "The prep board changed in another window. Showing the saved version."; sibling session chats of the same game pick up the saved board.
+- **Tests:** `scripts/regressions/prep-board.regression.ts` (pure module, table registrations, routes, shared board across sessions, revision conflicts, survival after the last session is deleted, prompt assembly never includes the board), `scripts/regressions/prep-board-mari-privacy.regression.ts`.
+- **Known limits:** sanitizer caps (`PREP_BOARD_LIMITS`): 40 sections, 2000 items, item text 4000 chars, section title 120, 20 tags of 60 chars, link label 200; client import rejects files over 16 MB. Game Mode chats only. Never sent to a model (nothing in prompt assembly reads the table). Later commits `d1ec31bbc` (36px touch targets and readable text on phones) and `ad7a61ad1` adjusted the phone layout; `abc4f85a1` added the calendar to the same Tools tab.
+
+### Chapters and scene markers
+
+- **Commit:** `2f9737914` (2026-09-23 09:06 +0300). One of nine features merged together in this commit.
+- **Files:** new `packages/client/src/components/chat/MessageChapters.tsx` (`ChapterFields`, `ChapterMenuSection`, `ChapterDivider`, `ChapterHeading`, `ChatChaptersList`), `packages/client/src/lib/chat-chapters-events.ts`; changed `packages/shared/src/utils/message-marks.ts`, `packages/shared/src/types/chat.ts`, `packages/server/src/routes/chats.routes.ts`, `packages/server/src/services/chat-insights/transcript-document.ts`, `packages/server/src/services/game/campaign-log.ts`, `packages/client/src/lib/game-log.ts`, `packages/client/src/lib/open-game-log.ts`, `packages/client/src/components/modals/GameLogModal.tsx`, `packages/client/src/components/chat/MessageMarks.tsx`, `packages/client/src/components/chat/ChatMessageSearch.tsx`, `packages/client/src/components/chat/ChatToolbarControls.tsx`, `packages/client/src/components/chat/ChatArea.tsx`, `packages/client/src/components/chat/ChatRoleplaySurface.tsx`, `packages/client/src/components/chat/ConversationView.tsx`, `packages/client/src/components/command-palette/CommandPaletteHost.tsx`, `packages/client/src/hooks/use-chats.ts`.
+- **What it does:** any Roleplay or Conversation message can be marked as a chapter start with a user-written title and optional summary (never generated). A divider ("Chapter: <title>") renders above the message, and message grouping breaks there. A new Chapters tab in the chat search panel lists chapters in reading order with message numbers and jumps to them (`requestGotoMessage`).
+- **What it does (cont.):** Markdown and HTML story exports render chapters as `##` headings (summary in italics); the HTML story also gets a "Contents" table of contents with `#chapter-N` anchors, and a chapter marked on a turn the export skips moves to the next kept turn. In Game Mode, chapters are marked per turn in the campaign log ("Start a chapter at this turn", edit or remove), which also gains a "Chapters" jump select; a chapter stored on a hidden turn shows on the next readable one.
+- **How to reach it:** message bookmark action menu (title "Bookmark, pin, note or chapter") > "Start a chapter here" (Enter saves, Escape cancels); chat toolbar search button ("Search, bookmarks, chapters and trash") > Chapters tab; command palette "Go to chapter…" (any chat; in Game Mode it opens the Campaign log with the chapter list focused, elsewhere it opens the Chapters tab, opening the phone overflow menu first when needed) plus one "Go to chapter N: <title>" command per chapter of the active chat while the palette is open. Game: Campaign log (from the Session panel > Tools tab). API: `GET /api/chats/:chatId/chapters` (returns `{ messageId, messageNumber, title, summary }[]`); marks are saved through the existing `PATCH /api/chats/:chatId/messages/:messageId/extra` with `{ chapter: {...} | null }`; exports via `GET /api/chats/:id/export?format=markdown|html`.
+- **Settings and defaults:** None. Not behind a feature switch.
+- **Storage:** message `extra.chapter` = `{ title, summary, createdAt }`; `chapter` added to `MESSAGE_MARK_EXTRA_KEYS`, so it is message-level and mirrored to every swipe. Validated in `normalizeMessageMarkPatch` (title required, whitespace collapsed). No new tables. Client query key `chatKeys.chapters(chatId)`, invalidated on mark save, delete and trash changes.
+- **Tests:** `scripts/regressions/message-chapters.regression.ts`.
+- **Known limits:** title max 120 chars (`MAX_CHAPTER_TITLE_LENGTH`, truncated), summary max 600 (`MAX_CHAPTER_SUMMARY_LENGTH`, rejected when longer). Never sent to the model. Game Mode has no per-message anchors on the main screen, so game chapters are only marked and read in the campaign log. Reading mode (separate feature) uses bookmarks, not these chapters, as its page breaks.
+
+### Random table starter packs
+
+- **Commit:** `2f9737914` (2026-09-23 09:06 +0300). One of nine features merged together in this commit.
+- **Files:** new `packages/client/src/lib/random-table-packs.ts` and five JSON packs under `packages/client/src/lib/table-packs/` (`taverns-and-inns.json`, `roads-and-weather.json`, `town-life.json`, `treasure.json`, `story-complications.json`); changed `packages/client/src/components/tools/RandomTablesTool.tsx`, `packages/client/src/hooks/use-random-tables.ts`, `packages/server/src/routes/random-tables.routes.ts`.
+- **What it does:** a "Starter packs" panel in the random tables tool offers five original generic fantasy packs, each self-contained (every `[[reference]]` points inside the pack): Taverns and inns (8 tables: names, menu, drinks, keeper), Roads and weather (6: weather, strange sky, roadside encounters, travellers, beasts, finds), Town life (6: rumours, districts, NPC quirks), Treasure (6: trinkets, gemstones, minor enchantments, minor/moderate/major loot), Story complications (3: complication, twist action, twist subject). Rows shown with a table count; a pack whose tables are all already present shows as added and is disabled.
+- **What it does (cont.):** adding a pack imports through the normal import route with `skipExisting`, so tables whose normalized names already exist in the visible scope are left out and adding a pack twice changes nothing. Toasts report created tables, tables kept because they existed, and tables dropped by the per-scope cap.
+- **How to reach it:** the "Add a starter pack" button in the random tables tool header (also shown in the empty state). The tool is in the game Session panel > Tools tab > Random tables section and in the "Random tables and oracle" command palette window. In a game, a scope select chooses "This game" or "All games"; outside a game packs go to the global scope. API: `POST /api/random-tables/import` gained optional `skipExisting: boolean` (default false) and returns `existing` (count skipped as already present) alongside `created` and `skipped`.
+- **Settings and defaults:** None. Not behind a feature switch.
+- **Storage:** None new: packs are static JSON bundled in the client; imported tables become ordinary rows in the existing `random_tables` table.
+- **Tests:** `scripts/regressions/random-table-packs.regression.ts` (every pack parses through the import sanitiser unchanged, 12 to 100 rows per table, dice tables without gaps, references stay in the pack, no em or en dashes, many clean rolls, route import with `skipExisting` is a no-op the second time).
+- **Known limits:** the per-scope table cap (`MAX_RANDOM_TABLES` = 2000) still applies. Pack names and descriptions are localized via `RANDOM_TABLE_PACK_KEYS`, but table names and rows are English only. For a game-scope add, name matching covers the game's tables and the global ones, so a pack whose tables exist globally adds nothing to the game.
+
+### NPC quick reference
+
+- **Commit:** `2f9737914` (2026-09-23 09:06 +0300). One of nine features merged together in this commit.
+- **Files:** new `packages/client/src/components/characters/NpcQuickReference.tsx` (popover), `packages/client/src/lib/npc-quick-reference.ts` (summary and placement helpers); changed `packages/client/src/components/characters/CharacterReferences.tsx` (`useNpcPeek` hover, tap and keyboard handling), `packages/client/src/lib/character-references.ts`, `packages/client/src/stores/ui.store.ts`, `packages/client/src/components/panels/SettingsPanel.tsx`.
+- **What it does:** when on, hovering (mouse, after 400 ms), clicking/tapping or pressing Enter on a linked character name in Roleplay, Conversation or Game narration shows a small card: avatar, name, a description shortened to about 300 chars at a word boundary, up to 8 tags, "Open card", and "Usage" (chat and game counts plus up to 5 recent chats that open on click, from the existing character usage endpoint). Placed below the name, or above when there is no room, clamped to the viewport.
+- **What it does (cont.):** only one popover is open at a time. A hover preview closes 250 ms after the pointer leaves; a click pins it and a second click on the same name closes it; Escape, a pointer down elsewhere, scrolling or resizing close it (focus returns to the name only when it was on the popover or name). Keyboard activation focuses the popover's first button. Game-local NPCs (not library cards) only show what the game provides and cannot load full details or usage. With the setting off, a name click opens the card editor as before.
+- **What it does (perf):** name linking in `createCharacterMatcher` now scans with a precomputed name set (by first character and name lengths) instead of one large alternation regex, linear in message length; the old regex remains as a fallback when lower-casing changes string length.
+- **How to reach it:** Settings > Advanced > Message Tools > "Character quick reference" (searchable in settings by npc, hover, popover, names, peek). API used (existing): `GET /api/character-usage/:characterId`.
+- **Settings and defaults:** UI store `npcQuickReference`, default `false`; included in `pickSyncedSettings` and `pickPersistedUIState`. Not behind a feature switch.
+- **Storage:** only the `npcQuickReference` UI setting (persisted and synced with the other UI settings). No tables or metadata keys.
+- **Tests:** `scripts/regressions/npc-quick-reference.regression.ts` (name matching: whole names, first names, titles, aliases, casing, word boundaries, longest match wins, ambiguous shared first names left unlinked, astral characters next to names).
+- **Known limits:** hover opening is mouse only (`pointerType === "mouse"`); touch uses tap. Description limit 300 (`NPC_PEEK_DESCRIPTION_LIMIT`), tags 8 (`NPC_PEEK_TAG_LIMIT`), usage list 5 rows. Per CHANGELOG, it never changes message text or what gets copied.
+
+### Initiative tracker
+
+- **Commit:** `2f9737914` (2026-09-23 09:06 +0300). One of nine features merged together in this commit.
+- **Files:** new `packages/shared/src/utils/initiative-tracker.ts` (pure turn-order module, exported via `packages/shared/src/index.ts`), `packages/server/src/db/schema/game-initiative-encounters.ts`, `packages/server/src/services/storage/game-initiative-encounters.storage.ts`, `packages/server/src/routes/game-initiative.routes.ts`, `packages/client/src/components/tools/InitiativeTracker.tsx`, `packages/client/src/components/modals/InitiativeTrackerModal.tsx`, `packages/client/src/hooks/use-initiative.ts`, `packages/client/src/lib/initiative-draft.ts`, `packages/client/src/lib/open-initiative-tracker.ts`; changed `packages/server/src/services/game/dice-roll-log.ts`, `packages/client/src/hooks/use-game-tools.ts`, `packages/client/src/components/game/GameDiceLog.tsx`, `packages/client/src/components/game/GameToolsPanel.tsx`, `packages/client/src/components/layout/ModalRenderer.tsx` (modal id `initiative-tracker`), `packages/client/src/components/command-palette/CommandPaletteHost.tsx`, `packages/server/src/routes/index.ts`.
+- **What it does:** add combatants from a character card, a lorebook entry (pick a lorebook, then search) or a typed name (duplicate names become "Goblin 2"); each has initiative dice (blank means d20, a bare number is a d20 modifier, otherwise NdM notation), initiative, free-text HP and conditions/notes. "Roll initiative" rolls everyone on the server, sorts (highest first, ties to the higher dice modifier, then existing order, unset last) and restarts at round 1; a single combatant can be rolled mid-fight without moving the current turn. Next/previous turn with a round counter, move up/down, delay (act after the next combatant), remove.
+- **What it does (cont.):** every initiative roll is written to the game's dice log with source `initiative` (shown as "Initiative" in the Dice Log, with crit/fumble flags on a single d20). "To input" inserts a one-line turn summary (for example "Round 2: <name>'s turn (HP 12/20; poisoned). Next: <name>.") into the chat input as an OOC note; nothing is sent automatically. Encounters can be saved per game ("Save encounter"), reopened from any session of the game ("Saved encounters"), and deleted; replacing an unsaved fight asks first ("Discard unsaved fight?").
+- **How to reach it:** the game Session panel > Tools tab > "Initiative tracker" section, with "Open in a window" (modal); command palette "Initiative tracker" (only when the active chat is Game Mode). Enter in an inline field commits it. API (prefix `/api/game-initiative`): `GET /api/game-initiative?chatId=`, `POST /api/game-initiative` (`{ chatId, name, state }`, 409 "Too many encounters" at the cap), `PUT /api/game-initiative/:id`, `DELETE /api/game-initiative/:id`, `POST /api/game-initiative/roll` (`{ chatId, combatants: [{ id, name, dice }] }`, returns `results`, `totals`, `logged`); 1 MB body limit on encounter writes.
+- **Settings and defaults:** None. Not behind a feature switch.
+- **Storage:** new file-backed table `game_initiative_encounters` (id, game_id, name, state JSON, created_at, updated_at), keyed by effective game id with no foreign key or cascade. Registered in `packages/server/src/db/schema/index.ts`, `BUILT_IN_FILE_BACKED_TABLES` in `packages/server/src/db/file-backed-store.ts`, `SHARDED_TABLES` in `scripts/protect-launcher-data.mjs`, and cleared by the `chats` scope of `POST /api/admin/expunge`. The working (unsaved) encounter is kept per chat in localStorage under `marinara-initiative-draft:<chatId>` so the Tools tab and the window show the same fight and a reload keeps it. Dice log rows go to the existing `game_dice_rolls` table. Cleared by Settings > Danger Zone "Chats & Messages" (`POST /api/admin/expunge` scope `chats`) and by `POST /api/admin/clear-all`.
+- **Tests:** `scripts/regressions/initiative-tracker.regression.ts` (pure turn-order rules, table registrations, CRUD per game, the roll route and its `initiative` dice-log rows, client wiring).
+- **Known limits:** 100 combatants per encounter (`MAX_INITIATIVE_COMBATANTS`), combatant name 120 chars, HP/notes 500 chars, 500 saved encounters per game (`MAX_INITIATIVE_ENCOUNTERS`). Dice are clamped to the shared dice limits. Delay on the last combatant in the order does nothing that round. Rolls are logged only for Game Mode chats. Nothing here writes to a chat. Phone layout adjusted later in `ad7a61ad1`.
+
+### Lorebook backlinks ("Fired in chats") and the Stale entries filter
+
+- **Commit:** `2f9737914` (2026-09-23 09:06 +0300). One of nine features merged together in this commit.
+- **Files:** new `packages/server/src/services/lorebook/activation-backlinks.ts` (pure `parseRecentChats`, `mergeRecentChats`, `findStaleEntries`, `clampStaleDays`), new `packages/client/src/components/lorebooks/LorebookEntryFiredIn.tsx` (badge plus popover); changed `packages/server/src/services/lorebook/activation-stats.ts`, `packages/server/src/db/schema/lorebook-activation-stats.ts`, `packages/server/src/routes/lorebooks.routes.ts`, `packages/client/src/hooks/use-lorebooks.ts` (`LorebookEntryRecentChat`, `LorebookStaleEntries`, `useLorebookStaleEntries`), `packages/client/src/components/lorebooks/LorebookEntryRow.tsx`, `packages/client/src/components/lorebooks/LorebookEditor.tsx`.
+- **What it does (backlinks):** each lorebook entry now keeps a bounded list of the chats it fired in (`{ chatId, count, lastActivatedAt }`, newest first, capped at `MAX_RECENT_CHATS_PER_ENTRY = 20`; the least recently fired chat drops off first). Per-chat counts accumulate in the existing in-memory pending batch and merge into the stored list in the same batched write as the global count. The entry row's fired count (`N×`) is now a button; clicking it opens a "Fired in chats" popover listing each chat by name with its per-chat count and a "Last fired {date}" tooltip, and clicking a chat opens it via `openChatAtMessage`. Deleted chats show as "Deleted chat" (not clickable). Escape or an outside click closes the popover. When 20 chats are listed a "Showing the 20 most recent chats." footer appears.
+- **What it does (stale):** `findStaleEntries` returns entries that did not fire in the last N days while the lorebook itself fired in that window (if no entry of the lorebook fired in the window, `lorebookActive` is false and nothing is called stale). Disabled entries, entries in effectively disabled folders (a disabled parent gates its enabled subfolders, via `collectEffectivelyDisabledFolderIds`) and entries created inside the window are left out. Results sort longest silent first, never-fired entries first. The editor adds a **Stale (N)** toggle next to "Never fired (N)" (the two are mutually exclusive) and, while it is on, a "Stale after" select with 7, 14, 30, 90 or 180 days (default 30). Folder grouping is turned off while the filter is on; jumping to an entry clears it.
+- **How to reach it:** lorebook editor > Entries list: click an entry's `N×` fired badge for backlinks; the "Stale (N)" toggle in the stats line above the list (shown only when stats exist and the lorebook is active in the window, or the filter is already on). API: `GET /api/lorebooks/:id/activation-stats` (now returns `recentChats` per entry, each enriched with `chatName` and `chatMode`, both null for deleted chats), new `GET /api/lorebooks/:id/stale-entries?days=N` (returns `{ days, cutoff, lorebookLastActivatedAt, lorebookActive, entries: [{ entryId, lastActivatedAt }] }`).
+- **Settings and defaults:** stale window default 30 days; server clamps `days` to 1..3650 (`DEFAULT_STALE_DAYS`, `MAX_STALE_DAYS`), falling back to 30 on bad input. Gated by the later feature switch **Usage and activation stats** (`usageAndActivationStats`, default On, Settings > Advanced > Features; commit 8aa93818b): Off records nothing (`recordLorebookActivations` and the flush return early) and the editor does not load activation stats, so neither the badge nor the Stale toggle appears (the stale query is only enabled once stats have loaded). The `/stale-entries` route itself is not gated on the server.
+- **Storage:** new nullable column `recent_chats` (JSON text) on the existing file-backed table `lorebook_entry_activation_stats` (`packages/server/src/db/schema/lorebook-activation-stats.ts`). Rows written before the column existed fall back to the old `last_chat_id` as a single entry with count 0 (per-chat count shown only when above 0). No new table, no localStorage.
+- **Tests:** `scripts/regressions/lorebook-backlinks.regression.ts` (bounded per-entry chat list including legacy rows, and the stale-entries finder).
+- **Known limits:** only the 20 most recent chats per entry are kept; history before this commit only knows the last chat. Per-chat counts start at this commit. Stale detection relies entirely on activation stats, so it is empty for a lorebook that never fired in the window. The popover `MAX_RECENT_CHATS` constant (20) is duplicated on the client.
+
+### Lorebook bulk editor
+
+- **Commit:** `2f9737914` (2026-09-23 09:06 +0300). One of nine features merged together in this commit.
+- **Files:** new `packages/shared/src/utils/lorebook-bulk-edit.ts` (exported from `packages/shared/src/index.ts`), new `packages/client/src/components/lorebooks/LorebookBulkEditPanel.tsx`; changed `packages/server/src/services/storage/lorebooks.storage.ts` (`bulkEditEntries`, `bulkRemoveEntries`), `packages/server/src/routes/lorebooks.routes.ts`, `packages/client/src/hooks/use-lorebooks.ts` (`useBulkEditLorebookEntries`, `useBulkDeleteLorebookEntries`), `packages/client/src/components/lorebooks/LorebookEditor.tsx`, `packages/client/src/components/lorebooks/LorebookEntryRow.tsx`.
+- **What it does:** in the editor's selection mode a collapsible "Bulk edit N entries" panel applies one change to the whole selection per click: Enable / Disable, Constant on / Constant off, move to a folder (full folder path labels, or "No folder (top level)"), Add or Remove keys on either the primary or secondary key list (comma or newline separated, trimmed, deduped case-insensitively), set Probability (0 to 100, blank = always, i.e. null), Set order (integer) and Set depth (integer >= 0). Each request runs in one transaction, so a failure leaves every selected entry unchanged. Key removal matches case-insensitively ignoring surrounding whitespace; only rows whose key list actually changes are written, and a key change clears the stored embedding (`embedding`, `embeddingSpaceId` set to null). A toast reports "Updated N entries" (count of rows that actually changed).
+- **What it does (selection and delete):** Shift+click on an entry row header or its checkbox selects or deselects the whole range between the last plainly clicked entry and the clicked one, in on-screen order (folders first, collapsed folders skipped; `selectLorebookEntryRange`); text highlighting on Shift+click is suppressed. "Select all" now has a tooltip explaining it takes every entry matching the current search and filters. Deleting a selection is now one request (`bulkRemoveEntries`, chat metadata pruned once) instead of one request per entry.
+- **How to reach it:** lorebook editor > Entries > **Select** button (tooltip "Select entries for batch editing, copying, moving, or deletion") > the "Bulk edit N entries" panel under the selection toolbar. API: `POST /api/lorebooks/:id/entries/bulk-edit` (body `{ entryIds, set?: { enabled, constant, probability, order, depth, folderId, tag }, keyField?: "keys" | "secondaryKeys", addKeys?, removeKeys? }`, returns `{ matched, updated }`), `POST /api/lorebooks/:id/entries/bulk-delete` (body `{ entryIds }`, returns `{ deleted }`). Both sync the linked character book when anything changed.
+- **Settings and defaults:** None. Panel is collapsed by default; key list defaults to primary keys.
+- **Storage:** None new (writes existing `lorebook_entries` rows).
+- **Tests:** `scripts/regressions/lorebook-bulk-edit.regression.ts`.
+- **Known limits:** max 5000 entries per request (`LOREBOOK_BULK_MAX_ENTRIES`) and 200 keys per add/remove list (`LOREBOOK_BULK_MAX_KEYS`, each key up to 500 chars). Bulk edit rejects the whole request (400) if any selected id is not in the lorebook or the folder belongs to another lorebook; bulk delete silently ignores unknown ids. A request with no change is rejected ("Choose at least one change to apply"). The schema accepts a `tag` field, but the panel exposes no control for it. Only one kind of change is sent per click (no combined multi-field form).
+
+### Lorebook Markdown and CSV import and export
+
+- **Commit:** `2f9737914` (2026-09-23 09:06 +0300). One of nine features merged together in this commit.
+- **Files:** new `packages/shared/src/utils/lorebook-text-format.ts` (parser, exporter, duplicate planner; shared so the client preview matches the server import), new `packages/server/src/services/lorebook/text-import.ts`, new `packages/server/src/routes/lorebook-text.routes.ts` (registered inside `lorebooksRoutes`), new `packages/client/src/components/lorebooks/LorebookTextImportDialog.tsx`; changed `packages/client/src/components/ui/ExportFormatDialog.tsx` (new `extraOptions` / `onSelectExtra` props), `packages/client/src/components/lorebooks/LorebookEditor.tsx`, `packages/server/src/routes/lorebooks.routes.ts`.
+- **What it does (formats):** Markdown: optional `# Lorebook name` preamble, one `## Entry name` heading per entry, then optional metadata lines `Keys:` (or `Keywords:`), `Folder: A / B`, `Enabled:`, `Constant:`, `Probability:`, then the body. Content lines starting with `#` are escaped with a backslash on export and unescaped on import. CSV: header row with `name`, `keys`, `content` required and optional `folder`, `enabled`, `constant`, `probability`; quoted cells, doubled quotes, multiline cells, a UTF-8 BOM and CRLF are accepted. Booleans accept true/yes/y/1/on and false/no/n/0/off. Folder paths use " / " and missing folders are created under each parent (matched by name case-insensitively).
+- **What it does (import dialog):** choose a file (`.md`, `.markdown`, `.txt`, `.csv`) or paste text; the format is auto-detected from the file name or first line and can be switched. A preview lists up to 200 entries and 200 issues with line numbers (errors such as missing name, empty content, name over 200 chars, unterminated quote, missing columns; warnings such as unknown column or a name repeated in the file). Target: "This lorebook" or "New lorebook" (with a name, default "Imported lorebook"). "When an entry name already exists": Skip (default), Import as a renamed copy (`Name (2)`, `Name (3)`...), or Overwrite the existing entry (a later duplicate in the same file wins; an overwritten entry without a folder in the file keeps its folder). Result toast: "Imported: N added, N overwritten, N skipped."
+- **What it does (export):** the lorebook export dialog gains **Markdown** and **CSV** choices next to the existing formats. CSV is sent with a UTF-8 BOM and CRLF so spreadsheet apps read non-English text; Markdown only writes `Enabled`, `Constant` and `Probability` lines when they differ from defaults.
+- **How to reach it:** lorebook editor header: the file-upload icon button ("Import entries from Markdown or CSV") opens the "Import entries" dialog; the "Export lorebook" button opens the export dialog with the new Markdown and CSV cards. API: `POST /api/lorebooks/:id/import-text` (body `{ format: "markdown" | "csv", text, duplicateMode: "skip" | "rename" | "overwrite" }`), `POST /api/lorebooks/import-text` (same plus `name`, creates a new lorebook and deletes it again if the import fails), `GET /api/lorebooks/:id/export-text?format=markdown|csv` (attachment `<name>.md` or `<name>.csv`). Import returns `{ lorebookId, created, renamed, overwritten, skipped, invalid, foldersCreated, issues }`.
+- **Settings and defaults:** None. Duplicate mode defaults to skip; format defaults to Markdown unless detected as CSV.
+- **Storage:** None new (creates rows in existing `lorebook_entries` and `lorebook_folders`, and a `lorebooks` row for the new-lorebook target).
+- **Tests:** `scripts/regressions/lorebook-text-import.regression.ts`.
+- **Known limits:** server caps text at 20 MiB (`LOREBOOK_TEXT_IMPORT_MAX_CHARS`) and 20,000 valid entries (`LOREBOOK_TEXT_IMPORT_MAX_ENTRIES`); names are capped at 200 chars. Only name, keys, content, folder, enabled, constant and probability round-trip; secondary keys, order, depth and other entry settings are not in either format. Commas and newlines inside a key are replaced with spaces on export, and a `/` in a folder name becomes `-`. File-level errors abort the import; invalid individual entries are skipped and counted as `invalid`. Entries are written one by one (not in a single transaction) into an existing lorebook, so a mid-import failure can leave a partial import (evident from `text-import.ts`). New entries get order values 10 apart after the current maximum.
+
+### Reading mode
+
+- **Commit:** `2f9737914` (2026-09-23 09:06 +0300). One of nine features merged together in this commit.
+- **Files:** new `packages/client/src/components/modals/ReadingModeModal.tsx`, new `packages/client/src/lib/reading-mode.ts` (pure entry building, pagination, saved position, typography settings, key map); changed `packages/client/src/lib/chat-insights.ts` (`openReadingMode`), `packages/client/src/components/chat/ChatBranchSelector.tsx` (`showReadingMode` prop), `packages/client/src/components/chat/ChatRoleplaySurface.tsx`, `packages/client/src/components/layout/ModalRenderer.tsx` (modal id `reading-mode`, lazy loaded), `packages/client/src/components/command-palette/CommandPaletteHost.tsx`.
+- **What it does:** a full-screen, distraction-free paged reader for a roleplay chat. It loads the chat's messages (each message's active swipe), drops system messages, empty messages, messages hidden from the user, command-only and roleplay-private messages, and (by default) messages hidden from the AI. Message text is reduced to plain reading text (HTML tags, style/script blocks and `<think>`/`<thinking>`/`<reasoning>` blocks removed, entities decoded) with `**bold**`, `*italic*` and `_italic_` kept. Each entry shows the speaker (persona snapshot name or "You" for user turns, character name, else "Narrator").
+- **What it does (pages and bookmarks):** pages are greedy runs of whole messages up to about 6000 characters at default settings (each message adds 80 chars of overhead; a message longer than a page gets its own page and is never split); the budget scales with text size and line width (clamped 1500 to 16000). A labelled message bookmark starts a new page and is shown as a chapter heading; a Bookmarks panel lists bookmarked messages and jumps to them with a brief highlight. The reader reopens on the page holding the first message of the last page read, or the nearest later readable message if that one was deleted or hidden.
+- **How to reach it:** roleplay chat toolbar > branch menu ("Switch branch") > **Read** button (tooltip "Open this chat in a distraction-free reader"), shown in the full and compact toolbars; command palette "Read this chat" (only when the active chat is roleplay). Keys (ignored while typing in a field or with Ctrl/Meta/Alt): Right Arrow, PageDown, J or N next page; Left Arrow, PageUp, K or P previous page; Home first page; End last page; B bookmarks panel; T text settings panel; + or = bigger text; - smaller text. All four arrow keys are kept from reaching the chat underneath (so they cannot swipe, regenerate or edit the last message). Uses existing `GET /api/chats/:id/messages`; no new route.
+- **Settings and defaults:** reader typography: text size 18 px (13 to 30, step 1), line width 68 ch (40 to 100, step 4), line spacing 1.7 (1.3 to 2.2, step 0.1), font Serif (or Sans). No feature switch.
+- **Storage:** localStorage only: `marinara:reading-mode:settings` (typography, shared across chats) and `marinara:reading-mode:position:<chatId>` (`{ messageId, number }` per chat). Storage failures (private windows, full storage) are swallowed.
+- **Tests:** `scripts/regressions/reading-mode.regression.ts`.
+- **Known limits:** roleplay chats only (the button and palette command are not offered for conversation or game chats). Read-only view: no editing, swipe switching or generation from the reader. Only the active swipe is shown. Markdown support is limited to bold and italic; other markup is shown as plain text. Saved position is per browser (localStorage), not synced. Later commit ad7a61ad1 adjusted phone text size and touch targets in modals and editors, touching these files.
+
+### In-world calendar for Game Mode, anchored to the game clock
+
+- **Commit:** `abc4f85a1` (2026-09-23 10:30 +0300).
+- **Files:** new `packages/shared/src/utils/game-calendar.ts` (exported from `packages/shared/src/index.ts`), `packages/server/src/routes/game-calendar.routes.ts`, `packages/client/src/components/tools/GameCalendarTool.tsx`, `packages/client/src/components/modals/GameCalendarModal.tsx`, `packages/client/src/hooks/use-game-calendar.ts`, `packages/client/src/lib/open-game-calendar.ts`, `docs/game/calendar.md`; changed `packages/client/src/components/game/GameToolsPanel.tsx`, `packages/client/src/components/layout/ModalRenderer.tsx` (modal `game-calendar`), `packages/client/src/components/command-palette/CommandPaletteHost.tsx`, `packages/server/src/routes/index.ts`, `packages/server/src/routes/docs.routes.ts`.
+- **What it does:** a per-game calendar with named months of any length, custom weekday names, an era suffix, an optional leap rule (every N / except every / unless every, extra days at the end of a chosen month) and moons (`name | cycle days | days since new moon today`, phase shown for today). It keeps no date of its own: it stores which calendar date is clock **Day 1** (`config.startDate`) and maps the Game Mode clock day (`gameTime.day`) to a date, so the Day editor, the automatic clock and time skips move the calendar too. Setup starts from a twelve-month template; "Today (clock Day N) is" renames the current day without skipping time.
+- **What it does (moving the date):** **-1d**, **+1d**, **+7d** buttons, a days field (negative goes back) with **Advance**, and **Make this today** on a picked day of the month view. Advancing changes the clock day only (time of day kept), never below Day 1; picking a date before Day 1 moves the calendar's Day 1 instead. Clock moves are mirrored into the latest game-state snapshot's time, honouring tracker field locks, as `/game/time/advance` does.
+- **How to reach it:** game Session panel > Tools tab > **Calendar** section (**Set up calendar**, later **Edit calendar**; a maximize button "Open calendar in a window" opens the `game-calendar` modal). Command palette action **In-world calendar** (only when the active chat is a Game Mode chat). API (prefix `/api/game-calendar`): `GET /api/game-calendar/:chatId` (calendar, clock, formatted time; a default switched-off calendar when none exists), `PUT /api/game-calendar/:chatId` (`{ calendar }`, clock untouched, 1 MB body limit), `POST /api/game-calendar/:chatId/advance` (`{ days }`, non-zero integer within +-100000), `POST /api/game-calendar/:chatId/date` (`{ date: { year, month, day } }`). All return 404 for non-game chats.
+- **Settings and defaults:** per-game toggle **Use this calendar in this game** (`enabled`, default off; a game without a calendar behaves as before). Not gated by a Feature switch.
+- **Storage:** chat metadata key `gameCalendar` (`{ enabled, config, events }`) on the game's session chat, beside `gameTime`; all writes go through the queued `patchMetadata` path. No new tables. Carried into a new session: the session-start `carryMeta` rest spread in `packages/server/src/routes/game.routes.ts` copies every previous-session metadata key it does not explicitly exclude, and neither `gameCalendar` nor `gameTime` is excluded.
+- **Tests:** `scripts/regressions/game-calendar-math.regression.ts`, `scripts/regressions/game-calendar-routes.regression.ts`, `scripts/regressions/game-calendar-gm-stable.regression.ts`.
+- **Known limits:** caps from `GAME_CALENDAR_LIMITS`: 60 months, 30 weekdays, 8 moons, 1000 days per month, 500 events, names 80 chars, era 40, event title 200, notes 2000, year clamped to +-1000000. The clock cannot go below Day 1.
+
+### Calendar events and deadlines
+
+- **Commit:** `abc4f85a1` (2026-09-23 10:30 +0300).
+- **Files:** `packages/client/src/components/tools/GameCalendarTool.tsx`, `packages/shared/src/utils/game-calendar.ts` (`upcomingCalendarEvents`, `eventsOnDate`).
+- **What it does:** add dated **Event** or **Deadline** entries on a picked day ("New event on ..."), optionally **Yearly** (a yearly event on a leap day falls on the month's last day in other years). **Upcoming** lists overdue deadlines first, then what is coming, soonest first; a past deadline shows as overdue until ticked done; finished deadlines and past one-off events drop out. Days with events get a dot in the month view. Events can be removed.
+- **How to reach it:** game Session panel > Tools tab > Calendar (or the **In-world calendar** window), after picking a day in the month view. Saved through `PUT /api/game-calendar/:chatId`.
+- **Settings and defaults:** None beyond the calendar's own **Use this calendar in this game** toggle.
+- **Storage:** `events` array inside chat metadata `gameCalendar`.
+- **Tests:** `scripts/regressions/game-calendar-math.regression.ts`, `scripts/regressions/game-calendar-routes.regression.ts`.
+- **Known limits:** at most 500 events per game; title 200 chars, notes 2000 chars.
+
+### Calendar date and upcoming events in the GM prompt
+
+- **Commit:** `abc4f85a1` (2026-09-23 10:30 +0300).
+- **Files:** `packages/server/src/services/generation/game-gm-prompt-runtime.ts`, `packages/shared/src/utils/game-calendar.ts` (`composeGameTimeLine`, `describeCalendarForPrompt`).
+- **What it does:** when a game's calendar is switched on, the GM prompt's time line uses the calendar date (weekday, day, month, year, era) instead of the tracker's free-text date, followed by up to 4 events or deadlines within the next 14 days (for example "(upcoming: X tomorrow; deadline Y in 4 days)", overdue deadlines as "overdue by N days"), then the snapshot time. Without a calendar, or with it off, the line is byte-identical to before; an unreadable calendar falls back to the plain line.
+- **How to reach it:** automatic on every GM turn in a Game Mode chat with an enabled calendar.
+- **Settings and defaults:** follows the per-game **Use this calendar in this game** toggle (default off).
+- **Storage:** None (reads `gameCalendar` and `gameTime` chat metadata).
+- **Tests:** `scripts/regressions/game-calendar-gm-stable.regression.ts`.
+- **Known limits:** 14-day horizon and 4 items in the prompt line.
+
+### Calendar HUD widget lists the game's calendar events
+
+- **Commit:** `abc4f85a1` (2026-09-23 10:30 +0300).
+- **Files:** `packages/client/src/components/game/ExtendedWidgets.tsx`, `packages/client/src/hooks/use-game-calendar.ts` (`useGameCalendarWidgetEntries`), `packages/shared/src/utils/game-calendar.ts` (`calendarWidgetEntries`).
+- **What it does:** a GM-made **calendar** HUD widget (which counts in clock day numbers, "Day 21") also shows the game calendar's upcoming events next to its own entries, deduplicated by day and title (case-insensitive), sorted soonest first. Events are merged at render time and never written into the widget, so edits do not fight the GM's widget updates.
+- **How to reach it:** any calendar HUD widget in a Game Mode chat whose calendar is on.
+- **Settings and defaults:** follows the per-game calendar toggle; the widget itself belongs to Extended HUD widgets (Feature switch, Chat settings > Agents, Game mode).
+- **Storage:** None.
+- **Tests:** `scripts/regressions/game-calendar-math.regression.ts` (the "HUD widget bridge" block covers `calendarWidgetEntries` and its merge with `calendarUpcoming`); the client render path itself has no fixture.
+- **Known limits:** 60-day horizon, at most 8 merged entries, overdue deadlines excluded; the widget still shows its top 3 upcoming.
+
+### Feature switches
+
+- **Commit:** `8aa93818b` (2026-09-23 19:14 +0300).
+- **Files:** `packages/shared/src/schemas/feature-settings.schema.ts` (new), `packages/shared/src/utils/game-feature-switches.ts` (new), `packages/server/src/services/features/feature-settings.ts` (new), `packages/server/src/services/game/game-feature-switches.ts` (new), `packages/server/src/services/lorebook/group-pick-policy.ts` (new), `packages/client/src/hooks/use-feature-settings.ts` (new), `packages/client/src/components/panels/settings/FeatureSwitchesSettings.tsx` (new), `packages/server/src/routes/app-settings.routes.ts`, `packages/server/src/services/storage/app-settings.storage.ts`, `packages/server/src/services/mari-db/mari-db.service.ts`, `packages/server/src/config/runtime-config.ts`, `packages/client/src/components/panels/SettingsPanel.tsx`, `packages/client/src/components/chat/ChatSettingsDrawer.tsx`, `packages/client/src/features/chat-settings/sections/AdvancedParametersSection.tsx`, `packages/shared/src/types/chat.ts`, `packages/server/src/routes/docs.routes.ts`, `docs/configuration/features.md` (new).
+- **What it does:** every addition this build makes over upstream Marinara Engine gets an on/off switch. Switched on (the default) keeps current behaviour; switched off restores the upstream behaviour. Commit 8aa93818b added 12 switches: 8 app-wide (7 server switches in the `features` app setting plus the browser-side client error reports preference), 3 per-game switches in chat metadata, and 1 per-chat cache warning (`cacheSendGuard`). Changes apply immediately, no restart or reload.
+- **What it does (server mechanism):** `feature-settings.ts` keeps one in-memory copy of the `features` app setting. `isFeatureEnabled(name)` and `getFeatureNumber(name)` are synchronous and allocation free so hot paths (every provider call, every lorebook scan) can call them. The cache is primed by `loadFeatureSettings` when `appSettingsRoutes` registers, replaced by `applyFeatureSettingsValue` on every `app-settings.storage.ts` write or removal of the `features` key, and reloaded by `reloadFeatureSettingsIfTouched` after Professor Mari's generic database commands (and their restore) touch the `app_settings` row `features`. Bad JSON or malformed values fall back to defaults via `normalizeFeatureSettings` (only well-formed known keys survive).
+- **What it does (precedence):** 1) environment variable, when set and non-blank, wins in both directions (`readEnvFlagOverride` in `runtime-config.ts`: `1`/`true`/`yes`/`on` = on, anything else = off, blank = unset); 2) the saved value; 3) the default (on, with default numbers). Env-controlled: `stableLorebookGroupPicks` by `LOREBOOK_STABLE_GROUP_WINNERS`, `providerRetry` by `PROVIDER_RETRY_TRANSIENT_ERRORS` (both listed in `FEATURE_ENV_FLAG_OVERRIDES`), and `backgroundCallCap` plus `backgroundCallsPerHour` by `MARINARA_BACKGROUND_CALLS_PER_HOUR` (parsed in `background-call-budget.ts`; `BACKGROUND_CALLS_PER_HOUR_ENV` is listed only so the UI can show the lock). The first two keep upstream names but invert the unset default (upstream: off unless set; here: on unless set).
+- **What it does (client):** `use-feature-settings.ts` exports `useFeatureSettings` (React Query, key `["features"]`, 5 minute staleTime), `useFeatureEnabled(name)` and `useFeatureNumber(name)` (both report ON/default until the server answers, so nothing hides before load), and `useSaveFeatureSettings` (PUT of the whole object, writes the response into the query cache). `FeatureSwitchesSettings.tsx` stores only non-default values (a `true` switch or a default number is deleted from the saved object, so future default changes still reach the install). A switch pinned by env is shown disabled with its in-effect value and the note "Set on the server by {{name}}." (`settings.features.envLocked`); its number input is hidden. Load and save errors show "Could not load the feature switches." / "Could not save the feature switches.".
+- **How to reach it:** Settings > Advanced > Features (section "Features", description "Everything this build adds starts on. Switch an item off to get the original Marinara behaviour."); settings search aliases include `features`, `switches`, `upstream`, `trash`, `retry`, `cache`, `usage`, `error reports`, `lorebook groups`. Per-game switches: the chat settings drawer of a Game chat, Agents tab (below Character knowledge per the docs page). Per-chat cache warning: chat settings drawer > Advanced Parameters, every chat mode. API: `GET /api/app-settings/features` returns `{ settings, envOverrides, effective }` (`FeatureSettingsResponse`); `PUT /api/app-settings/features` validates the body with the strict `featureSettingsSchema` and replaces the whole object (omitted keys return to default). Docs page `docs/configuration/features.md`, registered in the in-app docs under a new `configuration` directory (`docs.routes.ts`).
+- **Settings and defaults:** current schema (`feature-settings.schema.ts`): `FEATURE_SETTINGS_KEY = "features"`; `FEATURE_SWITCH_NAMES` = `chatgptHistoryReplay`, `cacheFriendlyPromptLayout`, `stableLorebookGroupPicks`, `providerRetry`, `backgroundCallCap`, `messageTrash`, `usageAndActivationStats` (all optional booleans, absent = on via `resolveFeatureEnabled`, which treats only `false` as off); `FEATURE_NUMBER_SETTINGS` = `backgroundCallsPerHour` (default 600, int 1 to 100000) and `messageTrashDays` (default `MESSAGE_TRASH_RETENTION_DAYS` = 30, int 1 to 365). The schema is unchanged since 8aa93818b. Client error reports, the 3 game switches and `cacheSendGuard` live outside this schema.
+- **Settings and defaults (13th switch):** commit d91c5d395 later moved generation job tracking into this panel as "Keep generating when the tab is closed" (rendered by `GenerationJobTrackingSettings` inside `FeatureSwitchesSettings.tsx`). It is the one switch that starts OFF and keeps its own app setting `generationJobTracking`, not the `features` object. Covered in its own entry.
+- **Storage:** app_settings key `features` (JSON object of booleans and numbers); UI setting `clientErrorReports` (synced UI store); chat metadata keys `gameSceneTimelineEnabled`, `gameExtendedWidgetsEnabled`, `gameAutoSceneMediaEnabled` (typed in `ChatMetadata`, `packages/shared/src/types/chat.ts`) and object `cacheSendGuard` `{ enabled?, thresholdPercent?, ttlMinutes? }`. Game switches are on every session chat of a game; per the docs a new session copies them with the rest of the game's settings and a branch keeps the source chat's choice.
+- **Tests:** `scripts/regressions/feature-settings.regression.ts` (normalization, routes, cached helper refreshed on storage write, env precedence), plus one regression per switch listed in each entry below. `scripts/regressions/tsconfig.client-lanes.json` changed to include a client lane.
+- **Known limits:** any new code path that writes `app_settings` rows directly (bypassing app-settings storage and Mari's reload) must call the reload, or a switch change is ignored until restart. Game and chat switches have no env variable and are independent of the app-wide ones. `send client error reports` is per browser profile (UI settings sync), not a server setting.
+
+### Feature switch: ChatGPT history replay
+
+- **Commit:** `8aa93818b` (2026-09-23 19:14 +0300).
+- **Files:** `packages/server/src/routes/generate.routes.ts` (`isPromptHistoryReplayEligible`), `packages/server/src/services/llm/providers/openai-chatgpt-cache.ts`, `packages/server/src/services/llm/providers/openai.provider.ts`.
+- **What it does:** ON: Game turns on the ChatGPT subscription reuse the previous prompt (history replay), and full-lore requests send a `session-id` header and `prompt_cache_key` (`me-lore-<identity>`) to keep the cache warm. OFF (upstream): `isPromptHistoryReplayEligible` returns false so the prompt is rebuilt every turn; `resolveOpenAIChatGPTCacheIdentity` returns undefined so no session header and no `prompt_cache_key` are sent.
+- **How to reach it:** Settings > Advanced > Features > "ChatGPT history replay" (help: "Game turns on ChatGPT reuse the previous prompt and send a cache session id. Off rebuilds the prompt every turn.").
+- **Settings and defaults:** default ON. Key `chatgptHistoryReplay` in the `features` app setting. No env variable.
+- **Storage:** app_settings `features.chatgptHistoryReplay`.
+- **Tests:** `scripts/regressions/feature-switch-chatgpt-replay.regression.ts`.
+- **Known limits:** only affects the OpenAI ChatGPT subscription provider path.
+
+### Feature switch: Cache-friendly prompt layout
+
+- **Commit:** `8aa93818b` (2026-09-23 19:14 +0300).
+- **Files:** `packages/server/src/services/generation/prompt-cache-layout.ts`, `packages/server/src/routes/generate.routes.ts`, `packages/server/src/routes/generate/dry-run-route.ts`.
+- **What it does:** ON: World Maps and other changing runtime blocks are moved next to the current turn, the full-lore prefix leads the prompt, and subscription providers use the full-lore layout by default. OFF (upstream): the layout functions return the messages in assembled order (`input.slice()` / shallow copies), and `shouldUseFullLorebookContext` only uses full lore when the chat explicitly set `fullLorebookContext: true` (new third argument `explicitlyEnabled`), so other chats get the keyword lore scan.
+- **How to reach it:** Settings > Advanced > Features > "Cache-friendly prompt layout" (help: "Moves World Maps and other changing blocks next to the current turn, and uses full lore on subscriptions. Off keeps the original order.").
+- **Settings and defaults:** default ON. Key `cacheFriendlyPromptLayout`. No env variable. Per-chat `fullLorebookContext` metadata still overrides in either direction (explicit false disables, explicit true enables even when the switch is off).
+- **Storage:** app_settings `features.cacheFriendlyPromptLayout`.
+- **Tests:** `scripts/regressions/feature-switch-cache-layout.regression.ts`.
+- **Known limits:** dry-run (prompt preview) follows the same rule, so previews match live requests.
+
+### Feature switch: Stable lorebook picks
+
+- **Commit:** `8aa93818b` (2026-09-23 19:14 +0300).
+- **Files:** `packages/server/src/services/lorebook/group-pick-policy.ts` (new, `lorebookGroupPickRandom`), callers in `packages/server/src/routes/chats.routes.ts`, `game.routes.ts`, `generate.routes.ts`, `generate/dry-run-route.ts`, `services/prompt/macro-context.ts`, `services/prompt/marker-expander.ts`.
+- **What it does:** ON: `lorebookGroupPickRandom()` returns undefined, so the scan seeds inclusion-group winners by chat id and a group keeps the same winner in a chat while its candidates stay the same. OFF (upstream): returns `Math.random`; a supplied random source disables the seed, so the winner is re-rolled on every scan. Probability gates default to `Math.random` either way and are unchanged.
+- **How to reach it:** Settings > Advanced > Features > "Stable lorebook picks" (help: "An inclusion group keeps the same winner in a chat while its candidates stay the same. Off re-rolls every turn.").
+- **Settings and defaults:** default ON. Key `stableLorebookGroupPicks`. Env `LOREBOOK_STABLE_GROUP_WINNERS` wins when set (`true`/`1`/`yes`/`on` = on, anything else = off); the toggle is then locked and shows the variable.
+- **Storage:** app_settings `features.stableLorebookGroupPicks`.
+- **Tests:** `scripts/regressions/feature-switch-lorebook-picks.regression.ts`.
+- **Known limits:** upstream's same-named variable defaults off when unset; here unset means on.
+
+### Feature switch: Retry failed provider calls
+
+- **Commit:** `8aa93818b` (2026-09-23 19:14 +0300).
+- **Files:** `packages/server/src/services/llm/rate-limit-aware-provider.ts`.
+- **What it does:** ON: a refused connection or a gateway 502/503 (`isTransientProviderError`) is classified `"transient"` and retried up to twice before any text reached the user, each attempt on the next resolved DNS address (`resolvedAddressOffsetForAttempt(attempt)` = attempt). OFF (upstream): only rate limits (429 and 529) retry, and every attempt uses the first address (offset 0). Applies to streaming, `chatComplete` and `embed`.
+- **How to reach it:** Settings > Advanced > Features > "Retry failed provider calls" (help: "Retries refused connections and gateway 502 or 503 errors twice, trying the next address. Off retries only rate limits.").
+- **Settings and defaults:** default ON. Key `providerRetry`. Env `PROVIDER_RETRY_TRANSIENT_ERRORS` wins when set (same truthy set as above).
+- **Storage:** app_settings `features.providerRetry`.
+- **Tests:** `scripts/regressions/feature-switch-provider-retry.regression.ts`.
+- **Known limits:** rate-limit retry precedence is unchanged; transient retry only happens before any streamed text arrived.
+
+### Feature switch: Background call cap
+
+- **Commit:** `8aa93818b` (2026-09-23 19:14 +0300).
+- **Files:** `packages/server/src/services/generation/background-call-budget.ts`.
+- **What it does:** ON: automatic (background) model calls are limited per rolling hour to `backgroundCallsPerHour`. OFF (upstream): no cap (limit 0). When `MARINARA_BACKGROUND_CALLS_PER_HOUR` is unset the budget now reads `isFeatureEnabled("backgroundCallCap") ? getFeatureNumber("backgroundCallsPerHour") : 0` instead of the fixed default.
+- **How to reach it:** Settings > Advanced > Features > "Background call cap" (help: "Limits automatic model calls per hour so background work cannot run up a bill. Off removes the cap."), with a "Calls per hour" number input shown below it while on.
+- **Settings and defaults:** default ON, `backgroundCallsPerHour` default 600 (1 to 100000). Env `MARINARA_BACKGROUND_CALLS_PER_HOUR` wins over both the switch and the number: a positive number sets the cap, `0`/`off`/`false`/`disabled` removes it; both controls then show as env-locked.
+- **Storage:** app_settings `features.backgroundCallCap`, `features.backgroundCallsPerHour`.
+- **Tests:** `scripts/regressions/feature-switch-background-cap.regression.ts`.
+- **Known limits:** the cap counts only automatic calls, not user-initiated generations (per the switch help; exact classification not re-verified here).
+
+### Feature switch: Message trash
+
+- **Commit:** `8aa93818b` (2026-09-23 19:14 +0300).
+- **Files:** `packages/server/src/routes/chats.routes.ts` (`chatUsesMessageTrash`), `packages/server/src/services/storage/message-trash.storage.ts`, `packages/client/src/hooks/use-chats.ts`, `packages/client/src/components/chat/ChatMessageSearch.tsx`, `packages/client/src/components/chat/ChatMessageMarksPanels.tsx`.
+- **What it does:** ON: deleted messages go to the chat's Trash, restorable, kept for `messageTrashDays` (retention, `expiresAt` and the expiry sweep now read `getFeatureNumber("messageTrashDays")` instead of the constant). OFF (upstream): every delete, single and bulk, is permanent on the server; the client skips the "moved to Trash" toast path and hides the Trash tab in the chat search panel. Messages already in Trash stay until they expire. Game chats and Professor Mari chats keep permanent deletes either way.
+- **How to reach it:** Settings > Advanced > Features > "Message trash" (help: "Deleted messages go to the chat Trash so you can restore them. Off deletes them permanently."), with "Days kept in Trash" below it while on. The Trash view is a tab of the chat search panel.
+- **Settings and defaults:** default ON, `messageTrashDays` default 30 (1 to 365). No env variable.
+- **Storage:** app_settings `features.messageTrash`, `features.messageTrashDays`.
+- **Tests:** `scripts/regressions/feature-switch-message-trash.regression.ts`.
+- **Known limits:** changing the days value retroactively changes expiry of entries already in Trash (retention is computed from `deletedAt` at read/sweep time).
+
+### Feature switch: Usage and activation stats
+
+- **Commit:** `8aa93818b` (2026-09-23 19:14 +0300).
+- **Files:** `packages/server/src/services/storage/generation-usage.storage.ts`, `packages/server/src/services/lorebook/activation-stats.ts`, `packages/client/src/components/panels/settings/UsageDashboardSettings.tsx`, `packages/client/src/components/lorebooks/LorebookEditor.tsx`.
+- **What it does:** ON: every generation records token usage and lorebook activations. OFF (upstream): the usage ledger write returns null, activation recording returns early, and activations already queued but not yet flushed are dropped at flush time. The Usage Dashboard is replaced by the notice "Usage recording is off. Turn on Usage and activation stats in Features to see this dashboard." and the lorebook editor stops fetching activation stats.
+- **How to reach it:** Settings > Advanced > Features > "Usage and activation stats" (help: "Records token usage and lorebook activations after each generation. Off records nothing and hides the dashboard and stats.").
+- **Settings and defaults:** default ON. Key `usageAndActivationStats`. No env variable.
+- **Storage:** app_settings `features.usageAndActivationStats`. Existing recorded data is not deleted.
+- **Tests:** `scripts/regressions/feature-switch-usage-stats.regression.ts`.
+- **Known limits:** generations made while off are never back-filled.
+
+### Feature switch: Send client error reports
+
+- **Commit:** `8aa93818b` (2026-09-23 19:14 +0300).
+- **Files:** `packages/client/src/lib/client-diagnostics.ts` (`setClientDiagnosticsEnabled`, `applyClientErrorReportsSetting`), `packages/client/src/main.tsx`, `packages/client/src/stores/ui.store.ts`, `packages/client/src/hooks/use-settings-sync.ts`.
+- **What it does:** ON: browser errors (error, unhandledrejection, React recovery, network) are sent to the server log via `POST /api/diagnostics/client`. OFF (upstream): the error listeners are never installed, `reportClientDiagnostic` and `flushQueue` return immediately, so nothing is queued or sent. The saved value is applied at startup before the sender can flush a queue left from an earlier visit, and re-applied on store change.
+- **How to reach it:** Settings > Advanced > Features > "Send client error reports" (help: "Sends browser errors to the server log to help with bug reports. Off sends nothing.").
+- **Settings and defaults:** default ON (`clientErrorReports: true` in the UI store; sync treats only explicit `false` as off). No env variable. Not part of `featureSettingsSchema`.
+- **Storage:** UI setting `clientErrorReports` (persisted UI state and synced settings).
+- **Tests:** `scripts/regressions/feature-switch-client-error-reports.regression.ts`.
+- **Known limits:** turning it off after listeners were installed in the same page stops sending but does not uninstall the listeners until reload (they drop reports while disabled).
+
+### Feature switch: Scene timeline (game)
+
+- **Commit:** `8aa93818b` (2026-09-23 19:14 +0300).
+- **Files:** `packages/shared/src/utils/game-feature-switches.ts` (`isGameSceneTimelineEnabled`), `packages/server/src/services/game/game-feature-switches.ts` (`snapshotPresenceTimeline`), `packages/server/src/routes/game.routes.ts`, `packages/server/src/routes/generate.routes.ts`, `packages/client/src/components/game/GameSurface.tsx`.
+- **What it does:** ON: after each GM turn a background call reviews the scene; scene presence, the Scenes tab and the scene index in the session recap come from it. OFF (upstream): the post-turn review is skipped, the timeline queue endpoint returns `{ queued: false }`, the recap gets no scene index, the Session panel shows only History, Journal and Tools (no Scenes tab), and presence/party replies use the latest tracker snapshot's present characters; a snapshot naming no party member lets every party member reply.
+- **How to reach it:** chat settings drawer of a Game chat, Agents tab > "Scene timeline" (help: "Review scenes after each GM turn for presence and the session recap. Off uses tracker presence instead.").
+- **Settings and defaults:** default ON (absent = on). Metadata key `gameSceneTimelineEnabled`. No env variable.
+- **Storage:** chat metadata `gameSceneTimelineEnabled` on each session chat.
+- **Tests:** `scripts/regressions/game-switch-scene-timeline.regression.ts`.
+- **Known limits:** existing timeline data is not deleted; it just stops being read or updated while off.
+
+### Feature switch: Extended HUD widgets (game)
+
+- **Commit:** `8aa93818b` (2026-09-23 19:14 +0300).
+- **Files:** `packages/shared/src/utils/game-feature-switches.ts` (`isGameExtendedWidgetsEnabled`, `upstreamHudWidgets`), `packages/server/src/services/game/gm-prompts.ts` (`buildUpstreamWidgetLines`, `enableExtendedWidgets`), `packages/server/src/services/generation/game-gm-prompt-runtime.ts`, `packages/server/src/services/game/branch-state.ts`, `packages/client/src/components/game/GameSurface.tsx`.
+- **What it does:** ON: the GM sees the extra widget types (checklist, schedule, clock, ledger and others) and may create and delete widgets. OFF (upstream): the late format reminder carries upstream's widget block with upstream widget types only; GM widget create/delete commands are ignored live (`GameSurface`) and on branch replay (`restoreBranchHudLists`). Extended widgets are hidden, not deleted, and return with saved values when switched back on; value changes to upstream widgets still apply.
+- **How to reach it:** chat settings drawer of a Game chat, Agents tab > "Extended HUD widgets" (help: "Extra widget types and GM widget create and delete. Off hides extended widgets without deleting them.").
+- **Settings and defaults:** default ON. Metadata key `gameExtendedWidgetsEnabled`. No env variable.
+- **Storage:** chat metadata `gameExtendedWidgetsEnabled`.
+- **Tests:** `scripts/regressions/game-switch-extended-widgets.regression.ts`.
+- **Known limits:** only the late format reminder changes; with the switch on the GM prompt is byte-for-byte unchanged and cached system prompt layers are never affected.
+
+### Feature switch: Automatic scene media (game)
+
+- **Commit:** `8aa93818b` (2026-09-23 19:14 +0300).
+- **Files:** `packages/shared/src/utils/game-feature-switches.ts` (`isGameAutoSceneMediaEnabled`), `packages/server/src/routes/generate.routes.ts`.
+- **What it does:** ON: after each GM turn `queueAutomaticGameMedia` may generate scene images and media. OFF (upstream): the automatic post-turn queue is skipped. Media the user explicitly requests still works.
+- **How to reach it:** chat settings drawer of a Game chat, Agents tab > "Automatic scene media" (help: "Queue scene images and media after each GM turn without being asked.").
+- **Settings and defaults:** default ON. Metadata key `gameAutoSceneMediaEnabled`. No env variable.
+- **Storage:** chat metadata `gameAutoSceneMediaEnabled`.
+- **Tests:** `scripts/regressions/game-switch-auto-scene-media.regression.ts`.
+- **Known limits:** gates only the automatic queue call site in the generate route.
+
+### Feature switch: Warn before a low-cache send (chat)
+
+- **Commit:** `8aa93818b` (2026-09-23 19:14 +0300).
+- **Files:** `packages/client/src/features/chat-settings/sections/AdvancedParametersSection.tsx`, `packages/client/src/components/chat/ChatSettingsDrawer.tsx` (`onCacheSendGuardChange`), `packages/shared/src/types/chat.ts`.
+- **What it does:** on providers with prompt caching, a send is held with a question first when the predicted cache hit is below the threshold. The server already read `cacheSendGuard` (`readCacheGuardSettings`); this commit only surfaces it as a control with the same defaults. OFF: sends are never held for low predicted cache hit.
+- **How to reach it:** chat settings drawer > Advanced Parameters > "Warn before a low-cache send" (help: "Hold a send and ask first when the predicted prompt cache hit falls below the threshold. Applies to providers with prompt caching."), with "Warn below (%)" number input (0 to 100, rounded) while on. Every chat mode.
+- **Settings and defaults:** `cacheSendGuard.enabled` default ON (absent = on), `cacheSendGuard.thresholdPercent` default 80. No env variable.
+- **Storage:** chat metadata object `cacheSendGuard` `{ enabled?, thresholdPercent?, ttlMinutes? }` (edits preserve other fields).
+- **Tests:** `scripts/regressions/chat-cache-send-guard-settings.regression.ts`.
+- **Known limits:** unlike the other switches this does not restore an upstream behaviour removal; it exposes an existing server setting.
+
 ### Stable lorebook inclusion-group winner per chat
 
 - Commit: `ede160d9d`.
@@ -1482,75 +2215,6 @@ Paths are relative to the repository root; `server/` means `packages/server/src/
 - Behaviour: the winner is seeded by chat id, group and candidate set: stable across turns, still varied across chats and when the activated candidates change. Injected random sources keep their behaviour.
 - Setting: **Stable lorebook picks** (`stableLorebookGroupPicks`, default on; env `LOREBOOK_STABLE_GROUP_WINNERS` wins).
 - Tests: `scripts/regressions/feature-switch-lorebook-picks.regression.ts`.
-
-### Feature switches: mechanism
-
-- Commit: `8aa93818b` (the job tracking switch joined on 2026-09-24 in `d91c5d395`).
-- Files: `packages/server/src/services/features/feature-settings.ts` (`isFeatureEnabled`), `packages/shared/src/schemas/feature-settings.schema.ts`, `packages/client/src/components/panels/settings/FeatureSwitchesSettings.tsx`, `packages/client/src/hooks/use-feature-settings.ts`, `packages/server/src/services/game/game-feature-switches.ts`, `packages/shared/src/utils/game-feature-switches.ts`, `ChatSettingsDrawer.tsx`, `AdvancedParametersSection.tsx`, `docs/configuration/features.md`.
-- Behaviour: app-wide switches in Settings > Advanced > Features are saved together in app setting `features` (JSON of booleans and numbers; missing, empty or unreadable means on with default numbers). Precedence: a set environment variable wins both ways, then the saved value, then default on. Changes apply without a restart or reload. Searching settings for `features` opens the section.
-- Rule: every switch defaults on, which is this build's behaviour; off restores upstream's.
-- Tests: `scripts/regressions/feature-settings.regression.ts`.
-
-### Feature switch: ChatGPT history replay
-
-- Setting: `chatgptHistoryReplay`, default on. Off: the prompt is rebuilt every turn and no `session-id` header or `prompt_cache_key` is sent.
-- Tests: `feature-switch-chatgpt-replay`.
-
-### Feature switch: Cache-friendly prompt layout
-
-- Setting: `cacheFriendlyPromptLayout`, default on. Off: the prompt goes in assembly order, and chats use the keyword lore scan unless a chat explicitly turned full lore on.
-- Tests: `feature-switch-cache-layout`.
-
-### Feature switch: Stable lorebook picks
-
-- Setting: `stableLorebookGroupPicks`, default on; env `LOREBOOK_STABLE_GROUP_WINNERS` (`true`, `1`, `yes`, `on` turn it on; anything else off). Off: the winner is re-rolled on every scan.
-- Tests: `feature-switch-lorebook-picks`.
-
-### Feature switch: Retry failed provider calls
-
-- Setting: `providerRetry`, default on; env `PROVIDER_RETRY_TRANSIENT_ERRORS`. On: a refused connection or gateway 502 or 503 is retried up to twice before any text arrived, each time on the next DNS address. Off: only 429 and 529 are retried, on the first address.
-- Tests: `feature-switch-provider-retry`.
-
-### Feature switch: Background call cap
-
-- Settings: `backgroundCallCap` (default on) and **Calls per hour** `backgroundCallsPerHour` (default 600); env `MARINARA_BACKGROUND_CALLS_PER_HOUR` (a positive number sets the cap; `0`, `off`, `false` or `disabled` removes it). Off: no cap.
-- Tests: `feature-switch-background-cap`.
-
-### Feature switch: Message trash
-
-- Settings: `messageTrash` (default on) and **Days kept in Trash** `messageTrashDays` (default 30). Off: every delete is permanent, single and bulk, and the Trash view is hidden; messages already in the Trash stay until they expire.
-- Tests: `feature-switch-message-trash`.
-
-### Feature switch: Usage and activation stats
-
-- Setting: `usageAndActivationStats`, default on. Off: no token usage or lorebook activations are recorded, including queued but unwritten activations; the Usage Dashboard and activation stats are hidden.
-- Tests: `feature-switch-usage-stats`.
-
-### Feature switch: Send client error reports
-
-- Setting: UI preference `clientErrorReports`, default on, synced with other UI settings. Off: the browser error listeners are not installed and nothing is queued or sent.
-- Tests: `feature-switch-client-error-reports`.
-
-### Game switch: Scene timeline
-
-- Setting: chat metadata `gameSceneTimelineEnabled`, default on, in a Game chat's settings drawer, Agents tab below Character knowledge. Off: no scene review call after GM turns, no scene index in the recap, Scenes tab hidden; presence and party replies use the tracker snapshot.
-- Tests: `game-switch-scene-timeline`.
-
-### Game switch: Extended HUD widgets
-
-- Setting: chat metadata `gameExtendedWidgetsEnabled`, default on. Off: the GM sees upstream's widget block and types only; create and delete commands are ignored live and on branch replay; existing extended widgets are hidden, not deleted. With the switch on the GM prompt is byte for byte what it was before the switch existed; the switch changes only the late format reminder, never the cached system layers.
-- Tests: `game-switch-extended-widgets`.
-
-### Game switch: Automatic scene media
-
-- Setting: chat metadata `gameAutoSceneMediaEnabled`, default on. Off: nothing is queued automatically after GM turns; media you ask for still works.
-- Tests: `game-switch-auto-scene-media`.
-
-### Chat switch: Warn before a low-cache send
-
-- Setting: chat metadata `cacheSendGuard.enabled` (default on) and `cacheSendGuard.thresholdPercent` (**Warn below (%)**, 0 to 100, default 80), in Chat settings > Advanced Parameters in every chat mode. The server already read this setting; the control only surfaces it with the same defaults.
-- Tests: `chat-cache-send-guard-settings`.
-- Game switches are copied into new sessions with the rest of the game's settings, and a branch keeps the choice of the chat it came from.
 
 ### HUD widget landing, enum repair and interim list capacity
 
@@ -1562,271 +2226,6 @@ Paths are relative to the repository root; `server/` means `packages/server/src/
 ### GameSurface parse repair
 
 - Commit: `a0e614fc5`. `3008c346d` applied a zero-context hunk one line late: `const shownChoices = activeChoices;` landed inside the `sendMessage(` call, so `GameSurface.tsx` did not parse at HEAD. The function now matches the working copy; nothing else changed.
-
-### Search All Chats
-
-- Commit: `786bda8dd` (feat/search); palette and shortcut in `8e4a1ccff`.
-- Files: `packages/client/src/components/modals/GlobalSearchModal.tsx`, `packages/server/src/routes/chat-insights.routes.ts` (prefix `/api/chat-insights`), `packages/server/src/services/chat-insights/chat-insights.service.ts`, `packages/shared/src/utils/chat-search-query.ts`.
-- Behaviour: finds messages across every chat with quoted phrases and filters for mode, character, sender and date range; results show highlighted snippets and open the chat at that message. Game results open the campaign log at that turn (since `7a7a44b11`). On phones the panel closes after the jump.
-- Shortcut: Ctrl+Shift+F (Cmd+Shift+F on Mac); also the search button beside the chat list and the command palette ("typing anything also offers a search inside messages").
-- Tests: `chat-global-search`.
-
-### Story exports (Markdown and HTML)
-
-- Commit: `786bda8dd`.
-- Files: `packages/server/src/services/chat-insights/transcript-document.ts`, `transcript-avatars.ts`.
-- Behaviour: Markdown and HTML exports next to JSONL and Text in the branch menu. Exports follow the active swipe and leave out hidden and system messages; the HTML story is a standalone page with light, dark and print styling and small embedded avatars; chapters become headings and the HTML story gets a contents list (since `2f9737914`). Private notes are left out unless "Include private notes in exports" is on.
-- Tests: `chat-story-export`.
-
-### Chat stats
-
-- Commit: `786bda8dd`.
-- Files: `packages/client/src/components/modals/ChatStatsModal.tsx`, `packages/shared/src/utils/chat-stats.ts`; route `GET /api/chat-insights/chats/:id/stats`.
-- Behaviour: Stats in the branch menu: messages, words per speaker, average reply length, messages per day, the longest message, reported generation tokens and play time. Play time adds up sittings; a pause over 30 minutes starts a new sitting.
-- Tests: `chat-stats-activity`, `chat-insights-display`.
-
-### Activity overview
-
-- Commit: `786bda8dd`.
-- Files: `packages/client/src/components/modals/ActivityOverviewModal.tsx`; route `GET /api/chat-insights/activity`.
-- Behaviour: pulse button beside your status: yearly heatmap of messages across all chats, streaks, totals, total play time and most played chats.
-- Tests: `chat-stats-activity`.
-
-### Dice log
-
-- Commit: `36f8f452e` (feat/game); summary strip in `524d6dbca`.
-- Files: `packages/client/src/components/game/GameDiceLog.tsx`, `packages/server/src/services/game/dice-roll-log.ts`, `db/schema/game-dice-rolls.ts`, `services/storage/game-dice-rolls.storage.ts`; routes `GET` and `POST /api/game-tools/dice-log`; fire-and-forget hook in `generate.routes.ts` after the GM message save.
-- Behaviour: every roll from the dice tray, GM narration and skill checks is kept with dice, total and crit or fumble flags; recent rolls, average against expected, natural 20s and 1s, per-face distribution, for the current session or the whole game. A one-line summary shows the most rolled die against a fair die and nat 20 and nat 1 rates. Logging never blocks or fails a roll. Session panel, Tools tab.
-- Schema: new table `game_dice_rolls`.
-- Tests: `game-dice-roll-log`.
-
-### Name generator
-
-- Commit: `36f8f452e`.
-- Files: `packages/client/src/components/tools/NameGenerator.tsx`, `modals/NameGeneratorModal.tsx`, `packages/client/src/lib/name-generator.ts`, `lib/open-name-generator.ts`.
-- Behaviour: offline fantasy names in harsh northern, flowing elvish, desert and imperial styles, plus names learned from a chosen lorebook or the character library; seeded, lockable, copyable. Opens from the Game Mode Tools tab or anywhere through its own window and the command palette.
-- Tests: `name-generator`.
-
-### Campaign codex export
-
-- Commits: `36f8f452e`; projection-based rewrite in `7a7a44b11`.
-- Files: `packages/server/src/services/game/campaign-codex.ts`; route `GET /api/game-tools/codex/:chatId`.
-- Behaviour: downloads a game's campaign memory as Markdown or JSON: entities grouped by kind with aliases, current state, verified facts, knowledge and relationships tagged by session, and a timeline. Since `7a7a44b11` it reads the merged campaign projection, writes each statement once with its holders (JSON format version 2: per-holder `knowledge` became `claims` and `heldBy`), cuts long values in Markdown, and keeps branch-aware session lists. Read only.
-- Tests: `campaign-codex-export`, `campaign-codex-projection`, `campaign-codex-size`.
-
-### Campaign log reader
-
-- Commit: `7a7a44b11` (feat/game-log).
-- Files: `packages/client/src/components/modals/GameLogModal.tsx`, `packages/client/src/lib/game-log.ts`, `lib/open-game-log.ts`, `packages/server/src/services/game/campaign-log.ts`; route `GET /api/game-tools/log/:chatId`.
-- Behaviour: full-screen reader laying out every session of a campaign in order, with segment edits and deletions applied, campaign-wide search with highlights and next and previous, and filters by session and speaker. Opens from the Tools tab or "Open campaign log" in the palette; `/goto` and Search All Chats game results open it at that turn. Chapter list for jumping (since `2f9737914`).
-- Tests: `campaign-log-reader`.
-
-### Check lorebook
-
-- Commit: `a837cd319` (feat/library).
-- Files: `packages/client/src/components/lorebooks/LorebookLintPanel.tsx`, `packages/shared/src/utils/lorebook-lint.ts`.
-- Behaviour: lists empty entries, entries without keys, duplicate keys and content, invalid or unsafe regex keys, overlong and disabled entries, and very short or common-word keys, with severity filters and a jump to each entry. Also "Check" for the open lorebook in the palette.
-- Tests: `lorebook-lint`.
-
-### Lorebook scan test
-
-- Commit: `a837cd319`.
-- Files: `LorebookScanTest.tsx`, `packages/server/src/services/lorebook/test-scan.ts`; route `POST /api/lorebooks/:id/test` (1 MB body limit).
-- Behaviour: runs the real generation scanner on pasted text or the current chat, showing which entries would fire and why (matched key, constant, recursion) and which matched but were held back by secondary keys, filters, groups or conditions.
-- Tests: `lorebook-test-scan`.
-
-### Lorebook activation stats, fired-in chats and Stale filter
-
-- Commits: `a837cd319`; backlinks and Stale in `2f9737914`.
-- Files: `packages/server/src/services/lorebook/activation-stats.ts`, `activation-backlinks.ts`, `db/schema/lorebook-activation-stats.ts`, `LorebookEntryFiredIn.tsx`; batched hook in `generate.routes.ts`.
-- Behaviour: each entry counts real firings (each saved reply once; swipes and regenerations count, Continue does not) with last activation, a **Fired** sort and a **Never fired** filter. Entries remember the last 20 chats they fired in; clicking the count opens them. **Stale** filter: entries that have not fired in the last 7 to 180 days while the rest of the lorebook did. Counting is batched, never interrupts a generation, and is written out on shutdown.
-- Setting: **Usage and activation stats** (`usageAndActivationStats`, default on).
-- Schema: new table `lorebook_entry_activation_stats`.
-- Tests: `lorebook-activation-stats`, `lorebook-backlinks`.
-
-### Character duplicates
-
-- Commit: `a837cd319`.
-- Files: `CharacterDuplicatesModal.tsx`, `packages/shared/src/utils/character-duplicates.ts`, `lib/open-character-duplicates.ts`.
-- Behaviour: **Duplicates** in the character library groups likely duplicates by matching names or very similar description and personality, with side-by-side basics, a field-by-field compare and an open button. Nothing is deleted automatically. Palette: "Find duplicate characters".
-- Tests: `character-duplicates`.
-
-### Character bulk tags
-
-- Commit: `a837cd319`.
-- Files: `CharacterBulkTagsModal.tsx`, `packages/shared/src/utils/character-tag-edits.ts`.
-- Behaviour: add, remove or rename tags on selected characters from the library selection bar, with a review summary; each card saves through its normal path so version history records the edit.
-- Tests: `character-bulk-tags`.
-
-### Command palette
-
-- Commit: `4922158c0` (feat/productivity); tool commands in `8e4a1ccff`; focus fix in `52464c6a7`.
-- Files: `packages/client/src/components/command-palette/CommandPalette.tsx`, `CommandPaletteHost.tsx`, `palette-navigation.ts`, `packages/client/src/lib/command-palette.ts` (`registerCommand`), `stores/command-palette.store.ts`.
-- Shortcut: **Ctrl+K** (Cmd+K on Mac), or the search button in the top bar.
-- Behaviour: jump to chats, characters, personas, lorebooks, presets and Settings tabs, or run actions (new chat, light or dark mode, chat guide); recent picks first. Since `8e4a1ccff` it reaches Search all chats, Activity overview, Name generator, Find duplicate characters, and where they apply stats, Markdown or story export, the dice log and campaign codex, and Check or Test for the open lorebook. Later merges add the calendar, campaign log, random tables, prep board, initiative tracker, reading mode, chapters and generation jobs. `52464c6a7`: the search box is focused as soon as the lazily mounted content exists, so the first keystrokes after Ctrl+K are no longer lost.
-- Tests: `command-palette`.
-
-### Keyboard shortcuts overlay
-
-- Commit: `4922158c0`.
-- Files: `command-palette/KeyboardShortcutsOverlay.tsx`, `packages/client/src/lib/keyboard-shortcuts.ts`.
-- Shortcut: **?** while not typing, or Keyboard shortcuts in the palette.
-- Behaviour: lists every shortcut the app supports, grouped by where it works.
-
-### Text snippets
-
-- Commit: `4922158c0`.
-- Files: `settings/TextSnippetsSettings.tsx`, `chat/SnippetPicker.tsx`, `packages/client/src/lib/text-snippets.ts`, `hooks/use-text-snippets.ts`, `hooks/use-snippet-expansion.ts`, `packages/shared/src/schemas/text-snippets.schema.ts`.
-- Behaviour: define triggers such as `;ooc` in Settings > General > Text Snippets; type the trigger then Space or Tab in the chat, conversation or game input to expand it. `{{cursor}}` sets the caret; macros like `{{char}}` fill in at send; Ctrl+Z undoes an expansion. Also insertable from Quick replies or the palette; syncs across devices.
-- Setting: app setting `text-snippets` (empty list means off).
-- Tests: `text-snippets`.
-
-### Usage dashboard
-
-- Commit: `4922158c0`.
-- Files: `settings/UsageDashboardSettings.tsx`, `hooks/use-usage-dashboard.ts`, `packages/server/src/routes/usage.routes.ts` (prefix `/api/usage`), `services/usage/usage-aggregation.ts`, `db/schema/generation-usage.ts`, `packages/shared/src/schemas/usage-dashboard.schema.ts`.
-- Behaviour: Settings > Advanced; totals provider-reported tokens per reply by connection, chat and day over a chosen range, with an optional cost estimate from prices per 1M input and output tokens. Usage is recorded from this version on.
-- Setting: **Usage and activation stats** (default on). Schema: new table `generation_usage`.
-- Tests: `usage-dashboard`.
-
-### Message bookmarks
-
-- Commit: `8391f07d1` (feat/messages).
-- Files: `chat/MessageMarks.tsx`, `ChatMessageMarksPanels.tsx`, `packages/shared/src/utils/message-marks.ts`.
-- Behaviour: bookmark any message with an optional short label; the Bookmarks tab of chat search lists speaker, snippet and time and jumps to the message.
-- Tests: `message-marks`.
-
-### Pin to context
-
-- Commit: `8391f07d1`.
-- Behaviour: a pinned message (up to 10 per chat) stays in the prompt when the context message limit would drop it, sent in original order and marked as an earlier pinned message (`applyContextMessageLimitWithPins`). Peek Prompt shows the same result.
-- Tests: `message-marks`.
-
-### Message Trash
-
-- Commit: `8391f07d1`.
-- Files: `packages/server/src/services/storage/message-trash.storage.ts`, Trash tab in chat search.
-- Behaviour: deleted Roleplay and Conversation messages go to a per-chat Trash; Restore returns a message to its original position with its swipes, bookmarks and notes; delete forever and empty trash; automatic purge after the retention days. Game and helper chats keep permanent deletes.
-- Setting: **Message trash** (`messageTrash`, default on; `messageTrashDays` 30). Schema: new table `message_trash`.
-- Tests: `message-trash`.
-
-### Private message notes
-
-- Commit: `8391f07d1`.
-- Behaviour: attach a note to any message from its bookmark action; a small note icon shows it. Notes are never sent to the model and are left out of exports unless "Include private notes in exports" is on (default off).
-- Tests: `message-marks`.
-
-### Nested library folders
-
-- Commit: `cc3d55b6c` (feat/organize, with the character tag-filter paging fix).
-- Files: `packages/client/src/components/panels/library/LibraryFolderTree.tsx`, `use-library-organizer.tsx`, `packages/client/src/stores/library-organize.store.ts`, `packages/shared/src/utils/library-folder-tree.ts`, `packages/server/src/services/storage/character-folders.ts`.
-- Behaviour: lorebook and character folders nest up to six levels; drag a folder onto another or to the top level; "New subfolder" and "Move folder to..." buttons; Move in selection mode picks a folder from the tree; counts include subfolders; open folders are remembered; search opens matching folders and shows each result's path. Deleting a folder moves its subfolders up one level. Preset and agent folders gain the same nesting on the server. Existing folders keep working.
-- Schema: `parentId` on `library_folders` and `character_groups` (cycle-safe).
-- Tests: `library-folder-tree`, `library-organize-migration`, `library-organize-unshard`.
-
-### Library campaign view
-
-- Commit: `cc3d55b6c`.
-- Files: `LibraryCampaignBar.tsx`, `LibraryCampaignSections.tsx`, `LibraryCampaignBadges.tsx`, `LibraryPickerModal.tsx`, `packages/client/src/lib/library-campaign-filter.ts`, `hooks/use-library-campaigns.ts`, `packages/server/src/routes/library-campaigns.routes.ts` (prefix `/api/library`), `services/storage/library-campaigns.storage.ts`, `packages/shared/src/schemas/library-campaign.schema.ts`.
-- Behaviour: a campaign picker above the Characters and Lorebooks lists shows one campaign's items (or everything in no campaign); the layers button groups the list into collapsible campaign sections. Campaigns come from game sessions (party, GM and linked NPC cards, active and chat-owned lorebooks, lorebooks linked to those characters). Rows show a campaign badge that filters on click; "Campaign" in selection mode or the swords button adds or removes items by hand. Each panel remembers its last choice.
-- Schema: new table `library_campaign_links`.
-- Tests: `library-campaigns`.
-
-### Random tables and yes/no oracle
-
-- Commit: `a03fe63a5` (feat/gm-tables).
-- Files: `packages/client/src/components/tools/RandomTablesTool.tsx`, `modals/RandomTablesModal.tsx`, `hooks/use-random-tables.ts`, `packages/shared/src/utils/random-tables.ts`, `packages/server/src/routes/random-tables.routes.ts` (prefix `/api/random-tables`: list, create, update, delete, `/import`, `/roll`, `/oracle`, `/lorebook-sources/:lorebookId`, `/from-lorebook`), `db/schema/random-tables.ts`.
-- Behaviour: tables roll on dice (d6, d20, d100, 2d6 with ranges such as 1-3) or by weight, can roll other tables with `[[Table Name]]` up to five levels, and are edited by pasting a plain list. Global or per game; JSON import and export; built from a lorebook folder or tag. The oracle answers at five likelihoods with yes, no, yes but, no but and exceptional results. Rolls can go to the Dice Log and into the chat input as an OOC note; nothing is sent automatically. Game Mode Tools tab and palette.
-- Schema: new table `random_tables`.
-- Tests: `random-tables`.
-
-### Character usage and Unused
-
-- Commit: `a03fe63a5`.
-- Files: `packages/server/src/services/characters/character-usage.ts`, `routes/character-usage.routes.ts` (prefix `/api/character-usage`), `CharacterUsageSection.tsx`, `CharacterUnusedModal.tsx`, `hooks/use-character-usage.ts`.
-- Behaviour: the character editor lists every chat and game a card is in (member, party member, NPC or GM), when each was last played and, on request, message counts. **Unused** lists cards in no chat. Reads only the chat list, never messages; cached until chats change.
-- Tests: `character-usage`.
-
-### Cross-feature integration review
-
-- Commit: `ab891fb41` (feat/integration-review).
-- Behaviour: fixes where the new tools meet: search, stats and palette seams, Danger Zone clears that also expunge the new tables, and usage recounts.
-- Tests: `integration-expunge`, `integration-seams`.
-
-### GM prep board
-
-- Commit: `2f9737914` (nine reviewed features).
-- Files: `packages/client/src/components/game/GamePrepBoard.tsx`, `modals/PrepBoardModal.tsx`, `hooks/use-prep-board.ts`, `packages/shared/src/utils/prep-board.ts`, `packages/server/src/routes/game-prep-board.routes.ts` (prefix `/api/prep-board`), `db/schema/game-prep-boards.ts`.
-- Behaviour: a private planning board per game (strong start, scenes, secrets and clues, open threads, NPCs, locations, treasure, notes; renamable and reorderable). Items have a used checkbox, tags and an optional link to a character card or lorebook entry. Drag within and across sections or move with arrow keys on the handle; search the board or a `#tag`; archive used items; carry unfinished items to the next session. "To input" puts an item into the chat input as an OOC note without sending. Never sent to the model, hidden from the built-in helper, survives deleting sessions, JSON import and export. Tools tab and full-screen from the palette.
-- Tests: `prep-board`, `prep-board-mari-privacy`.
-
-### Chapters
-
-- Commit: `2f9737914`.
-- Files: `chat/MessageChapters.tsx`, `packages/client/src/lib/chat-chapters-events.ts`.
-- Behaviour: start a chapter at any Roleplay or Conversation message from its bookmark action, with a title and optional summary. A divider marks it; the Chapters tab in chat search lists them; "Go to chapter" in the palette jumps; story exports use them as headings. Chapters follow the message through edits, swipes, trash and branches and are never sent to the model. In Game Mode, chapters are marked from the campaign log.
-- Tests: `message-chapters`.
-
-### Random table starter packs
-
-- Commit: `2f9737914`.
-- Files: `packages/client/src/lib/random-table-packs.ts`, `lib/table-packs/taverns-and-inns.json`, `roads-and-weather.json`, `town-life.json`, `treasure.json`, `story-complications.json`.
-- Behaviour: five original fantasy packs with tables that roll into each other, added from the pack button in the Tables header for all games or the current game; tables whose names already exist are skipped.
-- Tests: `random-table-packs`.
-
-### Character quick reference
-
-- Commit: `2f9737914`.
-- Files: `packages/client/src/components/characters/NpcQuickReference.tsx`, `packages/client/src/lib/npc-quick-reference.ts`.
-- Behaviour: hovering or tapping a linked character name in a chat message or Game narration shows a small card (avatar, short description, tags, Open card, where used). Enter opens it, Escape closes it. Never changes message text or copies. Name linking in long messages is faster with a large library.
-- Setting: Settings > Advanced > Character quick reference, default off.
-- Tests: `npc-quick-reference`.
-
-### Lorebook bulk edit
-
-- Commit: `2f9737914`.
-- Files: `LorebookBulkEditPanel.tsx`, `packages/shared/src/utils/lorebook-bulk-edit.ts`, `packages/client/src/lib/lorebook-selection.ts`.
-- Behaviour: in Select mode, Shift+click selects a range and Select all takes every entry matching the search and filters. Bulk edit enables or disables entries, turns Constant on or off, moves to a folder, adds or removes primary or secondary keys, and sets probability, order or depth in one all-or-nothing step. Deleting a selection is one request.
-- Tests: `lorebook-bulk-edit`.
-
-### Lorebook Markdown and CSV import and export
-
-- Commit: `2f9737914`.
-- Files: `LorebookTextImportDialog.tsx`, `packages/server/src/routes/lorebook-text.routes.ts`, `services/lorebook/text-import.ts`, `packages/shared/src/utils/lorebook-text-format.ts`.
-- Behaviour: Markdown (a `## Name` heading per entry, optional `Keys:` line, then text) and CSV (name, keys, content, optional folder, enabled, constant and probability). Import previews entries with line-numbered errors and warnings, targets the open or a new lorebook, and skips, renames or overwrites existing names. Markdown and CSV join the export dialog.
-- Tests: `lorebook-text-import`.
-
-### Reading mode
-
-- Commit: `2f9737914`.
-- Files: `packages/client/src/components/modals/ReadingModeModal.tsx`, `packages/client/src/lib/reading-mode.ts`.
-- Behaviour: Read in the branch menu or the palette opens a full-screen paged reader for roleplay chats that follows the active swipe, leaves out hidden messages, lists bookmarks as chapters and remembers the page per chat. Adjustable text size, line width, spacing and serif or sans.
-- Shortcuts: arrow keys, J and K, Home and End turn pages.
-- Tests: `reading-mode`.
-
-### Initiative tracker
-
-- Commit: `2f9737914`.
-- Files: `packages/client/src/components/tools/InitiativeTracker.tsx`, `modals/InitiativeTrackerModal.tsx`, `hooks/use-initiative.ts`, `lib/initiative-draft.ts`, `packages/shared/src/utils/initiative-tracker.ts`, `packages/server/src/routes/game-initiative.routes.ts` (prefix `/api/game-initiative`: list, create, update, delete, `/roll`), `db/schema/game-initiative-encounters.ts`.
-- Behaviour: add combatants from cards, lorebook entries or a typed name; roll initiative (each roll lands in the Dice Log as an Initiative roll); round counter, current, next and previous turn, HP and condition notes, move up or down, delay and remove. Encounters save per game and reopen from any session. **To input** drops the current turn into the chat input as an OOC note.
-- Tests: `initiative-tracker`.
-
-### In-world calendar
-
-- Commit: `abc4f85a1` (feat/calendar-v2).
-- Files: `packages/client/src/components/tools/GameCalendarTool.tsx`, `modals/GameCalendarModal.tsx`, `hooks/use-game-calendar.ts`, `packages/shared/src/utils/game-calendar.ts`, `packages/server/src/routes/game-calendar.routes.ts` (prefix `/api/game-calendar`, through the queued metadata path), `docs/game/calendar.md`.
-- Behaviour: custom months, weekdays, era, leap years and moons, a month view, dated events and deadlines with an upcoming list. The calendar stores only the date of clock Day 1 next to `gameTime`, so the Day editor, time advance and calendar move one clock. The GM sees the date and upcoming events; a GM calendar widget lists them. Tools tab > Calendar or **In-world calendar** in the palette.
-- Setting: chat metadata `gameCalendar`, per game, off until created. The GM time line uses it only when enabled (byte-identical otherwise) and stays out of the stable prompt block.
-- Tests: `game-calendar-math`, `game-calendar-routes` (isolated `FILE_STORAGE_DIR`), `game-calendar-gm-stable`.
-
-### Generation jobs (E02)
-
-- Commit: `077e055ee` (feat/generation-jobs); logging follow-ups `1094acd08`, `62fb57271`, `1d35147fc`.
-- Files: `packages/server/src/services/generation/generation-job-tracker.ts`, observer seam in `generation-jobs.ts` (fires after saves, never throws), `routes/generation-job-records.routes.ts` (prefix `/api/generation-job-records`), `db/schema/generation-job-records.ts`, client `GenerationJobsModal.tsx`, `generation-jobs/GenerationJobsActivityDot.tsx`, `GenerationJobsRecoveryHost.tsx`, `TrackedJobDetails.tsx`, `docs/development/generation-jobs.md`.
-- Behaviour: while tracking is on, image, sprite and video jobs keep a saved status, result link and short log; refreshing, closing the tab or losing the connection does not stop them while the server runs; results that finished while away are announced on return. The viewer shows kind, chat, age, run time, error code and log trail; the top bar shows a dot while jobs run; "Open generation jobs" is in the palette. A restart marks running jobs interrupted (not retried). Finished jobs kept 7 days, up to 300; deleting a chat deletes its jobs.
-- Logging: each transition is logged once (the store's `logJobState` is canonical for accepted, running and settled); failure lines drop echoed prompt text (see "Generation job failure lines drop echoed prompt text").
-- Setting: `generationJobTracking`, default off (moved into Features on 2026-09-24). Schema: new table `generation_job_records`.
-- Tests: `generation-job-tracking` (checks the whole failure line, error included, for a planted prompt).
 
 ### Lorebook folder power switch and campaign roster
 
@@ -1866,7 +2265,6 @@ Paths are relative to the repository root; `server/` means `packages/server/src/
 
 - `18875cd1f`: the open-issues check accepts a search-filtered journal timeline list.
 - `792b58081`, `367dba6a8`, `7be167a69`, `a478a8b5f`, `1610c3e17`, `f8d405382`, `20167a05b`: fixtures and comments use invented neutral names mapped one to one; assertions unchanged apart from renamed strings.
-- `c664bb44d`: the game log session name and random table scope render without template strings (the localization check flags them).
 - `847beb80a`: locale keys for the game journal, party bar and state patcher.
 - `cba450807`: pending `CHANGELOG.md` entries from the day's sessions.
 
