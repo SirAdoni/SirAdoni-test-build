@@ -156,6 +156,8 @@ Off: widgets keep the fixed size limits: a list longer than about 16 lines scrol
 
 Each widget can override the game in its edit dialog under **Size**: **Auto** follows this switch, **Always expand** expands even when the switch is off, and **Fixed size** keeps the limits even when it is on. The per-widget choice is stored in the widget's config as `autoExpand` (`expand` or `fixed`; Auto stores nothing).
 
+A height you set by hand (resizing the panel in Edit layout) wins over growing for Auto and Fixed size widgets. Always expand grows past it; the hand-set height is kept and applies again if you change the choice. With Collisions on, other movable panels make room for a grown widget.
+
 ### GM reasoning effort (a setting, not a switch)
 
 Metadata key: `gameGmReasoningEffort`. In the chat settings drawer of a Game chat, **GM Reasoning Effort** (just below the connection), or from the command palette (Ctrl+K, **Set GM reasoning effort**).

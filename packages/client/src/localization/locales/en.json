@@ -9316,6 +9316,7 @@
   "ui.game.widgeteditormodal.autoExpand": "Size",
   "ui.game.widgeteditormodal.autoExpandAuto": "Auto (follow the game setting)",
   "ui.game.widgeteditormodal.autoExpandExpand": "Always expand to fit",
+  "ui.game.widgeteditormodal.autoExpandExpandHelp": "This widget grows to show all its content, even past a height you set by hand, so resizing its height has no effect while Always expand is chosen. Auto keeps a hand-set height.",
   "ui.game.widgeteditormodal.autoExpandFixed": "Fixed size",
   "ui.game.widgeteditormodal.autoExpandHelp": "An expanding widget grows to show all its content instead of scrolling inside. Always expand also overrides a size you set by hand; Auto keeps it.",
   "ui.game.widgeteditormodal.count": "Count",

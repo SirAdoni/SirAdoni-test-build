@@ -521,6 +521,7 @@ function WidgetCard({
 }) {
   const { t: localizeUi } = useUiTranslation();
   const [collapsed, setCollapsed] = useState(false);
+  const autoExpand = useWidgetAutoExpand(widget);
   const naturalWidth = useMemo(() => {
     if (widget.config.autoSize === false) return 176;
     // Stored configs are not guaranteed well-formed (model blueprints, older saves), so measure defensively.
@@ -562,7 +563,10 @@ function WidgetCard({
       widgetId={widget.id}
       width={naturalWidth}
       autoWidth={widget.config.autoSize !== false}
+      // Widgets always grew with their content until a hand-set height; "Always expand" also grows past that
+      // height (kept stored for when the choice changes). Neighbours reflow around a grown panel with Collisions on.
       autoGrow
+      autoGrowOverridesManual={autoExpand.explicit && autoExpand.expand}
       allowTuck
       tuckIcon={widgetIcon(widget)}
       tuckLabel={widget.label}
@@ -970,7 +974,11 @@ function WidgetEditorModal({
             <option value="fixed">{localizeUi("ui.game.widgeteditormodal.autoExpandFixed")}</option>
           </select>
           <span className="block text-xs text-[var(--muted-foreground)]">
-            {localizeUi("ui.game.widgeteditormodal.autoExpandHelp")}
+            {localizeUi(
+              draft.autoExpand === "expand"
+                ? "ui.game.widgeteditormodal.autoExpandExpandHelp"
+                : "ui.game.widgeteditormodal.autoExpandHelp",
+            )}
           </span>
         </label>
 

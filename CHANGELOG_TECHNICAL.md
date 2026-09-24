@@ -286,6 +286,13 @@ Features:
 
 ## 2026-09-24
 
+### Widget auto expand: Always expand grows past a hand-set height
+- **Commit(s):** this commit
+- **Files:** `packages/client/src/components/game/GameWidgetPanel.tsx` (`WidgetCard` passes `autoGrowOverridesManual`; the editor's Size help text), `packages/client/src/localization/locales/en.json`, `docs/configuration/features.md`, `scripts/regressions/widget-auto-expand-manual-height.browser.mjs` (new).
+- **Behaviour:** uses the floating-panel growth API from 21d7b584e. Widget panels keep `autoGrow` on in every mode, as before, so Off and Fixed size stay exactly as they were: a panel grows with its content until the player sets its height by hand, and then that height wins. A widget set to **Always expand** (`config.autoExpand: "expand"`) passes `autoGrowOverridesManual`, so it grows past a hand-set height. The stored height is kept and applies again when the choice changes. Neighbour reflow comes from the same API: with Collisions on, movable panels reflow around a grown panel (or it scrolls when they cannot); with Collisions off nothing moves; pinned panels never move; reflow never saves positions. With Always expand chosen, the edit dialog explains that resizing the height by hand has no effect.
+- **Settings / env and defaults:** unchanged (per-widget Size, default Auto; game **Auto expand widgets** on).
+- **Tests:** `scripts/regressions/widget-auto-expand-manual-height.browser.mjs` (desktop panel at 1024x768 and 1440x900 with a saved hand-set height of 120px: an Auto list stays at 120px, an Always expand list grows to show all 22 entries without an inner scroll); `widget-auto-expand.browser.mjs` and `game-panel-grow-after-load.browser.mjs` pass.
+
 ### Widget auto expand (game default and per-widget Size)
 - **Commit(s):** this commit
 - **Files:** `packages/shared/src/utils/game-feature-switches.ts` (`GAME_WIDGET_AUTO_EXPAND_KEY`, `isGameWidgetAutoExpandEnabled`, `HudWidgetAutoExpandMode`, `widgetAutoExpandMode`, `resolveWidgetAutoExpand`), `packages/shared/src/types/game.ts` (`HudWidgetConfig.autoExpand`), `packages/shared/src/types/chat.ts` (`ChatMetadata.gameWidgetAutoExpand`), `packages/client/src/components/game/GameWidgetPanel.tsx` (`WidgetAutoExpandContext`, `useWidgetAutoExpand`, `AutoExpandWidgetBody`, `ListWidget` `expanded`, the tray sheet height, the **Size** select in `WidgetEditorModal`), `packages/client/src/components/game/GameSurface.tsx` (`GameHudContexts` provides the panel context and the game default in one wrapper), `packages/client/src/components/chat/ChatSettingsDrawer.tsx` (switch), `packages/client/src/localization/locales/en.json`, `docs/configuration/features.md`.
