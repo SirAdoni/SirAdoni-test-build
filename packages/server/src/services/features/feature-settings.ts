@@ -17,6 +17,7 @@ import {
   type FeatureUnavailableReason,
 } from "@marinara-engine/shared";
 import { readEnvFlagOverride } from "../../config/runtime-config.js";
+import { logSuppressed } from "../../lib/best-effort.js";
 
 /**
  * Switches an operator can pin from the environment (the names upstream uses). When the variable
@@ -58,8 +59,9 @@ export function notifyFeatureSettingsChange(): void {
   for (const listener of [...changeListeners]) {
     try {
       listener();
-    } catch {
+    } catch (err) {
       // Listeners own their error reporting; a save must not fail because of one.
+      logSuppressed(err, { event: "feature_settings.change", stage: "listener" });
     }
   }
 }

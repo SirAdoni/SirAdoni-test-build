@@ -15,6 +15,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { logSuppressed } from "../../lib/best-effort.js";
 import { logger } from "../../lib/logger.js";
 import { runWithRootDiagnosticContext } from "../../lib/diagnostics.js";
 import { logRepeated } from "../../lib/log-events.js";
@@ -297,8 +298,9 @@ export class ConsoleTrayController {
         if (reason === "switch-off") {
           try {
             child.kill();
-          } catch {
+          } catch (err) {
             // Already gone.
+            logSuppressed(err, { event: "console_tray.stop", stage: "kill", level: "debug" });
           }
         }
         finish();
@@ -312,8 +314,9 @@ export class ConsoleTrayController {
       try {
         child.stdin?.write("stop\n");
         child.stdin?.end();
-      } catch {
+      } catch (err) {
         // The exit handler or the timer finishes the stop.
+        logSuppressed(err, { event: "console_tray.stop", stage: "stdin-stop", level: "debug" });
       }
     });
     return this.stopping;

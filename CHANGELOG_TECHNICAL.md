@@ -278,6 +278,10 @@ Features:
 
 ## 2026-09-24
 
+### Regression fixes: empty-catch ratchet and campaign log reader
+- **Empty-catch ratchet (227 vs baseline 224):** the console tray commit added three empty catch blocks under `packages/server/src`. They now log through `logSuppressed` from `lib/best-effort.ts`: `console-tray.service.ts` stop path, `child.kill()` after the stop timeout (`console_tray.stop`, stage `kill`, debug) and the `stop` write to the helper's stdin (`console_tray.stop`, stage `stdin-stop`, debug); `feature-settings.ts` `notifyFeatureSettingsChange`, a throwing change listener (`feature_settings.change`, stage `listener`, warn, rate-limited). Behaviour is unchanged (still swallowed); the baseline stays at 224.
+- **Campaign log reader regression:** the wiring check for `GlobalSearchModal.tsx` expected `if (result.chatMode === "game") openGameLog(...)` on one line; the phone-targets commit (ad7a61ad1) let Prettier wrap it onto two lines with no code change. The code is correct, so the test regex now allows whitespace between the condition and the call (`scripts/regressions/campaign-log-reader.regression.ts`).
+
 ### Always-reasoning models: retry once without the reasoning-off flag (Chat Completions)
 - **Commit(s):** this commit
 - **Files:** `packages/server/src/services/llm/providers/reasoning-disable-rejection.ts` (new), `packages/server/src/services/llm/providers/openai.provider.ts`, `scripts/regressions/glm53-nanogpt-reasoning-off.regression.ts` (new), `scripts/regressions/openai-reasoning-disable-retry.regression.ts` (new), `CHANGELOG.md`.
