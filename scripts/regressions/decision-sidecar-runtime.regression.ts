@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 
 const root = mkdtempSync(join(tmpdir(), "marinara-decision-runtime-"));
 const dataDir = join(root, "data");
@@ -45,7 +45,7 @@ echo "0, GPU-fake, NVIDIA Fake, $total, $used, 615.71.09, 12.0"
 `,
 );
 chmodSync(join(binDir, "nvidia-smi"), 0o755);
-process.env.PATH = `${binDir}:${process.env.PATH ?? ""}`;
+process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
 
 const { DECISION_SIDECAR_DEFAULT_SETTINGS, parseDecisionSidecarSettings, SIDECAR_DECISION_MODELS } =
   await import("../../packages/shared/src/index.js");
@@ -53,8 +53,13 @@ const { setDecisionSidecarSettingsReader } =
   await import("../../packages/server/src/services/decision/decision-slots.js");
 const { serializeDecisionRuntimeManifestStamp } =
   await import("../../packages/server/src/services/sidecar/runtime-integrity-manifest.js");
-const { artifactSnapshotPath, decisionRuntimeInstalled, decisionRuntimeService, inheritedEnv } =
-  await import("../../packages/server/src/services/sidecar/decision-runtime.service.js");
+const {
+  artifactSnapshotPath,
+  decisionRuntimeInstalled,
+  decisionRuntimeService,
+  inheritedEnv,
+  isDecisionRuntimeSupported,
+} = await import("../../packages/server/src/services/sidecar/decision-runtime.service.js");
 const { decisionProcessService } =
   await import("../../packages/server/src/services/sidecar/decision-process.service.js");
 const { configuredCudaIndex, preflightDecisionModel } =
@@ -339,75 +344,90 @@ try {
   assert.equal(parseDecisionSidecarSettings(JSON.stringify({ cudaDevice: -1 })).cudaDevice, null);
   assert.equal(parseDecisionSidecarSettings(JSON.stringify({ cudaDevice: 1.5 })).cudaDevice, null);
 
-  // ── a fake installed runtime ──────────────────────────────────────────────────
+  // Everything below drives the real preflight and launcher, which only run where
+  // the decision runtime is supported (Linux x64): elsewhere the preflight answers
+  // "unsupported" before it looks at disk or memory, by design, and the fake
+  // `nvidia-smi` and Python are POSIX shell scripts that Windows cannot execute.
+  const runtimeSupported = isDecisionRuntimeSupported();
+  if (runtimeSupported) {
+    // ── a fake installed runtime ──────────────────────────────────────────────────
 
-  const runtime = decisionRuntimeService.getPaths();
-  mkdirSync(join(runtime.pythonPath, ".."), { recursive: true });
-  writeFileSync(
-    runtime.pythonPath,
-    `#!/bin/sh
+    const runtime = decisionRuntimeService.getPaths();
+    mkdirSync(join(runtime.pythonPath, ".."), { recursive: true });
+    writeFileSync(
+      runtime.pythonPath,
+      `#!/bin/sh
 echo started >> "${spawnMarker}"
 echo '{"url": "http://127.0.0.1:9"}'
 exec sleep 30
 `,
-  );
-  chmodSync(runtime.pythonPath, 0o755);
-  mkdirSync(join(runtime.sourcePath, "jev"), { recursive: true });
-  writeFileSync(join(runtime.sourcePath, "jev", "server.py"), "");
-  writeFileSync(join(runtime.directoryPath, "runtime-stamp.txt"), `${serializeDecisionRuntimeManifestStamp()}\n`);
-  mkdirSync(join(artifactSnapshotPath(model.artifacts[0]!), "package", "checkpoint"), { recursive: true });
-  assert.ok(decisionRuntimeInstalled(), "the fake runtime reads as installed");
+    );
+    chmodSync(runtime.pythonPath, 0o755);
+    mkdirSync(join(runtime.sourcePath, "jev"), { recursive: true });
+    writeFileSync(join(runtime.sourcePath, "jev", "server.py"), "");
+    writeFileSync(join(runtime.directoryPath, "runtime-stamp.txt"), `${serializeDecisionRuntimeManifestStamp()}\n`);
+    mkdirSync(join(artifactSnapshotPath(model.artifacts[0]!), "package", "checkpoint"), { recursive: true });
+    assert.ok(decisionRuntimeInstalled(), "the fake runtime reads as installed");
 
-  // ── free disk is not asked of a model already on disk ─────────────────────────
+    // ── free disk is not asked of a model already on disk ─────────────────────────
 
-  // More disk than any machine has, so the only way past the disk check is not
-  // being asked it.
-  const huge = { ...model, diskBytes: Number.MAX_SAFE_INTEGER };
-  assert.equal(
-    (await preflightDecisionModel(huge, { fresh: true })).assessment.verdict,
-    "not_enough_disk",
-    "a model still to download needs the space",
-  );
-  // A capability the probe could not read refuses a download, not a launch.
-  writeFileSync(noCapability, "");
-  const unknownBefore = await preflightDecisionModel(model, { fresh: true });
-  assert.equal(unknownBefore.assessment.verdict, "unsupported", "an unreadable capability refuses the download");
-  assert.match(unknownBefore.reason ?? "", /Could not read this GPU's compute capability/u);
-  for (const artifact of model.artifacts) {
-    mkdirSync(artifactSnapshotPath(artifact), { recursive: true });
-    writeFileSync(join(artifactSnapshotPath(artifact), ".marinara-download.json"), "{}");
+    // More disk than any machine has, so the only way past the disk check is not
+    // being asked it.
+    const huge = { ...model, diskBytes: Number.MAX_SAFE_INTEGER };
+    assert.equal(
+      (await preflightDecisionModel(huge, { fresh: true })).assessment.verdict,
+      "not_enough_disk",
+      "a model still to download needs the space",
+    );
+    // A capability the probe could not read refuses a download, not a launch.
+    writeFileSync(noCapability, "");
+    const unknownBefore = await preflightDecisionModel(model, { fresh: true });
+    assert.equal(unknownBefore.assessment.verdict, "unsupported", "an unreadable capability refuses the download");
+    assert.match(unknownBefore.reason ?? "", /Could not read this GPU's compute capability/u);
+    for (const artifact of model.artifacts) {
+      mkdirSync(artifactSnapshotPath(artifact), { recursive: true });
+      writeFileSync(join(artifactSnapshotPath(artifact), ".marinara-download.json"), "{}");
+    }
+    const unknownAfter = await preflightDecisionModel(model, { fresh: true });
+    assert.notEqual(unknownAfter.assessment.verdict, "unsupported", "and does not stop an installed model launching");
+    rmSync(noCapability);
+    const installed = await preflightDecisionModel(huge, { fresh: true });
+    assert.notEqual(installed.assessment.verdict, "not_enough_disk", "an installed model reaches the memory check");
+    assert.equal(installed.installable, true);
+
+    // ── a stop during a start's preflight cancels the start ───────────────────────
+
+    const starting = decisionProcessService.ensureRunning(model);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await decisionProcessService.stop();
+    assert.equal(await starting, null, "the start gives up");
+    assert.equal(existsSync(spawnMarker), false, "nothing was launched after the stop");
+    assert.equal(decisionProcessService.getStatus().running, false);
+
+    // Positive control, and proof a cancelled start does not leave a one-minute backoff.
+    const url = await decisionProcessService.ensureRunning(model);
+    assert.equal(url, "http://127.0.0.1:9", "an uninterrupted start launches straight away");
+    assert.equal(readFileSync(spawnMarker, "utf8").trim(), "started");
+
+    // ── the running model is counted once ─────────────────────────────────────────
+
+    // An 8 GB card with this model already loaded on it. Counted twice it reads as
+    // not fitting; counted once it fits with room to spare.
+    writeFileSync(gpuState, `8192 ${Math.round(model.vramBytes / 1024 / 1024) + 14}\n`);
+    const whileRunning = await preflightDecisionModel(model, { fresh: true });
+    assert.equal(whileRunning.assessment.verdict, "recommended", "the running model is not counted twice");
+    await decisionProcessService.stop();
+    assert.equal(decisionProcessService.getStatus().running, false);
+    writeFileSync(gpuState, "24463 14\n");
+  } else {
+    // What this platform does get: a named refusal rather than a disk or memory verdict.
+    const elsewhere = await preflightDecisionModel(model, { fresh: true });
+    assert.equal(elsewhere.assessment.verdict, "unsupported", "an unsupported platform is refused up front");
+    assert.match(elsewhere.reason ?? "", /Requires Linux with an NVIDIA GPU/u);
+    console.log(
+      "decision-sidecar-runtime: skipping the installed-runtime cases (the decision runtime is Linux x64 only)",
+    );
   }
-  const unknownAfter = await preflightDecisionModel(model, { fresh: true });
-  assert.notEqual(unknownAfter.assessment.verdict, "unsupported", "and does not stop an installed model launching");
-  rmSync(noCapability);
-  const installed = await preflightDecisionModel(huge, { fresh: true });
-  assert.notEqual(installed.assessment.verdict, "not_enough_disk", "an installed model reaches the memory check");
-  assert.equal(installed.installable, true);
-
-  // ── a stop during a start's preflight cancels the start ───────────────────────
-
-  const starting = decisionProcessService.ensureRunning(model);
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  await decisionProcessService.stop();
-  assert.equal(await starting, null, "the start gives up");
-  assert.equal(existsSync(spawnMarker), false, "nothing was launched after the stop");
-  assert.equal(decisionProcessService.getStatus().running, false);
-
-  // Positive control, and proof a cancelled start does not leave a one-minute backoff.
-  const url = await decisionProcessService.ensureRunning(model);
-  assert.equal(url, "http://127.0.0.1:9", "an uninterrupted start launches straight away");
-  assert.equal(readFileSync(spawnMarker, "utf8").trim(), "started");
-
-  // ── the running model is counted once ─────────────────────────────────────────
-
-  // An 8 GB card with this model already loaded on it. Counted twice it reads as
-  // not fitting; counted once it fits with room to spare.
-  writeFileSync(gpuState, `8192 ${Math.round(model.vramBytes / 1024 / 1024) + 14}\n`);
-  const whileRunning = await preflightDecisionModel(model, { fresh: true });
-  assert.equal(whileRunning.assessment.verdict, "recommended", "the running model is not counted twice");
-  await decisionProcessService.stop();
-  assert.equal(decisionProcessService.getStatus().running, false);
-  writeFileSync(gpuState, "24463 14\n");
 
   // ── the chosen GPU is the one weighed ─────────────────────────────────────────
 
@@ -417,11 +437,13 @@ exec sleep 30
   assert.equal(configuredCudaIndex(), 3, "with no choice made, the environment variable still applies");
   settings = { ...settings, cudaDevice: 0 };
   assert.equal(configuredCudaIndex(), 0, "a choice in the panel wins over the environment");
-  assert.notEqual((await preflightDecisionModel(model, { fresh: true })).assessment.verdict, "unsupported");
-  settings = { ...settings, cudaDevice: 1 };
-  const missing = await preflightDecisionModel(model, { fresh: true });
-  assert.equal(missing.assessment.verdict, "unsupported", "a chosen card that is gone is not replaced by another");
-  assert.match(missing.reason ?? "", /device 1\) is not present/u);
+  if (runtimeSupported) {
+    assert.notEqual((await preflightDecisionModel(model, { fresh: true })).assessment.verdict, "unsupported");
+    settings = { ...settings, cudaDevice: 1 };
+    const missing = await preflightDecisionModel(model, { fresh: true });
+    assert.equal(missing.assessment.verdict, "unsupported", "a chosen card that is gone is not replaced by another");
+    assert.match(missing.reason ?? "", /device 1\) is not present/u);
+  }
   delete process.env.MARINARA_DECISION_CUDA_DEVICE;
 } finally {
   globalThis.fetch = realFetch;

@@ -145,6 +145,9 @@ try {
     await chats.patchMetadata(chat.id, {
       enableAgents: false,
       enableMemoryRecall: false,
+      // Fork-only pre-send cache guard: this fixture's single XML history block changes every turn, so the guard
+      // would (correctly) hold each send for confirmation. This test pins prompt content, not the guard.
+      cacheSendGuard: { enabled: false },
       roleplayCommandsEnabled: true,
       roleplayCommandToggles: { notes: true, roll: true },
       roleplayCommandNarratorId: character.id,

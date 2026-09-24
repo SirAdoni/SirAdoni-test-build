@@ -15,6 +15,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { SidecarDecisionModelInfo } from "@marinara-engine/shared";
+import { logSuppressed } from "../../lib/best-effort.js";
 import { logger } from "../../lib/logger.js";
 import { getDataDir } from "../../utils/data-dir.js";
 import {
@@ -240,8 +241,9 @@ class DecisionProcessService {
           try {
             const announced = JSON.parse(line) as { url?: unknown };
             if (typeof announced.url === "string") finish(announced.url);
-          } catch {
+          } catch (error) {
             // A partial line; the next chunk completes it.
+            logSuppressed(error, { event: "decision-sidecar.start", stage: "ready-line-parse", level: "debug" });
           }
         }
       });
@@ -309,8 +311,9 @@ class DecisionProcessService {
       const done = setTimeout(() => {
         try {
           child.kill("SIGKILL");
-        } catch {
+        } catch (error) {
           // Already gone.
+          logSuppressed(error, { event: "decision-sidecar.stop", stage: "sigkill", level: "debug" });
         }
         resolve();
       }, 5000);

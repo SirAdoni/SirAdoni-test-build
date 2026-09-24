@@ -17,6 +17,7 @@ import { rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DecisionModelArtifact, SidecarDecisionModelInfo, SidecarDownloadProgress } from "@marinara-engine/shared";
+import { logSuppressed } from "../../lib/best-effort.js";
 import { logger } from "../../lib/logger.js";
 import { getDataDir } from "../../utils/data-dir.js";
 import { assertInsideDir } from "../../utils/security.js";
@@ -174,8 +175,9 @@ export class DecisionRuntimeService {
     this.activeFetchAbort = null;
     try {
       this.activeChild?.kill("SIGTERM");
-    } catch {
-      // Best-effort cancel.
+    } catch (error) {
+      // Best-effort cancel: the install child may already have exited.
+      logSuppressed(error, { event: "decision-runtime.cancel", stage: "sigterm", level: "debug" });
     }
   }
 
