@@ -13654,15 +13654,19 @@ function GameSurfaceComponent({
 
                     {/* Image generation failed — retry banner */}
                     {!replayActive && assetGenerationFailed && pendingAssetGeneration && (
-                      <div className="pointer-events-auto absolute bottom-32 left-1/2 z-30 -translate-x-1/2">
-                        <div className="flex items-center gap-3 rounded-xl bg-black/80 px-4 py-2.5 shadow-lg backdrop-blur-sm">
+                      <div
+                        data-game-asset-retry-line
+                        // Phones: an in-flow compact line at the column foot, never over narration or the composer.
+                        className="pointer-events-auto absolute bottom-32 left-1/2 z-30 -translate-x-1/2 max-lg:static max-lg:order-last max-lg:mx-3 max-lg:mb-2 max-lg:shrink-0 max-lg:translate-x-0"
+                      >
+                        <div className="flex items-center gap-3 rounded-xl bg-black/80 px-4 py-2.5 shadow-lg backdrop-blur-sm max-lg:gap-2 max-lg:px-3 max-lg:py-1">
                           <AlertTriangle size={14} className="shrink-0 text-amber-400" />
-                          <span className="text-xs text-white/70">
+                          <span className="text-xs text-white/70 max-lg:min-w-0 max-lg:flex-1 max-lg:truncate">
                             {localizeUi("ui.game.gamesurfacecomponent.imageGenerationFailed")}
                           </span>
                           <button
                             onClick={() => retryAssetGeneration()}
-                            className="flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1.5 text-xs text-white/80 transition-colors hover:bg-white/20 hover:text-white"
+                            className="flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1.5 text-xs text-white/80 transition-colors hover:bg-white/20 hover:text-white max-lg:py-1"
                           >
                             <RefreshCw size={12} />
                             {localizeUi("ui.game.gamesurfacecomponent.retry")}
@@ -13673,7 +13677,8 @@ function GameSurfaceComponent({
                               setPendingAssetGeneration(null);
                               setAssetGenerationBlocksScene(false);
                             }}
-                            className="text-white/40 transition-colors hover:text-white/70"
+                            className="text-white/40 transition-colors hover:text-white/70 max-lg:flex max-lg:h-8 max-lg:w-8 max-lg:items-center max-lg:justify-center"
+                            aria-label={localizeUi("ui.game.gamesurfacecomponent.dismiss")}
                           >
                             <X size={14} />
                           </button>

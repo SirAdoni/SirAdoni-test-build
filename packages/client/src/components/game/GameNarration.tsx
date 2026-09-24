@@ -5549,11 +5549,23 @@ export function GameNarration({
               from showing in the background while the confirmation modal is still open.
               While reviewing the past via wheel-nav, the input is hidden — the player is
               looking at history, not typing. */}
-              {playerInputAvailable && <div className="mt-2">{inputSlot}</div>}
+              {playerInputAvailable && (
+                // Phones: keep the composer pinned inside the scrolling panel so a short column
+                // (landscape, on-screen keyboard, crowded HUD) can never scroll it out of view.
+                <div
+                  data-game-composer-dock
+                  className="mt-2 max-lg:sticky max-lg:-bottom-3 max-lg:z-10 max-lg:-mx-3 max-lg:-mb-3 max-lg:bg-[var(--card)]/95 max-lg:px-3 max-lg:pb-3 max-lg:pt-1 max-lg:backdrop-blur-md dark:max-lg:bg-black/70"
+                >
+                  {inputSlot}
+                </div>
+              )}
 
               {/* Also show input when no narration at all (start of scene) */}
               {!scenePreparing && !active && !isStreaming && !sceneAnalysisFailed && inputSlot && (
-                <div className="mt-2">
+                <div
+                  data-game-composer-dock
+                  className="mt-2 max-lg:sticky max-lg:-bottom-3 max-lg:z-10 max-lg:-mx-3 max-lg:-mb-3 max-lg:bg-[var(--card)]/95 max-lg:px-3 max-lg:pb-3 max-lg:pt-1 max-lg:backdrop-blur-md dark:max-lg:bg-black/70"
+                >
                   {showLogsButton && logEntries.length > 0 && (
                     <div className="mb-2">
                       <button

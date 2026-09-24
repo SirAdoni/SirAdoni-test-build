@@ -46,6 +46,12 @@ try {
       () => (window.failure = "Validation Error: sections: Array must contain at most 200 element(s)"),
     );
     await page.addScriptTag({ content: bundle.outputFiles[0].text });
+    // Phones fold the viewer into a tab; open it like the player would.
+    if (width < 1024) await page.locator("[data-storyboard-phone-tab]").click();
+    // The failure reads as one friendly line; the raw request error stays behind Details.
+    await page.getByText("game.storyboard.friendlyFailure", { exact: true }).first().waitFor();
+    assert.equal(await page.getByRole("alert").isVisible(), false);
+    await page.locator("[data-storyboard-debug] > summary").click();
     await page.getByRole("alert").waitFor();
     assert.match(await page.getByRole("alert").innerText(), /sections: Array must contain at most 200/);
     assert.equal(await page.getByText("ui.game.gamesurfacecomponent.creatingStoryboard", { exact: true }).count(), 0);
@@ -60,7 +66,7 @@ try {
     await page.close();
   }
   console.info(
-    "Pre-render failures remain visible without a saved storyboard; retry and generating states work on mobile and desktop.",
+    "Pre-render failures show a friendly line with Retry, keep the request error behind Details, and generating states work on mobile and desktop.",
   );
 } finally {
   await browser.close();

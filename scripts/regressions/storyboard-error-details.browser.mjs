@@ -46,9 +46,12 @@ try {
   const page = await browser.newPage({ viewport: { width: 390, height: 800 } });
   await page.setContent('<div id="root"></div>');
   await page.addScriptTag({ content: bundle.outputFiles[0].text });
-  const detail = page.locator('details[role="status"]');
+  // Phones fold the viewer into a tab, and the frame error sits behind the Details disclosure.
+  await page.locator("[data-storyboard-phone-tab]").click();
+  const detail = page.locator("[data-storyboard-debug]");
   await detail.waitFor();
-  await detail.locator("summary").click();
+  assert.equal(await page.getByText(/No request was sent to the provider/).isVisible(), false);
+  await detail.locator("summary").first().click();
   assert.match(await detail.innerText(), /No request was sent to the provider/);
   assert.match(await detail.innerText(), /game.storyboard.errorRetryHint/);
   await page.getByRole("button", { name: "game.storyboard.previousPage" }).click();

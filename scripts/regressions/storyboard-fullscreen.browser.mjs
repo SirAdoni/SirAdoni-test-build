@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { chromium } from "@playwright/test";
-import { readFileSync, readdirSync, mkdirSync } from "node:fs";
+import { readFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
 import { resolve, join } from "node:path";
+import { buildClientCss } from "../ui-fixtures/lib/build-client-css.mjs";
 
 const viewerSource = resolve("packages/client/src/components/game/GameStoryboardViewer.tsx").replaceAll("\\", "/");
 const lightboxSource = resolve("packages/client/src/components/chat/ChatImageLightbox.tsx").replaceAll("\\", "/");
-const cssDir = resolve("packages/client/dist/assets");
-const cssFiles = readdirSync(cssDir).filter((name) => name.endsWith(".css"));
-assert.ok(cssFiles.length > 0, "production CSS assets are required for the styled fixture");
+// Compile the client Tailwind CSS from source so the styled fixture never depends on a stale dist build.
+const cssDirectory = mkdtempSync(join(os.tmpdir(), "marinara-storyboard-fullscreen-"));
+const clientCss = readFileSync(await buildClientCss(join(cssDirectory, "client.css")), "utf8");
 const englishMessages = JSON.parse(readFileSync("packages/client/src/localization/locales/en.json", "utf8"));
 mkdirSync(".tmp/storyboard-viewer-repair", { recursive: true });
 const bundle = await build({
@@ -44,8 +46,10 @@ try {
   for (const width of [390, 1440]) {
     const page = await browser.newPage({ viewport: { width, height: 800 } });
     await page.setContent('<div id="root"></div>');
-    for (const cssFile of cssFiles) await page.addStyleTag({ content: readFileSync(join(cssDir, cssFile), "utf8") });
+    await page.addStyleTag({ content: clientCss });
     await page.addScriptTag({ content: bundle.outputFiles[0].text });
+    // Phones fold the viewer into a tab; open it like the player would.
+    if (width < 1024) await page.locator("[data-storyboard-phone-tab]").click();
     await page.getByRole("button", { name: "Open storyboard image fullscreen" }).press("Enter");
     const dialog = page.getByRole("dialog");
     await dialog.waitFor();
@@ -67,4 +71,5 @@ try {
   console.info("Styled Game storyboard image opens in the fullscreen lightbox with keyboard Enter and closes with Escape on desktop and mobile.");
 } finally {
   await browser.close();
+  rmSync(cssDirectory, { recursive: true, force: true });
 }
