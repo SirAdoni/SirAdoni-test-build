@@ -14,6 +14,8 @@ import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { MusicSourceButton, MusicSourceGlyph } from "@/components/music/MusicSourceButton";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { placeFloatingWidget } from "../../lib/floating-widget-avoid";
+import { useFloatingWidgetAvoid, type FloatingWidgetAvoidState } from "../../hooks/use-floating-widget-avoid";
 
 // The YouTube IFrame API attaches itself to window; it has no bundled types.
 type YTPlayer = {
@@ -59,18 +61,6 @@ const MOBILE_WIDGET_VIEWPORT_PADDING = 8;
 /** Room kept free at the bottom for the chat composer so the collapsed bubble never covers Send. */
 const MOBILE_WIDGET_COMPOSER_RESERVE = 88;
 
-/** Re-renders on viewport resize (rotation, on-screen keyboard) so the widget re-clamps. */
-function useViewportResizeTick() {
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const bump = () => setTick((value) => value + 1);
-    window.addEventListener("resize", bump);
-    return () => window.removeEventListener("resize", bump);
-  }, []);
-  return tick;
-}
-
 function clampMobilePosition(x: number, y: number, collapsed: boolean) {
   if (typeof window === "undefined") return { x, y };
   const width = collapsed
@@ -92,25 +82,37 @@ function clampMobilePosition(x: number, y: number, collapsed: boolean) {
 function getMobileWidgetStyle(
   position: { x: number; y: number },
   collapsed: boolean,
+  avoid: FloatingWidgetAvoidState,
 ): Pick<CSSProperties, "left" | "top"> {
   if (typeof window === "undefined") {
     return { left: position.x, top: position.y };
+  }
+  const viewportWidth = avoid.viewportWidth || window.innerWidth;
+  const viewportHeight = avoid.viewportHeight || window.innerHeight;
+
+  if (collapsed) {
+    const placement = placeFloatingWidget({
+      x: position.x,
+      y: position.y,
+      size: MOBILE_WIDGET_COLLAPSED_SIZE,
+      viewportWidth,
+      viewportHeight,
+      padding: MOBILE_WIDGET_VIEWPORT_PADDING,
+      bottomReserve: MOBILE_WIDGET_COMPOSER_RESERVE,
+      obstacles: avoid.obstacles,
+    });
+    return { left: placement.x, top: placement.y };
   }
 
   return {
     left: Math.max(
       MOBILE_WIDGET_VIEWPORT_PADDING,
-      Math.min(window.innerWidth - MOBILE_WIDGET_COLLAPSED_SIZE - MOBILE_WIDGET_VIEWPORT_PADDING, position.x),
+      Math.min(viewportWidth - MOBILE_WIDGET_COLLAPSED_SIZE - MOBILE_WIDGET_VIEWPORT_PADDING, position.x),
     ),
-    top: collapsed
-      ? Math.max(
-          MOBILE_WIDGET_VIEWPORT_PADDING,
-          Math.min(window.innerHeight - MOBILE_WIDGET_COLLAPSED_SIZE - MOBILE_WIDGET_COMPOSER_RESERVE, position.y),
-        )
-      : Math.max(
-          MOBILE_WIDGET_VIEWPORT_PADDING,
-          Math.min(window.innerHeight - MOBILE_WIDGET_EXPANDED_HEIGHT - MOBILE_WIDGET_VIEWPORT_PADDING, position.y),
-        ),
+    top: Math.max(
+      MOBILE_WIDGET_VIEWPORT_PADDING,
+      Math.min(viewportHeight - MOBILE_WIDGET_EXPANDED_HEIGHT - MOBILE_WIDGET_VIEWPORT_PADDING, position.y),
+    ),
   };
 }
 
@@ -422,12 +424,10 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
     : error
       ? "Playback needs attention"
       : (nowPlaying?.channel ?? nowPlaying?.mood ?? "Ready for Music DJ");
-  const viewportResizeTick = useViewportResizeTick();
+  const floatingAvoid = useFloatingWidgetAvoid(mobile);
   const mobileWidgetStyle = useMemo(
-    () => getMobileWidgetStyle(mobilePosition, collapsed),
-    // viewportResizeTick re-runs the clamp against the new window size.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [collapsed, mobilePosition, viewportResizeTick],
+    () => getMobileWidgetStyle(mobilePosition, collapsed, floatingAvoid),
+    [collapsed, floatingAvoid, mobilePosition],
   );
   const mobileExpandedPanelStyle = useMemo(() => getMobileExpandedPanelStyle(mobilePosition), [mobilePosition]);
 

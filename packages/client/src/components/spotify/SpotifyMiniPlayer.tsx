@@ -39,6 +39,8 @@ import { cn } from "../../lib/utils";
 import { useUIStore } from "../../stores/ui.store";
 import { MusicSourceButton } from "../music/MusicSourceButton";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { placeFloatingWidget, type FloatingWidgetRect } from "../../lib/floating-widget-avoid";
+import { useFloatingWidgetAvoid } from "../../hooks/use-floating-widget-avoid";
 
 type SpotifyRepeatState = "off" | "track" | "context";
 
@@ -173,6 +175,8 @@ const MOBILE_WIDGET_EXPANDED_MAX_WIDTH = 320;
 const MOBILE_WIDGET_EXPANDED_HORIZONTAL_GUTTER = 24;
 const MOBILE_WIDGET_EXPANDED_HEIGHT = 132;
 const MOBILE_WIDGET_VIEWPORT_PADDING = 8;
+/** Room kept free at the bottom for the chat composer so the collapsed bubble never covers Send. */
+const MOBILE_WIDGET_COMPOSER_RESERVE = 88;
 const SPOTIFY_VOLUME_UNSUPPORTED_MESSAGE =
   "This Spotify device does not allow remote volume control. Use the device volume buttons instead.";
 
@@ -246,12 +250,27 @@ function getMobileWidgetStyle(
   collapsed: boolean,
   viewportWidth?: number,
   viewportHeight?: number,
+  obstacles: readonly FloatingWidgetRect[] = [],
 ): Pick<CSSProperties, "left" | "top"> {
   if (typeof window === "undefined") {
     return { left: position.x, top: position.y };
   }
   const width = viewportWidth ?? window.innerWidth;
   const height = viewportHeight ?? window.innerHeight;
+
+  if (collapsed) {
+    const placement = placeFloatingWidget({
+      x: position.x,
+      y: position.y,
+      size: MOBILE_WIDGET_COLLAPSED_SIZE,
+      viewportWidth: width,
+      viewportHeight: height,
+      padding: MOBILE_WIDGET_VIEWPORT_PADDING,
+      bottomReserve: MOBILE_WIDGET_COMPOSER_RESERVE,
+      obstacles,
+    });
+    return { left: placement.x, top: placement.y };
+  }
 
   return {
     left: Math.max(
@@ -260,12 +279,7 @@ function getMobileWidgetStyle(
     ),
     top: Math.max(
       MOBILE_WIDGET_VIEWPORT_PADDING,
-      Math.min(
-        height -
-          (collapsed ? MOBILE_WIDGET_COLLAPSED_SIZE : MOBILE_WIDGET_EXPANDED_HEIGHT) -
-          MOBILE_WIDGET_VIEWPORT_PADDING,
-        position.y,
-      ),
+      Math.min(height - MOBILE_WIDGET_EXPANDED_HEIGHT - MOBILE_WIDGET_VIEWPORT_PADDING, position.y),
     ),
   };
 }
@@ -906,9 +920,10 @@ export function SpotifyMiniPlayer({
   );
   const viewportWidth = viewport.w;
   const viewportHeight = viewport.h;
+  const floatingAvoid = useFloatingWidgetAvoid(mobile);
   const mobileWidgetStyle = useMemo(
-    () => getMobileWidgetStyle(mobilePosition, collapsed, viewportWidth, viewportHeight),
-    [collapsed, mobilePosition, viewportHeight, viewportWidth],
+    () => getMobileWidgetStyle(mobilePosition, collapsed, viewportWidth, viewportHeight, floatingAvoid.obstacles),
+    [collapsed, floatingAvoid.obstacles, mobilePosition, viewportHeight, viewportWidth],
   );
   const mobileExpandedPanelStyle = useMemo(
     () => getMobileExpandedPanelStyle(mobilePosition, viewportWidth),
