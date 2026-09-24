@@ -37,6 +37,7 @@ import { cn } from "../../lib/utils";
 import { FloatingGamePanel } from "./FloatingGamePanel";
 import { CHAT_TOOLBAR_OVERFLOW_BUTTON_SIZE_CLASS, getChatToolbarButtonClass } from "../chat/ChatToolbarControls";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { useVisibleViewportMaxHeight } from "../../hooks/use-visible-viewport-max-height";
 
 const LegacyNodeMap = lazy(() => import("./GameNodeMap").then((module) => ({ default: module.GameNodeMap })));
 function GameNodeMap(props: import("react").ComponentProps<typeof LegacyNodeMap>) {
@@ -1027,6 +1028,8 @@ export function MobileMapButton({
   const [mapViewMode, setMapViewMode] = useState<GameMapViewMode>("world");
   const pendingSpatialTransition = useChatStore((state) => state.pendingSpatialTransitions.get(chatId) ?? null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
+  const popoverPanelRef = useRef<HTMLDivElement | null>(null);
+  const popoverMaxHeight = useVisibleViewportMaxHeight(popoverPanelRef, open);
   const mapOptions = buildMapOptions(map, maps);
   const selectedMapId = viewedMapId ?? getMapId(map);
   const activeMap = activeMapId == null || selectedMapId === activeMapId;
@@ -1143,7 +1146,15 @@ export function MobileMapButton({
           data-game-skip-bg-nav="true"
         >
           <div
+            ref={popoverPanelRef}
             className="relative flex max-h-[min(68dvh,26rem)] flex-col overflow-hidden"
+            // Fit the visible viewport below the button (browser chrome, keyboard, home indicator) instead
+            // of a fixed 26rem cap, so a tall package view such as place details stays reachable.
+            style={
+              popoverMaxHeight == null
+                ? undefined
+                : { maxHeight: `calc(${popoverMaxHeight}px - env(safe-area-inset-bottom, 0px))` }
+            }
             onClick={(e) => e.stopPropagation()}
           >
             {/* Header */}
