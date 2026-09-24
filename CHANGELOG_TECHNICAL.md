@@ -128,7 +128,7 @@ Memory panel and related:
 - Custom widget bookmarks show their icon and move along the chosen edge in Edit layout.
 - Status widget (Persona Stats and custom RPG fields) and Contact Book widget. Files: `GameStatusWidget.tsx`, `game-status-widget.ts`, `GameContactBookWidget.tsx`.
 
-### Game Mode UI and layout (31)
+### Game Mode UI and layout (33)
 
 Edit layout (`GameLayoutEditToolbar.tsx`, `GameLayoutPopover.tsx`, `lib/game-layout-editor-store.ts`, `game-layout-geometry.ts`, `game-layout-snapshots.ts`, `game-layout-tidy.ts`; no switch yet):
 
@@ -159,6 +159,8 @@ Layout and phones:
 - Hide the party bar and Currently Present: two toggles in the desktop game toolbar, the phone Game actions menu and the Party section of game settings; per game and per device in localStorage `marinara-game-hud:<gameId>:party-bar:hidden` and `...:scene-presence:hidden`; default shown. Files: `hooks/use-game-hud-lists.ts`, `GameHudListToggles.tsx`, `features/chat-settings/sections/GameHudListsSettings.tsx`.
 - Long turns never move the layout: the composer grows upward from a fixed one-line slot (textarea capped at min(120px, 22dvh), scrolls inside) and the generating status keeps its height, so typing, pasting and sending move narration and floating panels 0px. Files: `game-composer-stability.ts`, `GameInput.tsx`, `GameNarration.tsx`.
 - Tablets: panels can report a minimum height, so narration keeps its composer in view on crowded 1024px and wider screens; the tablet narration column below 1024 stops at 48rem; touch tablets (768px wide and 32rem tall and up) get 36px Game controls. Files: `lib/game-panel-layout.ts`, `styles/globals.css`.
+- Tablets keep the tablet layout with the on-screen keyboard up: phone versus tablet is decided by the device screen short side (under 600px is a phone), exposed as `data-game-short-landscape` / `data-game-short-tablet` on the root and Tailwind variants of the same names. File: `lib/game-short-landscape.ts`.
+- Full names: map, place, widget, presence, contact, journal, sheet, speaker, storyboard and inventory names wrap instead of truncating (no ellipsis or clamp); package-drawn map names are left for upstream.
 
 Scene, combat and server guards:
 
@@ -488,7 +490,7 @@ Features:
 - Behaviour: panels can report a minimum height; narration asks for its composer area plus 272px, so widgets give way first, and the composer sticks to the panel bottom when the box is still short (`data-game-panel-keep`). Below 1024 the narration column stops at 48rem, centred, with the tray inside it (landscape phones excluded). On touch tablets (at least 768px wide and 32rem tall) toolbar, narration, composer, party, presence, storyboard, map, retry-line and widget header controls get a 36px minimum. Phones, landscape phones and mouse desktops are unchanged.
 - Settings: none.
 - Tests: `scripts/regressions/game-tablet-layout.live.mjs` (768x1024, 820x1180, 1024x768, 1180x820, 1366x1024, 1023x768, 1025x768: no horizontal overflow, composer visible and on top with and without a simulated keyboard, narration visible, no cut-off headings, 36px targets, column width below 1024); new case in `scripts/regressions/game-panel-crowded-layout.regression.ts`.
-- Known limits: map place titles truncate in the 320px desktop map card (the image-retry banner case is fixed in `a085f68f6`); at 1023x461 with a keyboard the landscape-phone rules apply and the composer is partly clipped.
+- Known limits: map place titles truncate in the 320px desktop map card (fixed in `d2f71b1cd`); the image-retry banner case is fixed in `a085f68f6`; the 1023x461 keyboard case is fixed in `ec1e99004`.
 
 ### Game retry banners above the floating HUD on desktop
 
@@ -498,6 +500,32 @@ Features:
 - Behaviour: both banners use z-55 from 1024px up; still inside the Game chrome layer, so dialogs stay above them. Phones keep the in-flow compact retry line.
 - Settings: none.
 - Tests: verified live on the sandbox at 1440x900 with an element at the banner position inside the chrome container (z-30 hit-tested under narration, z-55 on top); `game-storyboard-phone.browser.mjs` and client tsc pass.
+
+### Tablets with the keyboard up keep the tablet layout
+
+- Commit: `ec1e99004`.
+- Files: `packages/client/src/lib/game-short-landscape.ts` (new), `packages/client/src/styles/globals.css` (Tailwind `@custom-variant game-short-landscape` and `game-short-tablet`), `packages/client/src/components/game/GameSurface.tsx`, `GameNarration.tsx`, `GameInput.tsx`, `GameStoryboardViewer.tsx`, `GameMobileStatus.tsx`.
+- Cause: the landscape-phone rules keyed on a viewport at most 32rem tall below 1024px, so a 1024x768 tablet with the on-screen keyboard up (1023x461) got the phone layout: the composer was clipped and the story location card covered narration.
+- Behaviour: a short, narrow viewport is classed by the device's screen short side, which the keyboard does not change. Under 600px sets `data-game-short-landscape` on the document root (landscape phone rules, unchanged); 600px or more sets `data-game-short-tablet`; no screen size reported falls back to the phone rules. All former `max-lg:[@media(max-height:32rem)]:` classes use the `game-short-landscape:` variant, and the JS checks (`SHORT_LANDSCAPE_GAME_QUERY`, `shortLandscapeGame`, `shortGameViewport`, the GameInput location row) use the module. While the keyboard is up on a short tablet, the Currently Present strip, the storyboard tab and the image retry banner step aside and return when it closes. The 36px touch-tablet rule excludes phones by the attribute, so tablets keep 36px targets with the keyboard up.
+- Settings: none.
+- Tests: `scripts/regressions/game-short-landscape.regression.ts`, `scripts/regressions/game-short-landscape.browser.mjs` (390x844, 820x1180, 1024x768, 1023x461 with a 1024x768 screen, 844x390 with a phone screen, 1440x900, and a phone rotation; 14 checks); `game-tablet-layout.live.mjs` now runs the keyboard case and pins the device screen per browser context (Playwright resets `window.screen` on resize); `game-mobile-landscape.live.mjs` asserts a phone screen.
+
+### Full names everywhere the Game HUD renders them
+
+- Commits: `604b44ee9`, `fb35f57c5` (merged as `d2f71b1cd`).
+- Files: `packages/client/src/components/game/GameMap.tsx`, `GameNodeMap.tsx`, `game-node-map-label.ts` (new), `GameWidgetPanel.tsx`, `GameSurface.tsx`, `GameContactBookWidget.tsx`, `GameJournal.tsx`, `GameCharacterSheet.tsx`, `GameStoryboardViewer.tsx`, `GameNarration.tsx`, `GameInventory.tsx`, `GameMobileArrange.tsx`, `GameLayoutEditToolbar.tsx`, `FloatingGamePanel.tsx`.
+- Behaviour: names wrap onto as many lines as needed instead of truncating (no ellipsis, no line clamp, no marquee):
+  - Desktop map card title (was a marquee past 18 characters, otherwise cut with an ellipsis; drops below the day and time controls when the card is narrow).
+  - Phone and tablet map popover: map name, the "Story location:" breadcrumb, the current place and the selected-place footer.
+  - Node map tooltip (was cut at 15 characters; now wraps, flips below a node near the top edge and stays inside the map).
+  - Widget titles (floating card, phone card, phone modal, setup list) and widget stat names.
+  - Storyboard turn title and viewer title; Currently Present extras; phone presence chips grow and wrap inside their sideways-scrolling row.
+  - Contact book names, journal entry titles, the character sheet name, dialogue speaker names, the phone Arrange list, the Edit layout panel list and the panel options popover title.
+  - Inventory tiles on tablet and desktop grow to fit long item names; phones keep the compact tile that scrolls inside, and tapping shows the full name.
+- Bug fixed on the way: while maps load, a 208px placeholder card shares the map panel id; its width was saved and the loaded card stayed 208px instead of 320px, clipping the package view. Both cards now follow their set width unless resized by hand, and saved 208px widths recover.
+- Not changed (drawn by the hierarchical-maps package UI; listed for upstream): breadcrumb chips (`max-w-24 truncate`), the place title (`truncate text-xs font-bold`), the in-view "Story location" line, place descriptions (`line-clamp-2`), destination names (`max-w-32 truncate`), and the "STORY LOCATION" runtime row above the composer. Also still truncated and outside Game HUD names: the app chrome chat title, storyboard status text, and the closed native map picker select (opening it shows full names).
+- Settings: none.
+- Tests: `scripts/regressions/game-hud-full-names.browser.mjs` (map card, popover, node tooltip, widgets, contact book, inventory, journal, character sheet and storyboard with long invented names at 390x844, 820x1180, 1024x768, 1023x461 and 1440x900: no ellipsis, no clamp, no clipping or sideways overflow, no short word split, tooltip inside its box, loaded map card full width). Live sweep of three chats at the five sizes found no truncated host names.
 
 ### Job tracking setting moved into Feature switches
 
