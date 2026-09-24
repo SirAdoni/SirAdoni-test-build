@@ -289,6 +289,12 @@ Features:
 
 ## 2026-09-24
 
+### Regression: side-panel touch actions test follows the in-flow row layout
+- **Files:** `scripts/regressions/open-issues.regression.ts` (Issue #4449 block).
+- **Cause:** the phone pass `0b05da7f2` moved the touch action toolbars of the Characters, Personas, Lorebooks, Agents, Presets and Connections rows, and the folder headers (including the shared `LibraryFolderTree`), from an absolute overlay with reserved `max-md:pr-N [@media(pointer:coarse)]:pr-N` padding into the row's own flow (`max-md:static`, `ml-auto`, row `flex-wrap`), and made names wrap with `PANEL_ROW_NAME_WRAP_CLASS`. The test still asserted the old padding, so `open-issues` failed on main with "Characters rows must reserve action space only for touch layouts". The code is correct; the test was stale.
+- **Change:** the row check accepts either reserved touch padding or in-flow wrapping actions; folder headers must keep touch actions static in flow; Character and Preset rows must wrap their toolbar in the row flow (Character rows keep `pr-0` on desktop); the name click-target checks accept the `cn(..., PANEL_ROW_NAME_WRAP_CLASS)` form. Desktop checks (no hover padding, overlay pointer events) are unchanged.
+- **Tests:** `open-issues` passes.
+
 ### Campaign Wiki: one promise per record in the commitments list
 - **Files:** `packages/server/src/routes/campaign-memory-commitments.routes.ts` (new `groupCommitments`, type `CampaignMemoryGroupedCommitmentItem`; `project`, `projected`, list cursor and response), `scripts/regressions/campaign-memory-commitments-grouping.regression.ts` (new).
 - **Bug:** continuity publishes one fact per resolved subject, so `GET /:chatId/memory/commitments` listed a promise once per person: 488 rows for 165 distinct promises in a long campaign.

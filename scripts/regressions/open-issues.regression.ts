@@ -9841,9 +9841,16 @@ assert.equal(({} as { tags?: string[] }).tags, undefined, "Background metadata m
   );
 
   for (const [panelName, source] of sidebarPanelSources) {
-    assert.match(
-      source,
-      /max-md:pr-(?:14|16|20|24|32|36) \[@media\(pointer:coarse\)\]:pr-(?:14|16|20|24|32|36)/u,
+    // Touch layouts either reserve padding for the overlaid actions or, as the
+    // Characters phone pass does, put the actions in the row's flow so they
+    // wrap below the text instead of covering it.
+    const touchActionsInFlow =
+      /max-md:static[^"\n]*\[@media\(pointer:coarse\)\]:static[^"\n]*max-md:ml-auto[^"\n]*\[@media\(pointer:coarse\)\]:ml-auto/u.test(
+        source,
+      ) && /max-md:flex-wrap[^"\n]*pointer-coarse:flex-wrap/u.test(source);
+    assert.ok(
+      touchActionsInFlow ||
+        /max-md:pr-(?:14|16|20|24|32|36) \[@media\(pointer:coarse\)\]:pr-(?:14|16|20|24|32|36)/u.test(source),
       `${panelName} rows must reserve action space only for touch layouts`,
     );
     assert.doesNotMatch(
@@ -9879,8 +9886,9 @@ assert.equal(({} as { tags?: string[] }).tags, undefined, "Background metadata m
   const personasPanelSource = sidebarPanelSources.get("Personas")!;
   const charactersPanelSource = sidebarPanelSources.get("Characters")!;
   const presetsPanelSource = sidebarPanelSources.get("Presets")!;
-  // Characters and Lorebooks render folder headers through the shared LibraryFolderTree,
-  // which reserves more room because it shows more always-visible touch actions.
+  // Characters and Lorebooks render folder headers through the shared LibraryFolderTree.
+  // Since the phone pass, every folder header's touch actions sit in the header's flow
+  // (static) instead of overlaying the name, so no padding is reserved for them.
   const libraryFolderTreeSource = readFileSync(
     join(REPOSITORY_ROOT, "packages/client/src/components/panels/library/LibraryFolderTree.tsx"),
     "utf8",
@@ -9889,14 +9897,21 @@ assert.equal(({} as { tags?: string[] }).tags, undefined, "Background metadata m
     const usesLibraryFolderTree = panelName === "Characters" || panelName === "Lorebooks";
     assert.match(
       usesLibraryFolderTree ? libraryFolderTreeSource : sidebarPanelSources.get(panelName)!,
-      /group relative flex cursor-pointer[^"\n]*max-md:pr-(\d+) \[@media\(pointer:coarse\)\]:pr-\1/u,
-      `${panelName} folder headers must reserve space for always-visible touch actions`,
+      /pointer-events-none absolute[^"\n]*max-md:static max-md:translate-y-0 \[@media\(pointer:coarse\)\]:static \[@media\(pointer:coarse\)\]:translate-y-0/u,
+      `${panelName} folder headers must keep always-visible touch actions in flow beside the name`,
     );
   }
+  // Character rows keep no desktop padding; on touch the action toolbar joins the
+  // wrapping row flow, so it can never cover the name.
   assert.match(
     charactersPanelSource,
-    /pr-0 max-md:pr-32 \[@media\(pointer:coarse\)\]:pr-32/u,
-    "Character rows must match their coarse-pointer padding to the desktop-width action toolbar",
+    /!selectionMode && "pr-0"/u,
+    "Character rows must not reserve desktop padding for hover actions",
+  );
+  assert.match(
+    charactersPanelSource,
+    /max-md:flex-wrap[^"\n]*pointer-coarse:flex-wrap[\s\S]*?max-md:static max-md:translate-y-0 \[@media\(pointer:coarse\)\]:static \[@media\(pointer:coarse\)\]:translate-y-0 max-md:ml-auto/u,
+    "Character row touch actions must wrap in the row flow instead of overlaying the name",
   );
   assert.match(
     charactersPanelSource,
@@ -9905,17 +9920,17 @@ assert.equal(({} as { tags?: string[] }).tags, undefined, "Background metadata m
   );
   assert.match(
     presetsPanelSource,
-    /max-md:pr-36 \[@media\(pointer:coarse\)\]:pr-36/u,
-    "Preset rows must reserve space for the complete selected-preset touch toolbar",
+    /max-md:flex-wrap[^"\n]*pointer-coarse:flex-wrap[\s\S]*?max-md:static max-md:translate-y-0 \[@media\(pointer:coarse\)\]:static \[@media\(pointer:coarse\)\]:translate-y-0[^"\n]*max-md:ml-auto/u,
+    "Preset rows must wrap the complete selected-preset touch toolbar in the row flow",
   );
   assert.match(
     charactersPanelSource,
-    /data-character-row-name\s+className="w-fit max-w-full truncate/u,
+    /data-character-row-name\s+className=(?:"|\{cn\(")w-fit max-w-full truncate/u,
     "Character names must keep a content-sized click target beneath overlaid actions",
   );
   assert.match(
     personasPanelSource,
-    /className="w-fit max-w-full truncate text-sm font-medium">\{persona\.name\}/u,
+    /className=(?:"w-fit max-w-full truncate text-sm font-medium"|\{cn\("w-fit max-w-full truncate text-sm font-medium", PANEL_ROW_NAME_WRAP_CLASS\)\})>\s*\{persona\.name\}/u,
     "Persona names must keep a content-sized click target beneath overlaid actions",
   );
   assert.match(
