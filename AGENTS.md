@@ -107,7 +107,7 @@ Before designing or changing any client UI, find the closest existing feature in
 
 The local review conserves the shared CodeRabbit quota and complements the GitHub review. Use an existing PR rather than creating another for follow-up fixes.
 
-- **Never auto-check validation or test-plan checkboxes in a PR.** Those boxes are a to-do list for the human contributor, not evidence that work is done. If you generate a test plan, leave every box unchecked.
+- **Never auto-check validation or test-plan checkboxes in a PR.** Those boxes are a to-do list for the human contributor, not evidence that work is done. If you generate a test plan, leave every box unchecked. The "Pull Request template check" fails until at least one box is ticked, so tell the human which boxes the recorded evidence supports and that they need to tick them.
 - When preparing a PR description, list what needs manual verification clearly and explicitly. Write entries like "Manually verify X in browser" rather than "Works correctly."
 - If there is no linked issue or feature request, note that one should be opened before the PR is submitted. See `CONTRIBUTING.md § Before You Open a Pull Request`.
 

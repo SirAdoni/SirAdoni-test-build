@@ -36,15 +36,14 @@ this additive overlay. No repository file overrides platform permission controls
 Use this when the user reports broken behavior, screenshots a bug, or says
 "fix this".
 
-1. Extract the symptom, expected behavior, actual behavior, relevant mode, and likely subsystem.
-2. Restate the issue in one short paragraph.
-3. Name the narrow fix boundary and the proof claim.
-4. Reproduce or inspect the failing path before editing when possible.
-5. Diagnose one hypothesis at a time.
-6. Make the smallest root-cause fix.
-7. Verify the original repro or closest available proof path.
-8. Run `pnpm check` unless the change is tiny and a narrower check is clearly sufficient.
-9. Review the diff as a maintainer before reporting done.
+A bug fix is done when:
+
+- the symptom, expected and actual behavior, and the mode it happens in are restated;
+- the failing path was reproduced or inspected before editing, where possible;
+- the fix is the smallest one that addresses the root cause, within a named boundary;
+- the original repro (or the closest available proof path) passes afterwards;
+- `pnpm check` passes, unless the change is tiny and a narrower check clearly suffices;
+- the diff has been reviewed as a maintainer would review it.
 
 If reproduction is not possible, mark that as a proof gap instead of implying
 the repro was exercised.

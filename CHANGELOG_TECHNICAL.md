@@ -287,6 +287,16 @@ Features:
 
 ## 2026-09-24
 
+### Agent instruction audit for Opus 5.5 (five fixes)
+- **Files:** `.claude/skills/impeccable/SKILL.md`, `AGENTS.md`, `packages/client/.instructions.md`, `.github/agents/chai-workflow.md`. Report: `review-2026-09-22/prompt-audit-agent-files_v1.0.md` (outside the repo).
+- **Behaviour:**
+  - The impeccable skill no longer tells the model to "vary across projects... don't hold back". Product UI in an existing app follows the app's own components first.
+  - Its ban list now names the five Opus 5.5 default styles.
+  - `AGENTS.md` explains that the PR template check needs a human-ticked box.
+  - The client guide points at the UI Consistency rule.
+  - The bugfix lane is a list of done conditions instead of a 9-step script.
+- Documentation only.
+
 ### Agent guide: Claude Code runtime section and a required UI consistency rule
 - **Files:** `AGENTS.md` (new sections "Claude Code Runtime and Models" and "UI Consistency").
 - **Why:** Opus 5.5 falls back on its own default UI styles (cream backgrounds, italic accent words, "01/02/03" labels, monospace labels, pill buttons) when not given a precedent, and a vague "make it consistent" only swaps one default for another.
