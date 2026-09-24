@@ -50,6 +50,7 @@ import { reportDiagnosticError } from "../../lib/diagnostic-operation.js";
 import { logEvent, logRecovered, logRepeated } from "../../lib/log-events.js";
 import { registerWorkerGauge } from "../../lib/worker-gauges.js";
 import { backgroundCallBudgetSnapshot, tryConsumeBackgroundCall } from "../generation/background-call-budget.js";
+import { isContinuityParkReason, isContinuityPublishOnlyRetry } from "./continuity-retry-all.js";
 import type {
   GameContinuityContextSource,
   GameContinuityMetadata,
@@ -1792,8 +1793,7 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
         // batch back in the queue if nothing holds it. Only a batch with its own error waiting out its own
         // retry delay, or one that simply is running, is refused as busy.
         const parkedList = parked.get(chatId);
-        const parkReason =
-          target.errorCode === "CONTINUITY_PROVIDER_AUTH" || target.errorCode === "CONTINUITY_CONNECTION_UNAVAILABLE";
+        const parkReason = isContinuityParkReason(target.errorCode);
         if (!parkedList?.some((item) => item.id === target.id) && !parkReason) throw new Error("CONTINUITY_BUSY");
         parked.delete(chatId);
         for (const item of parkedList ?? [])
@@ -1809,13 +1809,7 @@ export function createGameContinuityRuntime(db: DB, options: ContinuityRuntimeOp
       if (staleHistorical(target)) throw new Error("CONTINUITY_BACKFILL_RERUN_REQUIRED");
       // A clean, reviewed receipt that only failed to publish (memory write, lorebook, publication step) needs no new
       // model read: put it back to verified and publish it again.
-      if (
-        target.status === "failed" &&
-        target.records.length > 0 &&
-        target.review !== null &&
-        target.review.findings.length === 0 &&
-        /^CONTINUITY_(MEMORY_|PUBLICATION|LOREBOOK)/.test(target.errorCode ?? "")
-      ) {
+      if (isContinuityPublishOnlyRetry(target)) {
         const verified = await storage.save({
           ...target,
           status: "verified",
