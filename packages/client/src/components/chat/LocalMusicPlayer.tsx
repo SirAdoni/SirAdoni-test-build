@@ -401,7 +401,7 @@ export function LocalMusicPlayer({ mobile = false }: { mobile?: boolean } = {}) 
         step={1}
         value={playerVolume}
         onChange={(event) => setPlayerVolume(Number(event.target.value))}
-        className="mari-local-music-volume-slider w-full pointer-coarse:h-9"
+        className="mari-local-music-volume-slider w-full pointer-coarse:h-9!"
         title={localizeUi("game.toolbar.volume")}
         aria-label={localizeUi("ui.chat.localmusicplayer.customMusicVolume")}
         style={{ "--range-progress": `${playerVolume}%` } as CSSProperties}

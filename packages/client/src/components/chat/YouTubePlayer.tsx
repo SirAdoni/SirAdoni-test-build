@@ -468,7 +468,7 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
         step={1}
         value={playerVolume}
         onChange={(event) => setPlayerVolume(Number(event.target.value))}
-        className="mari-youtube-volume-slider w-full pointer-coarse:h-9"
+        className="mari-youtube-volume-slider w-full pointer-coarse:h-9!"
         title={localizeUi("game.toolbar.volume")}
         aria-label={localizeUi("ui.chat.youtubeplayer.youtubeVolume")}
         style={{ "--range-progress": `${playerVolume}%` } as CSSProperties}

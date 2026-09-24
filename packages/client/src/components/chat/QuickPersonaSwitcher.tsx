@@ -339,7 +339,7 @@ export function QuickPersonaSwitcher({ className }: { className?: string }) {
             : localizeUi("ui.chat.quickpersonaswitcher.quickPersonaSwitcher")
         }
         className={cn(
-          "relative flex h-8 w-auto min-w-8 items-center justify-center gap-1 rounded-full overflow-visible px-0.5 transition-all border-2",
+          "relative flex h-8 w-auto min-w-8 pointer-coarse:h-9 items-center justify-center gap-1 rounded-full overflow-visible px-0.5 transition-all border-2",
           open ? "border-foreground/40" : "border-transparent hover:border-foreground/30 hover:opacity-90",
           className,
         )}
