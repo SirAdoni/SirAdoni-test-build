@@ -2307,7 +2307,7 @@ export function ConversationInput({
         <button
           onClick={() => fileInputRef.current?.click()}
           className={cn(
-            "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-all active:scale-90 sm:h-8 sm:w-8",
+            "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-all active:scale-90 sm:pointer-fine:h-8 sm:pointer-fine:w-8",
             attachments.length
               ? "bg-foreground/10 text-foreground/75 ring-1 ring-foreground/20"
               : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
@@ -2385,7 +2385,7 @@ export function ConversationInput({
                 setMobilePickerOpen((value) => !value);
               }}
               className={cn(
-                "flex h-8 w-8 items-center justify-center rounded-full transition-colors",
+                "flex h-8 w-8 pointer-coarse:h-9 pointer-coarse:w-9 items-center justify-center rounded-full transition-colors",
                 mobilePickerOpen
                   ? "bg-foreground/10 text-foreground/75 ring-1 ring-foreground/20"
                   : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
@@ -2417,7 +2417,7 @@ export function ConversationInput({
               onClick={() => void handleTranslateDraft()}
               disabled={!activeChatId || !hasInput || isTranslatingDraft}
               className={cn(
-                "hidden h-11 w-11 items-center justify-center rounded-full transition-colors sm:flex sm:h-8 sm:w-8",
+                "hidden h-11 w-11 items-center justify-center rounded-full transition-colors sm:flex sm:pointer-fine:h-8 sm:pointer-fine:w-8",
                 hasInput && !isTranslatingDraft
                   ? "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70"
                   : "text-foreground/25",
@@ -2459,7 +2459,7 @@ export function ConversationInput({
             disabled={!isActuallyGenerating && (isSendBlocked || isReadingAttachments || !activeChatId || !canSubmit)}
             aria-label={sendButtonTitle}
             className={cn(
-              "flex h-9 w-9 items-center justify-center rounded-xl transition-all duration-200 sm:h-8 sm:w-8",
+              "flex h-9 w-9 items-center justify-center rounded-xl transition-all duration-200 sm:pointer-fine:h-8 sm:pointer-fine:w-8",
               isActuallyGenerating
                 ? "text-foreground/75 hover:bg-foreground/10 hover:text-foreground/90"
                 : canSubmit && !isSendBlocked && !isReadingAttachments

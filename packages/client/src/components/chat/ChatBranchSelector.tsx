@@ -273,7 +273,7 @@ export function ChatBranchSelector({
 
   if (!activeChatId) return null;
 
-  const branchButtonSizeClassName = "relative h-8 w-8";
+  const branchButtonSizeClassName = "relative h-8 w-8 pointer-coarse:h-9 pointer-coarse:w-9";
 
   return (
     <>

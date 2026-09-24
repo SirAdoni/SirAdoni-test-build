@@ -53,6 +53,9 @@ const MUSIC_NEUTRAL_PROGRESS_FILL_CLASS = "bg-[#FF0000]";
 const MUSIC_NEUTRAL_ACTION_BG_CLASS = "bg-[var(--marinara-music-player-action-bg)]";
 const MUSIC_NEUTRAL_ACTION_TEXT_CLASS = "text-[var(--marinara-music-player-action-text)]";
 const YOUTUBE_LOGO_CLASS = "text-[#FF0000]";
+/** Touch screens get an invisible hit area of at least 36px around the small player buttons; the bar keeps its height. */
+const MUSIC_TOUCH_HIT_AREA_CLASS =
+  "relative pointer-coarse:before:absolute pointer-coarse:before:-inset-[0.375rem] pointer-coarse:before:content-['']";
 const MOBILE_WIDGET_COLLAPSED_SIZE = 48;
 const MOBILE_WIDGET_EXPANDED_MAX_WIDTH = 320;
 const MOBILE_WIDGET_EXPANDED_HORIZONTAL_GUTTER = 24;
@@ -446,6 +449,7 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
         type="button"
         onClick={toggleMute}
         className={cn(
+          MUSIC_TOUCH_HIT_AREA_CLASS,
           "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors",
           MUSIC_NEUTRAL_ICON_CLASS,
           MUSIC_NEUTRAL_ICON_HOVER_CLASS,
@@ -464,7 +468,7 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
         step={1}
         value={playerVolume}
         onChange={(event) => setPlayerVolume(Number(event.target.value))}
-        className="mari-youtube-volume-slider w-full"
+        className="mari-youtube-volume-slider w-full pointer-coarse:h-9"
         title={localizeUi("game.toolbar.volume")}
         aria-label={localizeUi("ui.chat.youtubeplayer.youtubeVolume")}
         style={{ "--range-progress": `${playerVolume}%` } as CSSProperties}
@@ -475,7 +479,10 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
   const compactBody = (
     <>
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <MusicSourceButton source="youtube" className={cn(MUSIC_NEUTRAL_BORDER_CLASS, MUSIC_NEUTRAL_BUTTON_BG_CLASS)} />
+        <MusicSourceButton
+          source="youtube"
+          className={cn(MUSIC_TOUCH_HIT_AREA_CLASS, MUSIC_NEUTRAL_BORDER_CLASS, MUSIC_NEUTRAL_BUTTON_BG_CLASS)}
+        />
         <div
           className={cn(
             "flex h-7 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[0.375rem] ring-1",
@@ -498,7 +505,14 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
           >
             {displayTitle}
           </p>
-          <p className={cn("truncate text-[0.5625rem] leading-tight", MUSIC_NEUTRAL_MUTED_CLASS)}>{displaySubtitle}</p>
+          <p
+            className={cn(
+              "truncate text-[0.5625rem] leading-tight pointer-coarse:text-[0.6875rem]",
+              MUSIC_NEUTRAL_MUTED_CLASS,
+            )}
+          >
+            {displaySubtitle}
+          </p>
         </div>
       </div>
       {nowPlaying && (
@@ -506,6 +520,7 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
           type="button"
           onClick={togglePlay}
           className={cn(
+            MUSIC_TOUCH_HIT_AREA_CLASS,
             "inline-flex h-7 w-7 items-center justify-center rounded-full shadow-[0_1px_8px_rgba(255,255,255,0.18)] transition-transform hover:scale-105 active:scale-95",
             MUSIC_NEUTRAL_ACTION_BG_CLASS,
             MUSIC_NEUTRAL_ACTION_TEXT_CLASS,
@@ -522,6 +537,7 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
           type="button"
           onClick={() => setShowVideo((v) => !v)}
           className={cn(
+            MUSIC_TOUCH_HIT_AREA_CLASS,
             "inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors active:scale-90",
             MUSIC_NEUTRAL_ICON_CLASS,
             MUSIC_NEUTRAL_ICON_HOVER_CLASS,
@@ -538,6 +554,7 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
           type="button"
           onClick={close}
           className={cn(
+            MUSIC_TOUCH_HIT_AREA_CLASS,
             "inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors active:scale-90",
             MUSIC_NEUTRAL_ICON_CLASS,
             MUSIC_NEUTRAL_ICON_HOVER_CLASS,

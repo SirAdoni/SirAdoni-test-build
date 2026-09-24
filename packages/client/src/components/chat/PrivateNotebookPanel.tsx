@@ -34,7 +34,7 @@ import {
 import {
   announceChatToolbarAction,
   getChatFloatingPanelDesktopRight,
-  getChatToolbarButtonClass,
+  getChatTouchToolbarButtonClass,
   type ChatToolbarFloatingPanelAnchor,
 } from "./ChatToolbarControls";
 
@@ -133,7 +133,7 @@ export function PrivateNotebookToolbarButton({
         announceChatToolbarAction("notebook");
         onClick(event);
       }}
-      className={buttonClassName ?? getChatToolbarButtonClass({ compact, open })}
+      className={buttonClassName ?? getChatTouchToolbarButtonClass({ compact, open })}
       title={label}
       aria-label={label}
       aria-haspopup="dialog"

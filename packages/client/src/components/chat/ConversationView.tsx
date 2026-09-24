@@ -28,7 +28,7 @@ import {
   CHAT_TOOLBAR_OVERFLOW_BUTTON_SIZE_CLASS,
   ChatToolbarButton,
   ChatToolbarMenu,
-  getChatToolbarButtonClass,
+  getChatTouchToolbarButtonClass,
 } from "./ChatToolbarControls";
 import { ChatHelpButton } from "./ChatHelpButton";
 import { PrivateNotebookToolbarButton } from "./PrivateNotebookPanel";
@@ -562,7 +562,9 @@ export function ConversationView({
     characterMap,
     chatCharIds,
     personaInfo,
-    toolbarButtonClass: getChatToolbarButtonClass({ sizeClassName: CHAT_TOOLBAR_OVERFLOW_BUTTON_SIZE_CLASS }),
+    toolbarButtonClass: getChatTouchToolbarButtonClass({
+      sizeClassName: `${CHAT_TOOLBAR_OVERFLOW_BUTTON_SIZE_CLASS} pointer-coarse:h-9 pointer-coarse:w-9`,
+    }),
   };
   const activeAgentIds = chatMeta.activeAgentIds;
   const enabledConversationCapabilities =
@@ -658,7 +660,7 @@ export function ConversationView({
               view="toolbar"
               capabilityProps={{
                 ...conversationCapabilityProps,
-                toolbarButtonClass: getChatToolbarButtonClass(),
+                toolbarButtonClass: getChatTouchToolbarButtonClass(),
               }}
               className="contents"
             />

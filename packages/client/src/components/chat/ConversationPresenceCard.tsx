@@ -405,7 +405,7 @@ export function ConversationPresenceCard({
   const identityPillClass = getChatToolbarButtonClass({
     compact: true,
     open,
-    sizeClassName: CHAT_TOOLBAR_IDENTITY_PILL_SIZE_CLASS,
+    sizeClassName: `${CHAT_TOOLBAR_IDENTITY_PILL_SIZE_CLASS} pointer-coarse:h-9`,
     className:
       "min-w-[8.5rem] max-w-[min(20rem,calc(100vw-8rem))] justify-start gap-2 px-2.5 text-[var(--foreground)]/80 hover:text-[var(--foreground)]/90 max-md:min-w-[7.5rem] max-md:max-w-[calc(100vw-5.75rem)]",
   });

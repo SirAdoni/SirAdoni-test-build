@@ -4,7 +4,7 @@ import { cn } from "../../lib/utils";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
 const SWIPE_BUTTON_CLASS =
-  "inline-flex min-h-8 min-w-8 items-center justify-center rounded-md p-[0.25em] transition-colors hover:bg-[var(--marinara-chat-message-action-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)] disabled:opacity-30 max-md:min-h-[44px] max-md:min-w-[44px]";
+  "inline-flex min-h-8 min-w-8 pointer-coarse:min-h-9 pointer-coarse:min-w-9 items-center justify-center rounded-md p-[0.25em] transition-colors hover:bg-[var(--marinara-chat-message-action-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)] disabled:opacity-30 max-md:min-h-[44px] max-md:min-w-[44px]";
 
 interface SwipeJumpControlProps {
   messageId: string;

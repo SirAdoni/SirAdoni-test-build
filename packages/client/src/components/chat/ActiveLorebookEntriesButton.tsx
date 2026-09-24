@@ -8,7 +8,7 @@ import { CHAT_FLOATING_UI_DISMISS_EVENT, isDesktopShellNavigationTarget } from "
 import { NEUTRAL_PANEL_SCROLL_AREA, NEUTRAL_PANEL_SHELL } from "../ui/neutral-surface-styles";
 import {
   CHAT_FLOATING_PANEL_SELECTOR,
-  getChatToolbarButtonClass,
+  getChatTouchToolbarButtonClass,
   readChatToolbarFloatingPanelAnchor,
   type ChatToolbarFloatingPanelAnchor,
 } from "./ChatToolbarControls";
@@ -181,7 +181,7 @@ export function ActiveLorebookEntriesButton({
     typeof buttonClassName === "function"
       ? buttonClassName({ open, hasEntries, hasSkippedEntries, isLoading, compact })
       : (buttonClassName ??
-        getChatToolbarButtonClass({
+        getChatTouchToolbarButtonClass({
           active: (hasEntries || hasSkippedEntries) && !isLoading,
           compact,
           open,

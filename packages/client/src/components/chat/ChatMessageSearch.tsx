@@ -17,7 +17,7 @@ import { useChatStore } from "../../stores/chat.store";
 import {
   CHAT_TOOLBAR_ACTION_EVENT,
   getChatFloatingPanelDesktopRight,
-  getChatToolbarButtonClass,
+  getChatTouchToolbarButtonClass,
   readAnnouncedChatToolbarPanelAction,
   readChatToolbarFloatingPanelAnchor,
   type ChatToolbarFloatingPanelAnchor,
@@ -199,7 +199,7 @@ export function ChatMessageSearch({ chatId }: { chatId: string }) {
         type="button"
         data-chat-help="search"
         data-chat-toolbar-panel-action="search"
-        className={getChatToolbarButtonClass({ open })}
+        className={getChatTouchToolbarButtonClass({ open })}
         title={buttonTitle}
         aria-label={buttonTitle}
         aria-haspopup="dialog"

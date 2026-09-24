@@ -4854,7 +4854,7 @@ export function ChatSettingsDrawer({
             type="button"
             onClick={requestClose}
             aria-label={localizeUi("ui.chat.chatsettingsdrawer.closeChatSettings")}
-            className={NEUTRAL_PANEL_CLOSE_BUTTON}
+            className={cn(NEUTRAL_PANEL_CLOSE_BUTTON, "pointer-coarse:min-h-9 pointer-coarse:min-w-9")}
           >
             <X size={NEUTRAL_PANEL_CLOSE_ICON_SIZE} />
           </button>
@@ -4942,7 +4942,7 @@ export function ChatSettingsDrawer({
                       : localizeUi("chat.settingsProfile.action.markDefault")
                   }
                   className={cn(
-                    "shrink-0 flex items-center justify-center rounded-md p-1.5 transition-colors disabled:cursor-not-allowed",
+                    "shrink-0 flex items-center justify-center rounded-md p-1.5 pointer-coarse:min-h-9 pointer-coarse:min-w-9 transition-colors disabled:cursor-not-allowed",
                     selectedChatPreset?.isActive
                       ? "text-yellow-400 disabled:opacity-100"
                       : "text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-yellow-400 disabled:opacity-40",
@@ -4973,7 +4973,7 @@ export function ChatSettingsDrawer({
                       ? localizeUi("chat.settingsProfile.default.cannotSave")
                       : localizeUi("chat.settingsProfile.action.saveInto")
                   }
-                  className="flex-1 flex items-center justify-center rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
+                  className="flex-1 flex items-center justify-center rounded-md p-1.5 pointer-coarse:min-h-9 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Save size="0.875rem" />
                 </button>
@@ -4985,7 +4985,7 @@ export function ChatSettingsDrawer({
                       ? localizeUi("chat.settingsProfile.default.cannotRename")
                       : localizeUi("chat.settingsProfile.action.rename")
                   }
-                  className="flex-1 flex items-center justify-center rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
+                  className="flex-1 flex items-center justify-center rounded-md p-1.5 pointer-coarse:min-h-9 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Pencil size="0.875rem" />
                 </button>
@@ -4993,7 +4993,7 @@ export function ChatSettingsDrawer({
                   onClick={handleSaveAsPreset}
                   disabled={!selectedChatPreset}
                   title={localizeUi("chat.settingsProfile.action.saveAs")}
-                  className="flex-1 flex items-center justify-center rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
+                  className="flex-1 flex items-center justify-center rounded-md p-1.5 pointer-coarse:min-h-9 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <FilePlus2 size="0.875rem" />
                 </button>
@@ -5001,7 +5001,7 @@ export function ChatSettingsDrawer({
                 <button
                   onClick={handleImportClick}
                   title={localizeUi("chat.settingsProfile.action.import")}
-                  className="flex-1 flex items-center justify-center rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+                  className="flex-1 flex items-center justify-center rounded-md p-1.5 pointer-coarse:min-h-9 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
                 >
                   <Download size="0.875rem" />
                 </button>
@@ -5009,7 +5009,7 @@ export function ChatSettingsDrawer({
                   onClick={handleExportPreset}
                   disabled={!selectedChatPreset}
                   title={localizeUi("chat.settingsProfile.action.export")}
-                  className="flex-1 flex items-center justify-center rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
+                  className="flex-1 flex items-center justify-center rounded-md p-1.5 pointer-coarse:min-h-9 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Upload size="0.875rem" />
                 </button>
@@ -5021,7 +5021,7 @@ export function ChatSettingsDrawer({
                       ? localizeUi("chat.settingsProfile.default.cannotDelete")
                       : localizeUi("chat.settingsProfile.action.delete")
                   }
-                  className="flex-1 flex items-center justify-center rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)]/15 hover:text-[var(--destructive)] disabled:cursor-not-allowed disabled:opacity-40"
+                  className="flex-1 flex items-center justify-center rounded-md p-1.5 pointer-coarse:min-h-9 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)]/15 hover:text-[var(--destructive)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Trash2 size="0.875rem" />
                 </button>
