@@ -463,7 +463,16 @@ Features:
 - Behaviour: panels can report a minimum height; narration asks for its composer area plus 272px, so widgets give way first, and the composer sticks to the panel bottom when the box is still short (`data-game-panel-keep`). Below 1024 the narration column stops at 48rem, centred, with the tray inside it (landscape phones excluded). On touch tablets (at least 768px wide and 32rem tall) toolbar, narration, composer, party, presence, storyboard, map, retry-line and widget header controls get a 36px minimum. Phones, landscape phones and mouse desktops are unchanged.
 - Settings: none.
 - Tests: `scripts/regressions/game-tablet-layout.live.mjs` (768x1024, 820x1180, 1024x768, 1180x820, 1366x1024, 1023x768, 1025x768: no horizontal overflow, composer visible and on top with and without a simulated keyboard, narration visible, no cut-off headings, 36px targets, column width below 1024); new case in `scripts/regressions/game-panel-crowded-layout.regression.ts`.
-- Known limits: map place titles truncate in the 320px desktop map card; the image-retry banner at 1024px and wider sits behind the narration panel; at 1023x461 with a keyboard the landscape-phone rules apply and the composer is partly clipped.
+- Known limits: map place titles truncate in the 320px desktop map card (the image-retry banner case is fixed in `a085f68f6`); at 1023x461 with a keyboard the landscape-phone rules apply and the composer is partly clipped.
+
+### Game retry banners above the floating HUD on desktop
+
+- Commit: `a085f68f6`.
+- Files: `packages/client/src/components/game/GameSurface.tsx`.
+- Cause: the "Image generation failed" and "Scene analysis failed" retry banners render inside the Game chrome container (`absolute inset-0 z-10`), the same stacking context as the floating HUD panels (layers 30 to 49 while dragged), so at z-30 they sat behind the narration panel (z-31) at 1024px and wider.
+- Behaviour: both banners use z-55 from 1024px up; still inside the Game chrome layer, so dialogs stay above them. Phones keep the in-flow compact retry line.
+- Settings: none.
+- Tests: verified live on the sandbox at 1440x900 with an element at the banner position inside the chrome container (z-30 hit-tested under narration, z-55 on top); `game-storyboard-phone.browser.mjs` and client tsc pass.
 
 ### Job tracking setting moved into Feature switches
 
