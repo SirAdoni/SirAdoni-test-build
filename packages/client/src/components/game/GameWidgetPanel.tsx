@@ -71,7 +71,7 @@ const GAME_WIDGET_TITLE_CLASS =
 const GAME_WIDGET_MUTED_CLASS = "text-[var(--marinara-chat-chrome-panel-muted)]";
 const GAME_WIDGET_BODY_DIVIDER_CLASS = "border-t border-[var(--marinara-chat-chrome-panel-divider)]";
 const GAME_WIDGET_ICON_BUTTON_CLASS =
-  "flex h-5 w-5 items-center justify-center rounded-md text-[var(--marinara-chat-chrome-button-text)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-highlight-text)]";
+  "flex h-5 w-5 items-center justify-center rounded-md md:[@media(min-height:32.0625rem)]:pointer-coarse:min-h-9 md:[@media(min-height:32.0625rem)]:pointer-coarse:min-w-9 text-[var(--marinara-chat-chrome-button-text)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-highlight-text)]";
 const GAME_WIDGET_TRACK_CLASS = "bg-[var(--marinara-chat-chrome-panel-divider)]";
 const GAME_WIDGET_TILE_CLASS =
   "border-[var(--marinara-chat-chrome-panel-divider)] bg-[var(--marinara-chat-chrome-highlight-bg)]";

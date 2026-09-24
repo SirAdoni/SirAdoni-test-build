@@ -4870,7 +4870,7 @@ export function GameNarration({
 
       <div
         data-tour="game-dialogue"
-        className="pointer-events-none relative z-10 mx-auto flex min-h-0 flex-1 w-full max-w-4xl flex-col justify-end max-lg:overflow-hidden"
+        className="pointer-events-none relative z-10 mx-auto flex min-h-0 flex-1 w-full max-w-4xl flex-col justify-end max-lg:overflow-hidden md:max-lg:[@media(min-height:32.0625rem)]:max-w-3xl"
       >
         {spriteStageSlot && (
           <CharacterLinkedContent currentNames showAvatar>
@@ -5064,7 +5064,7 @@ export function GameNarration({
               ref={activePanelRef}
               data-game-skip-bg-nav="true"
               data-component="GameNarration.ActivePanel"
-              className="pointer-events-auto min-h-0 max-h-full shrink overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]/90 p-3 shadow-[0_16px_38px_rgba(0,0,0,0.45)] backdrop-blur-md dark:border-white/15 dark:bg-black/50 lg:shrink-0 lg:max-h-[calc(100dvh-7rem)]"
+              className="pointer-events-auto min-h-0 max-h-full shrink overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]/90 p-3 shadow-[0_16px_38px_rgba(0,0,0,0.45)] backdrop-blur-md dark:border-white/15 dark:bg-black/50 lg:shrink-0 lg:max-h-[calc(100dvh-7rem)] group-data-[game-panel-limited=true]/panelbox:max-h-none group-data-[game-panel-limited=true]/panelbox:overflow-visible"
             >
               {/* Scene preparation gate: wait for effects before showing narration */}
               {scenePreparing && (
@@ -5558,9 +5558,11 @@ export function GameNarration({
                 // Phones: keep the composer pinned inside the scrolling panel so a short column
                 // (landscape, on-screen keyboard, crowded HUD) can never scroll it out of view.
                 <div
+                  // A crowded desktop layout shrinks the floating narration box into a scroller: pin there too.
+                  data-game-panel-keep
                   ref={composerDock.dockRef}
                   data-game-composer-dock
-                  className="mt-2 max-lg:sticky max-lg:-bottom-3 max-lg:z-10 max-lg:-mx-3 max-lg:-mb-3 max-lg:bg-[var(--card)]/95 max-lg:px-3 max-lg:pb-3 max-lg:pt-1 max-lg:backdrop-blur-md dark:max-lg:bg-black/70"
+                  className="mt-2 max-lg:sticky max-lg:-bottom-3 max-lg:z-10 max-lg:-mx-3 max-lg:-mb-3 max-lg:bg-[var(--card)]/95 max-lg:px-3 max-lg:pb-3 max-lg:pt-1 max-lg:backdrop-blur-md dark:max-lg:bg-black/70 group-data-[game-panel-limited=true]/panelbox:sticky group-data-[game-panel-limited=true]/panelbox:-bottom-px group-data-[game-panel-limited=true]/panelbox:z-10 group-data-[game-panel-limited=true]/panelbox:-mx-3 group-data-[game-panel-limited=true]/panelbox:-mb-3 group-data-[game-panel-limited=true]/panelbox:rounded-b-2xl group-data-[game-panel-limited=true]/panelbox:bg-[var(--card)]/95 group-data-[game-panel-limited=true]/panelbox:px-3 group-data-[game-panel-limited=true]/panelbox:pb-3 group-data-[game-panel-limited=true]/panelbox:pt-1 group-data-[game-panel-limited=true]/panelbox:backdrop-blur-md dark:group-data-[game-panel-limited=true]/panelbox:bg-black/70"
                 >
                   {inputSlot}
                 </div>
@@ -5569,9 +5571,11 @@ export function GameNarration({
               {/* Also show input when no narration at all (start of scene) */}
               {!scenePreparing && !active && !isStreaming && !sceneAnalysisFailed && inputSlot && (
                 <div
+                  // A crowded desktop layout shrinks the floating narration box into a scroller: pin there too.
+                  data-game-panel-keep
                   ref={composerDock.dockRef}
                   data-game-composer-dock
-                  className="mt-2 max-lg:sticky max-lg:-bottom-3 max-lg:z-10 max-lg:-mx-3 max-lg:-mb-3 max-lg:bg-[var(--card)]/95 max-lg:px-3 max-lg:pb-3 max-lg:pt-1 max-lg:backdrop-blur-md dark:max-lg:bg-black/70"
+                  className="mt-2 max-lg:sticky max-lg:-bottom-3 max-lg:z-10 max-lg:-mx-3 max-lg:-mb-3 max-lg:bg-[var(--card)]/95 max-lg:px-3 max-lg:pb-3 max-lg:pt-1 max-lg:backdrop-blur-md dark:max-lg:bg-black/70 group-data-[game-panel-limited=true]/panelbox:sticky group-data-[game-panel-limited=true]/panelbox:-bottom-px group-data-[game-panel-limited=true]/panelbox:z-10 group-data-[game-panel-limited=true]/panelbox:-mx-3 group-data-[game-panel-limited=true]/panelbox:-mb-3 group-data-[game-panel-limited=true]/panelbox:rounded-b-2xl group-data-[game-panel-limited=true]/panelbox:bg-[var(--card)]/95 group-data-[game-panel-limited=true]/panelbox:px-3 group-data-[game-panel-limited=true]/panelbox:pb-3 group-data-[game-panel-limited=true]/panelbox:pt-1 group-data-[game-panel-limited=true]/panelbox:backdrop-blur-md dark:group-data-[game-panel-limited=true]/panelbox:bg-black/70"
                 >
                   {showLogsButton && logEntries.length > 0 && (
                     <div className="mb-2">

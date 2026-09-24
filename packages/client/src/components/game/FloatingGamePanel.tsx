@@ -171,6 +171,9 @@ interface Props {
   fillHeight?: boolean;
 }
 
+/** Height of content kept visible above a data-game-panel-keep element when a crowded layout shrinks the panel. */
+const GAME_PANEL_KEEP_CONTEXT = 272;
+
 /** Desktop overlays share a surface, never a flow-layout stack. Phone layouts stay inline. */
 export function FloatingGamePanel(props: Props) {
   const context = useContext(GamePanelContext);
@@ -680,9 +683,12 @@ function FloatingFrame({
           : growsWithContent
             ? naturalHeight
             : (size.height ?? height ?? naturalHeight);
+        // Content marked data-game-panel-keep (the narration composer) stays in view with some context above it.
+        const keep = collapsed || tuckedClosed ? null : element.querySelector<HTMLElement>("[data-game-panel-keep]");
         return {
           width: tuckedClosed ? 36 : element.offsetWidth,
           height: tuckedClosed ? 40 : desiredHeight,
+          minHeight: keep ? Math.min(desiredHeight, keep.offsetHeight + GAME_PANEL_KEEP_CONTEXT) : undefined,
         };
       },
       setHeightLimit: (nextHeight) => {
@@ -1442,6 +1448,7 @@ function FloatingFrame({
       <div
         data-game-panel-content={id}
         data-game-panel-fill={fillBox ? "true" : undefined}
+        data-game-panel-limited={layoutHeightLimit != null ? "true" : undefined}
         // Children can style against the box: `group-data-[game-panel-fill=true]/panelbox:` when a
         // fixed-height panel asks its content to fill it, and --game-panel-box-max-height otherwise.
         className={`group/panelbox ${

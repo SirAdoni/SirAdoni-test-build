@@ -7818,6 +7818,30 @@ strong {
   }
 }
 
+/* Game mode on touch tablets: the HUD's own controls (toolbar, narration, composer,
+   party, presence, storyboard, map, retry line) get at least a 36px hit area. Phones,
+   landscape phones included (max-height 32rem), keep their own sizing, and links
+   inside running narration text are left alone. Compact controls opt out with
+   data-touch-compact. */
+@media (min-width: 768px) and (min-height: 32.0625rem) and (pointer: coarse) {
+  :is(
+      [data-tour="game-controls"],
+      [data-tour="game-map"],
+      [data-tour="game-party"],
+      [data-game-panel-content="toolbar"],
+      [data-component="GameNarration.ActivePanel"],
+      [data-component="GameSurface.ScenePresence"],
+      [data-game-panel-content="scene-presence"],
+      [data-storyboard-phone],
+      [data-game-panel-content="storyboard"],
+      [data-game-asset-retry-line]
+    )
+    button:not([data-touch-compact], .game-narration-prose :is(p, span) button) {
+    min-height: 2.25rem;
+    min-width: 2.25rem;
+  }
+}
+
 /* Landscape phones: the chat sidebar's fixed controls (mode tabs, create row,
    search) took the whole height and left no room for the chat list. Scroll the
    sidebar as one column instead, with its header (and close button) pinned. */
