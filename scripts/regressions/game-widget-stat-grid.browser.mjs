@@ -1,8 +1,10 @@
-// Stat block widgets lay label | value pairs out in as many columns as fit. A long value used to stay on one
-// line and squeeze its label to one letter per line, then run past the panel edge and get cut off.
-// Renders the real widget panel (desktop HUD and the phone widget tray) with long values at phone, tablet,
-// laptop and desktop sizes and checks every pair: the label never breaks inside a word, the value wraps and
-// stays inside the widget, and a pair with a long value spans the whole row. Obligations terms get the same check.
+// Stat block widgets are one aligned label/value table. A long value used to stay on one line and squeeze its
+// label to one letter per line, then run past the panel edge; a later layout mixed full-row and half-width pairs,
+// so value edges were ragged. Renders the real widget panel (desktop HUD, also at a hand-set 540px width, and
+// the phone widget tray) at phone, tablet, laptop and desktop sizes and checks every pair: the label never
+// breaks inside a word, values are left-aligned in one column shared by every row (per side-by-side table)
+// and wrap inside the widget, the label column is at most 40% unless a single word needs more, and only an
+// all-short block may split into two tables. Obligations terms get the squeeze check.
 // Run from the repo root: node scripts/regressions/game-widget-stat-grid.browser.mjs
 import assert from "node:assert/strict";
 import { build } from "esbuild";
@@ -43,6 +45,11 @@ import { GameWidgetPanel, MobileWidgetPanel } from '${game("GameWidgetPanel.tsx"
 const widgets = [
   { id: 'w-status', type: 'stat_block', label: 'Operative Status', icon: 'S', position: 'hud_right',
     config: { stats: ${JSON.stringify(STATS)} } },
+  { id: 'w-short', type: 'stat_block', label: 'Ship Systems', icon: 'Y', position: 'hud_right',
+    config: { stats: [
+      { name: 'Shields', value: 'Online' }, { name: 'Sensors', value: 3 },
+      { name: 'Jump Drive', value: 'Charging' }, { name: 'Hull', value: '82%' },
+    ] } },
   { id: 'w-debts', type: 'obligations', label: 'Debts', icon: 'D', position: 'hud_right',
     config: { tasks: [
       { text: 'Owe the broker | three thousand credits, payable at the next station before the customs inspection', done: false },
@@ -143,11 +150,46 @@ function inspect() {
     if (box.right > grid.right + 1 || box.left < grid.left - 1) problems.push(`value of "${name}" leaves the widget`);
     if (value.scrollWidth > value.clientWidth + 1) problems.push(`value of "${name}" overflows its box`);
     if (label.getBoundingClientRect().right > grid.right + 1) problems.push(`label "${name}" leaves the widget`);
-    if (value.textContent.length > 60 && row.getBoundingClientRect().width < grid.width - 2)
-      problems.push(`long value of "${name}" does not span the row`);
+    if (getComputedStyle(value).textAlign === "right") problems.push(`value of "${name}" is right-aligned`);
     for (let node = row.parentElement; node && node !== document.body; node = node.parentElement) {
       if (/(hidden|clip)/.test(getComputedStyle(node).overflowX) && node.getBoundingClientRect().right < box.right - 1)
         problems.push(`value of "${name}" is clipped by an ancestor`);
+    }
+  }
+  // Table alignment: per table, rows fall into one or two column groups; within a group every label starts at
+  // the same x and every value starts at the same x. A block with a long value is one single table.
+  for (const table of document.querySelectorAll("[data-stat-table]")) {
+    const tableRows = Array.from(table.querySelectorAll("[data-stat-row]"));
+    const groups = new Map();
+    for (const row of tableRows) {
+      const left = Math.round(row.getBoundingClientRect().left);
+      groups.set(left, [...(groups.get(left) ?? []), row]);
+    }
+    const long = tableRows.some((row) => row.children[1].textContent.length > 12);
+    if (long && (table.dataset.statTable !== "single" || groups.size !== 1))
+      problems.push(`a block with long values is not one single table (${table.dataset.statTable}, ${groups.size} groups)`);
+    if (groups.size > 2) problems.push(`stat table has ${groups.size} column groups`);
+    const width = table.getBoundingClientRect().width;
+    for (const rowsInGroup of groups.values()) {
+      const valueLefts = new Set(rowsInGroup.map((row) => Math.round(row.children[1].getBoundingClientRect().left)));
+      if (valueLefts.size !== 1) problems.push(`values do not share one column edge (${[...valueLefts].join(", ")})`);
+      const labelWidth = Math.max(...rowsInGroup.map((row) => row.children[0].getBoundingClientRect().width));
+      const longestWord = Math.max(
+        ...rowsInGroup.map((row) => {
+          const probe = document.createElement("span");
+          probe.style.cssText = "position:absolute;visibility:hidden;white-space:nowrap";
+          probe.className = row.children[0].className;
+          probe.textContent = row.children[0].textContent
+            .split(/\s+/)
+            .reduce((a, b) => (b.length > a.length ? b : a), "");
+          row.appendChild(probe);
+          const measured = probe.getBoundingClientRect().width;
+          probe.remove();
+          return measured;
+        }),
+      );
+      if (labelWidth > Math.max(width * 0.4, longestWord) + 2)
+        problems.push(`label column is ${Math.round(labelWidth)}px of ${Math.round(width)}px`);
     }
   }
   const terms = Array.from(document.querySelectorAll("span")).filter(
@@ -182,12 +224,27 @@ try {
     });
     // The desktop HUD panel shows from 1024px; the phone and tablet tray opens one widget at a time.
     const parts = [
-      ...(width >= 1024 ? [{ name: "desktop", open: null, rows: STATS.length, terms: 1 }] : []),
+      ...(width >= 1024
+        ? [
+            { name: "desktop", open: null, rows: STATS.length + 4, terms: 1 },
+            { name: "desktop", open: null, rows: STATS.length + 4, terms: 1, handWidth: 540 },
+          ]
+        : []),
       { name: "tray", open: "S", rows: STATS.length, terms: 0 },
+      { name: "tray", open: "Y", rows: 4, terms: 0 },
       { name: "tray", open: "D", rows: 0, terms: 1 },
     ];
     for (const part of parts) {
-      const label = `${width}x${height} ${part.name}${part.open ? ` ${part.open}` : ""}`;
+      const label = `${width}x${height} ${part.name}${part.open ? ` ${part.open}` : ""}${part.handWidth ? ` at ${part.handWidth}px` : ""}`;
+      // A width set by hand in Edit layout, as in the reported screenshot.
+      if (part.handWidth)
+        await context.addInitScript((handWidth) => {
+          for (const id of ["w-status", "w-short"])
+            localStorage.setItem(
+              `marinara-game-panel:fixture-chat:floating:widget:${id}:size-v2`,
+              JSON.stringify({ width: handWidth, manualWidth: true }),
+            );
+        }, part.handWidth);
       const page = await context.newPage();
       const errors = [];
       page.on("pageerror", (error) => errors.push(String(error.stack ?? error).slice(0, 600)));
@@ -198,7 +255,7 @@ try {
       const state = await page.evaluate(inspect);
       if (shotDir)
         await page.screenshot({
-          path: resolve(shotDir, `stat-grid-${width}-${part.name}${part.open ?? ""}.png`),
+          path: resolve(shotDir, `stat-grid-${width}-${part.name}${part.open ?? ""}${part.handWidth ?? ""}.png`),
           fullPage: true,
         });
       if (errors.length) failures.push(`${label}: page error ${errors.join("; ")}`);
@@ -214,4 +271,4 @@ try {
   await fs.rm(tempDirectory, { recursive: true, force: true });
 }
 assert.deepEqual(failures, [], failures.join("\n"));
-console.log("Stat block pairs keep whole-word labels, wrap long values inside the widget, and span the row when long.");
+console.log("Stat blocks are aligned label/value tables: whole-word labels, one left-aligned value column, nothing clipped.");

@@ -539,21 +539,14 @@ function WidgetCard({
     ].map((label) => (label == null ? "" : String(label)));
     const longest = labels.reduce((length, label) => Math.max(length, Array.from(label).length), 0);
     if (widget.type === "stat_block") {
-      // Values wrap inside their pair, so a long one no longer needs the widget to be as wide as the whole value.
-      const columnWidths = [0, 0];
-      for (const [index, stat] of stats.entries()) {
-        columnWidths[index % 2] = Math.max(
-          columnWidths[index % 2],
-          Math.min(
-            220,
-            Array.from(String(stat?.name ?? "")).length * 6.2 + Array.from(String(stat?.value ?? "")).length * 6.2 + 32,
-          ),
-        );
-      }
-      return Math.min(
-        448,
-        Math.max(176, Math.ceil(columnWidths[0] + columnWidths[1] + 36), widget.label.length * 6.2 + 64),
-      );
+      // One label column plus one value column; values wrap, so the widget need not fit the longest value.
+      // All-short blocks get room for two side-by-side tables.
+      const chars = (value: unknown) => Array.from(String(value ?? "")).length;
+      const labelWidth = stats.reduce((width, stat) => Math.max(width, chars(stat?.name) * 6.2), 0);
+      const valueWidth = stats.reduce((width, stat) => Math.max(width, chars(stat?.value) * 6.2), 0);
+      const table = labelWidth + valueWidth + 44;
+      const content = isCompactStatBlock(stats) ? Math.max(table, 2 * (labelWidth + valueWidth) + 64) : table;
+      return Math.min(448, Math.ceil(Math.max(176, content, widget.label.length * 6.2 + 64)));
     }
     return Math.max(176, Math.min(384, Math.ceil(longest * 6.2 + 64)));
   }, [widget]);
@@ -1357,42 +1350,61 @@ function CounterWidget({ widget }: { widget: HudWidget }) {
   );
 }
 
-function isLongStatPair(name: unknown, value: unknown): boolean {
-  const valueLength = String(value ?? "").length;
-  return valueLength > 18 || String(name ?? "").length + valueLength > 28;
+/** Values this short (and labels this short) let a stat block show two side-by-side tables when there is room. */
+const COMPACT_STAT_VALUE_CHARS = 12;
+const COMPACT_STAT_LABEL_CHARS = 16;
+
+function isCompactStatBlock(stats: ReadonlyArray<{ name?: unknown; value?: unknown }>): boolean {
+  return (
+    stats.length > 1 &&
+    stats.every(
+      (stat) =>
+        Array.from(String(stat?.value ?? "")).length <= COMPACT_STAT_VALUE_CHARS &&
+        Array.from(String(stat?.name ?? "")).length <= COMPACT_STAT_LABEL_CHARS,
+    )
+  );
 }
 
 function StatBlockWidget({ widget }: { widget: HudWidget }) {
   const rawStats = widget.config.stats;
   const stats = Array.isArray(rawStats) ? rawStats : [];
   const accent = widget.accent ?? "#6366f1";
+  const compact = isCompactStatBlock(stats);
 
-  // As many pair columns as the width allows (at least 8.5rem each). A pair with a long value spans the whole row,
-  // the label keeps its words whole and the value wraps under it rather than squeezing it or running off the panel.
+  // One aligned label/value table: the label column fits the longest label (at most 40% of the width, never
+  // narrower than its longest word, so labels only wrap at spaces), and values sit left-aligned in one column
+  // where they wrap. Every row shares the same two column edges. Only a widget whose pairs are all short turns
+  // into two side-by-side tables, and only once it is wide enough for both; rows are never mixed.
   return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(min(8.5rem,100%),1fr))] gap-x-3 gap-y-1">
-      {stats.map((s, i) => (
-        <div
-          key={s.name ?? i}
-          data-stat-row
-          className={cn(
-            "flex min-w-0 flex-wrap items-baseline justify-between gap-x-1.5 text-[0.5625rem]",
-            isLongStatPair(s.name, s.value) && "col-span-full",
-          )}
-        >
-          <span className={cn("max-w-full shrink-0 [overflow-wrap:break-word]", GAME_WIDGET_MUTED_CLASS)}>
-            <CharacterLinkedContent currentNames showAvatar>
-              {s.name}
-            </CharacterLinkedContent>
-          </span>
-          <span
-            className="min-w-0 max-w-full flex-[1_1_3.5rem] text-right font-mono font-bold [overflow-wrap:anywhere]"
-            style={{ color: accent }}
+    <div className="@container">
+      <div
+        data-stat-table={compact ? "compact" : "single"}
+        className={cn(
+          "grid grid-cols-[fit-content(40%)_minmax(0,1fr)] gap-x-2 gap-y-1",
+          compact &&
+            "@[20rem]:grid-cols-[fit-content(25%)_minmax(0,1fr)_fit-content(25%)_minmax(0,1fr)] @[20rem]:gap-x-3",
+        )}
+      >
+        {stats.map((s, i) => (
+          <div
+            key={s.name ?? i}
+            data-stat-row
+            className="col-span-2 grid grid-cols-subgrid items-baseline text-[0.5625rem]"
           >
-            <CharacterLinkedContent currentNames>{s.value}</CharacterLinkedContent>
-          </span>
-        </div>
-      ))}
+            <span className={cn("[overflow-wrap:break-word]", GAME_WIDGET_MUTED_CLASS)}>
+              <CharacterLinkedContent currentNames showAvatar>
+                {s.name}
+              </CharacterLinkedContent>
+            </span>
+            <span
+              className="min-w-0 font-mono font-bold tabular-nums [overflow-wrap:anywhere]"
+              style={{ color: accent }}
+            >
+              <CharacterLinkedContent currentNames>{s.value}</CharacterLinkedContent>
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

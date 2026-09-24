@@ -286,6 +286,13 @@ Features:
 
 ## 2026-09-24
 
+### Stat block widget: one aligned label/value table
+- **Commit(s):** this commit
+- **Files:** `packages/client/src/components/game/GameWidgetPanel.tsx` (`StatBlockWidget`, `isCompactStatBlock`, `COMPACT_STAT_VALUE_CHARS`, `COMPACT_STAT_LABEL_CHARS`, the stat block natural width), `scripts/regressions/game-widget-stat-grid.browser.mjs`.
+- **Bug:** the earlier fix (b6dac2088) spanned long pairs across the full row with the value right-aligned, and left short pairs in half-width columns, so value edges were ragged (some at the right edge, some at the middle) and the layout looked broken.
+- **Behaviour:** a stat block is one table: `grid-template-columns: fit-content(40%) minmax(0, 1fr)`, and each row is a `subgrid` spanning both columns. The label column fits the longest label, at most 40% of the width, but never narrower than a label's longest word, so labels wrap only at spaces. Values are left-aligned (`tabular-nums`, `overflow-wrap: anywhere`) in one column that every row shares, and they wrap there. A block whose values are all 12 characters or fewer and labels all 16 or fewer becomes two side-by-side tables (`fit-content(25%) minmax(0,1fr)` twice) once its container is at least 20rem (`@container`); otherwise it stays one table. Rows are never mixed. The natural width is label plus value plus padding (room for two tables when the block is all short), capped at 448px. Phone tray, auto expand and nothing-clipped behaviour are unchanged.
+- **Tests:** `game-widget-stat-grid.browser.mjs` now checks, per table, that every value in a column group starts at the same x, that no value is right-aligned, that the label column is at most 40% unless a single word needs more, that a block with long values is one single table, and that there are at most two column groups. It also covers a hand-set 540px desktop width and an all-short block, at 390x844, 820x1180, 1024x768 and 1440x900; the previous layout fails it. `game-hud-full-names` and `widget-auto-expand` pass.
+
 ### Widget auto expand: Always expand grows past a hand-set height
 - **Commit(s):** this commit
 - **Files:** `packages/client/src/components/game/GameWidgetPanel.tsx` (`WidgetCard` passes `autoGrowOverridesManual`; the editor's Size help text), `packages/client/src/localization/locales/en.json`, `docs/configuration/features.md`, `scripts/regressions/widget-auto-expand-manual-height.browser.mjs` (new).
