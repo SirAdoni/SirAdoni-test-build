@@ -13,7 +13,6 @@ import type {
 import {
   DEFAULT_GAME_SYSTEM_PROMPT,
   describeExtendedWidgetForPrompt,
-  listWidgetCapacity,
   wrapGameInstructions,
 } from "@marinara-engine/shared";
 import { upstreamHudWidgets } from "@marinara-engine/shared";
@@ -649,7 +648,7 @@ function buildWidgetSummaryLines(widgets: HudWidget[]): string[] {
       return `- ${widget.id} (${widget.type}): ${stats}`;
     }
     if (widget.type === "list" && Array.isArray(config.items) && config.items.length > 0) {
-      return `- ${widget.id} (${widget.type}, ${config.items.length}/${listWidgetCapacity(config)}): ${config.items.join("; ")}`;
+      return `- ${widget.id} (${widget.type}): ${config.items.join("; ")}`;
     }
     if (widget.type === "timer") {
       return `- ${widget.id} (${widget.type}): ${config.running ? "running" : "stopped"} ${config.seconds ?? 0}s`;
@@ -670,7 +669,7 @@ function buildUpstreamWidgetLines(widgets: HudWidget[]): string[] {
     `- HUD widgets are visual UI state only. Player stats, inventory, party member HP, party relationships, and other durable game facts remain in their own canonical systems; use [widget:] only to mirror a visible widget when that widget's displayed value should change.`,
     `- Command mapping: value = bars/gauges, count = counters, stat = one stat_block entry, add/remove = rotating list items, running/seconds = timers.`,
     `- Widget commands: [widget: id, value: n] [widget: id, stat: "Name", value: x] [widget: id, count: n] [widget: id, add: "Item"] [widget: id, remove: "Item"] [widget: id, running: true, seconds: 60]`,
-    `- List widgets keep every entry you add (up to 100); remove resolved or stale items yourself.`,
+    `- List widgets: keep at most 5 short entries visible; remove stale items freely.`,
   ];
 }
 
