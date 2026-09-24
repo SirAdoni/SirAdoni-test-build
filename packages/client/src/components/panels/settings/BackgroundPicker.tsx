@@ -92,7 +92,7 @@ const CARD_ACTION_CLASS =
 // From md up they normally float over the image on hover instead, which needs white-on-scrim.
 const FLOATING_CARD_ACTION_CLASS = "md:text-white/80 md:hover:bg-white/15 md:hover:text-white";
 const INLINE_ACCENT_BUTTON_CLASS =
-  "rounded-md bg-[var(--primary)]/15 px-1.5 py-0.5 text-[0.625rem] text-[var(--primary)] transition-colors hover:bg-[var(--primary)]/25 disabled:cursor-not-allowed disabled:opacity-50";
+  "rounded-md bg-[var(--primary)]/15 px-1.5 py-0.5 text-[0.625rem] max-md:text-[0.6875rem] pointer-coarse:text-[0.6875rem] text-[var(--primary)] transition-colors hover:bg-[var(--primary)]/25 disabled:cursor-not-allowed disabled:opacity-50";
 
 const CARD_TEXT_FIELD_CLASS =
   "min-w-0 flex-1 rounded border border-[var(--border)] bg-[var(--background)] px-1.5 py-1 text-[0.6875rem] text-[var(--foreground)] outline-none focus:border-[var(--primary)]";
@@ -760,7 +760,7 @@ export function BackgroundPicker({
               decoding="async"
             />
             <span className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/70 to-transparent" />
-            <span className="absolute bottom-2 left-2 rounded-md bg-black/60 px-1.5 py-0.5 text-[0.5625rem] font-medium text-white/90 backdrop-blur-sm">
+            <span className="absolute bottom-2 left-2 rounded-md bg-black/60 px-1.5 py-0.5 text-[0.5625rem] max-md:text-[0.6875rem] pointer-coarse:text-[0.6875rem] font-medium text-white/90 backdrop-blur-sm">
               {localizeUi(
                 background.source === "game_asset"
                   ? "ui.panels.backgroundpicker.gameAsset"
@@ -770,7 +770,7 @@ export function BackgroundPicker({
             {showRoleplayDefault && isDefaultRoleplay && (
               <span
                 data-background-default-indicator
-                className="absolute bottom-2 right-2 hidden rounded-md bg-black/60 px-1.5 py-0.5 text-[0.5rem] font-medium text-[var(--primary)] md:block md:group-hover:opacity-0"
+                className="absolute bottom-2 right-2 hidden rounded-md bg-black/60 px-1.5 py-0.5 text-[0.5rem] max-md:text-[0.6875rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--primary)] md:block md:group-hover:opacity-0"
               >
                 {localizeUi("ui.panels.backgroundpicker.roleplayDefaultShort")}
               </span>
@@ -901,7 +901,7 @@ export function BackgroundPicker({
                 className={cn(
                   CARD_ACTION_CLASS,
                   isFloatingActions && FLOATING_CARD_ACTION_CLASS,
-                  "w-auto px-2 text-[0.5625rem] font-medium md:px-1.5 md:text-[0.5rem]",
+                  "w-auto px-2 text-[0.5625rem] max-md:text-[0.6875rem] pointer-coarse:text-[0.6875rem] font-medium md:px-1.5 md:text-[0.5rem]",
                   isDefaultRoleplay && "bg-[var(--primary)]/12 !text-[var(--primary)]",
                 )}
                 title={
@@ -962,7 +962,7 @@ export function BackgroundPicker({
               {background.tags.map((tag) => (
                 <span
                   key={tag}
-                  className="inline-flex max-w-28 items-center gap-0.5 truncate rounded-full bg-[var(--background)]/65 px-1.5 py-0.5 text-[0.5rem] text-[var(--muted-foreground)] ring-1 ring-[var(--border)]/60"
+                  className="inline-flex max-w-28 items-center gap-0.5 truncate rounded-full bg-[var(--background)]/65 px-1.5 py-0.5 text-[0.5rem] max-md:text-[0.6875rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)] ring-1 ring-[var(--border)]/60"
                 >
                   {tag}
                   {isEditingTags && (
@@ -1028,7 +1028,7 @@ export function BackgroundPicker({
                 ? getBackgroundLibraryTitle(selectedBackground)
                 : localizeUi("ui.panels.backgroundpicker.defaultBackground")}
             </div>
-            <div className="mt-0.5 truncate text-[0.625rem] text-[var(--muted-foreground)]">
+            <div className="mt-0.5 truncate text-[0.625rem] max-md:text-[0.6875rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
               {localizeUi("ui.panels.backgroundpicker.value1BackgroundsAvailable", { value1: backgrounds.length })}
             </div>
           </span>
@@ -1136,7 +1136,7 @@ export function BackgroundPicker({
                   type="button"
                   onClick={() => setSourceFilter(value)}
                   className={cn(
-                    "flex min-h-8 items-center justify-center gap-1 rounded-md px-2 text-[0.625rem] font-medium transition-colors",
+                    "flex min-h-8 items-center justify-center gap-1 rounded-md px-2 text-[0.625rem] max-md:text-[0.6875rem] pointer-coarse:text-[0.6875rem] font-medium transition-colors",
                     sourceFilter === value
                       ? "bg-[var(--primary)]/16 text-[var(--primary)] shadow-sm ring-1 ring-[var(--primary)]/25"
                       : "text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
@@ -1315,7 +1315,7 @@ export function BackgroundPicker({
             </div>
           )}
 
-          <div className="flex min-h-7 flex-wrap items-center justify-between gap-2 text-[0.625rem] text-[var(--muted-foreground)]">
+          <div className="flex min-h-7 flex-wrap items-center justify-between gap-2 text-[0.625rem] max-md:text-[0.6875rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
             <span>
               {visibleBackgrounds.length} {localizeUi("ui.noodle.noodlehome.of")} {backgrounds.length}{" "}
               {localizeUi("ui.panels.backgroundpicker.backgrounds")}
@@ -1346,7 +1346,7 @@ export function BackgroundPicker({
           {backgrounds.length === 0 && (
             <div className="flex flex-col items-center gap-1.5 py-4 text-center">
               <Image size="1.25rem" className="text-[var(--muted-foreground)]/40" />
-              <p className="mari-chrome-text-muted text-[0.625rem]">
+              <p className="mari-chrome-text-muted text-[0.625rem] max-md:text-[0.6875rem] pointer-coarse:text-[0.6875rem]">
                 {localizeUi("ui.panels.backgroundpicker.noBackgroundsAvailableYet")}
               </p>
             </div>
@@ -1354,7 +1354,7 @@ export function BackgroundPicker({
           {backgrounds.length > 0 && visibleBackgrounds.length === 0 && (
             <div className="flex flex-col items-center gap-1.5 py-4 text-center">
               <Search size="1.25rem" className="text-[var(--muted-foreground)]/40" />
-              <p className="mari-chrome-text-muted text-[0.625rem]">
+              <p className="mari-chrome-text-muted text-[0.625rem] max-md:text-[0.6875rem] pointer-coarse:text-[0.6875rem]">
                 {localizeUi("ui.panels.backgroundpicker.noBackgroundsMatchThoseFilters")}
               </p>
             </div>

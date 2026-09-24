@@ -1,4 +1,6 @@
 import { ArrowLeft, Box, MessageSquare, Settings2, Sparkles } from "lucide-react";
+import { PANEL_PHONE_FLOOR_CLASS } from "../panels/panel-phone-floor";
+import { cn } from "../../lib/utils";
 import type { BuiltInAgentManifest, InstalledCapabilityPackage } from "@marinara-engine/shared";
 import { CapabilityElement } from "../capabilities/CapabilityElement";
 import { useTranslation as useUiTranslation } from "react-i18next";
@@ -93,7 +95,10 @@ export function FeatureAgentDetailHost({
   return (
     <section
       data-component="FeatureAgentDetailHost"
-      className="mari-editor-shell mari-editor-legacy-bridge flex min-h-0 flex-1 flex-col overflow-hidden"
+      className={cn(
+        "mari-editor-shell mari-editor-legacy-bridge flex min-h-0 flex-1 flex-col overflow-hidden",
+        PANEL_PHONE_FLOOR_CLASS,
+      )}
       aria-labelledby="feature-agent-detail-title"
     >
       <header className="mari-editor-header">

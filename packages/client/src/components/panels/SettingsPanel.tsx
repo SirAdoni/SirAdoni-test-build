@@ -3222,7 +3222,7 @@ function QuickRepliesSetting() {
     >
       <div className="flex min-h-9 items-stretch">
         <div className="flex min-w-0 items-center gap-1.5 py-2 pl-1.5 pr-2">
-          <label className="flex min-w-0 cursor-pointer items-center gap-2.5">
+          <label className="flex min-w-0 cursor-pointer items-center gap-2.5 max-md:min-h-9 pointer-coarse:min-h-9">
             <input
               type="checkbox"
               checked={showQuickRepliesMenu}

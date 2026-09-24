@@ -30,6 +30,16 @@ export const PANEL_PHONE_FLOOR_CLASS = [
   "max-md:[&_.mari-chrome-control--compact]:text-[0.6875rem]!",
   "pointer-coarse:[&_.mari-folder-helper]:text-[0.6875rem]!",
   "pointer-coarse:[&_.mari-chrome-control--compact]:text-[0.6875rem]!",
+  // Switches are a label around a visually hidden checkbox; the label gets an
+  // invisible hit area so the 20px track stays the same size.
+  "max-md:[&_label:has(>input.sr-only)]:before:absolute",
+  "max-md:[&_label:has(>input.sr-only)]:before:-inset-y-2",
+  "max-md:[&_label:has(>input.sr-only)]:before:-inset-x-1",
+  "max-md:[&_label:has(>input.sr-only)]:before:content-['']",
+  "pointer-coarse:[&_label:has(>input.sr-only)]:before:absolute",
+  "pointer-coarse:[&_label:has(>input.sr-only)]:before:-inset-y-2",
+  "pointer-coarse:[&_label:has(>input.sr-only)]:before:-inset-x-1",
+  "pointer-coarse:[&_label:has(>input.sr-only)]:before:content-['']",
 ].join(" ");
 
 // Row titles in side-panel lists: phones give the name two lines instead of
