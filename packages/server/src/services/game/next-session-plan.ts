@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import type { GameCampaignPlan, GameNpc } from "@marinara-engine/shared";
+import type { GameCampaignPlan, GameNpc, GameNpcStatus } from "@marinara-engine/shared";
 import { normalizeCharacterLookupName } from "./name-normalization.js";
 
 function normalizeText(value: unknown, fallback = ""): string {
@@ -104,4 +104,61 @@ export function normalizeNextSessionNpcs(raw: unknown, current: GameNpc[]): Game
     });
   }
   return next;
+}
+
+const DEAD_STATUS_WORDS = /^(?:dead|deceased|died|killed|slain|murdered|executed|perished)$/iu;
+const UNKNOWN_STATUS_WORDS = /^(?:unknown|missing|lost|vanished|disappeared|gone|whereabouts unknown)$/iu;
+const ALIVE_STATUS_WORDS = /^(?:alive|living|survived|surviving)$/iu;
+
+/** Map a status word (from a status field or a location mistakenly holding one) to a status. */
+export function parseGameNpcStatusWord(value: unknown): GameNpcStatus | null {
+  const word = normalizeText(value)
+    .replace(/[.!]+$/u, "")
+    .trim();
+  if (!word) return null;
+  if (DEAD_STATUS_WORDS.test(word)) return "dead";
+  if (UNKNOWN_STATUS_WORDS.test(word)) return "unknown";
+  if (ALIVE_STATUS_WORDS.test(word)) return "alive";
+  return null;
+}
+
+/** True when a location string is really a life-status word and must never be stored or shown as a place. */
+export function isGameNpcStatusWordLocation(location: unknown): boolean {
+  return parseGameNpcStatusWord(location) !== null;
+}
+
+/**
+ * Apply session-conclusion updates to NPCs that already exist: life status and last known location.
+ * Unknown names are ignored (new NPCs arrive through namedNpcs). A status word sent as a location
+ * never becomes the stored location; a death word there sets status "dead".
+ */
+export function applyKnownNpcUpdates(raw: unknown, current: GameNpc[]): GameNpc[] {
+  if (!Array.isArray(raw) || raw.length === 0) return current;
+  const indexByName = new Map<string, number>();
+  current.forEach((npc, index) => {
+    const key = normalizeCharacterLookupName(npc.name);
+    if (key && !indexByName.has(key)) indexByName.set(key, index);
+  });
+  let next: GameNpc[] | null = null;
+  for (const item of raw.slice(0, 12)) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const source = item as Record<string, unknown>;
+    const index = indexByName.get(normalizeCharacterLookupName(normalizeText(source.name).slice(0, 120)));
+    if (index === undefined) continue;
+    const npc = (next ?? current)[index]!;
+    const rawLocation = normalizeText(source.location).slice(0, 160);
+    const locationStatus = parseGameNpcStatusWord(rawLocation);
+    // A missing place ("Unknown") says nothing about the NPC's fate; only a death word in location sets status.
+    const status = parseGameNpcStatusWord(source.status) ?? (locationStatus === "dead" ? "dead" : null);
+    const location = rawLocation && !locationStatus && rawLocation.toLowerCase() !== "unknown" ? rawLocation : null;
+    const updated: GameNpc = {
+      ...npc,
+      ...(location ? { location } : {}),
+      ...(status ? { status } : {}),
+    };
+    if (updated.location === npc.location && updated.status === npc.status) continue;
+    next ??= [...current];
+    next[index] = updated;
+  }
+  return next ?? current;
 }

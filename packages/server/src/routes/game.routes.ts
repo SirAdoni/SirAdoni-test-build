@@ -131,7 +131,11 @@ import {
   selectPresentPartySpeakers,
   type PartySpeakerPromptContext,
 } from "../services/game/party-prompts.js";
-import { normalizeNextSessionCampaignPlan, normalizeNextSessionNpcs } from "../services/game/next-session-plan.js";
+import {
+  applyKnownNpcUpdates,
+  normalizeNextSessionCampaignPlan,
+  normalizeNextSessionNpcs,
+} from "../services/game/next-session-plan.js";
 import { normalizeCharacterLookupName } from "../services/game/name-normalization.js";
 import { buildPlayerPersonaCanonText } from "../services/generation/game-gm-prompt-runtime.js";
 import {
@@ -290,6 +294,7 @@ import {
   addNpcEntry,
   buildGameNpcJournalRemovalPatch,
   pruneGameNpcJournal,
+  reconcileNpcTrackedEntries,
   restorePrunedGameNpcJournal,
   upsertQuest,
   buildStructuredRecap,
@@ -3236,6 +3241,7 @@ type SessionConclusionApplication = {
   updatedCardCount: number;
   nextSessionCampaignPlan: unknown;
   nextSessionNamedNpcs: unknown;
+  nextSessionKnownNpcUpdates: unknown;
 };
 
 function currentGameCampaignPlan(meta: Record<string, unknown>): GameCampaignPlan {
@@ -3248,7 +3254,7 @@ function currentGameCampaignPlan(meta: Record<string, unknown>): GameCampaignPla
     : {};
 }
 
-function buildSessionPlanMetadataUpdates(
+export function buildSessionPlanMetadataUpdates(
   meta: Record<string, unknown>,
   conclusion: SessionConclusionApplication,
 ): Record<string, unknown> {
@@ -3263,7 +3269,10 @@ function buildSessionPlanMetadataUpdates(
     },
     gameNpcs: normalizeNextSessionNpcs(
       conclusion.nextSessionNamedNpcs,
-      Array.isArray(meta.gameNpcs) ? (meta.gameNpcs as GameNpc[]) : [],
+      applyKnownNpcUpdates(
+        conclusion.nextSessionKnownNpcUpdates,
+        Array.isArray(meta.gameNpcs) ? (meta.gameNpcs as GameNpc[]) : [],
+      ),
     ),
   };
 }
@@ -3324,6 +3333,7 @@ export function applySessionConclusionPayload(
     updatedCardCount: appliedCards.updatedCount,
     nextSessionCampaignPlan: nextSessionPlan.campaignPlan,
     nextSessionNamedNpcs: nextSessionPlan.namedNpcs,
+    nextSessionKnownNpcUpdates: nextSessionPlan.knownNpcUpdates,
   };
 }
 
@@ -5985,11 +5995,6 @@ function collectDiscoveredMapLocations(map: GameMap | null): Array<{ name: strin
     .map((cell) => ({ name: cell.label, description: cell.description ?? "" }));
 }
 
-function buildNpcTrackedInteraction(npc: GameNpc): string {
-  const location = npc.location?.trim();
-  return location && location.toLowerCase() !== "unknown" ? `Tracked at ${location}.` : "Tracked.";
-}
-
 /** Pulse 4: reputation changes as qualitative standings for campaign memory; the score stays in gameNpcs. */
 function legacyReputationChanges(
   previousNpcs: readonly GameNpc[],
@@ -6078,15 +6083,7 @@ function reconcileJournal(
     next = addLocationEntry(next, locationName, `The party is at ${locationName}.`);
   }
 
-  for (const npc of (meta.gameNpcs as GameNpc[]) ?? []) {
-    const interaction = buildNpcTrackedInteraction(npc);
-    const hasInteraction = next.npcLog.some(
-      (entry) => entry.npcName === npc.name && entry.interactions.includes(interaction),
-    );
-    if (!hasInteraction) {
-      next = addNpcEntry(next, npc, interaction);
-    }
-  }
+  next = reconcileNpcTrackedEntries(next, (meta.gameNpcs as GameNpc[]) ?? []);
 
   for (const quest of activeQuests) {
     const objectiveRows = Array.isArray(quest.objectives)
@@ -12697,44 +12694,46 @@ export async function gameRoutes(app: FastifyInstance) {
     const chat = await chats.getById(chatId);
     if (!chat) throw new Error("Chat not found");
 
-    const meta = parseMeta(chat.metadata);
-    const previousJournal = (meta.gameJournal as Journal) ?? createJournal();
+    // Build from the metadata read inside the patch so concurrent posts cannot overwrite each other.
+    let previousJournal = createJournal();
     let journal = previousJournal;
-
-    switch (type) {
-      case "location":
-        journal = addLocationEntry(journal, data.location as string, data.description as string);
-        break;
-      case "npc":
-        journal = addNpcEntry(journal, data.npc as GameNpc, data.interaction as string);
-        break;
-      case "combat":
-        journal = addCombatEntry(journal, data.description as string, data.outcome as "victory" | "defeat" | "fled");
-        break;
-      case "quest":
-        journal = upsertQuest(journal, data.quest as Parameters<typeof upsertQuest>[1]);
-        break;
-      case "item":
-        journal = addInventoryEntry(
-          journal,
-          data.item as string,
-          data.action as "acquired" | "used" | "lost" | "removed",
-          data.quantity as number,
-        );
-        break;
-      case "event":
-        journal = addEventEntry(journal, data.title as string, data.content as string);
-        break;
-      case "note":
-        journal = addNoteEntry(journal, data.title as string, data.content as string, {
-          readableType: data.readableType === "book" || data.readableType === "note" ? data.readableType : undefined,
-          sourceMessageId: typeof data.sourceMessageId === "string" ? data.sourceMessageId : undefined,
-          sourceSegmentIndex: typeof data.sourceSegmentIndex === "number" ? data.sourceSegmentIndex : undefined,
-        });
-        break;
-    }
-
-    await chats.patchMetadata(chatId, () => ({ gameJournal: journal }));
+    await chats.patchMetadata(chatId, (current) => {
+      previousJournal = (current.gameJournal as Journal) ?? createJournal();
+      journal = previousJournal;
+      switch (type) {
+        case "location":
+          journal = addLocationEntry(journal, data.location as string, data.description as string);
+          break;
+        case "npc":
+          journal = addNpcEntry(journal, data.npc as GameNpc, data.interaction as string);
+          break;
+        case "combat":
+          journal = addCombatEntry(journal, data.description as string, data.outcome as "victory" | "defeat" | "fled");
+          break;
+        case "quest":
+          journal = upsertQuest(journal, data.quest as Parameters<typeof upsertQuest>[1]);
+          break;
+        case "item":
+          journal = addInventoryEntry(
+            journal,
+            data.item as string,
+            data.action as "acquired" | "used" | "lost" | "removed",
+            data.quantity as number,
+          );
+          break;
+        case "event":
+          journal = addEventEntry(journal, data.title as string, data.content as string);
+          break;
+        case "note":
+          journal = addNoteEntry(journal, data.title as string, data.content as string, {
+            readableType: data.readableType === "book" || data.readableType === "note" ? data.readableType : undefined,
+            sourceMessageId: typeof data.sourceMessageId === "string" ? data.sourceMessageId : undefined,
+            sourceSegmentIndex: typeof data.sourceSegmentIndex === "number" ? data.sourceSegmentIndex : undefined,
+          });
+          break;
+      }
+      return { gameJournal: journal };
+    });
     if (type === "quest" && chat.mode === "game") {
       await recordChangedJournalQuests(
         app.db,

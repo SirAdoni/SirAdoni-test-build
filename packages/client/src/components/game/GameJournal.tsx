@@ -996,6 +996,9 @@ function NpcsView({
                 {name}
               </span>
               {showReputation && <span className={cn("text-[10px] font-medium", rep.color)}>{rep.text}</span>}
+              {entry.npc.status === "dead" && (
+                <span className="text-[10px] font-medium text-gray-400">{localizeUi("ui.game.npcsview.deceased")}</span>
+              )}
               {entry.npc.characterId && onNpcCharacterOpen && (
                 <button
                   type="button"

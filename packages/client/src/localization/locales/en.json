@@ -9214,6 +9214,7 @@
   "ui.game.notesview.writeYourNotesHereTrackCluesPlansNpcNames": "Write your notes here... track clues, plans, NPC names, theories, anything you want to remember.",
   "ui.game.notesview.yourPersonalNotesVisibleToTheGameMasterAnd": "Your personal notes, visible to the Game Master and party members.",
   "ui.game.npcPortraitNeedsReview": "Portrait needs review: {{names}}. The existing portrait or placeholder was kept. Retry from the character's portrait controls.",
+  "ui.game.npcsview.deceased": "Deceased",
   "ui.game.npcsview.generateNpcPortrait": "Generate NPC portrait",
   "ui.game.npcsview.noNpcsEncounteredYet": "No NPCs encountered yet.",
   "ui.game.npcsview.openCharacterCard": "Open character card",
