@@ -124,7 +124,7 @@ function Stepper({
           type="button"
           onClick={() => onStep(-1)}
           disabled={!canDecrease}
-          className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:opacity-40"
+          className="flex h-7 w-7 pointer-coarse:h-9 pointer-coarse:w-9 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:opacity-40"
           aria-label={t("readingMode.decrease", { setting: label })}
         >
           <Minus size="0.8rem" />
@@ -134,7 +134,7 @@ function Stepper({
           type="button"
           onClick={() => onStep(1)}
           disabled={!canIncrease}
-          className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:opacity-40"
+          className="flex h-7 w-7 pointer-coarse:h-9 pointer-coarse:w-9 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:opacity-40"
           aria-label={t("readingMode.increase", { setting: label })}
         >
           <Plus size="0.8rem" />
@@ -428,7 +428,7 @@ export function ReadingModeModal({ open, onClose, chatId }: { open: boolean; onC
                   aria-checked={settings.font === font}
                   onClick={() => setSettings((current) => ({ ...current, font }))}
                   className={cn(
-                    "h-7 rounded-md text-xs transition-colors",
+                    "h-7 pointer-coarse:h-9 rounded-md text-xs transition-colors",
                     settings.font === font
                       ? "bg-[var(--primary)]/15 text-[var(--foreground)]"
                       : "text-[var(--muted-foreground)] hover:bg-[var(--accent)]",

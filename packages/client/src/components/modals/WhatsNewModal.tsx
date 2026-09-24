@@ -591,7 +591,7 @@ export function WhatsNewModal({
 
         <div className="space-y-5 px-5 py-5 sm:px-6 sm:py-6">
           <header>
-            <span className="inline-flex rounded-full border border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-button-bg-active)] px-2.5 py-1 text-[0.625rem] font-bold uppercase tracking-[0.14em] text-[var(--marinara-chat-chrome-button-text-active)]">
+            <span className="inline-flex rounded-full border border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-button-bg-active)] px-2.5 py-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-bold uppercase tracking-[0.14em] text-[var(--marinara-chat-chrome-button-text-active)]">
               {localizeUi("ui.characters.metadatatab.version")} {APP_VERSION}
             </span>
             <h3
@@ -679,7 +679,7 @@ export function WhatsNewModal({
                         <HighlightIcon size="1.25rem" aria-hidden="true" />
                       </div>
                       <div className="min-w-0">
-                        <p className="text-[0.625rem] font-bold uppercase tracking-[0.14em] text-[var(--marinara-chat-chrome-accent)]">
+                        <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-bold uppercase tracking-[0.14em] text-[var(--marinara-chat-chrome-accent)]">
                           {releaseCopy(highlight.label)}
                         </p>
                         <h4 className="mt-1 text-base font-semibold text-[var(--marinara-chat-chrome-panel-title)]">

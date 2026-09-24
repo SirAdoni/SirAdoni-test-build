@@ -115,7 +115,7 @@ export function CreatePresetModal({ open, onClose }: Props) {
               onClose();
               reset();
             }}
-            className="rounded-lg px-4 py-2 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)]"
+            className="rounded-lg px-4 py-2 text-xs pointer-coarse:min-h-9 font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)]"
           >
             {localizeUi("chat.delete.dialog.cancel")}
           </button>

@@ -321,7 +321,7 @@ export function CampaignWikiFacts(props: CampaignWikiFactsProps) {
                 onClick={() => setKind(item)}
                 aria-pressed={kind === item}
                 className={cn(
-                  "inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs font-semibold transition-colors",
+                  "inline-flex min-h-8 pointer-coarse:min-h-9 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs font-semibold transition-colors",
                   kind === item
                     ? "border-primary/60 bg-primary/15 text-foreground"
                     : "border-border text-muted-foreground hover:bg-secondary hover:text-foreground",
@@ -344,7 +344,7 @@ export function CampaignWikiFacts(props: CampaignWikiFactsProps) {
                   value={moreKinds.some(([item]) => item === kind) ? kind : ""}
                   onChange={(event) => event.target.value && setKind(event.target.value)}
                   aria-label={t("ui.game.campaignWiki.facts.moreKinds", { defaultValue: "More kinds" })}
-                  className="min-h-8 w-28 rounded-lg border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary"
+                  className="min-h-8 pointer-coarse:min-h-9 w-28 rounded-lg border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary"
                 >
                   <option value="">{t("ui.game.campaignWiki.facts.moreKinds", { defaultValue: "More kinds" })}</option>
                   {moreKinds.map(([item, count]) => (
@@ -359,7 +359,7 @@ export function CampaignWikiFacts(props: CampaignWikiFactsProps) {
                   value={session}
                   onChange={(event) => setSession(event.target.value)}
                   aria-label={t("ui.game.campaignWiki.facts.sessionFilter", { defaultValue: "Show one session" })}
-                  className="min-h-8 w-28 rounded-lg border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary"
+                  className="min-h-8 pointer-coarse:min-h-9 w-28 rounded-lg border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary"
                 >
                   <option value="all">
                     {t("ui.game.campaignWiki.facts.allSessions", { defaultValue: "All sessions" })}

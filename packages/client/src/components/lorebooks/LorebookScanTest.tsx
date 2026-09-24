@@ -101,7 +101,7 @@ export function LorebookScanTest({ lorebookId, text, activeChat, entryNameById, 
               aria-pressed={effectiveSource === option}
               title={option === "chat" && !activeChat ? t("lorebook.editor.scanTest.noChat") : undefined}
               className={cn(
-                "max-w-[11rem] truncate rounded-md px-2 py-1 text-[0.625rem] font-medium transition-colors disabled:opacity-40",
+                "max-w-[11rem] truncate rounded-md px-2 py-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium transition-colors disabled:opacity-40",
                 effectiveSource === option
                   ? "bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-button-text-active)]"
                   : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
@@ -119,16 +119,16 @@ export function LorebookScanTest({ lorebookId, text, activeChat, entryNameById, 
           type="button"
           onClick={() => void run()}
           disabled={running || (effectiveSource === "text" && !text.trim())}
-          className="mari-editor-action mari-editor-action--compact ml-auto inline-flex items-center gap-1 px-2.5 py-1 text-[0.625rem] disabled:opacity-40"
+          className="mari-editor-action mari-editor-action--compact ml-auto inline-flex items-center gap-1 px-2.5 py-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] disabled:opacity-40"
         >
           {running ? <Loader2 size="0.6875rem" className="animate-spin" /> : <Play size="0.6875rem" />}
           {t("lorebook.editor.scanTest.run")}
         </button>
       </div>
-      <p className="text-[0.625rem] leading-snug text-[var(--muted-foreground)]">
+      <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] leading-snug text-[var(--muted-foreground)]">
         {t("lorebook.editor.scanTest.hint")}
       </p>
-      {error && <p className="text-[0.625rem] text-[var(--destructive)]">{error}</p>}
+      {error && <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--destructive)]">{error}</p>}
       {result && (
         <div className="space-y-2">
           <p className="text-[0.6875rem] font-medium text-[var(--foreground)]">
@@ -154,7 +154,7 @@ export function LorebookScanTest({ lorebookId, text, activeChat, entryNameById, 
                       <span className="block truncate text-[0.6875rem] font-medium">
                         {nameOf(item.entryId, item.name)}
                       </span>
-                      <span className="block break-words text-[0.625rem] text-[var(--muted-foreground)]">
+                      <span className="block break-words text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                         {reasonFor(item)}
                       </span>
                     </span>
@@ -181,7 +181,7 @@ export function LorebookScanTest({ lorebookId, text, activeChat, entryNameById, 
                         <span className="block truncate text-[0.6875rem] font-medium">
                           {nameOf(item.entryId, item.name)}
                         </span>
-                        <span className="block break-words text-[0.625rem] text-[var(--muted-foreground)]">
+                        <span className="block break-words text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                           {t(`lorebook.editor.scanTest.blocked.${item.reason}`, { keys: item.matchedKeys.join(", ") })}
                         </span>
                       </span>

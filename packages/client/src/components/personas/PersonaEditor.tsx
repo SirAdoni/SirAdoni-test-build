@@ -2701,7 +2701,7 @@ function PersonaSpritesTab({
           <span className="text-[0.6875rem] font-medium text-[var(--foreground)]">
             {localizeUi("ui.personas.personaspritestab.cleanupStrength")}
           </span>
-          <span className="text-[0.625rem] text-[var(--muted-foreground)]">
+          <span className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
             {localizeUi("ui.personas.personaspritestab.soft")}
           </span>
           <input
@@ -2714,7 +2714,7 @@ function PersonaSpritesTab({
             disabled={cleaningSprites}
             className="min-w-40 flex-1 accent-[var(--primary)] disabled:opacity-50"
           />
-          <span className="text-[0.625rem] text-[var(--muted-foreground)]">
+          <span className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
             {localizeUi("ui.personas.personaspritestab.aggressive")}
           </span>
           <span className="w-8 text-right text-[0.6875rem] tabular-nums text-[var(--muted-foreground)]">
@@ -2788,7 +2788,7 @@ function PersonaSpritesTab({
 
         {category === "expressions" && suggestedExpressions.length > 0 && (
           <div>
-            <p className="text-[0.625rem] text-[var(--muted-foreground)] mb-1.5">
+            <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)] mb-1.5">
               {localizeUi("ui.personas.personaspritestab.quickAdd")}
             </p>
             <div className="flex flex-wrap gap-1">
@@ -3039,7 +3039,7 @@ function PersonaColorsTab({
       </button>
 
       <div className="space-y-3 overflow-hidden rounded-xl border border-[var(--border)] bg-black/30 p-4">
-        <p className="text-[0.625rem] font-medium uppercase tracking-widest text-[var(--muted-foreground)]">
+        <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium uppercase tracking-widest text-[var(--muted-foreground)]">
           {localizeUi("settings.notifications.customSound.actions.preview")}
         </p>
         <div className="flex gap-3 flex-row-reverse">
@@ -3325,7 +3325,7 @@ function PersonaStatsTab({
                       className="flex-1 rounded-lg border border-[var(--border)] bg-[var(--input)] px-2 py-1 text-xs font-medium"
                       placeholder={localizeUi("ui.personas.personastatstab.statName")}
                     />
-                    <span className="text-[0.625rem] text-[var(--muted-foreground)]">
+                    <span className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                       {localizeUi("ui.personas.personastatstab.max")}
                     </span>
                     <input
@@ -3559,7 +3559,7 @@ function PersonaMetadataTab({
 
       {personaId && (
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--secondary)]/70 px-3 py-2">
-          <span className="text-[0.625rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
+          <span className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
             {localizeUi("ui.personas.personametadatatab.personaId")}
           </span>
           <code className="min-w-0 flex-1 break-all rounded-lg bg-[var(--background)] px-2 py-1 text-[0.6875rem] text-[var(--foreground)]">
@@ -4120,7 +4120,7 @@ function PersonaVersionHistoryPanel({
             type="button"
             onClick={handleResetVersions}
             disabled={isLoading || versionMutationPending || hasUnsavedChanges}
-            className="mari-editor-action mari-editor-action--compact inline-flex h-7 px-2 text-[0.625rem]"
+            className="mari-editor-action mari-editor-action--compact inline-flex h-7 px-2 text-[0.625rem] pointer-coarse:text-[0.6875rem]"
             title={localizeUi(
               hasUnsavedChanges
                 ? "ui.cardversionhistory.saveOrDiscardEditsBeforeResettingVersioning"
@@ -4134,7 +4134,7 @@ function PersonaVersionHistoryPanel({
             )}
             {localizeUi("ui.cardversionhistory.reset")}
           </button>
-          <span className="mari-editor-chip mari-editor-chip--accent px-2 py-0.5 text-[0.625rem]">
+          <span className="mari-editor-chip mari-editor-chip--accent px-2 py-0.5 text-[0.625rem] pointer-coarse:text-[0.6875rem]">
             {isLoading
               ? localizeUi("ui.personas.personaversionhistorypanel.loading")
               : localizeUi("ui.personas.personaversionhistorypanel.value1Saved", { value1: savedVersionCount })}
@@ -4169,7 +4169,7 @@ function PersonaVersionHistoryPanel({
                 <span className="block truncate text-[0.6875rem] font-medium text-[var(--foreground)]">
                   {getPersonaVersionTitle(version)}
                 </span>
-                <span className="block truncate text-[0.625rem] text-[var(--muted-foreground)]">
+                <span className="block truncate text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                   {formatCardVersionTimestamp(version.createdAt)}
                   {!version.isCurrent && version.source
                     ? localizeUi("ui.personas.personaversionhistorypanel.value1", { value1: version.source })
@@ -4275,7 +4275,7 @@ function PersonaVersionHistoryPanel({
                     <div className="mb-2 flex items-center justify-between gap-2">
                       <span className="text-xs font-semibold text-[var(--foreground)]">{field.label}</span>
                       {changed && (
-                        <span className="rounded-full bg-[var(--primary)]/10 px-2 py-0.5 text-[0.625rem] font-medium text-[var(--primary)]">
+                        <span className="rounded-full bg-[var(--primary)]/10 px-2 py-0.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--primary)]">
                           {localizeUi("ui.personas.personaversionhistorypanel.changed")}
                         </span>
                       )}
@@ -4462,7 +4462,7 @@ function DescriptionTab({
         showMarkdownPreview
         className="w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--secondary)] p-4 text-sm leading-relaxed outline-none transition-colors placeholder:text-[var(--muted-foreground)]/40 focus:border-emerald-400/40 focus:ring-1 focus:ring-emerald-400/20"
       />
-      <p className="mt-1.5 text-right text-[0.625rem] text-[var(--muted-foreground)]">
+      <p className="mt-1.5 text-right text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
         {formatEstimatedTokens(estimateTextTokens(formData.description), localizeUi)}
       </p>
     </div>
@@ -4521,7 +4521,7 @@ function TextareaTab({
         showMarkdownPreview
         className="w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--secondary)] p-4 text-sm leading-relaxed outline-none transition-colors placeholder:text-[var(--muted-foreground)]/40 focus:border-emerald-400/40 focus:ring-1 focus:ring-emerald-400/20"
       />
-      <p className="mt-1.5 text-right text-[0.625rem] text-[var(--muted-foreground)]">
+      <p className="mt-1.5 text-right text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
         {formatEstimatedTokens(estimateTextTokens(value), localizeUi)}
       </p>
     </div>

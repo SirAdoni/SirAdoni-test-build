@@ -49,13 +49,13 @@ import { useLorebookEntries, useLorebooks } from "../../hooks/use-lorebooks";
 import { useInitiativeEncounters, useInitiativeMutations } from "../../hooks/use-initiative";
 
 const FIELD_CLASS =
-  "h-8 min-w-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40";
+  "h-8 pointer-coarse:h-9 min-w-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40";
 const SMALL_FIELD_CLASS =
-  "h-7 min-w-0 rounded-md border border-border bg-background px-1.5 text-[0.6875rem] text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40";
+  "h-7 pointer-coarse:h-9 min-w-0 rounded-md border border-border bg-background px-1.5 text-[0.6875rem] text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40";
 const ICON_BUTTON_CLASS =
-  "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent";
+  "flex h-7 w-7 pointer-coarse:h-9 pointer-coarse:w-9 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent";
 const SMALL_BUTTON_CLASS =
-  "flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-[0.6875rem] font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-60";
+  "flex h-7 pointer-coarse:h-9 items-center gap-1.5 rounded-md border border-border px-2.5 text-[0.6875rem] font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-60";
 const MAX_PICKER_RESULTS = 8;
 
 type AddMode = InitiativeCombatantSource;
@@ -142,7 +142,9 @@ function CombatantRow({
         >
           {combatant.name}
         </span>
-        <span className="shrink-0 text-[0.625rem] tabular-nums text-muted-foreground">{combatant.dice}</span>
+        <span className="shrink-0 text-[0.625rem] pointer-coarse:text-[0.6875rem] tabular-nums text-muted-foreground">
+          {combatant.dice}
+        </span>
         <button
           type="button"
           onClick={onRoll}
@@ -262,7 +264,7 @@ function AddCombatant({
       onClick={() => setMode(value)}
       aria-pressed={mode === value}
       className={cn(
-        "h-7 flex-1 rounded-md px-2 text-[0.6875rem] font-medium transition-colors",
+        "h-7 pointer-coarse:h-9 flex-1 rounded-md px-2 text-[0.6875rem] font-medium transition-colors",
         mode === value ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground",
       )}
     >
@@ -320,7 +322,7 @@ function AddCombatant({
             type="button"
             onClick={() => add(text, null)}
             disabled={!text.trim()}
-            className={cn(SMALL_BUTTON_CLASS, "h-8")}
+            className={cn(SMALL_BUTTON_CLASS, "h-8 pointer-coarse:h-9")}
           >
             <Plus size={13} />
             {t("ui.initiative.add")}
@@ -338,7 +340,7 @@ function AddCombatant({
               <button
                 type="button"
                 onClick={() => add(option.name, option.id)}
-                className="flex h-7 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-xs text-foreground transition-colors hover:bg-secondary"
+                className="flex h-7 pointer-coarse:h-9 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-xs text-foreground transition-colors hover:bg-secondary"
               >
                 <Plus size={12} className="shrink-0 text-muted-foreground" />
                 <span className="truncate">{option.name}</span>
@@ -441,7 +443,7 @@ export function InitiativeTracker({ chatId }: { chatId: string }) {
         <select
           value={loadedId}
           onChange={(event) => void loadEncounter(event.target.value)}
-          className={cn(FIELD_CLASS, "w-28 shrink-0")}
+          className={cn(FIELD_CLASS, "w-28 shrink-0 pointer-coarse:w-36")}
           aria-label={t("ui.initiative.savedEncounters")}
         >
           <option value="">{t("ui.initiative.newEncounter")}</option>
@@ -496,7 +498,7 @@ export function InitiativeTracker({ chatId }: { chatId: string }) {
           <ChevronLeft size={15} />
         </button>
         <div className="min-w-0 flex-1 text-center" aria-live="polite">
-          <p className="text-[0.625rem] font-medium uppercase tracking-wide text-muted-foreground">
+          <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
             {t("ui.initiative.round", { round: state.round })}
           </p>
           <p className="truncate text-xs font-semibold text-foreground">

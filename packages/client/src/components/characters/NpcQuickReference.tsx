@@ -27,7 +27,8 @@ function UsageList({ characterId }: { characterId: string }) {
   const { t } = useTranslation();
   const { data, isLoading, isError } = useCharacterUsage(characterId);
   if (isLoading) return <Loader2 size="0.75rem" className="animate-spin text-[var(--muted-foreground)]" />;
-  if (isError || !data) return <p className="text-[0.6875rem] text-[var(--muted-foreground)]">{t("characters.usage.failed")}</p>;
+  if (isError || !data)
+    return <p className="text-[0.6875rem] text-[var(--muted-foreground)]">{t("characters.usage.failed")}</p>;
   if (data.chats.length === 0)
     return <p className="text-[0.6875rem] text-[var(--muted-foreground)]">{t("characters.usage.neverUsed")}</p>;
   const summary = [
@@ -49,7 +50,7 @@ function UsageList({ characterId }: { characterId: string }) {
               title={t("characters.usage.openChat")}
             >
               <span className="min-w-0 flex-1 truncate text-[var(--foreground)]">{usage.chatName}</span>
-              <span className="shrink-0 text-[0.625rem] text-[var(--muted-foreground)]">
+              <span className="shrink-0 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                 {formatRelativeContact(usage.lastActivityAt) ?? ""}
               </span>
             </button>
@@ -203,7 +204,7 @@ export function NpcQuickReferencePopover({
               {summary.tags.map((tag) => (
                 <span
                   key={tag}
-                  className="max-w-[8rem] truncate rounded-full bg-[var(--secondary)] px-1.5 py-px text-[0.625rem] text-[var(--muted-foreground)]"
+                  className="max-w-[8rem] truncate rounded-full bg-[var(--secondary)] px-1.5 py-px text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]"
                 >
                   {tag}
                 </span>

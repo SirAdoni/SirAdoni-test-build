@@ -224,7 +224,7 @@ export function WikiTabs<T extends string>({
             {typeof tab.count === "number" && (
               <span
                 className={cn(
-                  "rounded-full px-1.5 text-[0.625rem] tabular-nums",
+                  "rounded-full px-1.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] tabular-nums",
                   active ? "bg-primary/25" : "bg-secondary",
                 )}
               >

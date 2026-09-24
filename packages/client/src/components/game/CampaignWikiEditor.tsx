@@ -1049,7 +1049,7 @@ export function CampaignWikiEditor({
                     )}
                     {referenceTotal > 0 && (
                       <details className="group text-xs">
-                        <summary className="flex min-h-8 cursor-pointer list-none items-center gap-1.5 text-muted-foreground">
+                        <summary className="flex min-h-8 pointer-coarse:min-h-9 cursor-pointer list-none items-center gap-1.5 text-muted-foreground">
                           <ChevronDown size={13} className="transition-transform group-open:rotate-180" />
                           {t("ui.game.campaignWiki.editor.review.technical", { defaultValue: "Technical details" })}
                         </summary>
@@ -1216,7 +1216,7 @@ export function CampaignWikiEditor({
                   className="group rounded-lg border border-border/70 px-3 py-2"
                   open={Boolean(correctionValidFrom)}
                 >
-                  <summary className="flex min-h-8 cursor-pointer list-none items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  <summary className="flex min-h-8 pointer-coarse:min-h-9 cursor-pointer list-none items-center gap-1.5 text-xs font-medium text-muted-foreground">
                     <ChevronDown size={13} className="transition-transform group-open:rotate-180" />
                     {t("ui.game.campaignWiki.editor.advanced", { defaultValue: "Advanced options" })}
                   </summary>

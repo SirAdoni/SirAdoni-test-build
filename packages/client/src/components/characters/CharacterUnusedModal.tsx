@@ -115,7 +115,7 @@ export function CharacterUnusedModal({ open, onClose, onOpenCharacter }: Props) 
                         <span className="block truncate text-xs font-medium">
                           {character.name || t("characters.unused.unnamed")}
                         </span>
-                        <span className="block truncate text-[0.625rem] text-[var(--muted-foreground)]">
+                        <span className="block truncate text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                           {t(`characters.unused.category.${character.category}`)}
                           {" · "}
                           {t("characters.unused.added", { date: new Date(character.createdAt).toLocaleDateString() })}

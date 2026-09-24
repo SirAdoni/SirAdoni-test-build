@@ -184,7 +184,7 @@ export function AgentWriteApprovalModal({ open, onClose }: Props) {
         </div>
 
         <label className="flex flex-col gap-1.5">
-          <span className="text-[0.625rem] font-semibold uppercase text-[var(--muted-foreground)]">
+          <span className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-semibold uppercase text-[var(--muted-foreground)]">
             {localizeUi("ui.modals.agentwriteapprovalmodal.proposedText")}
           </span>
           <textarea
@@ -196,7 +196,7 @@ export function AgentWriteApprovalModal({ open, onClose }: Props) {
         </label>
 
         {entry.kind === "lorebook_update" && (
-          <p className="rounded-lg bg-[var(--background)]/70 px-3 py-2 text-[0.625rem] leading-relaxed text-[var(--muted-foreground)] ring-1 ring-[var(--border)]">
+          <p className="rounded-lg bg-[var(--background)]/70 px-3 py-2 text-[0.625rem] pointer-coarse:text-[0.6875rem] leading-relaxed text-[var(--muted-foreground)] ring-1 ring-[var(--border)]">
             {localizeUi("ui.modals.agentwriteapprovalmodal.keepEachLorebookEntryUnderA")}{" "}
             <span className="font-mono">###</span>{" "}
             {localizeUi("ui.modals.agentwriteapprovalmodal.headingYouCanEditNamesKeysTagsAndContent")}

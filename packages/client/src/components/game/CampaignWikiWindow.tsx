@@ -269,7 +269,7 @@ export function CampaignWikiWindow({ chatId, onClose, target = null }: CampaignW
             <button
               type="button"
               onClick={() => void ownerLookup.refetch()}
-              className="min-h-8 rounded border border-[var(--border)] px-2 text-[var(--muted-foreground)] hover:bg-[var(--secondary)]"
+              className="min-h-8 pointer-coarse:min-h-9 rounded border border-[var(--border)] px-2 text-[var(--muted-foreground)] hover:bg-[var(--secondary)]"
             >
               {t("ui.game.campaignWiki.retry")}
             </button>

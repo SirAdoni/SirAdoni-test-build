@@ -321,7 +321,7 @@ function RailSection({
         {open ? <ChevronDown size={13} aria-hidden="true" /> : <ChevronRight size={13} aria-hidden="true" />}
         <Icon size={13} aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate">{title}</span>
-        <span className="rounded-full bg-secondary px-1.5 py-px text-[0.625rem] tabular-nums">
+        <span className="rounded-full bg-secondary px-1.5 py-px text-[0.625rem] pointer-coarse:text-[0.6875rem] tabular-nums">
           {total.toLocaleString()}
         </span>
       </button>
@@ -337,7 +337,7 @@ function RailSection({
                   type="button"
                   onClick={() => setLimit((current) => Math.min(SECTION_MAX, current + SECTION_STEP))}
                   disabled={list.isFetching}
-                  className="inline-flex min-h-8 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-primary hover:bg-secondary disabled:opacity-60"
+                  className="inline-flex min-h-8 pointer-coarse:min-h-9 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-primary hover:bg-secondary disabled:opacity-60"
                 >
                   {list.isFetching && <Loader2 size={12} className="animate-spin" aria-hidden="true" />}
                   {t("ui.game.campaignWiki.rail.showMore", {
@@ -349,7 +349,7 @@ function RailSection({
               <button
                 type="button"
                 onClick={onSeeAll}
-                className="ml-auto inline-flex min-h-8 items-center rounded-lg px-2 text-xs font-semibold text-muted-foreground hover:bg-secondary hover:text-foreground"
+                className="ml-auto inline-flex min-h-8 pointer-coarse:min-h-9 items-center rounded-lg px-2 text-xs font-semibold text-muted-foreground hover:bg-secondary hover:text-foreground"
               >
                 {t("ui.game.campaignWiki.rail.seeAllKind", {
                   defaultValue: "See all {{formattedCount}}",
@@ -492,7 +492,7 @@ export function CampaignWikiRail({
         {listGroups.map((group) => (
           <div key={group.tier ?? "all"} className="space-y-px">
             {group.tier && (
-              <p className="px-2 pb-1 pt-3 text-[0.625rem] font-semibold uppercase tracking-wide text-muted-foreground">
+              <p className="px-2 pb-1 pt-3 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
                 {t(`ui.game.campaignWiki.matchTier.${group.tier}`)}
               </p>
             )}
@@ -587,7 +587,7 @@ export function CampaignWikiRail({
                 onClick={() => onKind(item)}
                 aria-pressed={kind === item}
                 className={cn(
-                  "inline-flex min-h-8 shrink-0 items-center gap-1 rounded-full border px-2 text-[0.6875rem] font-semibold transition-colors",
+                  "inline-flex min-h-8 pointer-coarse:min-h-9 shrink-0 items-center gap-1 rounded-full border px-2 text-[0.6875rem] font-semibold transition-colors",
                   kind === item
                     ? "border-primary/60 bg-primary/15 text-foreground"
                     : "border-border text-muted-foreground hover:bg-secondary hover:text-foreground",

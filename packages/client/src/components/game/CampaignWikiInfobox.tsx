@@ -65,7 +65,7 @@ function SeeAll({ onClick, label }: { onClick: () => void; label: string }) {
       type="button"
       onClick={onClick}
       aria-label={label}
-      className="-my-1 inline-flex min-h-8 items-center gap-0.5 rounded-md px-1.5 text-[0.6875rem] font-semibold text-primary hover:bg-secondary"
+      className="-my-1 inline-flex min-h-8 pointer-coarse:min-h-9 items-center gap-0.5 rounded-md px-1.5 text-[0.6875rem] font-semibold text-primary hover:bg-secondary"
     >
       {t("ui.game.campaignWiki.reader.seeAll", { defaultValue: "See all" })}
       <ChevronRight size={12} aria-hidden="true" />
@@ -299,7 +299,7 @@ function StateRow({
   const targetName = target ? nameOf(target) : null;
   return (
     <div className="min-w-0">
-      <dt className="flex min-h-7 items-center gap-1.5 text-[0.6875rem] text-muted-foreground">
+      <dt className="flex min-h-7 pointer-coarse:min-h-9 items-center gap-1.5 text-[0.6875rem] text-muted-foreground">
         <span className="min-w-0 flex-1 truncate">{humanizeKey(item.property)}</span>
         {stale && <FactLabelBadge label={STALE_LABEL} />}
         {sourceEvent && sourceEvent.evidence.length > 0 && (

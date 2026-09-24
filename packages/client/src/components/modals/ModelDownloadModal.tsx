@@ -541,7 +541,7 @@ export function ModelDownloadModal({ open, onClose }: Props) {
         {hasModel && (
           <div className="rounded-xl border border-green-500/30 bg-green-500/5 p-3">
             <div className="flex items-center gap-3">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-green-500/15">
+              <div className="flex h-8 pointer-coarse:h-9 w-8 shrink-0 items-center justify-center rounded-full bg-green-500/15">
                 <Check size="1rem" className="text-green-400" />
               </div>
               <div className="flex-1">
@@ -1279,7 +1279,7 @@ export function ModelDownloadModal({ open, onClose }: Props) {
                     </div>
                   </div>
                   {model.quantization === "q8_0" && (
-                    <span className="mari-chrome-accent-surface mari-accent-animated rounded-full px-2 py-0.5 text-[0.625rem] font-medium">
+                    <span className="mari-chrome-accent-surface mari-accent-animated rounded-full px-2 py-0.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium">
                       {localizeUi("ui.modals.modeldownloadmodal.recommended")}
                     </span>
                   )}

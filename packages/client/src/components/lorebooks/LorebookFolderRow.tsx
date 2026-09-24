@@ -342,7 +342,7 @@ export function LorebookFolderRow({
             onClick={(e) => e.stopPropagation()}
             title={localizeUi("ui.lorebooks.lorebookfolderrow.nestThisFolderUnderAnotherFolder")}
             aria-label={localizeUi("ui.lorebooks.lorebookfolderrow.parentFolder")}
-            className="mari-editor-field shrink-0 max-w-[4.75rem] truncate px-1 py-0.5 text-[0.625rem] text-[var(--marinara-editor-muted)] sm:max-w-[7rem] sm:px-1.5"
+            className="mari-editor-field shrink-0 max-w-[4.75rem] truncate px-1 py-0.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--marinara-editor-muted)] sm:max-w-[7rem] sm:px-1.5"
           >
             <option value="">{localizeUi("ui.lorebooks.lorebookfolderrow.topLevel")}</option>
             {parentOptions.map((candidate) => (
@@ -355,7 +355,7 @@ export function LorebookFolderRow({
 
         {/* Entry count badge */}
         <span
-          className="mari-editor-chip shrink-0 px-1.5 py-0.5 text-[0.625rem] sm:px-2"
+          className="mari-editor-chip shrink-0 px-1.5 py-0.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] sm:px-2"
           title={localizeUi("ui.lorebooks.lorebookfolderrow.entriesInThisFolder", { count: entryCount })}
         >
           {entryCount}

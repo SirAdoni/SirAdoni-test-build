@@ -60,7 +60,7 @@ function ActivityHeatmap({ overview }: { overview: ActivityOverview }) {
           value={String(selection)}
           onChange={(event) => setSelection(event.target.value === "recent" ? "recent" : Number(event.target.value))}
           aria-label={t("chatInsights.activity.range")}
-          className="mb-2 ml-auto h-8 rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-xs text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
+          className="mb-2 ml-auto h-8 pointer-coarse:h-9 rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 text-xs text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
         >
           <option value="recent">{t("chatInsights.activity.lastYear")}</option>
           {years.map((year) => (
@@ -76,7 +76,7 @@ function ActivityHeatmap({ overview }: { overview: ActivityOverview }) {
       >
         <div className="flex min-w-[34rem] flex-col gap-1">
           <div
-            className="grid h-3.5 text-[0.625rem] leading-none text-[var(--muted-foreground)]"
+            className="grid h-3.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] leading-none text-[var(--muted-foreground)]"
             style={{ gridTemplateColumns: columns, columnGap: "0.1875rem" }}
           >
             {grid.months
@@ -122,7 +122,7 @@ function ActivityHeatmap({ overview }: { overview: ActivityOverview }) {
           </div>
         </div>
       </div>
-      <div className="mt-1.5 flex items-center justify-end gap-1 text-[0.625rem] text-[var(--muted-foreground)]">
+      <div className="mt-1.5 flex items-center justify-end gap-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
         {t("chatInsights.activity.less")}
         {([0, 1, 2, 3, 4] as const).map((level) => (
           <span key={level} className={cn("h-[0.6875rem] w-[0.6875rem] rounded-[0.125rem]", LEVEL_CLASSES[level])} />

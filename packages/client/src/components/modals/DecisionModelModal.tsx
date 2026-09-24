@@ -275,7 +275,7 @@ export function DecisionModelModal({ open, onClose }: Props) {
           )}
         </div>
         {model.id === installedId && (
-          <span className="mari-chrome-accent-surface mari-accent-animated flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.625rem] font-medium">
+          <span className="mari-chrome-accent-surface mari-accent-animated flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium">
             <Check size="0.625rem" />
             {localizeUi("ui.modals.decisionmodelmodal.installedBadge")}
           </span>
@@ -339,7 +339,7 @@ export function DecisionModelModal({ open, onClose }: Props) {
                     </option>
                   ))}
                 </select>
-                <span className="text-[0.625rem] text-[var(--muted-foreground)]">
+                <span className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                   {localizeUi("ui.modals.decisionmodelmodal.gpuHelp")}
                 </span>
               </label>
@@ -352,7 +352,7 @@ export function DecisionModelModal({ open, onClose }: Props) {
             >
               <div className="min-w-0 flex-1">
                 <div className="text-xs font-medium">{localizeUi("ui.modals.decisionmodelmodal.enableToggle")}</div>
-                <div className="mt-0.5 text-[0.625rem] text-[var(--muted-foreground)]">
+                <div className="mt-0.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                   {localizeUi(
                     enabled ? "ui.modals.decisionmodelmodal.enabledHint" : "ui.modals.decisionmodelmodal.disabledHint",
                   )}
@@ -391,7 +391,7 @@ export function DecisionModelModal({ open, onClose }: Props) {
                     agreeing to any of it. */}
                 <div className="mt-2 rounded-xl border border-[var(--border)] bg-[var(--card)]/50 p-3">
                   <div className="text-xs font-medium">{localizeUi("ui.modals.decisionmodelmodal.byoTitle")}</div>
-                  <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
+                  <p className="mt-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                     {localizeUi("ui.modals.decisionmodelmodal.byoHelp")}
                   </p>
                   <div className="mt-2 flex gap-2">
@@ -432,7 +432,7 @@ export function DecisionModelModal({ open, onClose }: Props) {
                   {inspect.data?.model && inspect.data.preflight && (
                     <div className="mt-2 rounded-lg border border-[var(--border)] p-2.5">
                       <div className="text-xs font-medium">{inspect.data.model.label}</div>
-                      <div className="mt-1 flex flex-wrap items-center gap-3 text-[0.625rem] text-[var(--muted-foreground)]/70">
+                      <div className="mt-1 flex flex-wrap items-center gap-3 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]/70">
                         <span className="flex items-center gap-1">
                           <Download size="0.75rem" />
                           {formatBytes(inspect.data.model.downloadSizeBytes)}
@@ -471,7 +471,7 @@ export function DecisionModelModal({ open, onClose }: Props) {
 
                 {/* Off by default, because a model that only answers gates does not
                     need to hold GPU memory from boot. */}
-                <label className="mt-2 flex items-start gap-2 text-[0.625rem] text-[var(--muted-foreground)]">
+                <label className="mt-2 flex items-start gap-2 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                   <input
                     type="checkbox"
                     checked={data?.settings.startPolicy === "with_marinara"}

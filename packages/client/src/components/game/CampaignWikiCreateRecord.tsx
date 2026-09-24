@@ -614,7 +614,7 @@ export function ChangeReview({
                 ) : (
                   <div className="grid gap-2 sm:grid-cols-[1fr_auto_1fr] sm:items-stretch">
                     <div className="min-w-0 rounded-lg bg-secondary/40 px-3 py-2">
-                      <p className="text-[0.625rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                      <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
                         {t("ui.game.campaignWiki.editor.review.before", { defaultValue: "Before" })}
                       </p>
                       <p className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-6 text-muted-foreground">
@@ -627,7 +627,7 @@ export function ChangeReview({
                       className="mx-auto hidden self-center text-muted-foreground sm:block"
                     />
                     <div className="min-w-0 rounded-lg border border-primary/35 bg-primary/10 px-3 py-2">
-                      <p className="text-[0.625rem] font-semibold uppercase tracking-wide text-foreground/80">
+                      <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-semibold uppercase tracking-wide text-foreground/80">
                         {t("ui.game.campaignWiki.editor.review.after", { defaultValue: "After" })}
                       </p>
                       <p className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-6 text-foreground">
@@ -644,7 +644,7 @@ export function ChangeReview({
       {footnote && <p className="text-xs leading-5 text-muted-foreground">{footnote}</p>}
       {technical.length > 0 && (
         <details className="group rounded-lg border border-border/70 px-3 py-2 text-xs">
-          <summary className="flex min-h-8 cursor-pointer list-none items-center gap-1.5 font-medium text-muted-foreground">
+          <summary className="flex min-h-8 pointer-coarse:min-h-9 cursor-pointer list-none items-center gap-1.5 font-medium text-muted-foreground">
             <ChevronDown size={13} className="transition-transform group-open:rotate-180" />
             {t("ui.game.campaignWiki.editor.review.technical", { defaultValue: "Technical details" })}
           </summary>

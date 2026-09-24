@@ -7,7 +7,16 @@
 // and speaker, and a chapter list. Game mode has no per-message anchors on its
 // main screen, so chapters are marked here. Long campaigns render a window of
 // turns at a time.
-import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { BookOpen, ChevronDown, ChevronUp, Loader2, Search } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -108,7 +117,7 @@ function LogLineView({ line, ranges }: { line: LogLine; ranges: HitRange[] | und
   if (line.kind === "readable") {
     return (
       <div className="rounded-lg border border-[var(--border)] bg-[var(--secondary)]/40 px-3 py-2 italic">
-        <div className="mb-1 text-[0.625rem] font-semibold not-italic uppercase tracking-wide text-[var(--muted-foreground)]">
+        <div className="mb-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-semibold not-italic uppercase tracking-wide text-[var(--muted-foreground)]">
           {t(line.readableType === "book" ? "ui.game.log.book" : "ui.game.log.note")}
         </div>
         {body}
@@ -377,7 +386,7 @@ export function GameLogModal({
           <button
             type="button"
             onClick={showEarlier}
-            className="mari-chrome-control mari-chrome-control--small mx-auto px-4 text-xs"
+            className="mari-chrome-control mari-chrome-control--small mx-auto px-4 text-xs pointer-coarse:min-h-9!"
           >
             <ChevronUp size="0.875rem" />
             {t("ui.game.log.showEarlier")}
@@ -399,7 +408,11 @@ export function GameLogModal({
                   <span className="h-px flex-1 bg-[var(--border)]" />
                   <span className="max-w-[80%] truncate text-[0.6875rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
                     {sessionLabel(entry.sessionIndex)}
-                    {sessionName ? <span className="font-normal normal-case tracking-normal">{t("ui.game.log.sessionNameSuffix", { name: sessionName })}</span> : null}
+                    {sessionName ? (
+                      <span className="font-normal normal-case tracking-normal">
+                        {t("ui.game.log.sessionNameSuffix", { name: sessionName })}
+                      </span>
+                    ) : null}
                   </span>
                   <span className="h-px flex-1 bg-[var(--border)]" />
                 </div>
@@ -451,7 +464,7 @@ export function GameLogModal({
                     onClick={() => setEditingChapterKey(entry.key)}
                     title={chapterLabel}
                     aria-label={chapterLabel}
-                    className="absolute right-0.5 top-1 inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-foreground)] opacity-0 transition-opacity hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] group-hover:opacity-100 [@media(pointer:coarse)]:opacity-50"
+                    className="absolute right-0.5 top-1 inline-flex h-7 w-7 pointer-coarse:h-9 pointer-coarse:w-9 items-center justify-center rounded-md text-[var(--muted-foreground)] opacity-0 transition-opacity hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] group-hover:opacity-100 [@media(pointer:coarse)]:opacity-50"
                   >
                     <BookOpen size="0.8125rem" />
                   </button>
@@ -467,7 +480,7 @@ export function GameLogModal({
           <button
             type="button"
             onClick={showLater}
-            className="mari-chrome-control mari-chrome-control--small mx-auto px-4 text-xs"
+            className="mari-chrome-control mari-chrome-control--small mx-auto px-4 text-xs pointer-coarse:min-h-9!"
           >
             <ChevronDown size="0.875rem" />
             {t("ui.game.log.showLater")}

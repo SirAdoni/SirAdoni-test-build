@@ -611,7 +611,7 @@ export function CharacterLibraryView() {
               <ArrowLeft size="0.95rem" />
             </button>
             <div className="min-w-0">
-              <p className="text-[0.625rem] font-semibold uppercase tracking-[0.28em] text-[var(--marinara-chat-chrome-panel-muted)]">
+              <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-semibold uppercase tracking-[0.28em] text-[var(--marinara-chat-chrome-panel-muted)]">
                 {copy.title}
               </p>
               <h1 className="truncate text-base font-semibold text-[var(--marinara-chat-chrome-panel-title)] md:text-2xl">

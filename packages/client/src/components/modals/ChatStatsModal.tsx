@@ -181,7 +181,7 @@ function ChatStatsBody({ stats, onJump }: { stats: ChatStats; onJump: (messageNu
               <button
                 type="button"
                 onClick={() => onJump(stats.longestMessage!.messageNumber)}
-                className="ml-auto shrink-0 text-xs font-semibold text-[var(--primary)] underline-offset-2 hover:underline"
+                className="ml-auto shrink-0 text-xs font-semibold pointer-coarse:min-h-9 text-[var(--primary)] underline-offset-2 hover:underline"
               >
                 {t("chatInsights.stats.jump")}
               </button>
