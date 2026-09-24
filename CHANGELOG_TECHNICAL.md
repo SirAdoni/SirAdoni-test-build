@@ -289,6 +289,15 @@ Features:
 
 ## 2026-09-24
 
+### Campaign Wiki: grouped promises show every person involved
+- **Files:** `packages/client/src/components/game/CampaignWikiInfobox.tsx` (Open promises), `packages/client/src/components/game/CampaignWikiOverview.tsx` (`PromiseRow`), `packages/client/src/hooks/use-campaign-memory.ts` (types), `en.json` (`ui.game.campaignWiki.infobox.promiseWith`), `scripts/regressions/campaign-memory-commitments-ui.regression.ts`, `scripts/regressions/campaign-memory-commitments-grouping.regression.ts`.
+- **Context:** since `ab17602c3` the commitments list merges a promise's per-person copies into one item whose `participants` hold everyone, plus `memberCommitmentIds` and a page `total`. No client view read `participants[0]` as "the person", and the Promises & quests tab already rendered every participant chip.
+- **Overview:** the front page's Open promises rows showed only the first 3 people with no hint of the rest; they now list every person (same inline name buttons).
+- **Infobox:** a page's "Open promises" showed only title and state; each promise now adds a "With" line naming every other person involved as a link to their page (the page's own person is left out), styled like the overview rows, 36px targets on touch.
+- **Types:** `CampaignMemoryCommitmentItem.memberCommitmentIds?` and `CampaignMemoryCommitmentsPage.total?` mirror the server response.
+- **Transitions:** unchanged and verified. The client posts the listed item's representative `commitmentId` + `revision`; the grouping regression now also proves a stale revision is a 409, a second transition (active to completed) continues the same chain with all three copies still merged, re-transitioning the old head is refused, every participant survives, and any participant's filtered list shows the newest state.
+- **Tests:** `campaign-memory-commitments-ui` (no `participants[0]`, overview never slices people, infobox lists the others, transition payload), `campaign-memory-commitments-grouping`, `campaign-memory-commitments`; client tsc exit 0.
+
 ### Regression: side-panel touch actions test follows the in-flow row layout
 - **Files:** `scripts/regressions/open-issues.regression.ts` (Issue #4449 block).
 - **Cause:** the phone pass `0b05da7f2` moved the touch action toolbars of the Characters, Personas, Lorebooks, Agents, Presets and Connections rows, and the folder headers (including the shared `LibraryFolderTree`), from an absolute overlay with reserved `max-md:pr-N [@media(pointer:coarse)]:pr-N` padding into the row's own flow (`max-md:static`, `ml-auto`, row `flex-wrap`), and made names wrap with `PANEL_ROW_NAME_WRAP_CLASS`. The test still asserted the old padding, so `open-issues` failed on main with "Characters rows must reserve action space only for touch layouts". The code is correct; the test was stale.

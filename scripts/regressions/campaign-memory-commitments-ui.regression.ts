@@ -45,4 +45,31 @@ for (const kind of ["invitation", "promise", "offer", "quest", "employment", "ca
   assert.equal(typeof locale[`ui.game.campaignWiki.commitments.kind.${kind}`], "string", `missing kind label ${kind}`);
 for (const state of ["proposed", "accepted", "active", "completed", "declined", "cancelled", "unresolved"])
   assert.equal(typeof locale[`ui.game.campaignWiki.commitments.state.${state}`], "string", `missing state label ${state}`);
+// Grouped promises (one item per promise, every per-person copy merged into `participants`): each view shows all the
+// people involved, and transitions act on the listed representative's commitmentId + revision.
+const overview = readFileSync(
+  new URL("../../packages/client/src/components/game/CampaignWikiOverview.tsx", import.meta.url),
+  "utf8",
+);
+const infobox = readFileSync(
+  new URL("../../packages/client/src/components/game/CampaignWikiInfobox.tsx", import.meta.url),
+  "utf8",
+);
+for (const [name, source] of Object.entries({ component, overview, infobox }))
+  assert.doesNotMatch(source, /participants\[0\]/u, `${name} must not treat the first participant as the promise's person`);
+assert.match(hooks, /memberCommitmentIds\?: string\[\];/u, "the item type carries the merged copy ids");
+assert.match(component, /\{item\.participants\.map\(\(participant\) =>/u, "the promises list renders every participant");
+assert.match(overview, /\{people\.map\(\(participant\) =>/u, "overview promise rows list every person, not the first three");
+assert.doesNotMatch(overview, /people\.slice\(/u, "overview promise rows must not cut the people list");
+assert.match(
+  infobox,
+  /const others = item\.participants\.filter\([\s\S]*?participant\.entityId !== entity\.entityId[\s\S]*?\{others\.map\(\(participant, index\) =>/u,
+  "infobox open promises name every other person involved",
+);
+assert.equal(typeof locale["ui.game.campaignWiki.infobox.promiseWith"], "string", "missing infobox promise people label");
+assert.match(
+  component,
+  /commitmentId: item\.commitmentId,\s*expectedRevision: item\.revision,/u,
+  "transitions post the grouped item's representative id and revision",
+);
 process.stdout.write("campaign-memory-commitments-ui regression passed\n");

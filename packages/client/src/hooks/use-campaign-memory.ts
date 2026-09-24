@@ -432,10 +432,17 @@ export interface CampaignMemoryCommitmentItem {
   historical: boolean;
   openSince: string | null;
   revision: number;
+  /**
+   * Head fact ids of every per-person copy merged into this promise (the server groups copies sharing a receipt and
+   * record). `commitmentId`/`revision` are the representative's, so transitions stay on the item as listed.
+   */
+  memberCommitmentIds?: string[];
 }
 export interface CampaignMemoryCommitmentsPage {
   items: CampaignMemoryCommitmentItem[];
   nextCursor: string | null;
+  /** Merged commitments matching the filters, the unit the pages count. */
+  total?: number;
 }
 export interface CampaignMemoryCommitmentTransitionRequest {
   commitmentId: string;

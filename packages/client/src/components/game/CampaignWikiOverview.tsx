@@ -710,7 +710,8 @@ function PromiseRow({ item, onSelect }: { item: CampaignMemoryCommitmentItem; on
             </span>
           </>
         )}
-        {people.slice(0, 3).map((participant) => (
+        {/* A grouped promise lists every person it involves, not only the first few. */}
+        {people.map((participant) => (
           <span key={participant.entityId} className="inline-flex items-center gap-1.5">
             <span aria-hidden="true">·</span>
             <button

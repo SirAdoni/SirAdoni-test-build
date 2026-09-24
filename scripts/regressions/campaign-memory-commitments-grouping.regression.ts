@@ -151,6 +151,31 @@ try {
   assert.equal(after.commitmentId, kept.commitmentId, "the new head is the representative");
   assert.equal(after.state, "active", "the newest status wins over the untouched copies");
   assert.equal((await get("?state=proposed")).json().items.some((item: Item) => item.kind === "promise"), false, "the merged promise is not also listed as proposed");
+  assert.deepEqual(after.participants.map((p) => p.entityId).sort(), ["brisa", "corwen", "dell"], "every person survives the transition");
+
+  // The client transitions the listed item by its commitmentId + revision: a stale revision is a 409, and a second
+  // transition on the grouped item continues the same chain and stays merged.
+  const transition = (item: Item, state: string, revision: number, operationId: string) =>
+    app.inject({
+      method: "POST",
+      url: `/api/game/${chatId}/memory/commitments/${item.commitmentId}/transition`,
+      payload: { state, expectedRevision: revision, operationId, reason: "Grouped promise regression" },
+    });
+  response = await transition(after, "completed", after.revision + 1, "grouping-stale");
+  assert.equal(response.statusCode, 409, "a stale revision on the grouped item is a conflict");
+  response = await transition(after, "completed", after.revision, "grouping-complete");
+  assert.equal(response.statusCode, 200, response.body);
+  const done = response.json() as Item;
+  assert.equal(done.state, "completed");
+  assert.equal(done.memberCommitmentIds.length, 3, "a second transition keeps the three copies merged");
+  response = await transition(after, "cancelled", after.revision, "grouping-twice");
+  assert.equal(response.statusCode, 409, "transitioning an already-transitioned head is refused");
+  items = (await get("")).json().items as Item[];
+  assert.equal(items.length, 3, "still three commitments after two transitions");
+  const final = items.find((item) => item.kind === "promise")!;
+  assert.equal(final.commitmentId, done.commitmentId);
+  assert.equal(final.state, "completed");
+  assert.equal((await get("?entityId=corwen")).json().items.find((item: Item) => item.kind === "promise")?.state, "completed", "any participant's page shows the newest state");
 
   await app.close();
   console.log("campaign-memory-commitments-grouping regression passed");
