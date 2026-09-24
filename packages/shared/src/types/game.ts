@@ -831,6 +831,8 @@ export interface HudWidget {
 export interface HudWidgetConfig {
   /** Fit the panel to its visible labels instead of keeping the default fixed width. */
   autoSize?: boolean;
+  /** Grow to show all content: "auto" (absent) follows the game's widget auto expand default. */
+  autoExpand?: "auto" | "expand" | "fixed";
   // progress_bar / gauge / relationship_meter
   /** Initial value used when the widget is created for a new session. */
   startingValue?: number;

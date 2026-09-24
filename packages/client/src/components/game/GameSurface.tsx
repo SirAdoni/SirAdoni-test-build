@@ -1,6 +1,11 @@
 import { assignCombatTactics, combatTacticsSchema, extractNamedRoleNpcNames } from "@marinara-engine/shared";
 import type { ChatMetadata } from "@marinara-engine/shared";
-import { isGameExtendedWidgetsEnabled, isGameSceneTimelineEnabled, upstreamHudWidgets } from "@marinara-engine/shared";
+import {
+  isGameExtendedWidgetsEnabled,
+  isGameSceneTimelineEnabled,
+  isGameWidgetAutoExpandEnabled,
+  upstreamHudWidgets,
+} from "@marinara-engine/shared";
 // ──────────────────────────────────────────────
 // Game: Main Surface (rendered by ChatArea when mode === "game")
 // ──────────────────────────────────────────────
@@ -13,6 +18,7 @@ import {
   lazy,
   memo,
   Suspense,
+  type ContextType,
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -259,7 +265,12 @@ import { DirectionEngine } from "./DirectionEngine";
 import { FloatingGamePanel, GamePanelContext } from "./FloatingGamePanel";
 import { GameLayoutEditToolbar } from "./GameLayoutEditToolbar";
 import { GAME_PANEL_INTERACTIVE_LAYER } from "../../lib/game-panel-layout";
-import { GameWidgetPanel, GameWidgetSessionPrepModal, MobileWidgetPanel } from "./GameWidgetPanel";
+import {
+  GameWidgetPanel,
+  GameWidgetSessionPrepModal,
+  MobileWidgetPanel,
+  WidgetAutoExpandContext,
+} from "./GameWidgetPanel";
 import { MobileWidgetArrangeButton, MobileWidgetTray } from "./GameMobileArrange";
 import { useShortGameViewport } from "../../lib/game-short-landscape";
 import {
@@ -508,6 +519,23 @@ type SpotifyDevicesSnapshot = {
 };
 
 type GameDirectAddressMode = "party" | "gm";
+
+/** Floating panel context plus the game's widget auto expand default for every HUD widget below it. */
+function GameHudContexts({
+  panel,
+  widgetAutoExpand,
+  children,
+}: {
+  panel: ContextType<typeof GamePanelContext>;
+  widgetAutoExpand: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <WidgetAutoExpandContext.Provider value={widgetAutoExpand}>
+      <GamePanelContext.Provider value={panel}>{children}</GamePanelContext.Provider>
+    </WidgetAutoExpandContext.Provider>
+  );
+}
 
 function isMobileGameViewport(): boolean {
   return typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches;
@@ -2540,6 +2568,7 @@ function GameSurfaceComponent({
   );
   // Per-game switches. Extended widgets OFF hides extended types (their saved state is kept).
   const extendedWidgetsEnabled = isGameExtendedWidgetsEnabled(chatMeta);
+  const widgetAutoExpand = isGameWidgetAutoExpandEnabled(chatMeta);
   const hudWidgets = useMemo(
     () => (extendedWidgetsEnabled ? storedHudWidgets : upstreamHudWidgets(storedHudWidgets)),
     [extendedWidgetsEnabled, storedHudWidgets],
@@ -12910,8 +12939,9 @@ function GameSurfaceComponent({
         cards={sceneCharacterCards}
         onOpen={(id) => useGameModeStore.getState().openCharacterSheet(id)}
       >
-        <GamePanelContext.Provider
-          value={{
+        <GameHudContexts
+          widgetAutoExpand={widgetAutoExpand}
+          panel={{
             chatId: gamePanelLayoutScopeId,
             legacyChatId: activeChatId,
             surface: hudSurfaceRef,
@@ -14512,7 +14542,7 @@ function GameSurfaceComponent({
               </div>
             </DirectionEngine>
           </GameTransitionManager>
-        </GamePanelContext.Provider>
+        </GameHudContexts>
       </GameCharacterReferences>
 
       {/* Character sheet modal */}

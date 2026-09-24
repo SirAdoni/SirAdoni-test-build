@@ -101,6 +101,7 @@ import {
   GAME_AUTO_SCENE_MEDIA_ENABLED_KEY,
   GAME_EXTENDED_WIDGETS_ENABLED_KEY,
   GAME_SCENE_TIMELINE_ENABLED_KEY,
+  GAME_WIDGET_AUTO_EXPAND_KEY,
 } from "@marinara-engine/shared";
 import {
   DEFAULT_GAME_DICE_POOL_AGE_TURNS as DEFAULT_DICE_POOL_AGE_TURNS,
@@ -7498,6 +7499,11 @@ export function ChatSettingsDrawer({
                       GAME_AUTO_SCENE_MEDIA_ENABLED_KEY,
                       "chat.settings.game.autoSceneMedia",
                       "chat.settings.game.autoSceneMediaHelp",
+                    ],
+                    [
+                      GAME_WIDGET_AUTO_EXPAND_KEY,
+                      "chat.settings.game.widgetAutoExpand",
+                      "chat.settings.game.widgetAutoExpandHelp",
                     ],
                   ] as const
                 ).map(([key, label, help]) => (

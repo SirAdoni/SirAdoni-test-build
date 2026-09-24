@@ -146,6 +146,16 @@ On: after each GM turn the automatic scene media queue may generate scene images
 
 Off: nothing is queued automatically. Media you ask for still works.
 
+### Auto expand widgets
+
+Metadata key: `gameWidgetAutoExpand`.
+
+On: HUD widgets show all their content instead of scrolling inside it. A long list widget shows every entry, and a widget opened from the phone or tablet tray can grow up to the screen height. Widgets shrink back when their content shrinks.
+
+Off: widgets keep the fixed size limits: a list longer than about 16 lines scrolls inside the widget, and the tray sheet stops at the smaller of 60% of the screen and 28rem.
+
+Each widget can override the game in its edit dialog under **Size**: **Auto** follows this switch, **Always expand** expands even when the switch is off, and **Fixed size** keeps the limits even when it is on. The per-widget choice is stored in the widget's config as `autoExpand` (`expand` or `fixed`; Auto stores nothing).
+
 ### GM reasoning effort (a setting, not a switch)
 
 Metadata key: `gameGmReasoningEffort`. In the chat settings drawer of a Game chat, **GM Reasoning Effort** (just below the connection), or from the command palette (Ctrl+K, **Set GM reasoning effort**).

@@ -666,6 +666,8 @@ export interface ChatMetadata {
   gameExtendedWidgetsEnabled?: boolean;
   /** Automatic post-turn scene media queue. Absent = on; false = nothing queued automatically. */
   gameAutoSceneMediaEnabled?: boolean;
+  /** Widgets grow to fit their content (game default; a widget can override it). Absent = on; false = fixed limits. */
+  gameWidgetAutoExpand?: boolean;
   /** Hold a send whose predicted prompt-cache hit is below the threshold. Absent = enabled at 80 percent. */
   cacheSendGuard?: { enabled?: boolean; thresholdPercent?: number; ttlMinutes?: number };
   /** NPC identities the user removed and does not want automatically re-created. */

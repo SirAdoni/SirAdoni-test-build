@@ -56,6 +56,7 @@ A standing list of everything this fork carries over upstream `Pasta-Devs/Marina
 - Game (Chat settings > Agents in a Game chat): **Scene timeline** (`gameSceneTimelineEnabled`, on).
 - Game: **Extended HUD widgets** (`gameExtendedWidgetsEnabled`, on; off hides extended widgets without deleting them and renders upstream's widget block verbatim).
 - Game: **Automatic scene media** (`gameAutoSceneMediaEnabled`, on).
+- Game: **Auto expand widgets** (`gameWidgetAutoExpand`, on; off keeps the fixed size limits, today's behaviour). Per widget: **Size** Auto / Always expand / Fixed size (`config.autoExpand`).
 - Chat (Chat settings > Advanced Parameters): **Warn before a low-cache send** (`cacheSendGuard`, on, 80%).
 - Plus **Keep generating when the tab is closed** (generation job tracking, own app setting `generationJobTracking`, **off**), in this section since 2026-09-24.
 
@@ -117,7 +118,7 @@ Memory panel and related:
 - Stable NPC ids shared by client and server (`shared/src/utils/game-npc-id.ts`), with the legacy slug id as a lookup fallback.
 - Isolated NPC knowledge (per game, off) and NPC auto-create (per game, on). Files: `game-isolated-turn.ts`, `isolated-game-presence.ts`, `npc-character-sync.ts`.
 
-### HUD widgets (8)
+### HUD widgets (9)
 
 - 19 extended widget types: checklist, obligations, schedule, calendar, note, clock, pips, countdown, tug of war, tier track, stages, tags, ledger, log, rumor board, turn order, scoreboard, bars, charges. Files: `shared/src/utils/hud-widget-extended.ts`, `client/src/components/game/ExtendedWidgets.tsx`, GM catalog in `services/game/gm-prompts.ts`, type enums in `routes/game.routes.ts`. They reuse the existing `[widget:]` keys (add, remove, check, uncheck, text, value, max, stat) and restore on branches. Switch **Extended HUD widgets**.
 - List capacity 100: lists keep every entry up to a safety bound of 100; an explicit `config.max` still limits on purpose, with an eviction toast naming the widget. Files: `shared/src/utils/hud-widget-lifecycle.ts`, `GameWidgetPanel.tsx`, `services/game/branch-state.ts`. No switch.
@@ -125,6 +126,7 @@ Memory panel and related:
 - Widget editor: live preview, draft-mode setup editor (typed spaces kept), accent limit 64 characters, "1,500 gold" balances parse, the editor keeps its draft across model turns.
 - Edge tucking: widgets tuck into edge tabs and reveal on hover, click or a changed value.
 - Vertical widget stacks and grow-to-fit sizing by default (fixed height needs an explicit choice).
+- Auto expand: widgets show all their content instead of scrolling inside it (lists drop their 16rem scroll box; the phone tray sheet grows to the screen). Game default **Auto expand widgets** (`gameWidgetAutoExpand`, on) and a per-widget **Size** choice in the widget's edit dialog (`config.autoExpand`: Auto follows the game, Always expand, Fixed size). Files: `shared/src/utils/game-feature-switches.ts`, `GameWidgetPanel.tsx`, `GameSurface.tsx`, `ChatSettingsDrawer.tsx`.
 - Custom widget bookmarks show their icon and move along the chosen edge in Edit layout.
 - Status widget (Persona Stats and custom RPG fields) and Contact Book widget. Files: `GameStatusWidget.tsx`, `game-status-widget.ts`, `GameContactBookWidget.tsx`.
 
@@ -281,6 +283,14 @@ Features:
 - `contrib/dev-foundations` (local only, not pushed; 7 commits on top of `upstream/staging`, head `4a2b7f968`): a separate upstream contribution that re-packages parts of this work as opt-in changes (stable lorebook group winners and compact stored lorebook scans, robustness settings with runtime diagnostics, the startup inject gate, a Dev MCP, and a docs note). Nothing on it is part of the fork's main; the rest of this file describes main only.
 
 ## 2026-09-24
+
+### Widget auto expand (game default and per-widget Size)
+- **Commit(s):** this commit
+- **Files:** `packages/shared/src/utils/game-feature-switches.ts` (`GAME_WIDGET_AUTO_EXPAND_KEY`, `isGameWidgetAutoExpandEnabled`, `HudWidgetAutoExpandMode`, `widgetAutoExpandMode`, `resolveWidgetAutoExpand`), `packages/shared/src/types/game.ts` (`HudWidgetConfig.autoExpand`), `packages/shared/src/types/chat.ts` (`ChatMetadata.gameWidgetAutoExpand`), `packages/client/src/components/game/GameWidgetPanel.tsx` (`WidgetAutoExpandContext`, `useWidgetAutoExpand`, `AutoExpandWidgetBody`, `ListWidget` `expanded`, the tray sheet height, the **Size** select in `WidgetEditorModal`), `packages/client/src/components/game/GameSurface.tsx` (`GameHudContexts` provides the panel context and the game default in one wrapper), `packages/client/src/components/chat/ChatSettingsDrawer.tsx` (switch), `packages/client/src/localization/locales/en.json`, `docs/configuration/features.md`.
+- **Behaviour:** a widget that auto expands shows all its content instead of scrolling inside it. Today that means the list widget drops its 16rem (`max-h-64`) inner scroll box and the phone and tablet tray sheet may grow to the screen height (`100dvh - 10rem`) instead of `min(60vh, 28rem)`. The desktop panel already grows with its content (`autoGrow`) and shrinks back when content shrinks; its height is still limited by the HUD column. Resolution: per widget `config.autoExpand` `"expand"` or `"fixed"` wins; absent or `"auto"` follows the game's `gameWidgetAutoExpand` (absent = on). Choosing Auto in the editor deletes the key, so a widget that follows the game keeps its config byte for byte. The per-widget choice lives in widget state and is saved with the widget through `PUT /api/game/:chatId/widgets` (config is a free record there); the game default is a chat metadata boolean like the other per-game switches and is carried to new sessions with them.
+- **Not yet:** an explicit **Always expand** does not yet override a panel height the player set by hand, and a grown panel does not yet reflow its neighbours in Edit layout. Both wait on the shared floating-panel growth and reflow mechanism the UI session is building in `FloatingGamePanel.tsx` / `game-panel-layout.ts`, so there is one mechanism for grown map cards and widgets. `resolveWidgetAutoExpand` already reports `explicit` for that step.
+- **Settings / env and defaults:** Game chat settings > Agents > **Auto expand widgets** (`gameWidgetAutoExpand`, default on). Per widget: edit dialog **Size** (Auto, Always expand, Fixed size; default Auto). Off, or Fixed size, is the behaviour before this change.
+- **Tests:** `scripts/regressions/widget-auto-expand.regression.ts` (resolution rules), `scripts/regressions/widget-auto-expand.browser.mjs` (real desktop panel and tray at 390x844, 1024x768 and 1440x900: with the game on, an Auto list of 22 entries has no inner scroll box and shows all 22, a Fixed size list keeps its 256px scroll box; with the game off, an Auto list keeps the box and an Always expand list drops it; a long stat widget stays fully visible).
 
 ### Per-game GM reasoning effort
 - **Commit(s):** this commit
