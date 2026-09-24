@@ -33,6 +33,7 @@ import { logger, refreshConsoleLogLevel } from "../lib/logger.js";
 import { isSecretEnvKey } from "../lib/diagnostics.js";
 import { getEnvFilePath, getLogLevel, reloadRuntimeEnv, type EnvReloadResult } from "./runtime-config.js";
 import { personalServerExtensionRuntime } from "../services/extensions/personal-server-extension-runtime.js";
+import { notifyFeatureSettingsChange } from "../services/features/feature-settings.js";
 
 // Keys whose values are bound at process / app startup and won't take effect
 // without a full restart, even though we propagate them to process.env.
@@ -192,6 +193,8 @@ export function startEnvWatcher(): EnvWatcherHandle {
       logDiff(diff, envPath);
       applyLogLevel(diff);
       applyExternalExtensionsGate(diff);
+      // Env-backed feature switches (MARINARA_CONSOLE_TRAY and friends) may have flipped.
+      if (diff.updated.length > 0 || diff.added.length > 0 || diff.removed.length > 0) notifyFeatureSettingsChange();
       return diff;
     } catch (err) {
       logger.error({ event: "config.reload", outcome: "failed", envPath, err }, "[env-watcher] Failed to reload .env");

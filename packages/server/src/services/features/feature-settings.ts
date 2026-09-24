@@ -14,6 +14,7 @@ import {
   type FeatureSettings,
   type FeatureSettingsResponse,
   type FeatureSwitchName,
+  type FeatureUnavailableReason,
 } from "@marinara-engine/shared";
 import { readEnvFlagOverride } from "../../config/runtime-config.js";
 
@@ -24,12 +25,44 @@ import { readEnvFlagOverride } from "../../config/runtime-config.js";
 export const FEATURE_ENV_FLAG_OVERRIDES: Partial<Record<FeatureSwitchName, string>> = {
   stableLorebookGroupPicks: "LOREBOOK_STABLE_GROUP_WINNERS",
   providerRetry: "PROVIDER_RETRY_TRANSIENT_ERRORS",
+  consoleTray: "MARINARA_CONSOLE_TRAY",
+};
+
+/** Switches that only work on one platform. Elsewhere they are a no-op and the UI shows them as unavailable. */
+const FEATURE_PLATFORM_ONLY: Partial<
+  Record<FeatureSwitchName, { platform: NodeJS.Platform; reason: FeatureUnavailableReason }>
+> = {
+  consoleTray: { platform: "win32", reason: "windowsOnly" },
 };
 
 /** Owned by background-call-budget.ts, which parses it; listed here so the UI can show the lock. */
 export const BACKGROUND_CALLS_PER_HOUR_ENV = "MARINARA_BACKGROUND_CALLS_PER_HOUR";
 
 let cached: FeatureSettings = {};
+const changeListeners = new Set<() => void>();
+
+/**
+ * Run `listener` after every change that can flip a switch: a save, a key removal, a Mari-style
+ * reload, or a `.env` reload (env overrides). Services that must start or stop something at
+ * once (the console tray helper) subscribe here. Returns the unsubscribe function.
+ */
+export function onFeatureSettingsChange(listener: () => void): () => void {
+  changeListeners.add(listener);
+  return () => {
+    changeListeners.delete(listener);
+  };
+}
+
+/** Tell the listeners the effective switches may have changed. A throwing listener never breaks the writer. */
+export function notifyFeatureSettingsChange(): void {
+  for (const listener of [...changeListeners]) {
+    try {
+      listener();
+    } catch {
+      // Listeners own their error reporting; a save must not fail because of one.
+    }
+  }
+}
 
 /** Replace the cache from a stored JSON string (null = key removed). Bad JSON falls back to defaults. */
 export function applyFeatureSettingsValue(value: string | null): FeatureSettings {
@@ -42,6 +75,7 @@ export function applyFeatureSettingsValue(value: string | null): FeatureSettings
     }
   }
   cached = normalizeFeatureSettings(parsed);
+  notifyFeatureSettingsChange();
   return cached;
 }
 
@@ -102,7 +136,31 @@ export function featureEnvEffective(): NonNullable<FeatureSettingsResponse["effe
   return effective;
 }
 
-/** Tests only. */
+/** Switches that have no effect on this platform, with the reason (empty on a platform that supports them all). */
+export function featureUnavailable(
+  platform: NodeJS.Platform = process.platform,
+): NonNullable<FeatureSettingsResponse["unavailable"]> {
+  const unavailable: NonNullable<FeatureSettingsResponse["unavailable"]> = {};
+  for (const [name, rule] of Object.entries(FEATURE_PLATFORM_ONLY) as Array<
+    [FeatureSwitchName, { platform: NodeJS.Platform; reason: FeatureUnavailableReason }]
+  >) {
+    if (platform !== rule.platform) unavailable[name] = rule.reason;
+  }
+  return unavailable;
+}
+
+/** The GET and PUT response of `/api/app-settings/features`. */
+export function featureSettingsResponse(): FeatureSettingsResponse {
+  return {
+    settings: getFeatureSettings(),
+    envOverrides: featureEnvOverrides(),
+    effective: featureEnvEffective(),
+    unavailable: featureUnavailable(),
+  };
+}
+
+/** Tests only. Also notifies the change listeners, like a save would. */
 export function resetFeatureSettingsForTests(settings: FeatureSettings = {}): void {
   cached = normalizeFeatureSettings(settings);
+  notifyFeatureSettingsChange();
 }

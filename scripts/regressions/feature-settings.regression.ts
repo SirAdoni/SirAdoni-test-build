@@ -18,6 +18,7 @@ process.env.AUTO_CREATE_DEFAULT_CONNECTION = "false";
 delete process.env.LOREBOOK_STABLE_GROUP_WINNERS;
 delete process.env.PROVIDER_RETRY_TRANSIENT_ERRORS;
 delete process.env.MARINARA_BACKGROUND_CALLS_PER_HOUR;
+delete process.env.MARINARA_CONSOLE_TRAY;
 
 type TestApp = {
   close(): Promise<void>;
@@ -87,7 +88,13 @@ try {
 
   const read = await app.inject({ method: "GET", url: "/api/app-settings/features" });
   assert.equal(read.statusCode, 200);
-  assert.deepEqual(read.json(), { settings: { usageAndActivationStats: false }, envOverrides: {}, effective: {} });
+  assert.deepEqual(read.json(), {
+    settings: { usageAndActivationStats: false },
+    envOverrides: {},
+    effective: {},
+    // Platform-only switches: the Windows console tray is reported unavailable elsewhere.
+    unavailable: process.platform === "win32" ? {} : { consoleTray: "windowsOnly" },
+  });
 
   const saved = await app.inject({
     method: "PUT",

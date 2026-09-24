@@ -16,6 +16,7 @@ export const FEATURE_SWITCH_NAMES = [
   "backgroundCallCap",
   "messageTrash",
   "usageAndActivationStats",
+  "consoleTray",
 ] as const;
 export type FeatureSwitchName = (typeof FEATURE_SWITCH_NAMES)[number];
 
@@ -42,6 +43,7 @@ export const featureSettingsSchema = z
     backgroundCallCap: z.boolean().optional(),
     messageTrash: z.boolean().optional(),
     usageAndActivationStats: z.boolean().optional(),
+    consoleTray: z.boolean().optional(),
     backgroundCallsPerHour: numberSchema("backgroundCallsPerHour").optional(),
     messageTrashDays: numberSchema("messageTrashDays").optional(),
   })
@@ -70,6 +72,12 @@ export function resolveFeatureNumber(settings: FeatureSettings | null | undefine
   return settings?.[name] ?? FEATURE_NUMBER_SETTINGS[name].defaultValue;
 }
 
+/**
+ * Why a switch has no effect on this server, so the UI can show it as unavailable.
+ * `windowsOnly`: the switch drives a Windows-only helper (the console tray icon).
+ */
+export type FeatureUnavailableReason = "windowsOnly";
+
 export interface FeatureSettingsResponse {
   /** What is saved; absent keys use their defaults. */
   settings: FeatureSettings;
@@ -77,4 +85,6 @@ export interface FeatureSettingsResponse {
   envOverrides: Partial<Record<FeatureSwitchName | FeatureNumberName, string>>;
   /** For switches pinned by an on/off environment variable: the value actually in effect. */
   effective?: Partial<Record<FeatureSwitchName, boolean>>;
+  /** Switches that cannot work on this server (for example a Windows-only switch on Linux), with the reason. */
+  unavailable?: Partial<Record<FeatureSwitchName, FeatureUnavailableReason>>;
 }

@@ -6,21 +6,22 @@ Changes apply straight away. You do not need to restart the server or reload the
 
 ## Overview
 
-| Switch                                     | Default     | Scope         | Where to find it                    | Environment variable                 |
-| ------------------------------------------ | ----------- | ------------- | ----------------------------------- | ------------------------------------ |
-| **ChatGPT history replay**                 | On          | App           | Settings > Advanced > Features      |                                      |
-| **Cache-friendly prompt layout**           | On          | App           | Settings > Advanced > Features      |                                      |
-| **Stable lorebook picks**                  | On          | App           | Settings > Advanced > Features      | `LOREBOOK_STABLE_GROUP_WINNERS`      |
-| **Retry failed provider calls**            | On          | App           | Settings > Advanced > Features      | `PROVIDER_RETRY_TRANSIENT_ERRORS`    |
-| **Background call cap**                    | On, 600/h   | App           | Settings > Advanced > Features      | `MARINARA_BACKGROUND_CALLS_PER_HOUR` |
-| **Message trash**                          | On, 30 days | App           | Settings > Advanced > Features      |                                      |
-| **Usage and activation stats**             | On          | App           | Settings > Advanced > Features      |                                      |
-| **Send client error reports**              | On          | App (browser) | Settings > Advanced > Features      |                                      |
-| **Keep generating when the tab is closed** | **Off**     | App           | Settings > Advanced > Features      |                                      |
-| **Scene timeline**                         | On          | Game          | Chat settings > Agents (Game mode)  |                                      |
-| **Extended HUD widgets**                   | On          | Game          | Chat settings > Agents (Game mode)  |                                      |
-| **Automatic scene media**                  | On          | Game          | Chat settings > Agents (Game mode)  |                                      |
-| **Warn before a low-cache send**           | On, 80%     | Chat          | Chat settings > Advanced Parameters |                                      |
+| Switch                                      | Default      | Scope         | Where to find it                    | Environment variable                 |
+| ------------------------------------------- | ------------ | ------------- | ----------------------------------- | ------------------------------------ |
+| **ChatGPT history replay**                  | On           | App           | Settings > Advanced > Features      |                                      |
+| **Cache-friendly prompt layout**            | On           | App           | Settings > Advanced > Features      |                                      |
+| **Stable lorebook picks**                   | On           | App           | Settings > Advanced > Features      | `LOREBOOK_STABLE_GROUP_WINNERS`      |
+| **Retry failed provider calls**             | On           | App           | Settings > Advanced > Features      | `PROVIDER_RETRY_TRANSIENT_ERRORS`    |
+| **Background call cap**                     | On, 600/h    | App           | Settings > Advanced > Features      | `MARINARA_BACKGROUND_CALLS_PER_HOUR` |
+| **Message trash**                           | On, 30 days  | App           | Settings > Advanced > Features      |                                      |
+| **Usage and activation stats**              | On           | App           | Settings > Advanced > Features      |                                      |
+| **Minimize the console to the system tray** | On (Windows) | App (server)  | Settings > Advanced > Features      | `MARINARA_CONSOLE_TRAY`              |
+| **Send client error reports**               | On           | App (browser) | Settings > Advanced > Features      |                                      |
+| **Keep generating when the tab is closed**  | **Off**      | App           | Settings > Advanced > Features      |                                      |
+| **Scene timeline**                          | On           | Game          | Chat settings > Agents (Game mode)  |                                      |
+| **Extended HUD widgets**                    | On           | Game          | Chat settings > Agents (Game mode)  |                                      |
+| **Automatic scene media**                   | On           | Game          | Chat settings > Agents (Game mode)  |                                      |
+| **Warn before a low-cache send**            | On, 80%      | Chat          | Chat settings > Advanced Parameters |                                      |
 
 Searching settings for `features` also takes you to the app-wide section.
 
@@ -90,6 +91,23 @@ On: every generation records token usage and lorebook activations.
 
 Off: nothing is recorded, including activations that were queued but not yet written when you turned it off. The Usage Dashboard and the lorebook activation stats are hidden.
 
+### Minimize the console to the system tray
+
+Setting key: `consoleTray`. Windows only.
+
+On: while the server runs in a console window, a Marinara icon sits in the Windows system tray (its tooltip shows the port), and minimizing the console hides it from the taskbar. The icon's menu has **Open Marinara** (opens the app in your default browser at the address and port the server listens on), **Show console** or **Hide console**, and **Quit Marinara**, which stops the server gracefully, the same way Ctrl+C does. Double-clicking the icon shows or hides the console.
+
+Off: no tray icon, and the console is left alone, as in upstream Marinara. Turning it off while the console is hidden brings the console back. Turning it on or off applies at once.
+
+Good to know:
+
+- It works however the server was started: `start.bat`, `start-local.bat`, the Windows launcher or `pnpm start`.
+- In Windows Terminal (the Windows 11 default) the console is a tab that may share its window with other tabs, so the console is never hidden there. You still get the tray icon, and double-clicking it opens Marinara. The server log says why.
+- With no visible console (a service, or a console started hidden) there is no tray icon. The server log says so once.
+- When the server stops for any reason, including a crash, a hidden console is shown again and the icon goes away.
+- On Linux, macOS, Android and Docker the switch has no effect and is shown as unavailable.
+- It uses a small hidden Windows PowerShell helper (`packages/server/src/assets/console-tray.ps1`). If PowerShell is missing or blocked, the server logs one warning and keeps working normally.
+
 ### Send client error reports
 
 UI setting: `clientErrorReports`.
@@ -142,11 +160,12 @@ On providers with prompt caching, a send is held with a question first when the 
 2. **Saved switch.** The value saved in Settings or in the chat's metadata.
 3. **Default.** Anything never saved is on, with the default numbers.
 
-| Variable                             | Controls                               | Values                                                                        |
-| ------------------------------------ | -------------------------------------- | ----------------------------------------------------------------------------- |
-| `LOREBOOK_STABLE_GROUP_WINNERS`      | Stable lorebook picks                  | `true`, `1`, `yes` or `on` turn it on. Any other value turns it off.          |
-| `PROVIDER_RETRY_TRANSIENT_ERRORS`    | Retry failed provider calls            | `true`, `1`, `yes` or `on` turn it on. Any other value turns it off.          |
-| `MARINARA_BACKGROUND_CALLS_PER_HOUR` | Background call cap and Calls per hour | A positive number sets the cap. `0`, `off`, `false` or `disabled` removes it. |
+| Variable                             | Controls                                | Values                                                                             |
+| ------------------------------------ | --------------------------------------- | ---------------------------------------------------------------------------------- |
+| `LOREBOOK_STABLE_GROUP_WINNERS`      | Stable lorebook picks                   | `true`, `1`, `yes` or `on` turn it on. Any other value turns it off.               |
+| `PROVIDER_RETRY_TRANSIENT_ERRORS`    | Retry failed provider calls             | `true`, `1`, `yes` or `on` turn it on. Any other value turns it off.               |
+| `MARINARA_BACKGROUND_CALLS_PER_HOUR` | Background call cap and Calls per hour  | A positive number sets the cap. `0`, `off`, `false` or `disabled` removes it.      |
+| `MARINARA_CONSOLE_TRAY`              | Minimize the console to the system tray | `true`, `1`, `yes` or `on` turn it on. Any other value, such as `0`, turns it off. |
 
 The first two use the same names as upstream Marinara Engine, where they are off unless set. Here they are on unless set, so an unset variable keeps this build's behaviour.
 

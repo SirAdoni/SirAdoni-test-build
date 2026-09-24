@@ -26,6 +26,7 @@ const SERVER_SWITCHES: ReadonlyArray<{ name: FeatureSwitchName; number?: Feature
   { name: "backgroundCallCap", number: "backgroundCallsPerHour" },
   { name: "messageTrash", number: "messageTrashDays" },
   { name: "usageAndActivationStats" },
+  { name: "consoleTray" },
 ];
 
 const NUMBER_INPUT_CLASS =
@@ -44,6 +45,7 @@ export function FeatureSwitchesSettings({ anchorId }: { anchorId?: string }) {
   const settings = query.data?.settings;
   const envOverrides = query.data?.envOverrides ?? {};
   const envEffective = query.data?.effective ?? {};
+  const unavailable = query.data?.unavailable ?? {};
   const disabled = !query.data || save.isPending;
 
   const update = (patch: FeatureSettings) => {
@@ -77,12 +79,14 @@ export function FeatureSwitchesSettings({ anchorId }: { anchorId?: string }) {
       {SERVER_SWITCHES.map(({ name, number }) => {
         // A switch pinned by an environment variable shows the value in effect, not the saved one.
         const enabled = envEffective[name] ?? resolveFeatureEnabled(settings, name);
-        const locked = envNote(name);
+        // A switch this server's platform cannot run (the Windows-only console tray elsewhere) is shown, not offered.
+        const unavailableReason = unavailable[name];
+        const locked = unavailableReason ? t(`settings.features.unavailable.${unavailableReason}`) : envNote(name);
         return (
           <div key={name} className="flex flex-col">
             <ToggleSetting
               label={t(`settings.features.${name}.label`)}
-              checked={enabled}
+              checked={enabled && !unavailableReason}
               disabled={disabled || !!locked}
               onChange={(value) => update({ [name]: value })}
               help={t(`settings.features.${name}.help`)}
