@@ -79,13 +79,13 @@ import { usePrepBoard } from "../../hooks/use-prep-board";
 import { useUIStore } from "../../stores/ui.store";
 
 const FIELD_CLASS =
-  "h-8 min-w-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40";
+  "h-8 pointer-coarse:h-9 min-w-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40";
 const ICON_BUTTON_CLASS =
-  "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50";
+  "flex h-7 w-7 pointer-coarse:h-9 pointer-coarse:w-9 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50";
 const SMALL_BUTTON_CLASS =
-  "flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-[0.6875rem] font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-60";
+  "flex h-7 pointer-coarse:h-9 pointer-coarse:shrink-0 pointer-coarse:whitespace-nowrap items-center gap-1.5 rounded-md border border-border px-2.5 text-[0.6875rem] font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-60";
 const MENU_ITEM_CLASS =
-  "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-secondary focus-visible:bg-secondary focus-visible:outline-none";
+  "flex w-full pointer-coarse:min-h-9 items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-secondary focus-visible:bg-secondary focus-visible:outline-none";
 const IMPORT_MAX_BYTES = 16 * 1024 * 1024;
 const COLLAPSED_KEY = "marinara-prep-board-collapsed";
 
@@ -178,7 +178,7 @@ function MenuButton({ label, children }: { label: string; children: (close: () =
       {open && (
         <div
           role="menu"
-          className="absolute right-0 top-8 z-30 w-48 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-lg"
+          className="absolute right-0 top-8 pointer-coarse:top-10 z-30 w-48 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-lg"
         >
           {children(() => setOpen(false))}
         </div>
@@ -295,7 +295,7 @@ function LinkPicker({ onPick, onCancel }: { onPick: (link: PrepBoardLink) => voi
               >
                 <User size={12} className="shrink-0 text-muted-foreground" />
                 <span className="min-w-0 flex-1 truncate">{character.name}</span>
-                <span className="shrink-0 text-[0.625rem] text-muted-foreground">
+                <span className="shrink-0 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-muted-foreground">
                   {t("ui.prepBoard.linkCharacter")}
                 </span>
               </button>
@@ -312,7 +312,9 @@ function LinkPicker({ onPick, onCancel }: { onPick: (link: PrepBoardLink) => voi
               >
                 <BookOpen size={12} className="shrink-0 text-muted-foreground" />
                 <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-                <span className="shrink-0 text-[0.625rem] text-muted-foreground">{t("ui.prepBoard.linkEntry")}</span>
+                <span className="shrink-0 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-muted-foreground">
+                  {t("ui.prepBoard.linkEntry")}
+                </span>
               </button>
             </li>
           ))}
@@ -414,7 +416,7 @@ function ItemEditor({
         <button
           type="button"
           disabled={!text.trim()}
-          className="flex h-7 items-center rounded-md bg-primary px-2.5 text-[0.6875rem] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+          className="flex h-7 pointer-coarse:h-9 items-center rounded-md bg-primary px-2.5 text-[0.6875rem] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
           onClick={save}
         >
           {t("ui.prepBoard.save")}
@@ -494,7 +496,7 @@ function ItemRow({
         <button
           type="button"
           data-prep-handle={item.id}
-          className="mt-0.5 flex h-5 w-4 shrink-0 cursor-grab touch-none items-center justify-center rounded text-muted-foreground/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 active:cursor-grabbing"
+          className="mt-0.5 pointer-coarse:mt-0 flex h-5 w-4 pointer-coarse:h-9 pointer-coarse:w-9 shrink-0 cursor-grab touch-none items-center justify-center rounded text-muted-foreground/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 active:cursor-grabbing"
           title={moveLabel}
           aria-label={moveLabel}
           {...(disabled ? {} : listeners)}
@@ -503,22 +505,24 @@ function ItemRow({
           <GripVertical size={12} />
         </button>
       ) : (
-        <span className="w-4 shrink-0" />
+        <span className="w-4 pointer-coarse:w-9 shrink-0" />
       )}
-      <input
-        type="checkbox"
-        checked={item.done}
-        onChange={() => actions.toggleDone(item)}
-        aria-label={t("ui.prepBoard.markUsed")}
-        className="mt-1 h-3.5 w-3.5 shrink-0 accent-[var(--primary)]"
-      />
+      <label className="flex shrink-0 pointer-coarse:h-9 pointer-coarse:w-9 pointer-coarse:items-center pointer-coarse:justify-center">
+        <input
+          type="checkbox"
+          checked={item.done}
+          onChange={() => actions.toggleDone(item)}
+          aria-label={t("ui.prepBoard.markUsed")}
+          className="mt-1 h-3.5 w-3.5 shrink-0 accent-[var(--primary)] pointer-coarse:mt-0 pointer-coarse:h-4 pointer-coarse:w-4"
+        />
+      </label>
       <div className="min-w-0 flex-1">
         <button
           type="button"
           onClick={() => actions.edit(item)}
           title={item.createdSession !== null ? t("ui.prepBoard.addedIn", { session: item.createdSession }) : undefined}
           className={cn(
-            "block w-full whitespace-pre-wrap break-words rounded text-left text-xs leading-snug text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
+            "block w-full pointer-coarse:min-h-9 pointer-coarse:py-2 whitespace-pre-wrap break-words rounded text-left text-xs leading-snug text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
             item.done && "text-muted-foreground line-through decoration-muted-foreground/60",
           )}
         >
@@ -530,7 +534,7 @@ function ItemRow({
               <button
                 type="button"
                 onClick={() => actions.openLink(item.link!)}
-                className="flex max-w-full items-center gap-1 rounded bg-secondary px-1.5 py-0.5 text-[0.625rem] text-foreground transition-colors hover:bg-secondary/70"
+                className="flex max-w-full pointer-coarse:min-h-9 items-center gap-1 rounded bg-secondary px-1.5 py-0.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-foreground transition-colors hover:bg-secondary/70"
                 title={t("ui.prepBoard.openLink")}
               >
                 {item.link.kind === "character" ? <User size={10} /> : <BookOpen size={10} />}
@@ -542,12 +546,16 @@ function ItemRow({
                 key={tag}
                 type="button"
                 onClick={() => actions.searchTag(tag)}
-                className="rounded px-1 py-0.5 text-[0.625rem] text-primary transition-colors hover:bg-primary/10"
+                className="rounded pointer-coarse:min-h-9 pointer-coarse:min-w-9 px-1 py-0.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-primary transition-colors hover:bg-primary/10"
               >
                 #{tag}
               </button>
             ))}
-            {meta.length > 0 && <span className="text-[0.625rem] text-muted-foreground">{meta.join(" · ")}</span>}
+            {meta.length > 0 && (
+              <span className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-muted-foreground">
+                {meta.join(" · ")}
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -642,7 +650,7 @@ function AddItemInput({ sectionTitle, onAdd }: { sectionTitle: string; onAdd: (t
         }}
         placeholder={t("ui.prepBoard.addItem")}
         aria-label={t("ui.prepBoard.addItemTo", { section: sectionTitle })}
-        className={cn(FIELD_CLASS, "h-7 flex-1 border-dashed bg-transparent")}
+        className={cn(FIELD_CLASS, "h-7 pointer-coarse:h-9 flex-1 border-dashed bg-transparent")}
       />
       {value.trim() && (
         <button type="button" className={ICON_BUTTON_CLASS} onClick={submit} aria-label={t("ui.prepBoard.add")}>
@@ -938,7 +946,7 @@ export function GamePrepBoard({
           <p className="text-xs font-medium text-foreground">
             {t("ui.prepBoard.planning", { session: board.session })}
           </p>
-          <p className="text-[0.625rem] text-muted-foreground">
+          <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-muted-foreground">
             {t("ui.prepBoard.summary", { open: counts.open, done: counts.done })}
             {currentSession !== null && currentSession !== board.session
               ? t("ui.prepBoard.currentSession", { session: currentSession })
@@ -1063,13 +1071,13 @@ export function GamePrepBoard({
           }}
           placeholder={t("ui.prepBoard.search")}
           aria-label={t("ui.prepBoard.search")}
-          className={cn(FIELD_CLASS, "w-full pl-7", query && "pr-7")}
+          className={cn(FIELD_CLASS, "w-full pl-7", query && "pr-7 pointer-coarse:pr-10")}
         />
         {query && (
           <button
             type="button"
             onClick={() => setQuery("")}
-            className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+            className="absolute right-1 pointer-coarse:right-0 top-1/2 flex h-6 w-6 pointer-coarse:h-9 pointer-coarse:w-9 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:text-foreground"
             aria-label={t("ui.prepBoard.clearSearch")}
           >
             <X size={12} />
@@ -1105,12 +1113,12 @@ export function GamePrepBoard({
                     type="button"
                     onClick={() => toggleCollapsed(section.id)}
                     aria-expanded={!isCollapsed}
-                    className="flex min-w-0 flex-1 items-center gap-1 rounded py-0.5 text-left text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                    className="flex min-w-0 flex-1 pointer-coarse:min-h-9 items-center gap-1 rounded py-0.5 text-left text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
                   >
                     {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
                     <span className="truncate">{title}</span>
                     {openCount > 0 && (
-                      <span className="ml-1 rounded bg-secondary px-1 text-[0.625rem] font-medium normal-case text-foreground">
+                      <span className="ml-1 rounded bg-secondary px-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium normal-case text-foreground">
                         {openCount}
                       </span>
                     )}
@@ -1223,7 +1231,9 @@ export function GamePrepBoard({
           })}
         </div>
       </DndContext>
-      <p className="text-[0.625rem] text-muted-foreground">{t("ui.prepBoard.privateNote")}</p>
+      <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-muted-foreground">
+        {t("ui.prepBoard.privateNote")}
+      </p>
     </div>
   );
 }
