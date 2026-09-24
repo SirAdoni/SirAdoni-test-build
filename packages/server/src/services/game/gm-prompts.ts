@@ -263,6 +263,18 @@ export function buildGameRecencySeal(playerName?: string | null): string {
   return [buildPlayerCanonRecencySeal(playerName), buildHumanProseRecencyPrompt()].join("\n\n");
 }
 
+/**
+ * The final-boundary reminder left in place of the recency seal when a chat keeps the seal in the cached prefix
+ * (chat metadata `gameCacheStableFinalChecks`). It names both checks and restates the one rule that must stay last.
+ */
+export function buildGameRecencySealPointer(): string {
+  return [
+    `<final_checks>`,
+    `Before writing, apply <player_canon_check> and <prose_recency_check> from the start of this conversation exactly as written. The current player input is the highest-authority source for this turn.`,
+    `</final_checks>`,
+  ].join("\n");
+}
+
 /** Separate GM knowledge from information that characters can perceive in-world. */
 export function buildGameKnowledgeBoundaryPrompt(): string {
   return [

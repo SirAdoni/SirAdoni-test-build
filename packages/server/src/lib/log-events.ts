@@ -147,6 +147,7 @@ export type EventName =
   | "log.dropped"
   | "config.reload"
   | "prompt.debug"
+  | "prompt.layout.final_checks"
   | "sse.unreferenced_error";
 
 /**

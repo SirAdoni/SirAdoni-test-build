@@ -7,6 +7,22 @@ export interface PromptCacheLayoutMessage {
   providerMetadata?: Record<string, unknown>;
 }
 
+/** An invariant final-boundary check that may live in the cached prefix instead of the per-turn tail. */
+export interface StableFinalCheck {
+  /** The exact check text, as the prompt carries it at the final boundary. */
+  content: string;
+  /** The short reminder left at the final boundary in its place. */
+  pointer: string;
+}
+
+export interface PromptCacheLayoutOptions {
+  /**
+   * Checks to keep in the cached prefix (the chat opted in with `gameCacheStableFinalChecks`). Their full text
+   * moves just before the history and a short pointer stays at the final boundary. Omitted, nothing moves.
+   */
+  stableFinalChecks?: readonly StableFinalCheck[];
+}
+
 export interface FullLorebookContextParts {
   stable: string | undefined;
   dynamic: string | undefined;
@@ -138,7 +154,10 @@ export function shouldUseFullLorebookContext(
  * leading injections next to the current turn. User-authored prompt sections
  * and runtime agent sections retain their existing placement.
  */
-export function normalizePromptCacheLayout<T extends PromptCacheLayoutMessage>(messages: readonly T[]): T[] {
+export function normalizePromptCacheLayout<T extends PromptCacheLayoutMessage>(
+  messages: readonly T[],
+  options: PromptCacheLayoutOptions = {},
+): T[] {
   if (!isFeatureEnabled("cacheFriendlyPromptLayout")) return messages.map((message) => ({ ...message })) as T[];
   const next = messages.map((message) => ({ ...message })) as T[];
   const hasPromptMacroSyntax = (value: string) => /\{\{[^{}]+\}\}/u.test(value);
@@ -217,6 +236,52 @@ export function normalizePromptCacheLayout<T extends PromptCacheLayoutMessage>(m
       );
     }
   }
+  return relocateStableFinalChecks(next, options.stableFinalChecks);
+}
+
+/**
+ * Move invariant final-boundary checks into the cached prefix, just before the history and the per-turn blocks, and leave the
+ * short pointer in their old place. Anything after the last completed exchange is written to the cache again on the
+ * next turn, because the new exchange lands in front of it; a check whose bytes never change can sit before the
+ * history instead and is then read from the cache on every later turn. Only checks the caller names by exact content
+ * move, and only from inside or after the history. A check that is absent this turn moves nothing, so the request
+ * is byte-for-byte the plain layout.
+ */
+function relocateStableFinalChecks<T extends PromptCacheLayoutMessage>(
+  messages: T[],
+  checks: readonly StableFinalCheck[] | undefined,
+): T[] {
+  if (!checks?.length) return messages;
+  const next = messages.slice();
+  const moved: T[] = [];
+  for (const check of checks) {
+    if (!check.content.trim() || !check.pointer.trim()) continue;
+    const firstHistory = next.findIndex((message) => message.contextKind === "history");
+    if (firstHistory < 0) break;
+    let index = -1;
+    for (let cursor = next.length - 1; cursor > firstHistory; cursor -= 1) {
+      const message = next[cursor]!;
+      if (message.contextKind === "injection" && message.content === check.content) {
+        index = cursor;
+        break;
+      }
+    }
+    if (index < 0) continue;
+    const original = next[index]!;
+    next[index] = { ...original, content: check.pointer };
+    moved.push({ ...original });
+  }
+  if (moved.length === 0) return next;
+  // Ahead of the history and of every per-turn injection, so a first turn (whose runtime blocks sit before the only
+  // history message) already puts the check where every later turn keeps it.
+  const slot = next.findIndex(
+    (message) =>
+      message.contextKind === "history" ||
+      (message.contextKind === "injection" &&
+        (message.providerMetadata?.marinaraRuntimeContext === true ||
+          message.providerMetadata?.marinaraDynamicLoreContext === true)),
+  );
+  next.splice(slot, 0, ...moved);
   return next;
 }
 

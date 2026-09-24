@@ -51,6 +51,8 @@ On: World Maps and other changing runtime blocks move next to the current turn, 
 
 Off: the prompt is sent in the order it was assembled. Chats use the keyword lore scan unless a chat explicitly turned full lore on.
 
+Game chats on a subscription provider can also opt in to **stable final checks** with the chat metadata key `gameCacheStableFinalChecks` set to `true` (no settings control yet; default off). The player-canon and prose checks that close every Game prompt never change within a chat, but anything after the last finished exchange is written to the prompt cache again on the next turn. With the opt-in, their full text (about 5,100 characters) moves into the cached part of the prompt, just before the history, and a short `<final_checks>` reminder (about 230 characters) stays at the end. Each Game turn then writes about 4,900 fewer characters to the cache. The trade-off is that the full checks are no longer the last thing the model reads; the reminder names them and keeps the rule that the current player input has the highest authority. The opt-in only works while this switch is on. Turning it on or off in a running chat rewrites the cached history once.
+
 ### Stable lorebook picks
 
 Setting key: `stableLorebookGroupPicks`.

@@ -661,6 +661,7 @@ import { updateJournal } from "../services/generation/game-journal-runtime.js";
 import {
   buildGameSpecialInstructionsPrompt,
   buildGameRecencySeal,
+  buildGameRecencySealPointer,
   buildGameAuthorialContinuityPrompt,
   buildGmFormatReminder,
   resolveGameAddressMode,
@@ -8497,13 +8498,32 @@ export async function generateRoutes(app: FastifyInstance) {
             return fit.messages;
           };
 
+          // A chat that opted in keeps the invariant player-canon and prose checks in the cached prefix and leaves a
+          // short pointer at the final boundary, so the next turn does not write them to the cache again.
+          const gameStableFinalChecks =
+            chatMode === "game" && gameFinalRecencySeal && chatMeta.gameCacheStableFinalChecks === true
+              ? [{ content: gameFinalRecencySeal, pointer: resolvePromptMacros(buildGameRecencySealPointer()) }]
+              : undefined;
+          if (
+            gameStableFinalChecks &&
+            !advancedPreparedProviderMessages &&
+            supportsFullLorebookContext(conn.provider) &&
+            isFeatureEnabled("cacheFriendlyPromptLayout")
+          ) {
+            logger.debug(
+              { event: "prompt.layout.final_checks", chatId: input.chatId, movedChars: gameFinalRecencySeal!.length },
+              "[generate/game] Final checks kept in the cached prefix",
+            );
+          }
           let canonicalProviderMessages =
             advancedPreparedProviderMessages ??
             prepareProviderMessages(
               await fitPromptForSend(
                 toProviderMessages(
                   supportsFullLorebookContext(conn.provider)
-                    ? normalizePromptCacheLayout(preparedMessagesForGen)
+                    ? normalizePromptCacheLayout(preparedMessagesForGen, {
+                        stableFinalChecks: gameStableFinalChecks,
+                      })
                     : preparedMessagesForGen,
                 ),
               ),
