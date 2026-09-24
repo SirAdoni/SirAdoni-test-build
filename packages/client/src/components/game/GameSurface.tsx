@@ -12825,7 +12825,7 @@ function GameSurfaceComponent({
                       autoGrow
                       autoWidth
                     >
-                      <div className="pointer-events-auto flex w-full min-w-0 items-center gap-2 rounded-xl border border-white/10 bg-black/45 p-1.5 text-white/80 shadow-xl backdrop-blur-md lg:block lg:p-2">
+                      <div data-floating-widget-avoid className="pointer-events-auto flex w-full min-w-0 items-center gap-2 rounded-xl border border-white/10 bg-black/45 p-1.5 text-white/80 shadow-xl backdrop-blur-md lg:block lg:p-2">
                         <div className="contents text-[0.65rem] font-semibold uppercase tracking-wide text-white/60 lg:mb-1 lg:flex lg:flex-wrap lg:items-center lg:justify-between lg:gap-2">
                           <Users size={14} className="ml-1 shrink-0 lg:hidden" aria-hidden="true" />
                           <span className="truncate max-lg:sr-only">{localizeUi("sceneTimeline.present")}</span>
@@ -13739,6 +13739,7 @@ function GameSurfaceComponent({
                         !(compactHudWidgets && choicesVisible) ? (
                           <MobileWidgetTray
                             data-component="GameSurface.MobileWidgetTray"
+                            data-floating-widget-avoid
                             className={cn("mb-2 shrink-0", !compactHudWidgets && "md:hidden")}
                             trailing={
                               hudWidgets.length > 0 ? (
