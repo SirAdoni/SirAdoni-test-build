@@ -90,6 +90,11 @@ type MatchTier = "id" | "alias" | "prefix" | "text";
 const MATCH_TIER_RANK: Record<MatchTier, number> = { id: 0, alias: 1, prefix: 2, text: 3 };
 const REFERENCE_SAMPLE_LIMIT = 5;
 const DUPLICATE_SIMILARITY_THRESHOLD = 0.8;
+/**
+ * Citing the same message is not enough on its own: one reply yields many unrelated facts about the same person.
+ * Facts that share a message must also read alike (token Jaccard at or above this) or cite an identical quote.
+ */
+const DUPLICATE_SHARED_MESSAGE_SIMILARITY = 0.5;
 /** Facts in a terminal state never enter a duplicate group; resolving retires by superseding. */
 const DUPLICATE_EXCLUDED_STATUSES = new Set<CampaignMemoryFact["status"]>(["superseded", "retracted"]);
 
@@ -168,8 +173,9 @@ function compareSourceOrder(left: DuplicateFactView, right: DuplicateFactView): 
 }
 
 /**
- * Candidate duplicate groups: same subject and predicate, different receipts, evidence
- * message overlap or token Jaccard on the text at or above the threshold. Facts already
+ * Candidate duplicate groups: same subject and predicate, different receipts, and either an identical evidence
+ * quote, a shared evidence message with token Jaccard at or above DUPLICATE_SHARED_MESSAGE_SIMILARITY, or token
+ * Jaccard at or above DUPLICATE_SIMILARITY_THRESHOLD without shared evidence. Facts already
  * linked through supersedesFactId never pair. Groups are the connected components of
  * qualifying pairs; nothing is merged here.
  */
@@ -185,6 +191,14 @@ function findDuplicateGroups(facts: readonly CampaignMemoryFact[]): DuplicateGro
     if (members.length < 2) continue;
     const views = members.map(duplicateFactView);
     const tokens = views.map((view) => textTokens(view.text));
+    const quotes = members.map(
+      (fact) =>
+        new Set(
+          fact.evidence
+            .map((item) => item.quote.replace(/\s+/gu, " ").trim().toLocaleLowerCase())
+            .filter(Boolean),
+        ),
+    );
     const parent = views.map((_, index) => index);
     const find = (index: number): number => (parent[index] === index ? index : (parent[index] = find(parent[index]!)));
     const pairReason = new Map<string, { reason: DuplicateReason; similarity: number | null }>();
@@ -194,8 +208,12 @@ function findDuplicateGroups(facts: readonly CampaignMemoryFact[]): DuplicateGro
         const right = members[b]!;
         if (views[a]!.receiptId === views[b]!.receiptId) continue;
         if (left.supersedesFactId === right.factId || right.supersedesFactId === left.factId) continue;
-        const overlap = views[a]!.evidenceMessageIds.some((id) => views[b]!.evidenceMessageIds.includes(id));
+        const sharedMessage = views[a]!.evidenceMessageIds.some((id) => views[b]!.evidenceMessageIds.includes(id));
+        const sameQuote = [...quotes[a]!].some((quote) => quotes[b]!.has(quote));
         const similarity = tokenJaccard(tokens[a]!, tokens[b]!);
+        const overlap =
+          sameQuote ||
+          (sharedMessage && similarity !== null && similarity >= DUPLICATE_SHARED_MESSAGE_SIMILARITY);
         if (!overlap && (similarity === null || similarity < DUPLICATE_SIMILARITY_THRESHOLD)) continue;
         pairReason.set(`${a}:${b}`, { reason: overlap ? "overlapping-evidence" : "similar-text", similarity });
         parent[find(a)] = find(b);
@@ -353,16 +371,20 @@ function eventSummaries(
   facts: CampaignMemoryFact[],
   currentState: CampaignMemoryCurrentState[],
   entityById: ReadonlyMap<string, CampaignMemoryEntity>,
+  /**
+   * Every event the listing could show (defaults to `events`). Events that share a source message are deduplicated
+   * against this set in occurrence order, so a paged slice gets the same text it would get in the full list.
+   */
+  contextEvents: readonly CampaignMemoryEvent[] = events,
 ): Map<string, string> {
   const evidenceKey = (item: { messageId: string; quote: string }) => `${item.messageId}\u0000${item.quote.trim()}`;
-  const factsByEvidence = new Map<string, string[]>();
+  const factsByEvidence = new Map<string, CampaignMemoryFact[]>();
   for (const fact of facts) {
     if (DUPLICATE_EXCLUDED_STATUSES.has(fact.status)) continue;
-    const text = factText(fact);
-    if (!text) continue;
+    if (!factText(fact)) continue;
     for (const item of fact.evidence) {
       const list = factsByEvidence.get(evidenceKey(item)) ?? [];
-      if (!list.includes(text)) list.push(text);
+      if (!list.includes(fact)) list.push(fact);
       factsByEvidence.set(evidenceKey(item), list);
     }
   }
@@ -374,15 +396,67 @@ function eventSummaries(
     list.push(`${entity ? displayName(entity) : state.entityId}: ${state.property} = ${value}`);
     statesByEvent.set(state.sourceEventId, list);
   }
+  /**
+   * Readable options for one event, best first. A message usually yields several events (one per transition) and
+   * every fact from that message cites the same quote, so the facts are narrowed to the ones about this event: a
+   * subject among its participants or location, or a record/receipt/fact id among its transitions.
+   */
+  const candidates = (event: CampaignMemoryEvent): string[] => {
+    const citing = [...new Set(event.evidence.flatMap((item) => factsByEvidence.get(evidenceKey(item)) ?? []))];
+    const involved = new Set([...event.participantEntityIds, ...(event.locationEntityId ? [event.locationEntityId] : [])]);
+    const transitions = new Set(event.transitions);
+    const related = citing.filter((fact) => {
+      if (involved.has(fact.subjectEntityId) || transitions.has(fact.factId)) return true;
+      const value = fact.value;
+      if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+      const { recordId, receiptId } = value as Record<string, unknown>;
+      return (
+        (typeof recordId === "string" && transitions.has(recordId)) ||
+        (typeof receiptId === "string" && transitions.has(receiptId))
+      );
+    });
+    const quote = event.evidence.find((item) => item.quote.trim())?.quote.trim() ?? "";
+    return [
+      joinSentences(related.map(factText)),
+      statesByEvent.get(event.eventId)?.join("; ") ?? "",
+      joinSentences(citing.map(factText)),
+      quote,
+    ].filter(Boolean);
+  };
+  // Walk every event in occurrence order; an event whose text an earlier event from the same message already
+  // shows takes its next option, or stays empty rather than repeating it.
+  const wanted = new Set(events.map((event) => event.eventId));
+  const all = new Map<string, CampaignMemoryEvent>();
+  for (const event of [...contextEvents, ...events]) all.set(event.eventId, event);
+  const relevantMessages = new Set(events.flatMap((event) => event.evidence.map((item) => item.messageId)));
+  const walk = [...all.values()]
+    .filter((event) => wanted.has(event.eventId) || event.evidence.some((item) => relevantMessages.has(item.messageId)))
+    .sort(sortRecords) as CampaignMemoryEvent[];
+  const usedByMessage = new Map<string, Set<string>>();
   const summaries = new Map<string, string>();
-  for (const event of events) {
-    const fromFacts = [...new Set(event.evidence.flatMap((item) => factsByEvidence.get(evidenceKey(item)) ?? []))];
-    const text = fromFacts.length
-      ? fromFacts.slice(0, 3).join("; ")
-      : (statesByEvent.get(event.eventId)?.join("; ") ?? event.evidence.find((item) => item.quote.trim())?.quote.trim() ?? "");
-    summaries.set(event.eventId, text);
+  for (const event of walk) {
+    const messageIds = [...new Set(event.evidence.map((item) => item.messageId))];
+    const used = (text: string) => messageIds.some((id) => usedByMessage.get(id)?.has(text));
+    const text = candidates(event).find((option) => !used(option)) ?? "";
+    if (text)
+      for (const id of messageIds) {
+        const set = usedByMessage.get(id) ?? new Set<string>();
+        set.add(text);
+        usedByMessage.set(id, set);
+      }
+    if (wanted.has(event.eventId)) summaries.set(event.eventId, text);
   }
   return summaries;
+}
+
+/**
+ * Up to three sentences joined with one space. When there are several, one without closing punctuation gets a full
+ * stop so they do not run together; a single sentence is returned exactly as recorded.
+ */
+function joinSentences(sentences: readonly string[]): string {
+  const unique = [...new Set(sentences.map((sentence) => sentence.trim()).filter(Boolean))].slice(0, 3);
+  if (unique.length <= 1) return unique[0] ?? "";
+  return unique.map((sentence) => (/[.!?…]["'”’)\]]*$/u.test(sentence) ? sentence : `${sentence}.`)).join(" ");
 }
 
 function factText(fact: CampaignMemoryFact): string {
@@ -888,7 +962,7 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
         list.push({ entityId: state.entityId, key: state.property, value: state.value });
         changesByEvent.set(state.sourceEventId, list);
       }
-      const summaries = eventSummaries(slice, facts, currentState, entityById);
+      const summaries = eventSummaries(slice, facts, currentState, entityById, events);
       return {
         items: slice.map((event) => ({
           eventId: event.eventId,
@@ -972,7 +1046,7 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
         .filter((event) => event.evidence.some((item) => citedMessages.has(item.messageId)))
         .sort(sortRecords);
       const dependentEventIds = new Set(dependentEvents.map((event) => event.eventId));
-      const summaries = eventSummaries(dependentEvents, await storage.listFacts(scope), currentState, entityById);
+      const summaries = eventSummaries(dependentEvents, await storage.listFacts(scope), currentState, entityById, events);
       return {
         knowledge: knowledge
           .filter((item) => item.factId === fact.factId)

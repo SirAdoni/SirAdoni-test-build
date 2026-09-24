@@ -4,6 +4,10 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- The Campaign Wiki promises list shows each promise once, with everyone involved listed, instead of once per person.
+- Review duplicates no longer groups unrelated facts just because they came from the same message.
+- Timeline events no longer show ".;" between sentences, and several events from one message no longer all show the same text.
+- Characters titled Sergeant, Serjeant, Chaplain, Marshal, Founder, Madam, Commandant, Lamp-Master or Under-Gardener are recognised by their name alone ("Sergeant Holt" as "Holt"), and a bare title never stands for one character.
 - Campaign Wiki pages can be edited and archived again after their library card or lorebook entry was deleted.
 - "Game continuity" batch pages no longer repeat facts that are already on a character or place page. A fact that names one known and one unknown person is stored once, on the known person, and lists the unknown name.
 - Retiring a continuity batch now also archives its "Game continuity" page in the campaign's other sessions, where the old import had copied it.

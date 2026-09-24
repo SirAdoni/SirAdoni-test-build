@@ -22,6 +22,7 @@ import {
   projectCampaignMemoryCommitments,
   readCampaignMemoryCommitmentValue,
   validateCampaignMemoryCommitmentValue,
+  type CampaignMemoryCommitmentItem,
   type CampaignMemoryCommitmentValue,
 } from "../services/game/campaign-memory-commitments.js";
 
@@ -105,16 +106,108 @@ async function sourceOrder(app: FastifyInstance, chatId: string, evidence: reado
 /** The value is plain JSON by construction; the fact store types it as CampaignMemoryJson. */
 const asJson = (value: CampaignMemoryCommitmentValue) => value as unknown as CampaignMemoryJson;
 
+/** One listed commitment: the projected chain heads of every copy of the same promise, merged. */
+export type CampaignMemoryGroupedCommitmentItem = CampaignMemoryCommitmentItem & {
+  /** Head fact ids of every merged copy; `commitmentId` is the representative among them. */
+  memberCommitmentIds: string[];
+};
+
+/**
+ * Continuity publishes one fact per resolved subject (plus a lore-entity fallback), so a single promise arrives as
+ * several facts that share `value.receiptId` + `value.recordId`. Those copies are one commitment: the key is read
+ * from the ROOT fact of each chain, so a user transition (a `commitment` fact without those keys) stays with the
+ * copies it grew from. Facts without both keys group alone under their own head fact id.
+ *
+ * The representative (`commitmentId`, `revision`, `state`, `transitions`) is the copy whose head fact was written
+ * last (createdAt, then the projection's newest-first order), which is the newest status: a user transition or a
+ * continuity republication is always written after the copies it updates. Mutation endpoints act on that
+ * representative head fact id; the other copies are left as they are and stay merged under it.
+ */
+function groupCommitments(
+  items: readonly CampaignMemoryCommitmentItem[],
+  facts: ReadonlyMap<string, CampaignMemoryFact>,
+  aliasOf: (entityId: string) => string,
+): CampaignMemoryGroupedCommitmentItem[] {
+  const keyOf = (item: CampaignMemoryCommitmentItem) => {
+    const root = facts.get(item.transitions[0]?.factId ?? item.commitmentId);
+    const value = root?.value;
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const { receiptId, recordId } = value as Record<string, unknown>;
+      if (typeof receiptId === "string" && receiptId && typeof recordId === "string" && recordId)
+        return `record:${receiptId}\u0000${recordId}`;
+    }
+    return `fact:${item.commitmentId}`;
+  };
+  const groups = new Map<string, CampaignMemoryCommitmentItem[]>();
+  // `items` is newest-first; group order follows each group's newest member.
+  for (const item of items) {
+    const key = keyOf(item);
+    const members = groups.get(key);
+    if (members) members.push(item);
+    else groups.set(key, [item]);
+  }
+  const createdAt = (item: CampaignMemoryCommitmentItem) => facts.get(item.commitmentId)?.createdAt ?? "";
+  const result: CampaignMemoryGroupedCommitmentItem[] = [];
+  for (const members of groups.values()) {
+    const representative = members.reduce((best, item) => (createdAt(item) > createdAt(best) ? item : best));
+    const participants: CampaignMemoryCommitmentItem["participants"] = [];
+    const seenParticipants = new Set<string>();
+    const evidence: CampaignMemoryCommitmentItem["evidence"] = [];
+    const seenEvidence = new Set<string>();
+    for (const member of [representative, ...members.filter((item) => item !== representative)]) {
+      const listed = member.participants.some((p) => p.entityId === member.subjectEntityId);
+      for (const participant of listed
+        ? member.participants
+        : [
+            ...member.participants,
+            // A copy's subject is always one of the people the promise involves, even when its value omits it.
+            { entityId: member.subjectEntityId, role: "subject", alias: aliasOf(member.subjectEntityId) },
+          ]) {
+        if (seenParticipants.has(participant.entityId)) continue;
+        seenParticipants.add(participant.entityId);
+        participants.push({ ...participant });
+      }
+      for (const item of member.evidence) {
+        const key = `${item.messageId}\u0000${item.quote}`;
+        if (seenEvidence.has(key)) continue;
+        seenEvidence.add(key);
+        evidence.push(item);
+      }
+    }
+    const openOrders = members
+      .map((member) => member.openSince)
+      .filter((order): order is string => typeof order === "string")
+      .sort(compareCampaignMemoryMessageOrder);
+    result.push({
+      ...representative,
+      participants,
+      evidence,
+      historical: members.some((member) => member.historical),
+      openSince: representative.openSince === null ? null : (openOrders[0] ?? representative.openSince),
+      memberCommitmentIds: members.map((member) => member.commitmentId),
+    });
+  }
+  return result;
+}
+
 export async function campaignMemoryCommitmentsRoutes(app: FastifyInstance) {
   const storage = createCampaignMemoryStorage(app.db);
   const options = { bodyLimit: MAX_BODY_BYTES };
   const project = async (chatId: string) => {
     const scope = { chatId };
     const [facts, entities] = await Promise.all([storage.listFacts(scope), storage.listEntities(scope)]);
-    return projectCampaignMemoryCommitments(facts, entities);
+    const aliases = new Map(
+      entities.map((entity) => [entity.entityId, entity.aliases[0] || entity.summary || entity.entityId]),
+    );
+    return groupCommitments(
+      projectCampaignMemoryCommitments(facts, entities),
+      new Map(facts.map((fact) => [fact.factId, fact])),
+      (entityId) => aliases.get(entityId) ?? entityId,
+    );
   };
+  /** The grouped commitment containing `factId` as one of its merged heads. */
   const projected = async (chatId: string, factId: string) =>
-    (await project(chatId)).find((item) => item.commitmentId === factId);
+    (await project(chatId)).find((item) => item.memberCommitmentIds.includes(factId));
 
   app.get<{ Params: { chatId: string } }>("/:chatId/memory/commitments", async (request, reply) => {
     const query = listQuerySchema.safeParse(request.query ?? {});
@@ -126,7 +219,8 @@ export async function campaignMemoryCommitmentsRoutes(app: FastifyInstance) {
         .filter((item) => !state || item.state === state);
       let start = 0;
       if (cursor) {
-        const index = items.findIndex((item) => item.commitmentId === cursor);
+        // Cursors are representative ids; a member id (for example a cursor issued before a merge) resolves too.
+        const index = items.findIndex((item) => item.memberCommitmentIds.includes(cursor));
         if (index < 0)
           return reply
             .status(400)
@@ -134,7 +228,12 @@ export async function campaignMemoryCommitmentsRoutes(app: FastifyInstance) {
         start = index + 1;
       }
       const slice = items.slice(start, start + limit);
-      return { items: slice, nextCursor: start + limit < items.length ? (slice.at(-1)?.commitmentId ?? null) : null };
+      return {
+        items: slice,
+        nextCursor: start + limit < items.length ? (slice.at(-1)?.commitmentId ?? null) : null,
+        /** Grouped commitments matching the filters, the same unit the pages count. */
+        total: items.length,
+      };
     } catch (error) {
       return errorResponse(reply, error);
     }

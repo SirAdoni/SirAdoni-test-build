@@ -289,6 +289,30 @@ Features:
 
 ## 2026-09-24
 
+### Campaign Wiki: one promise per record in the commitments list
+- **Files:** `packages/server/src/routes/campaign-memory-commitments.routes.ts` (new `groupCommitments`, type `CampaignMemoryGroupedCommitmentItem`; `project`, `projected`, list cursor and response), `scripts/regressions/campaign-memory-commitments-grouping.regression.ts` (new).
+- **Bug:** continuity publishes one fact per resolved subject, so `GET /:chatId/memory/commitments` listed a promise once per person: 488 rows for 165 distinct promises in a long campaign.
+- **Behaviour:** items are grouped by the root chain fact's `value.receiptId` + `value.recordId` (a fact without both groups alone). The representative is the copy whose head fact was written last, so a user transition or a republication wins; it supplies `commitmentId`, `state`, `revision`, `transitions` and `subjectEntityId`. `participants` is the union of every copy's participants and subjects with aliases; `evidence` is the union deduplicated by message and quote; `historical` is true if any copy is; `openSince` is the earliest open order while open. Filters, cursor paging and a new `total` work on grouped items; a cursor naming any member resolves to its group. Transitions act on the representative head fact. Additive fields only: `memberCommitmentIds`, `total`.
+- **Tests:** `campaign-memory-commitments-grouping` (3 copies give 1 item with 3 participants, combined evidence, separate records stay separate, a key-less fact alone, filters, paging with totals, member cursor, a transition keeps the group and shows the new state).
+
+### Campaign Wiki: Review duplicates requires similarity or the same quote
+- **Files:** `packages/server/src/routes/campaign-memory.routes.ts` (`findDuplicateGroups`, new `DUPLICATE_SHARED_MESSAGE_SIMILARITY = 0.5`), `scripts/regressions/campaign-memory-wiki-review-text.regression.ts` (new).
+- **Bug:** any two facts with the same subject and predicate that cited the same message formed a duplicate pair whatever they said: 418 groups, 359 of them below 0.6 similarity.
+- **Behaviour:** a pair qualifies when the facts cite an identical evidence quote (whitespace-collapsed, case-insensitive), or share a message and reach token Jaccard 0.5, or reach the unchanged 0.8 text similarity. Response shape unchanged; fewer, real groups.
+- **Tests:** `campaign-memory-wiki-review-text` (an unrelated fact on the same message is not grouped, a near-duplicate is, an identical quote is); `campaign-memory-duplicates` passes.
+
+### Campaign Wiki: timeline event text joins cleanly and differs per event
+- **Files:** `packages/server/src/routes/campaign-memory.routes.ts` (`eventSummaries` with new optional `contextEvents`, new `joinSentences`; timeline and fact-dependents routes pass the full event list), `scripts/regressions/campaign-memory-wiki-review-text.regression.ts`.
+- **Bug:** fact sentences were joined with "; ", producing ".;", and every event from one message got identical text because all facts citing that message's quote were shared.
+- **Behaviour:** up to three sentences join with one space, adding a full stop only between sentences that lack closing punctuation; a single sentence is returned exactly as recorded. Each event tries, in order: facts about that event (subject is a participant or its location, or fact id, `value.recordId` or `value.receiptId` appears in `event.transitions`), its state changes, all facts citing its quote, then the quote. Walking events in occurrence order, an event takes the first option no earlier event sharing one of its messages already shows, otherwise stays empty. Deduplication runs over the full event list, so text does not change with page size or cursor. State text still joins with "; ". Response shapes unchanged.
+- **Tests:** `campaign-memory-wiki-review-text` (distinct per-event text, one-space joins, no "; ", the same text on a later page, fact dependents match); `campaign-memory-wiki-api` passes.
+
+### Named characters: more titles recognised
+- **Files:** `packages/server/src/services/game/named-characters.ts` (`TITLE_WORDS`, new `titleLength`, `isTitleWord`; `coreWords`, `namedCharacterAliases`), `scripts/regressions/campaign-memory-named-character-titles.regression.ts` (new).
+- **Bug:** chaplain, marshal, serjeant, sergeant, founder, madam, commandant, lamp-master and under-gardener were missing, so "Sergeant Holt" kept "Sergeant" as a short alias and prose about any sergeant matched that card.
+- **Behaviour:** the titles are added; hyphenated titles are skipped whether written joined or as two words; a name made only of titles keeps its last word; a bare title is never returned as a first-name or short alias, while the full name is always kept.
+- **Tests:** `campaign-memory-named-character-titles` (aliases for every new title, both hyphen forms, all-title names; "the Sergeant" matches nobody while the surnames match); `campaign-memory-named-characters` and `game-named-card-cache` pass.
+
 ### Campaign Wiki: pages whose owner was deleted can be edited and archived
 - **Files:** `packages/server/src/services/storage/campaign-memory.storage.ts` (`updateEntity`), `scripts/regressions/campaign-memory-deleted-owner-update.regression.ts` (new).
 - **Bug:** `updateEntity` re-resolved the entity's owner through `assertOwner` on every update, although owner and kind cannot change after registration. When the owning library card or Keeper lorebook entry had been deleted, every edit or archive of that page failed with 404 `CAMPAIGN_MEMORY_INVALID_REFERENCE`.
