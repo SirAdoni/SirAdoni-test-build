@@ -32,6 +32,8 @@ import { DATA_DIR } from "../../utils/data-dir.js";
 import { newId } from "../../utils/id-generator.js";
 import { assertInsideDir, isAllowedImageBuffer } from "../../utils/security.js";
 import { readAvatarBase64 } from "./game-asset-generation.js";
+import { isSubstantivelySameText } from "./card-text-similarity.js";
+import { isFeatureEnabled } from "../features/feature-settings.js";
 import { normalizeCharacterLookupName } from "./name-normalization.js";
 import {
   collectCharacterAvatarPaths,
@@ -973,13 +975,23 @@ async function updateLinkedAutoNpcCard(input: {
   let changed = false;
   let versionedContentChanged = false;
   const updates: Partial<CharacterData> = {};
+  // Settings > Features "Session-frozen NPC cards": a rewording that changes no facts is not saved, so it neither
+  // churns the card nor reaches the prompt.
+  const skipRewordings = isFeatureEnabled("gameFreezeNpcCardsPerSession");
+  const skippedRewordings: string[] = [];
+  const isRewording = (field: string, current: string, next: string) => {
+    if (!skipRewordings || !current || !isSubstantivelySameText(current, next)) return false;
+    skippedRewordings.push(field);
+    return true;
+  };
   const nextDescription =
     input.candidate.profile?.description ||
     (currentProvenance.profileSourceKey ? currentData.description : input.candidate.description) ||
     currentData.description;
   if (
     nextDescription !== currentData.description &&
-    shouldReplaceManagedValue(currentData.description ?? "", currentProvenance.managed.description)
+    shouldReplaceManagedValue(currentData.description ?? "", currentProvenance.managed.description) &&
+    !isRewording("description", currentData.description ?? "", nextDescription)
   ) {
     updates.description = nextDescription;
     changed = true;
@@ -995,7 +1007,8 @@ async function updateLinkedAutoNpcCard(input: {
   let managedAppearance = currentProvenance.managed.appearance;
   if (
     nextAppearance !== currentAppearance &&
-    shouldReplaceManagedValue(currentAppearance, currentProvenance.managed.appearance)
+    shouldReplaceManagedValue(currentAppearance, currentProvenance.managed.appearance) &&
+    !isRewording("appearance", currentAppearance, nextAppearance)
   ) {
     updates.extensions = { appearance: nextAppearance } as CharacterData["extensions"];
     managedAppearance = nextAppearance;
@@ -1016,7 +1029,12 @@ async function updateLinkedAutoNpcCard(input: {
   for (const field of ["personality", "backstory"] as const) {
     const current = field === "backstory" ? (currentData.extensions?.backstory ?? "") : (currentData.personality ?? "");
     const next = input.candidate.profile?.[field];
-    if (next && next !== current && shouldReplaceManagedValue(current, currentProvenance.managed[field] ?? "")) {
+    if (
+      next &&
+      next !== current &&
+      shouldReplaceManagedValue(current, currentProvenance.managed[field] ?? "") &&
+      !isRewording(field, current, next)
+    ) {
       if (field === "backstory")
         updates.extensions = { ...updates.extensions, backstory: next } as CharacterData["extensions"];
       else updates.personality = next;
@@ -1024,6 +1042,18 @@ async function updateLinkedAutoNpcCard(input: {
       changed = true;
       versionedContentChanged = true;
     }
+  }
+
+  if (skippedRewordings.length > 0) {
+    logger.debug(
+      {
+        event: "game.npc_card.rewording_skipped",
+        outcome: "skipped",
+        npcId: input.candidate.npcId,
+        fields: skippedRewordings,
+      },
+      "[game/npc-character-sync] kept the saved card text: the new text only rewords it",
+    );
   }
 
   let nextAvatarPath = input.row.avatarPath ?? null;

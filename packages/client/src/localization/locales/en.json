@@ -2796,6 +2796,8 @@
   "settings.features.envLocked": "Set on the server by {{name}}.",
   "settings.features.gameCacheStableLayout.help": "Game turns on the Claude subscription keep rules, format instructions and session context that did not change in the cached part of the prompt and send only what changed at the end. Needs the cache-friendly layout. Off keeps the original order.",
   "settings.features.gameCacheStableLayout.label": "Cache-stable Game prompt",
+  "settings.features.gameFreezeNpcCardsPerSession.help": "Game turns keep the character cards of people named in a session exactly as they were when the session started or the person first appeared. Later card changes ride at the end of the prompt as short per-card changes and are folded in at the next session, so a reworded card no longer re-sends the whole history. Rewordings that change no facts are not saved at all. Off rewrites the cached cards whenever a few have changed.",
+  "settings.features.gameFreezeNpcCardsPerSession.label": "Session-frozen NPC cards",
   "settings.features.loadFailed": "Could not load the feature switches.",
   "settings.features.messageTrash.help": "Deleted messages go to the chat Trash so you can restore them. Off deletes them permanently.",
   "settings.features.messageTrash.label": "Message trash",

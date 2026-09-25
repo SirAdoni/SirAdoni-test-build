@@ -70,6 +70,23 @@ The cached copy is rebuilt (one full cache rewrite) only when the changes carrie
 
 Off: the prompt is byte-identical to the layout without this switch.
 
+### Session-frozen NPC cards
+
+Setting key: `gameFreezeNpcCardsPerSession`. Applies to Game chats that use **Cache-friendly prompt layout**.
+
+The library cards of people named in a session (not in the party) sit in the cached part of the prompt, ahead of the history. Before this switch, a rewritten card waited in a small uncached section, and once six cards or 30,000 characters were waiting the whole list was rewritten in the cached part. The NPC Biographer and the NPC card sync reword cards often, so in a long session that rewrite came every few turns and each one re-sent the whole history (about 105,000 tokens; the cached share fell from about 93% to about 27% on those turns).
+
+On:
+
+- The cached cards stay exactly as they were when the session started or the person first appeared.
+- A later change to a card rides at the end of the prompt, in `<named_character_updates>`, as the changed lines only ("No longer true" and "Now true"). A long card paragraph is compared sentence by sentence. A change too large for that sends the whole card there instead.
+- The waiting changes are folded into the cached cards at the next session, or earlier once the changes carried at the end of the prompt, summed over the turns they rode there, cost more than re-sending everything after the cards (the history, at least 60,000 characters).
+- The NPC card sync does not save a new description, appearance, personality or backstory that only rewords the saved one: the same words in another order or with other punctuation, or one word swapped, with the same names, numbers and negations. A skipped rewording is logged at debug level (`game.npc_card.rewording_skipped`).
+
+Off: the cached cards are rewritten once six cards or 30,000 characters are waiting, and every rewording is saved, as before.
+
+The **Cache-stable Game prompt** layout uses the same rent-or-buy rule for its `<session_context>` block: it is rebuilt only once the changes carried at the end of the prompt reach the size of that block plus the history after it.
+
 ### Stable lorebook picks
 
 Setting key: `stableLorebookGroupPicks`.

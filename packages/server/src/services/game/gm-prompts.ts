@@ -57,6 +57,8 @@ export interface GmPromptContext {
   sceneCharacterCards?: Array<{ name: string; card: string }>;
   /** Newer text or newly named people waiting to be folded into the cached cards; rendered uncached. */
   sceneCharacterCardUpdates?: Array<{ name: string; card: string }>;
+  /** Settings > Features "Session-frozen NPC cards": updates may be changed lines against the cached card. */
+  sceneCharacterCardUpdatesFrozen?: boolean;
   playerName: string;
   /** Full player persona card */
   playerCard?: string | null;
@@ -938,7 +940,9 @@ export function buildGmSystemPromptParts(
     // history cache behind them.
     dynamicSections.push(
       `<named_character_updates>`,
-      "Current library cards for people named in this session who are not in the party. Where a person also appears in an earlier library card block, this newer card replaces it.",
+      ctx.sceneCharacterCardUpdatesFrozen
+        ? "Library card changes for people named in this session who are not in the party. A full card is new or replaces that person's earlier library card block; a list of changes applies to their earlier library card block, which is otherwise current."
+        : "Current library cards for people named in this session who are not in the party. Where a person also appears in an earlier library card block, this newer card replaces it.",
       ...sceneCharacterCardUpdates.map((entry) => entry.card),
       `</named_character_updates>`,
     );
