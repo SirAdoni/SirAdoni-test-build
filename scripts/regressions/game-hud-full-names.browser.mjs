@@ -35,7 +35,7 @@ const NAMES = {
   section: `${TOKEN} Sections 5-6 of the Lanternlit Procession`,
   mapTwo: `${TOKEN} Catacombsbeneaththeoldcathedralofsaintsandbells Map`,
   pkgPlace: `${TOKEN} Receivingchamberofthecountessofmarovskahall Suite`,
-  pkgCrumb: `${TOKEN} Kingdomofvaldenmoorandthecountedcontinent Realm`,
+  pkgCrumb: `${TOKEN} Kingdomofthefarshoreandthecountedcontinent Realm`,
   pkgDest: `${TOKEN} Candidateswingupperfloorofthewilliamsmanor Hall`,
   pkgDescription: `${TOKEN} A private receiving room with tall windows over the gardens and a long table of pale oak.`,
 };
