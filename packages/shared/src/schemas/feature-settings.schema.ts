@@ -11,6 +11,7 @@ export const FEATURE_SETTINGS_KEY = "features";
 export const FEATURE_SWITCH_NAMES = [
   "chatgptHistoryReplay",
   "cacheFriendlyPromptLayout",
+  "gameCacheStableLayout",
   "stableLorebookGroupPicks",
   "stableLoreOrder",
   "providerRetry",
@@ -41,6 +42,7 @@ export const featureSettingsSchema = z
   .object({
     chatgptHistoryReplay: z.boolean().optional(),
     cacheFriendlyPromptLayout: z.boolean().optional(),
+    gameCacheStableLayout: z.boolean().optional(),
     stableLorebookGroupPicks: z.boolean().optional(),
     stableLoreOrder: z.boolean().optional(),
     providerRetry: z.boolean().optional(),

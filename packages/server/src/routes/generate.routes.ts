@@ -785,6 +785,7 @@ import {
 } from "../services/generation/prompt-history-replay.js";
 import { injectCommittedTrackerContext } from "../services/generation/committed-tracker-context.js";
 import { isFeatureEnabled } from "../services/features/feature-settings.js";
+import { isGameStableLayoutActive, layoutGameStableContext } from "../services/generation/game-stable-layout.js";
 import { loadPriorBeholderState } from "../services/agents/beholder-state.js";
 import {
   appendGameGmCampaignMemory,
@@ -1895,6 +1896,8 @@ export async function generateRoutes(app: FastifyInstance) {
       // Get chat messages
       const allChatMessages = await chats.listMessages(input.chatId);
       const chatMode = requestChatMode;
+      // Settings > Features "Cache-stable Game prompt" (Game turns on the Claude subscription only).
+      const gameStableLayoutActive = isGameStableLayoutActive(chatMode, conn.provider);
       const advancedMemorySettings = normalizeAdvancedMemorySettings(chatMeta.advancedMemory);
       const advancedMemoryEnabled = chatMode === "roleplay" && advancedMemorySettings.enabled;
       // Resolve historical time before user start markers: later resets must not hide an older swipe target.
@@ -5076,6 +5079,7 @@ export async function generateRoutes(app: FastifyInstance) {
               dicePoolMode: gameDicePoolTurn,
               dicePoolBlock,
               rollDiceToolAttached,
+              ...(gameStableLayoutActive ? { liveValuesAfterFormat: true } : {}),
               // A package that brought its own inventory takes the built-in one out of the prompt.
               experienceProvidedSystems: capabilityPromptContext.provides,
               // A package that declares GM verbs gets one COMMANDS line each. No package declares a
@@ -8546,7 +8550,9 @@ export async function generateRoutes(app: FastifyInstance) {
           // A chat that opted in keeps the invariant player-canon and prose checks in the cached prefix and leaves a
           // short pointer at the final boundary, so the next turn does not write them to the cache again.
           const gameStableFinalChecks =
-            chatMode === "game" && gameFinalRecencySeal && chatMeta.gameCacheStableFinalChecks === true
+            chatMode === "game" &&
+            gameFinalRecencySeal &&
+            (chatMeta.gameCacheStableFinalChecks === true || gameStableLayoutActive)
               ? [{ content: gameFinalRecencySeal, pointer: resolvePromptMacros(buildGameRecencySealPointer()) }]
               : undefined;
           if (
@@ -8560,16 +8566,21 @@ export async function generateRoutes(app: FastifyInstance) {
               "[generate/game] Final checks kept in the cached prefix",
             );
           }
+          const laidOutMessages = supportsFullLorebookContext(conn.provider)
+            ? normalizePromptCacheLayout(preparedMessagesForGen, {
+                stableFinalChecks: gameStableFinalChecks,
+              })
+            : preparedMessagesForGen;
           let canonicalProviderMessages =
             advancedPreparedProviderMessages ??
             prepareProviderMessages(
               await fitPromptForSend(
                 toProviderMessages(
-                  supportsFullLorebookContext(conn.provider)
-                    ? normalizePromptCacheLayout(preparedMessagesForGen, {
-                        stableFinalChecks: gameStableFinalChecks,
-                      })
-                    : preparedMessagesForGen,
+                  // Settings > Features "Cache-stable Game prompt": session-level blocks that did not change
+                  // are served from a cached baseline before the history instead of being rewritten each turn.
+                  gameStableLayoutActive
+                    ? await layoutGameStableContext(input.chatId, laidOutMessages)
+                    : laidOutMessages,
                 ),
               ),
             );

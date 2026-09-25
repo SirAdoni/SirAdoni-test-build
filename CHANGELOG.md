@@ -4,6 +4,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Added **Cache-stable Game prompt** (Settings > Advanced > Features, on by default, needs **Cache-friendly prompt layout**). Game turns on the Claude subscription now keep the format instructions, campaign memory, continuity records, the World Maps block, story secrets, tracked NPCs and pending character cards in the cached part of the prompt, and send only what changed at the end: a short status note, the line changes of a block that changed a little, and the live values (weather, time, HUD values, inventory, recent transcript evidence). On a test chat the share of each Game turn read from the cache went from about 74% to about 97%, and each turn wrote about 8,800 characters to the cache instead of about 66,700. Switching it on rewrites the cache once. Off sends exactly the previous prompt. See docs/configuration/features.md.
 - The Campaign Wiki promises list shows each promise once, with everyone involved listed, instead of once per person.
 - Review duplicates no longer groups unrelated facts just because they came from the same message.
 - Timeline events no longer show ".;" between sentences, and several events from one message no longer all show the same text.
