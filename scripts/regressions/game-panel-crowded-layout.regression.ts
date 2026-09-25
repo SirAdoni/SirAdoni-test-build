@@ -10,7 +10,7 @@ import {
 // measured from the live game: natural content heights and the default anchors a
 // fresh profile gives them (left-column widgets pile up at 48 + slot * 44).
 const SURFACE = { width: 1440, height: 849 };
-type Spec = { id: string; x: number; y: number; width: number; height: number; firm?: boolean };
+type Spec = { id: string; x: number; y: number; width: number; height: number; firm?: boolean; minHeight?: number };
 const SESSION_12: Spec[] = [
   { id: "toolbar", x: 528, y: 48, width: 900, height: 34 },
   { id: "map", x: 12, y: 48, width: 320, height: 382 },
@@ -43,6 +43,7 @@ function resolve(specs: Spec[], bounds = SURFACE): { overflow: boolean; panels: 
       locked: true,
       priority: spec.id === "narration" ? 0 : spec.id === "map" || spec.id === "toolbar" ? 1 : 2,
       firmHeight: spec.firm,
+      minHeight: spec.minHeight,
       reading: GAME_READING_PANEL_IDS.has(spec.id),
       setPosition: (x, y) => {
         state.x = x;
@@ -167,6 +168,72 @@ function inBounds(panels: Resolved[], bounds = SURFACE): void {
       `${panel.id} resolves the same way on a repeated pass`,
     );
   }
+}
+
+// 6. A landscape tablet (1024x768, surface 1024x717): the crowded ladder used to squeeze narration to the
+//    reading floor (a third of the surface), scrolling its composer out of view. A panel's own minHeight
+//    (the narration composer plus some context) is a floor the widgets give way to instead.
+{
+  const tablet = { width: 1024, height: 717 };
+  const specs: Spec[] = [
+    { id: "toolbar", x: 100, y: 0, width: 520, height: 44 },
+    { id: "map", x: 12, y: 48, width: 320, height: 300 },
+    { id: "storyboard", x: 644, y: 48, width: 368, height: 280 },
+    { id: "scene-presence", x: 352, y: 350, width: 320, height: 110 },
+    { id: "widget:widget_a", x: 12, y: 360, width: 300, height: 260 },
+    { id: "widget:widget_b", x: 700, y: 340, width: 300, height: 240 },
+    { id: "narration", x: 64, y: 330, width: 896, height: 389, minHeight: 389 },
+  ];
+  const before = resolve(specs.map(({ minHeight: _floor, ...spec }) => spec), tablet);
+  assert.ok(
+    before.panels.find((panel) => panel.id === "narration")!.height < 389,
+    "without a floor the crowded tablet squeezes narration",
+  );
+  const { panels } = resolve(specs, tablet);
+  const narration = panels.find((panel) => panel.id === "narration")!;
+  assert.equal(narration.height, 389, "narration keeps its composer floor on a crowded tablet");
+  inBounds([narration], tablet);
+}
+
+// 7. A pinned panel (tucked, bottom-locked or top-centre) never moves. When one grows into a panel
+//    placed before it, it becomes a scrolling window that ends above that panel instead of being
+//    covered; with Collisions off nothing changes.
+{
+  const run = (allowOverlap: boolean) => {
+    const state = new Map<string, { x: number; y: number; height: number }>();
+    const item = (id: string, x: number, y: number, width: number, height: number, extra: Partial<GamePanelLayoutItem>) => {
+      state.set(id, { x, y, height });
+      return {
+        id,
+        x,
+        y,
+        preferredX: x,
+        preferredY: y,
+        width,
+        height,
+        locked: true,
+        priority: 0,
+        fixed: true,
+        setPosition: (nx: number, ny: number) => Object.assign(state.get(id)!, { x: nx, y: ny }),
+        setHeightLimit: (limit: number) => Object.assign(state.get(id)!, { height: Math.min(height, limit) }),
+        ...extra,
+      } satisfies GamePanelLayoutItem;
+    };
+    resolveGamePanelLayout(
+      [
+        item("widget:widget_pinned", 12, 100, 300, 560, {}),
+        item("narration", 12, 500, 896, 333, { reading: true, bottomInset: 16 }),
+      ],
+      { ...SURFACE, allowOverlap },
+    );
+    return state;
+  };
+  const on = run(false);
+  const pinned = on.get("widget:widget_pinned")!;
+  assert.deepEqual([pinned.x, pinned.y], [12, 100], "a pinned panel does not move");
+  assert.equal(pinned.height, 500 - 8 - 100, "a grown pinned panel scrolls above the panel it would cover");
+  assert.equal(on.get("narration")!.height, 333, "narration keeps its height");
+  assert.equal(run(true).get("widget:widget_pinned")!.height, 560, "with Collisions off the pinned panel is left alone");
 }
 
 console.info("Game panel crowded layout regression passed");

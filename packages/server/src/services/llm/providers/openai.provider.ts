@@ -30,7 +30,7 @@ import {
   supportsXhighReasoningEffort,
 } from "@marinara-engine/shared";
 import { logger } from "../../../lib/logger.js";
-import { logEvent } from "../../../lib/log-events.js";
+import { logEvent, logRepeated } from "../../../lib/log-events.js";
 import { isLoopbackIp, isNonRoutableNetworkIp } from "../../../middleware/ip-allowlist.js";
 import { llmHttpErrorFromResponseBody, SseFrameStats } from "../provider-error.js";
 import {
@@ -39,6 +39,13 @@ import {
   isGlm53MandatoryReasoningModel,
 } from "./glm-request-compat.js";
 import { resolveOpenAIChatGPTCacheIdentity } from "./openai-chatgpt-cache.js";
+import {
+  hasReasoningDisableFields,
+  isReasoningDisableRejectedError,
+  isReasoningDisableRejectedModel,
+  rememberReasoningDisableRejectedModel,
+  stripReasoningDisableFields,
+} from "./reasoning-disable-rejection.js";
 import { fetchResponsesWithDiagnostics, logResponsesProviderEvent } from "./openai-cache-diagnostics.js";
 import {
   OPENAI_EMPTY_STREAM_CAPTURE_MAX_BYTES,
@@ -679,6 +686,61 @@ export class OpenAIProvider extends BaseLLMProvider {
         " This custom endpoint rejected token streaming; disable token streaming and retry, or choose a model that supports streaming.";
     }
     return error;
+  }
+
+  /**
+   * Sends a Chat Completions request. A model already known to always reason gets
+   * its reasoning-disable fields removed before sending. When a request that turned
+   * reasoning off gets HTTP 400 saying reasoning cannot be disabled, the model is
+   * remembered for this base URL, the disable fields are removed and the request is
+   * sent once more. This happens before any output streamed; every other failure is
+   * returned unchanged for the caller's typed error.
+   */
+  private async fetchChatCompletionsWithReasoningFallback(
+    url: string,
+    body: Record<string, unknown>,
+    options: ChatOptions,
+    bufferResponse: boolean,
+  ): Promise<{ response: Response; serializedBody: string }> {
+    if (isReasoningDisableRejectedModel(this.baseUrl, options.model)) stripReasoningDisableFields(body);
+    const send = async () => {
+      const serializedBody = JSON.stringify(body);
+      const response = await llmFetch(url, {
+        method: "POST",
+        headers: this.buildHeaders(),
+        body: serializedBody,
+        bufferResponse,
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+      return { response, serializedBody };
+    };
+    const first = await send();
+    if (first.response.ok || first.response.status !== 400 || !hasReasoningDisableFields(body)) return first;
+    // Peek at a clone so the typed error can still read the original body.
+    const errorText = await first.response
+      .clone()
+      .text()
+      .catch(() => "");
+    if (!isReasoningDisableRejectedError(errorText)) return first;
+
+    rememberReasoningDisableRejectedModel(this.baseUrl, options.model);
+    stripReasoningDisableFields(body);
+    const host = URL.canParse(this.baseUrl) ? new URL(this.baseUrl).host : "unknown";
+    logRepeated(
+      `llm.reasoning-disable-rejected:${host}:${options.model}`,
+      "warn",
+      {
+        event: "llm.retry",
+        reason: "reasoning-disable-rejected",
+        attempt: 2,
+        httpStatus: 400,
+        provider: this.providerKind,
+        host,
+        model: options.model,
+      },
+      `[OpenAI] Model ${options.model} always reasons; retrying without the reasoning-off flag and skipping it for this model from now on`,
+    );
+    return send();
   }
 
   /**
@@ -1490,13 +1552,7 @@ export class OpenAIProvider extends BaseLLMProvider {
       Array.isArray(body.tools) ? body.tools.length : 0,
     );
 
-    const response = await llmFetch(url, {
-      method: "POST",
-      headers: this.buildHeaders(),
-      body: JSON.stringify(body),
-      bufferResponse: !effectiveStream,
-      ...(options.signal ? { signal: options.signal } : {}),
-    });
+    const { response } = await this.fetchChatCompletionsWithReasoningFallback(url, body, options, !effectiveStream);
 
     if (!response.ok) {
       throw await this.chatCompletionsHttpError(response, effectiveStream);
@@ -1777,14 +1833,12 @@ export class OpenAIProvider extends BaseLLMProvider {
       !!options.onToken,
     );
 
-    const requestBodySerialized = JSON.stringify(body);
-    const response = await llmFetch(url, {
-      method: "POST",
-      headers: this.buildHeaders(),
-      body: requestBodySerialized,
-      bufferResponse: !useStream,
-      ...(options.signal ? { signal: options.signal } : {}),
-    });
+    const { response, serializedBody: requestBodySerialized } = await this.fetchChatCompletionsWithReasoningFallback(
+      url,
+      body,
+      options,
+      !useStream,
+    );
 
     if (!response.ok) {
       throw await this.chatCompletionsHttpError(response, useStream);

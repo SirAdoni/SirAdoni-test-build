@@ -110,6 +110,7 @@ export function MessageMarksAction({
         className={cn(marks.any && ACTIVE_ICON_CLASS)}
         ariaPressed={open}
         stopPropagation={stopPropagation}
+        keepMenuOpen
       />
       {open &&
         createPortal(

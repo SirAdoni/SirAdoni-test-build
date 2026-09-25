@@ -114,6 +114,7 @@ import {
 } from "../services/spatial-context/projection.js";
 import { createSpatialContextStorage } from "../services/storage/spatial-context.storage.js";
 import { restoreBranchHudLists, trimJournalForBranch } from "../services/game/branch-state.js";
+import { STABLE_LORE_ORDER_METADATA_KEY } from "../services/lorebook/stable-lore-order.js";
 import { projectCampaignMemoryBranch } from "../services/game/campaign-memory-branch.js";
 import { formatCampaignMemoryMessageOrder } from "../services/game/campaign-memory-order.js";
 import { recordLegacyPresence, resolveLegacySourceMessageId } from "../services/game/campaign-memory-legacy-writers.js";
@@ -4575,7 +4576,9 @@ export async function chatsRoutes(app: FastifyInstance) {
 
     if (format === "text") {
       const header = `Chat: ${chat.name}\nDate: ${chat.createdAt}\n${"─".repeat(50)}\n`;
-      const body = msgs
+      // Turns hidden from the user stay out of the readable text transcript, as in the markdown and HTML exports.
+      const textMessages = msgs.filter((msg) => parseExportMetadata(msg.extra).hiddenFromUser !== true);
+      const body = textMessages
         .map((msg) => {
           const name = getDisplayName(msg);
           const ts = msg.createdAt ? new Date(msg.createdAt).toLocaleString() : "";
@@ -4592,7 +4595,7 @@ export async function chatsRoutes(app: FastifyInstance) {
         content: header + body,
         extension: "txt",
         contentType: "text/plain; charset=utf-8",
-        messageCount: msgs.length,
+        messageCount: textMessages.length,
         branchName,
       };
     }
@@ -4893,6 +4896,8 @@ export async function chatsRoutes(app: FastifyInstance) {
         "lastAutomaticSummaryMessageId",
         "daySummaries",
         "weekSummaries",
+        // The stable lore order is keyed to the source chat's message ids; a branch starts its own.
+        STABLE_LORE_ORDER_METADATA_KEY,
       ]) {
         delete settingsToKeep[key];
       }

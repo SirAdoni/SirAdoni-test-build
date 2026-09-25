@@ -20,7 +20,7 @@ export function KeyboardShortcutsOverlay() {
         <div className="grid gap-4 md:grid-cols-2">
           {KEYBOARD_SHORTCUT_GROUPS.map((group) => (
             <section key={group.id} className="min-w-0">
-              <h3 className="mb-1.5 text-[0.625rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
+              <h3 className="mb-1.5 text-[0.625rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)] [@media(pointer:coarse)]:text-[0.6875rem]">
                 {t(group.titleKey)}
               </h3>
               <dl className="divide-y divide-[var(--border)]/50 rounded-lg ring-1 ring-[var(--border)]/70">
@@ -31,13 +31,15 @@ export function KeyboardShortcutsOverlay() {
                       {shortcut.keys.map((combo, comboIndex) => (
                         <Fragment key={combo.join("+")}>
                           {comboIndex > 0 && (
-                            <span className="text-[0.625rem] text-[var(--muted-foreground)]">{t("shortcuts.or")}</span>
+                            <span className="text-[0.625rem] text-[var(--muted-foreground)] [@media(pointer:coarse)]:text-[0.6875rem]">
+                              {t("shortcuts.or")}
+                            </span>
                           )}
                           <span className="flex items-center gap-0.5">
                             {combo.map((key) => (
                               <kbd
                                 key={key}
-                                className="min-w-5 rounded border border-[var(--border)] bg-[var(--secondary)]/60 px-1.5 py-0.5 text-center font-mono text-[0.625rem] text-[var(--foreground)] shadow-[inset_0_-1px_0_var(--border)]"
+                                className="min-w-5 rounded border border-[var(--border)] bg-[var(--secondary)]/60 px-1.5 py-0.5 text-center font-mono text-[0.625rem] text-[var(--foreground)] [@media(pointer:coarse)]:text-[0.6875rem] shadow-[inset_0_-1px_0_var(--border)]"
                               >
                                 {formatShortcutKey(key, apple)}
                               </kbd>

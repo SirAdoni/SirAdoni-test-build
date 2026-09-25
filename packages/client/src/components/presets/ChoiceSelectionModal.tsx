@@ -257,17 +257,17 @@ function ChatChoiceSelectionModal({
               <div key={v.id} className="rounded-xl border border-[var(--border)] bg-[var(--secondary)] p-3">
                 <h4 className="mb-1 text-xs font-semibold text-[var(--foreground)]">{v.question}</h4>
                 <div className="mb-2 flex items-center gap-2">
-                  <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+                  <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                     {localizeUi("ui.presets.choiceselectionmodal.variable")}{" "}
                     <code className="text-[var(--foreground)]">{`{{${v.variableName}}}`}</code>
                   </p>
                   {v.options.length === 1 && !v.multiSelect && (
-                    <span className="flex items-center gap-0.5 rounded bg-[var(--accent)] px-1.5 py-0.5 text-[0.5625rem] font-medium text-[var(--foreground)]">
+                    <span className="flex items-center gap-0.5 rounded bg-[var(--accent)] px-1.5 py-0.5 text-[0.5625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--foreground)]">
                       {localizeUi("ui.presets.choiceselectionmodal.booleanToggle")}
                     </span>
                   )}
                   {(v.multiSelect || v.randomPick) && (
-                    <span className="flex items-center gap-0.5 rounded bg-[var(--accent)] px-1.5 py-0.5 text-[0.5625rem] font-medium text-[var(--foreground)]">
+                    <span className="flex items-center gap-0.5 rounded bg-[var(--accent)] px-1.5 py-0.5 text-[0.5625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--foreground)]">
                       {v.randomPick ? (
                         <>
                           <Shuffle size="0.5625rem" /> {localizeUi("ui.presets.choiceselectionmodal.randomPick")}
@@ -341,7 +341,7 @@ function ChatChoiceSelectionModal({
                               {opt.label}
                             </span>
                             {opt.value && (
-                              <p className="mt-0.5 line-clamp-2 text-[0.625rem] text-[var(--muted-foreground)]">
+                              <p className="mt-0.5 line-clamp-2 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                                 {opt.value.slice(0, 150)}
                                 {opt.value.length > 150 ? "…" : ""}
                               </p>
@@ -371,7 +371,7 @@ function ChatChoiceSelectionModal({
                                 {opt.label}
                               </span>
                               {opt.value && (
-                                <span className="mt-0.5 block line-clamp-2 text-[0.625rem] text-[var(--muted-foreground)]">
+                                <span className="mt-0.5 block line-clamp-2 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                                   {opt.value.slice(0, 150)}
                                   {opt.value.length > 150 ? "…" : ""}
                                 </span>
@@ -415,7 +415,7 @@ function ChatChoiceSelectionModal({
                               {opt.label}
                             </span>
                             {opt.value && (
-                              <p className="mt-0.5 line-clamp-2 text-[0.625rem] text-[var(--muted-foreground)]">
+                              <p className="mt-0.5 line-clamp-2 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                                 {opt.value.slice(0, 150)}
                                 {opt.value.length > 150 ? "…" : ""}
                               </p>

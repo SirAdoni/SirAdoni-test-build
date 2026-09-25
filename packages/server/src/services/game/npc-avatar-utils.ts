@@ -39,6 +39,8 @@ export interface GameNpcSanitizationOptions {
   locationNames?: readonly string[];
   /** Stable NPC identities the user explicitly removed. */
   ignoredNpcIds?: readonly string[];
+  /** Per-game names (companions, onboard AIs) narration extraction must skip; never used to drop existing rows. */
+  narrationExcludedNames?: readonly string[];
   /** Provenance-confirmed automatic cards that may be discarded when they duplicate protected identities. */
   autoCreatedCharacterIds?: readonly string[];
 }
@@ -226,9 +228,16 @@ export function gameNpcSanitizationOptionsFromMetadata(
   addMapLocations(metadata.gameMap);
   if (Array.isArray(metadata.gameMaps)) metadata.gameMaps.forEach(addMapLocations);
 
+  const narrationExcludedNames = Array.isArray(metadata.gameNarrationExcludedNpcNames)
+    ? (metadata.gameNarrationExcludedNpcNames as unknown[])
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .map((value) => value.trim())
+    : [];
+
   return {
     protectedCharacterNames: [...protectedCharacterNames],
     locationNames: [...locationNames],
+    narrationExcludedNames,
     ignoredNpcIds: Array.isArray(metadata.gameIgnoredNpcIds)
       ? (metadata.gameIgnoredNpcIds as unknown[]).filter(
           (value): value is string => typeof value === "string" && value.trim().length > 0,

@@ -172,7 +172,7 @@ export function EntityChipButton({
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex min-h-8 max-w-full items-center gap-1.5 rounded-full border border-border bg-secondary/50 py-0.5 pl-0.5 pr-2.5 text-xs text-foreground transition-colors hover:border-primary/50 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+      className="inline-flex min-h-8 pointer-coarse:min-h-9 max-w-full items-center gap-1.5 rounded-full border border-border bg-secondary/50 py-0.5 pl-0.5 pr-2.5 text-xs text-foreground transition-colors hover:border-primary/50 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
     >
       <EntityAvatar
         name={name}

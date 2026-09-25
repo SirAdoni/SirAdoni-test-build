@@ -162,7 +162,12 @@ function assetPayload(
   const candidates = buildSceneAssetNpcCandidates(
     gameNpcs,
     state?.presentCharacters,
-    [...(policy.protectedCharacterNames ?? []), ...(policy.locationNames ?? []), text(state?.location)],
+    [
+      ...(policy.protectedCharacterNames ?? []),
+      ...(policy.locationNames ?? []),
+      ...(policy.narrationExcludedNames ?? []),
+      text(state?.location),
+    ],
     narration,
   );
   const npcsNeedingAvatars = candidates

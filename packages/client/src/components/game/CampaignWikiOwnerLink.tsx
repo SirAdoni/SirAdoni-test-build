@@ -9,9 +9,15 @@ import {
   UserRound,
   type LucideIcon,
 } from "lucide-react";
-import type { CampaignMemoryOwnerRef } from "@marinara-engine/shared";
+import { useQuery } from "@tanstack/react-query";
+import type { CampaignMemoryOwnerRef, Lorebook } from "@marinara-engine/shared";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { useCharacters, usePersonas } from "../../hooks/use-characters";
+import { useChat } from "../../hooks/use-chats";
+import { lorebookKeys, useEntriesAcrossLorebooks } from "../../hooks/use-lorebooks";
+import { api } from "../../lib/api-client";
+import { openLorebookEntry } from "../../lib/lorebook-entry-focus";
+import { useChatStore } from "../../stores/chat.store";
 import { useGameModeStore } from "../../stores/game-mode.store";
 import { useUIStore } from "../../stores/ui.store";
 import { cn } from "../../lib/utils";
@@ -72,12 +78,78 @@ function ownerTypeOf(owner: CampaignMemoryOwnerRef): OwnerType {
   }
 }
 
+function activeLorebookIdsOf(metadata: unknown): string[] {
+  try {
+    const meta = typeof metadata === "string" ? JSON.parse(metadata) : metadata;
+    const ids = meta && typeof meta === "object" ? (meta as Record<string, unknown>).activeLorebookIds : null;
+    return Array.isArray(ids) ? ids.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+type LorebookTarget = { lorebookId: string; entryId: string | null; name: string };
+
+/**
+ * Finds the lorebook that holds a lore page's entry. The owner ref carries only the entry id, so the entry is looked
+ * up where the server allows lore owners to live: lorebooks scoped to the chat and the chat's active lorebooks first,
+ * then (only on a miss) the other chat-scoped lorebooks, where earlier sessions of the campaign keep their entries.
+ */
+function useLorebookOwner(owner: CampaignMemoryOwnerRef, chatId: string | null) {
+  const store = owner.type === "existing" ? owner.store : null;
+  const isEntry = store === "lorebook-entries";
+  const isBook = store === "lorebooks";
+  // Same key and payload as useLorebooks(), so the library's cached list is reused; only fetched for lore owners.
+  const books = useQuery({
+    queryKey: lorebookKeys.list(),
+    queryFn: () => api.get<Lorebook[]>("/lorebooks"),
+    enabled: isEntry || isBook,
+    staleTime: 5 * 60_000,
+  });
+  const chat = useChat(isEntry ? chatId : null);
+  const bookList = Array.isArray(books.data) ? books.data : [];
+  // The near lookup waits for the lorebook list and the chat, so an empty candidate list never reads as "not found".
+  const nearReady = isEntry && Boolean(books.data) && (!chatId || Boolean(chat.data) || chat.isError);
+  const nearIds = nearReady
+    ? [
+        ...bookList.filter((book) => chatId && book.chatId === chatId).map((book) => book.id),
+        // A deleted active lorebook would fail its entries fetch; only look in books that still exist.
+        ...activeLorebookIdsOf(chat.data?.metadata).filter((id) => bookList.some((book) => book.id === id)),
+      ]
+    : [];
+  const near = useEntriesAcrossLorebooks(nearIds);
+  const nearHit = near.entries?.find((entry) => entry.id === owner.recordId) ?? null;
+  const farIds =
+    nearReady && near.entries && !nearHit
+      ? bookList.filter((book) => book.chatId && !nearIds.includes(book.id)).map((book) => book.id)
+      : [];
+  const far = useEntriesAcrossLorebooks(farIds);
+  const farHit = far.entries?.find((entry) => entry.id === owner.recordId) ?? null;
+
+  if (isBook) {
+    const book = bookList.find((candidate) => candidate.id === owner.recordId);
+    return {
+      loading: books.isLoading,
+      target: book ? ({ lorebookId: book.id, entryId: null, name: book.name } satisfies LorebookTarget) : null,
+    };
+  }
+  if (!isEntry) return { loading: false, target: null };
+  const hit = nearHit ?? farHit;
+  const settled =
+    books.isError ||
+    (nearReady && (near.isError || (farIds.length > 0 ? Boolean(far.entries) || far.isError : Boolean(near.entries))));
+  return {
+    loading: !hit && !settled,
+    target: hit ? ({ lorebookId: hit.lorebookId, entryId: hit.id, name: hit.name } satisfies LorebookTarget) : null,
+  };
+}
+
 const BUTTON_CLASS =
   "group/owner inline-flex min-h-11 max-w-full items-center gap-2.5 rounded-xl border border-border bg-secondary/40 py-1.5 pl-1.5 pr-3 text-left transition-colors hover:border-primary/50 hover:bg-secondary/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60";
 
 /**
- * Link from a wiki page to the real record that owns it: the character card, persona, or map location. Resolution uses
- * the character and persona lists the client already loads; nothing else is fetched.
+ * Link from a wiki page to the real record that owns it: the character card, persona, lorebook entry, or map location.
+ * Characters and personas resolve from the lists the client already loads; lore owners look up their lorebook.
  */
 export function CampaignWikiOwnerLink({ owner, fallbackName, chatId, className }: CampaignWikiOwnerLinkProps) {
   const { t } = useUiTranslation();
@@ -85,13 +157,24 @@ export function CampaignWikiOwnerLink({ owner, fallbackName, chatId, className }
   const isCharacterOwner = ownerType === "character";
   const isPersonaOwner = ownerType === "persona";
   const isLocationOwner = ownerType === "location";
+  const isLorebookOwner = ownerType === "lorebook";
+  const activeChatId = useChatStore((s) => s.activeChatId);
+  const lore = useLorebookOwner(owner, chatId ?? activeChatId ?? null);
   const characters = useCharacters({ enabled: isCharacterOwner });
   const personas = usePersonas(isPersonaOwner);
   const rows = isCharacterOwner ? characters.data : isPersonaOwner ? personas.data : undefined;
   const record = Array.isArray(rows)
     ? (rows.map(readOwnerRecord).find((candidate) => candidate?.id === owner.recordId) ?? null)
-    : null;
-  const loading = isCharacterOwner ? characters.isLoading : isPersonaOwner ? personas.isLoading : false;
+    : lore.target
+      ? { id: lore.target.lorebookId, name: lore.target.name, avatarUrl: null }
+      : null;
+  const loading = isCharacterOwner
+    ? characters.isLoading
+    : isPersonaOwner
+      ? personas.isLoading
+      : isLorebookOwner
+        ? lore.loading
+        : false;
   const canOpen = record !== null;
   const canOpenMap = isLocationOwner && Boolean(chatId);
   const label = record?.name || fallbackName;
@@ -103,6 +186,9 @@ export function CampaignWikiOwnerLink({ owner, fallbackName, chatId, className }
       useGameModeStore.getState().openCharacterSheet(record.id);
     } else if (isPersonaOwner) {
       useUIStore.getState().openPersonaDetail(record.id);
+    } else if (lore.target) {
+      if (lore.target.entryId) openLorebookEntry(lore.target.lorebookId, lore.target.entryId);
+      else useUIStore.getState().openLorebookDetail(lore.target.lorebookId);
     }
   };
 
@@ -116,7 +202,9 @@ export function CampaignWikiOwnerLink({ owner, fallbackName, chatId, className }
         className={cn("mt-3 inline-flex min-h-11 items-center gap-2 text-xs text-muted-foreground", className)}
       >
         <Loader2 size={14} className="animate-spin" aria-hidden="true" />
-        {t("ui.game.campaignWiki.owner.loading")}
+        {isLorebookOwner
+          ? t("ui.game.campaignWiki.owner.loadingLorebook", { defaultValue: "Loading linked lorebook entry..." })
+          : t("ui.game.campaignWiki.owner.loading")}
       </span>
     );
   }
@@ -128,7 +216,9 @@ export function CampaignWikiOwnerLink({ owner, fallbackName, chatId, className }
       : isLocationOwner
         ? t("ui.game.campaignWiki.owner.openMap", { defaultValue: "Open on the map" })
         : ownerType === "lorebook"
-          ? t("ui.game.campaignWiki.owner.lorebookEntry", { defaultValue: "Lorebook entry" })
+          ? owner.store === "lorebooks"
+            ? t("ui.game.campaignWiki.owner.openLorebook", { defaultValue: "Open lorebook" })
+            : t("ui.game.campaignWiki.owner.lorebookEntry", { defaultValue: "Lorebook entry" })
           : t("ui.game.campaignWiki.owner.linkedRecord", { defaultValue: "Linked record" });
 
   const avatar =

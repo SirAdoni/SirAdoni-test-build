@@ -1075,7 +1075,7 @@ export function CharacterEditor() {
         onUseAvatar={handleGeneratedCharacterSheet}
       />
 
-      <div className="flex flex-wrap items-center gap-2 border-b border-[var(--border)] px-4 py-2">
+      <div className="flex flex-wrap items-center gap-2 border-b border-[var(--border)] px-4 py-2 [@media(max-height:500px)]:flex-nowrap [@media(max-height:500px)]:overflow-x-auto [@media(max-height:500px)]:py-0.5">
         <label className="flex items-center gap-2 text-xs" title={localizeUi("characters.organization.hint")}>
           {localizeUi("characters.organization.label")}
           <select
@@ -1124,7 +1124,7 @@ export function CharacterEditor() {
           {/* Avatar */}
           <div
             className={cn(
-              "mari-editor-avatar-tile group relative h-8 w-auto gap-1 overflow-visible md:h-9",
+              "mari-editor-avatar-tile group relative h-8 w-auto gap-1 overflow-visible md:h-9 pointer-coarse:h-9 pointer-coarse:[&>button[title]]:relative pointer-coarse:[&>button[title]]:before:absolute pointer-coarse:[&>button[title]]:before:-inset-1.5 pointer-coarse:[&>button[title]]:before:content-['']",
               !avatarPreview && "mari-avatar-placeholder mari-avatar-placeholder--character",
             )}
             style={{ width: "auto", overflow: "visible" }}
@@ -1133,7 +1133,7 @@ export function CharacterEditor() {
               <CharacterPhoto
                 src={avatarPreview}
                 name={formData.name}
-                className="block h-8 w-8 shrink-0 rounded-[inherit] md:h-9 md:w-9"
+                className="block h-8 w-8 shrink-0 rounded-[inherit] md:h-9 md:w-9 pointer-coarse:h-9 pointer-coarse:w-9"
                 onUpdate={() => fileInputRef.current?.click()}
                 updateLabel={localizeUi("editor.avatar.upload")}
               >
@@ -1149,7 +1149,7 @@ export function CharacterEditor() {
             ) : (
               <button
                 type="button"
-                className="flex h-8 w-8 items-center justify-center md:h-9 md:w-9"
+                className="flex h-8 w-8 items-center justify-center md:h-9 md:w-9 pointer-coarse:h-9 pointer-coarse:w-9"
                 onClick={() => fileInputRef.current?.click()}
                 aria-label={localizeUi("editor.avatar.upload")}
               >
@@ -1506,7 +1506,7 @@ function CharacterSummaryField({
         selfCharacterId={characterId}
         className="w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--secondary)] p-3 text-sm leading-relaxed outline-none placeholder:text-[var(--muted-foreground)]/40 focus:border-[var(--primary)]/40 focus:ring-1 focus:ring-[var(--primary)]/20"
       />
-      <p className="text-right text-[0.625rem] text-[var(--muted-foreground)]">
+      <p className="text-right text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
         {String(formData.summary ?? "").length}/500
       </p>
     </div>
@@ -1767,7 +1767,7 @@ function MetadataTab({
 
       {characterId && (
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--secondary)]/70 px-3 py-2">
-          <span className="text-[0.625rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
+          <span className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
             {localizeUi("ui.characters.metadatatab.characterId")}
           </span>
           <code className="min-w-0 flex-1 break-all rounded-lg bg-[var(--background)] px-2 py-1 text-[0.6875rem] text-[var(--foreground)]">
@@ -1920,7 +1920,7 @@ function MetadataTab({
             onChange={(e) => updateExtension("talkativeness", parseFloat(e.target.value))}
             className="w-full accent-[var(--primary)]"
           />
-          <span className="text-[0.625rem] text-[var(--muted-foreground)]">
+          <span className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
             {Math.round(formData.extensions.talkativeness * 100)}%
           </span>
         </label>
@@ -2166,7 +2166,7 @@ function CharacterVersionHistoryPanel({
             type="button"
             onClick={handleResetVersions}
             disabled={isLoading || versionMutationPending || hasUnsavedChanges}
-            className="mari-editor-action mari-editor-action--compact inline-flex h-7 px-2 text-[0.625rem]"
+            className="mari-editor-action mari-editor-action--compact inline-flex h-7 px-2 text-[0.625rem] pointer-coarse:text-[0.6875rem]"
             title={localizeUi(
               hasUnsavedChanges
                 ? "ui.cardversionhistory.saveOrDiscardEditsBeforeResettingVersioning"
@@ -2180,7 +2180,7 @@ function CharacterVersionHistoryPanel({
             )}
             {localizeUi("ui.cardversionhistory.reset")}
           </button>
-          <span className="mari-editor-chip mari-editor-chip--accent px-2 py-0.5 text-[0.625rem]">
+          <span className="mari-editor-chip mari-editor-chip--accent px-2 py-0.5 text-[0.625rem] pointer-coarse:text-[0.6875rem]">
             {isLoading
               ? localizeUi("ui.characters.characterversionhistorypanel.loading")
               : localizeUi("ui.characters.characterversionhistorypanel.value1Saved", { value1: savedVersionCount })}
@@ -2215,7 +2215,7 @@ function CharacterVersionHistoryPanel({
                 <span className="block truncate text-[0.6875rem] font-medium text-[var(--foreground)]">
                   {getVersionTitle(version)}
                 </span>
-                <span className="block truncate text-[0.625rem] text-[var(--muted-foreground)]">
+                <span className="block truncate text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                   {formatCardVersionTimestamp(version.createdAt)}
                   {!version.isCurrent && version.source
                     ? localizeUi("ui.characters.characterversionhistorypanel.value1", { value1: version.source })
@@ -2323,7 +2323,7 @@ function CharacterVersionHistoryPanel({
                     <div className="mb-2 flex items-center justify-between gap-2">
                       <span className="text-xs font-semibold text-[var(--foreground)]">{field.label}</span>
                       {changed && (
-                        <span className="rounded-full bg-[var(--primary)]/10 px-2 py-0.5 text-[0.625rem] font-medium text-[var(--primary)]">
+                        <span className="rounded-full bg-[var(--primary)]/10 px-2 py-0.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--primary)]">
                           {localizeUi("ui.characters.characterversionhistorypanel.changed")}
                         </span>
                       )}
@@ -2505,7 +2505,7 @@ function DialogueTab({
             text={localizeUi("ui.characters.dialoguetab.sampleConversationsShowingHowTheCharacterTalksHelpsThe")}
           />
         </span>
-        <p className="text-[0.625rem] text-[var(--muted-foreground)]/70">
+        <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]/70">
           {localizeUi("ui.characters.dialoguetab.useStartToSeparateExchangesUseUserAndChar")}
         </p>
         <MacroTextarea
@@ -3162,7 +3162,7 @@ function CharacterGalleryTab({
               onClick={() => setMediaTab(tab.id)}
               aria-pressed={active}
               className={cn(
-                "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors",
+                "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors pointer-coarse:min-h-9",
                 active
                   ? "bg-[var(--primary)] text-[var(--primary-foreground)] shadow-sm"
                   : "text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]",
@@ -4128,7 +4128,7 @@ function CharacterClipCard({
                     type="button"
                     onClick={() => void onGenerate(clip)}
                     disabled={generationDisabled || generating}
-                    className="inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] px-2.5 py-1 text-[0.7rem] font-semibold text-[var(--foreground)] opacity-0 shadow-sm transition-all hover:border-[var(--primary)]/50 hover:text-[var(--primary)] focus-visible:opacity-100 disabled:cursor-not-allowed disabled:text-[var(--muted-foreground)] group-hover:opacity-100 max-md:opacity-100"
+                    className="inline-flex min-h-8 pointer-coarse:min-h-9 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] px-2.5 py-1 text-[0.7rem] font-semibold text-[var(--foreground)] opacity-0 shadow-sm transition-all hover:border-[var(--primary)]/50 hover:text-[var(--primary)] focus-visible:opacity-100 disabled:cursor-not-allowed disabled:text-[var(--muted-foreground)] group-hover:opacity-100 max-md:opacity-100"
                     title={localizeUi("ui.characters.characterclipcard.generateValue1", {
                       value1: clip.label || localizeUi("ui.characters.characterclipcard.callClip"),
                     })}
@@ -4142,7 +4142,7 @@ function CharacterClipCard({
                     type="button"
                     onClick={() => onUpload(clip)}
                     disabled={uploading || uploadDisabled || generationDisabled}
-                    className="inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] px-2.5 py-1 text-[0.7rem] font-semibold text-[var(--foreground)] opacity-0 shadow-sm transition-all hover:border-[var(--primary)]/50 hover:text-[var(--primary)] focus-visible:opacity-100 disabled:cursor-not-allowed disabled:text-[var(--muted-foreground)] group-hover:opacity-100 max-md:opacity-100"
+                    className="inline-flex min-h-8 pointer-coarse:min-h-9 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] px-2.5 py-1 text-[0.7rem] font-semibold text-[var(--foreground)] opacity-0 shadow-sm transition-all hover:border-[var(--primary)]/50 hover:text-[var(--primary)] focus-visible:opacity-100 disabled:cursor-not-allowed disabled:text-[var(--muted-foreground)] group-hover:opacity-100 max-md:opacity-100"
                     title={localizeUi("ui.characters.characterclipcard.uploadValue1", {
                       value1: clip.label || localizeUi("ui.characters.characterclipcard.callClip"),
                     })}
@@ -4360,7 +4360,7 @@ function SpritesTab({
           onClick={() => setCategory(tab.id)}
           aria-pressed={category === tab.id}
           className={cn(
-            "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+            "rounded-md px-3 py-1.5 text-xs font-medium transition-colors pointer-coarse:min-h-9",
             category === tab.id
               ? "bg-[var(--primary)]/15 text-[var(--primary)]"
               : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
@@ -4840,7 +4840,7 @@ function SpritesTab({
           <span className="text-[0.6875rem] font-medium text-[var(--foreground)]">
             {localizeUi("ui.characters.spritestab.cleanupStrength")}
           </span>
-          <span className="text-[0.625rem] text-[var(--muted-foreground)]">
+          <span className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
             {localizeUi("ui.characters.spritestab.soft")}
           </span>
           <input
@@ -4853,7 +4853,7 @@ function SpritesTab({
             disabled={cleaningSprites}
             className="min-w-40 flex-1 accent-[var(--primary)] disabled:opacity-50"
           />
-          <span className="text-[0.625rem] text-[var(--muted-foreground)]">
+          <span className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
             {localizeUi("ui.characters.spritestab.aggressive")}
           </span>
           <span className="w-8 text-right text-[0.6875rem] tabular-nums text-[var(--muted-foreground)]">
@@ -4929,7 +4929,7 @@ function SpritesTab({
         {/* Quick expression buttons */}
         {category === "expressions" && suggestedExpressions.length > 0 && (
           <div>
-            <p className="text-[0.625rem] text-[var(--muted-foreground)] mb-1.5">
+            <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)] mb-1.5">
               {localizeUi("ui.characters.spritestab.quickAdd")}
             </p>
             <div className="flex flex-wrap gap-1">
@@ -4938,7 +4938,7 @@ function SpritesTab({
                   type="button"
                   key={expr}
                   onClick={() => startUpload(expr)}
-                  className="rounded-lg bg-[var(--secondary)] px-2.5 py-1 text-[0.6875rem] font-medium text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+                  className="rounded-lg bg-[var(--secondary)] px-2.5 py-1 text-[0.6875rem] font-medium pointer-coarse:min-h-9 text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
                 >
                   {expr}
                 </button>
@@ -5537,7 +5537,7 @@ function ColorsTab({
 
       {/* Preview card */}
       <div className="space-y-3 overflow-hidden rounded-xl border border-[var(--border)] bg-black/30 p-4">
-        <p className="text-[0.625rem] font-medium uppercase tracking-widest text-[var(--muted-foreground)]">
+        <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium uppercase tracking-widest text-[var(--muted-foreground)]">
           {localizeUi("settings.notifications.customSound.actions.preview")}
         </p>
         <div className="flex gap-3">
@@ -5860,14 +5860,14 @@ function LorebookTab({
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">{entry.name || `Entry #${i + 1}`}</p>
-                  <p className="mt-0.5 text-[0.625rem] text-[var(--muted-foreground)]">
+                  <p className="mt-0.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                     {localizeUi("ui.characters.lorebooktab.keys")} {entry.keys.join(", ")}{" "}
                     {entry.secondary_keys.length > 0 && `· Secondary: ${entry.secondary_keys.join(", ")}`}
                   </p>
                 </div>
                 <span
                   className={cn(
-                    "shrink-0 rounded-full px-2 py-0.5 text-[0.625rem] font-medium",
+                    "shrink-0 rounded-full px-2 py-0.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium",
                     entry.enabled
                       ? "bg-emerald-500/15 text-emerald-500"
                       : "bg-[var(--muted-foreground)]/15 text-[var(--muted-foreground)]",

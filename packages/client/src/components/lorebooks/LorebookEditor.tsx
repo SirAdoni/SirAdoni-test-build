@@ -244,7 +244,7 @@ function LinkedResourcePicker({
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-xs">{item.name}</span>
                 {item.description && (
-                  <span className="block truncate text-[0.625rem] text-[var(--muted-foreground)]">
+                  <span className="block truncate text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                     {item.description}
                   </span>
                 )}
@@ -297,7 +297,7 @@ function LinkedResourcePicker({
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-xs">{item.name}</span>
                   {item.description && (
-                    <span className="block truncate text-[0.625rem] text-[var(--muted-foreground)]">
+                    <span className="block truncate text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                       {item.description}
                     </span>
                   )}
@@ -1972,7 +1972,7 @@ export function LorebookEditor() {
             }}
           >
             {folderEntries.length === 0 && childFolders.length === 0 && (
-              <p className="py-2 text-[0.625rem] italic text-[var(--muted-foreground)]">
+              <p className="py-2 text-[0.625rem] pointer-coarse:text-[0.6875rem] italic text-[var(--muted-foreground)]">
                 {localizeUi("ui.lorebooks.lorebookeditor.emptyDragAnEntryHereOrPickThisFolder")}
               </p>
             )}
@@ -2276,7 +2276,7 @@ export function LorebookEditor() {
 
                 {/* Lorebook ID */}
                 <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--secondary)]/70 px-3 py-2">
-                  <span className="text-[0.625rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
+                  <span className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
                     {localizeUi("ui.lorebooks.lorebookeditor.lorebookId")}
                   </span>
                   <code className="min-w-0 flex-1 break-all rounded-lg bg-[var(--background)] px-2 py-1 text-[0.6875rem] text-[var(--foreground)]">
@@ -2722,7 +2722,7 @@ export function LorebookEditor() {
                     <FlaskConical size="0.8125rem" className="mari-chrome-accent-icon mari-accent-animated shrink-0" />
                     <span className="flex-1">{localizeUi("ui.lorebooks.lorebookeditor.keywordTest")}</span>
                     {previewActive && (
-                      <span className="rounded-full bg-emerald-400/15 px-2 py-0.5 text-[0.625rem] font-medium text-emerald-300 ring-1 ring-emerald-400/25">
+                      <span className="rounded-full bg-emerald-400/15 px-2 py-0.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-emerald-300 ring-1 ring-emerald-400/25">
                         {previewMatchCount} {localizeUi("ui.lorebooks.lorebookeditor.match")}
                         {previewMatchCount === 1 ? "" : localizeUi("ui.lorebooks.lorebookeditor.es")}
                       </span>
@@ -2882,14 +2882,14 @@ export function LorebookEditor() {
                       onClick={() => setSelectedEntryIds(new Set(visibleEntryIds))}
                       title={t("lorebook.editor.bulk.selectAllTitle")}
                       disabled={visibleEntryIds.length === 0}
-                      className="mari-editor-action mari-editor-action--compact px-2.5 py-1 text-[0.625rem] disabled:opacity-40"
+                      className="mari-editor-action mari-editor-action--compact px-2.5 py-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] disabled:opacity-40"
                     >
                       {t("lorebook.editor.batch.selectAll")}
                     </button>
                     <button
                       onClick={() => setSelectedEntryIds(new Set())}
                       disabled={selectedEntryIds.size === 0}
-                      className="rounded-lg px-2.5 py-1 text-[0.625rem] font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:opacity-40"
+                      className="rounded-lg px-2.5 py-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:opacity-40"
                     >
                       {t("lorebook.editor.batch.clear")}
                     </button>
@@ -2902,7 +2902,7 @@ export function LorebookEditor() {
                         bulkUpdateEntries.isPending ||
                         bulkDeleteEntries.isPending
                       }
-                      className="mari-editor-action mari-editor-action--primary mari-editor-action--compact inline-flex items-center gap-1 px-2.5 py-1.5 text-[0.625rem] disabled:opacity-40"
+                      className="mari-editor-action mari-editor-action--primary mari-editor-action--compact inline-flex items-center gap-1 px-2.5 py-1.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] disabled:opacity-40"
                     >
                       {transferEntries.isPending ? (
                         <Loader2 size="0.6875rem" className="animate-spin" />
@@ -2920,7 +2920,7 @@ export function LorebookEditor() {
                         bulkUpdateEntries.isPending ||
                         bulkDeleteEntries.isPending
                       }
-                      className="mari-editor-action mari-editor-action--compact inline-flex items-center gap-1 px-2.5 py-1.5 text-[0.625rem] disabled:opacity-40"
+                      className="mari-editor-action mari-editor-action--compact inline-flex items-center gap-1 px-2.5 py-1.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] disabled:opacity-40"
                     >
                       {transferEntries.isPending ? (
                         <Loader2 size="0.6875rem" className="animate-spin" />
@@ -2937,7 +2937,7 @@ export function LorebookEditor() {
                         bulkUpdateEntries.isPending ||
                         bulkDeleteEntries.isPending
                       }
-                      className="mari-editor-action mari-editor-action--compact inline-flex items-center gap-1 px-2.5 py-1.5 text-[0.625rem] disabled:opacity-40"
+                      className="mari-editor-action mari-editor-action--compact inline-flex items-center gap-1 px-2.5 py-1.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] disabled:opacity-40"
                     >
                       {bulkDeleteEntries.isPending ? (
                         <Loader2 size="0.6875rem" className="animate-spin" />
@@ -2948,7 +2948,7 @@ export function LorebookEditor() {
                     </button>
                     <button
                       onClick={exitEntrySelectionMode}
-                      className="rounded-lg px-2.5 py-1.5 text-[0.625rem] font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+                      className="rounded-lg px-2.5 py-1.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
                     >
                       {t("lorebook.editor.batch.done")}
                     </button>
@@ -3100,7 +3100,7 @@ export function LorebookEditor() {
                     {(draggingFolderIdx !== null || (draggingEntryIdx !== null && dragSourceContainer !== null)) && (
                       <div
                         data-lorebook-entry-root
-                        className="rounded-xl border border-dashed border-[var(--marinara-editor-border-strong)] bg-[var(--marinara-editor-control-bg-hover)] px-3 py-2 text-center text-[0.625rem] italic text-[var(--marinara-editor-accent)]"
+                        className="rounded-xl border border-dashed border-[var(--marinara-editor-border-strong)] bg-[var(--marinara-editor-control-bg-hover)] px-3 py-2 text-center text-[0.625rem] pointer-coarse:text-[0.6875rem] italic text-[var(--marinara-editor-accent)]"
                         onDragOver={(e) => {
                           if (draggingFolderIdx !== null) handleFolderRootDragOver(e);
                           else handleRootListDragOver(e);
@@ -3136,7 +3136,7 @@ export function LorebookEditor() {
                       }}
                     >
                       {(entriesByContainer.get(null) ?? []).length === 0 && (
-                        <p className="py-3 text-center text-[0.625rem] italic text-[var(--muted-foreground)] opacity-50">
+                        <p className="py-3 text-center text-[0.625rem] pointer-coarse:text-[0.6875rem] italic text-[var(--muted-foreground)] opacity-50">
                           {localizeUi("ui.lorebooks.lorebookeditor.noEntriesAtTheRootLevel")}
                         </p>
                       )}
@@ -3449,7 +3449,7 @@ function VectorizeSection({
           text={localizeUi("ui.lorebooks.vectorizesection.vectorizeEntriesToEnableSemanticMatchingEntriesWillBe")}
         />
       </div>
-      <div className="flex flex-wrap items-center gap-2 text-[0.625rem] text-[var(--muted-foreground)]">
+      <div className="flex flex-wrap items-center gap-2 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
         <span
           className={cn(
             "inline-flex items-center gap-1 rounded-full px-2 py-0.5 ring-1",
@@ -3476,7 +3476,7 @@ function VectorizeSection({
         )}
       </div>
       <div className="grid gap-2 sm:grid-cols-3">
-        <label className="space-y-1 text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+        <label className="space-y-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
           <span className="flex items-center gap-1">
             {localizeUi("ui.lorebooks.vectorizesection.queryMessages")}
             <HelpTooltip
@@ -3496,7 +3496,7 @@ function VectorizeSection({
             className="mari-editor-field h-9 w-full px-2.5 py-1.5 text-xs"
           />
         </label>
-        <label className="space-y-1 text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+        <label className="space-y-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
           <span className="flex items-center gap-1">
             {localizeUi("ui.lorebooks.vectorizesection.scoreThreshold")}
             <HelpTooltip
@@ -3517,7 +3517,7 @@ function VectorizeSection({
             className="mari-editor-field h-9 w-full px-2.5 py-1.5 text-xs"
           />
         </label>
-        <label className="space-y-1 text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+        <label className="space-y-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
           <span className="flex items-center gap-1">
             {localizeUi("ui.lorebooks.vectorizesection.vectorLimit")}
             <HelpTooltip
@@ -3542,11 +3542,11 @@ function VectorizeSection({
         </label>
       </div>
       {excludeFromVectorization ? (
-        <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+        <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
           {localizeUi("ui.lorebooks.vectorizesection.semanticSearchIsDisabledByTheLorebookLevelVectors")}
         </p>
       ) : embeddingConnections.length === 0 ? (
-        <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+        <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
           {localizeUi("ui.lorebooks.vectorizesection.noConnectionsWithAnEmbeddingModelConfiguredSetAn")}
         </p>
       ) : (
@@ -3616,21 +3616,21 @@ function VectorizeSection({
             </button>
           </div>
           {storedVectorCount > 0 && (
-            <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+            <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
               {storedVectorCount} {localizeUi("ui.lorebooks.vectorizesection.storedVector")}
               {storedVectorCount === 1 ? "" : localizeUi("ui.noodle.stageprofileview.s")}{" "}
               {localizeUi("ui.lorebooks.vectorizesection.canBeDeletedWithoutChangingLorebookText")}
             </p>
           )}
           {!selectedConnectionId && (
-            <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+            <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
               {localizeUi("ui.lorebooks.vectorizesection.semanticSearchIsOffUntilYouChooseAnEmbedding")}
             </p>
           )}
           {result && (
             <p
               className={cn(
-                "text-[0.625rem] flex items-center gap-1",
+                "text-[0.625rem] pointer-coarse:text-[0.6875rem] flex items-center gap-1",
                 result.success ? "text-emerald-400" : "text-red-400",
               )}
             >

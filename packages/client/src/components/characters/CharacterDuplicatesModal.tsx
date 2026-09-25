@@ -66,11 +66,11 @@ function CompareView({ group }: { group: DuplicateGroup }) {
         const same = values.every((value) => value === values[0]);
         return (
           <div key={field} className="rounded-lg border border-[var(--border)] p-2">
-            <div className="mb-1 flex items-center gap-2 text-[0.625rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
+            <div className="mb-1 flex items-center gap-2 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
               {t(`characters.duplicates.field.${field}`)}
               <span
                 className={cn(
-                  "rounded-full px-1.5 py-px text-[0.5625rem] normal-case tracking-normal",
+                  "rounded-full px-1.5 py-px text-[0.5625rem] pointer-coarse:text-[0.6875rem] normal-case tracking-normal",
                   same ? "bg-emerald-400/15 text-emerald-500" : "bg-amber-400/15 text-amber-500",
                 )}
               >
@@ -116,7 +116,7 @@ export function CharacterDuplicatesModal({ open, onClose, onOpenCharacter }: Pro
             <button
               type="button"
               onClick={() => void refetch()}
-              className="mari-chrome-control mari-chrome-control--compact"
+              className="mari-chrome-control mari-chrome-control--compact pointer-coarse:min-h-9! pointer-coarse:min-w-9! pointer-coarse:text-[0.6875rem]!"
             >
               {t("characters.duplicates.retry")}
             </button>
@@ -138,7 +138,7 @@ export function CharacterDuplicatesModal({ open, onClose, onOpenCharacter }: Pro
                   const comparing = comparingKey === key;
                   return (
                     <li key={key} className="space-y-2 rounded-xl border border-[var(--border)] p-2.5">
-                      <div className="flex flex-wrap items-center gap-1.5 text-[0.625rem]">
+                      <div className="flex flex-wrap items-center gap-1.5 text-[0.625rem] pointer-coarse:text-[0.6875rem]">
                         {group.nameMatch && (
                           <span className="rounded-full bg-[var(--accent)] px-2 py-0.5 font-medium">
                             {t("characters.duplicates.reasonName")}
@@ -154,7 +154,7 @@ export function CharacterDuplicatesModal({ open, onClose, onOpenCharacter }: Pro
                           onClick={() => setComparingKey(comparing ? null : key)}
                           aria-pressed={comparing}
                           className={cn(
-                            "mari-chrome-control mari-chrome-control--compact ml-auto",
+                            "mari-chrome-control mari-chrome-control--compact pointer-coarse:min-h-9! pointer-coarse:min-w-9! pointer-coarse:text-[0.6875rem]! ml-auto",
                             comparing && "mari-chrome-control--selected",
                           )}
                         >
@@ -183,7 +183,7 @@ export function CharacterDuplicatesModal({ open, onClose, onOpenCharacter }: Pro
                               )}
                               <div className="min-w-0 flex-1">
                                 <div className="truncate text-xs font-medium">{character.name}</div>
-                                <div className="truncate text-[0.625rem] text-[var(--muted-foreground)]">
+                                <div className="truncate text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                                   {[
                                     character.comment,
                                     character.creator && t("characters.duplicates.by", { creator: character.creator }),
@@ -200,7 +200,7 @@ export function CharacterDuplicatesModal({ open, onClose, onOpenCharacter }: Pro
                               <button
                                 type="button"
                                 onClick={() => onOpenCharacter(character.id)}
-                                className="mari-chrome-control mari-chrome-control--compact shrink-0"
+                                className="mari-chrome-control mari-chrome-control--compact pointer-coarse:min-h-9! pointer-coarse:min-w-9! pointer-coarse:text-[0.6875rem]! shrink-0"
                                 title={t("characters.duplicates.open")}
                               >
                                 <ExternalLink size="0.625rem" />
@@ -208,7 +208,7 @@ export function CharacterDuplicatesModal({ open, onClose, onOpenCharacter }: Pro
                               </button>
                             </div>
                             {character.tags.length > 0 && (
-                              <div className="truncate text-[0.625rem] text-[var(--muted-foreground)]">
+                              <div className="truncate text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                                 {character.tags.join(", ")}
                               </div>
                             )}

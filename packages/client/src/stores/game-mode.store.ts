@@ -7,6 +7,7 @@ import {
   applyExtendedWidgetUpdate,
   applyHudWidgetLifecycle,
   isExtendedHudWidgetType,
+  coerceWidgetValue,
   leadingWidgetNumber,
   listWidgetCapacity,
 } from "@marinara-engine/shared";
@@ -394,7 +395,8 @@ export const useGameModeStore = create<GameModeStore>((set) => ({
             // Handle stat_block: update a specific stat by name, creating it when needed.
             if (changes.statName && w.type === "stat_block") {
               const targetName = changes.statName.trim();
-              const rawValue = leadingWidgetNumber(changes.value) ?? changes.value;
+              // Stat values are text ("23 h 52 min", "540 km circuit"): only a wholly numeric one becomes a number.
+              const rawValue = typeof changes.value === "string" ? coerceWidgetValue(changes.value) : changes.value;
               const newValue =
                 typeof rawValue === "number"
                   ? rawValue

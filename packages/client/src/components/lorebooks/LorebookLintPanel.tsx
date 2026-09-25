@@ -84,7 +84,7 @@ export function LorebookLintPanel({ entries, onJumpToEntry, openRequest = 0 }: P
         <ListChecks size="0.8125rem" className="mari-chrome-accent-icon mari-accent-animated shrink-0" />
         <span className="flex-1">{t("lorebook.editor.lint.title")}</span>
         {open && issues.length > 0 && (
-          <span className="flex shrink-0 items-center gap-1.5 text-[0.625rem] text-[var(--muted-foreground)]">
+          <span className="flex shrink-0 items-center gap-1.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
             {SEVERITIES.filter((severity) => counts[severity] > 0).map((severity) => (
               <span key={severity} className="inline-flex items-center gap-1">
                 <span className={cn("h-1.5 w-1.5 rounded-full", SEVERITY_DOT[severity])} />
@@ -114,7 +114,7 @@ export function LorebookLintPanel({ entries, onJumpToEntry, openRequest = 0 }: P
                 }}
                 aria-pressed={severityFilter === severity}
                 className={cn(
-                  "mari-editor-action mari-editor-action--compact inline-flex items-center gap-1 px-2 py-1 text-[0.625rem]",
+                  "mari-editor-action mari-editor-action--compact inline-flex items-center gap-1 px-2 py-1 text-[0.625rem] pointer-coarse:text-[0.6875rem]",
                   severityFilter === severity &&
                     "border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-button-text-active)]",
                 )}
@@ -124,7 +124,7 @@ export function LorebookLintPanel({ entries, onJumpToEntry, openRequest = 0 }: P
                 <span className="opacity-60">{severity === "all" ? issues.length : counts[severity]}</span>
               </button>
             ))}
-            <label className="ml-auto inline-flex items-center gap-1.5 text-[0.625rem] text-[var(--muted-foreground)]">
+            <label className="ml-auto inline-flex items-center gap-1.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
               {t("lorebook.editor.lint.tokenLimit")}
               <input
                 type="number"
@@ -163,7 +163,7 @@ export function LorebookLintPanel({ entries, onJumpToEntry, openRequest = 0 }: P
                       <span className="block truncate text-[0.6875rem] font-medium text-[var(--foreground)]">
                         {issue.entryName || t("lorebook.editor.lint.untitledEntry")}
                       </span>
-                      <span className="block break-words text-[0.625rem] leading-snug text-[var(--muted-foreground)]">
+                      <span className="block break-words text-[0.625rem] pointer-coarse:text-[0.6875rem] leading-snug text-[var(--muted-foreground)]">
                         {describe(issue)}
                       </span>
                     </span>
@@ -175,7 +175,7 @@ export function LorebookLintPanel({ entries, onJumpToEntry, openRequest = 0 }: P
                   <button
                     type="button"
                     onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}
-                    className="w-full rounded-lg px-2 py-1.5 text-center text-[0.625rem] font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)]/40 hover:text-[var(--foreground)]"
+                    className="w-full rounded-lg px-2 py-1.5 text-center text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)]/40 hover:text-[var(--foreground)]"
                   >
                     {t("lorebook.editor.lint.showMore", { count: filtered.length - visibleCount })}
                   </button>

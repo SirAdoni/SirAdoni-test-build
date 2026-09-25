@@ -38,7 +38,7 @@ const GENDERS: ReadonlyArray<{ id: NameGender; labelKey: string }> = [
 
 const SLOT_COUNT = 8;
 const SELECT_CLASS =
-  "h-8 min-w-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40";
+  "h-8 pointer-coarse:h-9 min-w-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40";
 
 function characterName(row: unknown): string | null {
   if (!row || typeof row !== "object") return null;
@@ -135,7 +135,7 @@ export function NameGenerator({ className }: { className?: string }) {
     <div className={cn("space-y-2.5", className)}>
       <div className="grid grid-cols-2 gap-1.5">
         <label className="flex min-w-0 flex-col gap-1">
-          <span className="text-[0.625rem] font-medium uppercase tracking-wide text-muted-foreground">
+          <span className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
             {t("ui.nameGenerator.style")}
           </span>
           <select
@@ -151,7 +151,7 @@ export function NameGenerator({ className }: { className?: string }) {
           </select>
         </label>
         <label className="flex min-w-0 flex-col gap-1">
-          <span className="text-[0.625rem] font-medium uppercase tracking-wide text-muted-foreground">
+          <span className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
             {t("ui.nameGenerator.seed")}
           </span>
           <input
@@ -194,7 +194,7 @@ export function NameGenerator({ className }: { className?: string }) {
               aria-pressed={gender === item.id}
               onClick={() => setGender(item.id)}
               className={cn(
-                "rounded px-2 py-0.5 text-[0.6875rem] font-medium transition-colors",
+                "rounded px-2 py-0.5 text-[0.6875rem] font-medium transition-colors pointer-coarse:min-h-9 pointer-coarse:px-3",
                 gender === item.id
                   ? "bg-primary/15 text-foreground"
                   : "text-muted-foreground hover:bg-secondary hover:text-foreground",
@@ -204,7 +204,7 @@ export function NameGenerator({ className }: { className?: string }) {
             </button>
           ))}
         </div>
-        <label className="flex cursor-pointer items-center gap-1.5 text-[0.6875rem] text-muted-foreground">
+        <label className="flex cursor-pointer items-center gap-1.5 text-[0.6875rem] text-muted-foreground pointer-coarse:min-h-9">
           <input
             type="checkbox"
             checked={surname}
@@ -216,7 +216,7 @@ export function NameGenerator({ className }: { className?: string }) {
         <button
           type="button"
           onClick={regenerate}
-          className="ml-auto flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-[0.6875rem] font-medium text-foreground transition-colors hover:bg-secondary"
+          className="ml-auto flex h-7 pointer-coarse:h-9 items-center gap-1.5 rounded-md border border-border px-2.5 text-[0.6875rem] font-medium text-foreground transition-colors hover:bg-secondary"
           title={t("ui.nameGenerator.regenerateHint")}
         >
           <Dices size={13} />
@@ -250,7 +250,7 @@ export function NameGenerator({ className }: { className?: string }) {
                   aria-label={t(isLocked ? "ui.nameGenerator.unlock" : "ui.nameGenerator.lock")}
                   title={t(isLocked ? "ui.nameGenerator.unlock" : "ui.nameGenerator.lock")}
                   className={cn(
-                    "flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-secondary",
+                    "flex h-7 w-7 pointer-coarse:h-9 pointer-coarse:w-9 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-secondary",
                     isLocked ? "text-primary" : "text-muted-foreground",
                   )}
                 >
@@ -261,7 +261,7 @@ export function NameGenerator({ className }: { className?: string }) {
                   onClick={() => void copy(slot, name.full)}
                   aria-label={t("ui.nameGenerator.copy")}
                   title={t("ui.nameGenerator.copy")}
-                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                  className="flex h-7 w-7 pointer-coarse:h-9 pointer-coarse:w-9 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
                 >
                   {copied === slot ? <Check size={13} /> : <Copy size={13} />}
                 </button>
@@ -271,7 +271,7 @@ export function NameGenerator({ className }: { className?: string }) {
         </ul>
       )}
       {learned && ready && model && (
-        <p className="text-[0.625rem] text-muted-foreground">
+        <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-muted-foreground">
           {t("ui.nameGenerator.trainedOn", { count: model.known.length })}
         </p>
       )}

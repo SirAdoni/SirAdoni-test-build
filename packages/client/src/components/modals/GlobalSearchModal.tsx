@@ -143,7 +143,8 @@ export function GlobalSearchModal({
   const openResult = (result: GlobalChatSearchResult) => {
     onClose();
     // The Game screen has no per-message anchors; its turns open in the campaign log.
-    if (result.chatMode === "game") openGameLog({ chatId: result.chatId, messageId: result.messageId, messageNumber: result.messageNumber });
+    if (result.chatMode === "game")
+      openGameLog({ chatId: result.chatId, messageId: result.messageId, messageNumber: result.messageNumber });
     else openChatAtMessage(result.chatId, result.messageNumber);
   };
 
@@ -197,7 +198,7 @@ export function GlobalSearchModal({
           >
             <SlidersHorizontal size="0.875rem" />
             {activeFilterCount > 0 && (
-              <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--primary)] px-1 text-[0.5625rem] font-bold text-[var(--primary-foreground)]">
+              <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--primary)] px-1 text-[0.5625rem] pointer-coarse:text-[0.6875rem] font-bold text-[var(--primary-foreground)]">
                 {activeFilterCount}
               </span>
             )}
@@ -311,7 +312,7 @@ export function GlobalSearchModal({
             type="button"
             onClick={() => void search.fetchNextPage()}
             disabled={search.isFetchingNextPage}
-            className="mari-chrome-control mari-chrome-control--small mx-auto px-4 text-xs disabled:opacity-50"
+            className="mari-chrome-control mari-chrome-control--small mx-auto px-4 pointer-coarse:min-h-9! text-xs disabled:opacity-50"
           >
             {search.isFetchingNextPage ? <Loader2 size="0.75rem" className="animate-spin" /> : null}
             {t("chatInsights.search.loadMore")}

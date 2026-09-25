@@ -112,7 +112,7 @@ export function CreateConnectionModal({ open, onClose, initialProvider }: Props)
                 onClick={() => setProvider(key)}
                 aria-pressed={provider === key}
                 className={cn(
-                  "rounded-md px-2.5 py-2 text-left text-[0.6875rem] font-medium transition-all",
+                  "rounded-md px-2.5 py-2 pointer-coarse:min-h-9 text-left text-[0.6875rem] font-medium transition-all",
                   provider === key
                     ? "bg-sky-400/15 text-sky-400 ring-1 ring-sky-400/30"
                     : "bg-[var(--secondary)] text-[var(--muted-foreground)] ring-1 ring-[var(--border)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
@@ -122,7 +122,7 @@ export function CreateConnectionModal({ open, onClose, initialProvider }: Props)
               </button>
             ))}
           </div>
-          <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+          <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
             {provider === "xai"
               ? localizeUi("ui.modals.createconnectionmodal.createsAnXaiConnectionPrefilledWithGrok45")
               : localizeUi("ui.modals.createconnectionmodal.youCanAdjustTheEndpointKeyAndModelAfter")}
@@ -135,7 +135,7 @@ export function CreateConnectionModal({ open, onClose, initialProvider }: Props)
               onClose();
               reset();
             }}
-            className="rounded-lg px-4 py-2 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)]"
+            className="rounded-lg px-4 py-2 text-xs pointer-coarse:min-h-9 font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)]"
           >
             {localizeUi("chat.delete.dialog.cancel")}
           </button>

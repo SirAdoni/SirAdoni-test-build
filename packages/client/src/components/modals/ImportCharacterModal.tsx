@@ -365,7 +365,7 @@ export function ImportCharacterModal({ open, onClose }: Props) {
                   className="sr-only"
                 />
                 <span className="block text-xs font-medium text-[var(--foreground)]">{option.label}</span>
-                <span className="mt-1 block text-[0.625rem] leading-snug text-[var(--muted-foreground)]">
+                <span className="mt-1 block text-[0.625rem] pointer-coarse:text-[0.6875rem] leading-snug text-[var(--muted-foreground)]">
                   {option.description}
                 </span>
               </label>
@@ -401,7 +401,7 @@ export function ImportCharacterModal({ open, onClose }: Props) {
                   className="sr-only"
                 />
                 <span className="block text-xs font-medium text-[var(--foreground)]">{option.label}</span>
-                <span className="mt-1 block text-[0.625rem] leading-snug text-[var(--muted-foreground)]">
+                <span className="mt-1 block text-[0.625rem] pointer-coarse:text-[0.6875rem] leading-snug text-[var(--muted-foreground)]">
                   {option.description}
                 </span>
               </label>
@@ -514,7 +514,7 @@ export function ImportCharacterModal({ open, onClose }: Props) {
               reset();
               onClose();
             }}
-            className="rounded-lg px-4 py-2 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)]"
+            className="rounded-lg px-4 py-2 text-xs pointer-coarse:min-h-9 font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)]"
           >
             {localizeUi("capabilities.actions.close")}
           </button>

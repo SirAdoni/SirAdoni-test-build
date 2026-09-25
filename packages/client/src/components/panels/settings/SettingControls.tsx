@@ -99,7 +99,7 @@ export function SettingsSection({
             {help && <HelpTooltip text={localize(help)} />}
           </div>
           {localizedDescription && (
-            <div className="mt-1 text-[0.625rem] leading-relaxed text-[var(--marinara-chat-chrome-panel-muted)]">
+            <div className="mt-1 text-[0.625rem] max-md:text-[0.6875rem] pointer-coarse:text-[0.6875rem] leading-relaxed text-[var(--marinara-chat-chrome-panel-muted)]">
               {localizedDescription}
             </div>
           )}
@@ -512,7 +512,7 @@ function CustomNotificationSoundSetting() {
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-[0.6875rem] font-medium">{t("settings.notifications.customSound.label")}</span>
-            <span className="rounded-full bg-[var(--background)] px-1.5 py-0.5 text-[0.5625rem] text-[var(--muted-foreground)] ring-1 ring-[var(--border)]">
+            <span className="rounded-full bg-[var(--background)] px-1.5 py-0.5 text-[0.5625rem] max-md:text-[0.6875rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)] ring-1 ring-[var(--border)]">
               {isLoading
                 ? t("settings.notifications.customSound.status.loading")
                 : status?.configured
@@ -520,10 +520,10 @@ function CustomNotificationSoundSetting() {
                   : t("settings.notifications.customSound.status.default")}
             </span>
           </div>
-          <p className="mt-1 text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
+          <p className="mt-1 text-[0.625rem] max-md:text-[0.6875rem] pointer-coarse:text-[0.6875rem] leading-relaxed text-[var(--muted-foreground)]">
             {t("settings.notifications.customSound.description")}
           </p>
-          <p className="mt-0.5 text-[0.5625rem] text-[var(--muted-foreground)]/80">
+          <p className="mt-0.5 text-[0.5625rem] max-md:text-[0.6875rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]/80">
             {t("settings.notifications.customSound.formats")}
           </p>
         </div>
@@ -532,7 +532,7 @@ function CustomNotificationSoundSetting() {
             type="button"
             onClick={() => playNotificationPing()}
             disabled={isLoading}
-            className="mari-chrome-control inline-flex min-h-9 items-center gap-1.5 px-2.5 text-[0.625rem] disabled:opacity-50"
+            className="mari-chrome-control inline-flex min-h-9 items-center gap-1.5 px-2.5 text-[0.625rem] max-md:text-[0.6875rem] pointer-coarse:text-[0.6875rem] disabled:opacity-50"
           >
             <Play size="0.6875rem" />
             {t("settings.notifications.customSound.actions.preview")}
@@ -541,7 +541,7 @@ function CustomNotificationSoundSetting() {
             type="button"
             onClick={() => inputRef.current?.click()}
             disabled={isBusy}
-            className="mari-chrome-control inline-flex min-h-9 items-center gap-1.5 px-2.5 text-[0.625rem] disabled:opacity-50"
+            className="mari-chrome-control inline-flex min-h-9 items-center gap-1.5 px-2.5 text-[0.625rem] max-md:text-[0.6875rem] pointer-coarse:text-[0.6875rem] disabled:opacity-50"
           >
             {uploadSound.isPending ? (
               <Loader2 size="0.6875rem" className="animate-spin" />
@@ -557,7 +557,7 @@ function CustomNotificationSoundSetting() {
               type="button"
               onClick={() => void handleRemove()}
               disabled={isBusy}
-              className="mari-chrome-control inline-flex min-h-9 items-center gap-1.5 px-2.5 text-[0.625rem] text-[var(--destructive)] disabled:opacity-50"
+              className="mari-chrome-control inline-flex min-h-9 items-center gap-1.5 px-2.5 text-[0.625rem] max-md:text-[0.6875rem] pointer-coarse:text-[0.6875rem] text-[var(--destructive)] disabled:opacity-50"
             >
               {removeSound.isPending ? (
                 <Loader2 size="0.6875rem" className="animate-spin" />
@@ -661,7 +661,7 @@ export function SettingsCheckbox({
         )}
       </span>
       {localizedDescription && (
-        <span className="mt-0.5 block text-[0.625rem] leading-relaxed text-[var(--marinara-chat-chrome-panel-muted)]">
+        <span className="mt-0.5 block text-[0.625rem] max-md:text-[0.6875rem] pointer-coarse:text-[0.6875rem] leading-relaxed text-[var(--marinara-chat-chrome-panel-muted)]">
           {localizedDescription}
         </span>
       )}
@@ -806,7 +806,7 @@ export function SettingsSwitch({
         <label
           htmlFor={inputId}
           className={cn(
-            "mt-0.5 block text-[0.625rem] leading-relaxed text-[var(--marinara-chat-chrome-panel-muted)]",
+            "mt-0.5 block text-[0.625rem] max-md:text-[0.6875rem] pointer-coarse:text-[0.6875rem] leading-relaxed text-[var(--marinara-chat-chrome-panel-muted)]",
             disabled ? "cursor-not-allowed" : "cursor-pointer",
           )}
         >

@@ -52,7 +52,7 @@ import { NEUTRAL_PANEL_SCROLL_AREA, NEUTRAL_PANEL_SHELL } from "../ui/neutral-su
 import {
   CHAT_TOOLBAR_ICON_GAP_CLASS,
   CHAT_TOOLBAR_MOBILE_OVERFLOW_HEIGHT_CLASS,
-  getChatToolbarButtonClass,
+  getChatTouchToolbarButtonClass,
 } from "./ChatToolbarControls";
 import type {
   GameState,
@@ -567,7 +567,7 @@ export function RoleplayHUD({
 // ═══════════════════════════════════════════════
 
 /** Common mobile HUD button sizing – used by all four strip buttons */
-const HUD_ICON_BUTTON = getChatToolbarButtonClass({ compact: true });
+const HUD_ICON_BUTTON = getChatTouchToolbarButtonClass({ compact: true });
 const MOBILE_HUD_BTN = cn(HUD_ICON_BUTTON, CHAT_TOOLBAR_MOBILE_OVERFLOW_HEIGHT_CLASS, "cursor-pointer select-none");
 
 function RoleplayTrackerCapability({
@@ -597,7 +597,7 @@ function RoleplayTrackerCapability({
           trackerRetryBusy: isTrackerRetryBusy,
           lockMode,
           onToggleLockMode: onSetLockMode ? () => onSetLockMode(!lockMode) : undefined,
-          toolbarButtonClass: getChatToolbarButtonClass({
+          toolbarButtonClass: getChatTouchToolbarButtonClass({
             compact,
             className: compact ? CHAT_TOOLBAR_MOBILE_OVERFLOW_HEIGHT_CLASS : undefined,
           }),
@@ -810,7 +810,7 @@ function ActionsGroup({
         ref={btnRef}
         onClick={() => setAgentsOpen(!agentsOpen)}
         className={cn(
-          getChatToolbarButtonClass({
+          getChatTouchToolbarButtonClass({
             compact: true,
             open: agentsOpen,
             className: cn(CHAT_TOOLBAR_MOBILE_OVERFLOW_HEIGHT_CLASS, hasAgentCount && "w-auto min-w-8 gap-1.5 px-2"),
@@ -1476,7 +1476,7 @@ function CombinedWorldWidget({
         ref={buttonRef}
         onClick={() => setOpen(!open)}
         className={cn(
-          getChatToolbarButtonClass({
+          getChatTouchToolbarButtonClass({
             compact: true,
             open,
             className: CHAT_TOOLBAR_MOBILE_OVERFLOW_HEIGHT_CLASS,

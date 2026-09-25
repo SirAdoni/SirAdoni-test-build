@@ -145,8 +145,10 @@ function isSupportedChatAttachment(file: File): boolean {
 function getChatInputTextareaMaxHeightPx() {
   if (typeof window === "undefined") return 200;
   const isMobile = window.matchMedia("(max-width: 767px)").matches;
-  if (!isMobile) return 200;
   const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+  // Wide but short viewports (a phone in landscape, or any phone with the keyboard up)
+  // must not let the composer grow over the chat header; desktop heights keep 200px.
+  if (!isMobile) return Math.max(56, Math.min(200, Math.floor(viewportHeight * 0.3)));
   return Math.max(56, Math.min(128, Math.floor(viewportHeight * 0.24)));
 }
 
@@ -1860,6 +1862,22 @@ export const ChatInput = memo(function ChatInput({
     [activeChatId, quoteFormat, setInputDraft, syncInputState],
   );
 
+  // The growth cap depends on the viewport height, which changes when the on-screen
+  // keyboard opens or the phone rotates; re-apply it so a tall draft cannot cover the chat.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onViewportResize = () => {
+      const el = textareaRef.current;
+      if (el && el.value) resizeChatInputTextarea(el);
+    };
+    window.addEventListener("resize", onViewportResize);
+    window.visualViewport?.addEventListener("resize", onViewportResize);
+    return () => {
+      window.removeEventListener("resize", onViewportResize);
+      window.visualViewport?.removeEventListener("resize", onViewportResize);
+    };
+  }, []);
+
   const ensureInputVisible = useCallback(() => {
     if (typeof window === "undefined" || !window.matchMedia("(max-width: 767px)").matches) return;
     if (isIosWebKitBrowser(navigator.userAgent, navigator.platform, navigator.maxTouchPoints)) return;
@@ -2113,7 +2131,7 @@ export const ChatInput = memo(function ChatInput({
           onClick={() => fileInputRef.current?.click()}
           disabled={!activeChatId || isInputBusy}
           className={cn(
-            "flex h-9 w-9 items-center justify-center rounded-xl transition-all active:scale-90 disabled:cursor-not-allowed disabled:text-foreground/25 disabled:opacity-50 sm:h-8 sm:w-8",
+            "flex h-9 w-9 items-center justify-center rounded-xl transition-all active:scale-90 disabled:cursor-not-allowed disabled:text-foreground/25 disabled:opacity-50 sm:pointer-fine:h-8 sm:pointer-fine:w-8",
             attachments.length
               ? "bg-foreground/10 text-foreground/75 ring-1 ring-foreground/20"
               : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
@@ -2160,7 +2178,7 @@ export const ChatInput = memo(function ChatInput({
             ref={emojiButtonRef}
             onClick={() => setEmojiOpen((v) => !v)}
             className={cn(
-              "flex h-8 w-8 items-center justify-center rounded-full transition-colors active:scale-90",
+              "flex h-8 w-8 pointer-coarse:h-9 pointer-coarse:w-9 items-center justify-center rounded-full transition-colors active:scale-90",
               emojiOpen
                 ? "bg-foreground/10 text-foreground/75 ring-1 ring-foreground/20"
                 : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
@@ -2185,7 +2203,7 @@ export const ChatInput = memo(function ChatInput({
             ref={charPickerBtnRef}
             onClick={() => setCharPickerOpen((v) => !v)}
             className={cn(
-              "flex h-9 w-9 items-center justify-center rounded-full transition-colors sm:h-8 sm:w-8",
+              "flex h-9 w-9 items-center justify-center rounded-full transition-colors sm:pointer-fine:h-8 sm:pointer-fine:w-8",
               guideGenerations && hasInput
                 ? "bg-foreground/10 text-foreground/75 ring-1 ring-foreground/20 hover:bg-foreground/15"
                 : charPickerOpen
@@ -2208,7 +2226,7 @@ export const ChatInput = memo(function ChatInput({
             onClick={() => void handleTranslateDraft()}
             disabled={!activeChatId || !hasInput || isInputBusy || isTranslatingDraft}
             className={cn(
-              "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-all duration-200 sm:h-8 sm:w-8",
+              "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-all duration-200 sm:pointer-fine:h-8 sm:pointer-fine:w-8",
               hasInput && !isInputBusy && !isTranslatingDraft
                 ? "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70 active:scale-90"
                 : "text-foreground/25",
@@ -2249,7 +2267,7 @@ export const ChatInput = memo(function ChatInput({
             !activeChatId
           }
           className={cn(
-            "mari-chat-send-btn flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-all duration-200 sm:h-8 sm:w-8",
+            "mari-chat-send-btn flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-all duration-200 sm:pointer-fine:h-8 sm:pointer-fine:w-8",
             isInputBusy
               ? "text-foreground/75 hover:bg-foreground/10 hover:text-foreground/90"
               : (hasInput || attachments.length || canSubmitSpatialMove || canRetry || canContinue) &&

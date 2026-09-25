@@ -273,7 +273,7 @@ export function ChatBranchSelector({
 
   if (!activeChatId) return null;
 
-  const branchButtonSizeClassName = "relative h-8 w-8";
+  const branchButtonSizeClassName = "relative h-8 w-8 pointer-coarse:h-9 pointer-coarse:w-9";
 
   return (
     <>
@@ -302,7 +302,7 @@ export function ChatBranchSelector({
         title={localizeUi("ui.chat.chatbranchselector.switchBranch")}
       >
         <GitBranch size="0.8125rem" className="shrink-0" />
-        <span className="mari-chrome-muted-badge absolute -right-1 -top-1 flex min-w-4 justify-center px-1 text-[0.5625rem] font-semibold leading-4 text-[var(--marinara-chat-chrome-accent)]">
+        <span className="mari-chrome-muted-badge absolute -right-1 -top-1 flex min-w-4 justify-center px-1 text-[0.5625rem] font-semibold leading-4 text-[var(--marinara-chat-chrome-accent)] pointer-coarse:text-[0.6875rem]">
           {isLoading ? <Loader2 size="0.5625rem" className="mt-0.5 animate-spin" /> : branchCount}
         </span>
       </button>

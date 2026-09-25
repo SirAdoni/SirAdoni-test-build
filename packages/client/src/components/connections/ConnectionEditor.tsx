@@ -7,6 +7,7 @@ import {
   resolveDecisionConnectionTimeoutMs,
   type DecisionSource,
 } from "@marinara-engine/shared";
+import { PANEL_PHONE_FLOOR_CLASS } from "../panels/panel-phone-floor";
 import { isLanguageGenerationConnection } from "../../lib/connection-filters";
 import { useEffectiveGenerationParameters } from "../../hooks/use-effective-generation-parameters";
 // ──────────────────────────────────────────────
@@ -1612,7 +1613,12 @@ export function ConnectionEditor() {
   }
 
   return (
-    <div className="mari-editor-shell mari-editor-legacy-bridge flex flex-1 flex-col overflow-hidden">
+    <div
+      className={cn(
+        "mari-editor-shell mari-editor-legacy-bridge flex flex-1 flex-col overflow-hidden",
+        PANEL_PHONE_FLOOR_CLASS,
+      )}
+    >
       {/* ── Header ── */}
       <div className="mari-editor-header">
         <button

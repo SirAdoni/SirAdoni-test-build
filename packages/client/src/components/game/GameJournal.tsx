@@ -786,7 +786,7 @@ function TimelineView({
               <Icon size={12} className="text-white/60" />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="pr-14 text-xs font-medium text-white/80">{entry.title}</div>
+              <div className="break-words pr-14 text-xs font-medium text-white/80">{entry.title}</div>
               <AnimatedText html={entry.content} className="mt-0.5 text-[0.625rem] text-white/50" />
             </div>
             <div className="absolute right-2 top-2 flex items-center gap-0.5 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
@@ -996,6 +996,9 @@ function NpcsView({
                 {name}
               </span>
               {showReputation && <span className={cn("text-[10px] font-medium", rep.color)}>{rep.text}</span>}
+              {entry.npc.status === "dead" && (
+                <span className="text-[10px] font-medium text-gray-400">{localizeUi("ui.game.npcsview.deceased")}</span>
+              )}
               {entry.npc.characterId && onNpcCharacterOpen && (
                 <button
                   type="button"

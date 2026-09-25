@@ -14,6 +14,8 @@ import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { MusicSourceButton, MusicSourceGlyph } from "@/components/music/MusicSourceButton";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { placeFloatingWidget } from "../../lib/floating-widget-avoid";
+import { useFloatingWidgetAvoid, type FloatingWidgetAvoidState } from "../../hooks/use-floating-widget-avoid";
 
 // The YouTube IFrame API attaches itself to window; it has no bundled types.
 type YTPlayer = {
@@ -51,11 +53,16 @@ const MUSIC_NEUTRAL_PROGRESS_FILL_CLASS = "bg-[#FF0000]";
 const MUSIC_NEUTRAL_ACTION_BG_CLASS = "bg-[var(--marinara-music-player-action-bg)]";
 const MUSIC_NEUTRAL_ACTION_TEXT_CLASS = "text-[var(--marinara-music-player-action-text)]";
 const YOUTUBE_LOGO_CLASS = "text-[#FF0000]";
+/** Touch screens get an invisible hit area of at least 36px around the small player buttons; the bar keeps its height. */
+const MUSIC_TOUCH_HIT_AREA_CLASS =
+  "relative pointer-coarse:before:absolute pointer-coarse:before:-inset-[0.375rem] pointer-coarse:before:content-['']";
 const MOBILE_WIDGET_COLLAPSED_SIZE = 48;
 const MOBILE_WIDGET_EXPANDED_MAX_WIDTH = 320;
 const MOBILE_WIDGET_EXPANDED_HORIZONTAL_GUTTER = 24;
 const MOBILE_WIDGET_EXPANDED_HEIGHT = 132;
 const MOBILE_WIDGET_VIEWPORT_PADDING = 8;
+/** Room kept free at the bottom for the chat composer so the collapsed bubble never covers Send. */
+const MOBILE_WIDGET_COMPOSER_RESERVE = 88;
 
 function clampMobilePosition(x: number, y: number, collapsed: boolean) {
   if (typeof window === "undefined") return { x, y };
@@ -78,22 +85,37 @@ function clampMobilePosition(x: number, y: number, collapsed: boolean) {
 function getMobileWidgetStyle(
   position: { x: number; y: number },
   collapsed: boolean,
+  avoid: FloatingWidgetAvoidState,
 ): Pick<CSSProperties, "left" | "top"> {
   if (typeof window === "undefined") {
     return { left: position.x, top: position.y };
+  }
+  const viewportWidth = avoid.viewportWidth || window.innerWidth;
+  const viewportHeight = avoid.viewportHeight || window.innerHeight;
+
+  if (collapsed) {
+    const placement = placeFloatingWidget({
+      x: position.x,
+      y: position.y,
+      size: MOBILE_WIDGET_COLLAPSED_SIZE,
+      viewportWidth,
+      viewportHeight,
+      padding: MOBILE_WIDGET_VIEWPORT_PADDING,
+      bottomReserve: MOBILE_WIDGET_COMPOSER_RESERVE,
+      obstacles: avoid.obstacles,
+    });
+    return { left: placement.x, top: placement.y };
   }
 
   return {
     left: Math.max(
       MOBILE_WIDGET_VIEWPORT_PADDING,
-      Math.min(window.innerWidth - MOBILE_WIDGET_COLLAPSED_SIZE - MOBILE_WIDGET_VIEWPORT_PADDING, position.x),
+      Math.min(viewportWidth - MOBILE_WIDGET_COLLAPSED_SIZE - MOBILE_WIDGET_VIEWPORT_PADDING, position.x),
     ),
-    top: collapsed
-      ? position.y
-      : Math.max(
-          MOBILE_WIDGET_VIEWPORT_PADDING,
-          Math.min(window.innerHeight - MOBILE_WIDGET_EXPANDED_HEIGHT - MOBILE_WIDGET_VIEWPORT_PADDING, position.y),
-        ),
+    top: Math.max(
+      MOBILE_WIDGET_VIEWPORT_PADDING,
+      Math.min(viewportHeight - MOBILE_WIDGET_EXPANDED_HEIGHT - MOBILE_WIDGET_VIEWPORT_PADDING, position.y),
+    ),
   };
 }
 
@@ -405,7 +427,11 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
     : error
       ? "Playback needs attention"
       : (nowPlaying?.channel ?? nowPlaying?.mood ?? "Ready for Music DJ");
-  const mobileWidgetStyle = useMemo(() => getMobileWidgetStyle(mobilePosition, collapsed), [collapsed, mobilePosition]);
+  const floatingAvoid = useFloatingWidgetAvoid(mobile);
+  const mobileWidgetStyle = useMemo(
+    () => getMobileWidgetStyle(mobilePosition, collapsed, floatingAvoid),
+    [collapsed, floatingAvoid, mobilePosition],
+  );
   const mobileExpandedPanelStyle = useMemo(() => getMobileExpandedPanelStyle(mobilePosition), [mobilePosition]);
 
   const volumeMuted = playerVolume <= 0;
@@ -423,6 +449,7 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
         type="button"
         onClick={toggleMute}
         className={cn(
+          MUSIC_TOUCH_HIT_AREA_CLASS,
           "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors",
           MUSIC_NEUTRAL_ICON_CLASS,
           MUSIC_NEUTRAL_ICON_HOVER_CLASS,
@@ -441,7 +468,7 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
         step={1}
         value={playerVolume}
         onChange={(event) => setPlayerVolume(Number(event.target.value))}
-        className="mari-youtube-volume-slider w-full"
+        className="mari-youtube-volume-slider w-full pointer-coarse:h-9!"
         title={localizeUi("game.toolbar.volume")}
         aria-label={localizeUi("ui.chat.youtubeplayer.youtubeVolume")}
         style={{ "--range-progress": `${playerVolume}%` } as CSSProperties}
@@ -452,7 +479,10 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
   const compactBody = (
     <>
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <MusicSourceButton source="youtube" className={cn(MUSIC_NEUTRAL_BORDER_CLASS, MUSIC_NEUTRAL_BUTTON_BG_CLASS)} />
+        <MusicSourceButton
+          source="youtube"
+          className={cn(MUSIC_TOUCH_HIT_AREA_CLASS, MUSIC_NEUTRAL_BORDER_CLASS, MUSIC_NEUTRAL_BUTTON_BG_CLASS)}
+        />
         <div
           className={cn(
             "flex h-7 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[0.375rem] ring-1",
@@ -475,7 +505,14 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
           >
             {displayTitle}
           </p>
-          <p className={cn("truncate text-[0.5625rem] leading-tight", MUSIC_NEUTRAL_MUTED_CLASS)}>{displaySubtitle}</p>
+          <p
+            className={cn(
+              "truncate text-[0.5625rem] leading-tight pointer-coarse:text-[0.6875rem]",
+              MUSIC_NEUTRAL_MUTED_CLASS,
+            )}
+          >
+            {displaySubtitle}
+          </p>
         </div>
       </div>
       {nowPlaying && (
@@ -483,6 +520,7 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
           type="button"
           onClick={togglePlay}
           className={cn(
+            MUSIC_TOUCH_HIT_AREA_CLASS,
             "inline-flex h-7 w-7 items-center justify-center rounded-full shadow-[0_1px_8px_rgba(255,255,255,0.18)] transition-transform hover:scale-105 active:scale-95",
             MUSIC_NEUTRAL_ACTION_BG_CLASS,
             MUSIC_NEUTRAL_ACTION_TEXT_CLASS,
@@ -499,6 +537,7 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
           type="button"
           onClick={() => setShowVideo((v) => !v)}
           className={cn(
+            MUSIC_TOUCH_HIT_AREA_CLASS,
             "inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors active:scale-90",
             MUSIC_NEUTRAL_ICON_CLASS,
             MUSIC_NEUTRAL_ICON_HOVER_CLASS,
@@ -515,6 +554,7 @@ export function YouTubePlayer({ mobile = false }: { mobile?: boolean } = {}) {
           type="button"
           onClick={close}
           className={cn(
+            MUSIC_TOUCH_HIT_AREA_CLASS,
             "inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors active:scale-90",
             MUSIC_NEUTRAL_ICON_CLASS,
             MUSIC_NEUTRAL_ICON_HOVER_CLASS,

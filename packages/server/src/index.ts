@@ -34,6 +34,11 @@ import { logCsrfTrustSummary } from "./middleware/csrf-protection.js";
 import { startEnvWatcher } from "./config/env-watcher.js";
 import { migrateTaskbarShortcuts } from "./services/setup/taskbar-shortcut-migration.js";
 import { sidecarProcessService } from "./services/sidecar/sidecar-process.service.js";
+import {
+  consoleTrayBrowserUrl,
+  startConsoleTrayService,
+  stopConsoleTrayService,
+} from "./services/console-tray/console-tray.service.js";
 import { getRuntimeMemoryPeaks, getRuntimeMemorySnapshot, startRuntimeMemoryMonitor } from "./utils/runtime-memory.js";
 import { reportDiagnosticError } from "./lib/diagnostic-operation.js";
 import { createDiagnostic, wasDiagnosticReported } from "./lib/diagnostics.js";
@@ -149,6 +154,8 @@ async function main() {
       return;
     }
     isShuttingDown = true;
+    // The tray helper also restores the console by itself once this process is gone.
+    void stopConsoleTrayService();
     // Sever connections at 4 s and force exit(1) at 8 s if close or flush hangs.
     armShutdownDeadline(app, "crash", { exitCode: 1 });
     try {
@@ -191,6 +198,8 @@ async function main() {
     }
     isShuttingDown = true;
     logger.info("Received %s; shutting down Marinara Engine", signal);
+    // Restore the console (if the tray hid it) and remove the tray icon, alongside the close below.
+    const trayStopped = stopConsoleTrayService();
     // #5838: bound the whole close - sever connections at 4 s, force-exit at
     // 8 s - so a supervisor's stop window (earlyoom ~10 s, Docker 10 s) never
     // expires on a connection-wait and escalates to a write-dropping SIGKILL.
@@ -208,6 +217,8 @@ async function main() {
       stopRuntimeMemoryMonitor();
       stopFreezeDetector();
       await app.close();
+      // Usually finished long before the close; bounded so a stuck helper never delays the exit.
+      await Promise.race([trayStopped, new Promise((resolve) => setTimeout(resolve, 1_000).unref())]);
       logger.info({ event: "shutdown.complete", signal, elapsedMs: Date.now() - shutdownStarted }, "Shutdown complete");
       process.exit(0);
     } catch (err) {
@@ -239,6 +250,13 @@ async function main() {
     startSessionPostmortem();
     logCsrfTrustSummary();
     scheduleTaskbarShortcutMigration();
+    // Windows only, feature switch "consoleTray": tray icon, and the console hides when minimized.
+    // Quit in the tray menu runs the same graceful shutdown as Ctrl+C.
+    startConsoleTrayService({
+      url: consoleTrayBrowserUrl(protocol, host, port),
+      port,
+      onQuit: () => void shutdown("SIGINT"),
+    });
   } catch (err) {
     if (isShuttingDown) {
       logger.info("Startup interrupted by shutdown");

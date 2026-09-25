@@ -10,7 +10,11 @@ import { ToggleSetting } from "./SettingControls";
 
 export const GENERATION_JOB_TRACKING_CONTROL_ID = "generation-job-tracking";
 
-/** Opt-in "Track generation jobs": saved job status, a log trail per job, and reconnect recovery. */
+/**
+ * Opt-in job tracking, shown as a row of Settings > Advanced > Features. Unlike the other switches there
+ * it starts off and keeps its own app setting (generationJobTracking): saved job status, a log trail per
+ * job, and reconnect recovery.
+ */
 export function GenerationJobTrackingSettings({ anchorId }: { anchorId?: string }) {
   const { t } = useTranslation();
   const settings = useGenerationJobTrackingSettings();
@@ -18,7 +22,7 @@ export function GenerationJobTrackingSettings({ anchorId }: { anchorId?: string 
   const enabled = settings.data?.enabled === true;
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-1">
       <ToggleSetting
         anchorId={anchorId}
         label={t("settings.generationJobTracking.toggle")}
@@ -33,6 +37,7 @@ export function GenerationJobTrackingSettings({ anchorId }: { anchorId?: string 
         help={t("settings.generationJobTracking.help")}
       />
       <p className="px-1.5 text-[0.625rem] leading-relaxed text-[var(--marinara-chat-chrome-panel-muted)]">
+        {t("settings.generationJobTracking.startsOff")}{" "}
         {settings.isError
           ? t("settings.generationJobTracking.loadFailed")
           : t("settings.generationJobTracking.retention", {

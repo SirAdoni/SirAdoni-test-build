@@ -131,7 +131,11 @@ import {
   selectPresentPartySpeakers,
   type PartySpeakerPromptContext,
 } from "../services/game/party-prompts.js";
-import { normalizeNextSessionCampaignPlan, normalizeNextSessionNpcs } from "../services/game/next-session-plan.js";
+import {
+  applyKnownNpcUpdates,
+  normalizeNextSessionCampaignPlan,
+  normalizeNextSessionNpcs,
+} from "../services/game/next-session-plan.js";
 import { normalizeCharacterLookupName } from "../services/game/name-normalization.js";
 import { buildPlayerPersonaCanonText } from "../services/generation/game-gm-prompt-runtime.js";
 import {
@@ -206,6 +210,7 @@ import {
   isAutoCreatedGameNpcCharacterData,
   isVerifiedNpcCharacterData,
   isGameNpcCharacterSyncTargetCurrent,
+  cleanNarrationNpcDescription,
   mergeNarrationNpcObservations,
   removeUntouchedAutoNpcCharacter,
   resolveGameNpcSyncState,
@@ -289,6 +294,7 @@ import {
   addNpcEntry,
   buildGameNpcJournalRemovalPatch,
   pruneGameNpcJournal,
+  reconcileNpcTrackedEntries,
   restorePrunedGameNpcJournal,
   upsertQuest,
   buildStructuredRecap,
@@ -3235,6 +3241,7 @@ type SessionConclusionApplication = {
   updatedCardCount: number;
   nextSessionCampaignPlan: unknown;
   nextSessionNamedNpcs: unknown;
+  nextSessionKnownNpcUpdates: unknown;
 };
 
 function currentGameCampaignPlan(meta: Record<string, unknown>): GameCampaignPlan {
@@ -3247,7 +3254,7 @@ function currentGameCampaignPlan(meta: Record<string, unknown>): GameCampaignPla
     : {};
 }
 
-function buildSessionPlanMetadataUpdates(
+export function buildSessionPlanMetadataUpdates(
   meta: Record<string, unknown>,
   conclusion: SessionConclusionApplication,
 ): Record<string, unknown> {
@@ -3262,7 +3269,10 @@ function buildSessionPlanMetadataUpdates(
     },
     gameNpcs: normalizeNextSessionNpcs(
       conclusion.nextSessionNamedNpcs,
-      Array.isArray(meta.gameNpcs) ? (meta.gameNpcs as GameNpc[]) : [],
+      applyKnownNpcUpdates(
+        conclusion.nextSessionKnownNpcUpdates,
+        Array.isArray(meta.gameNpcs) ? (meta.gameNpcs as GameNpc[]) : [],
+      ),
     ),
   };
 }
@@ -3323,6 +3333,7 @@ export function applySessionConclusionPayload(
     updatedCardCount: appliedCards.updatedCount,
     nextSessionCampaignPlan: nextSessionPlan.campaignPlan,
     nextSessionNamedNpcs: nextSessionPlan.namedNpcs,
+    nextSessionKnownNpcUpdates: nextSessionPlan.knownNpcUpdates,
   };
 }
 
@@ -5644,30 +5655,38 @@ function isLikelyNarrationNpcName(rawName: string): boolean {
   return isPlausibleNarrationNpcName(rawName);
 }
 
-function extractNarrationSnippetForName(narration: string, name: string): string {
-  const cleaned = narration
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\[[^\]]+]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!cleaned) return `${name} appears in the current scene.`;
+// Whole dialogue lines: `[Speaker] [side]: "..."`, `Speaker: "..."` or a <speaker="..."> tag.
+const NARRATION_SPEAKER_LINE_PATTERNS = [
+  /^\s*(?:\[[^\]\r\n]*\]\s*)+(?::|["\u201C\u00AB\u300C])/u,
+  /^\s*[\p{Lu}][\p{L}'\u2019-]*(?:\s+[\p{Lu}][\p{L}'\u2019-]*)?\s*:\s*["\u201C\u00AB\u300C]/u,
+  /<speaker=/iu,
+];
 
+function extractNarrationSnippetForName(narration: string, name: string): string {
   const namePattern = escapeRegExp(name).replace(/\s+/g, "\\s+");
   const nameRe = new RegExp(`(?<![\\p{L}\\p{N}])${namePattern}(?![\\p{L}\\p{N}])`, "iu");
-  const sentenceMatches = cleaned.match(/[^.!?\n]+[.!?]?/g) ?? [];
-  for (const rawSentence of sentenceMatches) {
-    const sentence = rawSentence.trim();
-    if (sentence && nameRe.test(sentence)) {
+  const vocativeRe = new RegExp(`(?:^|[,;]\\s*)${namePattern}\\s*[.!?]*$|^${namePattern}\\s*[!?]`, "iu");
+  // Split per line so a quote on one line never glues onto the next line's sentence.
+  for (const rawLine of narration.split(/\r?\n/)) {
+    if (NARRATION_SPEAKER_LINE_PATTERNS.some((pattern) => pattern.test(rawLine))) continue;
+    const line = rawLine
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\[[^\]]+]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    for (const rawSentence of line.match(/[^.!?]+[.!?]*["\u201D\u2019\u00BB\u300D)]*/gu) ?? []) {
+      const sentence = cleanNarrationNpcDescription(rawSentence);
+      if (!sentence) continue;
+      // The name must appear in narration, not only inside someone's quoted speech,
+      // and a sentence that merely addresses the NPC by name is not a description.
+      const outsideSpeech = sentence
+        .replace(/"[^"]*"|\u201C[^\u201D]*\u201D|\u00AB[^\u00BB]*\u00BB|\u300C[^\u300D]*\u300D/gu, " ")
+        .trim();
+      if (!nameRe.test(outsideSpeech) || vocativeRe.test(outsideSpeech)) continue;
       return sentence.slice(0, 280);
     }
   }
-
-  const matchIndex = cleaned.search(nameRe);
-  if (matchIndex === -1) return `${name} appears in the current scene.`;
-
-  const start = Math.max(0, matchIndex - 100);
-  const end = Math.min(cleaned.length, matchIndex + 220);
-  return cleaned.slice(start, end).trim();
+  return `${name} appears in the current scene.`;
 }
 
 export function extractNarrationNpcCandidates(
@@ -5976,11 +5995,6 @@ function collectDiscoveredMapLocations(map: GameMap | null): Array<{ name: strin
     .map((cell) => ({ name: cell.label, description: cell.description ?? "" }));
 }
 
-function buildNpcTrackedInteraction(npc: GameNpc): string {
-  const location = npc.location?.trim();
-  return location && location.toLowerCase() !== "unknown" ? `Tracked at ${location}.` : "Tracked.";
-}
-
 /** Pulse 4: reputation changes as qualitative standings for campaign memory; the score stays in gameNpcs. */
 function legacyReputationChanges(
   previousNpcs: readonly GameNpc[],
@@ -6069,15 +6083,7 @@ function reconcileJournal(
     next = addLocationEntry(next, locationName, `The party is at ${locationName}.`);
   }
 
-  for (const npc of (meta.gameNpcs as GameNpc[]) ?? []) {
-    const interaction = buildNpcTrackedInteraction(npc);
-    const hasInteraction = next.npcLog.some(
-      (entry) => entry.npcName === npc.name && entry.interactions.includes(interaction),
-    );
-    if (!hasInteraction) {
-      next = addNpcEntry(next, npc, interaction);
-    }
-  }
+  next = reconcileNpcTrackedEntries(next, (meta.gameNpcs as GameNpc[]) ?? []);
 
   for (const quest of activeQuests) {
     const objectiveRows = Array.isArray(quest.objectives)
@@ -12688,44 +12694,46 @@ export async function gameRoutes(app: FastifyInstance) {
     const chat = await chats.getById(chatId);
     if (!chat) throw new Error("Chat not found");
 
-    const meta = parseMeta(chat.metadata);
-    const previousJournal = (meta.gameJournal as Journal) ?? createJournal();
+    // Build from the metadata read inside the patch so concurrent posts cannot overwrite each other.
+    let previousJournal = createJournal();
     let journal = previousJournal;
-
-    switch (type) {
-      case "location":
-        journal = addLocationEntry(journal, data.location as string, data.description as string);
-        break;
-      case "npc":
-        journal = addNpcEntry(journal, data.npc as GameNpc, data.interaction as string);
-        break;
-      case "combat":
-        journal = addCombatEntry(journal, data.description as string, data.outcome as "victory" | "defeat" | "fled");
-        break;
-      case "quest":
-        journal = upsertQuest(journal, data.quest as Parameters<typeof upsertQuest>[1]);
-        break;
-      case "item":
-        journal = addInventoryEntry(
-          journal,
-          data.item as string,
-          data.action as "acquired" | "used" | "lost" | "removed",
-          data.quantity as number,
-        );
-        break;
-      case "event":
-        journal = addEventEntry(journal, data.title as string, data.content as string);
-        break;
-      case "note":
-        journal = addNoteEntry(journal, data.title as string, data.content as string, {
-          readableType: data.readableType === "book" || data.readableType === "note" ? data.readableType : undefined,
-          sourceMessageId: typeof data.sourceMessageId === "string" ? data.sourceMessageId : undefined,
-          sourceSegmentIndex: typeof data.sourceSegmentIndex === "number" ? data.sourceSegmentIndex : undefined,
-        });
-        break;
-    }
-
-    await chats.patchMetadata(chatId, () => ({ gameJournal: journal }));
+    await chats.patchMetadata(chatId, (current) => {
+      previousJournal = (current.gameJournal as Journal) ?? createJournal();
+      journal = previousJournal;
+      switch (type) {
+        case "location":
+          journal = addLocationEntry(journal, data.location as string, data.description as string);
+          break;
+        case "npc":
+          journal = addNpcEntry(journal, data.npc as GameNpc, data.interaction as string);
+          break;
+        case "combat":
+          journal = addCombatEntry(journal, data.description as string, data.outcome as "victory" | "defeat" | "fled");
+          break;
+        case "quest":
+          journal = upsertQuest(journal, data.quest as Parameters<typeof upsertQuest>[1]);
+          break;
+        case "item":
+          journal = addInventoryEntry(
+            journal,
+            data.item as string,
+            data.action as "acquired" | "used" | "lost" | "removed",
+            data.quantity as number,
+          );
+          break;
+        case "event":
+          journal = addEventEntry(journal, data.title as string, data.content as string);
+          break;
+        case "note":
+          journal = addNoteEntry(journal, data.title as string, data.content as string, {
+            readableType: data.readableType === "book" || data.readableType === "note" ? data.readableType : undefined,
+            sourceMessageId: typeof data.sourceMessageId === "string" ? data.sourceMessageId : undefined,
+            sourceSegmentIndex: typeof data.sourceSegmentIndex === "number" ? data.sourceSegmentIndex : undefined,
+          });
+          break;
+      }
+      return { gameJournal: journal };
+    });
     if (type === "quest" && chat.mode === "game") {
       await recordChangedJournalQuests(
         app.db,
@@ -14862,6 +14870,7 @@ export async function gameRoutes(app: FastifyInstance) {
             const sceneNpcExcludedNames = [
               ...(npcSanitizationOptions.protectedCharacterNames ?? []),
               ...(npcSanitizationOptions.locationNames ?? []),
+              ...(npcSanitizationOptions.narrationExcludedNames ?? []),
               ...(typeof latestState?.location === "string" && latestState.location.trim()
                 ? [latestState.location.trim()]
                 : []),
@@ -15298,6 +15307,7 @@ export async function gameRoutes(app: FastifyInstance) {
       const narrationExcludedNames = [
         ...(npcIdentityBoundary.protectedCharacterNames ?? []),
         ...(npcIdentityBoundary.locationNames ?? []),
+        ...(npcIdentityBoundary.narrationExcludedNames ?? []),
         ...(currentLocationName ? [currentLocationName] : []),
       ];
       const presentCharacters =

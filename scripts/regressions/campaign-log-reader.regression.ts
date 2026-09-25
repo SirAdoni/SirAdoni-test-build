@@ -287,7 +287,7 @@ try {
   assert.match(chatArea, /openGameLog\(\{ chatId: gotoRequest\.chatId, messageNumber: gotoRequest\.messageNumber \}\)/);
   assert.doesNotMatch(chatArea, /gotoUnavailableInGame/, "no dead-end notice for game jumps");
   const globalSearch = read("../../packages/client/src/components/modals/GlobalSearchModal.tsx");
-  assert.match(globalSearch, /result\.chatMode === "game"\) openGameLog\(\{ chatId: result\.chatId, messageId: result\.messageId, messageNumber: result\.messageNumber \}\)/);
+  assert.match(globalSearch, /result\.chatMode === "game"\)\s*openGameLog\(\{ chatId: result\.chatId, messageId: result\.messageId, messageNumber: result\.messageNumber \}\)/);
   const palette = read("../../packages/client/src/components/command-palette/CommandPaletteHost.tsx");
   assert.match(palette, /id: "action:open-campaign-log"[\s\S]*?when: \(\) => activeChatMode\(\) === "game"/);
   const tools = read("../../packages/client/src/components/game/GameToolsPanel.tsx");

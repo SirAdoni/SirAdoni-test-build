@@ -609,7 +609,7 @@ export function DocsViewerModal({
   const sidebarHeaderTracked = groups.every((group) => TRACKING_SAFE_LABEL_RE.test(dirLabel(group.dir, docsLanguage)));
   const englishBadge = (
     <span
-      className="shrink-0 rounded-full border border-[var(--border)]/60 bg-black/5 px-1.5 py-0.5 text-[0.5625rem] font-medium text-[var(--muted-foreground)]/80 dark:bg-white/6"
+      className="shrink-0 rounded-full border border-[var(--border)]/60 bg-black/5 px-1.5 py-0.5 text-[0.5625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--muted-foreground)]/80 dark:bg-white/6"
       title={localizeUi("ui.modals.docsviewermodal.notYetTranslatedShowingEnglish")}
     >
       {localizeUi("ui.modals.docsviewermodal.englishBadge")}
@@ -638,7 +638,7 @@ export function DocsViewerModal({
               onChange={(event) => setSearchQuery(event.target.value)}
               placeholder={localizeUi("ui.modals.docsviewermodal.searchAllGuides")}
               aria-label={localizeUi("ui.modals.docsviewermodal.searchDocumentation")}
-              className="min-w-0 flex-1 bg-transparent text-xs text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]/65 [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-cancel-button]:appearance-none"
+              className="min-w-0 flex-1 bg-transparent text-xs pointer-coarse:min-h-9 text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]/65 [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-cancel-button]:appearance-none"
             />
             {searchQuery ? (
               <button
@@ -691,7 +691,7 @@ export function DocsViewerModal({
                           {highlightTermNodes(result.title, highlightTerm)}
                         </span>
                         {docsLanguage !== "en" && result.language === "en" ? englishBadge : null}
-                        <span className="shrink-0 rounded-full border border-[var(--border)]/60 bg-black/5 px-1.5 py-0.5 text-[0.5625rem] text-[var(--muted-foreground)]/80 dark:bg-white/6">
+                        <span className="shrink-0 rounded-full border border-[var(--border)]/60 bg-black/5 px-1.5 py-0.5 text-[0.5625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]/80 dark:bg-white/6">
                           {result.matches}
                         </span>
                       </span>
@@ -699,7 +699,7 @@ export function DocsViewerModal({
                         <span
                           key={`${result.path}-${snippet.line}`}
                           dir="auto"
-                          className="block truncate ps-6 text-[0.625rem] leading-snug text-[var(--muted-foreground)]/80"
+                          className="block truncate ps-6 text-[0.625rem] pointer-coarse:text-[0.6875rem] leading-snug text-[var(--muted-foreground)]/80"
                         >
                           {highlightTermNodes(snippet.text, highlightTerm)}
                         </span>
@@ -718,7 +718,7 @@ export function DocsViewerModal({
                   <p
                     dir="auto"
                     className={cn(
-                      "px-1 pb-1 text-[0.625rem] font-medium text-[var(--muted-foreground)]/70",
+                      "px-1 pb-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--muted-foreground)]/70",
                       sidebarHeaderTracked && "uppercase tracking-[0.16em]",
                     )}
                   >
@@ -749,7 +749,10 @@ export function DocsViewerModal({
                           <span dir="auto" className="block break-words text-xs font-medium leading-snug">
                             {entry.title}
                           </span>
-                          <span dir="ltr" className="block truncate text-[0.625rem] text-[var(--muted-foreground)]/70">
+                          <span
+                            dir="ltr"
+                            className="block truncate text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]/70"
+                          >
                             {entry.path}
                           </span>
                         </span>
@@ -763,12 +766,12 @@ export function DocsViewerModal({
           </div>
           {index ? (
             <div className="mt-2 shrink-0 border-t border-[var(--border)]/60 pt-2">
-              <p className="text-[0.625rem] text-[var(--muted-foreground)]/70">
+              <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]/70">
                 {localizeUi("ui.modals.docsviewermodal.alsoOnDiskAt")}
               </p>
               <code
                 dir="ltr"
-                className="block break-all text-[0.625rem] text-[var(--muted-foreground)]"
+                className="block break-all text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]"
                 title={index.root}
               >
                 {index.root}
@@ -798,12 +801,12 @@ export function DocsViewerModal({
                     writeSavedPlace({ doc: null, scrollTop: 0 });
                     setSelectedState(null);
                   }}
-                  className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] sm:hidden"
+                  className="flex h-7 w-7 pointer-coarse:h-9 pointer-coarse:w-9 items-center justify-center rounded-lg text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] sm:hidden"
                   aria-label={localizeUi("ui.modals.docsviewermodal.backToGuideList")}
                 >
                   <ArrowLeft size="0.875rem" />
                 </button>
-                <p className="min-w-0 truncate text-[0.625rem] text-[var(--muted-foreground)]/70">
+                <p className="min-w-0 truncate text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]/70">
                   {/* The path is an LTR isolate so an RTL UI locale cannot
                       reorder it against the updated-at clause beside it. */}
                   <span dir="ltr" className="[unicode-bidi:isolate]">

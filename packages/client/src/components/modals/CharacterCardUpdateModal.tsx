@@ -354,7 +354,7 @@ export function CharacterCardUpdateModal({ open, onClose }: Props) {
             type="button"
             onClick={handleReject}
             disabled={busyAction !== null || updateCharacter.isPending}
-            className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs pointer-coarse:min-h-9 font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] disabled:opacity-50"
           >
             <X size="0.75rem" />
             {localizeUi("ui.modals.charactercardupdatemodal.reject")}
@@ -363,7 +363,7 @@ export function CharacterCardUpdateModal({ open, onClose }: Props) {
             type="button"
             onClick={handleRegenerate}
             disabled={busyAction !== null || updateCharacter.isPending}
-            className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs pointer-coarse:min-h-9 font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] disabled:opacity-50"
             title={localizeUi("ui.modals.agentwriteapprovalmodal.regenerateThisProposal")}
           >
             {busyAction === "regenerate" ? (

@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @source "./capability-package-safelist.html";
 @import "./themes/sillytavern.css";
+@import "./capability-hierarchical-maps.css";
 
 /* World state & tracker widgets: equal flex sizing on mobile */
 @media (max-width: 767px) {
@@ -24,6 +25,12 @@
 
 /* ── Tailwind v4: Wire dark: variant to our data-theme attribute ── */
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* Game mode on landscape phones: lib/game-short-landscape.ts sets the root attribute from the screen
+   size, so a tablet with its on-screen keyboard up keeps the tablet layout. */
+@custom-variant game-short-landscape (&:where([data-game-short-landscape] *));
+/* The same short viewport on a tablet screen (its on-screen keyboard is up): the tablet layout stays. */
+@custom-variant game-short-tablet (&:where([data-game-short-tablet] *));
 
 /* ═══════════════════════════════════════════════
    Marinara Engine — Master Stylesheet
@@ -6363,6 +6370,11 @@ strong {
     order: 9;
   }
 
+  /* Portrait phones: the overflow menu button always closes the row. */
+  .mari-topbar-action[data-topbar-more] {
+    order: 11;
+  }
+
   .mari-topbar-action[data-topbar-hover-key="home"] > svg {
     width: clamp(15px, 4.4vw, 18px);
     height: clamp(15px, 4.4vw, 18px);
@@ -7810,5 +7822,164 @@ strong {
 
   :is([data-panel-key="settings"], [data-panel-key="connections"]) input[type="range"] {
     min-height: 2.25rem;
+  }
+}
+
+/* Game mode on touch tablets: the HUD's own controls (toolbar, narration, composer,
+   party, presence, storyboard, map, retry line) get at least a 36px hit area. Phones,
+   landscape phones included (data-game-short-landscape), keep their own sizing, and links
+   inside running narration text are left alone. Compact controls opt out with
+   data-touch-compact. */
+@media (min-width: 768px) and (pointer: coarse) {
+  :where(:root:not([data-game-short-landscape])) :is(
+      [data-tour="game-controls"],
+      [data-tour="game-map"],
+      [data-tour="game-party"],
+      [data-game-panel-content="toolbar"],
+      [data-component="GameNarration.ActivePanel"],
+      [data-component="GameSurface.ScenePresence"],
+      [data-game-panel-content="scene-presence"],
+      [data-storyboard-phone],
+      [data-game-panel-content="storyboard"],
+      [data-game-asset-retry-line]
+    )
+    button:not([data-touch-compact], .game-narration-prose :is(p, span) button) {
+    min-height: 2.25rem;
+    min-width: 2.25rem;
+  }
+}
+
+/* Landscape phones: the chat sidebar's fixed controls (mode tabs, create row,
+   search) took the whole height and left no room for the chat list. Scroll the
+   sidebar as one column instead, with its header (and close button) pinned. */
+@media (max-height: 500px) and (orientation: landscape) {
+  .mari-chat-sidebar {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .mari-chat-sidebar > * {
+    flex-shrink: 0;
+  }
+
+  .mari-chat-sidebar > .mari-sidebar-header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+
+  .mari-chat-sidebar > [data-chat-root-drop-zone] {
+    flex: 1 0 auto;
+    min-height: 12rem;
+    overflow-y: visible;
+  }
+}
+
+/* Short landscape screens (phones on their side): the editor header wrapped its
+   actions onto a second row and ate a third of the height. Keep it on one row
+   with tighter padding so the editor content gets the screen. */
+@media (max-height: 500px) and (orientation: landscape) {
+  .mari-editor-header,
+  .mari-editor-header--with-nav {
+    height: auto;
+    min-height: 0;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    gap: 0.5rem;
+    padding-block: 0.25rem;
+  }
+
+  .mari-editor-header .mari-editor-header-main,
+  .mari-editor-header--with-nav .mari-editor-header-main {
+    width: auto;
+    min-width: 0;
+    min-height: 0;
+    flex: 1 1 auto;
+    gap: 0.5rem;
+  }
+
+  .mari-editor-header .mari-editor-actions,
+  .mari-editor-header--with-nav .mari-editor-actions {
+    width: auto;
+    margin-left: 0;
+    flex-wrap: nowrap;
+    border-top: 0;
+    padding-top: 0;
+  }
+
+  .mari-editor-header .mari-editor-action--primary {
+    margin-right: 0;
+  }
+
+  .mari-editor-header .mari-editor-byline,
+  .mari-editor-header .mari-editor-save-label {
+    display: none;
+  }
+
+  .mari-editor-content {
+    padding-block: 0.75rem;
+  }
+}
+
+/* Touch screens: shared editor and chat controls get a 36px target. Fine
+   pointers (desktop) keep their compact sizes. */
+@media (pointer: coarse) {
+  .mari-editor-action,
+  .mari-editor-action--compact,
+  .mari-editor-header--with-nav .mari-editor-action {
+    min-height: 2.25rem;
+    min-width: 2.25rem;
+  }
+
+  .mari-editor-header--with-nav .mari-editor-action {
+    height: auto;
+  }
+
+  .mari-editor-section-jump {
+    display: inline-flex;
+    min-height: 2.25rem;
+    align-items: center;
+  }
+
+  .mari-message-actions > button,
+  .mari-message-actions > div > button {
+    min-height: 2.25rem;
+  }
+}
+
+/* Touch phones in portrait: the larger actions must still share one row with
+   the section picker, so the picker gives up width first. */
+@media (pointer: coarse) and (max-width: 767px) {
+  .mari-editor-header--with-nav .mari-editor-navigation {
+    min-width: 4.25rem;
+    flex: 1 1 0;
+  }
+
+  .mari-editor-header--with-nav .mari-editor-actions {
+    gap: 0.25rem;
+  }
+}
+
+/* Touch: toast action buttons (for example the update prompt's Refresh) grow to
+   36px, and the small corner close button gets an invisible 36px hit area.
+   The extra toaster attribute outranks sonner's own injected styles. */
+@media (pointer: coarse) {
+  [data-sonner-toaster] [data-sonner-toast] [data-button] {
+    height: auto;
+    min-height: 2.25rem;
+    padding-inline: 0.75rem;
+  }
+
+  [data-sonner-toaster] [data-sonner-toast] [data-close-button]::after {
+    position: absolute;
+    inset: -0.5rem;
+    content: "";
+  }
+
+  /* Tablets (sonner's non-mobile layout) used the 4rem desktop offset, which put
+     top toasts over the chat header and editor header under the top bar. Match
+     the phone offset from App.tsx instead. Inline --offset-top needs !important. */
+  [data-sonner-toaster][data-y-position="top"] {
+    --offset-top: calc(env(safe-area-inset-top) + 6.75rem) !important;
   }
 }

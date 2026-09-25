@@ -31,6 +31,8 @@ export interface GamePanelLayoutItem {
    * automatic panels into scrolling windows, but never undo a manual height.
    */
   firmHeight?: boolean;
+  /** Crowded reflow never shrinks this panel below this height (narration keeps its composer in view). */
+  minHeight?: number;
   /** Panels sharing a stack move and resolve as one vertical group. */
   stackGroup?: string | null;
   stackOrder?: number;
@@ -207,7 +209,7 @@ export function resolveGamePanelLayout(items: GamePanelLayoutItem[], bounds: Gam
     const overflowIds = resolvePanelPositions(
       layoutItems.map((item, index) => {
         // Reading panels never shrink below the reading floor; other panels follow the cap.
-        const itemCap = item.reading ? Math.max(readingCap, readingFloor) : cap;
+        const itemCap = Math.max(item.reading ? Math.max(readingCap, readingFloor) : cap, item.minHeight ?? 0);
         // Packed: movable widgets give up their anchors and fill from the top of their side.
         const pack = packed && !item.reading && !item.fixed && item.bottomInset == null;
         const anchorX = Number.isFinite(item.preferredX) ? item.preferredX! : item.x;
@@ -381,6 +383,8 @@ function resolvePanelPositions(
 ): string[] {
   const gap = bounds.gap ?? 8;
   const placed: GamePanelLayoutItem[] = [];
+  const anchorTop = (item: GamePanelLayoutItem) =>
+    Math.round(Number.isFinite(item.preferredY) ? item.preferredY! : item.y);
   const ordered = items
     .map((item) => ({ ...item, height: Math.min(item.height, bounds.height) }))
     .sort(
@@ -389,6 +393,9 @@ function resolvePanelPositions(
         // Reading panels claim their anchors before same-priority widgets.
         Number(!!b.reading) - Number(!!a.reading) ||
         Number(promoted.has(b.id)) - Number(promoted.has(a.id)) ||
+        // Higher anchors claim first, so a panel that grows pushes the one below it down
+        // instead of being pushed aside itself.
+        anchorTop(a) - anchorTop(b) ||
         a.id.localeCompare(b.id),
     );
 
@@ -440,7 +447,8 @@ function resolvePanelPositions(
             }
             // A widget squeezed into a leftover gap must still show a few lines; below that,
             // shrinking every panel a step further gives a better layout.
-            if (height < Math.min(source.reading ? Math.max(64, readingFloor) : Math.max(64, gapFloor), source.height))
+            const squeezeFloor = Math.max(source.reading ? readingFloor : gapFloor, source.minHeight ?? 0, 64);
+            if (height < Math.min(squeezeFloor, source.height))
               continue;
             const candidate = { ...source, x, y, height };
             const score = (item: GamePanelLayoutItem) => distance(item) + (source.height - item.height) * 2;
@@ -449,6 +457,17 @@ function resolvePanelPositions(
       }
       if (best) current = best;
       else overflowIds.push(source.id);
+    } else if (source.fixed && !bounds.allowOverlap && source.setHeightLimit && !source.firmHeight) {
+      // A pinned panel never moves. When it grew into a panel placed before it, it becomes a
+      // scrolling window that ends above that panel, so its content is never covered.
+      let height = current.height;
+      for (const item of placed)
+        if (intersects(current, item, gap) && item.y > current.y) height = Math.min(height, item.y - gap - current.y);
+      const floor = Math.max(source.reading ? readingFloor : gapFloor, source.minHeight ?? 0, 64);
+      if (height < current.height) {
+        if (height >= Math.min(floor, current.height)) current = { ...current, height };
+        else overflowIds.push(source.id);
+      }
     }
     source.setHeightLimit?.(current.height);
     placed.push(current);
@@ -463,7 +482,7 @@ type RegisteredPanel = Omit<GamePanelLayoutItem, "width" | "height" | "x" | "y" 
   getPosition: () => { x: number; y: number };
   /** The user's saved/manual position, excluding temporary collision reflow. */
   getPreferredPosition?: () => { x: number; y: number };
-  getSize?: () => { width: number; height: number };
+  getSize?: () => { width: number; height: number; minHeight?: number };
   setPosition: (x: number, y: number) => void;
   setPreferredPosition?: () => void;
   /** Persist the current position as the user's anchor (used after a grouped drag). */
@@ -812,14 +831,16 @@ export function scheduleGamePanelLayout(surface: HTMLElement): void {
     const items = [...registry.values()].map((panel, index) => {
       const actualPosition = panel.getPosition();
       const position = panel.getPreferredPosition?.() ?? panel.getPosition();
+      const size = panel.getSize?.();
       return {
         id: panel.id,
         x: actualPosition.x,
         y: actualPosition.y,
         preferredX: position.x,
         preferredY: position.y,
-        width: panel.getSize?.().width ?? panel.element.offsetWidth,
-        height: panel.getSize?.().height ?? panel.element.offsetHeight,
+        width: size?.width ?? panel.element.offsetWidth,
+        height: size?.height ?? panel.element.offsetHeight,
+        minHeight: size?.minHeight,
         locked: panel.locked,
         priority: panel.priority ?? index,
         fixed: panel.fixed,

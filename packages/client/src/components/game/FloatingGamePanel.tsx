@@ -149,8 +149,25 @@ interface Props {
   height?: number;
   overflowVisible?: boolean;
   collapsed?: boolean;
-  /** Reading/input panels must grow with content even after a manual resize. */
+  /**
+   * Grow the panel with its content (default false). Growth is reported to the layout resolver, so with
+   * Collisions on no neighbour covers the grown content: movable neighbours reflow around it, and when
+   * they cannot (pinned or tucked panels, a crowded screen) the grown panel becomes a scrolling window
+   * instead. Reading panels (narration, map, storyboard) keep their priority and narration its minimum
+   * height. With Collisions off panels keep their anchors and may overlap on purpose. Reflow never
+   * writes positions or sizes to storage. A height the player set by hand (resize or "Fixed height")
+   * wins over growth unless autoGrowOverridesManual is set. The prop can change at runtime; unless the
+   * player picked a growth mode in the layout editor, the panel switches between growing and its fixed height.
+   */
   autoGrow?: boolean;
+  /**
+   * With autoGrow, also grow past a height the player set by hand (resize or "Fixed height"), for
+   * content that must always show whole (default false). The manual height stays stored, and applies
+   * again once this is off.
+   */
+  autoGrowOverridesManual?: boolean;
+  /** With autoGrow, the tallest the panel grows before its content scrolls (px, default: the surface height). */
+  autoGrowMaxHeight?: number;
   /** Keep the panel width synchronized to measured content. */
   autoWidth?: boolean;
   /** Reserve the measured desktop portal height in the source flow. */
@@ -170,6 +187,9 @@ interface Props {
   /** With a fixed height, stretch the content to fill the panel box (data-game-panel-fill on the content). */
   fillHeight?: boolean;
 }
+
+/** Height of content kept visible above a data-game-panel-keep element when a crowded layout shrinks the panel. */
+const GAME_PANEL_KEEP_CONTEXT = 272;
 
 /** Desktop overlays share a surface, never a flow-layout stack. Phone layouts stay inline. */
 export function FloatingGamePanel(props: Props) {
@@ -284,6 +304,8 @@ function FloatingFrame({
   overflowVisible,
   collapsed,
   autoGrow,
+  autoGrowOverridesManual,
+  autoGrowMaxHeight,
   autoWidth,
   reserveSpace,
   layer = GAME_PANEL_HUD_LAYER,
@@ -418,7 +440,7 @@ function FloatingFrame({
     interactionRevealRef.current = interactionReveal;
     focusedRef.current = focused;
   }, [focused, interactionReveal]);
-  const [growth, setGrowth] = useState<"top" | "bottom" | "fixed">(() => {
+  const [growthSetting, setGrowth] = useState<"top" | "bottom" | "fixed">(() => {
     try {
       const stored = localStorage.getItem(`${sizeKey}:growth`);
       const explicit = localStorage.getItem(growthPreferenceKey) === "true";
@@ -428,7 +450,22 @@ function FloatingFrame({
     }
     return autoGrow ? "bottom" : "fixed";
   });
+  // Forced growth ignores a manual height (and a "Fixed height" pick) without forgetting it.
+  const growth = autoGrow && autoGrowOverridesManual && growthSetting === "fixed" ? "bottom" : growthSetting;
   const growsWithContent = growth !== "fixed";
+  // The same panel instance can switch props (the map card mounts as a small placeholder, then the
+  // real map with autoGrow); follow autoGrow unless the player picked a growth mode by hand.
+  const previousAutoGrow = useRef(autoGrow);
+  useEffect(() => {
+    if (previousAutoGrow.current === autoGrow) return;
+    previousAutoGrow.current = autoGrow;
+    try {
+      if (localStorage.getItem(growthPreferenceKey) === "true") return;
+    } catch {
+      /* Device-local preference is optional. */
+    }
+    setGrowth(autoGrow ? "bottom" : "fixed");
+  }, [autoGrow, growthPreferenceKey]);
   const [size, setSize] = useState<{ width: number; height?: number; manualWidth?: boolean }>(() => {
     try {
       const stored = JSON.parse(localStorage.getItem(sizeKey) ?? "null");
@@ -467,6 +504,13 @@ function FloatingFrame({
   const [layoutHeightLimit, setLayoutHeightLimit] = useState<number | null>(null);
   const layoutHeightLimitRef = useRef<number | null>(null);
   layoutHeightLimitRef.current = layoutHeightLimit;
+  const growCap =
+    growsWithContent && !collapsed && autoGrowMaxHeight != null && autoGrowMaxHeight > 0
+      ? Math.max(MIN_PANEL_HEIGHT, autoGrowMaxHeight)
+      : null;
+  /** The height the box is held to: a crowded-layout window, or the autoGrow cap. Content scrolls past it. */
+  const boxLimit =
+    growCap == null ? layoutHeightLimit : layoutHeightLimit == null ? growCap : Math.min(layoutHeightLimit, growCap);
   /** Content height measured the last time no crowded-layout limit applied. */
   const unlimitedNaturalHeight = useRef<number | null>(null);
   useLayoutEffect(() => {
@@ -640,14 +684,30 @@ function FloatingFrame({
         surfaceHeight: host.clientHeight,
       };
     }
+    // Content can cap itself (the narration card is at most the viewport minus a margin) and scroll
+    // inside, which hides a data-game-panel-keep element (the composer) below that inner fold while the
+    // panel looks as if it fits. Count the hidden part as natural height, independent of scroll position,
+    // so a short surface (a tablet keyboard) limits the panel and the keep element is pinned in view.
+    const keepHiddenHeight = () => {
+      const root = intrinsicContent.current;
+      const keep =
+        collapsed || tuckedClosed || !root ? null : root.querySelector<HTMLElement>("[data-game-panel-keep]");
+      let hidden = 0;
+      for (let parent = keep?.parentElement ?? null; parent && parent !== root; parent = parent.parentElement) {
+        if (/(auto|scroll|hidden|clip)/.test(getComputedStyle(parent).overflowY))
+          hidden += Math.max(0, parent.scrollHeight - parent.clientHeight);
+      }
+      return hidden;
+    };
     // Fill panels (the storyboard) shrink their media to the box they are given, so while a
     // crowded-layout limit applies their measured height is not their natural height. Use
     // the last unlimited measurement then, or the limit and the measurement feed back into
     // each other and the whole layout flips between two states every frame.
     const measureNaturalHeight = () => {
-      const measured = intrinsicContent.current
-        ? Math.max(intrinsicContent.current.offsetHeight, intrinsicContent.current.scrollHeight)
-        : element.offsetHeight;
+      const measured =
+        (intrinsicContent.current
+          ? Math.max(intrinsicContent.current.offsetHeight, intrinsicContent.current.scrollHeight)
+          : element.offsetHeight) + keepHiddenHeight();
       if (layoutHeightLimitRef.current == null) {
         unlimitedNaturalHeight.current = measured;
         return measured;
@@ -656,6 +716,12 @@ function FloatingFrame({
         ? Math.max(measured, unlimitedNaturalHeight.current)
         : measured;
     };
+    // Mirror the rendered box, or the resolver plans around a height the panel does not have: an
+    // auto-height box is as tall as its content (up to autoGrowMaxHeight), a fixed one as its stored size.
+    const desiredHeightFor = (naturalHeight: number) =>
+      collapsed || growsWithContent || size.height == null
+        ? Math.min(naturalHeight, growCap ?? Infinity)
+        : size.height;
     return registerGamePanel(host, {
       id,
       element,
@@ -674,24 +740,19 @@ function FloatingFrame({
       getPosition: () => ({ x: x.get(), y: y.get() }),
       getPreferredPosition: preferredAnchor,
       getSize: () => {
-        const naturalHeight = measureNaturalHeight();
-        const desiredHeight = collapsed
-          ? naturalHeight
-          : growsWithContent
-            ? naturalHeight
-            : (size.height ?? height ?? naturalHeight);
+        // Without a layout limit the rendered box is the truth; never report less than it covers.
+        const rendered = layoutHeightLimitRef.current == null && !tuckedClosed ? element.offsetHeight : 0;
+        const desiredHeight = Math.max(desiredHeightFor(measureNaturalHeight()), rendered);
+        // Content marked data-game-panel-keep (the narration composer) stays in view with some context above it.
+        const keep = collapsed || tuckedClosed ? null : element.querySelector<HTMLElement>("[data-game-panel-keep]");
         return {
           width: tuckedClosed ? 36 : element.offsetWidth,
           height: tuckedClosed ? 40 : desiredHeight,
+          minHeight: keep ? Math.min(desiredHeight, keep.offsetHeight + GAME_PANEL_KEEP_CONTEXT) : undefined,
         };
       },
       setHeightLimit: (nextHeight) => {
-        const naturalHeight = measureNaturalHeight();
-        const desiredHeight = collapsed
-          ? naturalHeight
-          : growsWithContent
-            ? naturalHeight
-            : (size.height ?? height ?? naturalHeight);
+        const desiredHeight = desiredHeightFor(measureNaturalHeight());
         const constrainedHeight = desiredHeight > nextHeight + 1 ? nextHeight : null;
         setLayoutHeightLimit((current) => (current === constrainedHeight ? current : constrainedHeight));
       },
@@ -736,7 +797,7 @@ function FloatingFrame({
     stackGroup,
     stackEnabled,
     size.height,
-    height,
+    growCap,
     fillHeight,
     setLayoutHeightLimit,
   ]);
@@ -870,11 +931,11 @@ function FloatingFrame({
   }, [size, sizeKey]);
   useEffect(() => {
     try {
-      localStorage.setItem(`${sizeKey}:growth`, growth);
+      localStorage.setItem(`${sizeKey}:growth`, growthSetting);
     } catch {
       /* Best effort. */
     }
-  }, [growth, sizeKey]);
+  }, [growthSetting, sizeKey]);
   const initiallyPlaced = useRef(false);
   useLayoutEffect(() => {
     if (!mounted || !bottom || initiallyPlaced.current || !panel.current || !surface.current) return;
@@ -1117,7 +1178,7 @@ function FloatingFrame({
       startY: event.clientY,
       origin,
       sizeBefore: size,
-      growthBefore: growth,
+      growthBefore: growthSetting,
       targets,
       bounds,
       obstacles,
@@ -1292,8 +1353,8 @@ function FloatingFrame({
         width: tuckedClosed ? 36 : expandedPanelWidth,
         height: tuckedClosed
           ? 40
-          : layoutHeightLimit != null
-            ? Math.min(layoutHeightLimit, available.height)
+          : boxLimit != null
+            ? Math.min(boxLimit, available.height)
             : growsWithContent || collapsed || size.height == null
               ? undefined
               : Math.min(size.height, available.height),
@@ -1442,6 +1503,7 @@ function FloatingFrame({
       <div
         data-game-panel-content={id}
         data-game-panel-fill={fillBox ? "true" : undefined}
+        data-game-panel-limited={layoutHeightLimit != null ? "true" : undefined}
         // Children can style against the box: `group-data-[game-panel-fill=true]/panelbox:` when a
         // fixed-height panel asks its content to fill it, and --game-panel-box-max-height otherwise.
         className={`group/panelbox ${
@@ -1452,13 +1514,13 @@ function FloatingFrame({
               : overflowVisible
                 ? "w-full"
                 : growsWithContent
-                  ? `w-full rounded-lg [overflow-wrap:anywhere] ${layoutHeightLimit != null ? "overflow-auto" : "overflow-visible"}`
+                  ? `w-full rounded-lg [overflow-wrap:anywhere] ${boxLimit != null ? "overflow-auto" : "overflow-visible"}`
                   : "h-full w-full overflow-auto rounded-lg [overflow-wrap:anywhere]"
         }`}
         style={
           {
-            maxHeight: layoutHeightLimit ?? available.height,
-            "--game-panel-box-max-height": `${layoutHeightLimit ?? available.height}px`,
+            maxHeight: boxLimit ?? available.height,
+            "--game-panel-box-max-height": `${boxLimit ?? available.height}px`,
             ...(fillBox ? { height: "100%" } : null),
           } as CSSProperties
         }
@@ -1765,7 +1827,7 @@ function GamePanelOptions(props: OptionsProps) {
       width={272}
     >
       <div className="flex items-center gap-2 px-1 pb-2 pt-0.5">
-        <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
+        <span className="min-w-0 flex-1 break-words text-[0.8125rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
           {props.label}
         </span>
         <button

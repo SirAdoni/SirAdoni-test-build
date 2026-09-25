@@ -23,6 +23,7 @@ import type {
 } from "@marinara-engine/shared";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { api } from "../../lib/api-client";
+import { showConfirmDialog } from "../../lib/app-dialogs";
 import { cn } from "../../lib/utils";
 import { useConnections } from "../../hooks/use-connections";
 import { chatKeys } from "../../hooks/use-chats";
@@ -72,6 +73,21 @@ interface ContinuityGap {
   status: string;
   reason: string;
   messageId?: string;
+}
+
+/** POST /game/:chatId/continuity/retry-all with { dryRun: true }: what Retry all would do. */
+interface ContinuityRetryAllSummary {
+  counts: { batches: number; modelBatches: number; publishOnly: number; superseded: number; split: number };
+  estimatedModelCalls: number;
+  budget: { used: number; limit: number };
+}
+
+/** The same route with { confirm: true }: what Retry all did. */
+interface ContinuityRetryAllResult extends ContinuityRetryAllSummary {
+  retried: string[];
+  published: string[];
+  requeued: string[];
+  skipped: Array<{ id: string; reason: string }>;
 }
 
 interface ContinuityStatusResponse {
@@ -493,6 +509,7 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
   const [batchesOpen, setBatchesOpen] = useState(false);
   const [filter, setFilter] = useState<BatchFilter>("attention");
   const [visibleCount, setVisibleCount] = useState(BATCH_PAGE);
+  const [retryAllResult, setRetryAllResult] = useState<ContinuityRetryAllResult | "nothing" | null>(null);
   const config = asConfig(metadata?.gameContinuity as ContinuityConfig | undefined);
   const [draft, setDraft] = useState<ContinuityConfig>(config);
 
@@ -518,6 +535,7 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
   useEffect(() => {
     setExpandedBatchId(null);
     setVisibleCount(BATCH_PAGE);
+    setRetryAllResult(null);
     resetSave();
   }, [chatId, resetSave]);
 
@@ -544,6 +562,58 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
       void queryClient.invalidateQueries({ queryKey: continuityKeys.status(chatId) });
       if (expandedBatchId)
         void queryClient.invalidateQueries({ queryKey: continuityKeys.receipt(chatId, expandedBatchId) });
+    },
+  });
+  // Retry all: a dry run for the confirmation, then the run. Null when the player cancelled.
+  const retryAll = useMutation({
+    mutationFn: async (): Promise<ContinuityRetryAllResult | "nothing" | null> => {
+      const plan = await api.post<ContinuityRetryAllSummary>(`/game/${chatId}/continuity/retry-all`, { dryRun: true });
+      if (plan.counts.batches === 0) return "nothing";
+      const lines = [
+        t("ui.game.continuityPanel.retryAll.confirmModel", {
+          defaultValue:
+            "{{count}} need a new read: about {{calls}} AI calls on the memory connection, more if the checker asks for fixes.",
+          count: plan.counts.modelBatches,
+          calls: plan.estimatedModelCalls,
+        }),
+      ];
+      if (plan.counts.publishOnly > 0)
+        lines.push(
+          t("ui.game.continuityPanel.retryAll.confirmPublishOnly", {
+            defaultValue: "{{count}} were already checked and only need saving again: no AI call.",
+            count: plan.counts.publishOnly,
+          }),
+        );
+      if (plan.counts.superseded > 0)
+        lines.push(
+          t("ui.game.continuityPanel.retryAll.confirmSuperseded", {
+            defaultValue: "{{count}} skipped: a newer remembered turn already covers them.",
+            count: plan.counts.superseded,
+          }),
+        );
+      if (plan.budget.limit > 0)
+        lines.push(
+          t("ui.game.continuityPanel.retryAll.confirmCap", {
+            defaultValue:
+              "Hourly call cap: {{used}} of {{limit}} used. Reads wait for a free slot instead of going over.",
+            used: plan.budget.used,
+            limit: plan.budget.limit,
+          }),
+        );
+      const confirmed = await showConfirmDialog({
+        title: t("ui.game.continuityPanel.retryAll.confirmTitle", {
+          defaultValue: "Retry {{count}} turns?",
+          count: plan.counts.batches,
+        }),
+        message: lines.join("\n\n"),
+        confirmLabel: t("ui.game.continuityPanel.retryAll.button", { defaultValue: "Retry all" }),
+      });
+      if (!confirmed) return null;
+      return api.post<ContinuityRetryAllResult>(`/game/${chatId}/continuity/retry-all`, { confirm: true });
+    },
+    onSuccess: (result) => {
+      if (result) setRetryAllResult(result);
+      void queryClient.invalidateQueries({ queryKey: continuityKeys.status(chatId) });
     },
   });
   const reconcile = useMutation({
@@ -714,6 +784,31 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
       {reconcile.isPending ? t("ui.game.continuity.rechecking") : t("ui.game.continuity.recheck")}
     </button>
   );
+
+  // Retry all copies the Recheck action above (recheckButton in this file): same secondaryButton classes,
+  // 13px RefreshCw that spins while pending, and the shared showConfirmDialog for the cost confirmation.
+  const showRetryAll =
+    config.mode !== "off" &&
+    !status.isError &&
+    (counts.attention > 0 || counts.stale > 0 || Boolean(blockingProblem.credentialsBatchId));
+  const retryAllButton = (
+    <button
+      type="button"
+      onClick={() => {
+        setRetryAllResult(null);
+        retryAll.mutate();
+      }}
+      disabled={retryAll.isPending}
+      className={secondaryButton}
+    >
+      <RefreshCw size={13} className={retryAll.isPending ? "animate-spin" : ""} aria-hidden="true" />
+      {t("ui.game.continuityPanel.retryAll.button", { defaultValue: "Retry all" })}
+    </button>
+  );
+  const retryAllFailed =
+    retryAllResult && retryAllResult !== "nothing"
+      ? retryAllResult.skipped.filter((item) => item.reason !== "superseded" && item.reason !== "split").length
+      : 0;
 
   const action: ReactNode =
     health === "off" ? (
@@ -897,7 +992,12 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
             )}
           </div>
         </div>
-        {action && <div className="flex shrink-0 flex-wrap gap-2">{action}</div>}
+        {(action || showRetryAll) && (
+          <div className="flex shrink-0 flex-wrap gap-2">
+            {action}
+            {showRetryAll && retryAllButton}
+          </div>
+        )}
       </div>
 
       {config.mode !== "off" && status.data && progressTotal > 0 && (
@@ -1006,6 +1106,25 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
       {retry.isError && (
         <p role="alert" className="border-t border-border px-3 py-2 text-xs text-destructive">
           {t("ui.game.continuity.retryFailed")}
+        </p>
+      )}
+      {retryAll.isError && (
+        <p role="alert" className="border-t border-border px-3 py-2 text-xs text-destructive">
+          {t("ui.game.continuityPanel.retryAll.failed", { defaultValue: "Could not retry the turns." })}
+        </p>
+      )}
+      {retryAllResult && (
+        <p role="status" className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
+          {retryAllResult === "nothing"
+            ? t("ui.game.continuityPanel.retryAll.nothing", { defaultValue: "Nothing to retry." })
+            : t("ui.game.continuityPanel.retryAll.result", {
+                defaultValue:
+                  "Retry all: {{queued}} queued, {{published}} saved again, {{superseded}} skipped as already covered, {{failed}} could not retry.",
+                queued: retryAllResult.retried.length,
+                published: retryAllResult.published.length,
+                superseded: retryAllResult.counts.superseded,
+                failed: retryAllFailed,
+              })}
         </p>
       )}
 

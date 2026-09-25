@@ -69,7 +69,7 @@ export function LorebookEntryFiredIn({ stat }: Props) {
         ref={buttonRef}
         type="button"
         className={cn(
-          "shrink-0 rounded px-1 text-[0.625rem] tabular-nums text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]",
+          "shrink-0 rounded px-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] tabular-nums text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]",
           open && "bg-[var(--accent)] text-[var(--foreground)]",
         )}
         title={title}
@@ -97,7 +97,7 @@ export function LorebookEntryFiredIn({ stat }: Props) {
               {localizeUi("lorebook.editor.backlinks.title")}
             </p>
             {chats.length === 0 ? (
-              <p className="px-1.5 pb-1 text-[0.625rem] text-[var(--muted-foreground)]">
+              <p className="px-1.5 pb-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                 {localizeUi("lorebook.editor.backlinks.empty")}
               </p>
             ) : (
@@ -146,7 +146,7 @@ export function LorebookEntryFiredIn({ stat }: Props) {
               </ul>
             )}
             {chats.length >= MAX_RECENT_CHATS && (
-              <p className="px-1.5 pb-0.5 pt-1 text-[0.625rem] text-[var(--muted-foreground)]">
+              <p className="px-1.5 pb-0.5 pt-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                 {localizeUi("lorebook.editor.backlinks.capped", { count: MAX_RECENT_CHATS })}
               </p>
             )}

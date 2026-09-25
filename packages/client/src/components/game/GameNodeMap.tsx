@@ -5,6 +5,7 @@ import { useState, useCallback, type ReactNode } from "react";
 import { cn } from "../../lib/utils";
 import type { GameMap } from "@marinara-engine/shared";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { layoutNodeLabel, wrapNodeLabel } from "./game-node-map-label";
 
 interface GameNodeMapProps {
   map: GameMap;
@@ -92,12 +93,9 @@ export function GameNodeMap({
   const edgeStrokeWidth = 2 * visualScale;
   const nodeRadius = 16 * visualScale;
   const emojiFontSize = 12 * visualScale;
-  const tooltipWidth = 80 * visualScale;
-  const tooltipHeight = 16 * visualScale;
   const tooltipRadius = 4 * visualScale;
-  const tooltipLabelOffset = 22 * visualScale;
-  const tooltipTopOffset = 32 * visualScale;
   const tooltipFontSize = 7 * visualScale;
+  const labelView = { minX: visibleMinX, minY: visibleMinY, width: visibleViewWidth, height: visibleViewHeight };
 
   return (
     <div className={cn("relative", fillPanel && "min-h-0 flex-1")} onMouseLeave={() => setHoveredNodeId(null)}>
@@ -203,31 +201,40 @@ export function GameNodeMap({
                     {node.discovered ? node.emoji : "❓"}
                   </text>
                   {/* Tooltip label — shown on hover/tap only */}
-                  {node.discovered && isHovered && (
-                    <>
-                      <rect
-                        x={node.x - tooltipWidth / 2}
-                        y={node.y - tooltipTopOffset}
-                        width={tooltipWidth}
-                        height={tooltipHeight}
-                        rx={tooltipRadius}
-                        fill="rgba(0, 0, 0, 0.85)"
-                        stroke="rgba(255, 255, 255, 0.15)"
-                        strokeWidth={0.5 * visualScale}
-                        className="pointer-events-none"
-                      />
-                      <text
-                        x={node.x}
-                        y={node.y - tooltipLabelOffset}
-                        textAnchor="middle"
-                        fontSize={tooltipFontSize}
-                        fill="rgba(255, 255, 255, 0.9)"
-                        className="pointer-events-none"
-                      >
-                        {node.label.length > 16 ? node.label.slice(0, 15) + "…" : node.label}
-                      </text>
-                    </>
-                  )}
+                  {node.discovered &&
+                    isHovered &&
+                    (() => {
+                      const lines = wrapNodeLabel(node.label);
+                      const box = layoutNodeLabel(node, lines.length, visualScale, labelView);
+                      return (
+                        <>
+                          <rect
+                            x={box.x}
+                            y={box.y}
+                            width={box.width}
+                            height={box.height}
+                            rx={tooltipRadius}
+                            fill="rgba(0, 0, 0, 0.85)"
+                            stroke="rgba(255, 255, 255, 0.15)"
+                            strokeWidth={0.5 * visualScale}
+                            className="pointer-events-none"
+                          />
+                          <text
+                            data-game-node-label
+                            textAnchor="middle"
+                            fontSize={tooltipFontSize}
+                            fill="rgba(255, 255, 255, 0.9)"
+                            className="pointer-events-none"
+                          >
+                            {lines.map((line, index) => (
+                              <tspan key={index} x={box.centerX} y={box.baselines[index]}>
+                                {line}
+                              </tspan>
+                            ))}
+                          </text>
+                        </>
+                      );
+                    })()}
                 </g>
               );
             })}

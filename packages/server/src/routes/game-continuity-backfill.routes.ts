@@ -4,6 +4,8 @@ import { z } from "zod";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { prepareContinuitySourcesWithExclusions } from "../services/game/continuity-sources.js";
 import { logger } from "../lib/logger.js";
+import { backgroundCallBudgetSnapshot } from "../services/generation/background-call-budget.js";
+import { planContinuityRetryAll } from "../services/game/continuity-retry-all.js";
 
 const rangeSchema = z.object({
   fromMessageId: z.string().trim().min(1),
@@ -11,6 +13,13 @@ const rangeSchema = z.object({
 });
 const publishSchema = z.object({ confirm: z.literal(true), repairPublished: z.boolean().optional() });
 const RETRYABLE_STATUSES = ["failed", "unresolved", "stale"] as const;
+// Retry all: `dryRun` returns the plan the confirmation shows; `confirm` runs it. Exactly one is required.
+const retryAllSchema = z.union([
+  z.object({ dryRun: z.literal(true) }).strict(),
+  z.object({ confirm: z.literal(true) }).strict(),
+]);
+/** Chats whose Retry all is enqueueing right now; a second press waits for the first instead of doubling it. */
+const retryAllRunning = new Set<string>();
 const retrySchema = z.object({
   statuses: z.array(z.enum(RETRYABLE_STATUSES)).min(1).optional(),
   errorCode: z.string().trim().min(1).optional(),
@@ -358,4 +367,93 @@ export async function gameContinuityBackfillRoutes(app: FastifyInstance) {
       }
     },
   );
+
+  /**
+   * Retry every failed, stale or parked continuity batch of a chat in one action (Game Memory panel "Retry all").
+   * Each batch goes through the same path as its own Retry: `gameContinuity.retry` for single batches (publish-only
+   * for clean receipts that failed at publication, a queued fresh read otherwise) and one historical re-plan per
+   * backfill manifest for stale historical batches. Nothing is called inline: model work is queued, and the queue
+   * runs it at its normal concurrency and books every stage call against the background call cap, pausing when the
+   * hour is spent. Batches a newer published batch already covers are skipped as superseded.
+   */
+  app.post<{ Params: { chatId: string } }>("/:chatId/continuity/retry-all", async (request, reply) => {
+    const parsed = retryAllSchema.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.status(400).send({ error: "Send { dryRun: true } or { confirm: true }" });
+    const { chatId } = request.params;
+    const chat = await createChatsStorage(app.db).getById(chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    if (chat.mode !== "game") return reply.status(400).send({ error: "Continuity requires a Game chat" });
+    const plan = planContinuityRetryAll(await app.gameContinuity.list(chatId));
+    const { used, limit } = backgroundCallBudgetSnapshot();
+    const summary = {
+      counts: plan.counts,
+      estimatedModelCalls: plan.estimatedModelCalls,
+      budget: { used, limit },
+    };
+    if ("dryRun" in parsed.data) return { dryRun: true, ...summary };
+    if (retryAllRunning.has(chatId))
+      return reply
+        .status(409)
+        .send({ code: "CONTINUITY_RETRY_ALL_RUNNING", error: "Retry all is already running for this game." });
+    retryAllRunning.add(chatId);
+    try {
+      const retried: string[] = [];
+      const published: string[] = [];
+      const requeued: string[] = [];
+      const skipped: Array<{ id: string; reason: string }> = plan.skipped.map(({ id, reason }) => ({ id, reason }));
+      const backfills = new Map<string, string[]>();
+      // One at a time: each call only books queue work (or publishes a checked receipt), so the queue, not this
+      // loop, decides how many model calls run at once.
+      for (const entry of plan.entries) {
+        if (entry.action === "backfill") {
+          backfills.set(entry.backfillId!, [...(backfills.get(entry.backfillId!) ?? []), entry.id]);
+          continue;
+        }
+        try {
+          const result = await app.gameContinuity.retry(chatId, entry.id);
+          if (!result) skipped.push({ id: entry.id, reason: "runtime_stopped" });
+          else if (entry.action !== "publish") retried.push(entry.id);
+          else if (result.status === "published") published.push(entry.id);
+          else skipped.push({ id: entry.id, reason: result.errorCode ?? "CONTINUITY_PUBLICATION_FAILED" });
+        } catch (error) {
+          const code = errorCode(error);
+          logger.warn({ err: error, chatId, receiptId: entry.id, code }, "Continuity retry all skipped a batch");
+          skipped.push({ id: entry.id, reason: code });
+        }
+      }
+      if (backfills.size) {
+        const manifests = backfillRecords(
+          JSON.parse((await createChatsStorage(app.db).getById(chatId))?.metadata || "{}"),
+        );
+        for (const [id, receiptIds] of backfills) {
+          const manifest = manifests.find((record) => record.id === id);
+          if (!manifest) {
+            for (const receiptId of receiptIds) skipped.push({ id: receiptId, reason: "backfill_missing" });
+            continue;
+          }
+          try {
+            const before = new Set(stringList(manifest.receiptIds));
+            const rerun = await startHistoricalBackfill(
+              app,
+              chatId,
+              { fromMessageId: String(manifest.fromMessageId), toMessageId: String(manifest.toMessageId) },
+              id,
+            );
+            for (const receipt of rerun.receipts) if (!before.has(receipt.id)) requeued.push(receipt.id);
+            retried.push(...receiptIds);
+          } catch (error) {
+            const code = errorCode(error);
+            logger.warn(
+              { err: error, chatId, backfillId: id, code },
+              "Continuity retry all could not re-run a backfill",
+            );
+            for (const receiptId of receiptIds) skipped.push({ id: receiptId, reason: code });
+          }
+        }
+      }
+      return { ...summary, retried, published, requeued, skipped };
+    } finally {
+      retryAllRunning.delete(chatId);
+    }
+  });
 }

@@ -73,6 +73,8 @@ import {
 } from "../lorebook/lorebook-scan-compaction.js";
 import { galleryFileHasReferences, unlinkGalleryFileIfUnreferenced } from "../image/gallery-file-lifecycle.js";
 import { deletePrivateNotebookRowsForChat } from "../private-notebook.service.js";
+import { pruneJournalSourceMessages } from "../game/journal.service.js";
+import { bestEffort } from "../../lib/best-effort.js";
 
 import { createAppSettingsStorage } from "./app-settings.storage.js";
 
@@ -2921,6 +2923,7 @@ export function createChatsStorage(db: DB) {
     },
 
     async removeMessage(id: string) {
+      let removedChatId: string | null = null;
       // Serialized on the same per-message queue as every other message
       // mutation (#5599): an in-flight edit either completes before the
       // delete or starts after it and sees a consistent world, instead of
@@ -2934,20 +2937,46 @@ export function createChatsStorage(db: DB) {
           const removed = await cascadeAgentLorebookEntriesForMessages([id]);
           await invalidateMemoryChunksFrom(db, existing.chatId, existing.createdAt);
           await refreshChatLastMessageAt(existing.chatId);
+          removedChatId = existing.chatId;
           return removed;
         }
         return [];
       });
       if (removedEntries.length > 0) await this.pruneLorebookChatMetadata(async () => removedEntries);
+      if (removedChatId) await this.pruneJournalSources(removedChatId, [id]);
+    },
+
+    /**
+     * Drop Game journal entries sourced from messages that left the live transcript (delete, bulk
+     * delete, trash) or whose content a regenerated swipe replaced. Best effort: the message change
+     * already happened, so a failure here is logged rather than thrown.
+     */
+    async pruneJournalSources(chatId: string, messageIds: readonly string[]) {
+      if (messageIds.length === 0) return;
+      await bestEffort({ event: "chat.journal.prune_sources", chatId }, async () => {
+        const chat = await this.getById(chatId);
+        if (!chat || !pruneJournalSourceMessages(parseMetadata(chat.metadata, chat.id).gameJournal, messageIds)) return;
+        await this.patchMetadata(
+          chatId,
+          (current) => {
+            const pruned = pruneJournalSourceMessages(current.gameJournal, messageIds);
+            return pruned ? { gameJournal: pruned } : {};
+          },
+          { touchUpdatedAt: false },
+        );
+      });
     },
 
     async removeMessages(ids: string[], chatId?: string) {
       if (ids.length === 0) return;
       return withDiagnosticContext({ ...(chatId ? { chatId } : {}), operation: "chat.messages.delete" }, async () => {
         const earliestByChat = new Map<string, string>();
+        const removedIdsByChat = new Map<string, string[]>();
         const removedEntryIds: string[] = [];
         const finishDeletion = async () => {
           if (removedEntryIds.length > 0) await this.pruneLorebookChatMetadata(async () => removedEntryIds);
+          for (const [affectedChatId, removedIds] of removedIdsByChat)
+            await this.pruneJournalSources(affectedChatId, removedIds);
           for (const [affectedChatId, createdAt] of earliestByChat) {
             await invalidateMemoryChunksFrom(db, affectedChatId, createdAt);
             await refreshChatLastMessageAt(affectedChatId);
@@ -2995,6 +3024,7 @@ export function createChatsStorage(db: DB) {
             });
             removedEntryIds.push(...removed.entryIds);
             for (const row of removed.rows) {
+              removedIdsByChat.set(row.chatId, [...(removedIdsByChat.get(row.chatId) ?? []), row.id]);
               const current = earliestByChat.get(row.chatId);
               if (!current || row.createdAt < current) earliestByChat.set(row.chatId, row.createdAt);
             }
@@ -3028,7 +3058,8 @@ export function createChatsStorage(db: DB) {
     },
 
     async addSwipe(messageId: string, content: string, silent?: boolean) {
-      return withInterruptionQueue([messageId], async (locked) => {
+      let replacedInChatId: string | null = null;
+      const created = await withInterruptionQueue([messageId], async (locked) => {
         if (!silent) await reconcileEffects(await readMessage(messageId), true, locked);
         const existing = await this.getSwipes(messageId);
         const nextIndex = existing.length;
@@ -3068,10 +3099,15 @@ export function createChatsStorage(db: DB) {
             .where(eq(messages.id, messageId));
           if (msg) {
             await invalidateMemoryChunksFrom(db, msg.chatId, msg.createdAt);
+            replacedInChatId = msg.chatId;
           }
         }
         return { id, index: nextIndex };
       });
+      // A regenerated turn supersedes the notes its previous swipe wrote; the new swipe's
+      // readables are posted again when its narration plays.
+      if (replacedInChatId) await this.pruneJournalSources(replacedInChatId, [messageId]);
+      return created;
     },
 
     async setActiveSwipe(messageId: string, index: number) {

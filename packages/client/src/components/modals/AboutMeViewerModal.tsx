@@ -438,7 +438,7 @@ export function AboutMeViewerModal({
               </span>
               <span
                 className={cn(
-                  "mari-about-me-badge rounded-full px-1.5 py-0.5 text-[0.5625rem] font-medium",
+                  "mari-about-me-badge rounded-full px-1.5 py-0.5 text-[0.5625rem] pointer-coarse:text-[0.6875rem] font-medium",
                   hasOverride
                     ? "bg-[var(--primary)]/15 text-[var(--primary)]"
                     : "bg-[var(--background)]/60 text-[var(--muted-foreground)]",
@@ -580,7 +580,7 @@ export function AboutMeViewerModal({
               </>
             )}
           </div>
-          <p className="mt-2 shrink-0 text-[0.625rem] text-[var(--muted-foreground)]">
+          <p className="mt-2 shrink-0 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
             {localizeUi("ui.modals.aboutmeviewermodal.defaultAboutMeIsEditedOnThe")}{" "}
             {kind === "persona"
               ? localizeUi("ui.modals.aboutmeviewermodal.persona")

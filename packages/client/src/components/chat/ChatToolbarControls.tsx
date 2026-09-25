@@ -28,6 +28,8 @@ export type ChatToolbarPanelAction = "gallery" | "notebook" | "search" | "settin
 
 export const CHAT_TOOLBAR_ICON_GAP_CLASS = "gap-0.5";
 export const CHAT_TOOLBAR_DEFAULT_BUTTON_SIZE_CLASS = "h-8 w-8";
+/** Chat header buttons on touch screens (tablets get the wide layout) keep a 36px+ target; mouse users keep 2rem. */
+export const CHAT_TOOLBAR_TOUCH_SIZE_CLASS = "pointer-coarse:h-9 pointer-coarse:w-9";
 export const CHAT_TOOLBAR_IDENTITY_PILL_SIZE_CLASS = "h-8 w-auto max-md:h-9";
 export const CHAT_TOOLBAR_MOBILE_OVERFLOW_HEIGHT_CLASS = "max-md:h-9";
 export const CHAT_TOOLBAR_OVERFLOW_BUTTON_SIZE_CLASS = "h-8 w-8 max-md:h-9 max-md:w-9";
@@ -144,6 +146,11 @@ export function getChatToolbarButtonClass({
   );
 }
 
+/** Chat header button class with the touch-size bump; use for square icon buttons in chat headers. */
+export function getChatTouchToolbarButtonClass(input: ChatToolbarButtonClassInput = {}) {
+  return getChatToolbarButtonClass({ ...input, className: cn(CHAT_TOOLBAR_TOUCH_SIZE_CLASS, input.className) });
+}
+
 export function ChatToolbarButton({
   className,
   icon,
@@ -173,7 +180,10 @@ export function ChatToolbarButton({
       }}
       data-chat-help={helpTarget ?? panelAction}
       data-chat-toolbar-panel-action={panelAction}
-      className={getChatToolbarButtonClass({ className, compact: size === "sm" })}
+      className={getChatToolbarButtonClass({
+        className: cn(CHAT_TOOLBAR_TOUCH_SIZE_CLASS, className),
+        compact: size === "sm",
+      })}
       title={localizedTitle}
       aria-label={localizedTitle}
     >

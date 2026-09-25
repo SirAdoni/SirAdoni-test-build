@@ -93,7 +93,7 @@ import {
   ChatToolbarButton,
   ChatToolbarMenu,
   getChatFloatingPanelDesktopRight,
-  getChatToolbarButtonClass,
+  getChatTouchToolbarButtonClass,
   readChatToolbarFloatingPanelAnchor,
   type ChatToolbarFloatingPanelAnchor,
 } from "./ChatToolbarControls";
@@ -807,7 +807,7 @@ function ActiveContextLinksButton({
         ref={buttonRef}
         data-chat-help="context"
         onClick={() => setOpen((prev) => !prev)}
-        className={getChatToolbarButtonClass({ compact, open })}
+        className={getChatTouchToolbarButtonClass({ compact, open })}
         title={t("chat.toolbar.activeContext")}
         aria-label={t("chat.toolbar.activeContext")}
         aria-haspopup="menu"
@@ -996,16 +996,16 @@ function SummaryButton({
           setOpen(!open);
         }}
         aria-label={summaryButtonLabel}
-        className={getChatToolbarButtonClass({
+        className={getChatTouchToolbarButtonClass({
           compact,
           open,
-          sizeClassName: "relative h-8 w-8",
+          sizeClassName: "relative h-8 w-8 pointer-coarse:h-9 pointer-coarse:w-9",
         })}
         title={summaryButtonLabel}
       >
         <ScrollText size="0.875rem" />
         {enabledSummaryCount > 0 && (
-          <span className="mari-chrome-muted-badge absolute -right-1 -top-1 flex min-w-4 justify-center px-1 text-[0.5625rem] font-semibold leading-4 text-[var(--marinara-chat-chrome-accent)]">
+          <span className="mari-chrome-muted-badge absolute -right-1 -top-1 flex min-w-4 justify-center px-1 text-[0.5625rem] font-semibold leading-4 text-[var(--marinara-chat-chrome-accent)] pointer-coarse:text-[0.6875rem]">
             {enabledSummaryCount}
           </span>
         )}
@@ -1156,7 +1156,7 @@ function AuthorNotesButton({
           setDesktopAnchor(nextOpen && !useMobilePanel ? readChatToolbarFloatingPanelAnchor(buttonRef.current) : null);
           onOpenChange(nextOpen);
         }}
-        className={getChatToolbarButtonClass({ active: hasNotes, compact, open })}
+        className={getChatTouchToolbarButtonClass({ active: hasNotes, compact, open })}
         title={t("chat.toolbar.authorNotes")}
         aria-label={t("chat.toolbar.authorNotes")}
       >
@@ -2246,7 +2246,7 @@ export function ChatRoleplaySurface({
                           view="toolbar"
                           capabilityProps={{
                             ...conversationCapabilityProps,
-                            toolbarButtonClass: getChatToolbarButtonClass(),
+                            toolbarButtonClass: getChatTouchToolbarButtonClass(),
                           }}
                           className="contents"
                         />
@@ -2380,7 +2380,7 @@ export function ChatRoleplaySurface({
                             view="toolbar"
                             capabilityProps={{
                               ...conversationCapabilityProps,
-                              toolbarButtonClass: getChatToolbarButtonClass({ compact: true }),
+                              toolbarButtonClass: getChatTouchToolbarButtonClass({ compact: true }),
                             }}
                             className="contents"
                           />

@@ -578,7 +578,7 @@ export function LorebookEntryRow({
         <button
           type="button"
           className={cn(
-            "flex h-6 w-4 shrink-0 items-center justify-center rounded p-0 text-[var(--muted-foreground)] transition-colors sm:h-auto sm:w-auto sm:p-0.5",
+            "relative flex h-6 w-4 shrink-0 items-center justify-center rounded p-0 pointer-coarse:before:absolute pointer-coarse:before:-inset-2 pointer-coarse:before:content-[''] text-[var(--muted-foreground)] transition-colors sm:h-auto sm:w-auto sm:p-0.5",
             compact && "hidden",
             draggable
               ? "cursor-grab hover:bg-[var(--accent)] hover:text-[var(--foreground)] active:cursor-grabbing"
@@ -642,7 +642,7 @@ export function LorebookEntryRow({
               ? localizeUi("ui.lorebooks.lorebookentryrow.collapseEntry")
               : localizeUi("ui.lorebooks.lorebookentryrow.expandEntry")
           }
-          className="flex h-6 w-4 shrink-0 items-center justify-center rounded p-0 text-[var(--muted-foreground)] transition-transform hover:bg-[var(--accent)] hover:text-[var(--foreground)] sm:h-auto sm:w-auto sm:p-0.5"
+          className="relative flex h-6 w-4 shrink-0 items-center justify-center rounded p-0 pointer-coarse:before:absolute pointer-coarse:before:-inset-2 pointer-coarse:before:content-[''] text-[var(--muted-foreground)] transition-transform hover:bg-[var(--accent)] hover:text-[var(--foreground)] sm:h-auto sm:w-auto sm:p-0.5"
           onClick={(e) => {
             e.stopPropagation();
             onToggleExpand();
@@ -766,7 +766,7 @@ export function LorebookEntryRow({
                       <span className="block text-[0.6875rem] font-semibold leading-tight">
                         {localizeUi(STATUS_LABEL_KEY[status])}
                       </span>
-                      <span className="mt-0.5 block text-[0.625rem] leading-snug text-[var(--marinara-editor-muted)]">
+                      <span className="mt-0.5 block text-[0.625rem] pointer-coarse:text-[0.6875rem] leading-snug text-[var(--marinara-editor-muted)]">
                         {localizeUi(STATUS_DESCRIPTION_KEY[status])}
                       </span>
                     </span>
@@ -779,7 +779,7 @@ export function LorebookEntryRow({
         {previewMatch && (
           <span
             className={cn(
-              "inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[0.625rem] font-medium ring-1",
+              "inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium ring-1",
               previewMatch === "matched"
                 ? "bg-emerald-400/12 text-emerald-300 ring-emerald-400/30"
                 : "mari-editor-chip mari-editor-chip--accent",
@@ -819,7 +819,7 @@ export function LorebookEntryRow({
         {mapBacklinks.length > 0 && (
           <button
             type="button"
-            className="inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md bg-sky-400/10 px-1.5 text-[0.625rem] font-medium text-sky-300 ring-1 ring-sky-400/20 hover:bg-sky-400/15"
+            className="inline-flex min-h-7 pointer-coarse:min-h-9 shrink-0 items-center gap-1 rounded-md bg-sky-400/10 px-1.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-sky-300 ring-1 ring-sky-400/20 hover:bg-sky-400/15"
             title={localizeUi("ui.lorebooks.lorebookentryrow.usedByValue1", {
               value1: mapBacklinks.map((backlink) => backlink.locationName).join(", "),
             })}
@@ -838,7 +838,7 @@ export function LorebookEntryRow({
         <button
           type="button"
           className={cn(
-            "relative inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[0.625rem] ring-1 transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--ring)] sm:h-6 sm:w-6",
+            "relative inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[0.625rem] pointer-coarse:text-[0.6875rem] ring-1 transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--ring)] sm:h-6 sm:w-6",
             isVectorExcluded
               ? "bg-[var(--destructive)]/10 text-[var(--destructive)] ring-[var(--destructive)]/20"
               : isVectorized
@@ -864,7 +864,7 @@ export function LorebookEntryRow({
             <CircleDashed size="0.75rem" />
           )}
           {showVectorStatus && (
-            <span className="pointer-events-none absolute left-1/2 top-full z-20 mt-1 -translate-x-1/2 whitespace-nowrap rounded-md bg-[var(--popover)] px-2 py-1 text-[0.625rem] font-medium text-[var(--popover-foreground)] shadow-lg ring-1 ring-[var(--border)]">
+            <span className="pointer-events-none absolute left-1/2 top-full z-20 mt-1 -translate-x-1/2 whitespace-nowrap rounded-md bg-[var(--popover)] px-2 py-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--popover-foreground)] shadow-lg ring-1 ring-[var(--border)]">
               {vectorStatusLabel}
             </span>
           )}
@@ -898,7 +898,7 @@ export function LorebookEntryRow({
                 <button
                   type="button"
                   onClick={() => setShowMobileControls(false)}
-                  className="rounded px-1.5 py-0.5 text-[0.625rem] text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+                  className="rounded px-1.5 py-0.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
                 >
                   {localizeUi("lorebook.editor.batch.done")}
                 </button>
@@ -1083,7 +1083,7 @@ export function LorebookEntryRow({
           {/* Token estimate (compact) */}
           <span
             className={cn(
-              "hidden min-w-[3.25rem] items-center justify-end gap-0.5 rounded px-1 py-0.5 text-[0.625rem] tabular-nums text-[var(--muted-foreground)]",
+              "hidden min-w-[3.25rem] items-center justify-end gap-0.5 rounded px-1 py-0.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] tabular-nums text-[var(--muted-foreground)]",
               !compact && "lg:inline-flex",
             )}
             title={localizeUi("ui.lorebooks.lorebookentryrow.value1TokensEstimated", {
@@ -1157,7 +1157,10 @@ function CompactSelect({
       value={value}
       title={title}
       onChange={(e) => onChange(e.target.value)}
-      className={cn("mari-editor-field h-6 min-w-0 truncate px-1 text-[0.625rem]", className)}
+      className={cn(
+        "mari-editor-field h-6 min-w-0 truncate px-1 text-[0.625rem] pointer-coarse:text-[0.6875rem]",
+        className,
+      )}
     >
       {options.map((opt) => (
         <option key={opt.value} value={opt.value}>
@@ -1207,7 +1210,10 @@ function CompactNumber({
   };
 
   return (
-    <label className="mari-editor-field flex h-6 items-center gap-px px-1 text-[0.625rem]" title={title}>
+    <label
+      className="mari-editor-field flex h-6 items-center gap-px px-1 text-[0.625rem] pointer-coarse:text-[0.6875rem]"
+      title={title}
+    >
       {prefix && <span className="text-[var(--muted-foreground)]">{prefix}:</span>}
       <input
         type="number"
@@ -1396,7 +1402,9 @@ function FilterPills({
   emptyLabel: string;
 }) {
   if (values.length === 0) {
-    return <p className="text-[0.625rem] text-[var(--muted-foreground)]">{emptyLabel}</p>;
+    return (
+      <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">{emptyLabel}</p>
+    );
   }
 
   return (
@@ -1409,7 +1417,7 @@ function FilterPills({
             type="button"
             onClick={() => onChange(toggleStringValue(selected, item.value))}
             className={cn(
-              "mari-editor-chip min-h-6 max-w-full px-2 py-1 text-[0.625rem] leading-none transition-colors",
+              "mari-editor-chip min-h-6 max-w-full px-2 py-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] leading-none transition-colors",
               active
                 ? "mari-editor-chip--accent mari-chrome-accent-surface mari-accent-animated"
                 : "text-[var(--marinara-editor-muted)] hover:text-[var(--marinara-editor-text)]",
@@ -1615,7 +1623,7 @@ function ExpandedDrawer({
       }}
     >
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--secondary)]/70 px-3 py-2">
-        <span className="text-[0.625rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
+        <span className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
           {localizeUi("ui.lorebooks.lorebookentryrow.entryId")}
         </span>
         <code className="min-w-0 flex-1 break-all rounded-lg bg-[var(--background)] px-2 py-1 text-[0.6875rem] text-[var(--foreground)]">
@@ -1740,7 +1748,7 @@ function ExpandedDrawer({
                 className="mari-editor-field mt-2 w-full resize-y px-2.5 py-2 text-xs"
                 placeholder={localizeUi("ui.lorebooks.expandeddrawer.decisionStatementPlaceholder")}
               />
-              <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
+              <p className="mt-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                 {form.decisionMode === "trigger"
                   ? localizeUi("ui.lorebooks.expandeddrawer.decisionTriggerHint")
                   : localizeUi("ui.lorebooks.expandeddrawer.decisionRequireHint")}
@@ -1821,7 +1829,7 @@ function ExpandedDrawer({
               <p className="text-[0.6875rem] font-medium">
                 {localizeUi("ui.lorebooks.expandeddrawer.additionalMatchingSources")}
               </p>
-              <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+              <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                 {localizeUi("ui.lorebooks.expandeddrawer.optionalCardFieldsToScanForThisEntryS")}
               </p>
             </div>
@@ -1876,7 +1884,7 @@ function ExpandedDrawer({
           title={localizeUi("ui.lorebooks.expandeddrawer.editContent")}
           showMacroReference
         />
-        <p className="mt-1 flex items-center gap-1 text-[0.625rem] text-[var(--muted-foreground)]">
+        <p className="mt-1 flex items-center gap-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
           <Hash size="0.5625rem" />~{estimateTokens(form.content ?? "").toLocaleString()}{" "}
           {localizeUi("ui.lorebooks.expandeddrawer.tokens")}
         </p>

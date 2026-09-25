@@ -12,6 +12,7 @@ import { CampaignWikiEvidence } from "./CampaignWikiEvidence";
 import {
   EntityRefName,
   FactLabelBadge,
+  RAW_ID,
   displayEntityName,
   enumLabel,
   portraitFor,
@@ -65,7 +66,7 @@ function SeeAll({ onClick, label }: { onClick: () => void; label: string }) {
       type="button"
       onClick={onClick}
       aria-label={label}
-      className="-my-1 inline-flex min-h-8 items-center gap-0.5 rounded-md px-1.5 text-[0.6875rem] font-semibold text-primary hover:bg-secondary"
+      className="-my-1 inline-flex min-h-8 pointer-coarse:min-h-9 items-center gap-0.5 rounded-md px-1.5 text-[0.6875rem] font-semibold text-primary hover:bg-secondary"
     >
       {t("ui.game.campaignWiki.reader.seeAll", { defaultValue: "See all" })}
       <ChevronRight size={12} aria-hidden="true" />
@@ -233,17 +234,41 @@ export function CampaignWikiInfobox({
           }
         >
           <ul className="space-y-1.5">
-            {openPromises.slice(0, INFOBOX_PROMISES).map((item) => (
-              <li key={item.commitmentId} className="flex items-start gap-2 text-sm leading-5 text-foreground">
-                <span className="mt-[0.4rem] h-1.5 w-1.5 shrink-0 rounded-full bg-primary" aria-hidden="true" />
-                <span className="min-w-0 flex-1">
-                  {item.title}
-                  <span className="ml-1.5 text-[0.6875rem] text-muted-foreground">
-                    {enumLabel(t as TFn, "commitments.state", item.state)}
+            {openPromises.slice(0, INFOBOX_PROMISES).map((item) => {
+              // A grouped promise names everyone it involves; this page's own person goes without saying.
+              const others = item.participants.filter(
+                (participant) =>
+                  participant.entityId !== entity.entityId && participant.alias && !RAW_ID.test(participant.alias),
+              );
+              return (
+                <li key={item.commitmentId} className="flex items-start gap-2 text-sm leading-5 text-foreground">
+                  <span className="mt-[0.4rem] h-1.5 w-1.5 shrink-0 rounded-full bg-primary" aria-hidden="true" />
+                  <span className="min-w-0 flex-1">
+                    {item.title}
+                    <span className="ml-1.5 text-[0.6875rem] text-muted-foreground">
+                      {enumLabel(t as TFn, "commitments.state", item.state)}
+                    </span>
+                    {others.length > 0 && (
+                      <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[0.6875rem] text-muted-foreground">
+                        <span>{t("ui.game.campaignWiki.infobox.promiseWith", { defaultValue: "With" })}</span>
+                        {others.map((participant, index) => (
+                          <span key={participant.entityId} className="inline-flex items-center gap-1.5">
+                            {index > 0 && <span aria-hidden="true">·</span>}
+                            <button
+                              type="button"
+                              onClick={() => onSelect(participant.entityId)}
+                              className="min-h-6 rounded font-medium text-foreground/90 hover:text-primary pointer-coarse:min-h-9"
+                            >
+                              {participant.alias}
+                            </button>
+                          </span>
+                        ))}
+                      </span>
+                    )}
                   </span>
-                </span>
-              </li>
-            ))}
+                </li>
+              );
+            })}
           </ul>
         </InfoboxSection>
       )}
@@ -299,7 +324,7 @@ function StateRow({
   const targetName = target ? nameOf(target) : null;
   return (
     <div className="min-w-0">
-      <dt className="flex min-h-7 items-center gap-1.5 text-[0.6875rem] text-muted-foreground">
+      <dt className="flex min-h-7 pointer-coarse:min-h-9 items-center gap-1.5 text-[0.6875rem] text-muted-foreground">
         <span className="min-w-0 flex-1 truncate">{humanizeKey(item.property)}</span>
         {stale && <FactLabelBadge label={STALE_LABEL} />}
         {sourceEvent && sourceEvent.evidence.length > 0 && (

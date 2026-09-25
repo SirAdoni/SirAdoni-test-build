@@ -1,4 +1,5 @@
 import { ActivationQuestionFields } from "./ActivationQuestionFields";
+import { PANEL_PHONE_FLOOR_CLASS } from "../panels/panel-phone-floor";
 import { useDecisionCalibration, useHasDecisionModel } from "../../hooks/use-decision-model";
 // ──────────────────────────────────────────────
 // Full-Page Agent Editor
@@ -2015,7 +2016,12 @@ export function AgentEditor() {
   );
 
   return (
-    <div className="mari-editor-shell mari-editor-legacy-bridge flex flex-1 flex-col overflow-hidden">
+    <div
+      className={cn(
+        "mari-editor-shell mari-editor-legacy-bridge flex flex-1 flex-col overflow-hidden",
+        PANEL_PHONE_FLOOR_CLASS,
+      )}
+    >
       {/* ── Header ── */}
       <div className="mari-editor-header">
         <button

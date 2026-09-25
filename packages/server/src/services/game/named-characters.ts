@@ -55,13 +55,41 @@ const TITLE_WORDS = new Set([
   "saint",
   "journeywoman",
   "journeyman",
+  "chaplain",
+  "marshal",
+  "serjeant",
+  "sergeant",
+  "founder",
+  "madam",
+  "commandant",
+  // Hyphenated titles are matched whole ("Lamp-Master") and also when written as two words ("Lamp Master").
+  "lamp-master",
+  "under-gardener",
 ]);
+
+/** How many leading words starting at `index` form one title: 1, 2 for a hyphenated title written apart, or 0. */
+function titleLength(words: readonly string[], index: number): number {
+  const word = words[index]!.toLowerCase();
+  if (TITLE_WORDS.has(word)) return 1;
+  const next = words[index + 1];
+  if (next && TITLE_WORDS.has(`${word}-${next.toLowerCase()}`)) return 2;
+  return 0;
+}
 
 function coreWords(name: string): string[] {
   const words = name.trim().split(/\s+/u).filter(Boolean);
   let start = 0;
-  while (start < words.length - 1 && TITLE_WORDS.has(words[start]!.toLowerCase())) start += 1;
+  for (;;) {
+    const length = start < words.length ? titleLength(words, start) : 0;
+    // A name that is only titles keeps its last word(s) rather than becoming empty.
+    if (length === 0 || start + length >= words.length) break;
+    start += length;
+  }
   return words.slice(start);
+}
+
+function isTitleWord(word: string): boolean {
+  return TITLE_WORDS.has(word.toLowerCase());
 }
 
 /** How often each distinctive first name occurs across a set of names; a first name is only an alias when unique. */
@@ -81,10 +109,17 @@ export function namedCharacterAliases(name: string, firstNameCounts: Map<string,
   const aliases = new Set<string>([words.join(" ")]);
   if (core.length > 0) aliases.add(core.join(" "));
   const first = core[0];
-  if (first && first.length >= 4 && /^\p{Lu}/u.test(first) && (firstNameCounts.get(first) ?? 0) === 1) {
+  // A title is never an alias on its own: "Sergeant" must not stand for one particular sergeant.
+  if (
+    first &&
+    first.length >= 4 &&
+    /^\p{Lu}/u.test(first) &&
+    !isTitleWord(first) &&
+    (firstNameCounts.get(first) ?? 0) === 1
+  ) {
     aliases.add(first);
   }
-  return [...aliases].filter((alias) => alias.length >= 3);
+  return [...aliases].filter((alias) => alias.length >= 3 && (alias === words.join(" ") || !isTitleWord(alias)));
 }
 
 function escapePattern(value: string): string {

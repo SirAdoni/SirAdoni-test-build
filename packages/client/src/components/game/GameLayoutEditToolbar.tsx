@@ -695,10 +695,10 @@ function PanelsMenu({ scopeId }: { scopeId: string }) {
               <div
                 key={entry.id}
                 data-layout-panel-row={entry.id}
-                className="flex h-7 shrink-0 items-center gap-2 rounded-md px-1.5 hover:bg-[var(--marinara-chat-chrome-highlight-bg)]"
+                className="flex min-h-7 shrink-0 items-center gap-2 rounded-md px-1.5 hover:bg-[var(--marinara-chat-chrome-highlight-bg)]"
               >
                 <span
-                  className={`min-w-0 flex-1 truncate text-xs ${isHidden ? "text-[var(--marinara-chat-chrome-panel-muted)] line-through decoration-1" : ""}`}
+                  className={`min-w-0 flex-1 break-words py-1 text-xs ${isHidden ? "text-[var(--marinara-chat-chrome-panel-muted)] line-through decoration-1" : ""}`}
                 >
                   {entry.label}
                 </span>

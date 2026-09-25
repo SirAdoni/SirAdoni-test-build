@@ -79,7 +79,10 @@ import { ChatSettingsSection as Section } from "../../features/chat-settings/Cha
 import { ActiveChatBackgroundPicker } from "../panels/settings/BackgroundPicker";
 import { AdvancedParametersSection } from "../../features/chat-settings/sections/AdvancedParametersSection";
 import { ChatNameSection } from "../../features/chat-settings/sections/ChatNameSection";
+import { GmReasoningEffortSection } from "../../features/chat-settings/sections/GmReasoningEffortSection";
 import { CombatStyleSection } from "../../features/chat-settings/sections/CombatStyleSection";
+import { GameHudListsSettings } from "../../features/chat-settings/sections/GameHudListsSettings";
+import { resolveGameHudScope } from "../../hooks/use-game-hud-lists";
 import { useGameRuleset } from "../../hooks/use-game-ruleset";
 import { isRulesetCombatFight } from "../../lib/ruleset-combat-bridge";
 import { ConnectionSection } from "../../features/chat-settings/sections/ConnectionSection";
@@ -98,6 +101,7 @@ import {
   GAME_AUTO_SCENE_MEDIA_ENABLED_KEY,
   GAME_EXTENDED_WIDGETS_ENABLED_KEY,
   GAME_SCENE_TIMELINE_ENABLED_KEY,
+  GAME_WIDGET_AUTO_EXPAND_KEY,
 } from "@marinara-engine/shared";
 import {
   DEFAULT_GAME_DICE_POOL_AGE_TURNS as DEFAULT_DICE_POOL_AGE_TURNS,
@@ -624,6 +628,7 @@ const CHAT_SETTINGS_ORDER = {
   modeIntro: -1500,
   chatName: -1400,
   connection: -1300,
+  gmReasoningEffort: -1290,
   promptPreset: -1200,
   advancedParameters: -1100,
   combatStyle: -475,
@@ -4854,7 +4859,7 @@ export function ChatSettingsDrawer({
             type="button"
             onClick={requestClose}
             aria-label={localizeUi("ui.chat.chatsettingsdrawer.closeChatSettings")}
-            className={NEUTRAL_PANEL_CLOSE_BUTTON}
+            className={cn(NEUTRAL_PANEL_CLOSE_BUTTON, "pointer-coarse:min-h-9 pointer-coarse:min-w-9")}
           >
             <X size={NEUTRAL_PANEL_CLOSE_ICON_SIZE} />
           </button>
@@ -4942,7 +4947,7 @@ export function ChatSettingsDrawer({
                       : localizeUi("chat.settingsProfile.action.markDefault")
                   }
                   className={cn(
-                    "shrink-0 flex items-center justify-center rounded-md p-1.5 transition-colors disabled:cursor-not-allowed",
+                    "shrink-0 flex items-center justify-center rounded-md p-1.5 pointer-coarse:min-h-9 pointer-coarse:min-w-9 transition-colors disabled:cursor-not-allowed",
                     selectedChatPreset?.isActive
                       ? "text-yellow-400 disabled:opacity-100"
                       : "text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-yellow-400 disabled:opacity-40",
@@ -4973,7 +4978,7 @@ export function ChatSettingsDrawer({
                       ? localizeUi("chat.settingsProfile.default.cannotSave")
                       : localizeUi("chat.settingsProfile.action.saveInto")
                   }
-                  className="flex-1 flex items-center justify-center rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
+                  className="flex-1 flex items-center justify-center rounded-md p-1.5 pointer-coarse:min-h-9 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Save size="0.875rem" />
                 </button>
@@ -4985,7 +4990,7 @@ export function ChatSettingsDrawer({
                       ? localizeUi("chat.settingsProfile.default.cannotRename")
                       : localizeUi("chat.settingsProfile.action.rename")
                   }
-                  className="flex-1 flex items-center justify-center rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
+                  className="flex-1 flex items-center justify-center rounded-md p-1.5 pointer-coarse:min-h-9 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Pencil size="0.875rem" />
                 </button>
@@ -4993,7 +4998,7 @@ export function ChatSettingsDrawer({
                   onClick={handleSaveAsPreset}
                   disabled={!selectedChatPreset}
                   title={localizeUi("chat.settingsProfile.action.saveAs")}
-                  className="flex-1 flex items-center justify-center rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
+                  className="flex-1 flex items-center justify-center rounded-md p-1.5 pointer-coarse:min-h-9 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <FilePlus2 size="0.875rem" />
                 </button>
@@ -5001,7 +5006,7 @@ export function ChatSettingsDrawer({
                 <button
                   onClick={handleImportClick}
                   title={localizeUi("chat.settingsProfile.action.import")}
-                  className="flex-1 flex items-center justify-center rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+                  className="flex-1 flex items-center justify-center rounded-md p-1.5 pointer-coarse:min-h-9 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
                 >
                   <Download size="0.875rem" />
                 </button>
@@ -5009,7 +5014,7 @@ export function ChatSettingsDrawer({
                   onClick={handleExportPreset}
                   disabled={!selectedChatPreset}
                   title={localizeUi("chat.settingsProfile.action.export")}
-                  className="flex-1 flex items-center justify-center rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
+                  className="flex-1 flex items-center justify-center rounded-md p-1.5 pointer-coarse:min-h-9 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Upload size="0.875rem" />
                 </button>
@@ -5021,7 +5026,7 @@ export function ChatSettingsDrawer({
                       ? localizeUi("chat.settingsProfile.default.cannotDelete")
                       : localizeUi("chat.settingsProfile.action.delete")
                   }
-                  className="flex-1 flex items-center justify-center rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)]/15 hover:text-[var(--destructive)] disabled:cursor-not-allowed disabled:opacity-40"
+                  className="flex-1 flex items-center justify-center rounded-md p-1.5 pointer-coarse:min-h-9 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)]/15 hover:text-[var(--destructive)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Trash2 size="0.875rem" />
                 </button>
@@ -5065,6 +5070,16 @@ export function ChatSettingsDrawer({
               onConnectionChange={setConnection}
             />
           </div>
+
+          {/* GM reasoning effort, game mode only */}
+          {isGame && (
+            <GmReasoningEffortSection
+              style={{ order: CHAT_SETTINGS_ORDER.gmReasoningEffort }}
+              value={metadata.gameGmReasoningEffort}
+              connection={chatGenerationConnectionsList.find((connection) => connection.id === chat.connectionId)}
+              onChange={(gameGmReasoningEffort) => updateMeta.mutate({ id: chat.id, gameGmReasoningEffort })}
+            />
+          )}
 
           {/* Roleplay prompt preset */}
           {modeSettingsSurfaces.promptSettingsSurface === "roleplay" && (
@@ -5168,6 +5183,7 @@ export function ChatSettingsDrawer({
               count={chatCharacterCount + (chat.personaId ? 1 : 0)}
               help={localizeUi("ui.chat.chatsettingsdrawer.yourInGamePartyPickAPersonaToPlay")}
             >
+              <GameHudListsSettings scopeId={resolveGameHudScope(metadata.gameId, chat.groupId, chat.id)} />
               <div className="space-y-1.5">
                 <label className="text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
                   {localizeUi("ui.characters.cardlibrarydetailcard.persona")}
@@ -7483,6 +7499,11 @@ export function ChatSettingsDrawer({
                       GAME_AUTO_SCENE_MEDIA_ENABLED_KEY,
                       "chat.settings.game.autoSceneMedia",
                       "chat.settings.game.autoSceneMediaHelp",
+                    ],
+                    [
+                      GAME_WIDGET_AUTO_EXPAND_KEY,
+                      "chat.settings.game.widgetAutoExpand",
+                      "chat.settings.game.widgetAutoExpandHelp",
                     ],
                   ] as const
                 ).map(([key, label, help]) => (

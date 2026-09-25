@@ -12,16 +12,20 @@ export const FEATURE_SWITCH_NAMES = [
   "chatgptHistoryReplay",
   "cacheFriendlyPromptLayout",
   "stableLorebookGroupPicks",
+  "stableLoreOrder",
   "providerRetry",
   "backgroundCallCap",
   "messageTrash",
   "usageAndActivationStats",
+  "consoleTray",
 ] as const;
 export type FeatureSwitchName = (typeof FEATURE_SWITCH_NAMES)[number];
 
 export const FEATURE_NUMBER_SETTINGS = {
   backgroundCallsPerHour: { defaultValue: 600, min: 1, max: 100_000 },
   messageTrashDays: { defaultValue: MESSAGE_TRASH_RETENTION_DAYS, min: 1, max: 365 },
+  /** Turns a stopped keyword match may stay in the lore block (stableLoreOrder); 0 turns lingering off. */
+  stableLoreLingerTurns: { defaultValue: 2, min: 0, max: 8 },
 } as const;
 export type FeatureNumberName = keyof typeof FEATURE_NUMBER_SETTINGS;
 export const FEATURE_NUMBER_NAMES = Object.keys(FEATURE_NUMBER_SETTINGS) as FeatureNumberName[];
@@ -38,12 +42,15 @@ export const featureSettingsSchema = z
     chatgptHistoryReplay: z.boolean().optional(),
     cacheFriendlyPromptLayout: z.boolean().optional(),
     stableLorebookGroupPicks: z.boolean().optional(),
+    stableLoreOrder: z.boolean().optional(),
     providerRetry: z.boolean().optional(),
     backgroundCallCap: z.boolean().optional(),
     messageTrash: z.boolean().optional(),
     usageAndActivationStats: z.boolean().optional(),
+    consoleTray: z.boolean().optional(),
     backgroundCallsPerHour: numberSchema("backgroundCallsPerHour").optional(),
     messageTrashDays: numberSchema("messageTrashDays").optional(),
+    stableLoreLingerTurns: numberSchema("stableLoreLingerTurns").optional(),
   })
   .strict();
 
@@ -70,6 +77,12 @@ export function resolveFeatureNumber(settings: FeatureSettings | null | undefine
   return settings?.[name] ?? FEATURE_NUMBER_SETTINGS[name].defaultValue;
 }
 
+/**
+ * Why a switch has no effect on this server, so the UI can show it as unavailable.
+ * `windowsOnly`: the switch drives a Windows-only helper (the console tray icon).
+ */
+export type FeatureUnavailableReason = "windowsOnly";
+
 export interface FeatureSettingsResponse {
   /** What is saved; absent keys use their defaults. */
   settings: FeatureSettings;
@@ -77,4 +90,6 @@ export interface FeatureSettingsResponse {
   envOverrides: Partial<Record<FeatureSwitchName | FeatureNumberName, string>>;
   /** For switches pinned by an on/off environment variable: the value actually in effect. */
   effective?: Partial<Record<FeatureSwitchName, boolean>>;
+  /** Switches that cannot work on this server (for example a Windows-only switch on Linux), with the reason. */
+  unavailable?: Partial<Record<FeatureSwitchName, FeatureUnavailableReason>>;
 }

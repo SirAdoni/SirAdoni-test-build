@@ -1,6 +1,7 @@
 // ──────────────────────────────────────────────
 // Panel: User Personas
 // ──────────────────────────────────────────────
+import { PANEL_PHONE_FLOOR_CLASS, PANEL_ROW_NAME_WRAP_CLASS } from "./panel-phone-floor";
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import {
@@ -582,7 +583,7 @@ export function PersonasPanel() {
   }, [deletePersona, exitSelectionMode, selectedPersonaIds, localizeUi]);
 
   return (
-    <div className="flex min-h-full flex-col gap-2 p-3">
+    <div className={cn("flex min-h-full flex-col gap-2 p-3", PANEL_PHONE_FLOOR_CLASS)}>
       <div
         className="mari-chrome-segmented mari-chrome-segmented--two"
         data-component="PersonaLibraryActions"
@@ -800,7 +801,7 @@ export function PersonasPanel() {
                   value2: group.name,
                 })}
                 title={localizeUi("ui.panels.backgroundpicker.doubleClickDoubleTapOrPressF2ToRename")}
-                className="group relative flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 transition-all hover:bg-[var(--sidebar-accent)]/40 max-md:pr-12 [@media(pointer:coarse)]:pr-12"
+                className="group relative flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 transition-all hover:bg-[var(--sidebar-accent)]/40"
                 onClick={(event) =>
                   handleFolderRenameGesture(group.id, event, {
                     onSingleClick: () => setExpandedGroupId(isExpanded ? null : group.id),
@@ -862,7 +863,7 @@ export function PersonasPanel() {
 
                 <div
                   data-folder-actions
-                  className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
+                  className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:static max-md:translate-y-0 [@media(pointer:coarse)]:static [@media(pointer:coarse)]:translate-y-0 max-md:ml-auto [@media(pointer:coarse)]:ml-auto max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
                 >
                   {folderMemberIds.length > 0 && (
                     <span
@@ -968,13 +969,15 @@ export function PersonasPanel() {
                         >
                           {selectionMode && (
                             <button
+                              data-touch-compact
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 toggleSelection(pid);
                               }}
                               className={cn(
-                                "flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors",
+                                // The 20px check box keeps its size; the pseudo element gives it a 36px hit area.
+                                "relative flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors before:absolute before:-inset-2 before:content-['']",
                                 isBulkSelected
                                   ? "border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-button-bg-active)] text-[var(--marinara-chat-chrome-button-text-active)]"
                                   : "border-[var(--muted-foreground)]/40 bg-[var(--secondary)] text-transparent",
@@ -1025,12 +1028,7 @@ export function PersonasPanel() {
                               <User size="0.625rem" />
                             )}
                           </div>
-                          <div
-                            className={cn(
-                              "min-w-0 flex-1",
-                              !selectionMode && "pr-0 max-md:pr-14 [@media(pointer:coarse)]:pr-14",
-                            )}
-                          >
+                          <div className={cn("min-w-0 flex-1", !selectionMode && "pr-0")}>
                             <div className="truncate text-[0.75rem] font-medium">{p.name}</div>
                             {p.comment && (
                               <div className="truncate text-[0.5625rem] italic text-[var(--muted-foreground)]">
@@ -1047,7 +1045,7 @@ export function PersonasPanel() {
                             </div>
                           </div>
                           {!selectionMode && (
-                            <div className="pointer-events-none absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] p-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover/member:opacity-100 [@media(pointer:fine)]:group-focus-within/member:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover/member:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within/member:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
+                            <div className="pointer-events-none absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] p-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover/member:opacity-100 [@media(pointer:fine)]:group-focus-within/member:opacity-100 max-md:static max-md:translate-y-0 [@media(pointer:coarse)]:static [@media(pointer:coarse)]:translate-y-0 max-md:ml-auto [@media(pointer:coarse)]:ml-auto max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover/member:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within/member:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
                               <ChatResourceActionButton
                                 payload={{ version: 1, kind: "persona", ids: [pid], label: p.name }}
                                 className="flex h-6 min-h-6 w-6 items-center justify-center p-0"
@@ -1129,7 +1127,7 @@ export function PersonasPanel() {
                 })
               }
               className={cn(
-                "group relative flex touch-pan-y cursor-pointer items-center gap-3 rounded-xl p-2.5 transition-all hover:bg-[var(--sidebar-accent)]",
+                "group relative flex touch-pan-y cursor-pointer items-center gap-3 rounded-xl p-2.5 transition-all hover:bg-[var(--sidebar-accent)] max-md:flex-wrap max-md:gap-2 pointer-coarse:flex-wrap pointer-coarse:gap-2",
                 selectionMode &&
                   isBulkSelected &&
                   "bg-[var(--marinara-chat-chrome-highlight-bg)] ring-1 ring-[var(--marinara-chat-chrome-button-border-active)]",
@@ -1172,13 +1170,15 @@ export function PersonasPanel() {
             >
               {selectionMode && (
                 <button
+                  data-touch-compact
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
                     toggleSelection(persona.id);
                   }}
                   className={cn(
-                    "flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors",
+                    // The 20px check box keeps its size; the pseudo element gives it a 36px hit area.
+                    "relative flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors before:absolute before:-inset-2 before:content-['']",
                     isBulkSelected
                       ? "border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-button-bg-active)] text-[var(--marinara-chat-chrome-button-text-active)]"
                       : "border-[var(--muted-foreground)]/40 bg-[var(--secondary)] text-transparent",
@@ -1243,9 +1243,14 @@ export function PersonasPanel() {
 
               {/* Info */}
               <div
-                className={cn("min-w-0 flex-1", !selectionMode && "pr-0 max-md:pr-32 [@media(pointer:coarse)]:pr-32")}
+                className={cn(
+                  "min-w-0 flex-1 max-md:min-w-[8.5rem] pointer-coarse:min-w-[8.5rem]",
+                  !selectionMode && "pr-0",
+                )}
               >
-                <div className="w-fit max-w-full truncate text-sm font-medium">{persona.name}</div>
+                <div className={cn("w-fit max-w-full truncate text-sm font-medium", PANEL_ROW_NAME_WRAP_CLASS)}>
+                  {persona.name}
+                </div>
                 {persona.comment && (
                   <div className="truncate text-[0.625rem] italic text-[var(--muted-foreground)]">
                     {persona.comment}
@@ -1261,7 +1266,7 @@ export function PersonasPanel() {
 
               {/* Actions */}
               {!selectionMode && (
-                <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 flex shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
+                <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 flex shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:static max-md:translate-y-0 [@media(pointer:coarse)]:static [@media(pointer:coarse)]:translate-y-0 max-md:ml-auto [@media(pointer:coarse)]:ml-auto max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
                   <ChatResourceActionButton
                     payload={{ version: 1, kind: "persona", ids: [persona.id], label: persona.name }}
                   />

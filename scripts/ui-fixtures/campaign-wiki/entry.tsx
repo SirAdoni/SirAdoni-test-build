@@ -8,6 +8,7 @@ import { ChatSettingsDrawer } from "../../../packages/client/src/components/chat
 import { initializeLocalization } from "../../../packages/client/src/localization/i18n";
 import { useGameModeStore } from "../../../packages/client/src/stores/game-mode.store";
 import { useUIStore } from "../../../packages/client/src/stores/ui.store";
+import { useChatStore } from "../../../packages/client/src/stores/chat.store";
 
 type MockControl = {
   delayMs: number;
@@ -31,6 +32,7 @@ type MockControl = {
   releaseOwner: () => void;
   ownerLinked: Record<string, string>;
   ownerLookups: string[];
+  loreFetches: string[];
   /** The next memory write (preview or apply) answers 409 CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE. */
   crossSessionOnce: boolean;
   /** The next commitment transition answers 409 CAMPAIGN_MEMORY_CROSS_SESSION_REFERENCE. */
@@ -98,6 +100,35 @@ if (DUPES)
       aliases: ["Game continuity 8"],
       summary: `Imported continuity entry ${index}.`,
     });
+// ?lore=1: lore pages owned by lorebook entries (one in the chat's active lorebook, one in an earlier session's
+// chat-scoped lorebook, one whose entry is gone) and one page owned by a whole lorebook.
+const LORE = new URL(window.location.href).searchParams.get("lore") === "1";
+if (LORE)
+  (
+    [
+      ["entity-lore-near", "Fixture Lore Near", "lorebook-entries", "entry-near"],
+      ["entity-lore-far", "Fixture Lore Far", "lorebook-entries", "entry-far"],
+      ["entity-lore-gone", "Fixture Lore Gone", "lorebook-entries", "entry-gone"],
+      ["entity-lore-book", "Fixture Lore Book", "lorebooks", "book-active"],
+    ] as const
+  ).forEach(([entityId, alias, store, recordId]) =>
+    entities.push({
+      ...entity(entityId, 2),
+      entityId,
+      kind: "lore",
+      owner: { type: "existing" as const, store, recordId } as any,
+      aliases: [alias],
+      summary: `${alias} fixture page.`,
+    }),
+  );
+const loreBooks = [
+  { id: "book-active", name: "Fixture Active Book", chatId: null, hiddenFromLibrary: false },
+  { id: "book-older", name: "Fixture Session Book", chatId: "chat-session-1", hiddenFromLibrary: true },
+];
+const loreEntries: Record<string, Array<{ id: string; lorebookId: string; name: string }>> = {
+  "book-active": [{ id: "entry-near", lorebookId: "book-active", name: "Near Entry" }],
+  "book-older": [{ id: "entry-far", lorebookId: "book-older", name: "Far Entry" }],
+};
 const entity0 = entities[0];
 const factStates = [
   {
@@ -638,6 +669,7 @@ async function main() {
     releaseOwner: () => undefined,
     ownerLinked: {},
     ownerLookups: [],
+    loreFetches: [],
     crossSessionOnce: false,
     crossSessionTransition: false,
     timelineRequests: [],
@@ -704,7 +736,12 @@ async function main() {
           metadata:
             control.branchMode === "no-metadata"
               ? {}
-              : { summary: null, gameSessionNumber: 3, ...(branch ? { campaignMemoryBranch: branch } : {}) },
+              : {
+                  summary: null,
+                  gameSessionNumber: 3,
+                  ...(branch ? { campaignMemoryBranch: branch } : {}),
+                  ...(LORE ? { activeLorebookIds: ["book-active", "book-deleted"] } : {}),
+                },
         }),
         { headers: { "Content-Type": "application/json" } },
       );
@@ -1148,6 +1185,18 @@ async function main() {
         headers: { "Content-Type": "application/json" },
       });
     }
+    if (LORE && parsed.pathname === "/api/lorebooks") {
+      control.loreFetches.push(parsed.pathname);
+      return new Response(JSON.stringify(loreBooks), { headers: { "Content-Type": "application/json" } });
+    }
+    const loreEntriesMatch = parsed.pathname.match(/^\/api\/lorebooks\/([^/]+)\/entries$/);
+    if (LORE && loreEntriesMatch) {
+      control.loreFetches.push(parsed.pathname);
+      const rows = loreEntries[loreEntriesMatch[1]];
+      return rows
+        ? new Response(JSON.stringify(rows), { headers: { "Content-Type": "application/json" } })
+        : new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+    }
     const match = parsed.pathname.match(/^\/api\/game\/chat-demo\/memory\/entities(?:\/([^/]+))?$/);
     if (!match) return originalFetch(input, init);
     const isDetail = Boolean(match[1]);
@@ -1217,6 +1266,8 @@ async function main() {
       { headers: { "Content-Type": "application/json" } },
     );
   };
+  // The wiki's owner link falls back to the active chat for its lorebook lookup, as it does inside a game.
+  if (LORE) useChatStore.setState({ activeChatId: "chat-demo" });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   window.__queryClient = queryClient;
   const surface = new URL(window.location.href).searchParams.get("surface");
@@ -1240,7 +1291,11 @@ async function main() {
     },
     ui: () => {
       const state = useUIStore.getState() as any;
-      return { personaDetailId: state.personaDetailId };
+      return {
+        personaDetailId: state.personaDetailId,
+        lorebookDetailId: state.lorebookDetailId,
+        lorebookDetailInitialTab: state.lorebookDetailInitialTab,
+      };
     },
   };
 }

@@ -122,7 +122,7 @@ function LinkButton({ onClick, children }: { onClick: () => void; children: Reac
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex min-h-8 items-center gap-1 rounded-lg px-2 text-xs font-semibold text-primary hover:bg-secondary"
+      className="inline-flex min-h-8 pointer-coarse:min-h-9 items-center gap-1 rounded-lg px-2 text-xs font-semibold text-primary hover:bg-secondary"
     >
       {children}
     </button>
@@ -288,7 +288,7 @@ export function CampaignWikiOverview({
                   </p>
                 )}
                 {topPeople.length > 0 && (
-                  <ul className="grid grid-cols-2 gap-2 @xl:grid-cols-3">
+                  <ul className="grid grid-cols-[repeat(auto-fill,minmax(10.5rem,1fr))] gap-2 @xl:grid-cols-3">
                     {topPeople.map((entity, index) => {
                       const name = displayEntityName(t, entity);
                       return (
@@ -421,7 +421,7 @@ export function CampaignWikiOverview({
                   )}
                 </ul>
                 <details data-campaign-wiki-overview-tools className="mt-3 rounded-xl border border-border px-3 py-2">
-                  <summary className="flex min-h-8 cursor-pointer items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+                  <summary className="flex min-h-8 pointer-coarse:min-h-9 cursor-pointer items-center gap-1.5 text-xs font-semibold text-muted-foreground">
                     <Wrench size={13} aria-hidden="true" />
                     <span className="flex-1">{t("ui.game.campaignWiki.reader.tools", { defaultValue: "Tools" })}</span>
                     {typeof reviewCount === "number" && reviewCount > 0 && (
@@ -534,7 +534,7 @@ export function TimelineEventPeople({
         <button
           type="button"
           onClick={() => onSelect(location.entityId)}
-          className="inline-flex min-h-7 max-w-full items-center gap-1 rounded-full border border-border px-2 text-[0.6875rem] font-medium text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+          className="inline-flex min-h-7 pointer-coarse:min-h-9 max-w-full items-center gap-1 rounded-full border border-border px-2 text-[0.6875rem] font-medium text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
         >
           <MapPin size={11} aria-hidden="true" />
           <span className="truncate">{location.alias}</span>
@@ -547,7 +547,7 @@ export function TimelineEventPeople({
             key={participant.entityId}
             type="button"
             onClick={() => onSelect(participant.entityId)}
-            className="inline-flex min-h-7 max-w-full items-center gap-1.5 rounded-full border border-border bg-secondary/40 py-0.5 pl-0.5 pr-2 text-[0.6875rem] font-medium text-foreground transition-colors hover:border-primary/50 hover:bg-secondary"
+            className="inline-flex min-h-7 pointer-coarse:min-h-9 max-w-full items-center gap-1.5 rounded-full border border-border bg-secondary/40 py-0.5 pl-0.5 pr-2 text-[0.6875rem] font-medium text-foreground transition-colors hover:border-primary/50 hover:bg-secondary"
           >
             <EntityAvatar
               name={participant.alias}
@@ -680,7 +680,7 @@ function OpenPromises({
         <button
           type="button"
           onClick={onShowAll}
-          className="mt-2 inline-flex min-h-8 items-center gap-1 rounded-lg px-2 text-xs font-semibold text-muted-foreground hover:bg-secondary hover:text-foreground"
+          className="mt-2 inline-flex min-h-8 pointer-coarse:min-h-9 items-center gap-1 rounded-lg px-2 text-xs font-semibold text-muted-foreground hover:bg-secondary hover:text-foreground"
         >
           {t("ui.game.campaignWiki.infobox.seeAllPromises", { defaultValue: "See all promises and quests" })}
         </button>
@@ -710,13 +710,14 @@ function PromiseRow({ item, onSelect }: { item: CampaignMemoryCommitmentItem; on
             </span>
           </>
         )}
-        {people.slice(0, 3).map((participant) => (
+        {/* A grouped promise lists every person it involves, not only the first few. */}
+        {people.map((participant) => (
           <span key={participant.entityId} className="inline-flex items-center gap-1.5">
             <span aria-hidden="true">·</span>
             <button
               type="button"
               onClick={() => onSelect(participant.entityId)}
-              className={cn("min-h-6 rounded font-medium text-foreground/90 hover:text-primary")}
+              className={cn("min-h-6 rounded font-medium text-foreground/90 hover:text-primary pointer-coarse:min-h-9")}
             >
               {participant.alias}
             </button>

@@ -133,6 +133,12 @@ export type EventName =
   | "update.step"
   | "update.apply"
   | "update.build.verify"
+  | "console_tray.start"
+  | "console_tray.stop"
+  | "console_tray.skipped"
+  | "console_tray.failed"
+  | "console_tray.quit"
+  | "console_tray.open"
   | "runtime.memory"
   | "runtime.memory_pressure"
   | "runtime.freeze"
@@ -141,6 +147,8 @@ export type EventName =
   | "log.dropped"
   | "config.reload"
   | "prompt.debug"
+  | "prompt.layout.final_checks"
+  | "lorebook.stable_order"
   | "sse.unreferenced_error";
 
 /**

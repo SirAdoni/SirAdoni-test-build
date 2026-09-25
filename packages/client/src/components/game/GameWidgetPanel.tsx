@@ -5,7 +5,7 @@
 // The model picks a type + config during setup;
 // the renderer handles all visual presentation.
 // ──────────────────────────────────────────────
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -18,7 +18,10 @@ import {
   LIST_WIDGET_MAX_LIMIT,
   listWidgetCapacity,
   normalizeExtendedWidgetConfig,
+  resolveWidgetAutoExpand,
+  widgetAutoExpandMode,
   type HudWidget,
+  type HudWidgetAutoExpandMode,
 } from "@marinara-engine/shared";
 import { ExtendedWidgetView } from "./ExtendedWidgets";
 import { useUpdateGameWidgets } from "../../hooks/use-game";
@@ -60,6 +63,17 @@ interface WidgetEditorDraft {
   running: boolean;
   stats: Array<{ name: string; value: string }>;
   items: string;
+  autoExpand: HudWidgetAutoExpandMode;
+}
+
+/**
+ * The game's widget auto expand default (chat metadata gameWidgetAutoExpand), provided by the Game surface.
+ * Without a provider it is on, the build default.
+ */
+export const WidgetAutoExpandContext = createContext(true);
+
+function useWidgetAutoExpand(widget: HudWidget) {
+  return resolveWidgetAutoExpand(widget, useContext(WidgetAutoExpandContext));
 }
 
 const GAME_WIDGET_SHELL_CLASS =
@@ -67,11 +81,11 @@ const GAME_WIDGET_SHELL_CLASS =
 const GAME_WIDGET_HEADER_CLASS =
   "flex w-full cursor-pointer items-center gap-1.5 px-2.5 py-1.5 text-left transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)]";
 const GAME_WIDGET_TITLE_CLASS =
-  "flex-1 overflow-x-auto scrollbar-hide whitespace-nowrap text-[0.6875rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]";
+  "min-w-0 flex-1 break-words text-[0.6875rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]";
 const GAME_WIDGET_MUTED_CLASS = "text-[var(--marinara-chat-chrome-panel-muted)]";
 const GAME_WIDGET_BODY_DIVIDER_CLASS = "border-t border-[var(--marinara-chat-chrome-panel-divider)]";
 const GAME_WIDGET_ICON_BUTTON_CLASS =
-  "flex h-5 w-5 items-center justify-center rounded-md text-[var(--marinara-chat-chrome-button-text)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-highlight-text)]";
+  "flex h-5 w-5 items-center justify-center rounded-md md:[@media(min-height:32.0625rem)]:pointer-coarse:min-h-9 md:[@media(min-height:32.0625rem)]:pointer-coarse:min-w-9 text-[var(--marinara-chat-chrome-button-text)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-highlight-text)]";
 const GAME_WIDGET_TRACK_CLASS = "bg-[var(--marinara-chat-chrome-panel-divider)]";
 const GAME_WIDGET_TILE_CLASS =
   "border-[var(--marinara-chat-chrome-panel-divider)] bg-[var(--marinara-chat-chrome-highlight-bg)]";
@@ -84,6 +98,7 @@ const EMPTY_WIDGET_DRAFT: WidgetEditorDraft = {
   running: false,
   stats: [],
   items: "",
+  autoExpand: "auto",
 };
 
 function isNumericWidgetType(type: HudWidget["type"]) {
@@ -155,6 +170,7 @@ function createWidgetEditorDraft(widget: HudWidget): WidgetEditorDraft {
       : Array.isArray(widget.config.items)
         ? widget.config.items.join("\n")
         : "",
+    autoExpand: widgetAutoExpandMode(widget),
   };
 }
 
@@ -365,6 +381,9 @@ export function MobileWidgetPanel({ widgets, position, chatId, layout = "vertica
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const { editingWidget, openEditor, closeEditor, saveWidget, isSaving } = useWidgetEditor(widgets, chatId);
   const expandedWidget = layout === "horizontal" ? (filtered.find((widget) => widget.id === expandedId) ?? null) : null;
+  // The tray sheet grows up to the screen for a widget that auto expands (the sheet's own limit otherwise).
+  const autoExpandDefault = useContext(WidgetAutoExpandContext);
+  const expandedWidgetFits = expandedWidget ? resolveWidgetAutoExpand(expandedWidget, autoExpandDefault).expand : false;
 
   if (filtered.length === 0) return null;
 
@@ -389,7 +408,7 @@ export function MobileWidgetPanel({ widgets, position, chatId, layout = "vertica
               >
                 <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-left">
                   <span className="text-xs">{widgetIcon(w)}</span>
-                  <span className="flex-1 truncate text-[0.6875rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
+                  <span className="min-w-0 flex-1 break-words text-[0.6875rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
                     <CharacterLinkedContent currentNames>{w.label}</CharacterLinkedContent>
                   </span>
                   <button
@@ -412,7 +431,7 @@ export function MobileWidgetPanel({ widgets, position, chatId, layout = "vertica
                   </button>
                 </div>
                 <div className={cn(GAME_WIDGET_BODY_DIVIDER_CLASS, "px-2.5 py-2")}>
-                  <WidgetBody widget={w} />
+                  <AutoExpandWidgetBody widget={w} />
                 </div>
               </div>
             );
@@ -422,7 +441,7 @@ export function MobileWidgetPanel({ widgets, position, chatId, layout = "vertica
             <button
               key={w.id}
               onClick={() => setExpandedId(w.id)}
-              className="marinara-chat-toolbar-button flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-base text-[var(--marinara-chat-chrome-button-text)] backdrop-blur-md transition-all hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] active:scale-95"
+              className="marinara-chat-toolbar-button flex h-11 w-11 shrink-0 snap-start items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-base text-[var(--marinara-chat-chrome-button-text)] backdrop-blur-md transition-all hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] active:scale-95"
               aria-haspopup={layout === "horizontal" ? "dialog" : undefined}
               aria-expanded={isExpanded}
               aria-label={w.label}
@@ -436,15 +455,21 @@ export function MobileWidgetPanel({ widgets, position, chatId, layout = "vertica
       {expandedWidget && (
         <Modal open onClose={() => setExpandedId(null)} title={expandedWidget.label} width="max-w-sm">
           <div className="space-y-3">
-            <div className={cn(GAME_WIDGET_SHELL_CLASS, "max-h-[min(60vh,28rem)] overflow-y-auto")}>
+            <div
+              className={cn(
+                GAME_WIDGET_SHELL_CLASS,
+                expandedWidgetFits ? "max-h-[calc(100dvh-10rem)]" : "max-h-[min(60vh,28rem)]",
+                "overflow-y-auto",
+              )}
+            >
               <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-left">
                 <span className="text-xs">{widgetIcon(expandedWidget)}</span>
-                <span className="min-w-0 flex-1 truncate text-[0.6875rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
+                <span className="min-w-0 flex-1 break-words text-[0.6875rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
                   <CharacterLinkedContent currentNames>{expandedWidget.label}</CharacterLinkedContent>
                 </span>
               </div>
               <div className={cn(GAME_WIDGET_BODY_DIVIDER_CLASS, "px-2.5 py-2")}>
-                <WidgetBody widget={expandedWidget} />
+                <WidgetBody widget={expandedWidget} expanded={expandedWidgetFits} />
               </div>
             </div>
             <div className="flex justify-end gap-2">
@@ -496,6 +521,7 @@ function WidgetCard({
 }) {
   const { t: localizeUi } = useUiTranslation();
   const [collapsed, setCollapsed] = useState(false);
+  const autoExpand = useWidgetAutoExpand(widget);
   const naturalWidth = useMemo(() => {
     if (widget.config.autoSize === false) return 176;
     // Stored configs are not guaranteed well-formed (model blueprints, older saves), so measure defensively.
@@ -513,14 +539,14 @@ function WidgetCard({
     ].map((label) => (label == null ? "" : String(label)));
     const longest = labels.reduce((length, label) => Math.max(length, Array.from(label).length), 0);
     if (widget.type === "stat_block") {
-      const columnWidths = [0, 0];
-      for (const [index, stat] of stats.entries()) {
-        columnWidths[index % 2] = Math.max(
-          columnWidths[index % 2],
-          Array.from(String(stat?.name ?? "")).length * 6.2 + String(stat?.value ?? "").length * 6.2 + 32,
-        );
-      }
-      return Math.max(176, Math.ceil(columnWidths[0] + columnWidths[1] + 36), widget.label.length * 6.2 + 64);
+      // One label column plus one value column; values wrap, so the widget need not fit the longest value.
+      // All-short blocks get room for two side-by-side tables.
+      const chars = (value: unknown) => Array.from(String(value ?? "")).length;
+      const labelWidth = stats.reduce((width, stat) => Math.max(width, chars(stat?.name) * 6.2), 0);
+      const valueWidth = stats.reduce((width, stat) => Math.max(width, chars(stat?.value) * 6.2), 0);
+      const table = labelWidth + valueWidth + 44;
+      const content = isCompactStatBlock(stats) ? Math.max(table, 2 * (labelWidth + valueWidth) + 64) : table;
+      return Math.min(448, Math.ceil(Math.max(176, content, widget.label.length * 6.2 + 64)));
     }
     return Math.max(176, Math.min(384, Math.ceil(longest * 6.2 + 64)));
   }, [widget]);
@@ -530,7 +556,10 @@ function WidgetCard({
       widgetId={widget.id}
       width={naturalWidth}
       autoWidth={widget.config.autoSize !== false}
+      // Widgets always grew with their content until a hand-set height; "Always expand" also grows past that
+      // height (kept stored for when the choice changes). Neighbours reflow around a grown panel with Collisions on.
       autoGrow
+      autoGrowOverridesManual={autoExpand.explicit && autoExpand.expand}
       allowTuck
       tuckIcon={widgetIcon(widget)}
       tuckLabel={widget.label}
@@ -574,7 +603,7 @@ function WidgetCard({
         {/* Body */}
         {!collapsed && (
           <div className={cn(GAME_WIDGET_BODY_DIVIDER_CLASS, "px-2.5 py-2")}>
-            <WidgetBody widget={widget} />
+            <AutoExpandWidgetBody widget={widget} />
           </div>
         )}
       </div>
@@ -584,7 +613,11 @@ function WidgetCard({
 
 // ── Widget Body Router ──
 
-function WidgetBody({ widget }: { widget: HudWidget }) {
+function AutoExpandWidgetBody({ widget }: { widget: HudWidget }) {
+  return <WidgetBody widget={widget} expanded={useWidgetAutoExpand(widget).expand} />;
+}
+
+function WidgetBody({ widget, expanded = false }: { widget: HudWidget; expanded?: boolean }) {
   const { t: localizeUi } = useUiTranslation();
   switch (widget.type) {
     case "progress_bar":
@@ -598,7 +631,7 @@ function WidgetBody({ widget }: { widget: HudWidget }) {
     case "stat_block":
       return <StatBlockWidget widget={widget} />;
     case "list":
-      return <ListWidget widget={widget} />;
+      return <ListWidget widget={widget} expanded={expanded} />;
     case "inventory_grid":
       return <InventoryGridWidget widget={widget} />;
     case "timer":
@@ -658,7 +691,11 @@ function WidgetEditorModal({
 
   const handleSave = useCallback(() => {
     if (!widget) return;
-    void onSave(buildUpdatedWidgetConfig(widget, draft, { syncStartingValue }));
+    const nextConfig = { ...buildUpdatedWidgetConfig(widget, draft, { syncStartingValue }) };
+    // "Auto" leaves no key behind, so a widget that follows the game default keeps its config as it was.
+    if (draft.autoExpand === "auto") delete nextConfig.autoExpand;
+    else nextConfig.autoExpand = draft.autoExpand;
+    void onSave(nextConfig);
   }, [draft, onSave, syncStartingValue, widget]);
 
   if (!open || !widget || typeof document === "undefined") return null;
@@ -910,6 +947,34 @@ function WidgetEditorModal({
           </div>
         )}
 
+        <label className="block space-y-1.5">
+          <span className="text-xs font-medium text-[var(--muted-foreground)]">
+            {localizeUi("ui.game.widgeteditormodal.autoExpand")}
+          </span>
+          <select
+            value={draft.autoExpand}
+            onChange={(event) =>
+              setDraft((current) => ({
+                ...current,
+                autoExpand:
+                  event.target.value === "expand" || event.target.value === "fixed" ? event.target.value : "auto",
+              }))
+            }
+            className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--foreground)] outline-none transition focus:border-[var(--primary)]"
+          >
+            <option value="auto">{localizeUi("ui.game.widgeteditormodal.autoExpandAuto")}</option>
+            <option value="expand">{localizeUi("ui.game.widgeteditormodal.autoExpandExpand")}</option>
+            <option value="fixed">{localizeUi("ui.game.widgeteditormodal.autoExpandFixed")}</option>
+          </select>
+          <span className="block text-xs text-[var(--muted-foreground)]">
+            {localizeUi(
+              draft.autoExpand === "expand"
+                ? "ui.game.widgeteditormodal.autoExpandExpandHelp"
+                : "ui.game.widgeteditormodal.autoExpandHelp",
+            )}
+          </span>
+        </label>
+
         <div className="flex justify-end gap-2 pt-1">
           <button
             type="button"
@@ -1085,7 +1150,9 @@ export function GameWidgetSessionPrepModal({
                   <div className="min-w-0 space-y-1">
                     <div className="flex items-center gap-2">
                       <span className="text-sm">{widgetIcon(widget)}</span>
-                      <span className="truncate text-sm font-medium text-[var(--foreground)]">{widget.label}</span>
+                      <span className="min-w-0 break-words text-sm font-medium text-[var(--foreground)]">
+                        {widget.label}
+                      </span>
                       <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[0.6875rem] uppercase tracking-wide text-[var(--muted-foreground)]">
                         {formatWidgetTypeLabel(widget.type)}
                       </span>
@@ -1283,37 +1350,74 @@ function CounterWidget({ widget }: { widget: HudWidget }) {
   );
 }
 
+/** Values this short (and labels this short) let a stat block show two side-by-side tables when there is room. */
+const COMPACT_STAT_VALUE_CHARS = 12;
+const COMPACT_STAT_LABEL_CHARS = 16;
+
+function isCompactStatBlock(stats: ReadonlyArray<{ name?: unknown; value?: unknown }>): boolean {
+  return (
+    stats.length > 1 &&
+    stats.every(
+      (stat) =>
+        Array.from(String(stat?.value ?? "")).length <= COMPACT_STAT_VALUE_CHARS &&
+        Array.from(String(stat?.name ?? "")).length <= COMPACT_STAT_LABEL_CHARS,
+    )
+  );
+}
+
 function StatBlockWidget({ widget }: { widget: HudWidget }) {
   const rawStats = widget.config.stats;
   const stats = Array.isArray(rawStats) ? rawStats : [];
   const accent = widget.accent ?? "#6366f1";
+  const compact = isCompactStatBlock(stats);
 
+  // One aligned label/value table: the label column fits the longest label (at most 40% of the width, never
+  // narrower than its longest word, so labels only wrap at spaces), and values sit left-aligned in one column
+  // where they wrap. Every row shares the same two column edges. Only a widget whose pairs are all short turns
+  // into two side-by-side tables, and only once it is wide enough for both; rows are never mixed.
   return (
-    <div className="grid grid-cols-2 gap-x-3 gap-y-1">
-      {stats.map((s, i) => (
-        <div key={s.name ?? i} className="flex items-center justify-between text-[0.5625rem]">
-          <span className={GAME_WIDGET_MUTED_CLASS}>
-            <CharacterLinkedContent currentNames showAvatar>
-              {s.name}
-            </CharacterLinkedContent>
-          </span>
-          <span className="shrink-0 whitespace-nowrap font-mono font-bold" style={{ color: accent }}>
-            <CharacterLinkedContent currentNames>{s.value}</CharacterLinkedContent>
-          </span>
-        </div>
-      ))}
+    <div className="@container">
+      <div
+        data-stat-table={compact ? "compact" : "single"}
+        className={cn(
+          "grid grid-cols-[fit-content(40%)_minmax(0,1fr)] gap-x-2 gap-y-1",
+          compact &&
+            "@[20rem]:grid-cols-[fit-content(25%)_minmax(0,1fr)_fit-content(25%)_minmax(0,1fr)] @[20rem]:gap-x-3",
+        )}
+      >
+        {stats.map((s, i) => (
+          <div
+            key={s.name ?? i}
+            data-stat-row
+            className="col-span-2 grid grid-cols-subgrid items-baseline text-[0.5625rem]"
+          >
+            <span className={cn("[overflow-wrap:break-word]", GAME_WIDGET_MUTED_CLASS)}>
+              <CharacterLinkedContent currentNames showAvatar>
+                {s.name}
+              </CharacterLinkedContent>
+            </span>
+            <span
+              className="min-w-0 font-mono font-bold tabular-nums [overflow-wrap:anywhere]"
+              style={{ color: accent }}
+            >
+              <CharacterLinkedContent currentNames>{s.value}</CharacterLinkedContent>
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
-function ListWidget({ widget }: { widget: HudWidget }) {
+function ListWidget({ widget, expanded }: { widget: HudWidget; expanded: boolean }) {
   const { t: localizeUi } = useUiTranslation();
   const rawItems = widget.config.items;
   const items = Array.isArray(rawItems) ? rawItems : [];
 
-  // Lists keep every entry now, so a long roster scrolls inside the widget instead of stretching the HUD.
+  // Lists keep every entry. With auto expand the widget grows to show them all; otherwise a long roster scrolls
+  // inside the widget instead of stretching the HUD.
   return (
-    <div className="max-h-64 space-y-0.5 overflow-y-auto">
+    <div data-widget-list className={cn("space-y-0.5", !expanded && "max-h-64 overflow-y-auto")}>
       {items.length === 0 ? (
         <p className={cn("text-[0.5625rem] italic", GAME_WIDGET_MUTED_CLASS)}>
           {localizeUi("ui.characters.characterversionhistorypanel.empty")}

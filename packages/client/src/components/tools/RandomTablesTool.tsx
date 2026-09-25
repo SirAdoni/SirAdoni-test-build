@@ -53,12 +53,13 @@ import {
 } from "../../hooks/use-random-tables";
 
 const FIELD_CLASS =
-  "h-8 min-w-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40";
+  "h-8 pointer-coarse:h-9 min-w-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40";
 const ICON_BUTTON_CLASS =
-  "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-50";
+  "flex h-7 w-7 pointer-coarse:h-9 pointer-coarse:w-9 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-50";
 const SMALL_BUTTON_CLASS =
-  "flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-[0.6875rem] font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-60";
-const LABEL_CLASS = "text-[0.625rem] font-medium uppercase tracking-wide text-muted-foreground";
+  "flex h-7 pointer-coarse:h-9 items-center gap-1.5 rounded-md border border-border px-2.5 text-[0.6875rem] font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-60";
+const LABEL_CLASS =
+  "text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground";
 const LOG_PREF_KEY = "marinara-random-tables-log";
 const IMPORT_MAX_BYTES = 16 * 1024 * 1024;
 
@@ -126,7 +127,10 @@ function NestedRolls({ result }: { result: TableRollResult }) {
   return (
     <ul className="mt-1 space-y-0.5 border-l border-border pl-2">
       {result.nested.map((child, index) => (
-        <li key={`${child.tableName}-${index}`} className="text-[0.625rem] text-muted-foreground">
+        <li
+          key={`${child.tableName}-${index}`}
+          className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-muted-foreground"
+        >
           <span className="font-medium text-foreground/80">{child.tableName}</span> ({child.notation}: {child.total}){" "}
           {child.text}
           <NestedRolls result={child} />
@@ -304,7 +308,7 @@ function StarterPacks({
         <span className={LABEL_CLASS}>{t("ui.randomTables.starterPacks")}</span>
         {canScopeToGame && (
           <select
-            className={cn(FIELD_CLASS, "h-7")}
+            className={cn(FIELD_CLASS, "h-7 pointer-coarse:h-9")}
             value={scope}
             onChange={(event) => setScope(event.target.value as RandomTableScope)}
             aria-label={t("ui.randomTables.scope")}
@@ -328,7 +332,7 @@ function StarterPacks({
                 <div className="truncate text-xs font-medium text-foreground">
                   {keys ? t(keys.name, { defaultValue: pack.name }) : pack.name}
                 </div>
-                <div className="text-[0.625rem] leading-snug text-muted-foreground">
+                <div className="text-[0.625rem] pointer-coarse:text-[0.6875rem] leading-snug text-muted-foreground">
                   {keys ? t(keys.description, { defaultValue: pack.description }) : pack.description}{" "}
                   {t("ui.randomTables.packTableCount", { count: pack.tables.length })}
                 </div>
@@ -718,7 +722,7 @@ export function RandomTablesTool({ chatId, className }: { chatId: string | null;
               <p className="whitespace-pre-wrap break-words text-sm text-foreground">
                 {output.result.rowIndex < 0 ? t("ui.randomTables.noRow") : output.result.text}
               </p>
-              <p className="mt-0.5 text-[0.625rem] text-muted-foreground">
+              <p className="mt-0.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-muted-foreground">
                 {output.result.tableName} ({output.result.notation}: {output.result.total})
                 {output.result.unresolved.length > 0 &&
                   ` · ${t("ui.randomTables.unresolved", { names: output.result.unresolved.join(", ") })}`}
@@ -808,7 +812,7 @@ export function RandomTablesTool({ chatId, className }: { chatId: string | null;
             onChange={(event) => setPanel({ ...editDraft, text: event.target.value })}
             aria-label={t("ui.randomTables.rows")}
           />
-          <p className="text-[0.625rem] leading-snug text-muted-foreground">
+          <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] leading-snug text-muted-foreground">
             {t("ui.randomTables.rowsHint")}{" "}
             {parsedDraft &&
               parsedDraft.rows.length > 0 &&

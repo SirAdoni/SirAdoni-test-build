@@ -143,6 +143,31 @@ function nameKey(value: string): string {
     .trim();
 }
 
+/**
+ * Provenance source of rows written by the legacy campaign-memory importer (LEGACY_CAMPAIGN_MEMORY_MIGRATION in
+ * campaign-memory-import.ts, repeated here because that module imports this one through campaign-memory-mutations).
+ */
+const LEGACY_IMPORT_SOURCE = "campaign-memory-legacy-v1";
+
+function isLegacyImportCopy(entity: CampaignMemoryEntity): boolean {
+  return entity.provenance?.source === LEGACY_IMPORT_SOURCE;
+}
+
+/** Entity ids a session's own facts, knowledge and events refer to. */
+function referencedEntityIds(memory: ChatMemory): Set<string> {
+  const ids = new Set<string>();
+  for (const fact of memory.facts) ids.add(fact.subjectEntityId);
+  for (const item of memory.knowledge) {
+    ids.add(item.holderEntityId);
+    if (item.attributedClaim) ids.add(item.attributedClaim.subjectEntityId);
+  }
+  for (const event of memory.events) {
+    for (const id of event.participantEntityIds) ids.add(id);
+    if (event.locationEntityId) ids.add(event.locationEntityId);
+  }
+  return ids;
+}
+
 /** Identity of an entity across sessions. */
 export function campaignEntityIdentity(entity: Pick<CampaignMemoryEntity, "kind" | "owner" | "aliases">): string {
   if (entity.owner.type === "existing") return `${entity.owner.store}:${entity.owner.recordId}`;
@@ -383,6 +408,7 @@ async function buildCampaignMemoryProjection(db: DB, chatId: string): Promise<Ca
     if (sideBySide(key, target)) continue;
     fold(key, target);
   }
+  const referencedByOrder = memories.map(({ memory }) => referencedEntityIds(memory));
   const entityIdMap = new Map<string, string>();
   const entities: ProjectedEntity[] = [];
   for (const group of groups.values()) {
@@ -396,9 +422,20 @@ async function buildCampaignMemoryProjection(db: DB, chatId: string): Promise<Ca
     const summary = [...ordered].reverse().find((item) => item.entity.summary?.trim())?.entity.summary;
     const body = [...ordered].reverse().find((item) => item.entity.body?.trim())?.entity.body;
     const anyActive = ordered.some((item) => item.entity.status === "active");
-    const sessionNumbers = [
-      ...new Set(ordered.map((item) => item.sessionNumber).filter((n): n is number => typeof n === "number")),
+    // The legacy import copied the whole lorebook into every session, so an imported copy is not an appearance on
+    // its own: a session counts when its copy was written by something else, or when that session's facts,
+    // knowledge or events refer to it. A page that only ever existed as imported copies shows its earliest session.
+    const numbered = (items: GroupItem[]) => [
+      ...new Set(items.map((item) => item.sessionNumber).filter((n): n is number => typeof n === "number")),
     ];
+    const appearances = numbered(
+      ordered.filter(
+        (item) =>
+          !isLegacyImportCopy(item.entity) || referencedByOrder[item.order]!.has(item.entity.entityId),
+      ),
+    );
+    const everyCopy = numbered(ordered);
+    const sessionNumbers = appearances.length ? appearances : everyCopy.length ? [Math.min(...everyCopy)] : [];
     for (const item of ordered) entityIdMap.set(item.entity.entityId, anchor.entity.entityId);
     entities.push({
       // Every field describes the anchor row, the one the wiki writes to (recordId = anchor id, expectedRevision =

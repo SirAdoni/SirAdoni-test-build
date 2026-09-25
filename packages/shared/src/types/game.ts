@@ -157,6 +157,9 @@ export interface GameCharacterCard {
 
 // ── NPCs ──
 
+/** Life status of a tracked NPC. An absent status means alive or unknown (legacy default). */
+export type GameNpcStatus = "alive" | "dead" | "unknown";
+
 /** A tracked NPC in the game world. */
 export interface GameNpc {
   id: string;
@@ -175,7 +178,10 @@ export interface GameNpc {
   gender?: string | null;
   /** Optional pronoun hint used for systems like NPC voice matching. */
   pronouns?: string | null;
+  /** Last known location. Setup seeds it; session conclusions may update it. Never a status word. */
   location: string;
+  /** Optional life status. Absent means alive or unknown, as before this field existed. */
+  status?: GameNpcStatus;
   /** Party reputation with this NPC: -100 (hostile) to 100 (devoted) */
   reputation: number;
   /** Notable interactions or knowledge */
@@ -831,6 +837,8 @@ export interface HudWidget {
 export interface HudWidgetConfig {
   /** Fit the panel to its visible labels instead of keeping the default fixed width. */
   autoSize?: boolean;
+  /** Grow to show all content: "auto" (absent) follows the game's widget auto expand default. */
+  autoExpand?: "auto" | "expand" | "fixed";
   // progress_bar / gauge / relationship_meter
   /** Initial value used when the widget is created for a new session. */
   startingValue?: number;

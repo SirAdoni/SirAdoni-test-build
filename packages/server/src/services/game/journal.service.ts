@@ -6,6 +6,7 @@
 // ──────────────────────────────────────────────
 
 import { normalizeGameNpcIdentityName, type GameNpc } from "@marinara-engine/shared";
+import { parseGameNpcStatusWord } from "./next-session-plan.js";
 
 // ── Types ──
 
@@ -240,6 +241,75 @@ export function addNpcEntry(journal: Journal, npc: GameNpc, interaction: string)
           },
         ],
   };
+}
+
+const SYNTHETIC_TRACKED_INTERACTION = /^Tracked(?: at (.+))?\.$/u;
+
+/**
+ * The synthetic "Tracked" line for an NPC's current state, or null when none should exist.
+ * A dead NPC gets no tracked line, and a status word is never written as a place.
+ */
+export function buildNpcTrackedInteraction(npc: GameNpc): string | null {
+  if (npc.status === "dead") return null;
+  const location = npc.location?.trim();
+  if (!location || location.toLowerCase() === "unknown") return "Tracked.";
+  const locationStatus = parseGameNpcStatusWord(location);
+  if (locationStatus === "dead") return null;
+  return locationStatus ? "Tracked." : `Tracked at ${location}.`;
+}
+
+function isStatusWordTrackedLine(content: string): boolean {
+  const match = SYNTHETIC_TRACKED_INTERACTION.exec(content.trim());
+  return !!match?.[1] && parseGameNpcStatusWord(match[1]) !== null;
+}
+
+/**
+ * Keep each NPC's synthetic "Tracked" line in step with its current location and status.
+ * Stale tracked lines are replaced in the NPC log rather than accumulated, a dead NPC keeps none,
+ * and legacy lines that recorded a status word as a place ("Tracked at Deceased.") are dropped.
+ * Chronological entries for genuine past locations stay as history.
+ */
+export function reconcileNpcTrackedEntries(journal: Journal, npcs: readonly GameNpc[]): Journal {
+  let next = journal;
+  if (next.entries.some((entry) => entry.type === "npc" && isStatusWordTrackedLine(entry.content))) {
+    next = {
+      ...next,
+      entries: next.entries.filter((entry) => entry.type !== "npc" || !isStatusWordTrackedLine(entry.content)),
+    };
+  }
+  for (const npc of npcs) {
+    const interaction = buildNpcTrackedInteraction(npc);
+    const isStale = (line: string) => SYNTHETIC_TRACKED_INTERACTION.test(line.trim()) && line.trim() !== interaction;
+    if (next.npcLog.some((entry) => entry.npcName === npc.name && entry.interactions.some(isStale))) {
+      next = {
+        ...next,
+        npcLog: next.npcLog.map((entry) =>
+          entry.npcName === npc.name
+            ? { ...entry, interactions: entry.interactions.filter((line) => !isStale(line)) }
+            : entry,
+        ),
+      };
+    }
+    if (!interaction) continue;
+    const hasInteraction = next.npcLog.some(
+      (entry) => entry.npcName === npc.name && entry.interactions.includes(interaction),
+    );
+    if (!hasInteraction) next = addNpcEntry(next, npc, interaction);
+  }
+  return next;
+}
+
+/**
+ * Drop journal entries whose source message was removed from the live transcript or replaced by a
+ * regenerated swipe. Returns null when nothing matched, so callers can skip the write.
+ */
+export function pruneJournalSourceMessages(journal: unknown, messageIds: readonly string[]): Journal | null {
+  if (!journal || typeof journal !== "object" || messageIds.length === 0) return null;
+  const current = journal as Journal;
+  if (!Array.isArray(current.entries)) return null;
+  const removed = new Set(messageIds);
+  const entries = current.entries.filter((entry) => !entry?.sourceMessageId || !removed.has(entry.sourceMessageId));
+  return entries.length === current.entries.length ? null : { ...current, entries };
 }
 
 /** Add a combat event to the journal. */

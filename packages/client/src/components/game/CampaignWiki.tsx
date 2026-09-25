@@ -320,7 +320,7 @@ function Detail({
                 value={perspective}
                 onChange={(event) => setPerspective(event.target.value)}
                 title={t("ui.game.campaignWiki.perspectiveNote")}
-                className="min-h-8 min-w-0 max-w-[12rem] bg-transparent text-xs outline-none"
+                className="min-h-8 pointer-coarse:min-h-9 min-w-0 max-w-[12rem] bg-transparent text-xs outline-none"
               >
                 <option value="gm">{t("ui.game.campaignWiki.perspective.gm")}</option>
                 {holders.map((holder) => (
@@ -781,7 +781,7 @@ function CampaignWikiTimeline({
               key={jump.key}
               type="button"
               onClick={() => jumpTo(jump.key)}
-              className="inline-flex min-h-8 shrink-0 items-center rounded-full border border-border px-2.5 text-[0.6875rem] font-semibold text-muted-foreground transition-colors hover:border-primary/50 hover:bg-secondary hover:text-foreground"
+              className="inline-flex min-h-8 pointer-coarse:min-h-9 shrink-0 items-center rounded-full border border-border px-2.5 text-[0.6875rem] font-semibold text-muted-foreground transition-colors hover:border-primary/50 hover:bg-secondary hover:text-foreground"
             >
               {jump.label}
             </button>
@@ -1342,7 +1342,7 @@ function CampaignMemoryBranchNotice({ chat }: { chat: ReturnType<typeof useChat>
         <button
           type="button"
           onClick={() => void chat.refetch()}
-          className="min-h-8 rounded-lg border border-border px-2 hover:bg-secondary"
+          className="min-h-8 pointer-coarse:min-h-9 rounded-lg border border-border px-2 hover:bg-secondary"
         >
           {t("ui.game.campaignWiki.retry")}
         </button>
@@ -1358,7 +1358,7 @@ function CampaignMemoryBranchNotice({ chat }: { chat: ReturnType<typeof useChat>
           <button
             type="button"
             onClick={() => void chat.refetch()}
-            className="min-h-8 rounded-lg border border-border px-2 text-muted-foreground hover:bg-secondary"
+            className="min-h-8 pointer-coarse:min-h-9 rounded-lg border border-border px-2 text-muted-foreground hover:bg-secondary"
           >
             {t("ui.game.campaignWiki.retry")}
           </button>
@@ -1389,7 +1389,7 @@ function CampaignMemoryBranchNotice({ chat }: { chat: ReturnType<typeof useChat>
                 )}
               </strong>
               <p className="mt-1 text-muted-foreground">{record.reason}</p>
-              <details className="mt-1 text-[0.625rem] text-muted-foreground">
+              <details className="mt-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-muted-foreground">
                 <summary className="cursor-pointer">{t("ui.game.campaignWiki.branchDiagnosticDetails")}</summary>
                 <code className="mt-1 block break-all">{record.recordId}</code>
               </details>

@@ -98,6 +98,7 @@ import { useTranslation as useUiTranslation } from "react-i18next";
 import { CharacterPhoto } from "../ui/CharacterPhoto";
 import { formatNarration } from "./game-narration-format";
 import { FloatingGamePanel } from "./FloatingGamePanel";
+import { useComposerDockReserve } from "./game-composer-stability";
 import {
   CroppedAvatar,
   ExpressionReaction,
@@ -3993,6 +3994,7 @@ export function GameNarration({
   // While reviewing the past (messageOffset > 0), interrupt controls are hidden and
   // the Next button is forced visible so the player can see and press "Return".
   const reviewingPast = messageOffset > 0;
+  const composerDock = useComposerDockReserve();
   const playerInputAvailable =
     !scenePreparing &&
     !reviewingPast &&
@@ -4732,7 +4734,7 @@ export function GameNarration({
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 flex-wrap items-center">
               <span
-                className="min-w-0 truncate text-[0.6875rem] font-bold"
+                className="min-w-0 break-words text-[0.6875rem] font-bold"
                 style={
                   nameColorStyle(findNamedMapValue(speakerNameColors, seg.speaker ?? "") ?? seg.color) ?? {
                     color: "rgb(186 230 253)",
@@ -4853,7 +4855,10 @@ export function GameNarration({
   };
 
   return (
-    <div className="pointer-events-none relative flex min-h-0 flex-1 flex-col justify-end px-3 pb-[max(0.75rem,var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))] pt-32 lg:pt-24 sm:px-6 md:pb-4">
+    <div
+      data-component="GameNarration.Stage"
+      className="pointer-events-none relative flex min-h-0 flex-1 flex-col justify-end px-3 pb-[max(0.75rem,var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))] pt-[var(--game-narration-top-reserve,8rem)] lg:pt-24 sm:px-6 md:pb-4 game-short-landscape:pb-2 game-short-landscape:pt-16"
+    >
       {/* Readability scrim. It darkens the whole scene, not just the panel, so it has to fade
           out with the panel — otherwise collapsing hides the text but keeps the art dimmed. */}
       <div
@@ -4865,7 +4870,7 @@ export function GameNarration({
 
       <div
         data-tour="game-dialogue"
-        className="pointer-events-none relative z-10 mx-auto flex min-h-0 flex-1 w-full max-w-4xl flex-col justify-end max-lg:overflow-hidden"
+        className="pointer-events-none relative z-10 mx-auto flex min-h-0 flex-1 w-full max-w-4xl flex-col justify-end max-lg:overflow-hidden md:max-lg:[@media(min-height:32.0625rem)]:max-w-3xl"
       >
         {spriteStageSlot && (
           <CharacterLinkedContent currentNames showAvatar>
@@ -5059,7 +5064,7 @@ export function GameNarration({
               ref={activePanelRef}
               data-game-skip-bg-nav="true"
               data-component="GameNarration.ActivePanel"
-              className="pointer-events-auto min-h-0 max-h-full shrink overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]/90 p-3 shadow-[0_16px_38px_rgba(0,0,0,0.45)] backdrop-blur-md dark:border-white/15 dark:bg-black/50 lg:shrink-0 lg:max-h-[calc(100dvh-7rem)]"
+              className="pointer-events-auto min-h-0 max-h-full shrink overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]/90 p-3 shadow-[0_16px_38px_rgba(0,0,0,0.45)] backdrop-blur-md dark:border-white/15 dark:bg-black/50 lg:shrink-0 lg:max-h-[calc(100dvh-7rem)] group-data-[game-panel-limited=true]/panelbox:max-h-none group-data-[game-panel-limited=true]/panelbox:overflow-visible"
             >
               {/* Scene preparation gate: wait for effects before showing narration */}
               {scenePreparing && (
@@ -5385,8 +5390,8 @@ export function GameNarration({
 
               {!scenePreparing && active && active.type === "narration" && (
                 <>
-                  {/* Narration: centered, no avatar */}
-                  <div className="mb-2 flex items-center justify-between gap-2">
+                  {/* Narration: centered, no avatar. Landscape phones drop the label row for reading room. */}
+                  <div className="mb-2 flex items-center justify-between gap-2 game-short-landscape:hidden">
                     <span className="rounded-full bg-[var(--muted)]/30 px-2 py-0.5 text-[0.625rem] font-semibold uppercase tracking-wide text-[var(--foreground)]/90 dark:bg-white/10 dark:text-white/90">
                       {localizeUi("ui.game.gamenarration.narration")}
                     </span>
@@ -5549,11 +5554,29 @@ export function GameNarration({
               from showing in the background while the confirmation modal is still open.
               While reviewing the past via wheel-nav, the input is hidden — the player is
               looking at history, not typing. */}
-              {playerInputAvailable && <div className="mt-2">{inputSlot}</div>}
+              {playerInputAvailable && (
+                // Phones: keep the composer pinned inside the scrolling panel so a short column
+                // (landscape, on-screen keyboard, crowded HUD) can never scroll it out of view.
+                <div
+                  // A crowded desktop layout shrinks the floating narration box into a scroller: pin there too.
+                  data-game-panel-keep
+                  ref={composerDock.dockRef}
+                  data-game-composer-dock
+                  className="mt-2 max-lg:sticky max-lg:-bottom-3 max-lg:z-10 max-lg:-mx-3 max-lg:-mb-3 max-lg:bg-[var(--card)]/95 max-lg:px-3 max-lg:pb-3 max-lg:pt-1 max-lg:backdrop-blur-md dark:max-lg:bg-black/70 group-data-[game-panel-limited=true]/panelbox:sticky group-data-[game-panel-limited=true]/panelbox:-bottom-px group-data-[game-panel-limited=true]/panelbox:z-10 group-data-[game-panel-limited=true]/panelbox:-mx-3 group-data-[game-panel-limited=true]/panelbox:-mb-3 group-data-[game-panel-limited=true]/panelbox:rounded-b-2xl group-data-[game-panel-limited=true]/panelbox:bg-[var(--card)]/95 group-data-[game-panel-limited=true]/panelbox:px-3 group-data-[game-panel-limited=true]/panelbox:pb-3 group-data-[game-panel-limited=true]/panelbox:pt-1 group-data-[game-panel-limited=true]/panelbox:backdrop-blur-md dark:group-data-[game-panel-limited=true]/panelbox:bg-black/70"
+                >
+                  {inputSlot}
+                </div>
+              )}
 
               {/* Also show input when no narration at all (start of scene) */}
               {!scenePreparing && !active && !isStreaming && !sceneAnalysisFailed && inputSlot && (
-                <div className="mt-2">
+                <div
+                  // A crowded desktop layout shrinks the floating narration box into a scroller: pin there too.
+                  data-game-panel-keep
+                  ref={composerDock.dockRef}
+                  data-game-composer-dock
+                  className="mt-2 max-lg:sticky max-lg:-bottom-3 max-lg:z-10 max-lg:-mx-3 max-lg:-mb-3 max-lg:bg-[var(--card)]/95 max-lg:px-3 max-lg:pb-3 max-lg:pt-1 max-lg:backdrop-blur-md dark:max-lg:bg-black/70 group-data-[game-panel-limited=true]/panelbox:sticky group-data-[game-panel-limited=true]/panelbox:-bottom-px group-data-[game-panel-limited=true]/panelbox:z-10 group-data-[game-panel-limited=true]/panelbox:-mx-3 group-data-[game-panel-limited=true]/panelbox:-mb-3 group-data-[game-panel-limited=true]/panelbox:rounded-b-2xl group-data-[game-panel-limited=true]/panelbox:bg-[var(--card)]/95 group-data-[game-panel-limited=true]/panelbox:px-3 group-data-[game-panel-limited=true]/panelbox:pb-3 group-data-[game-panel-limited=true]/panelbox:pt-1 group-data-[game-panel-limited=true]/panelbox:backdrop-blur-md dark:group-data-[game-panel-limited=true]/panelbox:bg-black/70"
+                >
                   {showLogsButton && logEntries.length > 0 && (
                     <div className="mb-2">
                       <button
@@ -5570,7 +5593,15 @@ export function GameNarration({
                 </div>
               )}
 
-              {isStreaming && <GameGenerationStatus />}
+              {isStreaming && (
+                // Holds the composer's height while the turn generates, so sending never drops the panel.
+                <div
+                  className={cn(composerDock.reserved > 0 && "max-lg:-mb-3")}
+                  style={{ minHeight: composerDock.reserved || undefined }}
+                >
+                  <GameGenerationStatus />
+                </div>
+              )}
             </div>
           )}
         </FloatingGamePanel>

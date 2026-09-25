@@ -584,7 +584,7 @@ function HomeWidgetFrame({
         aria-label={dragLabel}
         title={dragLabel}
         className={cn(
-          "mari-home-widget__drag-handle mari-chrome-accent-text-muted absolute right-2 top-2 z-20 flex h-7 w-5 cursor-grab touch-none select-none items-center justify-center opacity-100 transition-[opacity,color,transform] hover:text-[var(--foreground)] active:cursor-grabbing active:scale-95 focus-visible:outline-none focus-visible:text-[var(--marinara-app-accent-solid)] [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-focus-within:opacity-100 [@media(pointer:fine)]:group-hover:opacity-100",
+          "mari-home-widget__drag-handle mari-chrome-accent-text-muted absolute right-2 top-2 z-20 flex h-7 w-5 cursor-grab [@media(pointer:coarse)]:right-0.5 [@media(pointer:coarse)]:top-0.5 [@media(pointer:coarse)]:h-9 [@media(pointer:coarse)]:w-9 touch-none select-none items-center justify-center opacity-100 transition-[opacity,color,transform] hover:text-[var(--foreground)] active:cursor-grabbing active:scale-95 focus-visible:outline-none focus-visible:text-[var(--marinara-app-accent-solid)] [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-focus-within:opacity-100 [@media(pointer:fine)]:group-hover:opacity-100",
           dragging && "!cursor-grabbing !text-[var(--marinara-app-accent-solid)]",
         )}
         onClick={(event) => event.stopPropagation()}

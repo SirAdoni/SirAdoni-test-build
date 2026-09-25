@@ -656,6 +656,8 @@ export interface ChatMetadata {
   gameNpcs?: import("./game.js").GameNpc[];
   /** How separate NPC replies receive character-specific knowledge; absent keeps legacy shared GM dialogue. */
   gameNpcKnowledgeMode?: "legacy" | "isolated";
+  /** Reasoning effort for the GM narration turn. Absent or "default" keeps the resolved parameters unchanged. */
+  gameGmReasoningEffort?: import("../constants/game-gm-reasoning-effort.js").GameGmReasoningEffort;
   /** Create a linked Character-library card when Game Mode confirms a named NPC. Defaults to true. */
   gameAutoCreateNpcCharacters?: boolean;
   /** Scene timeline review, recap and timeline-based presence. Absent = on; false = upstream (snapshot presence). */
@@ -664,10 +666,14 @@ export interface ChatMetadata {
   gameExtendedWidgetsEnabled?: boolean;
   /** Automatic post-turn scene media queue. Absent = on; false = nothing queued automatically. */
   gameAutoSceneMediaEnabled?: boolean;
+  /** Widgets grow to fit their content (game default; a widget can override it). Absent = on; false = fixed limits. */
+  gameWidgetAutoExpand?: boolean;
   /** Hold a send whose predicted prompt-cache hit is below the threshold. Absent = enabled at 80 percent. */
   cacheSendGuard?: { enabled?: boolean; thresholdPercent?: number; ttlMinutes?: number };
   /** NPC identities the user removed and does not want automatically re-created. */
   gameIgnoredNpcIds?: string[];
+  /** Names (companions, onboard AIs) that narration must never turn into new NPCs. */
+  gameNarrationExcludedNpcNames?: string[];
   /** Current-session turn number when the last rare generated scene illustration was created. */
   gameLastIllustrationTurn?: number;
   /** Session number where the last rare generated scene illustration was created. */

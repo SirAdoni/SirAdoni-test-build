@@ -1,6 +1,7 @@
 // ──────────────────────────────────────────────
 // Panel: Presets (overhauled — search, assign, edit, duplicate)
 // ──────────────────────────────────────────────
+import { PANEL_PHONE_FLOOR_CLASS, PANEL_ROW_NAME_WRAP_CLASS } from "./panel-phone-floor";
 import {
   useState,
   useMemo,
@@ -919,7 +920,7 @@ export function PresetsPanel() {
           key={preset.id}
           data-touch-drag-card="preset"
           className={cn(
-            "group relative flex touch-pan-y cursor-pointer items-center gap-3 rounded-xl p-2.5 transition-all hover:bg-[var(--sidebar-accent)]",
+            "group relative flex touch-pan-y cursor-pointer items-center gap-3 rounded-xl p-2.5 transition-all hover:bg-[var(--sidebar-accent)] max-md:flex-wrap max-md:gap-2 pointer-coarse:flex-wrap pointer-coarse:gap-2",
             selectionMode &&
               isBulkSelected &&
               "bg-[var(--marinara-chat-chrome-highlight-bg)] ring-1 ring-[var(--marinara-chat-chrome-button-border-active)]",
@@ -957,7 +958,7 @@ export function PresetsPanel() {
             }}
           />
           <div
-            className="flex min-w-0 flex-1 items-center gap-3"
+            className="flex min-w-0 flex-1 items-center gap-3 max-md:min-w-[12rem] pointer-coarse:min-w-[12rem]"
             onClick={() => {
               if (suppressPresetClickRef.current) return;
               if (selectionMode) toggleSelection(preset.id);
@@ -1013,10 +1014,16 @@ export function PresetsPanel() {
             )}
             <div
               data-preset-open-action={preset.id}
-              className={cn("min-w-0 flex-1", !selectionMode && "pr-0 max-md:pr-36 [@media(pointer:coarse)]:pr-36")}
+              className={cn(
+                "min-w-0 flex-1 max-md:min-w-[8.5rem] pointer-coarse:min-w-[8.5rem]",
+                !selectionMode && "pr-0",
+              )}
             >
               <div className="flex min-w-0 items-center gap-1.5">
-                <span className="min-w-0 flex-1 truncate text-sm font-medium leading-5" title={preset.name}>
+                <span
+                  className={cn("min-w-0 flex-1 truncate text-sm font-medium leading-5", PANEL_ROW_NAME_WRAP_CLASS)}
+                  title={preset.name}
+                >
                   {preset.name}
                 </span>
                 {isDefault && (
@@ -1046,7 +1053,7 @@ export function PresetsPanel() {
           </div>
 
           {!selectionMode && (
-            <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 flex shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
+            <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 flex shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:static max-md:translate-y-0 [@media(pointer:coarse)]:static [@media(pointer:coarse)]:translate-y-0 max-md:ml-auto [@media(pointer:coarse)]:ml-auto max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
               <ChatResourceActionButton
                 payload={{ version: 1, kind: "preset", ids: [preset.id], label: preset.name }}
               />
@@ -1161,7 +1168,7 @@ export function PresetsPanel() {
   );
 
   return (
-    <div className="flex min-h-full flex-col gap-2 p-3">
+    <div className={cn("flex min-h-full flex-col gap-2 p-3", PANEL_PHONE_FLOOR_CLASS)}>
       <input
         ref={presetImageInputRef}
         type="file"
@@ -1304,7 +1311,7 @@ export function PresetsPanel() {
                     value2: folder.name,
                   })}
                   title={localizeUi("ui.panels.backgroundpicker.doubleClickDoubleTapOrPressF2ToRename")}
-                  className="group relative flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 transition-all hover:bg-[var(--sidebar-accent)]/40 max-md:pr-12 [@media(pointer:coarse)]:pr-12"
+                  className="group relative flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 transition-all hover:bg-[var(--sidebar-accent)]/40"
                   onClick={(event) =>
                     handleFolderRenameGesture(folder.id, event, {
                       onSingleClick: () => setExpandedFolderId(isExpanded ? null : folder.id),
@@ -1365,7 +1372,7 @@ export function PresetsPanel() {
                   )}
                   <div
                     data-folder-actions
-                    className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
+                    className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:static max-md:translate-y-0 [@media(pointer:coarse)]:static [@media(pointer:coarse)]:translate-y-0 max-md:ml-auto [@media(pointer:coarse)]:ml-auto max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
                   >
                     {(presetSearchActive ? folderItems.length : folder.itemIds.length) > 0 && (
                       <span

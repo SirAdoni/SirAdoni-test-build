@@ -405,7 +405,7 @@ export function ConversationPresenceCard({
   const identityPillClass = getChatToolbarButtonClass({
     compact: true,
     open,
-    sizeClassName: CHAT_TOOLBAR_IDENTITY_PILL_SIZE_CLASS,
+    sizeClassName: `${CHAT_TOOLBAR_IDENTITY_PILL_SIZE_CLASS} pointer-coarse:h-9`,
     className:
       "min-w-[8.5rem] max-w-[min(20rem,calc(100vw-8rem))] justify-start gap-2 px-2.5 text-[var(--foreground)]/80 hover:text-[var(--foreground)]/90 max-md:min-w-[7.5rem] max-md:max-w-[calc(100vw-5.75rem)]",
   });
@@ -608,10 +608,10 @@ export function ConversationPresenceCard({
               />
             </div>
             <div className="flex min-w-0 flex-1 flex-col items-start text-left leading-tight">
-              <span className="truncate text-[0.75rem] font-semibold text-[var(--foreground)]/90">
+              <span className="min-w-0 max-w-full break-words [overflow-wrap:anywhere] text-[0.75rem] font-semibold text-[var(--foreground)]/90">
                 {characters[0].name}
               </span>
-              <span className="block w-full truncate text-[0.5625rem] text-[var(--foreground)]/50">
+              <span className="block w-full break-words [overflow-wrap:anywhere] text-[0.5625rem] text-[var(--foreground)]/50">
                 {characters[0].activity || statusLabel(characters[0].status)}
               </span>
             </div>
@@ -649,7 +649,7 @@ export function ConversationPresenceCard({
                 </div>
               ))}
             </div>
-            <span className="min-w-0 truncate text-[0.75rem] font-semibold text-[var(--foreground)]/90">
+            <span className="min-w-0 break-words [overflow-wrap:anywhere] text-left leading-tight text-[0.75rem] font-semibold text-[var(--foreground)]/90">
               {characters.length <= 2
                 ? characters.map((character) => character.name).join(" & ")
                 : localizeUi("ui.chat.conversationpresencecard.value1Value2", {
@@ -764,7 +764,7 @@ export function ConversationPresenceCard({
                           <div className="flex min-w-0 items-center gap-2">
                             <button
                               type="button"
-                              className="min-w-0 flex-1 truncate text-left text-sm font-medium text-[var(--foreground)] transition-colors hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]"
+                              className="min-w-0 flex-1 break-words [overflow-wrap:anywhere] text-left text-sm font-medium text-[var(--foreground)] transition-colors hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]"
                               title={localizeUi("ui.chat.conversationpresencecard.openValue1Profile", {
                                 value1: character.name,
                               })}

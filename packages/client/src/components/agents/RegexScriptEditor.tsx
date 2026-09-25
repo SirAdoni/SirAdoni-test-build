@@ -1,6 +1,7 @@
 // ──────────────────────────────────────────────
 // Full-Page Regex Script Editor
 // ──────────────────────────────────────────────
+import { PANEL_PHONE_FLOOR_CLASS } from "../panels/panel-phone-floor";
 import { useState, useCallback, useEffect, useMemo, type ReactNode } from "react";
 import { useUIStore } from "../../stores/ui.store";
 import { showConfirmDialog } from "../../lib/app-dialogs";
@@ -584,7 +585,12 @@ export function RegexScriptEditor() {
       : null;
 
   return (
-    <div className="mari-editor-shell mari-editor-legacy-bridge flex flex-1 flex-col overflow-hidden">
+    <div
+      className={cn(
+        "mari-editor-shell mari-editor-legacy-bridge flex flex-1 flex-col overflow-hidden",
+        PANEL_PHONE_FLOOR_CLASS,
+      )}
+    >
       {/* ── Header ── */}
       <div className="mari-editor-header">
         <button

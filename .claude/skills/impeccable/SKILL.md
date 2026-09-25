@@ -63,7 +63,7 @@ Load the matching reference: [reference/brand.md](reference/brand.md) or [refere
 
 ## Shared design laws
 
-Apply to every design, both registers. Match implementation complexity to the aesthetic vision: maximalism needs elaborate code, minimalism needs precision. Interpret creatively. Vary across projects; never converge on the same choices. GPT is capable of extraordinary work. Don't hold back.
+Apply to every design, both registers. Match implementation complexity to the aesthetic vision: maximalism needs elaborate code, minimalism needs precision. In product register inside an existing app, consistency with the app's own components and tokens comes first (in this repo, `AGENTS.md` "UI Consistency"); bold or novel choices belong to brand register or to work the user explicitly asks to be new.
 
 ### Color
 
@@ -110,6 +110,7 @@ Match-and-refuse. If you're about to write any of these, rewrite the element wit
 - **The hero-metric template.** Big number, small label, supporting stats, gradient accent. SaaS cliché.
 - **Identical card grids.** Same-sized cards with icon + heading + text, repeated endlessly.
 - **Modal as first thought.** Modals are usually laziness. Exhaust inline / progressive alternatives first.
+- **Model default styles.** Cream or off-white page backgrounds, italic accent words in headlines, numbered "01/02/03" section labels, monospace labels, and pill-shaped buttons, unless the existing product already uses that pattern in that place. If a result shows another default creeping in, add it to this list by name.
 
 ### Copy
 

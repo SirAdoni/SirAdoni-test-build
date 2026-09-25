@@ -23,6 +23,31 @@ Shared skills live in `.claude/skills`; Codex accesses them through `.agents/ski
 
 References: [OpenAI agent instructions](https://learn.chatgpt.com/docs/agent-configuration/agents-md), [skills](https://learn.chatgpt.com/docs/build-skills), and [model catalog](https://developers.openai.com/api/docs/models).
 
+## Claude Code Runtime and Models
+
+- Claude Code reads this file and the skills in `.claude/skills`. Use the tools and permission mode the current host actually supplies, and preserve the user's configured model and reasoning effort unless a change is requested.
+- Current Claude model IDs: Opus 5.5 `claude-opus-5-5`, Sonnet 5 `claude-sonnet-5`, Haiku 4.5 `claude-haiku-4-5-20251001`. Verify against the host before pinning one in code or docs.
+
+| Work | Claude model, when available |
+| --- | --- |
+| Architecture, cross-system debugging, final integration and demanding review | Opus 5.5 |
+| Substantial implementation or detailed review | Opus 5.5 or Sonnet 5 |
+| Narrow searches, mechanical edits or focused checks | Sonnet 5 or Haiku 4.5 |
+
+- Opus 5.5 follows instructions literally and falls back on its own defaults where the instructions are silent. Give it the concrete precedent to follow (file, component, pattern) rather than a general quality request such as "make it consistent" or "avoid a generic look", which only swaps one default for another.
+- When delegating to subagents, give each one bounded ownership (files, branch or worktree) and the exact validation to run; keep integration and final verification with the primary agent.
+
+## UI Consistency (all agents, required for any client UI change)
+
+Before designing or changing any client UI, find the closest existing feature in `packages/client/src` (same kind of control, panel, row, modal, toggle, picker or empty state) and base every choice on it: component, Tailwind classes, spacing, icon size, colors, copy tone and interaction. Reuse the shared piece in `packages/client/src/components/ui/` when one exists instead of writing a lookalike.
+
+- Name the precedent you copied (file and component) in the PR description so the choice is traceable.
+- The codebase's own pattern always wins over any generic avoid-list. Example: `packages/client/.instructions.md` prescribes an absolutely positioned pill container for settings-row action buttons, so use it there.
+- Where no precedent exists, do not invent a new look from model defaults. Use the nearest neighbour's visual language and the theme tokens (`var(--primary)`, `var(--border)`, `var(--sidebar)`, and so on), not new colors, fonts or label styles.
+- Model default styles to avoid unless the codebase already uses them in that place: cream or off-white backgrounds, italic accent words in headings, numbered "01/02/03" section labels, monospace labels, and pill-shaped buttons.
+- Check both visual themes (default and `sillytavern`) in light and dark mode, and phone, tablet and desktop widths.
+- If a review or the first result shows a new default style creeping in, name that specific pattern and redo it rather than repeating a general instruction. Precedent: `c838386e1` had to restyle activation-question controls to match the existing keyword controls.
+
 ## Expected Completion and Authorization
 
 - Carry the requested work through implementation, appropriate validation, review fixes and the authorized publication steps. Do not stop at a plan, a clean local review, or a local commit when the user has asked for a PR.
@@ -82,7 +107,7 @@ References: [OpenAI agent instructions](https://learn.chatgpt.com/docs/agent-con
 
 The local review conserves the shared CodeRabbit quota and complements the GitHub review. Use an existing PR rather than creating another for follow-up fixes.
 
-- **Never auto-check validation or test-plan checkboxes in a PR.** Those boxes are a to-do list for the human contributor, not evidence that work is done. If you generate a test plan, leave every box unchecked.
+- **Never auto-check validation or test-plan checkboxes in a PR.** Those boxes are a to-do list for the human contributor, not evidence that work is done. If you generate a test plan, leave every box unchecked. The "Pull Request template check" fails until at least one box is ticked, so tell the human which boxes the recorded evidence supports and that they need to tick them.
 - When preparing a PR description, list what needs manual verification clearly and explicitly. Write entries like "Manually verify X in browser" rather than "Works correctly."
 - If there is no linked issue or feature request, note that one should be opened before the PR is submitted. See `CONTRIBUTING.md § Before You Open a Pull Request`.
 

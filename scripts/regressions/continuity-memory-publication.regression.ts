@@ -74,10 +74,12 @@ try {
   assert.ok(entity);
   assert.equal(entity.manualLock, 1);
   assert.deepEqual(JSON.parse(entity.owner), { type: "existing", store: "lorebook-entries", recordId: entryId });
-  // Record 1 names "Rowan Mercer" (no entity) and "Tilda Pennock" (npc-owner): one
-  // per-subject fact plus the lore fallback. Record 2 names only Tilda: one per-subject fact.
-  assert.equal((await db.select().from(schema.campaignMemoryFacts)).length, 3);
-  assert.equal((await db.select().from(schema.campaignMemoryMutationJournal)).length, 4);
+  // Record 1 names "Rowan Mercer" (no entity) and "Tilda Pennock" (npc-owner): one per-subject fact that carries
+  // the unresolved name. Record 2 names only Tilda: one per-subject fact. (This used to expect a third fact, a lore
+  // fallback for record 1 that duplicated its per-subject fact on the batch page; the fallback is now written only
+  // when no subject resolves.)
+  assert.equal((await db.select().from(schema.campaignMemoryFacts)).length, 2);
+  assert.equal((await db.select().from(schema.campaignMemoryMutationJournal)).length, 3);
   const factRows = await db.select().from(schema.campaignMemoryFacts);
   const canonicalSources = await readCampaignMemorySources(db, { chatId: "chat" });
   const expectedByRecord = new Map(records.map((record) => [record.id, record]));
@@ -86,13 +88,13 @@ try {
     const record = expectedByRecord.get(value.recordId)!;
     assert.ok(record);
     assert.equal(row.sourceRevision, receipt.sourceHash);
-    if (row.subjectEntityId === entityId) {
-      assert.equal(row.predicate, `continuity.${record.kind}`);
-      assert.deepEqual(value.subjects, record.subjects);
-      assert.deepEqual(value.unresolvedSubjects, [{ name: "Rowan Mercer", reason: "no-candidate" }], "the fallback reports every unresolved subject");
-      assert.deepEqual(value.resolvedSubjects, [{ name: "Tilda Pennock", entityId: "npc-owner" }]);
-    } else {
+    {
       assert.equal(row.subjectEntityId, "npc-owner", "resolved subjects publish on the subject entity");
+      assert.deepEqual(
+        value.unresolvedSubjects,
+        record === records[0] ? [{ name: "Rowan Mercer", reason: "no-candidate" }] : undefined,
+        "the per-subject fact reports the record's unresolved subjects",
+      );
       assert.equal(row.predicate, record.kind, "per-subject facts use the record kind as predicate");
       assert.equal(value.subject, "Tilda Pennock");
       assert.deepEqual(value.conditions, record.conditions);
@@ -102,16 +104,16 @@ try {
     assert.deepEqual(JSON.parse(row.conditions), record.conditions.map((condition) => ({ kind: "continuity.condition", value: condition })));
     assert.deepEqual(JSON.parse(row.evidence), record.evidence.map((item) => ({ ...item, sourceHash: canonicalSources.get(item.messageId)?.sourceHash })));
   }
-  assert.equal(factRows.filter((row) => row.subjectEntityId === entityId).length, 1, "a fully resolved record publishes no lore fallback");
+  assert.equal(factRows.filter((row) => row.subjectEntityId === entityId).length, 0, "a partly or fully resolved record publishes no lore fallback");
   assert.equal(factRows.filter((row) => JSON.parse(row.value).recordId === records[1]!.id).length, 1);
   const knowledgeRows = await db.select().from(schema.campaignMemoryKnowledge);
   assert.equal(knowledgeRows.length, 1);
   assert.equal(knowledgeRows[0]!.holderEntityId, "npc-owner", "reviewed knowledge is granted to the exact NPC entity");
-  const promiseFact = factRows.find((row) => JSON.parse(row.value).recordId === records[0]!.id && row.subjectEntityId === entityId)!;
-  assert.equal(knowledgeRows[0]!.factId, promiseFact.factId, "knowledge attaches to the record's fallback fact when one exists");
-  assert.deepEqual(JSON.parse(promiseFact.value).knowledge.holderRefs, ["npc-owner"], "name-only reviewed knowledge receives the deterministic holder ref");
+  const promiseFact = factRows.find((row) => JSON.parse(row.value).recordId === records[0]!.id && row.subjectEntityId === "npc-owner")!;
+  assert.equal(knowledgeRows[0]!.factId, promiseFact.factId, "knowledge attaches to the primary per-subject fact when there is no fallback");
+  // A fact published before unresolved names were recorded on per-subject facts replays unchanged.
   const oldPromiseValue = JSON.parse(promiseFact.value);
-  delete oldPromiseValue.knowledge.holderRefs;
+  delete oldPromiseValue.unresolvedSubjects;
   await db.delete(schema.campaignMemoryKnowledge).where(eq(schema.campaignMemoryKnowledge.factId, promiseFact.factId));
   await db.update(schema.campaignMemoryFacts).set({ value: JSON.stringify(oldPromiseValue) }).where(eq(schema.campaignMemoryFacts.factId, promiseFact.factId));
   await db.transaction((tx: any) => publishContinuityMemory(tx, receipt, { id: entryId, lorebookId: entry.lorebookId, name: entry.name }, messages, prepared));
@@ -129,11 +131,16 @@ try {
   assert.equal(ambiguousFallback.length, 1, "an ambiguous subject keeps the record on the lore-entity fallback");
   assert.deepEqual(JSON.parse(ambiguousFallback[0]!.value).unresolvedSubjects, [{ name: "Tilda Pennock", reason: "ambiguous-candidates" }], "the ambiguous subject is reported on the fallback");
   assert.equal((await db.select().from(schema.campaignMemoryFacts)).filter((row) => row.subjectEntityId === "npc-owner-2").length, 0, "ambiguous candidates never receive a per-subject fact");
+  // With Tilda ambiguous, record 1 has no resolved subject left, so it now needs the lore fallback too.
+  const promiseFallback = (await db.select().from(schema.campaignMemoryFacts)).find((row) => row.subjectEntityId === entityId && JSON.parse(row.value).recordId === records[0]!.id)!;
+  assert.ok(promiseFallback, "a record whose subjects all stop resolving gets the lore fallback");
+  assert.deepEqual(JSON.parse(promiseFallback.value).unresolvedSubjects, [{ name: "Rowan Mercer", reason: "no-candidate" }, { name: "Tilda Pennock", reason: "ambiguous-candidates" }]);
   await db.insert(schema.campaignMemoryEntities).values({ entityId: "npc-other", chatId: "chat", kind: "character", owner: JSON.stringify({ type: "existing", store: "game-npcs", recordId: "npc-tilda" }), aliases: JSON.stringify(["Other Holder"]), tags: JSON.stringify(["npc"]), attributes: "{}", status: "active", manualLock: 0, provenance: JSON.stringify({ source: "regression", sourceRevision: "npc-other", actor: "user" }), createdAt: now, updatedAt: now });
   const invalidPairReceipt = { ...receipt, knowledgeHolders: [...receipt.knowledgeHolders!, { entityId: "npc-other", kind: "character" as const, store: "game-npcs" as const, recordId: "npc-tilda", name: "Other Holder" }], records: receipt.records.map((record, index) => index === 0 ? { ...record, knowledge: { ...record.knowledge!, holderRefs: ["npc-other"] } } : record) };
   await db.transaction((tx: any) => publishContinuityMemory(tx, invalidPairReceipt, { id: entryId, lorebookId: entry.lorebookId, name: entry.name }, messages, prepared));
   assert.equal((await db.select().from(schema.campaignMemoryKnowledge)).length, 0, "invalid explicit holder/name pairing does not grant knowledge");
-  await db.update(schema.campaignMemoryFacts).set({ manualLock: 1 }).where(eq(schema.campaignMemoryFacts.factId, promiseFact.factId));
+  // The fallback is the record's primary (knowledge-bearing) fact while no subject resolves.
+  await db.update(schema.campaignMemoryFacts).set({ manualLock: 1 }).where(eq(schema.campaignMemoryFacts.factId, promiseFallback.factId));
   await db.transaction((tx: any) => publishContinuityMemory(tx, receipt, { id: entryId, lorebookId: entry.lorebookId, name: entry.name }, messages, prepared));
   assert.equal((await db.select().from(schema.campaignMemoryKnowledge)).length, 0, "locked facts do not receive newly granted knowledge");
   assert.equal((await db.select().from(schema.campaignMemoryEvents)).length, 0);

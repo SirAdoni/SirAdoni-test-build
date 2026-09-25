@@ -168,7 +168,7 @@ export function RightPanel() {
           <button
             onClick={close}
             aria-label={localizeUi("ui.layout.rightpanel.closePanel")}
-            className="mari-chrome-control mari-chrome-control--small mari-accent-animated shrink-0 p-1.5 active:scale-90"
+            className="mari-chrome-control mari-chrome-control--small mari-accent-animated shrink-0 p-1.5 active:scale-90 max-md:h-9 max-md:w-9 [@media(pointer:coarse)]:h-9 [@media(pointer:coarse)]:w-9"
           >
             <X size="0.875rem" />
           </button>

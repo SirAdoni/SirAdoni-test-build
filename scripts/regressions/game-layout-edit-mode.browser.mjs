@@ -311,11 +311,24 @@ try {
   );
 
   // Keyboard: arrow keys still move from the chip handle.
+  // Applying a layout remounts every panel; on a loaded machine that can land after the key press
+  // and put the panel back. Wait until the remounted panel holds still before nudging it.
+  let beforeKeys = await position(alpha);
+  for (let settled = 0; settled < 3; ) {
+    await page.waitForTimeout(150);
+    const now = await position(alpha);
+    settled = now.x === beforeKeys.x && now.y === beforeKeys.y ? settled + 1 : 0;
+    beforeKeys = now;
+  }
   const handle = alpha.getByRole("button", { name: "ui.game.floatingPanel.move" });
-  const beforeKeys = await position(alpha);
   await handle.focus();
   await page.keyboard.press("Shift+ArrowLeft");
-  assert.equal((await position(alpha)).x, beforeKeys.x - 40, "Shift+Arrow moves by a bigger step");
+  let afterKeys = await position(alpha);
+  for (let tries = 0; tries < 20 && afterKeys.x !== beforeKeys.x - 40; tries++) {
+    await page.waitForTimeout(100);
+    afterKeys = await position(alpha);
+  }
+  assert.equal(afterKeys.x, beforeKeys.x - 40, "Shift+Arrow moves by a bigger step");
 
   // Esc with no popover open leaves edit mode.
   await page.keyboard.press("Escape");

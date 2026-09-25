@@ -44,14 +44,15 @@ import { parseChatMetadata } from "../../lib/chat-display";
 import { cn } from "../../lib/utils";
 
 const FIELD_CLASS =
-  "h-8 min-w-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40";
+  "h-8 pointer-coarse:h-9 min-w-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40";
 const AREA_CLASS =
   "min-h-[4.5rem] w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40";
 const ICON_BUTTON_CLASS =
-  "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent";
+  "flex h-7 w-7 pointer-coarse:h-9 pointer-coarse:w-9 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent";
 const SMALL_BUTTON_CLASS =
-  "flex h-7 items-center justify-center gap-1.5 rounded-md border border-border px-2.5 text-[0.6875rem] font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-60";
-const LABEL_CLASS = "text-[0.625rem] font-medium uppercase tracking-wide text-muted-foreground";
+  "flex h-7 pointer-coarse:h-9 items-center justify-center gap-1.5 rounded-md border border-border px-2.5 text-[0.6875rem] font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-60";
+const LABEL_CLASS =
+  "text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground";
 
 function newEventId() {
   return `ev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -291,7 +292,7 @@ function CalendarView({
             <p className={LABEL_CLASS}>{config.weekdays[calendarWeekday(config, today)]}</p>
             <p className="text-sm font-semibold text-foreground [overflow-wrap:anywhere]">{shortDate(today)}</p>
           </div>
-          <span className="shrink-0 rounded-md bg-background px-1.5 py-0.5 text-[0.625rem] tabular-nums text-muted-foreground">
+          <span className="shrink-0 rounded-md bg-background px-1.5 py-0.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] tabular-nums text-muted-foreground">
             {t("ui.gameCalendar.clockDay", { day: clockDay })}
           </span>
         </div>
@@ -324,7 +325,7 @@ function CalendarView({
             onKeyDown={(event) => {
               if (event.key === "Enter") runAdvance(toInt(advanceBy, 0));
             }}
-            className={cn(FIELD_CLASS, "h-7 w-16")}
+            className={cn(FIELD_CLASS, "h-7 pointer-coarse:h-9 w-16")}
             aria-label={t("ui.gameCalendar.daysToAdvance")}
           />
           <button
@@ -374,7 +375,7 @@ function CalendarView({
             config.weekdays.map((name, index) => (
               <div
                 key={index}
-                className="truncate text-center text-[0.5625rem] font-medium text-muted-foreground"
+                className="truncate text-center text-[0.5625rem] pointer-coarse:text-[0.6875rem] font-medium text-muted-foreground"
                 title={name}
               >
                 {name.slice(0, 2)}
@@ -396,7 +397,7 @@ function CalendarView({
                 aria-pressed={isFocus}
                 aria-label={shortDate({ ...shown, day })}
                 className={cn(
-                  "relative flex h-7 items-center justify-center rounded-md text-[0.6875rem] tabular-nums transition-colors",
+                  "relative flex h-7 pointer-coarse:h-9 items-center justify-center rounded-md text-[0.6875rem] tabular-nums transition-colors",
                   isToday
                     ? "bg-primary font-bold text-primary-foreground"
                     : key < todayKey
@@ -477,11 +478,13 @@ function CalendarView({
                   <p className="truncate text-xs text-foreground" title={event.title}>
                     {event.title}
                   </p>
-                  <p className="truncate text-[0.625rem] text-muted-foreground">{eventDateLabel(date, event.yearly)}</p>
+                  <p className="truncate text-[0.625rem] pointer-coarse:text-[0.6875rem] text-muted-foreground">
+                    {eventDateLabel(date, event.yearly)}
+                  </p>
                 </div>
                 <span
                   className={cn(
-                    "shrink-0 text-[0.625rem] tabular-nums",
+                    "shrink-0 text-[0.625rem] pointer-coarse:text-[0.6875rem] tabular-nums",
                     overdue ? "font-semibold text-destructive" : "text-muted-foreground",
                   )}
                 >
@@ -520,7 +523,7 @@ function CalendarView({
           <select
             value={draft.kind}
             onChange={(event) => setDraft({ ...draft, kind: event.target.value as GameCalendarEventKind })}
-            className={cn(FIELD_CLASS, "h-7")}
+            className={cn(FIELD_CLASS, "h-7 pointer-coarse:h-9")}
             aria-label={t("ui.gameCalendar.kind")}
           >
             <option value="event">{t("ui.gameCalendar.kindEvent")}</option>
@@ -749,7 +752,9 @@ function CalendarSetup({
             title={t("ui.gameCalendar.leapExtraDays")}
           />
         </div>
-        <p className="text-[0.625rem] text-muted-foreground">{t("ui.gameCalendar.leapHelp")}</p>
+        <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-muted-foreground">
+          {t("ui.gameCalendar.leapHelp")}
+        </p>
       </div>
 
       <label className="block space-y-1">

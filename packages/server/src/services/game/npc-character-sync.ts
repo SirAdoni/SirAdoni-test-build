@@ -265,6 +265,26 @@ export function isEligibleGameNpcCharacterName(value: unknown): value is string 
   return /[\p{L}\p{N}]/u.test(name);
 }
 
+// Punctuation, closing quotes and letterless quoted spans (`" : "`) a stripped speaker tag can leave behind.
+const NARRATION_DESCRIPTION_LEADING_RESIDUE =
+  /^(?:[\s:;,.!?`\u2019\u201D\u00BB\u300D\u2013\u2014-]+|"[^"\p{L}\p{N}]*"|\u201C[^\u201D\p{L}\p{N}]*\u201D)+/u;
+const NARRATION_DESCRIPTION_QUOTED_SPAN =
+  /"[^"]*"|\u201C[^\u201C\u201D]*\u201D|\u00AB[^\u00AB\u00BB]*\u00BB|\u300C[^\u300C\u300D]*\u300D/gu;
+
+/**
+ * Return narration text that is safe to store as an NPC description, or ""
+ * when it is tag residue or a speech fragment (for example `" : "Name.`).
+ * Only the stored text changes; whether an NPC or card exists does not.
+ */
+export function cleanNarrationNpcDescription(value: unknown): string {
+  const text = cleanText(value, 4_000).replace(NARRATION_DESCRIPTION_LEADING_RESIDUE, "").trim();
+  if (!text) return "";
+  // A quote mark left over after removing balanced quoted spans means the text straddles speech.
+  if (/["\u201C\u201D\u00AB\u00BB\u300C\u300D]/u.test(text.replace(NARRATION_DESCRIPTION_QUOTED_SPAN, " "))) return "";
+  const words = text.match(/[\p{L}\p{N}][\p{L}\p{N}\p{M}'\u2019-]*/gu) ?? [];
+  return words.length >= 2 ? text : "";
+}
+
 export interface GameNpcNarrationObservation {
   name: string;
   description: string;
@@ -282,8 +302,9 @@ export function mergeNarrationNpcObservations(
   const merged = gameNpcs.map((npc) => ({ ...npc }));
   for (const observation of observations) {
     const name = cleanText(observation.name, 120);
-    const description = cleanText(observation.description, 4_000);
     if (!isEligibleGameNpcCharacterName(name) || !isPlausibleNarrationNpcName(name)) continue;
+    const rawDescription = cleanText(observation.description, 4_000);
+    const description = cleanNarrationNpcDescription(rawDescription);
     const normalizedName = normalizeCharacterLookupName(name);
     const exactMatchingIndexes = merged
       .map((npc, index) => (normalizeCharacterLookupName(npc.name) === normalizedName ? index : -1))
@@ -316,7 +337,7 @@ export function mergeNarrationNpcObservations(
       id: buildStableGameNpcId(name),
       name,
       emoji: "👤",
-      description,
+      description: description || (rawDescription ? `${name} appears in the current scene.` : ""),
       descriptionSource: "narration",
       location: "",
       reputation: 0,

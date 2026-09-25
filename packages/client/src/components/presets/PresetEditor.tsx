@@ -1615,7 +1615,7 @@ function SectionsTab({
                 <MessageSquare size="0.8125rem" /> {localizeUi("ui.presets.sectionstab.promptBlock")}
               </button>
               <div className="my-1 border-t border-[var(--border)]" />
-              <p className="px-3 py-1 text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+              <p className="px-3 py-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
                 {localizeUi("ui.presets.sectionstab.markers")}
               </p>
               {(Object.keys(MARKER_LABELS) as MarkerType[])
@@ -1633,7 +1633,7 @@ function SectionsTab({
               {injectableAgents.length > 0 && (
                 <>
                   <div className="my-1 border-t border-[var(--border)]" />
-                  <p className="px-3 py-1 text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+                  <p className="px-3 py-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
                     {localizeUi("ui.presets.sectionstab.agentSections")}
                   </p>
                   {injectableAgents.map((agent) => (
@@ -1688,16 +1688,16 @@ function SectionsTab({
             </h4>
             <button
               onClick={handleAddGroup}
-              className="mari-editor-action mari-editor-action--compact flex items-center gap-1 px-2 py-1 text-[0.625rem]"
+              className="mari-editor-action mari-editor-action--compact flex items-center gap-1 px-2 py-1 text-[0.625rem] pointer-coarse:text-[0.6875rem]"
             >
               <Plus size="0.625rem" /> {localizeUi("ui.presets.sectionstab.newGroup")}
             </button>
           </div>
-          <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+          <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
             {localizeUi("ui.presets.sectionstab.groupsWrapAdjacentSectionsInASingleXmlMarkdown")}
           </p>
           {groupMap.size === 0 ? (
-            <p className="py-2 text-center text-[0.625rem] text-[var(--muted-foreground)]">
+            <p className="py-2 text-center text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
               {localizeUi("ui.presets.sectionstab.noGroupsYetCreateOneToOrganizeSections")}
             </p>
           ) : (
@@ -1736,7 +1736,7 @@ function SectionsTab({
                       {g.name}
                     </span>
                   )}
-                  <span className="text-[0.5625rem] text-[var(--muted-foreground)]">
+                  <span className="text-[0.5625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                     {sections.filter((s: any) => s.groupId === g.id).length}{" "}
                     {localizeUi("ui.presets.sectionstab.sections")}
                   </span>
@@ -1965,7 +1965,7 @@ function SectionsTab({
                       <span
                         data-preset-marker-badge
                         className={cn(
-                          "mari-chrome-accent-surface mari-accent-animated shrink-0 rounded px-1.5 py-0.5 text-[0.5625rem] font-medium",
+                          "mari-chrome-accent-surface mari-accent-animated shrink-0 rounded px-1.5 py-0.5 text-[0.5625rem] pointer-coarse:text-[0.6875rem] font-medium",
                           compact && "max-sm:hidden",
                         )}
                       >
@@ -1976,14 +1976,14 @@ function SectionsTab({
                       <span
                         data-preset-section-group-badge
                         className={cn(
-                          "mari-editor-chip shrink-0 whitespace-nowrap px-1.5 py-0.5 text-[0.5625rem]",
+                          "mari-editor-chip shrink-0 whitespace-nowrap px-1.5 py-0.5 text-[0.5625rem] pointer-coarse:text-[0.6875rem]",
                           compact && "max-sm:hidden",
                         )}
                       >
                         {group.name}
                       </span>
                     )}
-                    <span className="hidden shrink-0 text-[0.625rem] text-[var(--muted-foreground)] sm:inline">
+                    <span className="hidden shrink-0 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)] sm:inline">
                       {role}
                     </span>
 
@@ -2128,7 +2128,7 @@ function SectionsTab({
                                 {localizeUi("ui.presets.sectionstab.agentSection")} <strong>{section.name}</strong>
                                 <p className="mt-1 text-[var(--muted-foreground)]">
                                   {localizeUi("ui.presets.sectionstab.the")}{" "}
-                                  <code className="rounded bg-black/20 px-1 py-0.5 text-[0.625rem] font-mono text-[var(--marinara-chat-chrome-panel-text)]">
+                                  <code className="rounded bg-black/20 px-1 py-0.5 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-mono text-[var(--marinara-chat-chrome-panel-text)]">
                                     {"{{agent::" + (mc.agentType ?? "agent") + "}}"}
                                   </code>{" "}
                                   {localizeUi("ui.presets.sectionstab.macroWillBeReplacedWithTheLatestOutputFrom")}
@@ -2219,7 +2219,7 @@ function SectionsTab({
                         {groupMap.size === 0 && (
                           <span
                             className={cn(
-                              "text-[0.625rem] text-[var(--muted-foreground)]",
+                              "text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]",
                               compact && "max-sm:basis-full max-sm:text-[0.5625rem]",
                             )}
                           >
@@ -2240,7 +2240,7 @@ function SectionsTab({
       </div>
 
       {sections.length > 0 && (
-        <p className="text-center text-[0.625rem] text-[var(--muted-foreground)]">
+        <p className="text-center text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
           {localizeUi("ui.presets.sectionstab.clickToExpandSectionsAreAssembledTopToBottom")}
         </p>
       )}
@@ -2383,7 +2383,7 @@ function PresetVariablesEditor({
           </span>
           <span
             data-preset-variable-count
-            className="mari-editor-chip mari-editor-chip--accent px-1.5 py-0.5 text-[0.5625rem]"
+            className="mari-editor-chip mari-editor-chip--accent px-1.5 py-0.5 text-[0.5625rem] pointer-coarse:text-[0.6875rem]"
           >
             {variables.length}
           </span>
@@ -2409,9 +2409,9 @@ function PresetVariablesEditor({
         </button>
       </div>
 
-      <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+      <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
         {localizeUi("ui.presets.presetvariableseditor.defineVariablesThatUsersSelectWhenAssigningThisPreset")}{" "}
-        <code className="mari-editor-chip mari-editor-chip--accent rounded px-1 text-[0.625rem]">
+        <code className="mari-editor-chip mari-editor-chip--accent rounded px-1 text-[0.625rem] pointer-coarse:text-[0.6875rem]">
           {"{{variable_name}}"}
         </code>{" "}
         {localizeUi("ui.presets.presetvariableseditor.inAnySectionToInsertTheSelectedValue")}
@@ -2706,20 +2706,20 @@ function VariableCard({
         >
           {varName}
         </span>
-        <span className="mari-editor-chip mari-editor-chip--accent shrink-0 px-1.5 py-0.5 text-[0.5625rem]">
+        <span className="mari-editor-chip mari-editor-chip--accent shrink-0 px-1.5 py-0.5 text-[0.5625rem] pointer-coarse:text-[0.6875rem]">
           {opts.length} {localizeUi("ui.presets.variablecard.options")}
         </span>
         {opts.length === 1 && !isMultiSelect && (
-          <span className="mari-chrome-accent-surface mari-accent-animated shrink-0 rounded px-1.5 py-0.5 text-[0.5625rem] font-medium">
+          <span className="mari-chrome-accent-surface mari-accent-animated shrink-0 rounded px-1.5 py-0.5 text-[0.5625rem] pointer-coarse:text-[0.6875rem] font-medium">
             {localizeUi("ui.presets.variablecard.boolean")}
           </span>
         )}
         {isMultiSelect && (
-          <span className="mari-chrome-accent-surface mari-accent-animated shrink-0 rounded px-1.5 py-0.5 text-[0.5625rem] font-medium">
+          <span className="mari-chrome-accent-surface mari-accent-animated shrink-0 rounded px-1.5 py-0.5 text-[0.5625rem] pointer-coarse:text-[0.6875rem] font-medium">
             {isRandomPick ? localizeUi("ui.presets.variablecard.random") : localizeUi("ui.presets.variablecard.multi")}
           </span>
         )}
-        <code className="hidden shrink-0 text-[0.625rem] text-[var(--muted-foreground)] sm:inline">{`{{${varName}}}`}</code>
+        <code className="hidden shrink-0 text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)] sm:inline">{`{{${varName}}}`}</code>
         <button
           onClick={async () => {
             if (
@@ -2745,11 +2745,11 @@ function VariableCard({
         <div className="space-y-3 border-t border-[var(--marinara-editor-divider)] px-3 py-3">
           {/* Variable Name */}
           <div className="space-y-1">
-            <label className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+            <label className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
               {localizeUi("ui.presets.variablecard.variableName")}
             </label>
             <VariableNameInput value={varName} onCommit={(v) => update({ variableName: v })} />
-            <p className="text-[0.5625rem] text-[var(--muted-foreground)]">
+            <p className="text-[0.5625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
               {localizeUi("ui.presets.variablecard.use")}{" "}
               <code className="mari-chrome-accent-text mari-accent-animated">{`{{${varName}}}`}</code>{" "}
               {localizeUi("ui.presets.variablecard.inAnyPromptSectionToInsertTheSelectedValue")}
@@ -2758,7 +2758,7 @@ function VariableCard({
 
           {/* Question */}
           <div className="space-y-1">
-            <label className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+            <label className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
               {localizeUi("ui.presets.variablecard.questionShownToUser")}
             </label>
             <VariableQuestionInput value={question} onCommit={(v) => update({ question: v })} />
@@ -2769,11 +2769,11 @@ function VariableCard({
             <div className="mari-editor-panel mari-editor-panel--soft space-y-1.5 p-2.5">
               <div className="flex items-center gap-1.5">
                 <ListChecks size="0.75rem" className="mari-chrome-accent-icon mari-accent-animated" />
-                <span className="mari-chrome-accent-text mari-accent-animated text-[0.625rem] font-medium">
+                <span className="mari-chrome-accent-text mari-accent-animated text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium">
                   {localizeUi("ui.presets.variablecard.booleanToggle")}
                 </span>
               </div>
-              <p className="text-[0.5625rem] text-[var(--muted-foreground)]">
+              <p className="text-[0.5625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                 {localizeUi("ui.presets.variablecard.thisVariableHasOnlyOneOptionSoItBehaves")}
               </p>
             </div>
@@ -2782,7 +2782,7 @@ function VariableCard({
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-1.5">
                   <ListChecks size="0.75rem" className="mari-chrome-accent-icon mari-accent-animated" />
-                  <span className="text-[0.625rem] font-medium text-[var(--foreground)]">
+                  <span className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--foreground)]">
                     {localizeUi("ui.presets.variablecard.multiSelect")}
                   </span>
                 </div>
@@ -2793,7 +2793,7 @@ function VariableCard({
                   className="p-0 hover:bg-transparent"
                 />
               </div>
-              <p className="text-[0.5625rem] text-[var(--muted-foreground)]">
+              <p className="text-[0.5625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                 {localizeUi("ui.presets.variablecard.allowUsersToSelectMultipleOptionsInsteadOfJust")}
               </p>
 
@@ -2802,7 +2802,7 @@ function VariableCard({
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5">
                     <Shuffle size="0.75rem" className="mari-chrome-accent-icon mari-accent-animated" />
-                    <span className="text-[0.625rem] font-medium text-[var(--foreground)]">
+                    <span className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--foreground)]">
                       {localizeUi("ui.presets.variablecard.randomPick")}
                     </span>
                   </div>
@@ -2813,7 +2813,7 @@ function VariableCard({
                     className="p-0 hover:bg-transparent"
                   />
                 </div>
-                <p className="text-[0.5625rem] text-[var(--muted-foreground)]">
+                <p className="text-[0.5625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                   {isMultiSelect
                     ? isRandomPick
                       ? localizeUi("ui.presets.variablecard.oneOfTheUserSSelectedOptionsWillBe")
@@ -2826,7 +2826,7 @@ function VariableCard({
                 {/* Separator (only shown for multi-select, and not random pick) */}
                 {isMultiSelect && !isRandomPick && (
                   <div className="flex items-center gap-2">
-                    <label className="shrink-0 text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+                    <label className="shrink-0 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
                       {localizeUi("ui.presets.variablecard.separator")}
                     </label>
                     <OptionFieldInput
@@ -2835,7 +2835,7 @@ function VariableCard({
                       className="mari-editor-field w-20 px-1.5 py-0.5 text-center font-mono text-xs"
                       placeholder=", "
                     />
-                    <span className="text-[0.5625rem] text-[var(--muted-foreground)]">
+                    <span className="text-[0.5625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                       {localizeUi("ui.presets.variablecard.eGBecomesRomanceFantasyAction")}
                     </span>
                   </div>
@@ -2849,7 +2849,7 @@ function VariableCard({
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-1.5">
                 <ListChecks size="0.75rem" className="mari-chrome-accent-icon mari-accent-animated" />
-                <span className="text-[0.625rem] font-medium text-[var(--foreground)]">
+                <span className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--foreground)]">
                   {localizeUi("ui.presets.variablecard.presentation")}
                 </span>
               </div>
@@ -2866,7 +2866,7 @@ function VariableCard({
                     type="button"
                     onClick={() => update({ displayMode: mode })}
                     className={cn(
-                      "rounded-md px-2 py-1 text-[0.625rem] font-medium transition-colors",
+                      "rounded-md px-2 py-1 text-[0.625rem] pointer-coarse:min-h-9 pointer-coarse:px-3 pointer-coarse:text-[0.6875rem] font-medium transition-colors",
                       displayMode === mode
                         ? "mari-chrome-accent-surface mari-accent-animated"
                         : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
@@ -2879,10 +2879,10 @@ function VariableCard({
             </div>
             <div className="flex items-center justify-between gap-2 border-t border-[var(--border)] pt-2">
               <div className="min-w-0">
-                <p className="text-[0.625rem] font-medium text-[var(--foreground)]">
+                <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--foreground)]">
                   {localizeUi("ui.presets.variablecard.alphabeticalOptionDisplay")}
                 </p>
-                <p className="text-[0.5625rem] text-[var(--muted-foreground)]">
+                <p className="text-[0.5625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                   {localizeUi("ui.presets.variablecard.manualOrderIsKeptForEditingAndExports")}
                 </p>
               </div>
@@ -2901,7 +2901,7 @@ function VariableCard({
 
           {/* Options */}
           <div className="space-y-1.5" data-preset-variable-option-root={variable.id}>
-            <label className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+            <label className="text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
               {localizeUi("ui.presets.variablecard.options_6bf5da9")}
             </label>
             {opts.map((opt, oi) => {
@@ -2997,7 +2997,7 @@ function VariableCard({
                         <ArrowDown size="0.625rem" />
                       </button>
                     </div>
-                    <span className="mari-chrome-accent-text mari-accent-animated shrink-0 text-[0.625rem] font-medium">
+                    <span className="mari-chrome-accent-text mari-accent-animated shrink-0 text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium">
                       {oi + 1}.
                     </span>
                     <OptionFieldInput
@@ -3032,7 +3032,7 @@ function VariableCard({
                     </button>
                   </div>
                   {valueIsBlank && (
-                    <p className="mt-1 pl-6 text-[0.5625rem] text-[var(--muted-foreground)]">
+                    <p className="mt-1 pl-6 text-[0.5625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                       {localizeUi("ui.presets.variablecard.blankValueInsertsNothing")}
                     </p>
                   )}
@@ -3051,7 +3051,7 @@ function VariableCard({
                 };
                 updateOpts([...currentOpts(), newOpt]);
               }}
-              className="mari-editor-action mari-editor-action--compact flex items-center gap-1 px-2 py-1 text-[0.625rem]"
+              className="mari-editor-action mari-editor-action--compact flex items-center gap-1 px-2 py-1 text-[0.625rem] pointer-coarse:text-[0.6875rem]"
             >
               <Plus size="0.625rem" /> {localizeUi("ui.noodle.noodlehome.addOption")}
             </button>
@@ -3418,7 +3418,7 @@ function ExpandedEditorModal({
           </div>
           {/* Footer */}
           <div className="flex items-center justify-between border-t border-[var(--border)] px-4 py-2.5">
-            <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+            <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
               {localizeUi("ui.presets.expandededitormodal.changesAutoSavePressEscapeToClose")}
             </p>
             <button
@@ -3488,7 +3488,7 @@ function StatCard({ label, value }: { label: string; value: number }) {
   return (
     <div className="mari-editor-panel flex flex-1 flex-col items-center p-3">
       <span className="text-xl font-bold text-[var(--foreground)]">{value}</span>
-      <span className="text-[0.625rem] text-[var(--muted-foreground)]">{label}</span>
+      <span className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">{label}</span>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from "react";
 import { cn } from "../../lib/utils";
+import { useMessageActionPresentation } from "./MessageActionsMenu";
 
 export const MESSAGE_ACTION_ICON_SIZE = "1em";
 
@@ -14,6 +15,7 @@ export function MessageActionButton({
   tabIndex,
   buttonRef,
   stopPropagation,
+  keepMenuOpen,
 }: {
   icon: ReactNode;
   onClick: () => void;
@@ -25,7 +27,39 @@ export function MessageActionButton({
   tabIndex?: number;
   buttonRef?: Ref<HTMLButtonElement>;
   stopPropagation?: boolean;
+  /** In the touch ⋯ menu, keep the menu open after the click (the action opens its own popover). */
+  keepMenuOpen?: boolean;
 }) {
+  const presentation = useMessageActionPresentation();
+  if (presentation.mode === "menu") {
+    return (
+      <button
+        ref={buttonRef}
+        type="button"
+        role="menuitem"
+        onClick={(event) => {
+          event.stopPropagation();
+          onClick();
+          if (!keepMenuOpen) presentation.close();
+        }}
+        aria-pressed={ariaPressed}
+        data-message-thinking-action={thinkingAction || undefined}
+        disabled={disabled}
+        className="flex min-h-11 w-full shrink-0 items-center gap-3 rounded-lg px-3 text-left text-sm text-[var(--foreground)] transition-colors [-webkit-tap-highlight-color:transparent] hover:bg-[var(--marinara-chat-message-action-bg-hover)] focus-visible:bg-[var(--marinara-chat-message-action-bg-hover)] focus-visible:outline-none active:bg-[var(--marinara-chat-message-action-bg-hover)] disabled:pointer-events-none disabled:opacity-40"
+      >
+        <span
+          aria-hidden="true"
+          className={cn(
+            "flex h-6 w-6 shrink-0 items-center justify-center text-[1.125rem] leading-none text-[var(--marinara-chat-message-action-text-hover)]",
+            className,
+          )}
+        >
+          {icon}
+        </span>
+        <span className="min-w-0 flex-1 truncate">{title}</span>
+      </button>
+    );
+  }
   return (
     <button
       ref={buttonRef}

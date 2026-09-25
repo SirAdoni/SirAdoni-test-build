@@ -113,7 +113,7 @@ export function CardLibraryPreview({
           <div
             data-character-favorite-indicator="card"
             className={cn(
-              "mari-chrome-accent-surface mari-accent-animated mari-chrome-tag absolute inline-flex items-center gap-1 py-1 text-[0.5625rem] font-medium backdrop-blur-sm",
+              "mari-chrome-accent-surface mari-accent-animated mari-chrome-tag absolute inline-flex items-center gap-1 py-1 text-[0.5625rem] pointer-coarse:text-[0.6875rem] font-medium backdrop-blur-sm",
               compact ? "right-1 top-1 px-1" : "right-2 top-2 px-2 sm:right-3 sm:top-3 sm:text-[0.625rem]",
             )}
             title={localizeUi("ui.characters.cardlibrarydetailcard.favorite")}
@@ -123,7 +123,7 @@ export function CardLibraryPreview({
           </div>
         )}
         {card.active && (
-          <div className="mari-chrome-accent-surface mari-chrome-tag absolute right-2 top-2 inline-flex items-center gap-1 px-2 py-1 text-[0.5625rem] font-medium backdrop-blur-sm sm:right-3 sm:top-3 sm:text-[0.625rem]">
+          <div className="mari-chrome-accent-surface mari-chrome-tag absolute right-2 top-2 inline-flex items-center gap-1 px-2 py-1 text-[0.5625rem] pointer-coarse:text-[0.6875rem] font-medium backdrop-blur-sm sm:right-3 sm:top-3 sm:text-[0.625rem]">
             <Check size="0.625rem" /> {localizeUi("ui.characters.lorebooktab.active")}
           </div>
         )}
@@ -140,12 +140,12 @@ export function CardLibraryPreview({
             {card.name}
           </div>
           {card.title && (
-            <div className="mt-0.5 truncate text-[0.625rem] italic text-[var(--marinara-chat-chrome-panel-muted)] sm:mt-1 sm:text-[0.6875rem]">
+            <div className="mt-0.5 truncate text-[0.625rem] pointer-coarse:text-[0.6875rem] italic text-[var(--marinara-chat-chrome-panel-muted)] sm:mt-1 sm:text-[0.6875rem]">
               {card.title}
             </div>
           )}
           {card.meta && (
-            <div className="mt-0.5 truncate text-[0.5625rem] font-semibold uppercase tracking-[0.14em] text-[var(--marinara-chat-chrome-panel-muted)] sm:mt-1 sm:text-[0.625rem] sm:tracking-[0.18em]">
+            <div className="mt-0.5 truncate text-[0.5625rem] pointer-coarse:text-[0.6875rem] font-semibold uppercase tracking-[0.14em] text-[var(--marinara-chat-chrome-panel-muted)] sm:mt-1 sm:text-[0.625rem] sm:tracking-[0.18em]">
               {card.meta}
             </div>
           )}
@@ -161,7 +161,7 @@ export function CardLibraryPreview({
         {!compact && (
           <div className="mt-auto flex flex-wrap gap-1 sm:gap-1.5">
             <span
-              className="mari-chrome-muted-badge gap-1 px-1.5 py-0.5 text-[0.5625rem] sm:px-2 sm:py-1 sm:text-[0.625rem]"
+              className="mari-chrome-muted-badge gap-1 px-1.5 py-0.5 text-[0.5625rem] pointer-coarse:text-[0.6875rem] sm:px-2 sm:py-1 sm:text-[0.625rem]"
               title={localizeUi(
                 "ui.characters.cardlibrarydetailcard.estimatedFromValue1CardTextFieldsActualTokenizerCounts",
                 { value1: kind === "personas" ? "persona" : "character" },
@@ -172,13 +172,13 @@ export function CardLibraryPreview({
             {card.tags.slice(0, 2).map((tag) => (
               <span
                 key={tag}
-                className="mari-chrome-tag bg-[var(--marinara-chat-chrome-highlight-bg)] px-1.5 py-0.5 text-[0.5625rem] font-medium text-[var(--marinara-chat-chrome-panel-text)] sm:px-2 sm:py-1 sm:text-[0.625rem]"
+                className="mari-chrome-tag bg-[var(--marinara-chat-chrome-highlight-bg)] px-1.5 py-0.5 text-[0.5625rem] pointer-coarse:text-[0.6875rem] font-medium text-[var(--marinara-chat-chrome-panel-text)] sm:px-2 sm:py-1 sm:text-[0.625rem]"
               >
                 {tag}
               </span>
             ))}
             {card.tags.length > 2 && (
-              <span className="mari-chrome-tag bg-[var(--marinara-chat-chrome-button-bg)] px-1.5 py-0.5 text-[0.5625rem] text-[var(--marinara-chat-chrome-panel-muted)] sm:px-2 sm:py-1 sm:text-[0.625rem]">
+              <span className="mari-chrome-tag bg-[var(--marinara-chat-chrome-button-bg)] px-1.5 py-0.5 text-[0.5625rem] pointer-coarse:text-[0.6875rem] text-[var(--marinara-chat-chrome-panel-muted)] sm:px-2 sm:py-1 sm:text-[0.625rem]">
                 +{card.tags.length - 2}
               </span>
             )}

@@ -21,6 +21,7 @@ import {
   recursiveScan,
   scanForActivatedEntries,
   lorebookEntryPassesContextFilters,
+  lorebookEntryPassesContextualActivationGate,
   passesForcedEntryActivationGates,
   type ScanMessage,
   type ScanOptions,
@@ -30,6 +31,14 @@ import {
   updateTimingStatesForScan,
 } from "./keyword-scanner.js";
 import { applyTokenBudget, processActivatedEntries } from "./prompt-injector.js";
+import {
+  isStableLoreOrderEnabled,
+  orderActivatedEntriesStably,
+  priorStableLoreOrder,
+  sortActivatedEntriesByStableKey,
+  type StableLoreOrderRequest,
+  type StableLoreOrderSnapshot,
+} from "./stable-lore-order.js";
 import { readGameContinuityState } from "../game/continuity-state.js";
 import { filterEligibleGameKeeperEntries } from "../game/game-keeper-lorebook.js";
 
@@ -61,6 +70,18 @@ export interface LorebookScanResult {
   updatedEntryStateOverrides?: Record<string, { ephemeral?: number | null; enabled?: boolean }>;
   /** Updated per-chat timing states for sticky/cooldown/delay. Caller should persist to chat metadata. */
   updatedEntryTimingStates?: Record<string, LorebookEntryTimingState>;
+  /**
+   * True when the entries (activatedEntryIds, blocks, depths, outlets) are in their stable lore order
+   * (stable-lore-order.ts); anything that rebuilds the blocks from them must keep that order.
+   */
+  stableOrder?: boolean;
+  /** The order this scan sent, for the caller to persist with persistLorebookRuntimeState. */
+  stableLoreOrderUpdate?: {
+    scopeKey: string;
+    turnKey: string;
+    prior: StableLoreOrderSnapshot;
+    snapshot: StableLoreOrderSnapshot;
+  };
 }
 
 export function scopeLorebookScanResultToCharacterContext(
@@ -121,7 +142,7 @@ export function scopeLorebookScanResultToCharacterContext(
             scopedActivatedEntries.reduce((sum, { entry }) => sum + entry.content.length, 0) / 4,
           ),
         }
-      : processActivatedEntries(scopedActivatedEntries, 0);
+      : processActivatedEntries(scopedActivatedEntries, 0, { preserveOrder: result.stableOrder === true });
   const scopedIds = new Set(scopedActivatedEntries.map((entry) => entry.entry.id));
   const scopedSkippedEntries = result.budgetSkippedEntries.filter((entry) => {
     const storedEntry = entriesById.get(entry.id);
@@ -1063,6 +1084,85 @@ export function resolveBudgetAndRecursivelyActivateLorebookEntries(
   ).selected;
 }
 
+/**
+ * Linger gate for the stable lore order: an entry that matched last turn but not this one may stay in the prompt for
+ * a few turns so a flickering keyword does not rewrite the lore block. It stays only when it is still an eligible,
+ * in-scope entry for this chat and would pass every gate an ordinary scan applies besides the keyword itself:
+ * enabled, character/tag/trigger filters, game-state activation conditions and the schedule (time, date, location)
+ * against this turn's game state. It must be a plain keyword or semantic entry (no constant, always-loaded, decision,
+ * probability, inclusion group, cooldown, delay, limited-use (ephemeral) or macro content), and it must fit the chat
+ * and lorebook budgets next to this turn's real activations. Nothing lingers on a turn where the budget already
+ * turned a fresh match away. Entries brought in by the current location are never offered here: the stored order
+ * lists them as not lingering (stable-lore-order.ts `x`).
+ */
+function createStableLoreLingerResolver(args: {
+  finalActivated: readonly ActivatedEntry[];
+  allEntries: readonly LorebookEntry[];
+  relevantLorebooksById: ReadonlyMap<string, Pick<Lorebook, "tokenBudget" | "entryLimit">>;
+  tokenBudget: number;
+  budgetPressure: boolean;
+  timingStates: ReadonlyMap<string, EntryTimingState>;
+  activeCharacterIds: string[];
+  activeCharacterTags: string[];
+  generationTriggers: string[];
+  gameState: GameStateForScanning | null;
+}): ((id: string) => ActivatedEntry | null) | undefined {
+  if (args.budgetPressure) return undefined;
+  const entriesById = new Map(args.allEntries.map((entry) => [entry.id, entry]));
+  let totalTokens = 0;
+  const perLorebookTokens = new Map<string, number>();
+  const perLorebookCounts = new Map<string, number>();
+  const book = (activation: Pick<ActivatedEntry, "entry">, tokens: number) => {
+    const lorebookId = activation.entry.lorebookId;
+    perLorebookTokens.set(lorebookId, (perLorebookTokens.get(lorebookId) ?? 0) + tokens);
+    perLorebookCounts.set(lorebookId, (perLorebookCounts.get(lorebookId) ?? 0) + 1);
+    totalTokens += tokens;
+  };
+  for (const activation of args.finalActivated) {
+    if (activation.entry.alwaysLoaded === true) continue;
+    book(activation, estimateLorebookTokens(activation.entry.content));
+  }
+  return (id) => {
+    const entry = entriesById.get(id);
+    if (!entry) return null;
+    if (entry.constant || entry.alwaysLoaded === true || hasDecisionActivation(entry)) return null;
+    if (entry.group?.trim()) return null;
+    if (typeof entry.probability === "number" && entry.probability < 100) return null;
+    if (hasMacroTemplateSyntax(entry.content)) return null;
+    if (entry.position === 7 && !entry.outletName?.trim()) return null;
+    // A limited-use entry counts down only on real activations; lingering would inject it past its limit.
+    if (entry.ephemeral !== null && entry.ephemeral !== undefined && entry.ephemeral > 0) return null;
+    const timing = args.timingStates.get(id);
+    if (timing && (timing.cooldownRemaining > 0 || timing.delayRemaining > 0)) return null;
+    if (
+      !lorebookEntryPassesContextualActivationGate(entry, {
+        activeCharacterIds: args.activeCharacterIds,
+        activeCharacterTags: args.activeCharacterTags,
+        generationTriggers: args.generationTriggers,
+        gameState: args.gameState,
+      })
+    ) {
+      return null;
+    }
+    const tokens = estimateLorebookTokens(entry.content);
+    const lorebook = args.relevantLorebooksById.get(entry.lorebookId);
+    if (!lorebook) return null;
+    const lorebookBudget = lorebook.tokenBudget ?? 0;
+    if (args.tokenBudget > 0 && totalTokens + tokens > args.tokenBudget) return null;
+    if (lorebookBudget > 0 && (perLorebookTokens.get(entry.lorebookId) ?? 0) + tokens > lorebookBudget) return null;
+    if ((perLorebookCounts.get(entry.lorebookId) ?? 0) >= normalizeLorebookEntryLimit(lorebook.entryLimit)) return null;
+    const activation: ActivatedEntry = {
+      entry,
+      matchedKeys: ["[sticky]", "[linger]"],
+      activationSources: ["sticky"],
+      injectionOrder: entry.order,
+      sticky: true,
+    };
+    book(activation, tokens);
+    return activation;
+  };
+}
+
 /** Build the full prefix without keyword, probability, depth or budget selection. */
 export function buildFullLorebookContext(
   entries: readonly LorebookEntry[],
@@ -1185,6 +1285,12 @@ export async function processLorebooks(
     resolveDecisions?: LorebookDecisionResolver;
     /** Optional random source for probability and weighted group selection. */
     random?: () => number;
+    /**
+     * Previous order for this chat and scan scope (stable-lore-order.ts). With the "Stable lore order"
+     * switch on, kept entries stay in place, new ones are appended and dropped ones may linger; the result carries
+     * `stableLoreOrderUpdate` for the caller to persist. Omitted, the entries use the stable key order only.
+     */
+    stableLoreOrder?: StableLoreOrderRequest;
   },
 ): Promise<LorebookScanResult> {
   const storage = createLorebooksStorage(db);
@@ -1607,12 +1713,66 @@ export async function processLorebooks(
       ? serializeTimingStateMap(updatedTimingMap)
       : undefined;
 
-  const result = processActivatedEntries(finalActivated, 0);
+  // Settings > Features "Stable lore order": a deterministic, append-only order for the selected
+  // entries (stable-lore-order.ts). Timing, ephemeral counters and budgets above saw only the real activations.
+  const stableOrder = isStableLoreOrderEnabled();
+  let sentActivated = finalActivated;
+  let stableLoreOrderUpdate: LorebookScanResult["stableLoreOrderUpdate"];
+  if (stableOrder) {
+    const request = options?.stableLoreOrder;
+    if (request) {
+      const prior = priorStableLoreOrder(request.state, request.scopeKey, request.turnKey);
+      const lingerEntry = createStableLoreLingerResolver({
+        finalActivated,
+        allEntries,
+        relevantLorebooksById,
+        tokenBudget,
+        budgetPressure: budgetResult.budgetSkippedEntries.length > 0,
+        timingStates,
+        activeCharacterIds: matchingContext.activeCharacterIds,
+        activeCharacterTags: matchingContext.activeCharacterTags,
+        generationTriggers: options?.generationTriggers ?? ["chat"],
+        gameState: gameState ?? null,
+      });
+      const ordered = orderActivatedEntriesStably({
+        selected: finalActivated,
+        prior,
+        lingerTurns: request.lingerTurns,
+        lingerEntry,
+      });
+      sentActivated = ordered.ordered;
+      stableLoreOrderUpdate = {
+        scopeKey: request.scopeKey,
+        turnKey: request.turnKey,
+        prior,
+        snapshot: ordered.snapshot,
+      };
+      if (ordered.lingered.length > 0 || ordered.appended.length > 0) {
+        logger.debug(
+          {
+            event: "lorebook.stable_order",
+            chatId: options?.chatId,
+            keptCount: ordered.ordered.length - ordered.appended.length - ordered.lingered.length,
+            appendedCount: ordered.appended.length,
+            lingeredCount: ordered.lingered.length,
+            heldCount: ordered.held.length,
+          },
+          "Stable lore order applied",
+        );
+      }
+    } else {
+      sentActivated = sortActivatedEntriesByStableKey(finalActivated);
+    }
+  }
+
+  const result = processActivatedEntries(sentActivated, 0, { preserveOrder: stableOrder });
 
   return {
     ...result,
-    activatedEntryIds: finalActivated.map((a) => a.entry.id),
-    activatedEntries: finalActivated.map((a) => {
+    ...(stableOrder ? { stableOrder: true } : {}),
+    ...(stableLoreOrderUpdate ? { stableLoreOrderUpdate } : {}),
+    activatedEntryIds: sentActivated.map((a) => a.entry.id),
+    activatedEntries: sentActivated.map((a) => {
       const semanticScore = readSemanticScore(a.matchedKeys);
       return {
         id: a.entry.id,

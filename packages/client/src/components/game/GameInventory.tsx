@@ -579,7 +579,7 @@ function InventorySlot({ item, globalIndex, selected, reorderEnabled, onClick }:
       }
       aria-pressed={item ? selected : undefined}
       className={cn(
-        "group relative flex aspect-square flex-col items-center justify-center overflow-hidden rounded border transition-all",
+        "group relative flex aspect-square flex-col items-center justify-center rounded border transition-all max-md:overflow-hidden",
         // touch-action: none lets the TouchSensor activate without browser scroll-gestures stealing the touch.
         // Scrolling the inventory panel is still possible by touching the modal background / pagination row.
         enabled && "touch-none select-none [-webkit-touch-callout:none]",
@@ -598,8 +598,8 @@ function InventorySlot({ item, globalIndex, selected, reorderEnabled, onClick }:
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-gradient-to-b from-white/8 to-white/[0.02] text-sm font-bold text-amber-400/80 ring-1 ring-white/8">
             {item.name.charAt(0).toUpperCase()}
           </div>
-          <div className="mt-1 flex min-h-0 w-full min-w-0 flex-1 flex-col items-center justify-center px-1">
-            <div className="flex max-h-full min-h-0 w-full min-w-0 flex-col items-center gap-0.5 overflow-hidden max-md:overflow-y-auto max-md:overscroll-contain max-md:touch-pan-y">
+          <div className="mt-1 flex w-full min-w-0 flex-1 flex-col items-center justify-center px-1 max-md:min-h-0">
+            <div className="flex w-full min-w-0 flex-col items-center gap-0.5 max-md:max-h-full max-md:min-h-0 max-md:overflow-y-auto max-md:overscroll-contain max-md:touch-pan-y">
               <span className="block w-full whitespace-normal break-words text-center text-[0.58rem] font-medium leading-tight text-white/80 [overflow-wrap:anywhere]">
                 {item.name}
               </span>

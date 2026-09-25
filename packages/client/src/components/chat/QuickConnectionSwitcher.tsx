@@ -226,7 +226,7 @@ export function QuickConnectionSwitcher({
         onClick={() => setOpen((v) => !v)}
         title={localizeUi("ui.chat.quickconnectionswitcher.quickConnectionSwitcher")}
         className={cn(
-          "flex h-8 w-8 items-center justify-center rounded-xl transition-all",
+          "flex h-8 w-8 pointer-coarse:h-9 pointer-coarse:w-9 items-center justify-center rounded-xl transition-all",
           open
             ? "bg-foreground/10 text-foreground/75 ring-1 ring-foreground/20"
             : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",

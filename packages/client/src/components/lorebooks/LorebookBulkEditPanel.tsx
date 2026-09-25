@@ -49,7 +49,7 @@ function folderPathLabels(folders: LorebookFolder[]): Array<{ id: string; label:
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      <span className="w-full text-[0.625rem] font-medium uppercase tracking-wide text-[var(--muted-foreground)] sm:w-20 sm:shrink-0">
+      <span className="w-full text-[0.625rem] pointer-coarse:text-[0.6875rem] font-medium uppercase tracking-wide text-[var(--muted-foreground)] sm:w-20 sm:shrink-0">
         {label}
       </span>
       {children}
@@ -94,7 +94,7 @@ export function LorebookBulkEditPanel({ lorebookId, selectedIds, folders, busy =
   const applySet = (set: LorebookBulkSet, onSuccess?: () => void) => void apply({ set }, onSuccess);
 
   const buttonClass =
-    "mari-editor-action mari-editor-action--compact px-2.5 py-1 text-[0.625rem] disabled:opacity-40 max-sm:flex-1";
+    "mari-editor-action mari-editor-action--compact px-2.5 py-1 text-[0.625rem] pointer-coarse:text-[0.6875rem] disabled:opacity-40 max-sm:flex-1";
   const fieldClass = "mari-editor-field px-2 py-1 text-[0.6875rem]";
 
   return (

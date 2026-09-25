@@ -384,7 +384,7 @@ export function CharacterRegexSection({
         )}
       </div>
 
-      <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+      <p className="text-[0.625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
         {localizeUi("ui.characters.characterregexsection.findReplacePatternsScopedToThisCharacterTheyStay")}
       </p>
 
@@ -432,7 +432,7 @@ export function CharacterRegexSection({
                               : localizeUi("ui.characters.advancedtab.user")}
                           </span>
                         ))}
-                        <span className="max-w-[6.25rem] truncate font-mono text-[0.5625rem] text-[var(--muted-foreground)]">
+                        <span className="max-w-[6.25rem] truncate font-mono text-[0.5625rem] pointer-coarse:text-[0.6875rem] text-[var(--muted-foreground)]">
                           /{script.findRegex}/{script.flags}
                         </span>
                       </div>

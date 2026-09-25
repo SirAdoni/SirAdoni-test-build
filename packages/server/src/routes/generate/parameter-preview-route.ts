@@ -56,6 +56,7 @@ export async function registerParameterPreviewRoute(app: FastifyInstance) {
       chatMode,
       isSceneChat: metadata?.sceneStatus === "active",
       chatParameters: metadata?.chatParameters,
+      gameGmReasoningEffort: metadata?.gameGmReasoningEffort,
       managedParameterDefinitions: definitions,
       modelAccessPolicy: policy,
       initialSources: Object.fromEntries(Object.keys(storedPresetParams ?? {}).map((key) => [key, "preset"])),

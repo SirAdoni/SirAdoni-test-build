@@ -351,6 +351,30 @@ export function lorebookEntryPassesContextFilters(
   });
 }
 
+/**
+ * The non-keyword gates an ordinary scan applies to every entry: enabled, character/tag/trigger filters, game-state
+ * activation conditions and the schedule (time, date, location). Timing and probability are not included.
+ */
+export function lorebookEntryPassesContextualActivationGate(
+  entry: LorebookEntry,
+  options: {
+    activeCharacterIds?: string[];
+    activeCharacterTags?: string[];
+    generationTriggers?: string[];
+    gameState?: GameStateForScanning | null;
+  },
+): boolean {
+  return passesContextualActivationGate(
+    entry,
+    {
+      activeCharacterIds: makeValueSet(options.activeCharacterIds),
+      activeCharacterTags: makeValueSet(options.activeCharacterTags),
+      generationTriggers: makeValueSet(options.generationTriggers?.length ? options.generationTriggers : ["chat"]),
+    },
+    options.gameState ?? null,
+  );
+}
+
 function getAdditionalMatchingText(entry: LorebookEntry, sourceText: Partial<Record<LorebookMatchingSource, string>>) {
   if (!entry.additionalMatchingSources?.length) return "";
   return entry.additionalMatchingSources

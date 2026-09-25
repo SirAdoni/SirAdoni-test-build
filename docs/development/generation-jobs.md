@@ -1,6 +1,6 @@
 # Generation Jobs and Job Tracking
 
-This guide covers how Marinara Engine runs long media generations as jobs, and the optional **Track generation jobs** setting. That setting saves each job's status and results, keeps a log trail per job, and lets the client pick jobs back up after a refresh or a lost connection.
+This guide covers how Marinara Engine runs long media generations as jobs, and the optional **Keep generating when the tab is closed (job tracking)** setting. That setting saves each job's status and results, keeps a log trail per job, and lets the client pick jobs back up after a refresh or a lost connection.
 
 For the shared structured logging vocabulary (`event`, `state`, `elapsedMs`, `errorCode`, `outcome` and the diagnostic context fields), see [Logging (Developers)](logging.md).
 
@@ -40,7 +40,7 @@ Client: GenerationJobsRecoveryHost (reattach, palette command),
 
 **The tracker.** On startup it reads the setting (a read only) and installs the observer. When tracking is on, it also reconciles stale records and runs a retention pass. It keeps a serialized, failure-safe write queue, so a storage error is logged and never reaches the generation.
 
-**The setting.** It is stored in `app_settings` under the key `generationJobTracking` (`"true"` or `"false"`). The UI is in **Settings > Advanced > Generation job tracking**. `GET /api/generation-job-records/settings` and `PUT /api/generation-job-records/settings` with `{ "enabled": boolean }` read and change it.
+**The setting.** It is stored in `app_settings` under the key `generationJobTracking` (`"true"` or `"false"`). The UI is a row in **Settings > Advanced > Features** (the only switch there that starts off), with a button under it that opens the Generation jobs viewer. `GET /api/generation-job-records/settings` and `PUT /api/generation-job-records/settings` with `{ "enabled": boolean }` read and change it.
 
 ### Setting off
 

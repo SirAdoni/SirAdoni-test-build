@@ -16,6 +16,14 @@ export interface PromptMessage {
   name?: string;
 }
 
+export interface ProcessActivatedEntriesOptions {
+  /**
+   * Keep the given entry order inside each block, depth and outlet instead of sorting by entry order. Set when the
+   * entries are already in their stable lore order (stable-lore-order.ts), so the block only grows at its end.
+   */
+  preserveOrder?: boolean;
+}
+
 export interface InjectAtDepthOptions {
   /** Earliest index an entry may be inserted at. */
   minIndex?: number;
@@ -28,15 +36,20 @@ export interface InjectAtDepthOptions {
  * Position 0 = WORLD_INFO_BEFORE (before character defs)
  * Position 1 = WORLD_INFO_AFTER (after character defs)
  */
-export function buildWorldInfoBlocks(activatedEntries: ActivatedEntry[]): {
+export function buildWorldInfoBlocks(
+  activatedEntries: ActivatedEntry[],
+  options: ProcessActivatedEntriesOptions = {},
+): {
   before: string;
   after: string;
 } {
   const beforeParts: string[] = [];
   const afterParts: string[] = [];
 
-  // Sort by order
-  const sorted = [...activatedEntries].sort((a, b) => a.entry.order - b.entry.order);
+  // Sort by order, unless the caller already put the entries in their stable (cache-friendly) order.
+  const sorted = options.preserveOrder
+    ? [...activatedEntries]
+    : [...activatedEntries].sort((a, b) => a.entry.order - b.entry.order);
 
   for (const { entry } of sorted) {
     if (entry.position <= 0) {
@@ -59,7 +72,10 @@ export function buildWorldInfoBlocks(activatedEntries: ActivatedEntry[]): {
  * Only entries with position 2 (depth injection mode) are included.
  * Position 0/1 entries always go to worldInfoBefore/After via buildWorldInfoBlocks.
  */
-export function getDepthInjectedEntries(activatedEntries: ActivatedEntry[]): Array<{
+export function getDepthInjectedEntries(
+  activatedEntries: ActivatedEntry[],
+  options: ProcessActivatedEntriesOptions = {},
+): Array<{
   content: string;
   role: LorebookRole;
   depth: number;
@@ -67,17 +83,19 @@ export function getDepthInjectedEntries(activatedEntries: ActivatedEntry[]): Arr
 }> {
   return activatedEntries
     .filter((a) => a.entry.position === 2 && a.entry.depth >= 0)
-    .map((a) => ({
+    .map((a, index) => ({
       content: a.entry.content,
       role: a.entry.role,
       depth: a.entry.depth,
       order: a.entry.order,
+      index,
     }))
     .sort((a, b) => {
-      // Same depth: sort by order
-      if (a.depth === b.depth) return a.order - b.order;
-      return a.depth - b.depth;
-    });
+      // An explicit depth always wins. Within one depth: entry order, or the stable order the caller kept.
+      if (a.depth !== b.depth) return a.depth - b.depth;
+      return options.preserveOrder ? a.index - b.index : a.order - b.order;
+    })
+    .map(({ content, role, depth, order }) => ({ content, role, depth, order }));
 }
 
 /**
@@ -169,6 +187,7 @@ export function applyTokenBudget(activatedEntries: ActivatedEntry[], tokenBudget
 export function processActivatedEntries(
   activatedEntries: ActivatedEntry[],
   tokenBudget: number = 0,
+  options: ProcessActivatedEntriesOptions = {},
 ): {
   worldInfoBefore: string;
   worldInfoAfter: string;
@@ -185,16 +204,19 @@ export function processActivatedEntries(
   );
 
   // Build blocks
-  const { before, after } = buildWorldInfoBlocks(budgeted);
+  const { before, after } = buildWorldInfoBlocks(budgeted, options);
 
   // Get depth entries
-  const depthEntries = getDepthInjectedEntries(budgeted);
+  const depthEntries = getDepthInjectedEntries(budgeted, options);
 
   // Outlet names are deliberately exact and case-sensitive. Activated entries
   // with the same name are joined in insertion order, but are not injected at
   // any automatic lorebook position.
   const outletParts = new Map<string, string[]>();
-  for (const { entry } of [...budgeted].sort((a, b) => a.entry.order - b.entry.order)) {
+  const outletOrder = options.preserveOrder
+    ? [...budgeted]
+    : [...budgeted].sort((a, b) => a.entry.order - b.entry.order);
+  for (const { entry } of outletOrder) {
     if (entry.position !== 7 || !entry.outletName) continue;
     const parts = outletParts.get(entry.outletName) ?? [];
     parts.push(entry.content);

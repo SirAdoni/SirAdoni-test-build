@@ -52,10 +52,7 @@ import {
   Tags,
 } from "lucide-react";
 import { getCharacterTitle } from "../../lib/character-display";
-import {
-  matchesCardLibrarySearchIndex,
-  parseCardLibrarySearchQuery,
-} from "../../lib/card-library-search";
+import { matchesCardLibrarySearchIndex, parseCardLibrarySearchQuery } from "../../lib/card-library-search";
 import { buildCharacterSearchIndex } from "./library/character-search-index";
 import { useUIStore, type CharacterLibrarySort } from "../../stores/ui.store";
 import { sortPanelFolders } from "../../lib/panel-sort";
@@ -65,7 +62,10 @@ import type { CharacterCatalogEntry } from "@marinara-engine/shared";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { formatEstimatedTokens } from "../../lib/character-token-count";
 import { SelectionActionBar } from "../ui/SelectionActionBar";
-import { SELECTION_EXTRA_ACTION_BUTTON_CLASS, SELECTION_EXTRA_ACTION_LABEL_CLASS } from "../ui/selection-action-classes";
+import {
+  SELECTION_EXTRA_ACTION_BUTTON_CLASS,
+  SELECTION_EXTRA_ACTION_LABEL_CLASS,
+} from "../ui/selection-action-classes";
 import { TouchDragHandle } from "../ui/TouchDragHandle";
 import { buildLibraryFolderView, type LibraryFolderNode } from "../../lib/library-folder-view";
 import { LibrarySearchInput } from "./library/LibrarySearchInput";
@@ -86,6 +86,7 @@ import { CharacterCategoryFilter } from "../characters/CharacterCategoryFilter";
 import { CharacterDuplicatesModal } from "../characters/CharacterDuplicatesModal";
 import { CharacterUnusedModal } from "../characters/CharacterUnusedModal";
 import { CircleSlash } from "lucide-react";
+import { PANEL_PHONE_FLOOR_CLASS, PANEL_ROW_NAME_WRAP_CLASS } from "./panel-phone-floor";
 import { CharacterBulkTagsModal } from "../characters/CharacterBulkTagsModal";
 import type { CharacterLibraryCategory } from "@marinara-engine/shared";
 
@@ -992,6 +993,7 @@ export function CharactersPanel() {
       >
         {selectionMode && (
           <button
+            data-touch-compact
             type="button"
             aria-label={
               isBulkSelected
@@ -999,7 +1001,8 @@ export function CharactersPanel() {
                 : localizeUi("ui.panels.ttsconfigcard.selectCharacter")
             }
             className={cn(
-              "flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors",
+              // The 20px check box keeps its size; the pseudo element gives it a 36px hit area.
+              "relative flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors before:absolute before:-inset-2 before:content-['']",
               isBulkSelected
                 ? "border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-button-text-active)]"
                 : "border-[var(--muted-foreground)]/40 bg-[var(--secondary)] text-transparent",
@@ -1300,7 +1303,7 @@ export function CharactersPanel() {
           clearActiveChatResourceDrag();
         }}
         className={cn(
-          "group relative flex min-h-[4.5rem] shrink-0 touch-pan-y cursor-pointer items-center gap-2.5 rounded-xl p-2 transition-all hover:bg-[var(--sidebar-accent)] max-md:min-h-16",
+          "group relative flex min-h-[4.5rem] shrink-0 touch-pan-y cursor-pointer items-center gap-2.5 rounded-xl p-2 transition-all hover:bg-[var(--sidebar-accent)] max-md:min-h-16 max-md:flex-wrap max-md:gap-2 pointer-coarse:flex-wrap pointer-coarse:gap-2",
           selectionMode &&
             isBulkSelected &&
             "bg-[var(--marinara-chat-chrome-highlight-bg)] ring-1 ring-[var(--marinara-chat-chrome-button-border-active)]",
@@ -1309,6 +1312,7 @@ export function CharactersPanel() {
       >
         {selectionMode && (
           <button
+            data-touch-compact
             type="button"
             aria-label={
               isBulkSelected
@@ -1316,7 +1320,8 @@ export function CharactersPanel() {
                 : localizeUi("ui.panels.ttsconfigcard.selectCharacter")
             }
             className={cn(
-              "flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors",
+              // The 20px check box keeps its size; the pseudo element gives it a 36px hit area.
+              "relative flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors before:absolute before:-inset-2 before:content-['']",
               isBulkSelected
                 ? "border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-button-text-active)]"
                 : "border-[var(--muted-foreground)]/40 bg-[var(--secondary)] text-transparent",
@@ -1386,10 +1391,12 @@ export function CharactersPanel() {
         </div>
 
         {/* Info */}
-        <div className={cn("min-w-0 flex-1", !selectionMode && "pr-0 max-md:pr-32 [@media(pointer:coarse)]:pr-32")}>
+        <div
+          className={cn("min-w-0 flex-1 max-md:min-w-[8.5rem] pointer-coarse:min-w-[8.5rem]", !selectionMode && "pr-0")}
+        >
           <div
             data-character-row-name
-            className="w-fit max-w-full truncate text-sm font-medium"
+            className={cn("w-fit max-w-full truncate text-sm font-medium", PANEL_ROW_NAME_WRAP_CLASS)}
             style={
               charNameColor
                 ? charNameColor.startsWith("linear-gradient")
@@ -1454,7 +1461,7 @@ export function CharactersPanel() {
         {!selectionMode && (
           <div
             data-character-row-actions
-            className="pointer-events-none absolute right-2 top-1/2 z-10 flex w-auto -translate-y-1/2 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] p-1 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
+            className="pointer-events-none absolute right-2 top-1/2 z-10 flex w-auto -translate-y-1/2 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] p-1 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:static max-md:translate-y-0 [@media(pointer:coarse)]:static [@media(pointer:coarse)]:translate-y-0 max-md:ml-auto [@media(pointer:coarse)]:ml-auto max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
           >
             <ChatResourceActionButton
               payload={{ version: 1, kind: "character", ids: [char.id], label: charName }}
@@ -1536,7 +1543,10 @@ export function CharactersPanel() {
       ref={panelScrollRef}
       onScroll={handlePanelScroll}
       data-component="CharactersPanelScroll"
-      className="flex h-full min-h-0 flex-col gap-2 overflow-y-auto p-3 [scrollbar-gutter:stable]"
+      className={cn(
+        "flex h-full min-h-0 flex-col gap-2 overflow-y-auto p-3 [scrollbar-gutter:stable]",
+        PANEL_PHONE_FLOOR_CLASS,
+      )}
     >
       <div
         className="mari-chrome-segmented mari-chrome-segmented--two"
@@ -1910,7 +1920,9 @@ export function CharactersPanel() {
                 aria-label={localizeUi("characters.bulkTags.action")}
               >
                 <Tags size="0.75rem" className="shrink-0" />
-                <span className={SELECTION_EXTRA_ACTION_LABEL_CLASS}>{localizeUi("characters.bulkTags.actionShort")}</span>
+                <span className={SELECTION_EXTRA_ACTION_LABEL_CLASS}>
+                  {localizeUi("characters.bulkTags.actionShort")}
+                </span>
               </button>
             </>
           }
