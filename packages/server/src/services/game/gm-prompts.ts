@@ -57,6 +57,8 @@ export interface GmPromptContext {
   sceneCharacterCards?: Array<{ name: string; card: string }>;
   /** Newer text or newly named people waiting to be folded into the cached cards; rendered uncached. */
   sceneCharacterCardUpdates?: Array<{ name: string; card: string }>;
+  /** Settings > Features "Session-frozen NPC cards": updates may be changed lines against the cached card. */
+  sceneCharacterCardUpdatesFrozen?: boolean;
   playerName: string;
   /** Full player persona card */
   playerCard?: string | null;
@@ -646,6 +648,10 @@ function buildCampaignPlanLines(plan?: GameCampaignPlan | null): string[] {
   return lines;
 }
 
+/** Stand-ins for the live values when they follow the format block (Settings > Features "Cache-stable Game prompt"). */
+const LIVE_HUD_VALUES_POINTER = `- Current widget values: see <gm_only_hud_values> in the latest turn context (absent when no widget exists).`;
+const LIVE_SHEETS_POINTER = `Current sheets: see <character_sheets> in the latest turn context.`;
+
 function buildCompactInventoryLine(items: Array<{ name: string; quantity: number }>): string {
   return items.map((item) => `${item.name}${item.quantity > 1 ? ` ×${item.quantity}` : ""}`).join("; ");
 }
@@ -671,12 +677,15 @@ function buildWidgetSummaryLines(widgets: HudWidget[]): string[] {
 }
 
 /** Extended HUD widgets OFF: upstream's widget block verbatim (no extra types, no create/delete). */
-function buildUpstreamWidgetLines(widgets: HudWidget[]): string[] {
+function buildUpstreamWidgetLines(
+  widgets: HudWidget[],
+  valueLines: (widgets: HudWidget[]) => string[] = buildWidgetSummaryLines,
+): string[] {
   if (widgets.length === 0) return [];
   return [
     ``,
     `HUD WIDGETS:`,
-    ...buildWidgetSummaryLines(widgets),
+    ...valueLines(widgets),
     `- Widget usage: emit widget commands for every real change to these visible HUD widgets. Do not skip a changed widget just because another system tracks related player or party stats.`,
     `- HUD widgets are visual UI state only. Player stats, inventory, party member HP, party relationships, and other durable game facts remain in their own canonical systems; use [widget:] only to mirror a visible widget when that widget's displayed value should change.`,
     `- Command mapping: value = bars/gauges, count = counters, stat = one stat_block entry, add/remove = rotating list items, running/seconds = timers.`,
@@ -931,7 +940,9 @@ export function buildGmSystemPromptParts(
     // history cache behind them.
     dynamicSections.push(
       `<named_character_updates>`,
-      "Current library cards for people named in this session who are not in the party. Where a person also appears in an earlier library card block, this newer card replaces it.",
+      ctx.sceneCharacterCardUpdatesFrozen
+        ? "Library card changes for people named in this session who are not in the party. A full card is new or replaces that person's earlier library card block; a list of changes applies to their earlier library card block, which is otherwise current."
+        : "Current library cards for people named in this session who are not in the party. Where a person also appears in an earlier library card block, this newer card replaces it.",
       ...sceneCharacterCardUpdates.map((entry) => entry.card),
       `</named_character_updates>`,
     );
@@ -1214,6 +1225,11 @@ export function buildGmFormatReminder(
      *  attachment are gated on the same fact, so the tool is never attached without being
      *  described and never described without being attached. */
     rollDiceToolAttached?: boolean;
+    /** Settings > Features "Cache-stable Game prompt" (gameCacheStableLayout). The live values (HUD widget values,
+     *  character sheets, inventory) render as their own blocks after `</output_format>`, and the format block keeps
+     *  a pointer to them, so the instructions stay byte-stable while the values change. Absent or false renders
+     *  today's reminder byte for byte. */
+    liveValuesAfterFormat?: boolean;
   },
 ): string {
   if (ctx.addressMode === "gm") {
@@ -1489,7 +1505,19 @@ export function buildGmFormatReminder(
     );
   }
 
-  if (ctx.ruleset) lines.push(...renderRulesetSheetSection(ctx.ruleset, ctx.rulesetSheetBlocks ?? []));
+  const liveValuesAfterFormat = ctx.liveValuesAfterFormat === true;
+  // Blocks that carry this turn's values; with liveValuesAfterFormat they follow </output_format>.
+  const liveValueLines: string[] = [];
+  if (ctx.ruleset) {
+    const sheetSection = renderRulesetSheetSection(ctx.ruleset, ctx.rulesetSheetBlocks ?? []);
+    const sheetsStart = sheetSection.indexOf(`<character_sheets>`);
+    if (liveValuesAfterFormat && sheetsStart >= 0) {
+      lines.push(...sheetSection.slice(0, sheetsStart), LIVE_SHEETS_POINTER);
+      liveValueLines.push(``, ...sheetSection.slice(sheetsStart));
+    } else {
+      lines.push(...sheetSection);
+    }
+  }
 
   // The installed experience's own verbs, last in the block so the built-ins keep their order. Each
   // line already arrives fully rendered from the verb runtime; nothing here inspects or reformats it.
@@ -1523,14 +1551,27 @@ export function buildGmFormatReminder(
     }
   }
 
+  const hudValueLines = (widgets: HudWidget[]): string[] => {
+    if (!liveValuesAfterFormat) return buildWidgetSummaryLines(widgets);
+    if (widgets.length > 0) {
+      liveValueLines.push(
+        ``,
+        `<gm_only_hud_values>`,
+        `These values are UI bookkeeping, not facts characters can automatically perceive or discuss.`,
+        ...buildWidgetSummaryLines(widgets),
+        `</gm_only_hud_values>`,
+      );
+    }
+    return [LIVE_HUD_VALUES_POINTER];
+  };
   if (ctx.enableCustomWidgets !== false && ctx.enableExtendedWidgets === false) {
-    lines.push(...buildUpstreamWidgetLines(upstreamHudWidgets(hudWidgets)));
+    lines.push(...buildUpstreamWidgetLines(upstreamHudWidgets(hudWidgets), hudValueLines));
   } else if (ctx.enableCustomWidgets !== false) {
     lines.push(
       ``,
       `<gm_only_hud_widgets>`,
       `These values are UI bookkeeping, not facts characters can automatically perceive or discuss.`,
-      ...buildWidgetSummaryLines(hudWidgets),
+      ...hudValueLines(hudWidgets),
       `- You may dynamically create useful HUD widgets and delete obsolete ones as the scene changes. There is no fixed widget-count cap. Reuse stable IDs; do not duplicate existing widgets or invent story events to justify UI changes. Preserve user-requested trackers unless the user removes them or their stated purpose is complete.`,
       `- Create: [widget: stable_id, action: create, type: counter, label: "Supplies", position: hud_left, count: 3]. Supported types: progress_bar, gauge, relationship_meter, counter, stat_block, list, inventory_grid, timer, and the extra types below. Optional initial fields: value, max, count, seconds, running, text, icon. For a new stat_block, list or extra type, create it first and then use ordinary stat/add/text commands to fill it.`,
       `- Delete an entire widget: [widget: stable_id, action: delete]. This removes only its HUD display, never inventory, relationships, quests, or other canonical facts. The existing remove: "Item" command removes a list item, NOT the widget. Create commands are idempotent and never overwrite an existing widget's values.`,
@@ -1556,7 +1597,7 @@ export function buildGmFormatReminder(
   // Inventory context. Skipped when an experience owns items: an older save can still carry a stale
   // built-in list, which would contradict the inventory the player has on screen.
   if (!experienceOwnsInventory && playerInventory.length > 0) {
-    lines.push(
+    (liveValuesAfterFormat ? liveValueLines : lines).push(
       ``,
       `<gm_only_inventory>`,
       `PLAYER INVENTORY: ${buildCompactInventoryLine(playerInventory)}`,
@@ -1565,7 +1606,7 @@ export function buildGmFormatReminder(
     );
   }
 
-  lines.push(`</output_format>`);
+  lines.push(`</output_format>`, ...liveValueLines);
 
   return lines.join("\n");
 }

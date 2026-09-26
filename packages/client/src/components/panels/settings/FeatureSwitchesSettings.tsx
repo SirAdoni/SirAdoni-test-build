@@ -21,6 +21,8 @@ export const FEATURE_SWITCHES_CONTROL_ID = "feature-switches";
 const SERVER_SWITCHES: ReadonlyArray<{ name: FeatureSwitchName; number?: FeatureNumberName }> = [
   { name: "chatgptHistoryReplay" },
   { name: "cacheFriendlyPromptLayout" },
+  { name: "gameCacheStableLayout" },
+  { name: "gameFreezeNpcCardsPerSession" },
   { name: "stableLorebookGroupPicks" },
   { name: "stableLoreOrder", number: "stableLoreLingerTurns" },
   { name: "providerRetry" },

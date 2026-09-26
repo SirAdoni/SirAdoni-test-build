@@ -54,6 +54,39 @@ Off: the prompt is sent in the order it was assembled. Chats use the keyword lor
 
 Game chats on a subscription provider can also opt in to **stable final checks** with the chat metadata key `gameCacheStableFinalChecks` set to `true` (no settings control yet; default off). The player-canon and prose checks that close every Game prompt never change within a chat, but anything after the last finished exchange is written to the prompt cache again on the next turn. With the opt-in, their full text (about 5,100 characters) moves into the cached part of the prompt, just before the history, and a short `<final_checks>` reminder (about 230 characters) stays at the end. Each Game turn then writes about 4,900 fewer characters to the cache. The trade-off is that the full checks are no longer the last thing the model reads; the reminder names them and keeps the rule that the current player input has the highest authority. The opt-in only works while this switch is on. Turning it on or off in a running chat rewrites the cached history once.
 
+### Cache-stable Game prompt
+
+Setting key: `gameCacheStableLayout`. Needs **Cache-friendly prompt layout** on. Only Game chats on the Claude subscription use it.
+
+On the Claude subscription, everything after the last finished exchange is written to the prompt cache again on every turn. A Game turn used to carry about 85,000 characters there: the format instructions, campaign memory, continuity records, the World Maps block, the story secrets, tracked NPCs and pending character cards, although most of them had not changed since the turn before. Each turn wrote 28,000 to 37,000 tokens to the cache and only 55 to 64% of the prompt came from it.
+
+On: those session-level blocks are kept once, in a `<session_context>` block in the cached part of the prompt just before the history, with the player-canon and prose checks (as with the `gameCacheStableFinalChecks` opt-in below). Each turn:
+
+- a block that has not changed leaves the end of the prompt, and a short `<session_context_status>` note there names it as current;
+- a block that changed a little is sent as its line changes (`<campaign_memory_changes>` and so on: removed and added lines), and one that changed a lot is sent again in full; the note says which copy counts;
+- the small live values always stay at the end: weather, morale, time and game state, HUD widget values (`<gm_only_hud_values>`), inventory, character sheets, the recent transcript part of the continuity block (`<game_continuity_recent>`) and the final-checks reminder. The format instructions point to these blocks instead of holding the values.
+
+The cached copy is rebuilt (one full cache rewrite) only when the changes carried at the end of the prompt, added up over the turns they rode there, cost as much as that rewrite. A block that changes on every turn never enters the cached copy, so it never causes a rebuild. The cached copy is kept per chat in `data/game-stable-layout/`. On a test chat the share of each turn read from the cache went from about 74% to about 97% (turns without memory changes); a replay with memory, map and continuity changes every few turns averages about 90%. Switching it on rewrites the cache once, and so does the second turn of each new session, which builds its cached copy. The trade-off is that the format instructions and session context are no longer the last thing the model reads; the status note and the final-checks reminder at the end name them.
+
+Off: the prompt is byte-identical to the layout without this switch.
+
+### Session-frozen NPC cards
+
+Setting key: `gameFreezeNpcCardsPerSession`. Applies to Game chats that use **Cache-friendly prompt layout**.
+
+The library cards of people named in a session (not in the party) sit in the cached part of the prompt, ahead of the history. Before this switch, a rewritten card waited in a small uncached section, and once six cards or 30,000 characters were waiting the whole list was rewritten in the cached part. The NPC Biographer and the NPC card sync reword cards often, so in a long session that rewrite came every few turns and each one re-sent the whole history (about 105,000 tokens; the cached share fell from about 93% to about 27% on those turns).
+
+On:
+
+- The cached cards stay exactly as they were when the session started or the person first appeared.
+- A later change to a card rides at the end of the prompt, in `<named_character_updates>`, as the changed lines only ("No longer true" and "Now true"). A long card paragraph is compared sentence by sentence. A change too large for that sends the whole card there instead.
+- The waiting changes are folded into the cached cards at the next session, or earlier once the changes carried at the end of the prompt, summed over the turns they rode there, cost more than re-sending everything after the cards (the history, at least 60,000 characters).
+- The NPC card sync does not save a new description, appearance, personality or backstory that only rewords the saved one: the same words in another order or with other punctuation, or one word swapped, with the same names, numbers and negations. A skipped rewording is logged at debug level (`game.npc_card.rewording_skipped`).
+
+Off: the cached cards are rewritten once six cards or 30,000 characters are waiting, and every rewording is saved, as before.
+
+The **Cache-stable Game prompt** layout uses the same rent-or-buy rule for its `<session_context>` block: it is rebuilt only once the changes carried at the end of the prompt reach the size of that block plus the history after it.
+
 ### Stable lorebook picks
 
 Setting key: `stableLorebookGroupPicks`.

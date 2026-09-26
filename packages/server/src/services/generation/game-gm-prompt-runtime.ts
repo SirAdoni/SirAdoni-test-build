@@ -1,4 +1,5 @@
 import { layoutNamedCards, type NamedCard } from "../game/named-card-cache.js";
+import { isFeatureEnabled } from "../features/feature-settings.js";
 import { selectNamedCharacterIds } from "../game/named-characters.js";
 import {
   GAME_GM_BUILT_IN_PROMPT_TEMPLATES,
@@ -626,6 +627,7 @@ export async function injectGameGmPromptRuntime(args: {
   // Without this the GM only has a name and invents race, age and looks.
   let sceneCharacterCards: Array<{ name: string; card: string }> = [];
   let sceneCharacterCardUpdates: Array<{ name: string; card: string }> = [];
+  let sceneCharacterCardUpdatesFrozen = false;
   if (args.chatMetadata.gameSceneCharacterCards !== false && typeof args.chars.list === "function") {
     try {
       const rows = await args.chars.list();
@@ -665,9 +667,25 @@ export async function injectGameGmPromptRuntime(args: {
       }
       if (args.cacheFriendlyLayout) {
         // Cached cards keep the exact text they were cached with; new people and rewritten cards ride uncached.
-        const layout = await layoutNamedCards(args.chatId, current);
+        // Settings > Features "Session-frozen NPC cards": cached cards stay frozen for the session and later changes
+        // ride uncached as changed lines, folded in at the next session or once they cost more than a rebuild.
+        const freeze = isFeatureEnabled("gameFreezeNpcCardsPerSession")
+          ? (() => {
+              const history = args.mappedMessages.filter((message) => message.contextKind === "history");
+              return {
+                sessionKey: String(sessionNumber),
+                turnKey: history.length,
+                suffixChars: history.reduce(
+                  (sum, message) => sum + (typeof message.content === "string" ? message.content.length : 0),
+                  0,
+                ),
+              };
+            })()
+          : undefined;
+        const layout = await layoutNamedCards(args.chatId, current, freeze);
         sceneCharacterCards = layout.stable.map(({ name, card }) => ({ name, card }));
         sceneCharacterCardUpdates = layout.updates.map(({ name, card }) => ({ name, card }));
+        if (freeze) sceneCharacterCardUpdatesFrozen = true;
       } else {
         sceneCharacterCards = current.map(({ name, card }) => ({ name, card }));
       }
@@ -792,6 +810,7 @@ export async function injectGameGmPromptRuntime(args: {
     partyCardRuntime,
     sceneCharacterCards,
     sceneCharacterCardUpdates,
+    ...(sceneCharacterCardUpdatesFrozen ? { sceneCharacterCardUpdatesFrozen: true } : {}),
     playerName: args.personaName,
     playerCard,
     gmCharacterCard,
