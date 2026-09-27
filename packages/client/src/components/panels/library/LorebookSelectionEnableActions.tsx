@@ -9,7 +9,10 @@ import { toast } from "sonner";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { useSetLorebooksEnabled } from "../../../hooks/use-lorebooks";
 import { planLorebookSelectionEnable } from "../../../lib/lorebook-selection";
-import { SELECTION_EXTRA_ACTION_BUTTON_CLASS, SELECTION_EXTRA_ACTION_LABEL_CLASS } from "../../ui/selection-action-classes";
+import {
+  SELECTION_EXTRA_ACTION_BUTTON_CLASS,
+  SELECTION_EXTRA_ACTION_LABEL_CLASS,
+} from "../../ui/selection-action-classes";
 
 interface LorebookSelectionEnableActionsProps {
   selectedIds: ReadonlySet<string>;
@@ -19,10 +22,7 @@ interface LorebookSelectionEnableActionsProps {
 export function LorebookSelectionEnableActions({ selectedIds, lorebooks }: LorebookSelectionEnableActionsProps) {
   const { t: localizeUi } = useUiTranslation();
   const setEnabled = useSetLorebooksEnabled();
-  const enabledById = useMemo(
-    () => new Map(lorebooks.map((lorebook) => [lorebook.id, lorebook.enabled])),
-    [lorebooks],
-  );
+  const enabledById = useMemo(() => new Map(lorebooks.map((lorebook) => [lorebook.id, lorebook.enabled])), [lorebooks]);
   const toEnable = useMemo(
     () => planLorebookSelectionEnable(selectedIds, enabledById, true),
     [enabledById, selectedIds],
@@ -53,7 +53,9 @@ export function LorebookSelectionEnableActions({ selectedIds, lorebooks }: Loreb
       if (changedIds.length === 0) return;
       toast.success(
         localizeUi(
-          enable ? "ui.panels.lorebookspanel.enabledSelectedLorebooks" : "ui.panels.lorebookspanel.disabledSelectedLorebooks",
+          enable
+            ? "ui.panels.lorebookspanel.enabledSelectedLorebooks"
+            : "ui.panels.lorebookspanel.disabledSelectedLorebooks",
           { count: changedIds.length },
         ),
         {

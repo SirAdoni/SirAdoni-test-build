@@ -240,6 +240,7 @@ const inputKeys: Record<CampaignMemoryRecordType, readonly string[]> = {
     "targetEntityId",
     "type",
     "inverseLabel",
+    "notes",
     "status",
     "effectiveFrom",
     "effectiveTo",

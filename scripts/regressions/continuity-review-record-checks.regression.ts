@@ -40,8 +40,9 @@ for (const fragment of [
   "recordConditions",
   "missingQualifiers",
   "actorMismatch",
-  "An empty conditions array is never evidence that the sources attached no qualifier",
-  "every missingQualifiers entry is a condition finding",
+  "compare each source qualifier against both the record text and recordConditions",
+  "A qualifier preserved in the record prose does not need to be duplicated in conditions",
+  "every remaining missingQualifiers entry is a condition finding",
   'every actorMismatch other than "none" is an attribution finding',
 ])
   assert.ok(prompt.includes(fragment), `review prompt is missing: ${fragment}`);
@@ -88,5 +89,31 @@ assert.deepEqual(Object.keys(normalized.findings[0]!).sort(), ["detail", "kind",
 assert.doesNotThrow(() => validateGameContinuityReview(normalized, sources, [record]));
 // A worksheet with no findings still validates as a clean review.
 assert.equal(normalizeGameContinuityReview({ ...raw, findings: [] }, sources, [record]).findings.length, 0);
+
+// Normalization must preserve the reviewer's semantic finding even when its quote appears in record prose under a
+// different clause; only the reviewer prompt decides whether the qualifier's meaning is actually retained.
+const retainedBase = {
+  ...base,
+  text: "Edmund did not offer a two-month contract if she completes the survey first.",
+  evidence: [{ messageId: "m1", quote: "Edmund offered a two-month contract if she completes the survey first." }],
+};
+const retainedRecord: GameContinuityRecord = {
+  ...retainedBase,
+  id: createGameContinuityRecordId("retained", retainedBase),
+};
+const retainedReview = normalizeGameContinuityReview(
+  {
+    ...raw,
+    findings: [{ ...raw.findings[0], quote: "if she completes the survey first", recordIds: ["r1"] }],
+  },
+  sources,
+  [retainedRecord],
+);
+assert.equal(retainedReview.findings.length, 1, "semantic condition findings must not be discarded by normalization");
+assert.equal(retainedReview.findings[0]!.quote, "if she completes the survey first");
+
+// The same source qualifier is still flagged when it is absent from both prose and conditions.
+const missingReview = normalizeGameContinuityReview(raw, sources, [record]);
+assert.equal(missingReview.findings.length, 1, "a genuinely omitted qualifier remains reviewable");
 
 console.log("continuity-review-record-checks regression passed");

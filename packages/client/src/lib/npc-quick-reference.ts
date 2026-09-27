@@ -42,7 +42,10 @@ export function readNpcPeekSummary(row: unknown): NpcPeekSummary {
   const tags = Array.isArray(card.tags)
     ? [
         ...new Set(
-          card.tags.filter((tag): tag is string => typeof tag === "string").map((tag) => tag.trim()).filter(Boolean),
+          card.tags
+            .filter((tag): tag is string => typeof tag === "string")
+            .map((tag) => tag.trim())
+            .filter(Boolean),
         ),
       ]
     : [];

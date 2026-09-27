@@ -740,7 +740,11 @@ export async function loadCampaignCodex(db: DB, chatId: string): Promise<Campaig
         generatedAt,
         sessions: codexSessionsFromProjection(
           projection,
-          chosen.map((session) => ({ chatId: session.id, sessionNumber: sessionNumber(session), name: readString(session.name) })),
+          chosen.map((session) => ({
+            chatId: session.id,
+            sessionNumber: sessionNumber(session),
+            name: readString(session.name),
+          })),
         ),
         entitiesMerged: true,
       });

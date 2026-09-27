@@ -1,3 +1,4 @@
+import { WORLD_HISTORY_ATTRIBUTE } from "@marinara-engine/shared";
 import type {
   CampaignMemoryBacklink,
   CampaignMemoryCurrentState,
@@ -169,8 +170,13 @@ function referencedEntityIds(memory: ChatMemory): Set<string> {
 }
 
 /** Identity of an entity across sessions. */
-export function campaignEntityIdentity(entity: Pick<CampaignMemoryEntity, "kind" | "owner" | "aliases">): string {
+export function campaignEntityIdentity(
+  entity: Pick<CampaignMemoryEntity, "kind" | "owner" | "aliases"> & Partial<Pick<CampaignMemoryEntity, "attributes">>,
+): string {
   if (entity.owner.type === "existing") return `${entity.owner.store}:${entity.owner.recordId}`;
+  // Historical notes with the same title can describe distinct events. Preserve stable owner identity.
+  if (entity.kind === "note" && entity.attributes?.[WORLD_HISTORY_ATTRIBUTE] !== undefined)
+    return `world-history:${entity.owner.recordId}`;
   const name = entity.aliases.map(nameKey).find(Boolean);
   return name ? `${entity.kind}:name:${name}` : `registry:${entity.owner.recordId}`;
 }
@@ -186,7 +192,10 @@ export function campaignMemoryScopeEnabled(metadata: unknown): boolean {
  * the current chat's own lineage first, then the canonical session, then the most recently created branch, never one
  * newer than the current chat.
  */
-export async function listCampaignSessionChats(db: DB, chatId: string): Promise<Array<{ id: string; sessionNumber?: number }>> {
+export async function listCampaignSessionChats(
+  db: DB,
+  chatId: string,
+): Promise<Array<{ id: string; sessionNumber?: number }>> {
   const current = (await db.select().from(chats).where(eq(chats.id, chatId)).limit(1))[0] as ChatRow | undefined;
   if (!current) return [];
   const self = [{ id: current.id, sessionNumber: sessionNumberOf(current) }];
@@ -430,8 +439,7 @@ async function buildCampaignMemoryProjection(db: DB, chatId: string): Promise<Ca
     ];
     const appearances = numbered(
       ordered.filter(
-        (item) =>
-          !isLegacyImportCopy(item.entity) || referencedByOrder[item.order]!.has(item.entity.entityId),
+        (item) => !isLegacyImportCopy(item.entity) || referencedByOrder[item.order]!.has(item.entity.entityId),
       ),
     );
     const everyCopy = numbered(ordered);
@@ -482,7 +490,12 @@ async function buildCampaignMemoryProjection(db: DB, chatId: string): Promise<Ca
         chatId,
         holderEntityId: mapId(item.holderEntityId),
         ...(item.attributedClaim
-          ? { attributedClaim: { ...item.attributedClaim, subjectEntityId: mapId(item.attributedClaim.subjectEntityId) } }
+          ? {
+              attributedClaim: {
+                ...item.attributedClaim,
+                subjectEntityId: mapId(item.attributedClaim.subjectEntityId),
+              },
+            }
           : {}),
         ...origin,
       });

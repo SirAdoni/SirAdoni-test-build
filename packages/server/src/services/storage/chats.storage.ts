@@ -106,6 +106,7 @@ function lorebookEntryStateRemovalPatch(metadata: MetadataPatch, entryIds: Reado
 
 const metadataPatchQueues = new Map<string, Promise<void>>();
 const messageExtraPatchQueues = new Map<string, Promise<void>>();
+const gameTurnReviewMutationQueues = new Map<string, Promise<void>>();
 
 /**
  * LOCK ORDER (#5599/#5600): the message patch queue is always acquired
@@ -177,6 +178,30 @@ export async function withChatMetadataPatchQueue<T>(chatId: string, operation: (
 
 export async function withMessageExtraPatchQueue<T>(messageId: string, operation: () => Promise<T>): Promise<T> {
   return withPatchQueue(messageExtraPatchQueues, messageId, operation);
+}
+
+/**
+ * Acquire the same queues used by metadata and message-extra writers before
+ * opening a transaction. Review corrections use this narrow gate so their
+ * optimistic checks and direct row writes cannot interleave with ordinary
+ * chat/message edits; queue-taking writers must never be called inside the
+ * transaction callback.
+ */
+export async function withGameTurnReviewWrite<T>(
+  db: DB,
+  chatId: string,
+  messageId: string,
+  operation: (transaction: DB) => Promise<T>,
+): Promise<T> {
+  return withPatchQueue(gameTurnReviewMutationQueues, chatId, () =>
+    withChatMetadataPatchQueue(chatId, () =>
+      withMessageExtraPatchQueue(messageId, () => db.transaction((transaction) => operation(transaction))),
+    ),
+  );
+}
+
+export function isGameTurnReviewMutationPending(chatId: string): boolean {
+  return gameTurnReviewMutationQueues.has(chatId);
 }
 
 function parseMetadata(raw: unknown, chatId = "unknown"): MetadataPatch {
@@ -719,7 +744,10 @@ export function createChatsStorage(db: DB) {
    */
   async function compactStaleLorebookScans(chatId: string, keepMessageId: string) {
     try {
-      const rows = await db.select({ id: messages.id, extra: messages.extra }).from(messages).where(eq(messages.chatId, chatId));
+      const rows = await db
+        .select({ id: messages.id, extra: messages.extra })
+        .from(messages)
+        .where(eq(messages.chatId, chatId));
       const ids = rows.map((row) => row.id);
       if (ids.length === 0) return;
       const swipeRows = await db
@@ -738,12 +766,18 @@ export function createChatsStorage(db: DB) {
               ? compactLorebookScanInExtra(parseExtraRecord(message.extra, messageExtraAt(message.id)))
               : null;
             if (compacted)
-              await db.update(messages).set({ extra: JSON.stringify(compacted) }).where(eq(messages.id, messageId));
+              await db
+                .update(messages)
+                .set({ extra: JSON.stringify(compacted) })
+                .where(eq(messages.id, messageId));
           }
           for (const swipe of await readSwipes(messageId)) {
             const compacted = compactLorebookScanInExtra(parseExtraRecord(swipe.extra, swipeExtraAt(swipe.id)));
             if (compacted)
-              await db.update(messageSwipes).set({ extra: JSON.stringify(compacted) }).where(eq(messageSwipes.id, swipe.id));
+              await db
+                .update(messageSwipes)
+                .set({ extra: JSON.stringify(compacted) })
+                .where(eq(messageSwipes.id, swipe.id));
           }
         });
       }

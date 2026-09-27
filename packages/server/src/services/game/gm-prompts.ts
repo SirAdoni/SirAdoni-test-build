@@ -17,6 +17,8 @@ import {
 } from "@marinara-engine/shared";
 import { upstreamHudWidgets } from "@marinara-engine/shared";
 import type { CharacterSpriteInfo } from "./sprite.service.js";
+import { REPUTATION_ACTIONS } from "./reputation.service.js";
+import { replaceGamePromptText, type GamePromptTextReplacement } from "./game-prompt-text-replacements.js";
 
 /**
  * The sheet names a one-request dice placeholder can actually resolve this turn (#6215).
@@ -168,15 +170,21 @@ export function buildGameAuthorialContinuityPrompt(messages: ReadonlyArray<{ rol
   ].join("\n\n");
 }
 
-export function buildGameSpecialInstructionsPrompt(value: unknown): string {
+export function buildGameSpecialInstructionsPrompt(
+  value: unknown,
+  rules: readonly GamePromptTextReplacement[] = [],
+): string {
   const specialInstructions = normalizePromptText(value);
   if (!specialInstructions) return "";
 
   return [
-    `<game_special_instructions>`,
+    replaceGamePromptText(`<game_special_instructions>`, rules),
     specialInstructions,
-    `</game_special_instructions>`,
-    `Treat these chat-level, user-authored instructions as authoritative for this game. If a lorebook entry, memory, summary, character card, story arc, or earlier assistant-authored claim conflicts with them, follow these instructions and treat the conflicting material as superseded. Do not preserve the conflict by qualifying, reframing, or inventing an exception. They do not override required output formats or schemas.`,
+    replaceGamePromptText(`</game_special_instructions>`, rules),
+    replaceGamePromptText(
+      `Treat these chat-level, user-authored instructions as authoritative for this game. If a lorebook entry, memory, summary, character card, story arc, or earlier assistant-authored claim conflicts with them, follow these instructions and treat the conflicting material as superseded. Do not preserve the conflict by qualifying, reframing, or inventing an exception. They do not override required output formats or schemas.`,
+      rules,
+    ),
   ].join("\n");
 }
 
@@ -1427,7 +1435,7 @@ export function buildGmFormatReminder(
         ]),
     `- [Note: contents] or [Book: contents] - when a new readable note or book is acquired and should be tracked in the journal.`,
     `- [state: exploration|dialogue|combat|travel_rest] - only on actual mode transitions. If you're planning to use [state: combat], this one ALWAYS has to be at the end of the turn, as it initiates a new combat generation and UI.`,
-    `- [reputation: npc="Name" action="helped"] - only when a concrete event meaningfully changes an NPC's tracked stance. Do not emit one for every agreeable line, gift, compliment, routine kindness, ordinary disagreement, or merely pleasant beat.`,
+    `- [reputation: npc="Name" action="helped"] - when a concrete action elicits a depicted NPC reaction or stated shift in stance. Use the NPC's exact tracked name and one exact action ID (${REPUTATION_ACTIONS.join(", ")}). Do not infer a reaction from an unseen action, score a passing mood, or repeat an event already tagged.`,
     `- [party_change: character="Exact Character Name" change="add|remove"] - only when someone truly joins or leaves the party. Use remove when a party member dies, permanently departs, or is no longer traveling with the player.`,
     `- [session_end: reason="goal achieved|good place to pause"] - only when the current session truly ends.`,
   );

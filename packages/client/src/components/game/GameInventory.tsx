@@ -83,12 +83,9 @@ export function GameInventory({
     useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
   );
 
-  const handleItemClick = useCallback(
-    (item: InventoryItem) => {
-      setSelectedItem((prev) => (prev && sameIdentity(prev, item) ? null : item));
-    },
-    [],
-  );
+  const handleItemClick = useCallback((item: InventoryItem) => {
+    setSelectedItem((prev) => (prev && sameIdentity(prev, item) ? null : item));
+  }, []);
 
   const handleUse = useCallback(
     (item: InventoryItem) => {
@@ -120,15 +117,15 @@ export function GameInventory({
     if (sortMode === "name") {
       entries.sort(
         (a, b) =>
-          a.item.name.localeCompare(b.item.name, undefined, { sensitivity: "base", numeric: true }) || a.index - b.index,
+          a.item.name.localeCompare(b.item.name, undefined, { sensitivity: "base", numeric: true }) ||
+          a.index - b.index,
       );
     } else if (sortMode === "quantity") {
       entries.sort((a, b) => b.item.quantity - a.item.quantity || a.index - b.index);
     }
     return entries;
   }, [items, trimmedQuery, sortMode]);
-  const selectedViewIndex =
-    selectedIndex >= 0 ? viewEntries.findIndex((entry) => entry.index === selectedIndex) : -1;
+  const selectedViewIndex = selectedIndex >= 0 ? viewEntries.findIndex((entry) => entry.index === selectedIndex) : -1;
 
   const pageCount = Math.max(1, Math.ceil(viewEntries.length / ITEMS_PER_PAGE));
   const safePageIndex = Math.min(pageIndex, pageCount - 1);

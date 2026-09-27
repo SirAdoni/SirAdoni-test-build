@@ -49,7 +49,7 @@ const server = http.createServer((req, res) => {
             name: "Real NPC",
             avatar: "/npc-silhouette.svg",
             opinion: 0,
-            relationshipStatus: "trusted ally",
+            relationshipStatus: "friend-of",
             automaticCategories: ["trusted"],
             evidenceMessageIds: ["m1"],
           },

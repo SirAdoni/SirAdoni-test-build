@@ -42,6 +42,15 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function stable(value: unknown): string {
   return JSON.stringify(value);
 }
+function stableRecordIgnoringKeys(record: GameContinuityRecord): string {
+  return JSON.stringify(
+    Object.fromEntries(
+      Object.entries(record)
+        .filter(([key]) => key !== "id" && key !== "keys")
+        .sort(([left], [right]) => left.localeCompare(right)),
+    ),
+  );
+}
 function recordRefMap(records: GameContinuityRecord[]): Map<string, GameContinuityRecord> {
   return new Map(records.map((record, index) => [`r${index + 1}`, record]));
 }
@@ -68,7 +77,9 @@ export function buildTargetedContinuityRepairPrompt(args: TargetedContinuityRepa
     "When a reviewed record combines clauses with different statuses, conditions, actors, or knowledge holders, split it into independently evidenced complete records. Preserve every source-supported clause and condition; use knowledge.scope=world with holders=[] for objective mechanics when no knower is established.";
   const deletionRule =
     "Preserve all supported clauses in replacements or splits. Delete a record only when its entire synthesis is unsupported: a zero-record replacement requires at least one unsupported or contradiction finding and every co-targeted finding must be unsupported, contradiction, or knowledge. Knowledge-only, condition, attribution, omission, or other findings require a replacement. Delete unsupported holder grants together with the unsupported synthesis when appropriate; final source-first review remains mandatory.";
-  args = { ...args, instructions: `${compoundRepairRule} ${deletionRule} ${args.instructions ?? ""}` };
+  const omissionRule =
+    "For EACH omission finding with recordIds=[], address that finding individually with one or more complete added records whose primary evidence cites that finding's messageId. Cover its missing fact and preserve every material source qualifier, including actor, object, negation, condition, and time boundary. A citation alone does not prove coverage; do not claim coverage unless the added record states the supported missing fact, and leave semantic sufficiency to independent review. Distinct omitted source messages each need their own source-backed addition.";
+  args = { ...args, instructions: `${compoundRepairRule} ${deletionRule} ${omissionRule} ${args.instructions ?? ""}` };
   // Shown only when they differ from the review's, i.e. when the caller passes the extractor's own dispositions.
   const extractionDispositions =
     JSON.stringify(args.extraction.dispositions) === JSON.stringify(args.review.dispositions)
@@ -167,8 +178,7 @@ export function applyTargetedContinuityRepair(
         const ref = refById.get(id);
         if (!ref || !replacements.has(ref)) reject(`finding target ${id} has no replacement operation`);
       }
-    } else if (finding.kind === "omission" && patch.add.length === 0)
-      reject("omission finding requires an added record");
+    }
   }
   const rawRecords: Array<GameContinuityRecord | Record<string, unknown>> = [];
   for (let index = 0; index < args.extraction.records.length; index += 1) {
@@ -188,12 +198,31 @@ export function applyTargetedContinuityRepair(
     // would silently delete the record being repaired.
     { dropUnlocatedRecords: false },
   );
+  const originalIds = new Set(args.extraction.records.map((record) => record.id));
+  const replacedIds = new Set([...replacements.keys()].map((ref) => refs.get(ref)!.id));
+  const addedRecords = normalized.records.filter((record) => !originalIds.has(record.id));
+  const normalizedAdditions = normalized.records.slice(rawRecords.length - patch.add.length);
+  for (const finding of args.review.findings) {
+    if (finding.kind !== "omission" || finding.recordIds.length !== 0) continue;
+    if (
+      !normalizedAdditions.some((record) =>
+        record.evidence.some((evidence) => evidence.messageId === finding.messageId),
+      )
+    )
+      reject(
+        `empty-target omission for ${finding.messageId} requires an added record with primary evidence for that message`,
+      );
+  }
+  const untouchedRecordContent = new Set(
+    args.extraction.records.filter((record) => !replacedIds.has(record.id)).map(stableRecordIgnoringKeys),
+  );
+  if (addedRecords.some((record) => untouchedRecordContent.has(stableRecordIgnoringKeys(record))))
+    reject("repair would duplicate an unaffected record; preserve history without adding an exact semantic duplicate");
   const changed =
     stable(normalized.records) !== stable(args.extraction.records) ||
     stable(normalized.dispositions) !== stable(args.extraction.dispositions);
   if (args.review.findings.length > 0 && !changed)
     reject("repair patch made no effective change for reviewed findings");
-  const replacedIds = new Set([...replacements.keys()].map((ref) => refs.get(ref)!.id));
   const records = normalized.records.map((record) => {
     const untouched = args.extraction.records.find((original) => original.id === record.id);
     return untouched && !replacedIds.has(record.id) ? untouched : record;

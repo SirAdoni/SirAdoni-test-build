@@ -22,10 +22,7 @@ export function useLorebookFolderToggle(
 ) {
   const { t: localizeUi } = useUiTranslation();
   const setEnabled = useSetLorebooksEnabled();
-  const enabledById = useMemo(
-    () => new Map(lorebooks.map((lorebook) => [lorebook.id, lorebook.enabled])),
-    [lorebooks],
-  );
+  const enabledById = useMemo(() => new Map(lorebooks.map((lorebook) => [lorebook.id, lorebook.enabled])), [lorebooks]);
   // One plan per folder, rebuilt only when folders or lorebook states change.
   const planByFolder = useMemo(() => {
     const plans = new Map<string, ReturnType<typeof planLibraryFolderLorebookToggle>>();
@@ -73,7 +70,9 @@ export function useLorebookFolderToggle(
       if (changedIds.length === 0) return;
       toast.success(
         localizeUi(
-          enable ? "ui.panels.libraryorganize.enabledFolderLorebooks" : "ui.panels.libraryorganize.disabledFolderLorebooks",
+          enable
+            ? "ui.panels.libraryorganize.enabledFolderLorebooks"
+            : "ui.panels.libraryorganize.disabledFolderLorebooks",
           { count: changedIds.length, value1: folder.name },
         ),
         {

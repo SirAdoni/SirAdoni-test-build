@@ -1,6 +1,44 @@
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type Page, type TestInfo, type Locator } from "@playwright/test";
 import { readFileSync } from "node:fs";
 
+async function assertCenterReachable(target: Locator, testInfo: TestInfo, label: string) {
+  const measurement = await target.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+    const describe = (node: Element | null) =>
+      node
+        ? {
+            tag: node.tagName,
+            label: node.getAttribute("aria-label"),
+            className: node.className,
+            rect: node.getBoundingClientRect().toJSON(),
+            zIndex: getComputedStyle(node).zIndex,
+            position: getComputedStyle(node).position,
+            transform: getComputedStyle(node).transform,
+          }
+        : null;
+    const ancestors = [];
+    for (let node = hit; node && ancestors.length < 8; node = node.parentElement) ancestors.push(describe(node));
+    const remove = element.parentElement?.parentElement?.querySelector('[aria-label^="Remove "]');
+    const pseudo = remove ? getComputedStyle(remove, "::before") : null;
+    return {
+      reachable: element === hit || element.contains(hit),
+      target: describe(element),
+      hit: describe(hit),
+      ancestors,
+      remove: describe(remove ?? null),
+      pseudo: pseudo && {
+        top: pseudo.top,
+        right: pseudo.right,
+        bottom: pseudo.bottom,
+        left: pseudo.left,
+        pointerEvents: pseudo.pointerEvents,
+      },
+    };
+  });
+  await testInfo.attach(label, { body: JSON.stringify(measurement, null, 2), contentType: "application/json" });
+  expect(measurement.reachable, `${label}: control center must reach its own action`).toBe(true);
+}
 const APP_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version as string;
 
 const PORTRAIT_DATA_URL = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
@@ -334,20 +372,91 @@ test("Game mobile geometry keeps dialogue, compact header, panels, and storyboar
       expect(geometry.party!.bottom).toBeLessThanOrEqual(geometry.dialogue.top + 4);
       await expect(page.getByRole("button", { name: "Open map", exact: true })).toBeVisible();
       await page.getByRole("button", { name: "Open map", exact: true }).click();
-      const mapPopover = page.locator('[data-tour="game-map"] [data-game-skip-bg-nav="true"]');
+      const mapPopover = page.locator("[data-game-mobile-map-popover]");
       await expect(mapPopover).toBeVisible();
       await expect(mapPopover.getByRole("button", { name: "Close map", exact: true })).toBeVisible();
-      await expect(page.getByText("Moonlit Bridge", { exact: true }).first()).toBeVisible();
+      await expect(mapPopover.getByText("Moonlit Bridge", { exact: true }).first()).toBeVisible();
+      await mapPopover.getByRole("button", { name: "Zoom in map", exact: true }).click();
+      await expect(mapPopover).toBeVisible();
+      await assertCenterReachable(
+        mapPopover.getByRole("button", { name: "Close map", exact: true }),
+        testInfo,
+        `map-hit-${viewport.width}x${viewport.height}`,
+      );
       await mapPopover.getByRole("button", { name: "Close map", exact: true }).click();
       await expect(page.getByRole("button", { name: "Open map", exact: true })).toBeVisible();
+      const mapTrigger = page.getByRole("button", { name: "Open map", exact: true });
+      await expect(mapTrigger).toBeFocused();
+      await mapTrigger.press("Enter");
+      await expect(mapPopover.getByRole("button", { name: "Close map", exact: true })).toBeFocused();
+      await page.keyboard.press("Escape");
+      await expect(mapPopover).toBeHidden();
+      await expect(mapTrigger).toBeFocused();
+      await mapTrigger.click();
+      await page.setViewportSize({ width: Math.max(320, viewport.width - 20), height: viewport.height });
+      await expect
+        .poll(async () =>
+          mapPopover.evaluate((element) => {
+            const box = element.getBoundingClientRect();
+            return box.left >= 0 && box.right <= innerWidth && box.bottom <= innerHeight;
+          }),
+        )
+        .toBe(true);
+      await page.screenshot({ path: testInfo.outputPath(`map-fixed-${viewport.width}x${viewport.height}.png`) });
+      await page.setViewportSize(viewport);
+      // A real outside pointer dismisses; do not force a click through covered content.
+      await page.mouse.click(2, 2);
+      await expect(mapPopover).toBeHidden();
       const partyButton = page.getByRole("button", { name: "Open party members", exact: true });
       await expect(partyButton).toBeVisible();
       await partyButton.click();
+      await assertCenterReachable(
+        page.locator("[data-game-party-popover]").getByRole("button", { name: "Player", exact: true }),
+        testInfo,
+        `first-party-hit-${viewport.width}x${viewport.height}`,
+      );
       await expect(
         page
-          .locator('[data-tour="game-party"]:visible')
+          .locator(mobile ? "[data-game-party-popover]" : '[data-tour="game-party"]:visible')
           .getByRole("button", { name: /^Mira Mobile(?: - Click to open character sheet)?$/ }),
       ).toBeVisible();
+      await page.setViewportSize({ width: Math.max(320, viewport.width - 20), height: viewport.height });
+      await expect
+        .poll(() =>
+          page.locator("[data-game-party-popover]").evaluate((element) => {
+            const box = element.getBoundingClientRect();
+            return box.left >= 0 && box.right <= innerWidth && box.bottom <= innerHeight;
+          }),
+        )
+        .toBe(true);
+      await page.setViewportSize(viewport);
+      await page.mouse.click(2, 2);
+      await expect(page.locator("[data-game-party-popover]")).toBeHidden();
+      await partyButton.focus();
+      await page.keyboard.press("Enter");
+      const playerRow = page.locator("[data-game-party-popover]").getByRole("button", { name: "Player", exact: true });
+      await playerRow.click();
+      const playerSheet = page.getByRole("dialog", { name: "Player", exact: true });
+      await expect(playerSheet).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(playerSheet).toBeHidden();
+      await partyButton.click();
+      await expect(playerRow).toBeFocused();
+      await page.keyboard.press("Enter");
+      await expect(playerSheet).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(playerSheet).toBeHidden();
+      await partyButton.click();
+      await page.keyboard.press("Escape");
+      await expect(page.locator("[data-game-party-popover]")).toBeHidden();
+      await expect(partyButton).toBeFocused();
+      const scenePresence = page.locator('[data-component="GameSurface.ScenePresence"]');
+      if (await scenePresence.isVisible())
+        await assertCenterReachable(
+          scenePresence.getByRole("button", { name: "Open in Campaign Wiki", exact: true }),
+          testInfo,
+          `presence-after-party-${viewport.width}x${viewport.height}`,
+        );
       expect(await page.locator('[data-game-floating-panel="map"], [data-game-floating-panel="party"]').count()).toBe(
         0,
       );
@@ -367,11 +476,13 @@ test("Game mobile geometry keeps dialogue, compact header, panels, and storyboar
       expect(partyBox!.y + partyBox!.height).toBeLessThanOrEqual(geometry.dialogue.top + 4);
     }
 
-    const closeStoryboard = page.getByRole("button", { name: "Close storyboard viewer", exact: true });
-    const storyboardFrame = page
-      .locator('[data-game-floating-panel="storyboard"]')
-      .or(page.locator('[data-game-skip-bg-nav="true"]').filter({ has: closeStoryboard }))
-      .last();
+    if (mobile) await page.locator("[data-storyboard-phone-tab]").click();
+    const storyboardFrame = mobile
+      ? page.locator("[data-storyboard-phone-sheet]")
+      : page.locator('[data-game-floating-panel="storyboard"]');
+    const closeStoryboard = mobile
+      ? storyboardFrame.getByRole("button", { name: "Hide storyboard", exact: true })
+      : page.getByRole("button", { name: "Close storyboard viewer", exact: true });
     await expect(storyboardFrame).toBeVisible();
     await expect(storyboardFrame.locator("img").first()).toBeVisible();
     await expect(storyboardFrame.getByRole("button", { name: "Next storyboard page", exact: true })).toBeVisible();
@@ -390,16 +501,24 @@ test("Game mobile geometry keeps dialogue, compact header, panels, and storyboar
       await expect(storyboardFrame.getByText("Storyboard frame 2", { exact: true })).toBeVisible();
       const frameDetails = storyboardFrame.locator("details").filter({ hasText: "Generation details" });
       await expect(frameDetails).not.toHaveAttribute("open", "");
-      await frameDetails.locator("summary").click();
+      await frameDetails.locator(":scope > summary").click();
       await expect(frameDetails.getByText("The fixture storyboard frame could not be rendered.")).toBeVisible();
       await closeStoryboard.click();
       await expect(storyboardFrame).toHaveCount(0);
+      await expect(page.locator("[data-storyboard-phone-tab]")).toHaveAttribute("aria-expanded", "false");
     }
 
     if (!mobile) await closeStoryboard.click();
     if (mobile) await page.getByRole("button", { name: "Open party members", exact: true }).click();
+    await assertCenterReachable(
+      page
+        .locator(mobile ? "[data-game-party-popover]" : '[data-tour="game-party"]:visible')
+        .getByRole("button", { name: /^Mira Mobile(?: - Click to open character sheet)?$/ }),
+      testInfo,
+      `party-hit-${viewport.width}x${viewport.height}`,
+    );
     await page
-      .locator('[data-tour="game-party"]:visible')
+      .locator(mobile ? "[data-game-party-popover]" : '[data-tour="game-party"]:visible')
       .getByRole("button", { name: /^Mira Mobile(?: - Click to open character sheet)?$/ })
       .click();
     const characterSheet = page.getByRole("dialog", { name: "Mira Mobile", exact: true });
@@ -413,6 +532,42 @@ test("Game mobile geometry keeps dialogue, compact header, panels, and storyboar
     await page.keyboard.press("Escape");
     await expect(characterSheet).toBeHidden();
 
+    // Both independent actions must work through normal pointer and keyboard input.
+    const revealPartyMenu = async () => {
+      if (mobile) await page.getByRole("button", { name: "Open party members", exact: true }).click();
+    };
+    await revealPartyMenu();
+    const avatar = page
+      .locator(mobile ? "[data-game-party-popover]" : '[data-tour="game-party"]:visible')
+      .getByRole("button", { name: /^Mira Mobile(?: - Click to open character sheet)?$/ });
+    await avatar.focus();
+    await page.keyboard.press("Enter");
+    await expect(characterSheet).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(characterSheet).toBeHidden();
+    await revealPartyMenu();
+    const remove = page
+      .locator(mobile ? "[data-game-party-popover]" : '[data-tour="game-party"]:visible')
+      .getByRole("button", { name: "Remove Mira Mobile from party", exact: true });
+    const removeBox = await remove.boundingBox();
+    expect(removeBox).not.toBeNull();
+    expect(removeBox!.width).toBeGreaterThanOrEqual(mobile ? 44 : 24);
+    expect(removeBox!.height).toBeGreaterThanOrEqual(mobile ? 44 : 24);
+    await remove.focus();
+    await assertCenterReachable(remove, testInfo, `remove-hit-${viewport.width}x${viewport.height}`);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`party-fixed-${viewport.width}x${viewport.height}.png`) });
+    await remove.click();
+    const keep = page.getByRole("button", { name: "Keep", exact: true });
+    await expect(keep).toBeVisible();
+    await keep.click();
+    if (!(await remove.isVisible())) await revealPartyMenu();
+    await remove.focus();
+    await page.keyboard.press("Enter");
+    await expect(keep).toBeVisible();
+    await keep.click();
+    if (mobile) await page.keyboard.press("Escape");
+
     if (mobile && viewport.height === 800) {
       const scrollable = await page.locator('[data-component="GameNarration.ActivePanel"]').evaluate((element) => {
         const scroller = element.querySelector<HTMLElement>("[class*='overflow-y-auto']");
@@ -420,6 +575,26 @@ test("Game mobile geometry keeps dialogue, compact header, panels, and storyboar
       });
       expect(scrollable).toBe(true);
     }
+  }
+
+  if (mobile) {
+    const mobileViewport = page.viewportSize()!;
+    await page.getByRole("button", { name: "Open map", exact: true }).click();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await expect(page.locator("[data-game-mobile-map-popover]")).toBeHidden();
+    await page.setViewportSize(mobileViewport);
+    await page.getByRole("button", { name: "Open map", exact: true }).click();
+    await expect(page.locator("[data-game-mobile-map-popover]")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("button", { name: "Open map", exact: true })).toBeFocused();
+    await page.getByRole("button", { name: "Open party members", exact: true }).click();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await expect(page.locator("[data-game-party-popover]")).toBeHidden();
+    await page.setViewportSize(mobileViewport);
+    await page.getByRole("button", { name: "Open party members", exact: true }).click();
+    await expect(page.locator("[data-game-party-popover]")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("button", { name: "Open party members", exact: true })).toBeFocused();
   }
 
   await request.delete(`/api/chats/${fixture.chatId}`).catch(() => undefined);

@@ -1,3 +1,5 @@
+import { buildCampaignFactionWeb } from "../services/game/campaign-faction-web.js";
+import { worldHistoryPage } from "@marinara-engine/shared";
 import { isPinnedFact } from "../services/game/campaign-memory-context.js";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
@@ -194,9 +196,7 @@ function findDuplicateGroups(facts: readonly CampaignMemoryFact[]): DuplicateGro
     const quotes = members.map(
       (fact) =>
         new Set(
-          fact.evidence
-            .map((item) => item.quote.replace(/\s+/gu, " ").trim().toLocaleLowerCase())
-            .filter(Boolean),
+          fact.evidence.map((item) => item.quote.replace(/\s+/gu, " ").trim().toLocaleLowerCase()).filter(Boolean),
         ),
     );
     const parent = views.map((_, index) => index);
@@ -212,8 +212,7 @@ function findDuplicateGroups(facts: readonly CampaignMemoryFact[]): DuplicateGro
         const sameQuote = [...quotes[a]!].some((quote) => quotes[b]!.has(quote));
         const similarity = tokenJaccard(tokens[a]!, tokens[b]!);
         const overlap =
-          sameQuote ||
-          (sharedMessage && similarity !== null && similarity >= DUPLICATE_SHARED_MESSAGE_SIMILARITY);
+          sameQuote || (sharedMessage && similarity !== null && similarity >= DUPLICATE_SHARED_MESSAGE_SIMILARITY);
         if (!overlap && (similarity === null || similarity < DUPLICATE_SIMILARITY_THRESHOLD)) continue;
         pairReason.set(`${a}:${b}`, { reason: overlap ? "overlapping-evidence" : "similar-text", similarity });
         parent[find(a)] = find(b);
@@ -311,7 +310,9 @@ function sortEntitiesByKind(left: CampaignMemoryEntity, right: CampaignMemoryEnt
 async function hideEmptyContinuityMirrors(
   reader: {
     listFacts(scope: { chatId: string }): Promise<Array<{ subjectEntityId: string }>>;
-    listEvents(scope: { chatId: string }): Promise<Array<{ participantEntityIds: string[]; locationEntityId?: string | null }>>;
+    listEvents(scope: {
+      chatId: string;
+    }): Promise<Array<{ participantEntityIds: string[]; locationEntityId?: string | null }>>;
     listKnowledge(scope: { chatId: string }): Promise<Array<{ holderEntityId: string }>>;
   },
   chatId: string,
@@ -391,7 +392,12 @@ function eventSummaries(
   const statesByEvent = new Map<string, string[]>();
   for (const state of currentState) {
     const entity = entityById.get(state.entityId);
-    const value = typeof state.value === "string" ? (entityById.get(state.value) ? displayName(entityById.get(state.value)!) : state.value) : JSON.stringify(state.value);
+    const value =
+      typeof state.value === "string"
+        ? entityById.get(state.value)
+          ? displayName(entityById.get(state.value)!)
+          : state.value
+        : JSON.stringify(state.value);
     const list = statesByEvent.get(state.sourceEventId) ?? [];
     list.push(`${entity ? displayName(entity) : state.entityId}: ${state.property} = ${value}`);
     statesByEvent.set(state.sourceEventId, list);
@@ -403,7 +409,10 @@ function eventSummaries(
    */
   const candidates = (event: CampaignMemoryEvent): string[] => {
     const citing = [...new Set(event.evidence.flatMap((item) => factsByEvidence.get(evidenceKey(item)) ?? []))];
-    const involved = new Set([...event.participantEntityIds, ...(event.locationEntityId ? [event.locationEntityId] : [])]);
+    const involved = new Set([
+      ...event.participantEntityIds,
+      ...(event.locationEntityId ? [event.locationEntityId] : []),
+    ]);
     const transitions = new Set(event.transitions);
     const related = citing.filter((fact) => {
       if (involved.has(fact.subjectEntityId) || transitions.has(fact.factId)) return true;
@@ -463,7 +472,7 @@ function factText(fact: CampaignMemoryFact): string {
   const value = fact.value as unknown;
   if (typeof value === "string") return value.trim();
   if (value && typeof value === "object" && typeof (value as { text?: unknown }).text === "string")
-    return ((value as { text: string }).text).trim();
+    return (value as { text: string }).text.trim();
   return "";
 }
 
@@ -633,6 +642,77 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
     }
   });
 
+  app.get("/:chatId/memory/factions", async (req, reply) => {
+    const query = z
+      .object({
+        entityId: z.string().trim().min(1).max(300),
+        offset: z.coerce.number().int().min(0).default(0),
+        limit: z.coerce.number().int().min(1).max(20).default(8),
+        includeEnded: z.enum(["true", "false"]).default("false"),
+      })
+      .safeParse(req.query);
+    if (!query.success)
+      return reply.status(400).send({
+        error: { code: "INVALID_QUERY", message: "Invalid faction query" },
+      });
+    const { chatId } = req.params as { chatId: string };
+    try {
+      const { reader, projection } = await memoryScope(req, chatId);
+      const [entities, relationships] = await Promise.all([
+        reader.listEntities({ chatId }),
+        reader.listRelationships({ chatId }),
+      ]);
+      const entityId = canonicalEntityId(projection, query.data.entityId);
+      if (!entities.some((entity) => entity.entityId === entityId && entity.kind === "organization"))
+        return reply.status(404).send({
+          error: {
+            code: "CAMPAIGN_MEMORY_NOT_FOUND",
+            message: "Organization not found",
+          },
+        });
+      return buildCampaignFactionWeb(
+        entities,
+        relationships,
+        entityId,
+        query.data.offset,
+        query.data.limit,
+        query.data.includeEnded === "true",
+      );
+    } catch (error) {
+      return errorResponse(reply, error);
+    }
+  });
+
+  app.get("/:chatId/memory/world-history", async (req, reply) => {
+    const query = z
+      .object({
+        q: z.string().trim().max(100).optional(),
+        era: z.string().max(100).optional(),
+        offset: z.coerce.number().int().min(0).default(0),
+        limit: z.coerce.number().int().min(1).max(100).default(25),
+        archived: z.enum(["true", "false"]).optional(),
+      })
+      .safeParse(req.query ?? {});
+    if (!query.success)
+      return reply.status(400).send({
+        error: {
+          code: "INVALID_QUERY",
+          message: "Invalid world history query",
+        },
+      });
+    const { chatId } = req.params as { chatId: string };
+    try {
+      const { reader, projection } = await memoryScope(req, chatId);
+      return worldHistoryPage(
+        await reader.listEntities({ chatId }),
+        { ...query.data, archived: query.data.archived === "true" },
+        (id) => canonicalEntityId(projection, id),
+      );
+    } catch (error) {
+      return errorResponse(reply, error);
+    }
+  });
+
   app.get("/:chatId/memory/entities", async (req, reply) => {
     const query = querySchema.safeParse(req.query ?? {});
     if (!query.success)
@@ -664,8 +744,7 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
         return tier ? [{ ...entity, matchTier: tier }] : [];
       });
       ranked.sort(
-        (left, right) =>
-          MATCH_TIER_RANK[left.matchTier] - MATCH_TIER_RANK[right.matchTier] || order(left, right),
+        (left, right) => MATCH_TIER_RANK[left.matchTier] - MATCH_TIER_RANK[right.matchTier] || order(left, right),
       );
       return { ...page(ranked, query.data.offset, query.data.limit), kindTotals };
     } catch (error) {
@@ -716,7 +795,7 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
       const withCoHolders = (item: CampaignMemoryFact) => ({ ...item, coHolders: coHoldersOf(item.factId) });
       // Per-session and per-kind counts cover every fact about the entity, whatever the filters and page.
       const entityFacts = facts.filter((item) => item.subjectEntityId === entityId);
-      const tally = <K,>(keyOf: (fact: CampaignMemoryFact) => K) => {
+      const tally = <K>(keyOf: (fact: CampaignMemoryFact) => K) => {
         const counts = new Map<K, number>();
         for (const fact of entityFacts) counts.set(keyOf(fact), (counts.get(keyOf(fact)) ?? 0) + 1);
         return counts;
@@ -734,8 +813,7 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
           .filter((item) => !query.data.factKind || factKindOf(item) === query.data.factKind)
           .filter(
             (item) =>
-              !factSearch ||
-              `${item.predicate} ${JSON.stringify(item.value)}`.toLocaleLowerCase().includes(factSearch),
+              !factSearch || `${item.predicate} ${JSON.stringify(item.value)}`.toLocaleLowerCase().includes(factSearch),
           )
           .sort(sortRecords)
           .map(withCoHolders),
@@ -793,11 +871,13 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
         .filter((item) => item.entityId !== entityId && referenced.has(item.entityId))
         .sort(sortEntities);
       const checkedFactIds = new Set(knowledgePage.items.flatMap((item) => (item.factId ? [item.factId] : [])));
-      const allFactRecords: EvidenceRecord[] = facts.filter((item) => checkedFactIds.has(item.factId)).map((item) => ({
-        id: item.factId,
-        evidence: item.evidence,
-        manual: item.author === "user" || item.provenance.actor === "user",
-      }));
+      const allFactRecords: EvidenceRecord[] = facts
+        .filter((item) => checkedFactIds.has(item.factId))
+        .map((item) => ({
+          id: item.factId,
+          evidence: item.evidence,
+          manual: item.author === "user" || item.provenance.actor === "user",
+        }));
       const factChecks = new Map(Object.entries(sourceChecks(allFactRecords, new Map(), activeMessages)));
       const displayedSourceRecords: EvidenceRecord[] = [
         ...factPage.items.map((item) => ({
@@ -825,11 +905,13 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
       const eventChecks = new Map(
         Object.entries(
           sourceChecks(
-            events.filter((item) => referencedEventIds.has(item.eventId)).map((item) => ({
-              id: item.eventId,
-              evidence: item.evidence,
-              manual: item.provenance.actor === "user",
-            })),
+            events
+              .filter((item) => referencedEventIds.has(item.eventId))
+              .map((item) => ({
+                id: item.eventId,
+                evidence: item.evidence,
+                manual: item.provenance.actor === "user",
+              })),
             new Map(),
             activeMessages,
           ),
@@ -990,7 +1072,11 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
     const query = factsQuerySchema.safeParse(req.query ?? {});
     if (!query.success)
       return reply.status(400).send({
-        error: { code: "INVALID_QUERY", message: "Invalid campaign memory facts query", details: query.error.flatten() },
+        error: {
+          code: "INVALID_QUERY",
+          message: "Invalid campaign memory facts query",
+          details: query.error.flatten(),
+        },
       });
     const { chatId } = req.params as { chatId: string };
     try {
@@ -1046,7 +1132,13 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
         .filter((event) => event.evidence.some((item) => citedMessages.has(item.messageId)))
         .sort(sortRecords);
       const dependentEventIds = new Set(dependentEvents.map((event) => event.eventId));
-      const summaries = eventSummaries(dependentEvents, await storage.listFacts(scope), currentState, entityById, events);
+      const summaries = eventSummaries(
+        dependentEvents,
+        await storage.listFacts(scope),
+        currentState,
+        entityById,
+        events,
+      );
       return {
         knowledge: knowledge
           .filter((item) => item.factId === fact.factId)
@@ -1060,7 +1152,10 @@ export async function campaignMemoryRoutes(app: FastifyInstance) {
           .filter((item) => dependentEventIds.has(item.sourceEventId))
           .sort(sortRecords)
           .map((item) => ({ entityId: item.entityId, key: item.property, causeEventId: item.sourceEventId })),
-        events: dependentEvents.map((event) => ({ eventId: event.eventId, summary: summaries.get(event.eventId) ?? "" })),
+        events: dependentEvents.map((event) => ({
+          eventId: event.eventId,
+          summary: summaries.get(event.eventId) ?? "",
+        })),
       };
     } catch (error) {
       return errorResponse(reply, error);

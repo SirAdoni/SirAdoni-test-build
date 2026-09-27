@@ -4585,11 +4585,7 @@ class FileTableStore {
       tables,
       residentChatUnits: this.loadedUnits.size,
       dirtyTables: [...this.dirtyTables].sort(),
-      lastFlushError: flushError
-        ? flushError instanceof Error
-          ? flushError.message
-          : String(flushError)
-        : null,
+      lastFlushError: flushError ? (flushError instanceof Error ? flushError.message : String(flushError)) : null,
       quarantinedTables: this.quarantinedTables.length,
     };
   }
@@ -6212,12 +6208,7 @@ class FileTableStore {
     flushStats.currentPath = path;
     if (hookLabel !== undefined) await this.testHooks?.beforeTableWrite?.(hookLabel, content);
     const previous = this.writtenFingerprints.get(path);
-    if (
-      !recoveredFromBackup &&
-      previous &&
-      previous.fingerprint === fingerprint &&
-      fileStillMatches(path, previous)
-    ) {
+    if (!recoveredFromBackup && previous && previous.fingerprint === fingerprint && fileStillMatches(path, previous)) {
       flushStats.filesSkipped += 1;
       if (hookLabel !== undefined) this.testHooks?.onTableWriteSkipped?.(hookLabel);
       return false;

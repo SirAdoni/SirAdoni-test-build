@@ -719,9 +719,7 @@ function FloatingFrame({
     // Mirror the rendered box, or the resolver plans around a height the panel does not have: an
     // auto-height box is as tall as its content (up to autoGrowMaxHeight), a fixed one as its stored size.
     const desiredHeightFor = (naturalHeight: number) =>
-      collapsed || growsWithContent || size.height == null
-        ? Math.min(naturalHeight, growCap ?? Infinity)
-        : size.height;
+      collapsed || growsWithContent || size.height == null ? Math.min(naturalHeight, growCap ?? Infinity) : size.height;
     return registerGamePanel(host, {
       id,
       element,
@@ -1594,7 +1592,11 @@ function FloatingFrame({
               type="button"
               disabled={panelLocked}
               aria-label={t("ui.game.floatingPanel.moveNamed", { name: label })}
-              title={panelLocked ? t("ui.game.layoutEditor.lockedHint") : t("ui.game.floatingPanel.moveNamed", { name: label })}
+              title={
+                panelLocked
+                  ? t("ui.game.layoutEditor.lockedHint")
+                  : t("ui.game.floatingPanel.moveNamed", { name: label })
+              }
               className="flex h-full min-w-0 touch-none items-center gap-1 rounded-l-md pl-1 pr-1.5 enabled:cursor-grab focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--marinara-chat-chrome-accent)] disabled:cursor-default"
               onPointerDown={startDrag}
               onPointerMove={moveDrag}

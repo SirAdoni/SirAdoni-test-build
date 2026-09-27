@@ -7,12 +7,59 @@ export interface ContactCategoryState {
 export const DEFAULT_CATEGORY_IDS = ["staff", "friends", "enemies"] as const;
 
 export function displayOpinion(opinion: number | string | undefined): number | null {
-  if (typeof opinion === "number") return Number.isFinite(opinion) ? opinion : null;
+  if (typeof opinion === "number")
+    return Number.isFinite(opinion) && opinion >= -100 && opinion <= 100 ? opinion : null;
   if (typeof opinion === "string" && opinion.trim()) {
     const numeric = Number(opinion);
-    return Number.isFinite(numeric) ? numeric : null;
+    return Number.isFinite(numeric) && numeric >= -100 && numeric <= 100 ? numeric : null;
   }
   return null;
+}
+
+const RELATIONSHIP_STATUS_KEYS: Record<string, string> = {
+  "stranger-to": "strangerTo",
+  "acquaintance-of": "acquaintanceOf",
+  "neutral-toward": "neutralToward",
+  "suspicious-of": "suspiciousOf",
+  "friend-of": "friendOf",
+  "lover-of": "loverOf",
+  "enemy-of": "enemyOf",
+  "arch-nemesis-of": "archNemesisOf",
+  "eternal-ally-of": "eternalAllyOf",
+  "rival-of": "rivalOf",
+  "allied-with": "alliedWith",
+  loves: "loves",
+  hates: "hates",
+  distrusts: "distrusts",
+  "distrusted-by": "distrustedBy",
+  "betrothed-to": "betrothedTo",
+  "sworn-to": "swornTo",
+  "holds-oath-of": "holdsOathOf",
+  employs: "employs",
+  "employed-by": "employedBy",
+  "served-by": "servedBy",
+  family: "family",
+  role: "role",
+  trusts: "trusts",
+  "trusted-by": "trustedBy",
+  knows: "knows",
+  "works-with": "worksWith",
+  serves: "serves",
+  protects: "protects",
+  owes: "owes",
+  "owes-to": "owesTo",
+  "rivals-with": "rivalsWith",
+  "mentor-of": "mentorOf",
+  "student-of": "studentOf",
+  "parent-of": "parentOf",
+  "child-of": "childOf",
+  "sibling-of": "siblingOf",
+  "spouse-of": "spouseOf",
+  "ally-of": "allyOf",
+};
+
+export function relationshipStatusKey(status: string | undefined): string | null {
+  return status ? (RELATIONSHIP_STATUS_KEYS[status.trim().toLocaleLowerCase()] ?? null) : null;
 }
 
 export function contactCategoryId(name: string, used: Set<string> = new Set()) {

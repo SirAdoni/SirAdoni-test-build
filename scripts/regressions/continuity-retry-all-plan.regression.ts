@@ -5,6 +5,7 @@ import {
   isContinuityPublishOnlyRetry,
   planContinuityRetryAll,
 } from "../../packages/server/src/services/game/continuity-retry-all.js";
+import { continuityReceiptCovers } from "../../packages/server/src/services/game/continuity-retirement.js";
 
 // Retry all in the Game Memory panel plans every failed, stale or parked batch of one game: publish-only receipts
 // cost no model call, superseded copies are skipped, split parents are never re-read, and the estimate counts
@@ -12,7 +13,7 @@ import {
 
 let clock = Date.parse("2026-01-01T00:00:00.000Z");
 function source(messageId: string, hash = `hash-${messageId}`): GameContinuitySource {
-  return { messageId, swipeIndex: 0, hash, role: "assistant" } as GameContinuitySource;
+  return { messageId, swipeIndex: 0, hash, role: "assistant", content: messageId };
 }
 function receipt(id: string, patch: Partial<GameContinuityReceipt> = {}): GameContinuityReceipt {
   clock += 60_000;
@@ -164,6 +165,14 @@ assert.deepEqual(
 );
 assert.deepEqual(plan.counts, { batches: 9, modelBatches: 7, publishOnly: 2, superseded: 2, split: 1 });
 assert.equal(plan.estimatedModelCalls, 7 * CONTINUITY_RETRY_ALL_CALLS_PER_BATCH);
+assert.equal(
+  continuityReceiptCovers(newerPublished, {
+    ...supersededFailed,
+    sources: [{ ...source("turn-3"), content: undefined } as unknown as GameContinuitySource],
+  }),
+  false,
+  "malformed legacy source text never counts as covered",
+);
 
 // Nothing to do: an all-published game plans an empty run with no calls.
 const empty = planContinuityRetryAll([newerPublished, verified]);

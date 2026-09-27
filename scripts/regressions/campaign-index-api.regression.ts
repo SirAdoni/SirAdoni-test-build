@@ -82,6 +82,10 @@ try {
     }),
     // Session 4 holds more accepted turns than one manifest may carry.
     gameChat("index-s4", "index-game", 4),
+    gameChat("repair-s1", "repair-game", 1, {
+      gameSessionStatus: "concluded",
+      gameContinuity: { mode: "active" },
+    }),
     gameChat("other-s1", "other-game", 1),
   ]);
   const longMessages = Array.from({ length: LONG_TURNS }, (_, turn) => [
@@ -119,6 +123,9 @@ try {
       { id: "s3-u2", chatId: "index-s3", role: "user", content: "Alice looks down.", createdAt: at(42) },
       ...longMessages,
       { id: "s4-tail", chatId: "index-s4", role: "user", content: "Tail.", createdAt: at(100 + LONG_TURNS * 2) },
+      { id: "repair-u1", chatId: "repair-s1", role: "user", content: "First question.", createdAt: at(1000) },
+      { id: "repair-a1", chatId: "repair-s1", role: "assistant", content: "First answer.", createdAt: at(1001) },
+      { id: "repair-tail", chatId: "repair-s1", role: "user", content: "Tail.", createdAt: at(1002) },
     ]);
 
   // Stubbed provider: empty records, no provider calls; a gate holds workers so queue order can be observed.
@@ -195,7 +202,7 @@ try {
     const meta = JSON.parse((await chatStore.getById(chatId))!.metadata || "{}");
     return Array.isArray(meta.gameContinuityBackfills) ? meta.gameContinuityBackfills : [];
   };
-  const jobOf = async () => JSON.parse((await chatStore.getById("index-s1"))!.metadata).campaignIndexJob;
+  const jobOf = async (chatId = "index-s1") => JSON.parse((await chatStore.getById(chatId))!.metadata).campaignIndexJob;
   const statuses = async (chatId: string) => (await storage.list(chatId)).map((receipt) => receipt.status);
   const waitFor = async (label: string, check: () => Promise<boolean>) => {
     for (let attempt = 0; attempt < 400; attempt += 1) {
@@ -245,7 +252,7 @@ try {
   assert.equal((await get("/api/game/campaign-index/plan?chatId=index-s2")).json().games[0].gameId, "index-game");
   assert.deepEqual(
     (await get("/api/game/campaign-index/plan")).json().games.map((item: { gameId: string }) => item.gameId),
-    ["index-game", "other-game"],
+    ["index-game", "other-game", "repair-game"],
     "omitting the scope lists every game",
   );
 
@@ -389,6 +396,25 @@ try {
   assert.equal(job.sessions["index-s4"].backfillIds.length, 2, "59 turns split into 45 + 14");
   assert.equal((await manifestsOf("index-s4")).length, 3);
   assert.equal((await post("/api/game/campaign-index/cancel", { gameId: "index-game" })).statusCode, 200);
+
+  // A completed concluded session is repaired by the scheduler when later history arrives.
+  const repairRun = await post("/api/game/campaign-index/run", {
+    gameId: "repair-game",
+    steps: { registerOwners: false, backfill: true, publishVerified: false },
+  });
+  assert.equal(repairRun.statusCode, 200, repairRun.body);
+  await waitFor("repair session verified", settled("repair-s1"));
+  await tickCampaignIndexJobs(app);
+  assert.equal((await jobOf("repair-s1")).status, "done");
+  await db.insert(messages).values([
+    { id: "repair-u2", chatId: "repair-s1", role: "user", content: "Second question.", createdAt: at(1003) },
+    { id: "repair-a2", chatId: "repair-s1", role: "assistant", content: "Second answer.", createdAt: at(1004) },
+    { id: "repair-tail-2", chatId: "repair-s1", role: "user", content: "Tail again.", createdAt: at(1005) },
+  ]);
+  await tickCampaignIndexJobs(app);
+  const repairedJob = await jobOf("repair-s1");
+  assert.equal(repairedJob.status, "running", "the scheduler reopens a completed concluded session with new history");
+  assert.equal(repairedJob.sessions["repair-s1"].status, "enqueued");
 
   await app.close();
   app = null;

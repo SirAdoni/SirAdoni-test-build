@@ -1,7 +1,9 @@
 // ──────────────────────────────────────────────
 // Game: Compact Party Portraits Bar (top-left, horizontal)
 // ──────────────────────────────────────────────
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { visibleViewportSpaceBelow } from "../../hooks/use-visible-viewport-max-height";
 import { X } from "lucide-react";
 import { useGameModeStore } from "../../stores/game-mode.store";
 import type { AvatarCrop } from "@marinara-engine/shared";
@@ -189,6 +191,43 @@ export function GamePartyBar({
   const [previewFocused, setPreviewFocused] = useState(false);
   const mobileMenuRef = useRef<HTMLDivElement | null>(null);
   const mobileMenuToggleRef = useRef<HTMLButtonElement | null>(null);
+  const mobilePopupRef = useRef<HTMLDivElement | null>(null);
+  const [menuPosition, setMenuPosition] = useState({ left: 12, top: 12, maxHeight: 300 });
+
+  // Match other mobile menus: portal above scene widgets, while leaving the desktop bar inline.
+  useLayoutEffect(() => {
+    if (!mobileMenuOpen || partyMembers.length <= 1) return;
+    const measure = () => {
+      const trigger = mobileMenuToggleRef.current;
+      const popup = mobilePopupRef.current;
+      if (!trigger || !popup) return;
+      const rect = trigger.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) {
+        setMobileMenuOpen(false);
+        return;
+      }
+      const viewport = window.visualViewport;
+      const leftEdge = viewport?.offsetLeft ?? 0;
+      const topEdge = viewport?.offsetTop ?? 0;
+      const right = leftEdge + (viewport?.width ?? window.innerWidth);
+      const bottom = topEdge + (viewport?.height ?? window.innerHeight);
+      const left = Math.max(leftEdge + 12, Math.min(rect.left, right - popup.getBoundingClientRect().width - 12));
+      const top = Math.max(topEdge + 12, Math.min(rect.bottom + 6, bottom - 100));
+      setMenuPosition({ left, top, maxHeight: visibleViewportSpaceBelow(top, viewport, window.innerHeight) });
+    };
+    measure();
+    mobilePopupRef.current?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    window.visualViewport?.addEventListener("resize", measure);
+    window.visualViewport?.addEventListener("scroll", measure);
+    return () => {
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+      window.visualViewport?.removeEventListener("resize", measure);
+      window.visualViewport?.removeEventListener("scroll", measure);
+    };
+  }, [mobileMenuOpen, partyMembers.length]);
 
   const memberVisuals = useMemo(
     () =>
@@ -238,7 +277,7 @@ export function GamePartyBar({
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
-      if (mobileMenuRef.current?.contains(target)) return;
+      if (mobileMenuRef.current?.contains(target) || mobilePopupRef.current?.contains(target)) return;
       setMobileMenuOpen(false);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -276,7 +315,7 @@ export function GamePartyBar({
       }}
       disabled={removingPartyMemberId === member.id}
       className={cn(
-        "absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-[var(--marinara-chat-chrome-button-text-hover)] shadow-md transition-colors hover:bg-[var(--destructive)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)] disabled:cursor-not-allowed disabled:opacity-60 before:absolute before:-inset-2 before:content-['']",
+        "relative flex h-11 w-11 shrink-0 lg:h-6 lg:w-6 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-[var(--marinara-chat-chrome-button-text-hover)] shadow-md transition-colors hover:bg-[var(--destructive)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)] disabled:cursor-not-allowed disabled:opacity-60",
         extraClassName,
       )}
       aria-label={localizeUi("ui.game.gamepartybar.removeValue1FromParty", { value1: member.name })}
@@ -300,7 +339,7 @@ export function GamePartyBar({
               if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setPreviewFocused(false);
             }}
           >
-            <div className="group relative shrink-0">
+            <div className="group relative flex shrink-0 items-center gap-1">
               <PartyAvatar
                 visual={memberVisuals[previewIndex]}
                 className="h-9 w-9"
@@ -334,38 +373,48 @@ export function GamePartyBar({
           </div>
         )}
 
-        {mobileMenuOpen && memberVisuals.length > 1 && (
-          <div
-            className={cn(
-              NEUTRAL_SURFACE_VARIABLES,
-              "marinara-chat-popover absolute left-0 top-[calc(100%+0.375rem)] z-50 rounded-xl border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-panel-bg)] p-1.5 shadow-2xl backdrop-blur-md",
-            )}
-          >
-            {/* p-1 keeps the corner remove buttons inside the scroll box instead of clipping them. */}
-            <div className="flex max-h-[min(44svh,18rem)] flex-col items-center gap-1.5 overflow-y-auto overscroll-contain p-1 [-webkit-overflow-scrolling:touch]">
-              {memberVisuals.map((visual) => (
-                <div key={visual.member.id} className="group relative shrink-0">
-                  <div
-                    title={localizeUi("ui.game.gamepartybar.value1ClickToOpenCharacterSheet", {
-                      value1: visual.member.name,
-                    })}
-                  >
-                    <PartyAvatar
-                      visual={visual}
-                      className="h-9 w-9"
-                      label={describeMember(visual)}
-                      onOpen={() => {
-                        openCharacterSheet(visual.sheetId);
-                        setMobileMenuOpen(false);
-                      }}
-                    />
+        {mobileMenuOpen &&
+          memberVisuals.length > 1 &&
+          createPortal(
+            <div
+              ref={mobilePopupRef}
+              data-game-party-popover
+              style={{
+                left: menuPosition.left,
+                top: menuPosition.top,
+                maxHeight: `calc(${menuPosition.maxHeight}px - env(safe-area-inset-bottom, 0px))`,
+              }}
+              className={cn(
+                NEUTRAL_SURFACE_VARIABLES,
+                "marinara-chat-popover fixed z-[9999] flex max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded-xl border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-panel-bg)] p-1.5 shadow-2xl backdrop-blur-md",
+              )}
+            >
+              {/* Padding keeps keyboard focus rings inside the scroll box. */}
+              <div className="flex min-h-0 max-h-[min(44svh,18rem)] flex-col items-center gap-1.5 overflow-y-auto overscroll-contain p-1 [-webkit-overflow-scrolling:touch]">
+                {memberVisuals.map((visual) => (
+                  <div key={visual.member.id} className="group relative flex shrink-0 items-center gap-1">
+                    <div
+                      title={localizeUi("ui.game.gamepartybar.value1ClickToOpenCharacterSheet", {
+                        value1: visual.member.name,
+                      })}
+                    >
+                      <PartyAvatar
+                        visual={visual}
+                        className="h-9 w-9"
+                        label={describeMember(visual)}
+                        onOpen={() => {
+                          openCharacterSheet(visual.sheetId);
+                          setMobileMenuOpen(false);
+                        }}
+                      />
+                    </div>
+                    {canRemoveMember(visual.member) && renderRemoveButton(visual.member)}
                   </div>
-                  {canRemoveMember(visual.member) && renderRemoveButton(visual.member)}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+                ))}
+              </div>
+            </div>,
+            document.body,
+          )}
       </div>
 
       <div className="scrollbar-hide hidden max-w-full touch-pan-x items-center gap-1.5 overflow-x-auto px-0.5 py-1 [-webkit-overflow-scrolling:touch] lg:flex">
@@ -375,7 +424,7 @@ export function GamePartyBar({
           return (
             <div
               key={member.id}
-              className="group relative shrink-0 origin-left transition-transform duration-150 ease-out hover:scale-[1.03] active:scale-[0.98]"
+              className="group relative flex shrink-0 items-center gap-1 origin-left transition-transform duration-150 ease-out hover:scale-[1.03] active:scale-[0.98]"
             >
               <div title={localizeUi("ui.game.gamepartybar.value1ClickToOpenCharacterSheet", { value1: member.name })}>
                 <PartyAvatar

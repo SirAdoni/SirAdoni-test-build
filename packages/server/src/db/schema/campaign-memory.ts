@@ -114,6 +114,7 @@ export const campaignMemoryRelationships = fileTable("campaign_memory_relationsh
   targetEntityId: text("target_entity_id").notNull(),
   type: text("type").notNull(),
   inverseLabel: text("inverse_label").notNull(),
+  notes: text("notes"),
   status: text("status").notNull(),
   effectiveFrom: text("effective_from"),
   effectiveTo: text("effective_to"),

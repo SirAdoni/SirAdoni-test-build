@@ -106,6 +106,7 @@ import {
   nameColorStyle,
   type SpeakerAvatarInfo,
 } from "./GameNarrationVisuals";
+import { GameTurnReview } from "./GameTurnReview";
 
 const GamePeekPromptButton = lazy(() => import("./GamePeekPromptButton"));
 
@@ -2623,6 +2624,34 @@ export function GameNarration({
     [segments],
   );
 
+  const handleTurnReviewSourceSelect = useCallback(
+    (evidence: { messageId: string; swipeIndex: number; quote: string }) => {
+      const targetIndex = segments.findIndex((segment) => {
+        if (segment.sourceMessageId !== evidence.messageId) return false;
+        const content = stripGmTagsKeepReadables(segment.content).toLowerCase();
+        return content.includes(evidence.quote.trim().toLowerCase());
+      });
+      if (targetIndex >= 0) {
+        revealSegmentFully(targetIndex);
+        activeSegmentScrollRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        return;
+      }
+
+      const normalizedQuote = evidence.quote.trim().toLowerCase();
+      const targetLogIndex = flatLogEntries.findIndex(
+        (entry) =>
+          entry.messageId === evidence.messageId &&
+          stripGmTagsKeepReadables(entry.segment.content).toLowerCase().includes(normalizedQuote),
+      );
+      const fallbackLogIndex = flatLogEntries.findIndex((entry) => entry.messageId === evidence.messageId);
+      if (targetLogIndex >= 0 || fallbackLogIndex >= 0) {
+        const index = targetLogIndex >= 0 ? targetLogIndex : fallbackLogIndex;
+        onSetReviewOffset?.(Math.max(0, flatLogEntries.length - index - 1));
+      }
+    },
+    [flatLogEntries, onSetReviewOffset, revealSegmentFully, segments],
+  );
+
   const prepareLogDeleteNavigation = useCallback(
     (deletedLogKey: string, liveSegmentIndex: number) => {
       const deletedLogIndex = flatLogEntries.findIndex((entry) => getFlatLogEntryKey(entry) === deletedLogKey);
@@ -4010,6 +4039,10 @@ export function GameNarration({
   const emptySceneInputVisible = !scenePreparing && !active && !isStreaming && !sceneAnalysisFailed && !!inputSlot;
   const narrationInputVisible = playerInputAvailable || emptySceneInputVisible;
   const activeSourceRole = activeSourceMessage?.role ?? active?.sourceRole ?? null;
+  const turnReviewMessage =
+    activeSourceMessage && (activeSourceMessage.role === "assistant" || activeSourceMessage.role === "narrator")
+      ? activeSourceMessage
+      : latestAssistant;
   const activeCanBranchAtInput = !!(
     playerInputAvailable &&
     onBranchMessage &&
@@ -5548,6 +5581,15 @@ export function GameNarration({
 
               {!scenePreparing && combatStatusNotice}
 
+              {!scenePreparing && !isStreaming && narrationComplete && turnReviewMessage?.chatId && (
+                <GameTurnReview
+                  chatId={turnReviewMessage.chatId}
+                  messageId={turnReviewMessage.id}
+                  swipeIndex={turnReviewMessage.activeSwipeIndex ?? 0}
+                  onSourceSelect={handleTurnReviewSourceSelect}
+                />
+              )}
+
               {/* Inline input — appears inside the narration box once all segments are read,
               or after the player has CONFIRMED an interrupt (not just opened the modal).
               Gating on `interruptCommitted` (not `interruptPending`) keeps the input bar
@@ -6883,11 +6925,54 @@ function truncateMessageContentAtSourceSegment(rawContent: string, segmentIndexI
 }
 
 const INLINE_DIALOGUE_VERBS = [
-  "said", "says", "whispered", "whispers", "muttered", "mutters", "replied", "replies", "called", "calls",
-  "shouted", "shouts", "asked", "asks", "warned", "warns", "growled", "growls", "hissed", "hisses",
-  "exclaimed", "exclaims", "murmured", "murmurs", "sighed", "sighs", "snapped", "snaps", "barked", "barks",
-  "declared", "declares", "continued", "continues", "added", "adds", "spoke", "speaks", "began", "begins",
-  "remarked", "remarks", "chuckled", "chuckles", "laughed", "laughs", "cried", "cries",
+  "said",
+  "says",
+  "whispered",
+  "whispers",
+  "muttered",
+  "mutters",
+  "replied",
+  "replies",
+  "called",
+  "calls",
+  "shouted",
+  "shouts",
+  "asked",
+  "asks",
+  "warned",
+  "warns",
+  "growled",
+  "growls",
+  "hissed",
+  "hisses",
+  "exclaimed",
+  "exclaims",
+  "murmured",
+  "murmurs",
+  "sighed",
+  "sighs",
+  "snapped",
+  "snaps",
+  "barked",
+  "barks",
+  "declared",
+  "declares",
+  "continued",
+  "continues",
+  "added",
+  "adds",
+  "spoke",
+  "speaks",
+  "began",
+  "begins",
+  "remarked",
+  "remarks",
+  "chuckled",
+  "chuckles",
+  "laughed",
+  "laughs",
+  "cried",
+  "cries",
 ];
 
 // Capitalized words that look like a speaker but are pronouns or articles ("He said", "The guard said").

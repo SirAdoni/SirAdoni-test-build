@@ -47,6 +47,14 @@ import {
   promptDecisionCacheKey,
 } from "../../services/decision/prompt-decisions.js";
 import { gameGmPromptDecisionTexts } from "../../services/generation/game-gm-prompt-runtime.js";
+import {
+  parseGamePromptTextReplacements,
+  replaceGamePromptText,
+} from "../../services/game/game-prompt-text-replacements.js";
+import {
+  applyGamePromptDirectEdits,
+  parseGamePromptDirectEdits,
+} from "../../services/game/game-prompt-direct-edits.js";
 import { DECISION_SETTINGS_KEYS } from "../../services/decision/decision-default.js";
 import { createPromptsStorage } from "../../services/storage/prompts.storage.js";
 import { createCharactersStorage } from "../../services/storage/characters.storage.js";
@@ -1731,7 +1739,10 @@ export async function registerDryRunRoute(app: FastifyInstance) {
       const customPrompt = resolveGameGmPromptTemplate(chatMeta, setupConfig);
       const selectedGamePrompt = presetStringField(effectivePreset as Record<string, unknown> | null, "gamePrompt");
       const gamePromptTemplate = customPrompt ?? (selectedGamePrompt || DEFAULT_GAME_SYSTEM_PROMPT);
-      const renderedGamePrompt = resolvePromptMacros(gamePromptTemplate);
+      const renderedGamePrompt = replaceGamePromptText(
+        resolvePromptMacros(gamePromptTemplate),
+        parseGamePromptTextReplacements(chatMeta.gamePromptTextReplacements) ?? [],
+      );
       finalMessages = [{ role: "system", content: renderedGamePrompt }, ...finalMessages];
     }
 
@@ -1850,7 +1861,10 @@ export async function registerDryRunRoute(app: FastifyInstance) {
     }
 
     if (chatMode === "game") {
-      const gameSpecialInstructionsPrompt = buildGameSpecialInstructionsPrompt(chatMeta.gameSpecialInstructions);
+      const gameSpecialInstructionsPrompt = buildGameSpecialInstructionsPrompt(
+        chatMeta.gameSpecialInstructions,
+        parseGamePromptTextReplacements(chatMeta.gamePromptTextReplacements) ?? [],
+      );
       if (gameSpecialInstructionsPrompt) {
         appendToFirstSystemMessage(finalMessages, resolvePromptMacros(gameSpecialInstructionsPrompt));
       }
@@ -1917,12 +1931,22 @@ export async function registerDryRunRoute(app: FastifyInstance) {
     // ── Impersonate: same instruction block as POST /api/generate (no DB writes) ──
     if (impersonate) {
       const impersonateInstruction = buildImpersonateInstruction({
+        gameMode: chatMode === "game",
         customPrompt: body.impersonatePromptTemplate ?? chatMeta.impersonatePrompt,
         direction: userMessage,
         personaName,
         personaDescription,
       });
-      finalMessages.push({ role: "user", content: impersonateInstruction });
+      // Match live Game impersonation priority before provider-specific system splitting.
+      if (chatMode === "game") {
+        const firstNonSystem = finalMessages.findIndex((message) => message.role !== "system");
+        finalMessages.splice(firstNonSystem < 0 ? finalMessages.length : firstNonSystem, 0, {
+          role: "system",
+          content: impersonateInstruction,
+        });
+      } else {
+        finalMessages.push({ role: "user", content: impersonateInstruction });
+      }
     }
 
     // Optional post-processing: in preset mode, re-wrap conversation as <chat_history> + <last_message>.
@@ -2168,7 +2192,15 @@ export async function registerDryRunRoute(app: FastifyInstance) {
           maxTokens,
         });
     if (advancedContext) effectiveMaxContext = advancedContext.maxContext;
-    const providerMessages = advancedContext ? fit.messages : prepareProviderMessages(fit.messages);
+    const providerMessages =
+      chat.mode === "game"
+        ? applyGamePromptDirectEdits(
+            advancedContext ? fit.messages : prepareProviderMessages(fit.messages),
+            parseGamePromptDirectEdits(chatMeta.gamePromptDirectEdits) ?? [],
+          )
+        : advancedContext
+          ? fit.messages
+          : prepareProviderMessages(fit.messages);
     const maxTokensForSend = fit.maxTokensForSend;
 
     // Prompt preview mode: return the exact prompt shape that would be sent.

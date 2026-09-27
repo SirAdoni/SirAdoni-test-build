@@ -69,7 +69,9 @@ function canonStatementKey(value: unknown, evidence: ReadonlyArray<{ messageId: 
 
 async function loadUserRetractedStatements(
   storage: {
-    listFacts(scope: { chatId: string }): Promise<
+    listFacts(scope: {
+      chatId: string;
+    }): Promise<
       Array<{ value: unknown; evidence: ReadonlyArray<{ messageId: string }>; status: string; manualLock: boolean }>
     >;
   },
@@ -78,14 +80,16 @@ async function loadUserRetractedStatements(
 ): Promise<Set<string>> {
   let pending = cache.get(chatId);
   if (!pending) {
-    pending = storage.listFacts({ chatId }).then(
-      (facts) =>
-        new Set(
-          facts
-            .filter((fact) => fact.status === "retracted" && fact.manualLock)
-            .map((fact) => canonStatementKey(fact.value, fact.evidence)),
-        ),
-    );
+    pending = storage
+      .listFacts({ chatId })
+      .then(
+        (facts) =>
+          new Set(
+            facts
+              .filter((fact) => fact.status === "retracted" && fact.manualLock)
+              .map((fact) => canonStatementKey(fact.value, fact.evidence)),
+          ),
+      );
     cache.set(chatId, pending);
   }
   return pending;
@@ -575,7 +579,10 @@ async function continuityBookBelongsToChat(
 ): Promise<boolean> {
   if (book.chatId === chatId) return true;
   if (!book.chatId || book.sourceAgentId !== GAME_LOREBOOK_KEEPER_SOURCE_ID) return false;
-  const rows = await tx.select().from(chats).where(inArray(chats.id, [book.chatId, chatId]));
+  const rows = await tx
+    .select()
+    .from(chats)
+    .where(inArray(chats.id, [book.chatId, chatId]));
   const owner = rows.find((row) => row.id === book.chatId);
   const current = rows.find((row) => row.id === chatId);
   if (!owner || !current || owner.mode !== "game" || current.mode !== "game") return false;
@@ -855,7 +862,10 @@ export async function publishContinuityMemory(
       const existingFact = await memoryStorage.getFact({ chatId: receipt.chatId }, factId);
       // A statement the user retracted and locked is canon that it is false: a re-read of the same text (a new
       // receipt, a backfill, a repair) must not publish it again under a new fact id.
-      if (!existingFact && (await userRetractedStatements()).has(canonStatementKey(factInput.value, factInput.evidence))) {
+      if (
+        !existingFact &&
+        (await userRetractedStatements()).has(canonStatementKey(factInput.value, factInput.evidence))
+      ) {
         if (factId === primaryFact.factId) primaryLocked = true;
         continue;
       }

@@ -43,6 +43,55 @@ const VALID_DIRECTION_EFFECTS = new Set<DirectionCommand["effect"]>([
 const VALID_DIRECTION_TARGETS = new Set<NonNullable<DirectionCommand["target"]>>(["background", "content", "all"]);
 const VALID_SCENE_TIME_OF_DAY = new Set(["dawn", "morning", "afternoon", "evening", "night", "midnight"]);
 
+export type SceneClockEvidence = {
+  elapsedMinutes: number;
+  timeEvidence: string | null;
+};
+
+/** Deterministic gate for route writers: evidence must occur verbatim in supplied text and describe elapsed time. */
+export function validateSceneClockEvidence(input: SceneClockEvidence, sources: readonly string[]): SceneClockEvidence {
+  if (
+    !Number.isInteger(input.elapsedMinutes) ||
+    input.elapsedMinutes <= 0 ||
+    input.elapsedMinutes > 1440 ||
+    !input.timeEvidence
+  ) {
+    return { elapsedMinutes: 0, timeEvidence: null };
+  }
+  const evidence = input.timeEvidence.trim();
+  const source = sources.filter((value) => typeof value === "string").join("\n");
+  if (!evidence || !source.includes(evidence)) return { elapsedMinutes: 0, timeEvidence: null };
+  // Future plans and deadlines are not elapsed time, even when they contain a duration.
+  if (/\b(?:in|within|before|by|will|would|shall|should|plan(?:ned)?|wait|waiting|meet|return)\b/iu.test(evidence)) {
+    return { elapsedMinutes: 0, timeEvidence: null };
+  }
+  if (
+    !/(?:\b(?:after|for|lasted|passed|elapsed|spent|waited)\b[\s\S]{0,40}\b\d+\s+(?:minutes?|hours?|days?)\b|\b\d+\s+(?:minutes?|hours?|days?)\s+(?:later|had passed|elapsed)\b)/iu.test(
+      evidence,
+    )
+  ) {
+    return { elapsedMinutes: 0, timeEvidence: null };
+  }
+  const durationMatches = [...evidence.matchAll(/\b(\d+)\s+(minute|minutes|hour|hours|day|days)\b/giu)];
+  if (durationMatches.length !== 1) return { elapsedMinutes: 0, timeEvidence: null };
+  const amount = Number(durationMatches[0]![1]);
+  const unit = durationMatches[0]![2]!.toLowerCase();
+  const derivedMinutes = amount * (unit.startsWith("day") ? 1440 : unit.startsWith("hour") ? 60 : 1);
+  if (!Number.isSafeInteger(derivedMinutes) || derivedMinutes !== input.elapsedMinutes || derivedMinutes > 1440) {
+    return { elapsedMinutes: 0, timeEvidence: null };
+  }
+  return input;
+}
+
+function normalizeSceneClockEvidence(raw: Record<string, unknown>): SceneClockEvidence {
+  const rawMinutes = typeof raw.elapsedMinutes === "number" ? raw.elapsedMinutes : Number(raw.elapsedMinutes);
+  const elapsedMinutes = Number.isInteger(rawMinutes) && rawMinutes >= 0 && rawMinutes <= 1440 ? rawMinutes : 0;
+  const evidence = sanitizeString(raw.timeEvidence)?.slice(0, 500) ?? null;
+  return elapsedMinutes > 0 && evidence
+    ? { elapsedMinutes, timeEvidence: evidence }
+    : { elapsedMinutes: 0, timeEvidence: null };
+}
+
 function normalizeSceneTimeOfDay(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();
@@ -334,6 +383,7 @@ function capCombinedDirections(result: SceneAnalysis): SceneAnalysis {
 export function postProcessSceneResult(raw: SceneAnalysis, ctx: PostProcessContext): SceneAnalysis {
   const result = { ...raw };
   const rawRecord = raw as unknown as Record<string, unknown>;
+  Object.assign(result as object, normalizeSceneClockEvidence(rawRecord));
 
   // ── Sanitize string "null" → actual null (grammar sometimes emits the string) ──
   if (result.background === "null") result.background = null;

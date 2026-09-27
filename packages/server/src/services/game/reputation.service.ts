@@ -8,7 +8,7 @@
 import type { GameNpc } from "@marinara-engine/shared";
 
 /** Action tags and their default reputation modifiers. */
-const ACTION_MODIFIERS: Record<string, number> = {
+export const REPUTATION_ACTION_MODIFIERS: Record<string, number> = {
   // Positive
   helped: 15,
   rescued: 25,
@@ -39,6 +39,15 @@ const ACTION_MODIFIERS: Record<string, number> = {
   persuaded: 2,
   bribed: -3,
 };
+
+export const REPUTATION_ACTIONS = Object.keys(REPUTATION_ACTION_MODIFIERS);
+
+export function isSupportedReputationAction(action: string, modifier?: number): boolean {
+  return (
+    Object.hasOwn(REPUTATION_ACTION_MODIFIERS, action.trim().toLowerCase()) ||
+    (modifier !== undefined && Number.isFinite(modifier) && modifier >= -100 && modifier <= 100)
+  );
+}
 
 export type ReputationTier = "devoted" | "allied" | "friendly" | "neutral" | "unfriendly" | "hostile" | "enemy";
 
@@ -118,8 +127,12 @@ export function applyReputationChange(
   action: string,
   customModifier?: number,
 ): { npc: GameNpc; change: number; newTier: ReputationTier; milestone: RelationshipMilestone | null } {
-  const modifier = customModifier ?? ACTION_MODIFIERS[action] ?? 0;
-  const oldReputation = npc.reputation;
+  const normalizedAction = action.trim().toLowerCase();
+  if (!isSupportedReputationAction(normalizedAction, customModifier)) {
+    throw new Error(`Unsupported reputation action: ${action}`);
+  }
+  const modifier = customModifier ?? REPUTATION_ACTION_MODIFIERS[normalizedAction]!;
+  const oldReputation = Number.isFinite(npc.reputation) ? npc.reputation : 0;
   const newReputation = Math.max(-100, Math.min(100, oldReputation + modifier));
   const newTier = getReputationTier(newReputation);
   const milestone = detectMilestone(npc.name, oldReputation, newReputation);
@@ -127,9 +140,10 @@ export function applyReputationChange(
   const updated: GameNpc = {
     ...npc,
     reputation: newReputation,
+    reputationObserved: true,
     notes: [
-      ...npc.notes,
-      `[${action}] reputation ${modifier >= 0 ? "+" : ""}${modifier} → ${newReputation} (${newTier})`,
+      ...(npc.notes ?? []),
+      `[${normalizedAction}] reputation ${modifier >= 0 ? "+" : ""}${modifier} → ${newReputation} (${newTier})`,
       ...(milestone ? [`🏛️ Milestone: ${milestone.description}`] : []),
     ],
   };
@@ -152,16 +166,13 @@ export function processReputationActions(
   const milestones: RelationshipMilestone[] = [];
 
   for (const { npcId, action, modifier } of actions) {
+    if (!isSupportedReputationAction(action, modifier)) continue;
     // Support both ID-based and name-based lookup
     let npc = npcMap.get(npcId);
     if (!npc) {
-      // Try matching by name (case-insensitive)
-      for (const [, n] of npcMap) {
-        if (n.name.toLowerCase() === npcId.toLowerCase()) {
-          npc = n;
-          break;
-        }
-      }
+      // Names are accepted only when unique; two people sharing a name must not share a score.
+      const matches = [...npcMap.values()].filter((n) => n.name.trim().toLowerCase() === npcId.trim().toLowerCase());
+      if (matches.length === 1) npc = matches[0];
     }
     if (!npc) continue;
 

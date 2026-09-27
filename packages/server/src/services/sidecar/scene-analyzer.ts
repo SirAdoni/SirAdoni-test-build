@@ -17,6 +17,7 @@ import {
   type GameActiveState,
   type SceneSpotifyTrackCandidate,
 } from "@marinara-engine/shared";
+import { REPUTATION_ACTIONS } from "../game/reputation.service.js";
 
 export interface SceneAnalyzerContext {
   /** Current game state before this turn. */
@@ -61,6 +62,8 @@ export interface SceneAnalyzerContext {
   currentWeather: string | null;
   /** Current time of day. */
   currentTimeOfDay: string | null;
+  /** Exact server clock before this turn; phase labels must not replace it without evidence. */
+  currentGameTime?: { day: number; hour: number; minute: number } | null;
   /** Game setup genre, e.g. fantasy, sci-fi, modern. */
   genre?: string | null;
   /** Game setup setting, e.g. medieval kingdom, cyberpunk city. */
@@ -282,6 +285,11 @@ export function buildSceneAnalyzerUserPrompt(
     parts.push(
       ``,
       `Current: state=${ctx.currentState}, location=${ctx.currentLocation ?? "unset"}, bg=${ctx.currentBackground ?? "none"}, weather=${ctx.currentWeather ?? "unset"}, time=${ctx.currentTimeOfDay ?? "unset"}`,
+      ...(ctx.currentGameTime
+        ? [
+            `Exact server clock: Day ${ctx.currentGameTime.day}, ${String(ctx.currentGameTime.hour).padStart(2, "0")}:${String(ctx.currentGameTime.minute).padStart(2, "0")}`,
+          ]
+        : []),
     );
     const worldContext = [
       ctx.genre ? `genre=${compactPromptLabel(ctx.genre)}` : "",
@@ -325,8 +333,9 @@ export function buildSceneAnalyzerUserPrompt(
       : [
           `2. AUDIO DIRECTION — Choose compact musicGenre/musicIntensity/locationKind hints. Do NOT choose music or ambient file tags; Marinara maps these hints to assets deterministically. Do NOT output spotifyTrack.`,
         ]),
-    `3. REPUTATION — If an NPC relationship shifted, note it. Otherwise empty array.`,
-    `4. PER-BEAT EFFECTS — Scan the provided narration beats using their original indices [0]-[${maxSegmentIndex}]. For each beat you can optionally add:`,
+    `3. TIME — Set elapsedMinutes to an integer from 0 to 1440 only when player_action or narration explicitly and reliably states elapsed in-world time. Set it to 0 when no exact duration is stated. Set timeEvidence to one short exact contiguous quote proving that duration, or null when elapsedMinutes is 0. Never infer duration from dialogue length, mood, lighting, travel implication, or a coarse timeOfDay label.`,
+    `4. REPUTATION — If an NPC relationship shifted, note it. Otherwise empty array.`,
+    `5. PER-BEAT EFFECTS — Scan the provided narration beats using their original indices [0]-[${maxSegmentIndex}]. For each beat you can optionally add:`,
     `   - "sfx": ${
       generateSoundEffects
         ? "short, concrete sound-generation prompts (for example: quiet footsteps on wet stone, distant wooden door slam)"
@@ -355,7 +364,7 @@ export function buildSceneAnalyzerUserPrompt(
     ``,
     `RULES:`,
     `- Process narration beats in chronological order. The last explicit scene state wins; do not move a later disclosure or state backward, infer an unshown return, or use absence from narration as evidence.`,
-    `- For reputationChanges, require a concrete depicted relationship change. One disagreement, routine assistance, an NPC's interpretation, or praise/criticism without a changed stance is not enough; keep the array empty.`,
+    `- For reputationChanges, require a concrete action and a depicted NPC reaction or stated shift in stance. Do not infer a change from politeness, a passing mood, or an action the NPC did not witness. Use only these exact action IDs: ${REPUTATION_ACTIONS.join(", ")}. Do not score the same event twice.`,
     `- Use ONLY the exact tags listed in the template below for asset-backed fields. If backgrounds:generated:<short-location-slug> is listed, replace <short-location-slug> with a short concrete location slug.${
       generateSoundEffects
         ? " Generated sound-effect prompts are the only exception: describe the requested sound plainly."
@@ -373,7 +382,7 @@ export function buildSceneAnalyzerUserPrompt(
           `- Do not include spotifyTrack when Spotify music is disabled.`,
         ]),
     `- locationKind describes the physical space for ambience: interior, exterior, underground, urban, or nature. Use null if unclear.`,
-    `- timeOfDay is calendar time, not lighting mood. Do NOT change it for indoor shadows, lamps, dark rooms, or atmosphere; keep null unless the story clearly moved to a new time of day. Use morning after an overnight sleep/wake-up, evening for sunset/dusk, night for nightfall, and midnight only for the middle of the night.`,
+    `- timeOfDay is calendar time, not lighting mood. Do NOT change it for indoor shadows, lamps, dark rooms, or atmosphere; keep null unless the story clearly moved to a new time of day. A phase label alone never advances the exact clock or implies a day rollover; elapsedMinutes is the only automatic time advancement signal.`,
     `- segmentEffects can be an EMPTY array [] when nothing changed.`,
     `- Cinematic directions are spice, not punctuation. Use at most 2 total directions per turn, and never more than 1 direction in any 3-beat span. Prefer none for routine dialogue.`,
     `- Use directions for real visual beats: a door slamming, a blade impact, thunder, a memory fracture, a kiss/reveal close-up, a panic spike, a scene transition, or a major emotional turn. Do not attach directions to every line.`,
@@ -417,7 +426,9 @@ export function buildSceneAnalyzerUserPrompt(
   // NPC names for reputation
   const npcNames = ctx?.trackedNpcs?.length ? ctx.trackedNpcs.map((n) => n.name) : [];
   const reputationHint =
-    npcNames.length > 0 ? `[{"npcName":"<${npcNames.join(" | ")}>","action":"<what changed>"}] or []` : `[]`;
+    npcNames.length > 0
+      ? `[{"npcName":"<${npcNames.join(" | ")}>","action":"<one exact action ID from RULES>"}] or []`
+      : `[]`;
 
   // SFX options for segment effects
   const sfxLine = generateSoundEffects
@@ -449,6 +460,8 @@ export function buildSceneAnalyzerUserPrompt(
     `  "background": "<one BACKGROUND OPTIONS value | null>",`,
     `  "weather": "<clear | cloudy | foggy | rainy | stormy | snowy | windy | frost | null>",`,
     `  "timeOfDay": "<dawn | morning | afternoon | evening | night | midnight | null>",`,
+    `  "elapsedMinutes": <integer 0-1440>,`,
+    `  "timeEvidence": "<exact contiguous quote proving elapsedMinutes> | null",`,
     `  "locationKind": "<${locationKindOptions}>",`,
     ...(useSpotifyMusic
       ? [

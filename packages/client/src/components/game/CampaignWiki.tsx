@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   BookMarked,
@@ -903,7 +903,10 @@ function groupByMatchTier(items: CampaignMemoryEntityListItem[], query: string) 
 
 type ReaderView = "home" | "timeline" | ToolPage;
 /** Campaign-wide tool pages opened from the front page. */
-type ToolPage = "review" | "canon";
+type ToolPage = "review" | "canon" | "factions";
+const CampaignFactionWeb = lazy(() =>
+  import("./CampaignFactionWeb").then((module) => ({ default: module.CampaignFactionWeb })),
+);
 type TimelineTab = "events" | "promises";
 
 export function CampaignWiki({
@@ -1030,7 +1033,7 @@ export function CampaignWiki({
     return true;
   };
   const selectEntity = (id: string) => {
-    if (editing && !confirmEditorExit()) return;
+    if (!confirmEditorExit()) return;
     setSelectedId(id);
     setCampaignTimeline(false);
     setOverviewOpen(false);
@@ -1159,6 +1162,8 @@ export function CampaignWiki({
           homeActive={!selectedId && !campaignTimeline && !toolPage}
           onShowHome={showOverview}
           onShowTimeline={() => showTimeline()}
+          factionsActive={toolPage === "factions"}
+          onShowFactions={() => showToolPage("factions")}
           onCollapse={() => setNavCollapsed(true)}
           className={cn(
             "flex-1 md:w-[20rem] md:shrink-0 md:flex-none md:border-r md:border-border md:pr-3",
@@ -1170,7 +1175,7 @@ export function CampaignWiki({
           className={cn("flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden", !reading && "hidden md:flex")}
           aria-live="polite"
         >
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {reading && (
               <button
                 type="button"
@@ -1193,6 +1198,11 @@ export function CampaignWiki({
             )}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-1 md:px-6 lg:px-10" data-campaign-wiki-scroll="reader">
+            {view === "factions" && (
+              <Suspense fallback={<p>{t("ui.game.factions.loading")}</p>}>
+                <CampaignFactionWeb chatId={chatId} onSelect={selectEntity} onDirtyChange={setEditorDirty} />
+              </Suspense>
+            )}
             {view === "timeline" && (
               <div className="mx-auto w-full max-w-[60rem] space-y-4 pb-10 pt-1" data-campaign-wiki-timeline-page>
                 <header className="space-y-3 border-b border-border pb-3">

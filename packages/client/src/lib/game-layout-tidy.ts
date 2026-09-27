@@ -110,7 +110,8 @@ export function tidyLayout(
       }
     }
     // Nowhere left: keep it in its column at the readable minimum (the screen is simply full).
-    if (!next) next = { x: home, y: Math.max(0, Math.min(cursors[column], limit - minHeight)), width, height: minHeight };
+    if (!next)
+      next = { x: home, y: Math.max(0, Math.min(cursors[column], limit - minHeight)), width, height: minHeight };
     if (next.x === home) cursors[column] = next.y + next.height + gap;
     placed.push(next);
     result.set(item.id, next);

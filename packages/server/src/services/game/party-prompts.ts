@@ -10,6 +10,29 @@ import {
   buildProtagonistFairnessPrompt,
 } from "./gm-prompts.js";
 import type { CharacterSpriteInfo } from "./sprite.service.js";
+import { REPUTATION_ACTIONS } from "./reputation.service.js";
+
+const PARTY_REPUTATION_TAG =
+  /\[reputation:\s*npc="([^"]+)"\s*action="([^"]+)"(?:\s+modifier="(-?\d+(?:\.\d+)?)")?\]/giu;
+
+export function extractPartyReputationActions(
+  raw: string,
+): Array<{ npcId: string; action: string; modifier?: number }> {
+  const pattern = new RegExp(PARTY_REPUTATION_TAG.source, "giu");
+  const actions: Array<{ npcId: string; action: string; modifier?: number }> = [];
+  for (const match of raw.matchAll(pattern)) {
+    actions.push({
+      npcId: match[1]!.trim(),
+      action: match[2]!.trim(),
+      ...(match[3] === undefined ? {} : { modifier: Number(match[3]) }),
+    });
+  }
+  return actions;
+}
+
+export function stripPartyReputationTags(raw: string): string {
+  return raw.replace(new RegExp(PARTY_REPUTATION_TAG.source, "giu"), "").trim();
+}
 
 export interface PartyPromptContext {
   /** Character cards for each party member, optionally enriched with game-specific class/ability info. */
@@ -251,7 +274,7 @@ export function buildPartySystemPrompt(ctx: PartyPromptContext): string {
     `- Party members may order, ask, advise, offer, pressure, or initiate contact when in character, but stop before the player's voluntary response`,
     `- In travel/rest: focus on character bonding, camp activities, healing, planning`,
     `- In [action] lines describing something happening to or around the player, address the player as "you" (second person). Example: "He gestures vaguely at your entire being."`,
-    `- Only when a concrete event meaningfully shifts a party member's bond with the player, append: [reputation: npc="Name" action="description"]. Do not reward or penalize every agreeable line, gift, compliment, routine kindness, ordinary disagreement, or merely pleasant beat.`,
+    `- Only when a concrete, depicted event changes this speaker's stance toward the player, append [reputation: npc="Exact tracked name" action="helped"]. Use one exact action ID (${REPUTATION_ACTIONS.join(", ")}); add an optional modifier from -100 to 100 only when a listed action's default does not fit. Do not infer a reaction from private thoughts, the player's unchosen response, or an unseen action, and do not tag another party member. Do not reward or penalize every agreeable line, gift, compliment, routine kindness, ordinary disagreement, or merely pleasant beat.`,
     ``,
     `Current game state: ${ctx.gameActiveState}`,
     `</party_rules>`,

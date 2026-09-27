@@ -30,6 +30,7 @@ try {
   const { gameContinuityBackfillRoutes } =
     await import("../../packages/server/src/routes/game-continuity-backfill.routes.js");
 
+  const { prepareContinuitySources } = await import("../../packages/server/src/services/game/continuity-sources.js");
   const db = await createFileNativeDB();
   const at = (seconds: number) => new Date(Date.UTC(2026, 8, 12, 0, 0, seconds)).toISOString();
   const manifest = {
@@ -80,19 +81,24 @@ try {
     { id: "inv-a2", chatId, role: "assistant", content: "Alice is inside.", createdAt: at(9) },
   ]);
 
+  const preparedSources = prepareContinuitySources(await createChatsStorage(db).listMessages(chatId), {});
+  const receiptSources = preparedSources.filter(
+    (source) => source.messageId === "inv-u1" || source.messageId === "inv-a1",
+  );
   const storage = createGameContinuityStorage(db);
   await storage.enqueue({
     id: receiptId,
     chatId,
     sessionNumber: 2,
-    sourceHash: "inventory-source-hash",
-    sources: [
-      { messageId: "inv-u1", swipeIndex: 0, hash: "h1", role: "user", content: "Alice opens the gate." },
-      { messageId: "inv-a1", swipeIndex: 0, hash: "h2", role: "assistant", content: "The gate opens." },
-    ],
+    sourceHash: createHash("sha256")
+      .update(JSON.stringify({ sources: receiptSources, context: [] }))
+      .digest("hex"),
+    sources: receiptSources,
     context: [],
     configHash: "config-hash",
-    config: { historicalBackfill: { id: backfillId, fromMessageId: "inv-u1", toMessageId: "inv-a2", sessionNumber: 2 } },
+    config: {
+      historicalBackfill: { id: backfillId, fromMessageId: "inv-u1", toMessageId: "inv-a2", sessionNumber: 2 },
+    },
     status: "failed",
     attempts: 3,
     repairAttempts: 0,
@@ -146,7 +152,11 @@ try {
   assert.deepEqual(frozen.countsByStatus, { failed: 1 });
   assert.deepEqual(frozen.countsByErrorCode, { CONTINUITY_TIMEOUT: 1 });
   assert.equal(frozen.preparedInRange, 4);
-  assert.deepEqual(frozen.coverageGaps, ["inv-u2", "inv-a2"], "prepared messages in range without any receipt");
+  assert.deepEqual(
+    frozen.coverageGaps,
+    ["inv-u1", "inv-a1", "inv-u2", "inv-a2"],
+    "failed receipts do not reserve coverage even when their source versions match",
+  );
   assert.equal(
     frozen.rangeHash,
     createHash("sha256").update(`${chatId}\0inv-u1\0inv-a2`).digest("hex"),
@@ -168,6 +178,56 @@ try {
   const rewritten = (await app.inject({ method: "GET", url: `/api/game/${chatId}/continuity/inventory` })).json();
   assert.notEqual(rewritten.manifests[0].manifestHash, frozen.manifestHash);
   assert.equal(rewritten.manifests[0].rangeHash, frozen.rangeHash);
+
+  // Inventory reports reservations, not verified-fact coverage. A queued receipt reserves only
+  // the exact current source version and complete character range; the runtime stays stubbed.
+  const original = await storage.get(receiptId);
+  assert.ok(original);
+  const userSource = receiptSources.find((source) => source.messageId === "inv-u1")!;
+  const assistantSource = receiptSources.find((source) => source.messageId === "inv-a1")!;
+  const characters = [...assistantSource.content];
+  const prefix = { ...assistantSource, content: characters.slice(0, 5).join(""), end: 5 };
+  const tail = { ...assistantSource, content: characters.slice(5).join(""), start: 5 };
+  const uncovered = ["inv-u2", "inv-a2"];
+  const withAssistantGap = ["inv-a1", ...uncovered];
+  const cases = [
+    { label: "matching current source versions reserve coverage", sources: receiptSources, expected: uncovered },
+    {
+      label: "different source hashes remain uncovered",
+      sources: [userSource, { ...assistantSource, hash: "stale-source-hash" }],
+      expected: withAssistantGap,
+    },
+    {
+      label: "a different swipe does not cover the selected swipe",
+      sources: [userSource, { ...assistantSource, swipeIndex: 1 }],
+      expected: withAssistantGap,
+    },
+    {
+      label: "a partial interval does not cover the full message",
+      sources: [userSource, prefix],
+      expected: withAssistantGap,
+    },
+    {
+      label: "adjacent intervals jointly cover the complete message",
+      sources: [userSource, prefix, tail],
+      expected: uncovered,
+    },
+  ];
+  for (const { label, sources, expected } of cases) {
+    await storage.save({
+      ...original,
+      status: "queued",
+      sources,
+      sourceHash: createHash("sha256")
+        .update(JSON.stringify({ sources, context: [] }))
+        .digest("hex"),
+      errorCode: undefined,
+      error: undefined,
+    });
+    const checked = await app.inject({ method: "GET", url: `/api/game/${chatId}/continuity/inventory` });
+    assert.equal(checked.statusCode, 200, checked.body);
+    assert.deepEqual(checked.json().manifests[0].coverageGaps, expected, label);
+  }
 
   await app.close();
   app = null;

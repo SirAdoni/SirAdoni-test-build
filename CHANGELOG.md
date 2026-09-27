@@ -4,6 +4,34 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Fixed memory status to distinguish checked batches from continuous source coverage and explain withheld facts without hiding accepted memories. Coverage warnings now open the relevant details.
+- Strengthened targeted memory repairs so omitted source messages require their own evidenced additions, and repairs cannot duplicate an unchanged claim merely by assigning different search keys.
+
+- Fixed Contact Book updates across NPC cards and campaign memory: contacts keep a stable identity, relationship statuses respect sourced direction and manual locks, and an unobserved opinion is distinguished from a recorded neutral score. Reputation changes now refresh the book, and party replies use supported reputation actions instead of silently losing updates.
+
+- Added a Family Tree view for authored family relationships, with character navigation and branch-aware preservation of supported historical links.
+- Added a Faction Web for organizations and their directed relationships, including relationship notes and protected manual edits.
+- Added World History entries with campaign-calendar dates, participants and locations, search, editing and archiving. Existing entries retain their source session's calendar; historical branches use supported earlier journal snapshots and hold records whose history cannot be established.
+- Improved memory recovery for accepted turns and partially indexed history. Coverage now checks source text, selected swipes and complete source ranges, and unresolved or withheld material stays visibly incomplete.
+- Protected manual facts and page edits during rereads, retries, source retirement and restart recovery. Conflicting regenerated material is held for review instead of silently replacing the user's edits.
+- Fixed party removal controls intercepting character-avatar clicks. Mobile party and map popups now appear above scene widgets, support keyboard dismissal and focus return, and close when their mobile triggers disappear at a desktop breakpoint.
+
+
+- Separate Character Replies now includes a bounded excerpt of each speaker's own recent accepted dialogue, so characters can remember what they just said even before campaign memory catches up. Other characters' private lines remain excluded, and message edits and regeneration boundaries are respected.
+
+- Separate Character Replies now explicitly keeps planner scheduling notes out of visible scene narration.
+
+- Game Mode prompts now respect the saved game clock after a manual time correction, instead of reusing an older snapshot time. Separate Character Replies can now carry explicit player travel to the existing map movement handler.
+
+- Separate Character Replies now preserves conversational order and lets later speakers react to earlier replies they witnessed. Characters can speak again in a multi-part exchange without failing the turn; private thoughts and whispers remain restricted to their owners or recipients.
+
+- Fixed Impersonate generating NPC dialogue instead of your next player message when Separate Character Replies is enabled.
+
+- Fixed a character disappearing from scene presence after leaving and returning within the same turn. The final scene roster now takes precedence over the earlier departure.
+
+- Fixed Separate character replies getting stuck on repeated scene setup: the GM can bring known campaign NPCs into the scene before they answer, including group requests such as "fetch everyone" without recent names, and pass recent witnessed context to characters without displaying it as repeated player-action narration. Characters still receive only their own memory and the events they can perceive.
+
+- Game Chat Settings now has a full prompt editor. It shows the exact request from the latest saved Game turn, including the built-in narration rule, and lets you edit the text directly. Saved edits carry into later requests while current game state and chat history continue to update; you can restore the built-in text. Editing command formats can affect how Game features interpret replies.
 - Added **Session-frozen NPC cards** (Settings > Advanced > Features, on by default). In Game mode the character cards of people named in a session now stay as they were when the session started or the person first appeared, and later changes reach the GM at the end of the prompt as the changed lines only. They are folded in at the next session, or earlier only when carrying them costs more than re-sending the history. A card the NPC Biographer only rewords is no longer saved. Before, a few reworded cards rewrote the cached cards every few turns and dropped the cached share of that turn from about 93% to about 27%. Off keeps the previous behaviour. See docs/configuration/features.md.
 - Added **Cache-stable Game prompt** (Settings > Advanced > Features, on by default, needs **Cache-friendly prompt layout**). Game turns on the Claude subscription now keep the format instructions, campaign memory, continuity records, the World Maps block, story secrets, tracked NPCs and pending character cards in the cached part of the prompt, and send only what changed at the end: a short status note, the line changes of a block that changed a little, and the live values (weather, time, HUD values, inventory, recent transcript evidence). On a test chat the share of each Game turn read from the cache went from about 74% to about 97%, and each turn wrote about 8,800 characters to the cache instead of about 66,700. Switching it on rewrites the cache once. Off sends exactly the previous prompt. See docs/configuration/features.md.
 - The Campaign Wiki promises list shows each promise once, with everyone involved listed, instead of once per person.

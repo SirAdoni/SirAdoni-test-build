@@ -52,7 +52,12 @@ import {
   renameSavedLayout,
   type SavedLayout,
 } from "../../lib/game-layout-snapshots";
-import { arrangePanels, measureFloatingPanels, writeArrangedSnapshot, type ArrangeMode } from "../../lib/game-layout-arrange";
+import {
+  arrangePanels,
+  measureFloatingPanels,
+  writeArrangedSnapshot,
+  type ArrangeMode,
+} from "../../lib/game-layout-arrange";
 import {
   applyLayoutAsStep,
   beginLayoutEditSession,
@@ -542,10 +547,18 @@ function LayoutToolbar({
         </ToolbarButton>
         {selection.length >= 2 && (
           <>
-            <ToolbarButton label={t("ui.game.layoutEditor.alignLeft")} onClick={() => arrange("left")} name="align-left">
+            <ToolbarButton
+              label={t("ui.game.layoutEditor.alignLeft")}
+              onClick={() => arrange("left")}
+              name="align-left"
+            >
               <AlignStartVertical size={14} aria-hidden="true" />
             </ToolbarButton>
-            <ToolbarButton label={t("ui.game.layoutEditor.alignRight")} onClick={() => arrange("right")} name="align-right">
+            <ToolbarButton
+              label={t("ui.game.layoutEditor.alignRight")}
+              onClick={() => arrange("right")}
+              name="align-right"
+            >
               <AlignEndVertical size={14} aria-hidden="true" />
             </ToolbarButton>
             <ToolbarButton label={t("ui.game.layoutEditor.alignTop")} onClick={() => arrange("top")} name="align-top">

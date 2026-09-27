@@ -1,4 +1,9 @@
-import { assignCombatTactics, combatTacticsSchema, extractNamedRoleNpcNames } from "@marinara-engine/shared";
+import {
+  assignCombatTactics,
+  combatTacticsSchema,
+  extractNamedRoleNpcNames,
+  readGameClock,
+} from "@marinara-engine/shared";
 import type { ChatMetadata } from "@marinara-engine/shared";
 import {
   isGameExtendedWidgetsEnabled,
@@ -57,7 +62,6 @@ import {
   useUpdateCampaignProgression,
   useStartSession,
   useGenerateMap,
-  useAdvanceTime,
   useUpdateWeather,
   useUpdateReputation,
   useTransitionGameState,
@@ -4143,7 +4147,6 @@ function GameSurfaceComponent({
   }, [spriteVisible, activeSpriteIds]);
 
   // New game mechanics hooks
-  const _advanceTime = useAdvanceTime();
   const updateWeather = useUpdateWeather();
   const _updateReputation = useUpdateReputation();
   const transitionGameState = useTransitionGameState();
@@ -5705,6 +5708,7 @@ function GameSurfaceComponent({
       currentLocation: gameSnapshot?.location ?? null,
       enemyTier: combatMusicTier,
       currentWeather: gameSnapshot?.weather ?? null,
+      currentGameTime: readGameClock(gameTimeMeta),
       currentTimeOfDay: gameSnapshot?.time ?? metaTime ?? null,
       genre: ((chatMeta.gameSetupConfig as Record<string, unknown> | undefined)?.genre as string | undefined) ?? null,
       setting:
@@ -5725,8 +5729,7 @@ function GameSurfaceComponent({
         sceneAnalysisTimeoutRef.current = null;
       }
       const analysisScope = sceneRuntimeScopeKeyRef.current;
-      const stillCurrent = () =>
-        gameSurfaceMountedRef.current && sceneRuntimeScopeKeyRef.current === analysisScope;
+      const stillCurrent = () => gameSurfaceMountedRef.current && sceneRuntimeScopeKeyRef.current === analysisScope;
 
       const onComplete = () => {
         if (sceneAnalysisTimeoutRef.current) {
@@ -6133,8 +6136,7 @@ function GameSurfaceComponent({
 
   async function applySceneResult(incomingResult: SceneAnalysis, msg: { id: string; content?: string | null }) {
     const resultScope = sceneRuntimeScopeKeyRef.current;
-    const resultStillCurrent = () =>
-      gameSurfaceMountedRef.current && sceneRuntimeScopeKeyRef.current === resultScope;
+    const resultStillCurrent = () => gameSurfaceMountedRef.current && sceneRuntimeScopeKeyRef.current === resultScope;
     const result = await materializeGeneratedGameAudio(incomingResult);
     if (!resultStillCurrent()) return;
     setSceneAnalysisFailed(false);
@@ -6145,7 +6147,7 @@ function GameSurfaceComponent({
     // The mutations below also persist to DB, but may race with snapshot creation.
     // If no snapshot exists yet (first turn), create a minimal one.
     const currentGS = useGameStateStore.getState().current;
-    if (result.weather || result.timeOfDay) {
+    if (result.weather) {
       const base = currentGS ?? {
         id: "",
         chatId: activeChatId,
@@ -6165,7 +6167,6 @@ function GameSurfaceComponent({
       useGameStateStore.getState().setGameState({
         ...base,
         ...(result.weather ? { weather: result.weather } : {}),
-        ...(result.timeOfDay ? { time: result.timeOfDay } : {}),
       });
     }
 
@@ -6178,8 +6179,28 @@ function GameSurfaceComponent({
       });
     }
 
-    if (result.timeOfDay) {
-      _advanceTime.mutate({ chatId: activeChatId, action: result.timeOfDay });
+    if (result.elapsedMinutes && result.timeEvidence) {
+      try {
+        const sourceMessage = messages.find((message) => message.id === msg.id);
+        if (!sourceMessage) throw new Error("Scene clock source is no longer available.");
+        await api.post(`/game/${activeChatId}/turn-review/${msg.id}/clock`, {
+          swipeIndex: sourceMessage.activeSwipeIndex ?? 0,
+          elapsedMinutes: result.elapsedMinutes,
+          timeEvidence: result.timeEvidence,
+        });
+        if (!resultStillCurrent()) return;
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: chatKeys.detail(activeChatId) }),
+          queryClient.invalidateQueries({ queryKey: ["game-turn-review", activeChatId] }),
+        ]);
+        const updatedState = await api.get<import("@marinara-engine/shared").GameState | null>(
+          `/chats/${activeChatId}/game-state`,
+        );
+        if (resultStillCurrent() && updatedState) useGameStateStore.getState().setGameState(updatedState);
+      } catch (error) {
+        console.warn("[scene-wrapup] Could not apply source-backed turn clock", error);
+        if (resultStillCurrent()) toast.warning(localizeUi("ui.game.turnReview.clockApplyFailed"));
+      }
     }
     if (result.reputationChanges?.length) {
       const repActions = result.reputationChanges.map((rc) => ({
@@ -8934,7 +8955,11 @@ function GameSurfaceComponent({
 
       setRemovingPartyMemberId(member.id);
       try {
-        await removePartyMember.mutateAsync({ chatId: activeChatId, characterName: member.name, characterId: member.id });
+        await removePartyMember.mutateAsync({
+          chatId: activeChatId,
+          characterName: member.name,
+          characterId: member.id,
+        });
       } finally {
         setRemovingPartyMemberId(null);
       }
@@ -13338,10 +13363,7 @@ function GameSurfaceComponent({
                             });
                             setMobileRetryMenuOpen(false);
                           }}
-                          className={cn(
-                            GAME_MOBILE_ROOT_BUTTON,
-                            "game-short-landscape:h-11 game-short-landscape:w-11",
-                          )}
+                          className={cn(GAME_MOBILE_ROOT_BUTTON, "game-short-landscape:h-11 game-short-landscape:w-11")}
                           data-floating-widget-avoid
                           title={t("game.toolbar.actions")}
                           aria-label={t("game.toolbar.actions")}

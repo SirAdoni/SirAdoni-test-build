@@ -48,6 +48,21 @@ try {
   );
   assert.equal(parsed.movements.length, 1);
   assert.equal(parsed.relationships.length, 1);
+  const explicitStances = parseContinuityStructure(
+    {
+      relationships: [
+        { recordId: "r1", source: "A", target: "B", type: "suspicious-of", status: "active" },
+        { recordId: "r1", source: "A", target: "B", type: "eternal-ally-of", status: "active" },
+        { recordId: "r1", source: "A", target: "B", type: "lover-of", status: "active" },
+      ],
+    },
+    new Set(["r1"]),
+  );
+  assert.deepEqual(
+    explicitStances.relationships.map((relationship) => relationship.type),
+    ["suspicious-of", "eternal-ally-of", "lover-of"],
+    "explicit directional stances and established bonds remain separate relationship types",
+  );
 
   const db = await createFileNativeDB();
   const now = new Date().toISOString();

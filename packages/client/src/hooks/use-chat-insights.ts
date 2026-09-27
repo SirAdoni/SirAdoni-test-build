@@ -72,8 +72,7 @@ export function useChatStats(chatId: string | null, enabled = true) {
 export function useActivityOverview(enabled = true) {
   return useQuery({
     queryKey: chatInsightKeys.activity(),
-    queryFn: ({ signal }) =>
-      api.get<ActivityOverview>(`/chat-insights/activity?${timezoneParams()}`, { signal }),
+    queryFn: ({ signal }) => api.get<ActivityOverview>(`/chat-insights/activity?${timezoneParams()}`, { signal }),
     enabled,
     staleTime: 60_000,
   });

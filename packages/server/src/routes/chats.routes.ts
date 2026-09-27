@@ -100,6 +100,11 @@ import {
   promptDecisionCacheKey,
 } from "../services/decision/prompt-decisions.js";
 import { gameGmPromptDecisionTexts } from "../services/generation/game-gm-prompt-runtime.js";
+import {
+  parseGamePromptTextReplacements,
+  replaceGamePromptText,
+} from "../services/game/game-prompt-text-replacements.js";
+import { parseGamePromptDirectEdits } from "../services/game/game-prompt-direct-edits.js";
 import { DECISION_SETTINGS_KEYS } from "../services/decision/decision-default.js";
 import {
   createGameStateStorage,
@@ -1479,6 +1484,16 @@ export async function chatsRoutes(app: FastifyInstance) {
     const incoming = req.body as Record<string, unknown> | undefined;
     if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) {
       return reply.status(400).send({ error: "Request body must be a JSON object" });
+    }
+    if (Object.prototype.hasOwnProperty.call(incoming, "gamePromptTextReplacements")) {
+      const rules = parseGamePromptTextReplacements(incoming.gamePromptTextReplacements);
+      if (!rules) return reply.status(400).send({ error: "Invalid Game prompt text replacements" });
+      incoming.gamePromptTextReplacements = rules;
+    }
+    if (Object.prototype.hasOwnProperty.call(incoming, "gamePromptDirectEdits")) {
+      const edits = parseGamePromptDirectEdits(incoming.gamePromptDirectEdits);
+      if (!edits) return reply.status(400).send({ error: "Invalid Game prompt direct edits" });
+      incoming.gamePromptDirectEdits = edits;
     }
     // Validate Discord webhook URL if provided
     if (typeof incoming.discordWebhookUrl === "string" && incoming.discordWebhookUrl.trim()) {
@@ -3150,12 +3165,14 @@ export async function chatsRoutes(app: FastifyInstance) {
 
   // Peek prompt — return an exact saved turn prompt when available, otherwise
   // assemble the prompt for this chat as if generating right now.
-  app.post<{ Params: { id: string }; Body: { messageId?: unknown } }>("/:id/peek-prompt", async (req, reply) => {
+  type PeekPromptBody = { messageId?: unknown; latestExact?: unknown };
+  app.post<{ Params: { id: string }; Body: PeekPromptBody }>("/:id/peek-prompt", async (req, reply) => {
     const chat = await storage.getById(req.params.id);
     if (!chat) return reply.status(404).send({ error: "Chat not found" });
 
     const chatMessages = await storage.listMessages(req.params.id);
     const requestedMessageId = typeof req.body?.messageId === "string" ? req.body.messageId.trim() : "";
+    const latestExactRequested = req.body?.latestExact === true && !requestedMessageId;
     const requestedMessage = requestedMessageId
       ? (chatMessages.find((message) => message.id === requestedMessageId) ?? null)
       : null;
@@ -3311,11 +3328,19 @@ export async function chatsRoutes(app: FastifyInstance) {
       }
       return null;
     })();
-    const promptSourceMessage = requestedMessage ?? latestVisibleMessage;
+    const promptSourceMessages = latestExactRequested
+      ? chatMessages
+          .slice()
+          .reverse()
+          .filter(
+            (message) => message.role === "assistant" && (!supportsHiddenFromAI || !isMessageHiddenFromAI(message)),
+          )
+      : [requestedMessage ?? latestVisibleMessage];
 
-    if (promptSourceMessage?.role === "assistant") {
+    for (const promptSourceMessage of promptSourceMessages) {
+      if (promptSourceMessage?.role !== "assistant") continue;
       const extra = parseExtra(promptSourceMessage.extra) as Record<string, unknown>;
-      let cached = await readCachedPrompt(extra, Boolean(requestedMessage));
+      let cached = await readCachedPrompt(extra, Boolean(requestedMessage || latestExactRequested));
 
       // If message-level extra doesn't have it (swipe overwrite), check swipes.
       if (!cached && promptSourceMessage.id) {
@@ -3323,12 +3348,13 @@ export async function chatsRoutes(app: FastifyInstance) {
         const activeSwipe = swipes.find((s: any) => s.index === promptSourceMessage.activeSwipeIndex);
         const activeSwipeExtra = activeSwipe ? (parseExtra(activeSwipe.extra) as Record<string, unknown>) : null;
         if (activeSwipe) {
-          cached = await readCachedPrompt(activeSwipeExtra ?? {}, Boolean(requestedMessage));
+          cached = await readCachedPrompt(activeSwipeExtra ?? {}, Boolean(requestedMessage || latestExactRequested));
         }
       }
 
       if (cached) {
         const exact = cached.isolatedPromptCapture === undefined ? true : cached.isolatedPromptCapture;
+        if (latestExactRequested && !exact) continue;
         return {
           messages: cached.messages,
           chatMode,
@@ -3343,12 +3369,14 @@ export async function chatsRoutes(app: FastifyInstance) {
               ? "Legacy isolated metadata is available, but this turn has no captured planner and actor requests; the cached prompt is only partial GM input."
               : requestedMessage
                 ? "This is the exact cached text prompt sent for the selected turn."
-                : "This is the cached text prompt saved after provider preparation for the active assistant swipe.",
+                : latestExactRequested
+                  ? "This is the exact cached text prompt sent for the newest saved turn."
+                  : "This is the cached text prompt saved after provider preparation for the active assistant swipe.",
         };
       }
     }
 
-    if (requestedMessage) {
+    if (requestedMessage || latestExactRequested) {
       return reply.status(404).send({ error: "No exact saved prompt is available for this turn" });
     }
 
@@ -3666,7 +3694,10 @@ export async function chatsRoutes(app: FastifyInstance) {
             const customPrompt = resolveGameGmPromptTemplate(chatMeta, setupConfig);
             const selectedGamePrompt = presetStringField(preset as Record<string, unknown> | null, "gamePrompt");
             const gamePromptTemplate = customPrompt ?? (selectedGamePrompt || DEFAULT_GAME_SYSTEM_PROMPT);
-            const renderedGamePrompt = resolveMacros(gamePromptTemplate, promptMacroContext);
+            const renderedGamePrompt = replaceGamePromptText(
+              resolveMacros(gamePromptTemplate, promptMacroContext),
+              parseGamePromptTextReplacements(chatMeta.gamePromptTextReplacements) ?? [],
+            );
             let messages: Parameters<typeof toPeekPromptMessages>[0] = [
               {
                 role: "system" as const,
@@ -3711,8 +3742,9 @@ export async function chatsRoutes(app: FastifyInstance) {
             if (lorebookResult.depthEntries.length > 0) {
               messages = injectAtDepth(messages, lorebookResult.depthEntries);
             }
+            const previewMessages = injectOwnerSpatialPrompt(messages, ownerSpatialProjection);
             return {
-              messages: toPeekPromptMessages(injectOwnerSpatialPrompt(messages, ownerSpatialProjection)),
+              messages: toPeekPromptMessages(previewMessages),
               chatMode,
               parameters: null,
               source: "live_preview",

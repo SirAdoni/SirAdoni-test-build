@@ -13,6 +13,7 @@ import {
   hasCategory,
   migrateContactState,
   removeCategoryAssignments,
+  relationshipStatusKey,
   type ContactCategoryState,
 } from "./game-contact-book-state";
 
@@ -279,95 +280,107 @@ export function GameContactBookWidget({ chatId, campaignKey, refreshKey, open, o
       {visible.length === 0 ? (
         <p className="p-4 text-sm text-[var(--muted-foreground)]">{t("ui.game.contactBook.noMatches")}</p>
       ) : (
-        visible.map((contact) => (
-          <article key={contact.id} className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-3">
-            <div className="flex items-start gap-3">
-              {contact.avatar ? (
-                <CharacterPhoto
-                  src={contact.avatar}
-                  name={contact.name}
-                  className="block h-10 w-10 shrink-0 overflow-hidden rounded-full"
-                  onUpdate={
-                    contact.characterId
-                      ? () => {
-                          onClose();
-                          onOpenCharacter?.(contact.characterId as string);
-                        }
-                      : undefined
-                  }
-                >
-                  <img
+        visible.map((contact) => {
+          const opinion = displayOpinion(contact.opinion);
+          const statusKey = relationshipStatusKey(contact.relationshipStatus);
+          return (
+            <article key={contact.id} className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-3">
+              <div className="flex items-start gap-3">
+                {contact.avatar ? (
+                  <CharacterPhoto
                     src={contact.avatar}
-                    alt={contact.name}
-                    className="h-full w-full object-cover"
-                    style={getAvatarCropStyle(contact.avatarCrop)}
-                  />
-                </CharacterPhoto>
-              ) : (
-                <div className="h-10 w-10 rounded-full bg-[var(--muted)]" />
-              )}
-              <div className="min-w-0 flex-1">
-                <button
-                  type="button"
-                  className="block max-w-full break-words text-left font-semibold hover:underline"
-                  onClick={() => {
-                    if (!contact.characterId) return;
-                    onClose();
-                    onOpenCharacter?.(contact.characterId);
-                  }}
-                  disabled={!contact.characterId}
-                >
-                  {contact.name}
-                </button>
-                <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--muted-foreground)]">
-                  <span>
-                    <strong className="text-[var(--foreground)]">{t("ui.game.contactBook.opinion")}:</strong>{" "}
-                    {displayOpinion(contact.opinion) ?? t("ui.game.contactBook.unknown")}
-                  </span>
-                  <span>
-                    <strong className="text-[var(--foreground)]">{t("ui.game.contactBook.relationshipStatus")}:</strong>{" "}
-                    {contact.relationshipStatus || t("ui.game.contactBook.unknown")}
-                  </span>
-                </div>
-              </div>
-            </div>
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <select
-                value=""
-                onChange={(event) => assignCategory(contact.id, event.target.value)}
-                aria-label={t("ui.game.contactBook.assignCategory", { name: contact.name })}
-                className="rounded-lg border border-[var(--border)] bg-transparent px-2 py-1 text-xs"
-              >
-                <option value="">{t("ui.game.contactBook.addToCategory")}</option>
-                {categories.map((category) => (
-                  <option key={category.id} value={category.id}>
-                    {category.name}
-                  </option>
-                ))}
-              </select>
-              {(groups[contact.id] ?? []).map((id) => (
-                <span key={id} className="rounded-full bg-[var(--accent)] px-2 py-1 text-[0.6875rem]">
-                  {categories.find((category) => category.id === id)?.name ?? id}
+                    name={contact.name}
+                    className="block h-10 w-10 shrink-0 overflow-hidden rounded-full"
+                    onUpdate={
+                      contact.characterId
+                        ? () => {
+                            onClose();
+                            onOpenCharacter?.(contact.characterId as string);
+                          }
+                        : undefined
+                    }
+                  >
+                    <img
+                      src={contact.avatar}
+                      alt={contact.name}
+                      className="h-full w-full object-cover"
+                      style={getAvatarCropStyle(contact.avatarCrop)}
+                    />
+                  </CharacterPhoto>
+                ) : (
+                  <div className="h-10 w-10 rounded-full bg-[var(--muted)]" />
+                )}
+                <div className="min-w-0 flex-1">
                   <button
                     type="button"
-                    onClick={() =>
-                      persist(categories, {
-                        ...groups,
-                        [contact.id]: (groups[contact.id] ?? []).filter((value) => value !== id),
-                      })
-                    }
-                    className="ml-1"
-                    aria-label={t("ui.game.contactBook.removeCategoryFrom", {
-                      category: categories.find((item) => item.id === id)?.name ?? id,
-                    })}
+                    className="block max-w-full break-words text-left font-semibold hover:underline"
+                    onClick={() => {
+                      if (!contact.characterId) return;
+                      onClose();
+                      onOpenCharacter?.(contact.characterId);
+                    }}
+                    disabled={!contact.characterId}
                   >
-                    ×
+                    {contact.name}
                   </button>
-                </span>
-              ))}
-            </div>
-          </article>
-        ))
+                  <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--muted-foreground)]">
+                    <span>
+                      <strong className="text-[var(--foreground)]">{t("ui.game.contactBook.opinion")}:</strong>{" "}
+                      {opinion === null
+                        ? t("ui.game.contactBook.unknown")
+                        : t("ui.game.contactBook.opinionValue", { value: opinion })}
+                    </span>
+                    <span>
+                      <strong className="text-[var(--foreground)]">
+                        {t("ui.game.contactBook.relationshipStatus")}:
+                      </strong>{" "}
+                      {statusKey
+                        ? t(`ui.game.contactBook.relationships.${statusKey}`)
+                        : contact.relationshipStatus?.trim() && !contact.relationshipStatus.startsWith("reputation:")
+                          ? contact.relationshipStatus.replaceAll("-", " ")
+                          : t("ui.game.contactBook.unknown")}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <select
+                  value=""
+                  onChange={(event) => assignCategory(contact.id, event.target.value)}
+                  aria-label={t("ui.game.contactBook.assignCategory", { name: contact.name })}
+                  className="rounded-lg border border-[var(--border)] bg-transparent px-2 py-1 text-xs"
+                >
+                  <option value="">{t("ui.game.contactBook.addToCategory")}</option>
+                  {categories.map((category) => (
+                    <option key={category.id} value={category.id}>
+                      {category.name}
+                    </option>
+                  ))}
+                </select>
+                {(groups[contact.id] ?? []).map((id) => (
+                  <span key={id} className="rounded-full bg-[var(--accent)] px-2 py-1 text-[0.6875rem]">
+                    {categories.find((category) => category.id === id)?.name ?? id}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        persist(categories, {
+                          ...groups,
+                          [contact.id]: (groups[contact.id] ?? []).filter((value) => value !== id),
+                        })
+                      }
+                      className="ml-1"
+                      aria-label={t("ui.game.contactBook.removeCategoryFrom", {
+                        category: categories.find((item) => item.id === id)?.name ?? id,
+                      })}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </article>
+          );
+        })
       )}
     </div>
   );

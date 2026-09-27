@@ -3,6 +3,9 @@ import { logger } from "../../lib/logger.js";
 
 const MAX_BEATS = 24;
 const MAX_ACTORS = 12;
+// The trusted catalogue is not an active cast: only validated actorRequests
+// consume provider calls, which remain bounded by MAX_ACTORS.
+const MAX_TRUSTED_ACTORS = 256;
 const MAX_BEAT_TEXT = 4_000;
 const MAX_ACTION_CHARS = 8_000;
 // A single actor may need to enumerate a bounded visible roster (for example,
@@ -16,11 +19,19 @@ export type IsolatedGameActor = {
   name: string;
   card: string;
   authorizedMemory?: string;
+  initiallyPresent?: boolean;
 };
 
 export type IsolatedGamePlan = {
-  publicScene: Array<{ beat: number; text: string; perceivedBy: string[] }>;
-  actorRequests: Array<{ beat: number; actorId: string }>;
+  publicScene: Array<{
+    beat: number;
+    text: string;
+    perceivedBy: string[];
+    contextOnly?: boolean;
+    arrivingActorIds?: string[];
+  }>;
+  actorRequests: Array<{ beat: number; actorId: string; perceivedBy: string[] }>;
+  spatialDirective?: { type: "move"; destinationId: string };
 };
 
 export type IsolatedGameActorLine = {
@@ -41,6 +52,12 @@ export type IsolatedGameActorPrompt = {
   ownCard: string;
   authorizedMemory: string;
   publicScene: readonly IsolatedGamePlan["publicScene"][number][];
+  priorActorLines: Array<{
+    beat: number;
+    actorId: string;
+    actorName: string;
+    lines: IsolatedGameActorLine[];
+  }>;
 };
 
 export type IsolatedGameTurnResult = {
@@ -63,6 +80,7 @@ export type IsolatedGameTurnInput = {
   playerActorName?: string;
   plan: (gmPrompt: string, signal: AbortSignal) => Promise<unknown>;
   actor: (prompt: IsolatedGameActorPrompt, signal: AbortSignal) => Promise<unknown>;
+  resolveActorContext?: (actorId: string) => Promise<{ card: string; authorizedMemory?: string }>;
   signal?: AbortSignal;
   maxConcurrency?: number;
 };
@@ -90,6 +108,12 @@ function actorName(value: unknown, field: string): string {
   const name = text(value, field, 300);
   if (/[\[\]\r\n:]/u.test(name)) fail(`${field} contains format delimiter characters`);
   return name;
+}
+
+function spatialDestinationId(value: unknown, field: string): string {
+  const id = text(value, field, 128);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(id)) fail(`${field} contains an invalid location ID`);
+  return id;
 }
 
 function validatePublicText(value: unknown, field: string): string {
@@ -120,23 +144,59 @@ function normalizePlan(value: unknown, actors: readonly IsolatedGameActor[], pla
       actorId(id, `publicScene[${index}].perceivedBy[${audienceIndex}]`),
     );
     if (new Set(perceivedBy).size !== perceivedBy.length) fail(`publicScene[${index}].perceivedBy contains duplicates`);
-    return { beat, text: validatePublicText(row.text, `publicScene[${index}].text`), perceivedBy };
+    const contextOnly = row.contextOnly === undefined ? undefined : row.contextOnly;
+    if (contextOnly !== undefined && typeof contextOnly !== "boolean")
+      fail(`publicScene[${index}].contextOnly must be a boolean`);
+    const arrivingActorIds = row.arrivingActorIds === undefined ? undefined : row.arrivingActorIds;
+    if (arrivingActorIds !== undefined && !Array.isArray(arrivingActorIds))
+      fail(`publicScene[${index}].arrivingActorIds must be an array`);
+    const arrivalIds = arrivingActorIds?.map((id, arrivalIndex) =>
+      actorId(id, `publicScene[${index}].arrivingActorIds[${arrivalIndex}]`),
+    );
+    if (arrivalIds && new Set(arrivalIds).size !== arrivalIds.length)
+      fail(`publicScene[${index}].arrivingActorIds contains duplicates`);
+    return {
+      beat,
+      text: validatePublicText(row.text, `publicScene[${index}].text`),
+      perceivedBy,
+      ...(contextOnly !== undefined ? { contextOnly } : {}),
+      ...(arrivalIds !== undefined ? { arrivingActorIds: arrivalIds } : {}),
+    };
   });
-  publicScene.sort((left, right) => left.beat - right.beat);
 
+  // Keep legacy tolerance for an out-of-order JSON array; all boundaries use beat order.
+  publicScene.sort((left, right) => left.beat - right.beat);
   const actorById = new Map<string, IsolatedGameActor>();
   for (const actor of actors) {
     const id = actorId(actor.actorId, "actor.actorId");
     if (actorById.has(id)) fail(`duplicate trusted actor ${id}`);
     actorName(actor.name, `actor ${id}.name`);
-    text(actor.card, `actor ${id}.card`, 20_000);
-    if (actor.authorizedMemory !== undefined && actor.authorizedMemory.length > 20_000)
-      fail(`actor ${id}.authorizedMemory exceeds 20000 characters`);
-    actorById.set(id, { ...actor, actorId: id });
+    if (actor.initiallyPresent !== undefined && typeof actor.initiallyPresent !== "boolean")
+      fail(`actor ${id}.initiallyPresent must be a boolean`);
+    actorById.set(id, { ...actor, actorId: id, initiallyPresent: actor.initiallyPresent !== false });
   }
-  if (actorById.size > MAX_ACTORS) fail("trusted actor roster is too large");
+  if (actorById.size > MAX_TRUSTED_ACTORS) fail("trusted actor roster is too large");
 
-  const requested = new Set<string>();
+  const present = new Set(
+    [...actorById.values()].filter((actor) => actor.initiallyPresent !== false).map((actor) => actor.actorId),
+  );
+  const arrivalsByActor = new Map<string, number>();
+  for (const beat of publicScene) {
+    const arrivals = beat.arrivingActorIds ?? [];
+    if (arrivals.length > 0 && beat.contextOnly) fail(`publicScene[${beat.beat}] arrival cannot be context-only`);
+    for (const id of arrivals) {
+      if (!actorById.has(id)) fail(`publicScene[${beat.beat}] references an unknown arrival actor`);
+      if (playerActorId && id === playerActorId) fail("player actor cannot arrive");
+      if (present.has(id)) fail(`actor ${id} is already present`);
+      present.add(id);
+      arrivalsByActor.set(id, beat.beat);
+    }
+    for (const audience of beat.perceivedBy) {
+      if (!actorById.has(audience)) fail(`publicScene[${beat.beat}] references an unknown audience actor`);
+      if (!present.has(audience)) fail(`publicScene[${beat.beat}] references a nonpresent audience actor`);
+    }
+  }
+
   const actorRequests = raw.actorRequests.map((item, index) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) fail(`actorRequests[${index}] must be an object`);
     const row = item as Record<string, unknown>;
@@ -145,17 +205,41 @@ function normalizePlan(value: unknown, actors: readonly IsolatedGameActor[], pla
     const id = actorId(row.actorId, `actorRequests[${index}].actorId`);
     if (!actorById.has(id)) fail(`actorRequests[${index}] references an unknown actor`);
     if (playerActorId && id === playerActorId) fail("player actor cannot be requested");
-    if (requested.has(id)) fail(`duplicate actor request ${id}`);
-    requested.add(id);
-    return { beat: Number(row.beat), actorId: id };
-  });
-  for (const beat of publicScene) {
-    for (const audience of beat.perceivedBy) {
-      if (!actorById.has(audience)) fail(`publicScene[${beat.beat}] references an unknown audience actor`);
+    const arrivalBeat = arrivalsByActor.get(id);
+    const actorIsPresent = actorById.get(id)?.initiallyPresent !== false;
+    if (!actorIsPresent && (arrivalBeat === undefined || arrivalBeat > Number(row.beat)))
+      fail(`actorRequests[${index}] references an actor before arrival`);
+    const sceneBeat = publicScene.find((scene) => scene.beat === Number(row.beat))!;
+    const rawPerceivedBy = row.perceivedBy === undefined ? sceneBeat.perceivedBy : row.perceivedBy;
+    if (!Array.isArray(rawPerceivedBy)) fail(`actorRequests[${index}].perceivedBy must be an array`);
+    const perceivedBy = [
+      ...new Set(
+        rawPerceivedBy.map((audience, audienceIndex) =>
+          actorId(audience, `actorRequests[${index}].perceivedBy[${audienceIndex}]`),
+        ),
+      ),
+    ];
+    for (const audience of perceivedBy) {
+      if (!actorById.has(audience)) fail(`actorRequests[${index}] references an unknown audience actor`);
+      const audienceArrivalBeat = arrivalsByActor.get(audience);
+      const audiencePresent = actorById.get(audience)?.initiallyPresent !== false;
+      if (!audiencePresent && (audienceArrivalBeat === undefined || audienceArrivalBeat > Number(row.beat)))
+        fail(`actorRequests[${index}] references a nonpresent audience actor`);
     }
+    return { beat: Number(row.beat), actorId: id, perceivedBy };
+  });
+  actorRequests.sort((left, right) => left.beat - right.beat);
+  if (!publicScene.some((beat) => !beat.contextOnly)) fail("plan requires a player-visible scene beat");
+  let spatialDirective: IsolatedGamePlan["spatialDirective"];
+  if (raw.spatialDirective !== undefined && raw.spatialDirective !== null) {
+    if (!raw.spatialDirective || typeof raw.spatialDirective !== "object" || Array.isArray(raw.spatialDirective))
+      fail("spatialDirective must be an object");
+    const directive = raw.spatialDirective as Record<string, unknown>;
+    if (directive.type !== "move") fail("spatialDirective.type must be move");
+    const destinationId = spatialDestinationId(directive.destinationId, "spatialDirective.destinationId");
+    spatialDirective = { type: "move", destinationId };
   }
-  actorRequests.sort((left, right) => left.beat - right.beat || left.actorId.localeCompare(right.actorId));
-  return { publicScene, actorRequests };
+  return { publicScene, actorRequests, ...(spatialDirective ? { spatialDirective } : {}) };
 }
 
 function normalizeActorOutput(
@@ -212,15 +296,16 @@ function quoteDialogue(value: string): string {
 function composeContent(
   plan: IsolatedGamePlan,
   actors: ReadonlyMap<string, IsolatedGameActor>,
-  outputs: readonly IsolatedGameActorOutput[],
+  outputs: readonly (IsolatedGameActorOutput | undefined)[],
   playerActorId?: string,
   playerActorName?: string,
 ): string {
   const linesByBeat = new Map<number, string[]>();
-  for (const output of outputs) {
+  for (const [requestIndex, output] of outputs.entries()) {
+    if (!output) continue;
     const actor = actors.get(output.actorId);
     if (!actor) continue;
-    const request = plan.actorRequests.find((item) => item.actorId === output.actorId);
+    const request = plan.actorRequests[requestIndex];
     if (!request) continue;
     const rendered = output.lines.map((line) => {
       const type = line.type ?? "main";
@@ -238,11 +323,14 @@ function composeContent(
   }
   const result: string[] = [];
   for (const beat of plan.publicScene) {
-    result.push(beat.text);
+    if (!beat.contextOnly) result.push(beat.text);
     const actorLines = linesByBeat.get(beat.beat);
     if (actorLines?.length) result.push(actorLines.join("\n"));
   }
-  return result.join("\n\n").trim();
+  const content = result.join("\n\n").trim();
+  return plan.spatialDirective
+    ? `${content}${content ? "\n\n" : ""}[spatial_move: destination_id=${plan.spatialDirective.destinationId}]`
+    : content;
 }
 
 export async function runIsolatedGameTurn(input: IsolatedGameTurnInput): Promise<IsolatedGameTurnResult> {
@@ -258,25 +346,40 @@ export async function runIsolatedGameTurn(input: IsolatedGameTurnInput): Promise
   const playerAction = input.playerAction ?? "";
   if (playerAction.length > MAX_ACTION_CHARS) fail(`playerAction exceeds ${MAX_ACTION_CHARS} characters`);
   const actors = new Map<string, IsolatedGameActor>();
-  const actorNames = new Set<string>();
   for (const actor of input.actors) {
     const id = actorId(actor.actorId, "actor.actorId");
     if (actors.has(id)) fail(`duplicate trusted actor ${id}`);
     const name = actorName(actor.name, `actor ${id}.name`);
-    const nameKey = name.normalize("NFKC").trim().toLocaleLowerCase();
-    if (actorNames.has(nameKey)) fail(`duplicate trusted actor name ${name}`);
-    actorNames.add(nameKey);
-    text(actor.card, `actor ${id}.card`, 20_000);
-    if (actor.authorizedMemory !== undefined && actor.authorizedMemory.length > 20_000)
-      fail(`actor ${id}.authorizedMemory exceeds 20000 characters`);
     actors.set(id, { ...actor, actorId: id, name });
   }
+  if (actors.size > MAX_TRUSTED_ACTORS) fail("trusted actor roster is too large");
   const rawPlan = await input.plan(input.gmPrompt, signal);
   signal.throwIfAborted();
   const plan = normalizePlan(rawPlan, [...actors.values()], input.playerActorId);
+  const selectedNames = new Set<string>();
+  const selectedActorIds = new Set<string>();
+  for (const request of plan.actorRequests) {
+    if (selectedActorIds.has(request.actorId)) continue;
+    selectedActorIds.add(request.actorId);
+    const actor = actors.get(request.actorId)!;
+    const nameKey = actor.name.normalize("NFKC").trim().toLocaleLowerCase();
+    if (selectedNames.has(nameKey)) fail(`duplicate selected actor name ${actor.name}`);
+    selectedNames.add(nameKey);
+  }
   const diagnostics: IsolatedGameTurnResult["actorDiagnostics"] = [];
-  const outputs: IsolatedGameActorOutput[] = [];
-  const work = plan.actorRequests.map((request) => ({ request, requestId: randomUUID() }));
+  const outputs: Array<IsolatedGameActorOutput | undefined> = Array.from({ length: plan.actorRequests.length });
+  const work = plan.actorRequests.map((request, index) => ({ request, index, requestId: randomUUID() }));
+  const completionResolvers = work.map(() => {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  });
+  const arrivalByActor = new Map<string, number>();
+  for (const beat of plan.publicScene) {
+    for (const id of beat.arrivingActorIds ?? []) arrivalByActor.set(id, beat.beat);
+  }
   const controller = new AbortController();
   const abort = () => controller.abort(signal.reason);
   if (signal.aborted) abort();
@@ -289,30 +392,91 @@ export async function runIsolatedGameTurn(input: IsolatedGameTurnInput): Promise
       if (!item) return;
       const actor = actors.get(item.request.actorId)!;
       try {
+        await Promise.all(
+          work
+            .slice(0, item.index)
+            .filter(
+              (prior) => prior.request.actorId === actor.actorId || prior.request.perceivedBy.includes(actor.actorId),
+            )
+            .map((prior) => completionResolvers[prior.index]!.promise),
+        );
+        controller.signal.throwIfAborted();
+        const context = input.resolveActorContext
+          ? await input.resolveActorContext(actor.actorId)
+          : { card: actor.card, authorizedMemory: actor.authorizedMemory };
+        const ownCard = text(context.card, `actor ${actor.actorId}.card`, 20_000);
+        if (context.authorizedMemory !== undefined) {
+          if (typeof context.authorizedMemory !== "string")
+            fail(`actor ${actor.actorId}.authorizedMemory must be a string`);
+          if (context.authorizedMemory.length > 20_000)
+            fail(`actor ${actor.actorId}.authorizedMemory exceeds 20000 characters`);
+        }
+        const authorizedMemory = context.authorizedMemory ?? "";
         const raw = await input.actor(
           {
             expectedActorId: actor.actorId,
             actorName: actor.name,
-            ownCard: actor.card,
-            authorizedMemory: actor.authorizedMemory ?? "",
-            publicScene: plan.publicScene.filter(
-              (beat) => beat.beat <= item.request.beat && beat.perceivedBy.includes(actor.actorId),
-            ),
+            ownCard,
+            authorizedMemory,
+            publicScene: plan.publicScene.filter((beat) => {
+              const actorArrival = arrivalByActor.get(actor.actorId);
+              return (
+                beat.beat <= item.request.beat &&
+                beat.perceivedBy.includes(actor.actorId) &&
+                (actorArrival === undefined || beat.beat >= actorArrival)
+              );
+            }),
+            priorActorLines: work
+              .slice(0, item.index)
+              .filter(
+                (prior) => prior.request.actorId === actor.actorId || prior.request.perceivedBy.includes(actor.actorId),
+              )
+              .flatMap((prior) => {
+                const output = outputs[prior.index];
+                if (!output) return [];
+                const ownLines = prior.request.actorId === actor.actorId;
+                const lines = output.lines.filter((line) => {
+                  const type = line.type ?? "main";
+                  if (type === "thought") return ownLines;
+                  if (type === "whisper") return ownLines || line.targetActorId === actor.actorId;
+                  return type === "main" || type === "side" || type === "action";
+                });
+                return lines.length === 0
+                  ? []
+                  : [
+                      {
+                        beat: prior.request.beat,
+                        actorId: prior.request.actorId,
+                        actorName: actors.get(prior.request.actorId)!.name,
+                        lines,
+                      },
+                    ];
+              }),
           },
           controller.signal,
         );
-        const output = normalizeActorOutput(raw, actor, actors, input.playerActorId);
-        outputs.push(output);
-        diagnostics.push({ actorId: actor.actorId, status: "accepted", requestId: item.requestId });
+        // Being eligible for an arrival does not make someone a valid whisper target yet.
+        const presentAtRequest = new Map(
+          [...actors].filter(
+            ([id, candidate]) =>
+              candidate.initiallyPresent !== false ||
+              plan.publicScene.some((beat) => beat.beat <= item.request.beat && beat.arrivingActorIds?.includes(id)),
+          ),
+        );
+        const output = normalizeActorOutput(raw, actor, presentAtRequest, input.playerActorId);
+        outputs[item.index] = output;
+        diagnostics[item.index] = { actorId: actor.actorId, status: "accepted", requestId: item.requestId };
       } catch (error) {
         if (signal.aborted) throw error;
         logger.warn(error, "[isolated-game] Actor output rejected for actor %s", actor.actorId);
-        diagnostics.push({
+        diagnostics[item.index] = {
           actorId: actor.actorId,
           status: "omitted",
           reason: error instanceof Error ? error.message : String(error),
           requestId: item.requestId,
-        });
+        };
+      } finally {
+        completionResolvers[item.index]!.resolve();
       }
     }
   };
@@ -325,12 +489,12 @@ export async function runIsolatedGameTurn(input: IsolatedGameTurnInput): Promise
     signal.removeEventListener("abort", abort);
   }
   signal.throwIfAborted();
-  const actorOrder = new Map(plan.actorRequests.map((item, index) => [item.actorId, index]));
-  outputs.sort((left, right) => (actorOrder.get(left.actorId) ?? 0) - (actorOrder.get(right.actorId) ?? 0));
-  diagnostics.sort((left, right) => (actorOrder.get(left.actorId) ?? 0) - (actorOrder.get(right.actorId) ?? 0));
+  const acceptedDiagnostics = diagnostics.filter(
+    (diagnostic): diagnostic is NonNullable<(typeof diagnostics)[number]> => diagnostic !== undefined,
+  );
   return {
     content: composeContent(plan, actors, outputs, input.playerActorId, input.playerActorName),
     plan,
-    actorDiagnostics: diagnostics,
+    actorDiagnostics: acceptedDiagnostics,
   };
 }

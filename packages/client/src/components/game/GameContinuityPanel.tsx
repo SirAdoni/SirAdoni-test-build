@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -503,6 +503,7 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
     },
   });
   const connections = useConnections();
+  const coverageIssuesRef = useRef<HTMLDivElement>(null);
   const [expandedBatchId, setExpandedBatchId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -702,9 +703,11 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
                       ? "catchingUp"
                       : counts.stale > 0
                         ? "stale"
-                        : counts.total === 0
-                          ? "empty"
-                          : "ok";
+                        : gaps.some((gap) => gap.reason !== "CONTINUITY_BATCH_NOT_PUBLISHED")
+                          ? "attention"
+                          : counts.total === 0
+                            ? "empty"
+                            : "ok";
 
   const openBatches = (next: BatchFilter) => {
     setFilter(next);
@@ -720,20 +723,19 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
     credentials: t("ui.game.continuityPanel.health.credentials", { defaultValue: "Paused: API key rejected" }),
     budget: t("ui.game.continuityPanel.health.budget", { defaultValue: "Paused: hourly call cap reached" }),
     limit: t("ui.game.continuityPanel.health.limit", { defaultValue: "Paused: usage limit reached" }),
-    attention: t("ui.game.continuityPanel.health.attention", {
-      defaultValue: "Needs attention: {{count}} turns",
-      count: counts.attention,
+    attention: t("ui.game.continuityPanel.health.coverageAttention", {
+      defaultValue: "Memory needs attention",
     }),
-    catchingUp: t("ui.game.continuityPanel.health.catchingUp", {
-      defaultValue: "Catching up: {{count}} turns waiting",
+    catchingUp: t("ui.game.continuityPanel.health.pendingBatches", {
+      defaultValue: "Catching up: {{count}} batches waiting",
       count: counts.pending,
     }),
-    stale: t("ui.game.continuityPanel.health.stale", {
-      defaultValue: "{{count}} turns changed since they were remembered",
+    stale: t("ui.game.continuityPanel.health.staleBatches", {
+      defaultValue: "{{count}} batches changed since they were checked",
       count: counts.stale,
     }),
     empty: t("ui.game.continuityPanel.health.empty", { defaultValue: "Nothing remembered yet" }),
-    ok: t("ui.game.continuityPanel.health.ok", { defaultValue: "Memory is up to date" }),
+    ok: t("ui.game.continuityPanel.health.batchesChecked", { defaultValue: "Recorded batches checked" }),
   };
   const explanation: Record<Health, string> = {
     loading: "",
@@ -755,8 +757,8 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
     limit: t("ui.game.continuityPanel.explain.limit", {
       defaultValue: "Your AI connection hit its usage limit. Nothing is lost: waiting turns resume on their own.",
     }),
-    attention: t("ui.game.continuityPanel.explain.attention", {
-      defaultValue: "Some turns could not be remembered. Open them to see why, then retry.",
+    attention: t("ui.game.continuityPanel.explain.coverageAttention", {
+      defaultValue: "Some memory work or source coverage needs attention. Review the details below.",
     }),
     catchingUp:
       counts.working > 0
@@ -773,8 +775,8 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
     empty: t("ui.game.continuityPanel.explain.empty", {
       defaultValue: "Memory starts with your next turn.",
     }),
-    ok: t("ui.game.continuityPanel.explain.ok", {
-      defaultValue: "Every turn so far has been read and double-checked.",
+    ok: t("ui.game.continuityPanel.explain.batchesChecked", {
+      defaultValue: "All recorded batches have finished checking. Full-turn coverage is shown below.",
     }),
   };
 
@@ -843,7 +845,17 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
         {t("ui.game.continuity.retry")}
       </button>
     ) : health === "attention" ? (
-      <button type="button" className={primaryButton} onClick={() => openBatches("attention")}>
+      <button
+        type="button"
+        className={primaryButton}
+        onClick={() => {
+          if (counts.attention > 0) openBatches("attention");
+          else {
+            coverageIssuesRef.current?.focus({ preventScroll: true });
+            coverageIssuesRef.current?.scrollIntoView({ block: "nearest" });
+          }
+        }}
+      >
         {t("ui.game.continuityPanel.action.showProblems", { defaultValue: "Show problems" })}
       </button>
     ) : health === "stale" ? (
@@ -936,7 +948,11 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
       return t("ui.game.continuityPanel.gap.invalid", {
         defaultValue: "A saved memory no longer matches its turn",
       });
-    return t("ui.game.continuityPanel.gap.other", { defaultValue: "Turns missing from memory" });
+    if (reason === "CONTINUITY_REVIEW_WITHHELD")
+      return t("ui.game.continuityPanel.gap.withheldFacts", {
+        defaultValue: "Some proposed facts were withheld during review. Accepted facts remain available.",
+      });
+    return t("ui.game.continuityPanel.gap.coverage", { defaultValue: "Memory coverage needs attention" });
   };
 
   return (
@@ -1004,7 +1020,7 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
         <div className="px-3 pb-3">
           <div
             role="progressbar"
-            aria-label={t("ui.game.continuityPanel.progressLabel", { defaultValue: "Memory progress" })}
+            aria-label={t("ui.game.continuityPanel.batchProgressLabel", { defaultValue: "Memory batch progress" })}
             aria-valuemin={0}
             aria-valuemax={progressTotal}
             aria-valuenow={counts.reviewed}
@@ -1015,8 +1031,8 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
             <span className="h-full bg-amber-400/80" style={{ width: `${pct(counts.attention + counts.stale)}%` }} />
           </div>
           <p className="mt-1.5 text-xs text-muted-foreground">
-            {t("ui.game.continuityPanel.progressText", {
-              defaultValue: "{{done}} of {{total}} turns remembered",
+            {t("ui.game.continuityPanel.batchProgressText", {
+              defaultValue: "{{done}} of {{total}} memory batches checked",
               done: counts.reviewed.toLocaleString(),
               total: progressTotal.toLocaleString(),
             })}
@@ -1029,7 +1045,7 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
                   id: "done" as const,
                   value: counts.reviewed,
                   dot: "bg-emerald-400",
-                  label: t("ui.game.continuityPanel.count.remembered", { defaultValue: "Remembered" }),
+                  label: t("ui.game.continuityPanel.count.checkedBatches", { defaultValue: "Checked batches" }),
                 },
                 {
                   id: "waiting" as const,
@@ -1079,10 +1095,10 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
           <CheckCircle2 size={13} className="shrink-0" aria-hidden="true" />
           <span>
             {verifiedThroughMessageId
-              ? t("ui.game.continuityPanel.watermark", {
-                  defaultValue: "Everything up to a recent turn is fully checked.",
+              ? t("ui.game.continuityPanel.coverageWatermark", {
+                  defaultValue: "Continuous checked coverage reaches the recorded turn.",
                 })
-              : t("ui.game.continuity.verifiedThroughNone")}
+              : t("ui.game.continuityPanel.coverageWatermarkNone")}
           </span>
           {verifiedThroughMessageId && (
             <TechnicalDetails
@@ -1129,10 +1145,15 @@ export function GameContinuityPanel({ chatId, metadata, className }: GameContinu
       )}
 
       {!!gapGroups.length && (
-        <div className="border-t border-border px-3 py-2.5 text-xs" data-component="GameContinuityPanel.Gaps">
+        <div
+          ref={coverageIssuesRef}
+          tabIndex={-1}
+          className="border-t border-border px-3 py-2.5 text-xs"
+          data-component="GameContinuityPanel.Gaps"
+        >
           <p className="flex items-center gap-1.5 font-semibold text-foreground">
             <AlertTriangle size={13} className="text-amber-300" aria-hidden="true" />
-            {t("ui.game.continuityPanel.gapsTitle", { defaultValue: "Turns missing from memory" })}
+            {t("ui.game.continuityPanel.coverageIssuesTitle", { defaultValue: "Memory coverage issues" })}
           </p>
           <ul className="mt-1 flex flex-col gap-1">
             {gapGroups.map(([reason, items]) => (

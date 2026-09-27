@@ -184,6 +184,8 @@ export interface GameNpc {
   status?: GameNpcStatus;
   /** Party reputation with this NPC: -100 (hostile) to 100 (devoted) */
   reputation: number;
+  /** Whether the numeric reputation was established by an observed action. Legacy default zero means unknown. */
+  reputationObserved?: boolean;
   /** Notable interactions or knowledge */
   notes: string[];
   /** Optional avatar URL (generated or uploaded) */

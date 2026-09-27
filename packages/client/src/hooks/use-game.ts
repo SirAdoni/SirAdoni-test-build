@@ -1056,6 +1056,9 @@ export function useUpdateReputation() {
       if (store.getState().activeSessionChatId === variables.chatId) store.getState().setNpcs(res.npcs as any[]);
       qc.invalidateQueries({ queryKey: chatKeys.detail(variables.chatId) });
       qc.invalidateQueries({ queryKey: [...gameKeys.all, "journal", variables.chatId] });
+      if (res.changes.length > 0) {
+        qc.invalidateQueries({ queryKey: ["game-contact-book", variables.chatId] });
+      }
     },
   });
 }

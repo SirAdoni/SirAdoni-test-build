@@ -50,12 +50,15 @@ export async function chatInsightsRoutes(app: FastifyInstance) {
     }),
   );
 
-  app.get<{ Params: { id: string }; Querystring: { tzOffset?: string; tz?: string } }>("/chats/:id/stats", async (req, reply) => {
-    const [chat] = await app.db.select().from(chats).where(eq(chats.id, req.params.id));
-    if (!chat || isInternalAssistantChat(chat)) return reply.status(404).send({ error: "Chat not found" });
-    return computeStoredChatStats(app.db, chat, {
-      timezoneOffsetMinutes: normalizeTimezoneOffset(req.query.tzOffset),
-      timeZone: req.query.tz ?? null,
-    });
-  });
+  app.get<{ Params: { id: string }; Querystring: { tzOffset?: string; tz?: string } }>(
+    "/chats/:id/stats",
+    async (req, reply) => {
+      const [chat] = await app.db.select().from(chats).where(eq(chats.id, req.params.id));
+      if (!chat || isInternalAssistantChat(chat)) return reply.status(404).send({ error: "Chat not found" });
+      return computeStoredChatStats(app.db, chat, {
+        timezoneOffsetMinutes: normalizeTimezoneOffset(req.query.tzOffset),
+        timeZone: req.query.tz ?? null,
+      });
+    },
+  );
 }

@@ -11,11 +11,15 @@ process.env.NODE_ENV = "test";
 process.env.MARINARA_LITE = "true";
 type Scenario =
   | "success"
+  | "ordered-dialogue"
+  | "recurring-dialogue"
   | "introduction"
+  | "arrival"
   | "invalid-plan"
   | "actor-failure"
   | "missing-usage"
   | "legacy"
+  | "impersonate"
   | "oversized-actor";
 let scenario: Scenario = "success";
 const bodies: Array<Record<string, any>> = [];
@@ -26,7 +30,9 @@ function trustedActorIds(body: Record<string, any>): string[] {
   );
   assert.ok(injection, "planner includes an explicit trusted roster");
   const roster = JSON.parse(injection.content.split("Trusted actor roster (exact IDs): ").at(-1));
-  return roster.map((actor: { actorId: string }) => actor.actorId);
+  return roster
+    .filter((actor: { initiallyPresent?: boolean }) => actor.initiallyPresent !== false)
+    .map((actor: { actorId: string }) => actor.actorId);
 }
 const provider = createServer(async (_request, response) => {
   const chunks: Buffer[] = [];
@@ -36,7 +42,13 @@ const provider = createServer(async (_request, response) => {
   const prompt = (body.messages ?? []).map((message: any) => message.content ?? "").join("\n");
   const planner = prompt.includes("Trusted actor roster");
   const rosterMatch = prompt.match(/Trusted actor roster[^:]*:\s*(\[[\s\S]*?\])/u);
-  const roster = rosterMatch ? (JSON.parse(rosterMatch[1]) as Array<{ actorId: string }>) : [];
+  const allCandidates = rosterMatch
+    ? (JSON.parse(rosterMatch[1]) as Array<{ actorId: string; initiallyPresent?: boolean }>)
+    : [];
+  const roster =
+    scenario === "arrival"
+      ? allCandidates.slice(0, 2)
+      : allCandidates.filter((actor) => actor.initiallyPresent !== false);
   const expected = prompt.match(/Expected actor ID:\s*([^\n]+)/u)?.[1]?.trim();
   const actorId = roster[0]?.actorId ?? expected ?? "missing";
   const introductionFacts = [
@@ -65,40 +77,61 @@ const provider = createServer(async (_request, response) => {
     text: "OBSERVABLE-" + beat + "-" + "x".repeat(3900),
     perceivedBy: roster.map(({ actorId: id }) => id),
   }));
-  const content =
+  let content =
     scenario === "invalid-plan" && planner
       ? JSON.stringify({ publicScene: [{ beat: 0, text: "<private>leak</private>" }], actorRequests: [] })
       : planner
-        ? scenario === "introduction"
+        ? scenario === "arrival"
           ? JSON.stringify({
               publicScene: [
                 {
                   beat: 0,
-                  text: "The visible household staff wait in their arranged groups.",
-                  perceivedBy: roster.map(({ actorId: id }) => id),
+                  contextOnly: true,
+                  text: "The player is already seated and asks Alice to call Bob to eat. RECENT_CONTEXT_ONLY",
+                  perceivedBy: [roster[0]!.actorId],
                 },
                 {
                   beat: 1,
-                  text: `Dorian publicly presents the visible staff by name and role: ${introductionFacts.join("; ")}.`,
-                  perceivedBy: roster.length > 0 ? [roster[0]!.actorId] : [],
+                  text: "Bob enters the dining room in response to the call.",
+                  arrivingActorIds: [roster[1]!.actorId],
+                  perceivedBy: roster.map(({ actorId: id }) => id),
                 },
               ],
-              actorRequests: roster.length > 0 ? [{ beat: 1, actorId: roster[0]!.actorId }] : [],
+              actorRequests: [
+                { beat: 0, actorId: roster[0]!.actorId },
+                { beat: 1, actorId: roster[1]!.actorId },
+              ],
             })
-          : scenario === "oversized-actor"
+          : scenario === "introduction"
             ? JSON.stringify({
-                publicScene: oversizedScene,
-                actorRequests: roster.map(({ actorId: id }) => ({ beat: 23, actorId: id })),
-              })
-            : JSON.stringify({
                 publicScene: [
-                  { beat: 0, text: "The room is quiet.", perceivedBy: roster.map(({ actorId: id }) => id) },
-                  ...(roster.length > 0
-                    ? [{ beat: 1, text: "ALICE_SECRET_RAW_PLAYER_PRIVATE", perceivedBy: [roster[0]!.actorId] }]
-                    : []),
+                  {
+                    beat: 0,
+                    text: "The visible household staff wait in their arranged groups.",
+                    perceivedBy: roster.map(({ actorId: id }) => id),
+                  },
+                  {
+                    beat: 1,
+                    text: `Dorian publicly presents the visible staff by name and role: ${introductionFacts.join("; ")}.`,
+                    perceivedBy: roster.length > 0 ? [roster[0]!.actorId] : [],
+                  },
                 ],
-                actorRequests: roster.map(({ actorId: id }, index) => ({ beat: index === 0 ? 1 : 0, actorId: id })),
+                actorRequests: roster.length > 0 ? [{ beat: 1, actorId: roster[0]!.actorId }] : [],
               })
+            : scenario === "oversized-actor"
+              ? JSON.stringify({
+                  publicScene: oversizedScene,
+                  actorRequests: roster.map(({ actorId: id }) => ({ beat: 23, actorId: id })),
+                })
+              : JSON.stringify({
+                  publicScene: [
+                    { beat: 0, text: "The room is quiet.", perceivedBy: roster.map(({ actorId: id }) => id) },
+                    ...(roster.length > 0
+                      ? [{ beat: 1, text: "ALICE_SECRET_RAW_PLAYER_PRIVATE", perceivedBy: [roster[0]!.actorId] }]
+                      : []),
+                  ],
+                  actorRequests: roster.map(({ actorId: id }, index) => ({ beat: index === 0 ? 1 : 0, actorId: id })),
+                })
         : scenario === "actor-failure"
           ? JSON.stringify({ actorId: "wrong-actor", lines: [{ type: "main", text: "bad" }] })
           : scenario === "introduction"
@@ -107,10 +140,38 @@ const provider = createServer(async (_request, response) => {
                 lines: introductionFacts.map((fact) => ({ type: "main", text: fact })),
               })
             : JSON.stringify({ actorId, lines: [{ type: "main", text: "I watch the door." }] });
-  if (scenario === "legacy" && body.stream === true) {
+  if (scenario === "ordered-dialogue" || scenario === "recurring-dialogue") {
+    content = planner
+      ? JSON.stringify({
+          publicScene: [
+            { beat: 0, text: "Alice and Bob stand at the gate.", perceivedBy: roster.map((a) => a.actorId) },
+            ...(scenario === "recurring-dialogue"
+              ? [{ beat: 1, text: "A bell rings above the gate.", perceivedBy: roster.map((a) => a.actorId) }]
+              : []),
+          ],
+          actorRequests: [
+            ...roster.map((a) => ({ beat: 0, actorId: a.actorId, perceivedBy: roster.map((b) => b.actorId) })),
+            ...(scenario === "recurring-dialogue"
+              ? [{ beat: 1, actorId: roster[0]!.actorId, perceivedBy: roster.map((a) => a.actorId) }]
+              : []),
+          ],
+        })
+      : JSON.stringify({
+          actorId,
+          lines: prompt.includes("Expected actor name: Alice Route")
+            ? prompt.includes("PUBLIC_ANSWER")
+              ? [{ type: "main", text: "Yes, Bob, see you at six. RECURRING_CONFIRMATION" }]
+              : [
+                  { type: "main", text: "The gate opens at six. PUBLIC_ANSWER" },
+                  { type: "thought", text: "PRIVATE_THOUGHT_NOT_SHARED" },
+                ]
+            : [{ type: "main", text: "I heard six; I will return then." }],
+        });
+  }
+  if ((scenario === "legacy" || scenario === "impersonate") && body.stream === true) {
     response.writeHead(200, { "content-type": "text/event-stream" });
     response.end(
-      `data: ${JSON.stringify({ choices: [{ delta: { content: "Legacy narrative." } }] })}\n\n` +
+      `data: ${JSON.stringify({ choices: [{ delta: { content: scenario === "impersonate" ? "I ask about the watch." : "Legacy narrative." } }] })}\n\n` +
         `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
     );
     return;
@@ -186,7 +247,7 @@ try {
     fallbackForMain: true,
     treatAsLocalEndpoint: true,
   } as any);
-  const makeChat = async (mode: "isolated" | "legacy" | "empty") => {
+  const makeChat = async (mode: "isolated" | "legacy" | "impersonate" | "empty" | "arrival") => {
     if (mode === "empty") {
       const chat = await chats.create({ name: "narrator only", mode: "game", characterIds: [] } as any);
       await chats.updateMetadata(chat.id, {
@@ -217,10 +278,30 @@ try {
         .id;
     const alice = await makeCharacter("Alice Route");
     const bob = await makeCharacter("Bob Route");
-    const chat = await chats.create({ name: `isolated ${mode}`, mode: "game", characterIds: [alice, bob] } as any);
+    const unused =
+      mode === "arrival"
+        ? (await characters.create({
+            name: "Unused Archivist",
+            description: "UNUSED_PRIVATE_CARD ".repeat(2000),
+            personality: "quiet",
+            scenario: "Away",
+          } as any))!.id
+        : null;
+    const chat = await chats.create({
+      name: `isolated ${mode}`,
+      mode: "game",
+      characterIds: mode === "arrival" ? [alice] : [alice, bob],
+    } as any);
     await chats.updateMetadata(chat.id, {
-      ...(mode === "isolated" ? { gameNpcKnowledgeMode: "isolated" } : {}),
-      gameNpcs: [],
+      gameTime: { day: 4, hour: 14, minute: 17 },
+      ...(["isolated", "arrival"].includes(mode) ? { gameNpcKnowledgeMode: "isolated" } : {}),
+      gameNpcs:
+        mode === "arrival"
+          ? [
+              { id: "npc:guest", characterId: bob, name: "Bob Route", observedDescription: "Known guest" },
+              { id: "npc:unused", characterId: unused, name: "Unused Archivist" },
+            ]
+          : [],
       gameJournal: { entries: [], quests: [], locations: [], npcLog: [], inventoryLog: [] },
     } as any);
     const prior = await chats.createMessage({ chatId: chat.id, role: "user", content: "I enter." } as any);
@@ -234,7 +315,7 @@ try {
       weather: "",
       temperature: "",
       worldCustomFields: [],
-      presentCharacters: [{ characterId: alice }, { characterId: bob }],
+      presentCharacters: mode === "arrival" ? [{ characterId: alice }] : [{ characterId: alice }, { characterId: bob }],
       recentEvents: [],
       playerStats: null,
       personaStats: null,
@@ -377,6 +458,34 @@ try {
       payload: { chatId, userMessage, connectionId: connection.id, streaming: true },
     });
 
+  const ordered = await makeChat("isolated");
+  bodies.length = 0;
+  scenario = "ordered-dialogue";
+  const orderedResponse = await generate(ordered.chat.id);
+  assert.equal(orderedResponse.statusCode, 200, orderedResponse.body);
+  assert.match(orderedResponse.body, /I heard six/);
+  assert.equal(bodies.length, 3, "ordering uses the same planner and two actor calls");
+  const orderedTexts = bodies.slice(1).map((body) => body.messages.map((m: any) => m.content).join("\n"));
+  assert.match(orderedTexts[0], /Expected actor name: Alice Route/);
+  assert.match(orderedTexts[1], /Expected actor name: Bob Route/);
+  assert.match(orderedTexts[1], /PUBLIC_ANSWER/, "later provider request receives the already spoken answer");
+  assert.doesNotMatch(orderedTexts[1], /PRIVATE_THOUGHT_NOT_SHARED|ALICE_PRIVATE_MEMORY/);
+  assert.match(orderedTexts[1], /Earlier witnessed replies in this turn/);
+
+  const recurring = await makeChat("isolated");
+  bodies.length = 0;
+  scenario = "recurring-dialogue";
+  const recurringResponse = await generate(recurring.chat.id);
+  assert.equal(recurringResponse.statusCode, 200, recurringResponse.body);
+  assert.match(recurringResponse.body, /RECURRING_CONFIRMATION/);
+  assert.equal(bodies.length, 4, "planner plus three requests including a recurring actor");
+  const finalActorText = bodies[3]!.messages.map((m: any) => m.content).join("\n");
+  assert.match(finalActorText, /PUBLIC_ANSWER/);
+  assert.match(finalActorText, /I heard six; I will return then/);
+  const recurringSaved = (await chats.listMessages(recurring.chat.id)).find((m: any) => m.role === "assistant");
+  assert(recurringSaved.content.indexOf("RECURRING_CONFIRMATION") > recurringSaved.content.indexOf("A bell rings"));
+  assert.equal(JSON.parse(recurringSaved.extra).isolatedGameTurn.actorDiagnostics.length, 3);
+
   const isolated = await makeChat("isolated");
   bodies.length = 0;
   scenario = "success";
@@ -388,8 +497,16 @@ try {
   const plannerText = bodies[0]!.messages.map((message: any) => message.content).join("\n");
   assert.match(plannerText, new RegExp(isolated.alice));
   assert.match(plannerText, new RegExp(isolated.bob));
+  assert.match(plannerText, /optional spatialDirective/);
+  assert.match(plannerText, /explicitly completed a user-directed move or arrival/);
+  assert.match(plannerText, /known location catalogue is not authorization/);
+  assert.match(plannerText, /automatic travel is off/);
+  assert.match(plannerText, /Do not substitute discovery/);
+  assert.match(plannerText, /final reader-facing narrative prose/);
+  assert.match(plannerText, /actorRequests is scheduling metadata, not narration/);
   const actorTexts = bodies.slice(1).map((body) => body.messages.map((message: any) => message.content).join("\n"));
   assert.equal(actorTexts.filter((text) => text.includes("ALICE_PRIVATE_MEMORY")).length, 1);
+  assert.equal(actorTexts.filter((text) => text.includes("spatial_move")).length, 0);
   assert.equal(actorTexts.filter((text) => text.includes("ALICE_SECRET_RAW_PLAYER_PRIVATE")).length, 1);
   assert.ok(actorTexts.every((text) => /Expected actor ID:\s*\S+/u.test(text)));
   assert.equal(
@@ -400,6 +517,13 @@ try {
     (message: any) => message.role === "assistant",
   );
   const isolatedExtra = JSON.parse(isolatedAssistant.extra);
+  assert.deepEqual(isolatedExtra.gameTurnClock.before, { day: 4, hour: 14, minute: 17 });
+  assert.deepEqual(isolatedExtra.gameTurnClock.after, { day: 4, hour: 14, minute: 17 });
+  assert.match(
+    JSON.stringify(bodies.slice(1).map((body) => body.messages)),
+    /Current in-world time \(server clock\): Day 4, 14:17/,
+    "Separate character replies receive the canonical exact clock",
+  );
   assert.equal(isolatedExtra.isolatedGameTurn.promptRequests.length, 3);
   assert.deepEqual(
     isolatedExtra.isolatedGameTurn.promptRequests[0].messages,
@@ -459,6 +583,43 @@ try {
     "Known cache reads survive when this provider does not report cache writes",
   );
 
+  const arrival = await makeChat("arrival");
+  bodies.length = 0;
+  scenario = "arrival";
+  const arrivalResponse = await generate(arrival.chat.id, "Please fetch everyone to eat with us.");
+  assert.equal(arrivalResponse.statusCode, 200, arrivalResponse.body);
+  assert.equal(bodies.length, 3, "known offscene guest gets a reply in the same turn after arrival");
+  const arrivalRoster = JSON.parse(
+    bodies[0]!.messages.at(-1).content.split("Trusted actor roster (exact IDs): ").at(-1),
+  );
+  assert.deepEqual(
+    arrivalRoster.slice(0, 2).map((actor: any) => [actor.actorId, actor.initiallyPresent]),
+    [
+      [arrival.alice, true],
+      [arrival.bob, false],
+    ],
+  );
+  assert.equal(arrivalRoster.length, 3, "unused known identities remain eligible without becoming present");
+  assert.ok(
+    bodies.every((body) => !JSON.stringify(body.messages).includes("UNUSED_PRIVATE_CARD")),
+    "unused private card is never sent",
+  );
+  const arrivalMessages = await chats.listMessages(arrival.chat.id);
+  const arrivalContent = arrivalMessages.findLast((message: any) => message.role === "assistant")!.content;
+  assert.match(arrivalContent, /Bob enters the dining room/u);
+  assert.match(arrivalContent, /\[Bob Route\]/u);
+  assert.doesNotMatch(arrivalContent, /RECENT_CONTEXT_ONLY|already seated/u);
+  const arrivingActorPrompt = bodies
+    .slice(1)
+    .find((body) => JSON.stringify(body.messages).includes(`Expected actor ID: ${arrival.bob}`));
+  assert.ok(arrivingActorPrompt);
+  assert.match(JSON.stringify(arrivingActorPrompt.messages), /Bob enters the dining room/u);
+  assert.doesNotMatch(JSON.stringify(arrivingActorPrompt.messages), /RECENT_CONTEXT_ONLY|ALICE_PRIVATE_MEMORY/u);
+  const hostPrompt = bodies
+    .slice(1)
+    .find((body) => JSON.stringify(body.messages).includes(`Expected actor ID: ${arrival.alice}`));
+  assert.match(JSON.stringify(hostPrompt.messages), /already seated/u);
+
   const introduction = await makeChat("isolated");
   bodies.length = 0;
   npcSyncRequests.length = 0;
@@ -481,6 +642,8 @@ try {
   assert.equal(npcSyncRequests.length, 1, "accepted isolated response schedules exactly one NPC sync");
 
   const impersonated = await makeChat("isolated");
+  bodies.length = 0;
+  scenario = "impersonate";
   const syncsBeforeImpersonated = npcSyncRequests.length;
   const impersonatedResponse = await app!.inject({
     method: "POST",
@@ -494,6 +657,44 @@ try {
     },
   });
   assert.equal(impersonatedResponse.statusCode, 200, impersonatedResponse.body);
+  assert.equal(bodies.length, 1, "Impersonate uses one player-writing request, not the NPC planner/actor flow");
+  const playerInstruction = bodies[0]!.messages.find(
+    (message: any) => typeof message.content === "string" && message.content.includes("You are now writing as"),
+  );
+  assert.equal(playerInstruction?.role, "system", "Game impersonation must not be subordinate to the GM role");
+  assert.match(playerInstruction.content, /not a Game Master turn/u);
+  assert.match(playerInstruction.content, /Do not continue the GM narration/u);
+  assert.doesNotMatch(JSON.stringify(bodies[0]!.messages), /Trusted actor roster|Expected actor ID:/u);
+  const impersonatedEvents = impersonatedResponse.body
+    .split("\n")
+    .filter((line: string) => line.startsWith("data: "))
+    .map((line: string) => {
+      try {
+        return JSON.parse(line.slice(6));
+      } catch {
+        return null;
+      }
+    });
+  const savedPlayer = impersonatedEvents.findLast((event: any) => event?.type === "message_saved")?.data;
+  assert.equal(savedPlayer?.role, "user");
+  assert.equal(savedPlayer?.content, "I ask about the watch.");
+  const retryPlayer = await app!.inject({
+    method: "POST",
+    url: "/api/generate",
+    payload: {
+      chatId: impersonated.chat.id,
+      regenerateMessageId: savedPlayer.id,
+      connectionId: connection.id,
+      streaming: true,
+      impersonate: true,
+    },
+  });
+  assert.equal(retryPlayer.statusCode, 200, retryPlayer.body);
+  assert.match(
+    retryPlayer.body,
+    /I ask about the watch/u,
+    "A generated player message can be retried in isolated mode",
+  );
   await new Promise((resolve) => setTimeout(resolve, 25));
   assert.equal(npcSyncRequests.length, syncsBeforeImpersonated, "impersonated/unsaved turn does not schedule NPC sync");
 
@@ -684,9 +885,29 @@ try {
   }
 
   const regen = await makeChat("isolated");
+  const aliceAcceptedExtra = {
+    isolatedGameTurn: {
+      actorDiagnostics: [{ actorId: regen.alice, status: "accepted", requestId: "route-history" }],
+    },
+  };
+  await chats.createMessage({
+    chatId: regen.chat.id,
+    role: "assistant",
+    content: '[Alice Route] [main]: "PREVIOUS_ALICE_EVIDENCE"',
+    extra: aliceAcceptedExtra,
+  } as any);
+  await chats.createMessage({
+    chatId: regen.chat.id,
+    role: "assistant",
+    content: '[Alice Route] [main]: "HIDDEN_ALICE_EVIDENCE"',
+    extra: { ...aliceAcceptedExtra, hiddenFromAI: true },
+  } as any);
   scenario = "success";
   await generate(regen.chat.id);
-  const target = (await chats.listMessages(regen.chat.id)).find((message: any) => message.role === "assistant");
+  const generatedAssistants = (await chats.listMessages(regen.chat.id)).filter(
+    (message: any) => message.role === "assistant",
+  );
+  const target = generatedAssistants[generatedAssistants.length - 1];
   assert.ok(target);
   await chats.updateMessageContent(target.id, "ORIGINAL_TARGET_MARKER");
   const laterUser = await chats.createMessage({
@@ -697,8 +918,8 @@ try {
   await chats.createMessage({
     chatId: regen.chat.id,
     role: "assistant",
-    content: "Later response.",
-    extra: { encryptedReasoning: ["ENCRYPTED_FUTURE_MARKER"] },
+    content: '[Alice Route] [main]: "FUTURE_ALICE_EVIDENCE"',
+    extra: { ...aliceAcceptedExtra, encryptedReasoning: ["ENCRYPTED_FUTURE_MARKER"] },
   } as any);
   const bobEntity = await memory.createEntity({
     chatId: regen.chat.id,
@@ -734,6 +955,13 @@ try {
     provenance: { source: "test", sourceRevision: "test", actor: "user" },
     manualLock: false,
   });
+  await chats.updateMessageExtraForSwipe(target.id, target.activeSwipeIndex ?? 0, {
+    gameTurnClock: {
+      before: { day: 4, hour: 13, minute: 50 },
+      after: { day: 4, hour: 14, minute: 17 },
+      manualCorrection: true,
+    },
+  });
   bodies.length = 0;
   const regenerated = await app!.inject({
     method: "POST",
@@ -741,19 +969,33 @@ try {
     payload: { chatId: regen.chat.id, regenerateMessageId: target.id, connectionId: connection.id, streaming: true },
   });
   assert.equal(regenerated.statusCode, 200, regenerated.body);
+  const regeneratedClock = JSON.parse((await chats.getMessage(target.id))!.extra).gameTurnClock;
+  assert.equal(regeneratedClock.manualCorrection, true, "Regeneration preserves an explicit clock correction");
+  assert.deepEqual(regeneratedClock.before, { day: 4, hour: 13, minute: 50 });
+  assert.deepEqual(regeneratedClock.after, { day: 4, hour: 14, minute: 17 });
   const regenerationPrompt = bodies
     .map((body) => body.messages.map((message: any) => message.content).join("\n"))
     .join("\n");
+  const regeneratedAlicePrompt = bodies
+    .map((body) => body.messages.map((message: any) => message.content).join("\n"))
+    .find((text) => text.includes(`Expected actor ID: ${regen.alice}`));
+  assert.ok(regeneratedAlicePrompt, "regeneration sends an Alice actor request");
+  assert.match(
+    regeneratedAlicePrompt,
+    /PREVIOUS_ALICE_EVIDENCE/u,
+    "regeneration includes preceding accepted own actor dialogue in the actor request",
+  );
   assert.doesNotMatch(
     regenerationPrompt,
-    /LATER_PRIVATE_FUTURE|LATER_CANONICAL_PRIVATE|ENCRYPTED_FUTURE_MARKER|ORIGINAL_TARGET_MARKER/u,
+    /HIDDEN_ALICE_EVIDENCE|FUTURE_ALICE_EVIDENCE|LATER_PRIVATE_FUTURE|LATER_CANONICAL_PRIVATE|ENCRYPTED_FUTURE_MARKER|ORIGINAL_TARGET_MARKER/u,
+    "regeneration excludes hidden, target, and post-target actor dialogue",
   );
   const regenerationSwipes = await chats.getSwipes(target.id);
   assert.equal(regenerationSwipes.length, 2, "regeneration adds one swipe to the target");
   assert.equal(regenerationSwipes[0]?.content, "ORIGINAL_TARGET_MARKER");
   assert.equal(
     (await chats.listMessages(regen.chat.id)).filter((message: any) => message.role === "assistant").length,
-    2,
+    4,
   );
 
   const regenInvalid = await makeChat("isolated");

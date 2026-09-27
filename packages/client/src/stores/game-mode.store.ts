@@ -155,7 +155,6 @@ function debouncedPersistWidgets(chatId: string, widgets: HudWidget[]) {
   }, 1000);
 }
 
-
 function normalizeListWidgetItem(value: string): string {
   return value
     .trim()

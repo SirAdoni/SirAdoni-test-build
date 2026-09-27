@@ -22,6 +22,8 @@ try {
   const { createGameContinuityStorage } =
     await import("../../packages/server/src/services/storage/game-continuity.storage.js");
   const { createGameContinuityRuntime } = await import("../../packages/server/src/services/game/continuity-runtime.js");
+  const { applyCampaignMemoryMutation } =
+    await import("../../packages/server/src/services/game/campaign-memory-mutations.js");
   const { CONTINUITY_SOURCE_RETIRED, continuityReceiptsShareSources, findSourceChangedReceipts } =
     await import("../../packages/server/src/services/game/continuity-retirement.js");
   const { prepareContinuitySources } = await import("../../packages/server/src/services/game/continuity-sources.js");
@@ -108,8 +110,7 @@ try {
     (await liveFacts()).map((fact) => String((fact.value as Record<string, unknown>).text ?? ""));
   const generatedEntries = async () =>
     (await db.select().from(lorebookEntries)).filter((entry) => entry.id.startsWith("gce_"));
-  const setContent = (id: string, content: string) =>
-    db.update(messages).set({ content }).where(eq(messages.id, id));
+  const setContent = (id: string, content: string) => db.update(messages).set({ content }).where(eq(messages.id, id));
 
   // 1. A turn is accepted, read and published.
   const first = await continuity.enqueueCommittedTurn({ chatId: "chat", assistantMessageId: "a1", sessionNumber: 1 });
@@ -174,11 +175,95 @@ try {
   await db.delete(messages).where(eq(messages.id, "a1"));
   await continuity.reconcileChat("chat", { changedMessageIds: ["a1"] });
   assert.equal((await storage.get(restored[0]!.id))?.status, "stale");
-  assert.equal((await generatedEntries()).length, 0, "the deleted turn's generated lore entry is removed");
+  assert.deepEqual(
+    (await generatedEntries()).map((entry) => entry.id),
+    restored[0]!.entryIds,
+    "the locked fact keeps the generated page it still owns",
+  );
   assert.deepEqual(
     (await liveFacts()).map((fact) => fact.factId),
     [liveFact!.factId],
     "the locked fact is kept; nothing else from the deleted turn stays live",
+  );
+
+  // A user can edit a generated fact without setting manualLock. The mutation journal, not the unchanged
+  // author/manualLock fields, is the evidence that automatic retirement must leave their correction alone.
+  const publishExtraTurn = async (prefix: string, content: string, second: number) => {
+    await db.insert(messages).values([
+      { id: `${prefix}-before`, chatId: "chat", role: "user", content: "Tell me more.", createdAt: t(second) },
+      { id: `${prefix}-answer`, chatId: "chat", role: "assistant", content, createdAt: t(second + 1) },
+      { id: `${prefix}-after`, chatId: "chat", role: "user", content: "Continue.", createdAt: t(second + 2) },
+    ]);
+    const queued = await continuity.enqueueCommittedTurn({
+      chatId: "chat",
+      assistantMessageId: `${prefix}-answer`,
+      sessionNumber: 1,
+    });
+    assert.ok(queued);
+    await waitUntil(async () => (await storage.get(queued.id))?.status === "published", `${prefix} publication`);
+    const receipt = (await storage.get(queued.id))!;
+    const fact = (await liveFacts()).find((item) => (item.value as Record<string, unknown>).text === content);
+    assert.ok(fact, `${prefix} published its fact`);
+    assert.equal(receipt.entryIds.length, 1, `${prefix} published one owned page`);
+    return { receipt, fact, entryId: receipt.entryIds[0]! };
+  };
+
+  const playerFact = await publishExtraTurn("player-fact", "Ismene keeps a blue lantern.", 4);
+  await applyCampaignMemoryMutation(db, {
+    chatId: "chat",
+    operationId: "player-edited-generated-fact",
+    actor: "user",
+    reason: "Correct the remembered account",
+    recordType: "fact",
+    action: "update",
+    recordId: playerFact.fact.factId,
+    expectedRevision: playerFact.fact.revision,
+    patch: { value: { ...(playerFact.fact.value as Record<string, unknown>), text: "Ismene keeps a green lantern." } },
+  });
+  const unlockedEditedFact = await memory.getFact({ chatId: "chat" }, playerFact.fact.factId);
+  assert.equal(unlockedEditedFact?.manualLock, false);
+  assert.equal(unlockedEditedFact?.author, "system");
+  await db.delete(messages).where(eq(messages.id, "player-fact-answer"));
+  await continuity.reconcileChat("chat", { changedMessageIds: ["player-fact-answer"] });
+  assert.equal((await storage.get(playerFact.receipt.id))?.status, "stale");
+  assert.equal((await memory.getFact({ chatId: "chat" }, playerFact.fact.factId))?.status, "verified");
+  assert.ok(
+    (await db.select().from(lorebookEntries)).some((entry) => entry.id === playerFact.entryId),
+    "the owned page stays while a protected fact still points to it",
+  );
+  assert.ok(
+    (await memory.listEntities({ chatId: "chat" })).some(
+      (entity) => entity.entityId === playerFact.fact.subjectEntityId && entity.status === "active",
+    ),
+    "the protected fact's owner entity remains active",
+  );
+
+  // A generated page can also be edited directly. Its published content hash must prevent the retirement
+  // cleanup from deleting that user-authored text, even when the associated automatic fact is retracted.
+  const playerPage = await publishExtraTurn("player-page", "Ismene keeps a red lantern.", 7);
+  const editedPageContent = "Player-authored account of Ismene's lantern.";
+  await db
+    .update(lorebookEntries)
+    .set({ content: editedPageContent })
+    .where(eq(lorebookEntries.id, playerPage.entryId));
+  await db.delete(messages).where(eq(messages.id, "player-page-answer"));
+  await continuity.reconcileChat("chat", { changedMessageIds: ["player-page-answer"] });
+  assert.equal((await storage.get(playerPage.receipt.id))?.status, "stale");
+  assert.equal((await memory.getFact({ chatId: "chat" }, playerPage.fact.factId))?.status, "retracted");
+  assert.equal(
+    (await db.select().from(lorebookEntries).where(eq(lorebookEntries.id, playerPage.entryId)))[0]?.content,
+    editedPageContent,
+    "a manually edited generated page survives retirement",
+  );
+  assert.ok(
+    (await memory.listEntities({ chatId: "chat" })).some(
+      (entity) =>
+        entity.owner.type === "existing" &&
+        entity.owner.store === "lorebook-entries" &&
+        entity.owner.recordId === playerPage.entryId &&
+        entity.status === "active",
+    ),
+    "the preserved page keeps its owner entity",
   );
 
   // 7. Receipts read from identical text replace one another; different text does not.
@@ -190,8 +275,7 @@ try {
   );
   assert.ok(extracted.length >= 3, "each distinct text was read by the extractor");
   // A grouped read that includes every message of an older single-turn read replaces it; the reverse does not.
-  const { continuityReceiptCovers } =
-    await import("../../packages/server/src/services/game/continuity-retirement.js");
+  const { continuityReceiptCovers } = await import("../../packages/server/src/services/game/continuity-retirement.js");
   const single = { ...a, sources: a.sources.slice(0, 1) };
   const grouped = { ...a, id: "grouped", sources: [...a.sources, { ...a.sources[0]!, messageId: "later", hash: "h" }] };
   assert.equal(continuityReceiptCovers(grouped, single), true, "a grouped read covers the single turn it contains");
@@ -200,6 +284,33 @@ try {
     continuityReceiptCovers(grouped, { ...single, sources: single.sources.map((s) => ({ ...s, hash: "edited" })) }),
     false,
     "an older read of different text is not covered",
+  );
+
+  // Slice hashes describe the original message, not the slice. Neither a disjoint slice nor a partial read
+  // can replace a full read. Offsets use Unicode code points, exactly as the source slicer does.
+  const fullSource = { ...a.sources[0]!, role: "assistant", content: "A🌍BCDE", start: 0, end: 6 };
+  const full = { ...a, sources: [fullSource] };
+  const slice = (start: number, end: number) => ({
+    ...fullSource,
+    start,
+    end,
+    content: [...fullSource.content].slice(start, end).join(""),
+  });
+  const firstHalf = { ...a, sources: [slice(0, 3)] };
+  const secondHalf = { ...a, sources: [slice(3, 6)] };
+  assert.equal(continuityReceiptCovers(firstHalf, full), false);
+  assert.equal(continuityReceiptCovers(firstHalf, secondHalf), false);
+  assert.equal(continuityReceiptCovers(full, secondHalf), true);
+  assert.equal(continuityReceiptCovers({ ...a, sources: [slice(3, 6), slice(0, 3)] }, full), true);
+  assert.equal(continuityReceiptCovers({ ...a, sources: [slice(0, 2), slice(3, 6)] }, full), false);
+  assert.equal(continuityReceiptCovers({ ...a, sources: [slice(0, 4), slice(2, 6)] }, full), true);
+  assert.equal(continuityReceiptCovers({ ...full, sources: [{ ...fullSource, end: 999 }] }, full), false);
+  assert.equal(continuityReceiptCovers({ ...full, sources: [{ ...fullSource, role: "user" }] }, full), false);
+  assert.equal(continuityReceiptCovers({ ...full, sources: [{ ...fullSource, swipeIndex: 99 }] }, full), false);
+  assert.equal(
+    continuityReceiptCovers({ ...full, sources: [{ ...fullSource, start: undefined, end: undefined }] }, full),
+    true,
+    "legacy whole-message sources use their code-point content length",
   );
 
   // 8. The chat routes' change notifier carries the edited message ids through its debounce to the reconcile.

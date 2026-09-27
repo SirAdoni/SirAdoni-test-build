@@ -136,10 +136,7 @@ function readChatUsage(chat: CampaignChatRow): ChatUsage {
   const cardIds = (ids: Array<string | null>) =>
     Array.from(new Set(ids.filter((id): id is string => !!id && !id.startsWith("npc:"))));
   const gmCharacterIds = cardIds([optionalString(metadata.gameGmCharacterId), optionalString(setup.gmCharacterId)]);
-  const partyCharacterIds = cardIds([
-    ...strings(metadata.gamePartyCharacterIds),
-    ...strings(setup.partyCharacterIds),
-  ]);
+  const partyCharacterIds = cardIds([...strings(metadata.gamePartyCharacterIds), ...strings(setup.partyCharacterIds)]);
   const npcCharacterIds = cardIds(
     npcs.map((npc) =>
       npc && typeof npc === "object" ? optionalString((npc as Record<string, unknown>).characterId) : null,
