@@ -59,7 +59,8 @@ export function createCharacterMatcher(characters: CharacterReference[]) {
   const firstChars = new Set([...names.keys()].map((key) => key[0]));
   const wordChar = /[\p{L}\p{N}_]/u;
   const endsWithWordChar = (text: string, index: number) =>
-    index > 0 && wordChar.test(String.fromCodePoint(text.codePointAt(index - 1 - (isLowSurrogate(text, index - 1) ? 1 : 0))!));
+    index > 0 &&
+    wordChar.test(String.fromCodePoint(text.codePointAt(index - 1 - (isLowSurrogate(text, index - 1) ? 1 : 0))!));
   const startsWithWordChar = (text: string, index: number) =>
     index < text.length && wordChar.test(String.fromCodePoint(text.codePointAt(index)!));
   let fallback: RegExp | null | undefined;

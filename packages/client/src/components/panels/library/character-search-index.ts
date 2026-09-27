@@ -25,7 +25,12 @@ export function getCharacterSearchDocument(character: SearchableCharacter, tags:
     meta: formatCardLibraryMeta(c.creator, c.character_version),
     summary: getCardLibrarySummary([c.summary, c.creator_notes, c.description, c.personality]),
     tags,
-    sections: [{ content: c.description }, { content: c.personality }, { content: c.scenario }, { content: c.first_mes }],
+    sections: [
+      { content: c.description },
+      { content: c.personality },
+      { content: c.scenario },
+      { content: c.first_mes },
+    ],
   };
 }
 

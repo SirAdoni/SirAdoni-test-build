@@ -2,6 +2,7 @@ import { DEFAULT_IMPERSONATE_PROMPT } from "@marinara-engine/shared";
 
 interface BuildImpersonateInstructionArgs {
   customPrompt?: unknown;
+  gameMode?: boolean;
   direction?: string | null;
   personaName?: string | null;
   personaDescription?: string | null;
@@ -79,6 +80,7 @@ function renderImpersonateTemplate(
 
 export function buildImpersonateInstruction({
   customPrompt,
+  gameMode = false,
   direction,
   personaName,
   personaDescription,
@@ -87,6 +89,17 @@ export function buildImpersonateInstruction({
   const impersonationDirection = normalizeDirection(direction);
   const personaLabel = normalizeText(personaName) || "{{user}}";
   const description = normalizeText(personaDescription);
+  const scopeInstruction = (instruction: string): string =>
+    gameMode
+      ? [
+          "<impersonate_mode>",
+          "This call is the user's explicit request to write their character's next message, not a Game Master turn.",
+          "For this call only, the user delegates authorship of their character's words and voluntary actions. The ordinary GM rules against writing the player apply to GM turns, not this explicitly requested impersonation.",
+          "Use the supplied world and character information as context. Output only the player's next in-character message following the selected template below. Do not continue the GM narration, write NPC dialogue, decide NPC responses, or resolve the consequences of the player's proposed action.",
+          "</impersonate_mode>",
+          instruction,
+        ].join("\n")
+      : instruction;
 
   if (normalizedCustomPrompt) {
     const resolvedCustomPrompt = renderImpersonateTemplate(normalizedCustomPrompt, {
@@ -94,14 +107,18 @@ export function buildImpersonateInstruction({
       personaName: personaLabel,
       personaDescription: description,
     });
-    return normalizedCustomPrompt.includes("{{impersonate_direction}}")
-      ? resolvedCustomPrompt
-      : buildCustomImpersonateInstruction(resolvedCustomPrompt, impersonationDirection);
+    return scopeInstruction(
+      normalizedCustomPrompt.includes("{{impersonate_direction}}")
+        ? resolvedCustomPrompt
+        : buildCustomImpersonateInstruction(resolvedCustomPrompt, impersonationDirection),
+    );
   }
 
-  return renderImpersonateTemplate(DEFAULT_IMPERSONATE_PROMPT, {
-    direction: impersonationDirection,
-    personaName: personaLabel,
-    personaDescription: description,
-  });
+  return scopeInstruction(
+    renderImpersonateTemplate(DEFAULT_IMPERSONATE_PROMPT, {
+      direction: impersonationDirection,
+      personaName: personaLabel,
+      personaDescription: description,
+    }),
+  );
 }

@@ -392,7 +392,9 @@ export function selectHistoryBreakpointIndex(messages: readonly ChatMessage[]): 
       tail.every(
         (message) =>
           message.role === "user" &&
-          (message.contextKind === "injection" || message.contextKind === undefined || message.contextKind === "history"),
+          (message.contextKind === "injection" ||
+            message.contextKind === undefined ||
+            message.contextKind === "history"),
       )
     ) {
       return index;

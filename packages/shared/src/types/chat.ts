@@ -760,6 +760,10 @@ export interface ChatMetadata {
   gameGmPromptTemplates?: import("./agent.js").AgentPromptTemplateOption[];
   /** Additional game-mode generation instructions appended to the final GM format reminder. */
   gameSpecialInstructions?: string | null;
+  /** Per-chat literal replacements applied to built-in Game Mode prompt instructions. */
+  gamePromptTextReplacements?: Array<{ find: string; replace: string }>;
+  /** Direct edits made in the assembled Game Mode request editor. */
+  gamePromptDirectEdits?: Array<{ role: string; find: string; replace: string }>;
   /** Generic Game Mode Music DJ toggle. Legacy gameUseSpotifyMusic remains the Spotify-specific pipeline flag. */
   gameUseMusicDj?: boolean;
   /** Extra user instructions for game scene illustration prompts. */

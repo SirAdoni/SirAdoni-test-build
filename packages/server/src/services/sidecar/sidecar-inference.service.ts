@@ -7,6 +7,7 @@
 
 import { randomUUID } from "crypto";
 import type { SceneAnalysis } from "@marinara-engine/shared";
+import { REPUTATION_ACTIONS } from "../game/reputation.service.js";
 import { fitMessagesToContext, llmFetch, sanitizeApiError, type ChatMessage } from "../llm/base-provider.js";
 import { sidecarModelService } from "./sidecar-model.service.js";
 import { sidecarProcessService } from "./sidecar-process.service.js";
@@ -516,7 +517,7 @@ const SCENE_ANALYSIS_SCHEMA = {
         type: "object" as const,
         properties: {
           npcName: { type: "string" as const },
-          action: { type: "string" as const },
+          action: { type: "string" as const, enum: REPUTATION_ACTIONS },
         },
         required: ["npcName", "action"] as const,
         additionalProperties: false as const,

@@ -348,10 +348,7 @@ function GameStoryboardPhoneViewer(props: Parameters<typeof GameStoryboardInline
             className={cn("ml-auto shrink-0 text-white/60 transition-transform", open ? "" : "rotate-180")}
           />
         </button>
-        <StoryboardCloseButton
-          onClose={props.onClose}
-          className="h-8 w-8 shrink-0 game-short-landscape:hidden"
-        />
+        <StoryboardCloseButton onClose={props.onClose} className="h-8 w-8 shrink-0 game-short-landscape:hidden" />
       </div>
       {open
         ? createPortal(

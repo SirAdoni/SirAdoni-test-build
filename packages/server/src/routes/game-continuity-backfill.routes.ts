@@ -6,6 +6,9 @@ import { prepareContinuitySourcesWithExclusions } from "../services/game/continu
 import { logger } from "../lib/logger.js";
 import { backgroundCallBudgetSnapshot } from "../services/generation/background-call-budget.js";
 import { planContinuityRetryAll } from "../services/game/continuity-retry-all.js";
+import { continuityReceiptCovers } from "../services/game/continuity-retirement.js";
+import { desc, inArray } from "../db/file-query.js";
+import { gameStateSnapshots } from "../db/schema/index.js";
 
 const rangeSchema = z.object({
   fromMessageId: z.string().trim().min(1),
@@ -13,6 +16,15 @@ const rangeSchema = z.object({
 });
 const publishSchema = z.object({ confirm: z.literal(true), repairPublished: z.boolean().optional() });
 const RETRYABLE_STATUSES = ["failed", "unresolved", "stale"] as const;
+const COVERING_RECEIPT_STATUSES = new Set([
+  "queued",
+  "extracting",
+  "reviewing",
+  "repairing",
+  "verified",
+  "published",
+  "unresolved",
+]);
 // Retry all: `dryRun` returns the plan the confirmation shows; `confirm` runs it. Exactly one is required.
 const retryAllSchema = z.union([
   z.object({ dryRun: z.literal(true) }).strict(),
@@ -121,7 +133,11 @@ export async function startHistoricalBackfill(
 }
 
 /** Message counts, prepared/excluded sources and frozen manifests with coverage; null when the chat is missing. */
-export async function readContinuityInventory(app: FastifyInstance, chatId: string) {
+export async function readContinuityInventory(
+  app: FastifyInstance,
+  chatId: string,
+  options: { includePreparedSources?: boolean } = {},
+) {
   const chats = createChatsStorage(app.db);
   const chat = await chats.getById(chatId);
   if (!chat) return null;
@@ -133,6 +149,45 @@ export async function readContinuityInventory(app: FastifyInstance, chatId: stri
     messages,
     metadata && typeof metadata === "object" && !Array.isArray(metadata) ? (metadata as Record<string, unknown>) : {},
   );
+  let acceptedAssistantIds: string[] | undefined;
+  if (options.includePreparedSources) {
+    const preparedIds = new Set(prepared.map((source) => source.messageId));
+    const rawMessageIndex = new Map(messages.map((message, index) => [message.id, index]));
+    // Historical backfill deliberately spans the requested history regardless of live activation/mode.
+    const acceptedEligible =
+      chat.mode === "game"
+        ? messages.filter((message) => message.role === "assistant" && preparedIds.has(message.id))
+        : [];
+    const snapshotRows =
+      acceptedEligible.length > 0
+        ? await app.db
+            .select({
+              messageId: gameStateSnapshots.messageId,
+              swipeIndex: gameStateSnapshots.swipeIndex,
+              committed: gameStateSnapshots.committed,
+            })
+            .from(gameStateSnapshots)
+            .where(
+              inArray(
+                gameStateSnapshots.messageId,
+                acceptedEligible.map((message) => message.id),
+              ),
+            )
+            .orderBy(desc(gameStateSnapshots.createdAt))
+        : [];
+    const latestCommitted = new Map<string, number>();
+    for (const row of snapshotRows) {
+      const key = `${row.messageId}:${row.swipeIndex}`;
+      if (!latestCommitted.has(key)) latestCommitted.set(key, row.committed);
+    }
+    acceptedAssistantIds = acceptedEligible
+      .filter((message) => {
+        const committed = latestCommitted.get(`${message.id}:${message.activeSwipeIndex ?? 0}`);
+        const messageIndex = rawMessageIndex.get(message.id) ?? -1;
+        return committed === 1 || (committed === undefined && messages[messageIndex + 1]?.role === "user");
+      })
+      .map((message) => message.id);
+  }
   const receipts = await app.gameContinuity.list(chatId);
   const receiptById = new Map(receipts.map((receipt) => [receipt.id, receipt]));
   const receiptCounts: Record<string, number> = {};
@@ -146,7 +201,7 @@ export async function readContinuityInventory(app: FastifyInstance, chatId: stri
     const countsByStatus: Record<string, number> = {};
     const countsByErrorCode: Record<string, number> = {};
     const missingReceiptIds: string[] = [];
-    const covered = new Set<string>();
+    const coveringReceipts: Array<Pick<(typeof receipts)[number], "sources">> = [];
     for (const receiptId of receiptIds) {
       const receipt = receiptById.get(receiptId);
       if (!receipt) {
@@ -155,7 +210,8 @@ export async function readContinuityInventory(app: FastifyInstance, chatId: stri
       }
       countsByStatus[receipt.status] = (countsByStatus[receipt.status] ?? 0) + 1;
       if (receipt.errorCode) countsByErrorCode[receipt.errorCode] = (countsByErrorCode[receipt.errorCode] ?? 0) + 1;
-      for (const source of receipt.sources) covered.add(source.messageId);
+      if (!COVERING_RECEIPT_STATUSES.has(receipt.status)) continue;
+      coveringReceipts.push(receipt);
     }
     const fromIndex = messageIndex.get(fromMessageId) ?? -1;
     const toIndex = messageIndex.get(toMessageId) ?? -1;
@@ -179,13 +235,23 @@ export async function readContinuityInventory(app: FastifyInstance, chatId: stri
       countsByStatus,
       countsByErrorCode,
       preparedInRange: preparedInRange.length,
-      coverageGaps: preparedInRange.map((source) => source.messageId).filter((messageId) => !covered.has(messageId)),
+      coverageGaps: preparedInRange
+        .filter(
+          (source) =>
+            !continuityReceiptCovers(
+              { sources: coveringReceipts.flatMap((receipt) => receipt.sources) },
+              { sources: [source] },
+            ),
+        )
+        .map((source) => source.messageId),
     };
   });
   return {
     chatId,
     messageCounts,
     prepared: prepared.map((source) => ({ messageId: source.messageId, role: source.role })),
+    ...(options.includePreparedSources ? { preparedSources: prepared } : {}),
+    ...(acceptedAssistantIds ? { acceptedAssistantIds } : {}),
     excluded,
     receiptCounts,
     manifests,

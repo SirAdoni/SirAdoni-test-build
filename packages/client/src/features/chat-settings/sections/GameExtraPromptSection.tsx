@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
-import { RotateCcw, Sliders } from "lucide-react";
+import { FilePenLine, RotateCcw, Sliders } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { DEFAULT_GAME_SYSTEM_PROMPT, type AgentPromptTemplateOption } from "@marinara-engine/shared";
 import { MacroTextarea } from "../../../components/ui/MacroTextarea";
 import { ChatSettingsSection } from "../ChatSettingsSection";
+import type { GamePromptDirectEdit } from "../game-prompt-direct-edits";
+import { GamePromptRequestEditor } from "./GamePromptRequestEditor";
 
 interface PromptPresetOption {
   id: string;
@@ -12,6 +14,7 @@ interface PromptPresetOption {
 }
 
 interface GameExtraPromptSectionProps {
+  chatId: string;
   storedValue: string;
   specialInstructionsValue: string;
   promptPresetId: string | null;
@@ -19,14 +22,18 @@ interface GameExtraPromptSectionProps {
   selectedPresetPrompt: string;
   gmPromptTemplateId: string | null;
   gmPromptTemplates: AgentPromptTemplateOption[];
+  directEdits: GamePromptDirectEdit[];
   onCommit: (value: string | null) => void;
   onSpecialInstructionsCommit: (value: string | null) => void;
   onSpecialInstructionsChange: (value: string) => void;
   onPromptPresetChange: (presetId: string | null) => void;
   onGmPromptTemplateChange: (templateId: string | null) => void;
+  onDirectEditsCommit: (value: GamePromptDirectEdit[]) => Promise<unknown>;
+  onDirectEditsReset: () => Promise<unknown>;
 }
 
 export function GameExtraPromptSection({
+  chatId,
   storedValue,
   specialInstructionsValue,
   promptPresetId,
@@ -34,19 +41,22 @@ export function GameExtraPromptSection({
   selectedPresetPrompt,
   gmPromptTemplateId,
   gmPromptTemplates,
+  directEdits,
   onCommit,
   onSpecialInstructionsCommit,
   onSpecialInstructionsChange,
   onPromptPresetChange,
   onGmPromptTemplateChange,
+  onDirectEditsCommit,
+  onDirectEditsReset,
 }: GameExtraPromptSectionProps) {
   const { t: localizeUi } = useUiTranslation();
+  const [editorOpen, setEditorOpen] = useState(false);
   const selectedGmPromptTemplate = gmPromptTemplates.find((template) => template.id === gmPromptTemplateId) ?? null;
   const basePrompt =
     selectedGmPromptTemplate?.promptTemplate.trim() || selectedPresetPrompt.trim() || DEFAULT_GAME_SYSTEM_PROMPT;
-  // Local draft always shows the effective Game prompt (chat-local edit, else
-  // the GM style / preset / built-in default). Editing saves a chat-local copy.
   const [draft, setDraft] = useState(storedValue || basePrompt);
+
   useEffect(() => {
     setDraft(storedValue || basePrompt);
   }, [storedValue, basePrompt]);
@@ -76,7 +86,26 @@ export function GameExtraPromptSection({
       icon={<Sliders size="0.875rem" />}
       help={localizeUi("ui.chatSettings.gameextrapromptsection.chooseAPresetSGamePromptThenOptionallyEdit")}
     >
-      <div className="space-y-2">
+      <div className="space-y-3">
+        <div className="rounded-lg border border-[var(--border)] bg-[var(--secondary)]/45 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-xs font-medium">{localizeUi("ui.chatSettings.gamePromptRequestEditor.title")}</p>
+              <p className="mt-1 text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
+                {localizeUi("ui.chatSettings.gamePromptRequestEditor.openHelp")}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setEditorOpen(true)}
+              className="flex items-center gap-1.5 rounded-lg bg-[var(--primary)] px-3 py-2 text-xs font-medium text-[var(--primary-foreground)] hover:opacity-90"
+            >
+              <FilePenLine size="0.875rem" />
+              {localizeUi("ui.chatSettings.gamePromptRequestEditor.open")}
+            </button>
+          </div>
+        </div>
+
         <label className="flex flex-col gap-1.5">
           <span className="text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
             {localizeUi("ui.chatSettings.conversationpromptsection.promptSource")}
@@ -92,12 +121,11 @@ export function GameExtraPromptSection({
                 ? localizeUi("ui.chatSettings.conversationpromptsection.noPresetsAvailable")
                 : localizeUi("ui.chatSettings.gameextrapromptsection.defaultGamePrompt")}
             </option>
-            {promptPresets.length > 0 &&
-              promptPresets.map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  {preset.name}
-                </option>
-              ))}
+            {promptPresets.map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.name}
+              </option>
+            ))}
           </select>
         </label>
         <label className="flex flex-col gap-1.5">
@@ -175,6 +203,15 @@ export function GameExtraPromptSection({
           />
         </div>
       </div>
+      {editorOpen && (
+        <GamePromptRequestEditor
+          chatId={chatId}
+          existingEdits={directEdits}
+          onSave={onDirectEditsCommit}
+          onReset={onDirectEditsReset}
+          onClose={() => setEditorOpen(false)}
+        />
+      )}
     </ChatSettingsSection>
   );
 }

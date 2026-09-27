@@ -10,6 +10,7 @@ const occupantName = z
   .transform((name) => name.replace(/^(?:\d+|two|three|four|five|six|seven|eight|nine|ten)\s+(?=[a-z])/u, ""));
 export const sceneVisitSchema = z.object({
   location: z.string().trim().min(1),
+  locationEvidence: z.string().trim().min(1).optional(),
   present: z.array(occupantName),
   participants: z.array(occupantName),
   presenceEvidence: z.array(z.object({ name: occupantName, quote: z.string().trim().min(1) })).optional(),
@@ -58,6 +59,11 @@ export function validateSceneEvidence(
   const evidenceByName = (visit: GameSceneVisit) =>
     new Map((visit.presenceEvidence ?? []).map((entry) => [normalizeIdentity(entry.name), entry.quote]));
   for (const [visitIndex, visit] of visits.entries()) {
+    if (visit.locationEvidence !== undefined && !source.includes(visit.locationEvidence)) {
+      errors.push(
+        `visits[${visitIndex}].locationEvidence has no exact supporting transcript quote: ${JSON.stringify(visit.locationEvidence)}`,
+      );
+    }
     for (const key of ["facts", "departures"] as const) {
       for (const [index, fact] of visit[key].entries()) {
         if (source.includes(fact.quote)) continue;
@@ -109,10 +115,10 @@ export function validateSceneEvidence(
       errors.push(`visits[${visitIndex}]: Everyone still present must be included in scene participants`);
     }
     priorLocation = visit.location;
-    priorPresent = sameScene
-      ? new Set([...currentPresent, ...visit.present.map(normalizeIdentity)])
-      : new Set(visit.present.map(normalizeIdentity));
+    priorPresent = sameScene ? new Set(currentPresent) : new Set<string>();
     for (const departure of visit.departures) priorPresent.delete(normalizeIdentity(departure.name));
+    // present is the end-of-visit roster; an earlier departure can be followed by a return.
+    for (const name of visit.present) priorPresent.add(normalizeIdentity(name));
   }
   if (errors.length) throw new Error(errors.slice(0, 12).join("\n"));
 }
@@ -162,7 +168,7 @@ export function appendSceneVisits(
     }
     const departed = new Set(visit.departures.map((entry) => entry.name));
     // Silence is not a departure. Removing an established occupant requires explicit source evidence.
-    scene.present = [...new Set([...scene.present, ...visit.present])].filter((name) => !departed.has(name));
+    scene.present = [...new Set([...scene.present.filter((name) => !departed.has(name)), ...visit.present])];
     scene.participants = [...new Set([...scene.participants, ...visit.participants, ...scene.present])];
     if (!scene.messageIds.includes(messageId)) scene.messageIds.push(messageId);
     const facts = new Set(scene.summary ? scene.summary.split("\n") : []);

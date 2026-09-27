@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import type { GameContinuityReview } from "@marinara-engine/shared";
 import {
   applyTargetedContinuityRepair,
@@ -7,10 +8,14 @@ import {
 import { normalizeGameContinuityExtraction } from "../../packages/server/src/services/game/continuity-review.js";
 
 const batchId = "targeted-repair-regression";
-const sources = [
-  { messageId: "m1", swipeIndex: 0, hash: "h1", role: "assistant", content: "The lantern is lit." },
-  { messageId: "m2", swipeIndex: 0, hash: "h2", role: "assistant", content: "Mira promised to return." },
-];
+const source = (messageId: string, content: string) => ({
+  messageId,
+  swipeIndex: 0,
+  hash: createHash("sha256").update(content).digest("hex"),
+  role: "assistant",
+  content,
+});
+const sources = [source("m1", "The lantern is lit."), source("m2", "Mira promised to return.")];
 const rawRecords = [
   {
     kind: "event",
@@ -90,6 +95,19 @@ assert.equal(repaired.records[0]!.status, "asserted");
 assert.equal(repaired.records[1]!.status, "proposed");
 assert.deepEqual(repaired.records[1]!.knowledge, { scope: "private", holders: ["Mira"] });
 assert.deepEqual(repaired.records[2], extraction.records[1]);
+assert.throws(
+  () =>
+    applyTargetedContinuityRepair(
+      {
+        replace: [{ recordRef: "r1", records: [{ ...rawRecords[1]!, keys: ["different-indexing-key"] }] }],
+        add: [],
+        dispositions: extraction.dispositions,
+      },
+      args,
+    ),
+  /duplicate an unaffected record/u,
+  "a replacement cannot duplicate an unaffected record by changing only indexing keys",
+);
 const repairPrompt = buildTargetedContinuityRepairPrompt(args);
 assert.equal(repairPrompt.includes('"recordRef":"r1"'), true);
 assert.match(repairPrompt, /different statuses[\s\S]*split it into independently evidenced/u);
@@ -200,6 +218,10 @@ const omissionReview: GameContinuityReview = {
   dispositions: extraction.dispositions,
 };
 const omissionArgs = { ...args, review: omissionReview };
+assert.match(
+  buildTargetedContinuityRepairPrompt(omissionArgs),
+  /For EACH omission finding[\s\S]*Distinct omitted source messages each need their own source-backed addition/u,
+);
 const added = applyTargetedContinuityRepair(
   {
     replace: [],
@@ -219,7 +241,144 @@ assert.throws(
       },
       omissionArgs,
     ),
-  /added record/,
+  /empty-target omission for m1 requires an added record with primary evidence for that message/u,
+);
+assert.throws(
+  () =>
+    applyTargetedContinuityRepair(
+      {
+        replace: [{ recordRef: "r1", records: [replacementRecord("A lantern marks the path.", "learning")] }],
+        add: [],
+        dispositions: extraction.dispositions,
+      },
+      {
+        ...omissionArgs,
+        review: {
+          ...omissionReview,
+          findings: [
+            ...omissionReview.findings,
+            {
+              kind: "attribution",
+              messageId: "m1",
+              quote: "The lantern is lit.",
+              recordIds: [extraction.records[0]!.id],
+              detail: "separate reviewed replacement target",
+            },
+          ],
+        },
+      },
+    ),
+  /empty-target omission for m1 requires an added record with primary evidence for that message/u,
+  "a replacement citing the omitted source does not satisfy the add-record contract",
+);
+
+// Separate primary messages preserve delivery, untouched food, and a distinct no-intake-since-arrival qualifier.
+const foodDelivery = "At noon I delivered a sealed meal to the station.\nAt dusk, the meal was still untouched.";
+const noIntake = "Since arriving at the station this morning, I have eaten nothing.";
+const omissionSources = [source("food-delivery", foodDelivery), source("no-intake", noIntake)];
+const foodRecord = (messageId: string, quote: string, text: string, kind: "event" | "learning" = "event") => ({
+  kind,
+  text,
+  subjects: ["meal"],
+  conditions: [],
+  status: "asserted",
+  knowledge: { scope: "world", holders: [] },
+  evidence: [{ messageId, quote }],
+  keys: ["meal"],
+});
+const omissionExtraction = normalizeGameContinuityExtraction(
+  {
+    records: [
+      foodRecord(
+        "food-delivery",
+        "I delivered a sealed meal to the station.",
+        "A sealed meal was delivered to the station.",
+      ),
+    ],
+    dispositions: [
+      { messageId: "food-delivery", status: "covered", reason: "delivery recorded" },
+      { messageId: "no-intake", status: "unresolved", reason: "missing intake detail" },
+    ],
+  },
+  omissionSources,
+  batchId,
+);
+const multiOmissionArgs = {
+  extraction: omissionExtraction,
+  review: {
+    findings: [
+      {
+        kind: "omission" as const,
+        messageId: "food-delivery",
+        quote: "the meal was still untouched",
+        recordIds: [],
+        detail: "Preserve that the delivered meal remained untouched.",
+      },
+      {
+        kind: "omission" as const,
+        messageId: "no-intake",
+        quote: "Since arriving at the station this morning, I have eaten nothing.",
+        recordIds: [],
+        detail: "Preserve the separate no-intake-since-arrival qualifier.",
+      },
+    ],
+    dispositions: omissionExtraction.dispositions,
+  },
+  sources: omissionSources,
+  batchId,
+};
+const foodAdditions = [
+  foodRecord(
+    "food-delivery",
+    "At noon I delivered a sealed meal to the station.\nAt dusk, the meal was still untouched.",
+    "The sealed meal delivered to the station remained untouched at dusk.",
+  ),
+  foodRecord(
+    "no-intake",
+    "Since arriving at the station this morning, I have eaten nothing.",
+    "No food has been eaten since arriving at the station this morning.",
+    "learning",
+  ),
+];
+const foodPatch = { replace: [], add: foodAdditions, dispositions: omissionExtraction.dispositions };
+const foodRepaired = applyTargetedContinuityRepair(foodPatch, multiOmissionArgs);
+assert.equal(foodRepaired.records.length, 3);
+assert.match(foodRepaired.records[1]!.text, /remained untouched/u);
+assert.match(foodRepaired.records[2]!.text, /since arriving/u);
+assert.deepEqual(foodRepaired.records[1]!.evidence, foodAdditions[0]!.evidence);
+assert.deepEqual(foodRepaired.records[2]!.evidence, foodAdditions[1]!.evidence);
+assert.throws(
+  () => applyTargetedContinuityRepair({ ...foodPatch, add: foodAdditions.slice(0, 1) }, multiOmissionArgs),
+  /empty-target omission for no-intake requires an added record with primary evidence/u,
+  "one addition cannot satisfy a distinct omitted source",
+);
+assert.throws(
+  () =>
+    applyTargetedContinuityRepair(
+      {
+        ...foodPatch,
+        add: foodAdditions.map((record) => ({
+          ...record,
+          evidence: [{ messageId: "food-delivery", quote: "At noon I delivered a sealed meal to the station." }],
+        })),
+      },
+      multiOmissionArgs,
+    ),
+  /empty-target omission for no-intake requires an added record with primary evidence/u,
+  "a valid quote from the wrong primary source cannot satisfy an omission",
+);
+assert.throws(
+  () =>
+    applyTargetedContinuityRepair(
+      { replace: [], add: [], dispositions: omissionExtraction.dispositions },
+      multiOmissionArgs,
+    ),
+  /empty-target omission for food-delivery requires an added record with primary evidence/u,
+  "no-op patches cannot pass multiple omissions",
+);
+assert.match(
+  buildTargetedContinuityRepairPrompt(multiOmissionArgs),
+  /preserve every material source qualifier[\s\S]*Distinct omitted source messages/u,
 );
 
 // The extractor left m2 unresolved; the reviewer found nothing and marked it covered. The repair may add the
@@ -245,7 +404,10 @@ const completedRepair = applyTargetedContinuityRepair(
   unfinishedArgs,
 );
 assert.equal(completedRepair.records.length, 2, "the extractor's unresolved message can receive an added record");
-assert.match(buildTargetedContinuityRepairPrompt(unfinishedArgs), /CURRENT EXTRACTION DISPOSITIONS[^]*needs a closer read/u);
+assert.match(
+  buildTargetedContinuityRepairPrompt(unfinishedArgs),
+  /CURRENT EXTRACTION DISPOSITIONS[^]*needs a closer read/u,
+);
 assert.doesNotMatch(buildTargetedContinuityRepairPrompt(args), /CURRENT EXTRACTION DISPOSITIONS/u);
 
 console.log("continuity-repair-patch regression passed");

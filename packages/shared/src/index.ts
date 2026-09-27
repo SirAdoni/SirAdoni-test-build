@@ -16,6 +16,7 @@ export * from "./types/connection.js";
 export * from "./utils/openai-image.js";
 export * from "./types/agent.js";
 export * from "./types/game-state.js";
+export * from "./types/game-turn-review.js";
 export * from "./types/combat-encounter.js";
 export * from "./types/scene.js";
 export * from "./types/persona.js";
@@ -240,3 +241,5 @@ export * from "./types/campaign-memory.js";
 export * from "./types/campaign-memory-api.js";
 
 export * from "./utils/game-narration-text.js";
+export * from "./utils/family-tree.js";
+export * from "./utils/world-history.js";

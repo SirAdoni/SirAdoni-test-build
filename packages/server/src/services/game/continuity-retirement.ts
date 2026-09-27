@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { CampaignMemoryActor, GameContinuityReceipt, GameContinuitySource } from "@marinara-engine/shared";
 import type { DB } from "../../db/connection.js";
 import { eq } from "../../db/file-query.js";
@@ -43,17 +44,44 @@ export function continuityReceiptsShareSources(a: GameContinuityReceipt, b: Game
 }
 
 function messageKey(source: GameContinuitySource): string {
-  return JSON.stringify([source.messageId, source.swipeIndex, source.hash]);
+  return JSON.stringify([source.messageId, source.swipeIndex, source.hash, source.role]);
 }
 
 /**
- * Every message the older receipt read is also read, unchanged, by the newer one. A grouped archive read of eight
- * turns replaces the single-turn read of one of them, so the same text is not remembered twice.
+ * Every character the older receipt read must also be read, unchanged, by the newer one. Slice hashes identify
+ * the WHOLE message, so matching hashes alone cannot establish coverage of long messages. Adjacent/overlapping
+ * slices may jointly cover a previous range; a gap must never retire or skip its unread facts.
  */
-export function continuityReceiptCovers(newer: GameContinuityReceipt, older: GameContinuityReceipt): boolean {
+export function continuityReceiptCovers(
+  newer: Pick<GameContinuityReceipt, "sources">,
+  older: Pick<GameContinuityReceipt, "sources">,
+): boolean {
   if (!older.sources.length) return false;
-  const keys = new Set(newer.sources.map(messageKey));
-  return older.sources.every((source) => keys.has(messageKey(source)));
+  const range = (source: GameContinuitySource): [number, number] | null => {
+    if (typeof source.content !== "string") return null;
+    const start = source.start ?? 0;
+    const length = codePointLength(source.content);
+    const end = source.end ?? start + length;
+    return Number.isSafeInteger(start) && start >= 0 && Number.isSafeInteger(end) && end - start === length
+      ? [start, end]
+      : null;
+  };
+  return older.sources.every((source) => {
+    const target = range(source);
+    if (!target) return false;
+    const candidates = newer.sources
+      .filter((candidate) => messageKey(candidate) === messageKey(source))
+      .map(range)
+      .filter((candidate): candidate is [number, number] => candidate !== null)
+      .sort((a, b) => a[0] - b[0]);
+    let coveredUntil = target[0];
+    for (const [start, end] of candidates) {
+      if (start > coveredUntil) return false;
+      coveredUntil = Math.max(coveredUntil, end);
+      if (coveredUntil >= target[1]) return true;
+    }
+    return false;
+  });
 }
 
 /** Largest edit, in characters, that can keep a turn's memory without reading it again. */
@@ -254,7 +282,7 @@ async function otherCampaignSessionChatIds(tx: DB, chatId: string): Promise<stri
     .map((row) => row.id);
 }
 
-/** Retire one published receipt and take its memory back out. Locked or player-authored facts are left alone. */
+/** Retire one published receipt without removing player-edited facts or their owned pages. */
 export async function retireContinuityReceipt(
   db: DB,
   receiptId: string,
@@ -280,8 +308,17 @@ export async function retireContinuityReceipt(
         chatId: receipt.chatId,
         messageIds: [...new Set(facts.flatMap((fact) => fact.evidence.map((item) => item.messageId)))],
       });
+      // An ordinary player correction need not set manualLock or change the generated fact's author.
+      // The mutation journal is the durable record of who touched it; retirement must respect that too.
+      const userEditedFactIds = new Set(
+        (await memory.listMutationJournal(scope))
+          .filter((mutation) => mutation.recordType === "fact" && mutation.actor === "user")
+          .map((mutation) => mutation.recordId),
+      );
+      const keptSubjectIds = new Set<string>();
       for (const fact of facts) {
-        if (fact.manualLock || fact.author === "user") {
+        if (fact.manualLock || fact.author === "user" || userEditedFactIds.has(fact.factId)) {
+          keptSubjectIds.add(fact.subjectEntityId);
           result.keptFacts += 1;
           continue;
         }
@@ -304,12 +341,37 @@ export async function retireContinuityReceipt(
       }
 
       const entryIds = new Set(receipt.entryIds);
-      for (const entity of await memory.listEntities(scope)) {
+      const entities = await memory.listEntities(scope);
+      const preservedEntryIds = new Set<string>();
+      const ownedEntries = new Map<string, typeof lorebookEntries.$inferSelect>();
+      for (const entryId of entryIds) {
+        const row = (await tx.select().from(lorebookEntries).where(eq(lorebookEntries.id, entryId)).limit(1))[0];
+        if (!row) continue;
+        const state = metadataObject(row.dynamicState);
+        if (receiptIdOf(state) !== receipt.id) continue;
+        ownedEntries.set(entryId, row);
+        if (
+          typeof state.publishedContentHash === "string" &&
+          createHash("sha256").update(JSON.stringify(row.content)).digest("hex") !== state.publishedContentHash
+        )
+          preservedEntryIds.add(entryId);
+      }
+      for (const entity of entities) {
+        if (
+          entity.owner.type === "existing" &&
+          entity.owner.store === "lorebook-entries" &&
+          entryIds.has(entity.owner.recordId) &&
+          keptSubjectIds.has(entity.entityId)
+        )
+          preservedEntryIds.add(entity.owner.recordId);
+      }
+      for (const entity of entities) {
         if (
           entity.status === "archived" ||
           entity.owner.type !== "existing" ||
           entity.owner.store !== "lorebook-entries" ||
           !entryIds.has(entity.owner.recordId) ||
+          preservedEntryIds.has(entity.owner.recordId) ||
           entity.manualLock
         )
           continue;
@@ -338,6 +400,7 @@ export async function retireContinuityReceipt(
               entity.owner.type === "existing" &&
               entity.owner.store === "lorebook-entries" &&
               entryIds.has(entity.owner.recordId) &&
+              !preservedEntryIds.has(entity.owner.recordId) &&
               !entity.manualLock,
           );
           if (!copies.length) continue;
@@ -362,17 +425,8 @@ export async function retireContinuityReceipt(
           }
         }
       }
-      for (const entryId of entryIds) {
-        const rows = await tx.select().from(lorebookEntries).where(eq(lorebookEntries.id, entryId)).limit(1);
-        const row = rows[0];
-        if (!row) continue;
-        let owner: unknown = null;
-        try {
-          owner = JSON.parse(String(row.dynamicState ?? "{}"));
-        } catch {
-          owner = null;
-        }
-        if (receiptIdOf(owner) !== receipt.id) continue;
+      for (const entryId of ownedEntries.keys()) {
+        if (preservedEntryIds.has(entryId)) continue;
         await tx.delete(lorebookEntries).where(eq(lorebookEntries.id, entryId));
         result.removedEntries += 1;
       }

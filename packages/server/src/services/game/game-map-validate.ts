@@ -119,7 +119,14 @@ export function validateGeneratedGameMap(input: unknown): GameMapValidationResul
   if (type === "grid") {
     const width = toInt(raw.width);
     const height = toInt(raw.height);
-    if (width === null || height === null || width < 1 || height < 1 || width > MAX_GRID_SIDE || height > MAX_GRID_SIDE) {
+    if (
+      width === null ||
+      height === null ||
+      width < 1 ||
+      height < 1 ||
+      width > MAX_GRID_SIDE ||
+      height > MAX_GRID_SIDE
+    ) {
       return { ok: false, error: `Grid map needs a width and height between 1 and ${MAX_GRID_SIDE}` };
     }
     if (!Array.isArray(raw.cells)) return { ok: false, error: "Grid map needs a cells array" };

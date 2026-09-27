@@ -1028,13 +1028,13 @@ async function buildRetryAgentContext(args: {
   // Compacted scans (every message but the newest generation's row) keep no entry text; use the stored entry text.
   const storedLoreContentById = new Map<string, string>();
   {
-    const missingIds = (Array.isArray(rawLorebookScan.activatedEntries) ? rawLorebookScan.activatedEntries : []).flatMap(
-      (entry) => {
-        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
-        const row = entry as Record<string, unknown>;
-        return typeof row.id === "string" && typeof row.content !== "string" ? [row.id] : [];
-      },
-    );
+    const missingIds = (
+      Array.isArray(rawLorebookScan.activatedEntries) ? rawLorebookScan.activatedEntries : []
+    ).flatMap((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+      const row = entry as Record<string, unknown>;
+      return typeof row.id === "string" && typeof row.content !== "string" ? [row.id] : [];
+    });
     if (missingIds.length > 0) {
       const lorebooksStore = createLorebooksStorage(db);
       for (const id of missingIds) {
@@ -4773,7 +4773,8 @@ export async function registerRetryAgentsRoute(
                 name:
                   message.role === "user"
                     ? retryPersonaContext.personaName
-                    : (context.characters.find((character) => character.id === message.characterId)?.name ?? "Narrator"),
+                    : (context.characters.find((character) => character.id === message.characterId)?.name ??
+                      "Narrator"),
                 content: typeof message.content === "string" ? message.content : "",
               }));
             const retried = resolvedAgents.map((entry) => entry.resolved);
@@ -5179,7 +5180,10 @@ export async function registerRetryAgentsRoute(
                   ...envelope.approval,
                   payload: {
                     ...envelope.approval.payload,
-                    backfillCursor: { agentConfigId: backfillTarget.agentConfigId, messageId: backfillTarget.messageId },
+                    backfillCursor: {
+                      agentConfigId: backfillTarget.agentConfigId,
+                      messageId: backfillTarget.messageId,
+                    },
                   },
                 },
               },

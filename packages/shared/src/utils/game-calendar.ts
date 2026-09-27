@@ -455,6 +455,25 @@ export function readGameClock(value: unknown): GameClockTime | null {
 /** Largest clock day the calendar maps; beyond it years would leave exact integer range. */
 const MAX_CLOCK_DAY = 1_000_000_000;
 
+function formatGameClock(clock: GameClockTime): string {
+  const day = Math.min(MAX_CLOCK_DAY, clock.day);
+  const timeOfDay =
+    clock.hour >= 5 && clock.hour < 7
+      ? "dawn"
+      : clock.hour >= 7 && clock.hour < 12
+        ? "morning"
+        : clock.hour >= 12 && clock.hour < 17
+          ? "afternoon"
+          : clock.hour >= 17 && clock.hour < 20
+            ? "evening"
+            : clock.hour >= 20
+              ? "night"
+              : "midnight";
+  return `Day ${day}, ${clock.hour.toString().padStart(2, "0")}:${clock.minute
+    .toString()
+    .padStart(2, "0")} (${timeOfDay})`;
+}
+
 /** The calendar date of a Game Mode clock day: clock Day 1 is `startDate`. */
 export function calendarDateForClockDay(config: GameCalendarConfig, clockDay: number): GameCalendarDate {
   // The clock day comes from stored metadata; keep absurd values inside exact integer range.
@@ -654,14 +673,15 @@ export function parseWeekdaysText(text: string): string[] {
 }
 
 /**
- * The GM prompt's "Time" value. Without a calendar it is exactly the snapshot's own "date, time" join
- * it always was; with one switched on, the calendar's date line (read from the clock day in metadata)
- * takes the place of the free-text snapshot date.
+ * The GM prompt's "Time" value. A valid Game Mode clock in metadata is authoritative; snapshots are
+ * retained as a legacy fallback when no clock exists. With a calendar enabled, its date line comes
+ * from the metadata clock day while the clock supplies the time portion.
  */
 export function composeGameTimeLine(
   snapshot: { date?: string | null; time?: string | null } | null | undefined,
   metadata: Record<string, unknown> | null | undefined,
 ): string | undefined {
+  const clock = readGameClock(metadata?.gameTime);
   let calendar: GameCalendarState | null = null;
   try {
     calendar = readGameCalendar(metadata);
@@ -669,16 +689,18 @@ export function composeGameTimeLine(
     calendar = null;
   }
   if (!calendar) {
+    if (clock) return formatGameClock(clock);
     if (!snapshot || !(snapshot.time || snapshot.date)) return undefined;
     return [snapshot.date, snapshot.time].filter(Boolean).join(", ");
   }
-  const day = readGameClock(metadata?.gameTime)?.day ?? 1;
+  const day = clock?.day ?? 1;
   let line: string;
   try {
     line = describeCalendarForPrompt(calendar, day);
   } catch {
     // A calendar that cannot be read never costs the GM its time line: fall back to the plain one.
+    if (clock) return formatGameClock(clock);
     return composeGameTimeLine(snapshot, null);
   }
-  return [line, snapshot?.time].filter(Boolean).join(", ");
+  return [line, clock ? formatGameClock(clock) : snapshot?.time].filter(Boolean).join(", ");
 }

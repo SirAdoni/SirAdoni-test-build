@@ -36,6 +36,24 @@ validateSceneEvidence([departure], "Ferrant leaves.");
 appendSceneVisits(scenes, "three", [departure]);
 assert.deepEqual(scenes[0].present, ["Edmund", "Quenby"]);
 assert(scenes[0].participants.includes("Ferrant"), "A departure must remain in scene history");
+const returnScenes: GameSceneTimelineEntry[] = [];
+appendSceneVisits(returnScenes, "before", [visit("Hall", ["Edmund", "Quenby"])]);
+const returnVisit = evidenced(
+  visit("Hall", ["Edmund", "Quenby"], [], [{ name: "Quenby", quote: "Quenby leaves." }]),
+  [],
+);
+validateSceneEvidence(
+  [returnVisit, evidenced(visit("Hall", ["Edmund", "Quenby"]), [])],
+  "Quenby leaves. Later, Quenby returns.",
+  { requirePresenceEvidence: true, previous: { location: "Hall", present: ["Edmund", "Quenby"] } },
+);
+appendSceneVisits(returnScenes, "return", [returnVisit]);
+appendSceneVisits(returnScenes, "silent", [visit("Hall", ["Edmund"])]);
+assert.deepEqual(
+  returnScenes[0].present,
+  ["Edmund", "Quenby"],
+  "The explicit end-of-visit roster must retain a returned occupant through later silence",
+);
 appendSceneVisits(scenes, "four", [visit("Hall", ["Edmund", "Ludmila"]), visit("Gate", ["Edmund"])]);
 assert.deepEqual(
   scenes.map((scene) => scene.location),
@@ -167,10 +185,14 @@ assert.equal(recapScenes[0]?.closed, false);
 appendSceneVisits(recapScenes, "empty-recap", [evidenced(visit("New place", []), [])], { resetCurrentPresence: true });
 assert.deepEqual(recapScenes[0].present, []);
 assert(recapScenes[0].participants.includes("Old companion"), "Historical participants remain in history");
-validateSceneEvidence([evidenced(visit("Hall", ["Edmund"]), []), evidenced(visit("Hall", ["Quenby"]), [])], "Silence.", {
-  requirePresenceEvidence: true,
-  previous: { location: "Hall", present: ["Edmund", "Quenby"] },
-});
+validateSceneEvidence(
+  [evidenced(visit("Hall", ["Edmund"]), []), evidenced(visit("Hall", ["Quenby"]), [])],
+  "Silence.",
+  {
+    requirePresenceEvidence: true,
+    previous: { location: "Hall", present: ["Edmund", "Quenby"] },
+  },
+);
 assert.throws(
   () =>
     validateSceneEvidence([evidenced(visit("Garden", ["Quenby"]), [])], "Edmund enters the garden.", {

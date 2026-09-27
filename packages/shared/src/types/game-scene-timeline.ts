@@ -1,5 +1,7 @@
 export interface GameSceneVisit {
   location: string;
+  /** Exact NEW TURN excerpt proving the physical move into this location. */
+  locationEvidence?: string;
   present: string[];
   participants: string[];
   /** Exact NEW TURN excerpts proving newly introduced physical occupants. */

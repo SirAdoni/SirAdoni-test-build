@@ -136,6 +136,7 @@ export async function buildGameContactBook(db: DB, chatId: string): Promise<Game
     .filter((relationship) => eligibleChatIds.has(String(relationship.chatId)))
     .sort(
       (left, right) =>
+        Number(Boolean(left.manualLock)) - Number(Boolean(right.manualLock)) ||
         (sessionForChat.get(String(left.chatId)) ?? Number.MAX_SAFE_INTEGER) -
           (sessionForChat.get(String(right.chatId)) ?? Number.MAX_SAFE_INTEGER) ||
         String(left.updatedAt ?? left.createdAt ?? "").localeCompare(
@@ -144,29 +145,57 @@ export async function buildGameContactBook(db: DB, chatId: string): Promise<Game
         Number(left.revision ?? 0) - Number(right.revision ?? 0),
     );
   const relationshipCache = new Map<string, string | null | undefined>();
-  const relationshipFor = (contactId: string): string | null | undefined => {
-    if (relationshipCache.has(contactId)) return relationshipCache.get(contactId);
-    const contactIds = new Set([contactId, ...(relationshipEntityIdsByOwner.get(contactId) ?? [])]);
+  const relationshipFor = (ownerIds: readonly string[]): string | null | undefined => {
+    const key = [...ownerIds].sort().join("\0");
+    if (relationshipCache.has(key)) return relationshipCache.get(key);
+    const contactIds = new Set(ownerIds);
+    for (const ownerId of ownerIds) {
+      for (const entityId of relationshipEntityIdsByOwner.get(ownerId) ?? []) contactIds.add(entityId);
+    }
     let selected: string | undefined;
+    let selectedType: string | undefined;
     let matched = false;
     for (const relationship of scopedRelationships) {
+      const type = String(relationship.type ?? "");
+      // Legacy reputation edges are a score tier, not a social bond.
+      if (type.startsWith("reputation:")) continue;
       const sourceContact = contactIds.has(String(relationship.sourceEntityId));
       const targetContact = contactIds.has(String(relationship.targetEntityId));
       const sourcePersona = personaEntityIds.has(String(relationship.sourceEntityId));
       const targetPersona = personaEntityIds.has(String(relationship.targetEntityId));
-      // The API exposes the recorded human predicate. Lifecycle state remains
-      // campaign-memory data and is deliberately not converted into a made-up
-      // contact label (for example, "active friend").
       if (!((sourceContact && targetPersona) || (targetContact && sourcePersona))) continue;
+      // A player's suspicion or affection for someone does not establish the
+      // NPC's stance toward the player.
+      if (
+        targetContact &&
+        sourcePersona &&
+        [
+          "stranger-to",
+          "acquaintance-of",
+          "neutral-toward",
+          "suspicious-of",
+          "arch-nemesis-of",
+          "eternal-ally-of",
+          "loves",
+          "hates",
+          "trusts",
+          "distrusts",
+        ].includes(type)
+      ) {
+        continue;
+      }
+      if (relationship.status === "proposed" || relationship.status === "held") continue;
       matched = true;
       if (relationship.status === "active") {
-        selected = sourceContact && targetPersona ? String(relationship.type) : String(relationship.inverseLabel);
-      } else {
+        selected = sourceContact && targetPersona ? type : String(relationship.inverseLabel);
+        selectedType = type;
+      } else if (relationship.status === "ended" && selectedType === type) {
         selected = undefined;
+        selectedType = undefined;
       }
     }
     const result = matched ? (selected ?? null) : undefined;
-    relationshipCache.set(contactId, result);
+    relationshipCache.set(key, result);
     return result;
   };
   let pendingSessions = 0;
@@ -219,9 +248,17 @@ export async function buildGameContactBook(db: DB, chatId: string): Promise<Game
           ) ??
           matchingEntries.find((candidate: any) => typeof candidate.avatar === "string" && candidate.avatar.trim());
         const existing = contacts.get(id);
-        const relationshipRecord = relationshipFor(id);
+        const relationshipRecord = relationshipFor([
+          ...new Set([id, ...matchingEntries.map((candidate: any) => String(candidate.id ?? "")).filter(Boolean)]),
+        ]);
         const relationshipStatus = relationshipRecord ?? existing?.relationshipStatus;
         const shouldClearRelationship = relationshipRecord === null;
+        const recordedOpinion =
+          typeof entry?.reputation === "number" &&
+          Number.isFinite(entry.reputation) &&
+          entry.reputation >= -100 &&
+          entry.reputation <= 100 &&
+          (entry.reputationObserved === true || (entry.reputationObserved !== false && entry.reputation !== 0));
         contacts.set(id, {
           id,
           ...(entry?.characterId
@@ -242,16 +279,15 @@ export async function buildGameContactBook(db: DB, chatId: string): Promise<Game
             : existing?.avatarCrop
               ? { avatarCrop: existing.avatarCrop }
               : {}),
-          ...(typeof entry?.reputation === "number"
+          ...(recordedOpinion
             ? { opinion: entry.reputation }
             : existing?.opinion !== undefined
               ? { opinion: existing.opinion }
               : {}),
           ...(shouldClearRelationship ? {} : relationshipStatus ? { relationshipStatus } : {}),
-          automaticCategories:
-            typeof entry?.reputation === "number"
-              ? [entry.reputation >= 50 ? "trusted" : entry.reputation <= -50 ? "hostile" : "known"]
-              : (existing?.automaticCategories ?? []),
+          automaticCategories: recordedOpinion
+            ? [entry.reputation >= 50 ? "trusted" : entry.reputation <= -50 ? "hostile" : "known"]
+            : ["known"],
           evidenceMessageIds: [...new Set([...(existing?.evidenceMessageIds ?? []), ...scene.messageIds])],
         });
       }

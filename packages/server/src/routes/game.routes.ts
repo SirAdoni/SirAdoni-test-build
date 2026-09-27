@@ -18,6 +18,7 @@ import {
 import { buildGameContactBook } from "../services/game/game-contact-book.js";
 import { ensureContinuityHolderReferences } from "../services/game/continuity-holder-snapshot.js";
 import { queueSceneTimeline, readSceneTimeline, sceneTimelineRecap } from "../services/game/scene-timeline.service.js";
+import { applyGameTurnClock, correctGameTurnReview, getGameTurnReview } from "../services/game/turn-review.service.js";
 import { isGameSceneTimelineEnabled } from "@marinara-engine/shared";
 import { snapshotPresenceTimeline } from "../services/game/game-feature-switches.js";
 import { readGameContinuityState } from "../services/game/continuity-state.js";
@@ -125,6 +126,8 @@ import {
 } from "../services/game/gm-prompts.js";
 import {
   buildPartySpeakerSystemPrompt,
+  extractPartyReputationActions,
+  stripPartyReputationTags,
   filterPartyNarrationForSpeaker,
   rejectCrossSpeakerPartyLines,
   runBoundedPartySpeakerRequests,
@@ -7596,8 +7599,11 @@ export async function gameRoutes(app: FastifyInstance) {
       verifiedThroughMessageId: state.verifiedThroughMessageId,
       // When the watermark message was written, so the panel can say "checked up to Tuesday 14:02".
       verifiedThroughAt: state.verifiedThroughMessageId
-        ? ((await createChatsStorage(app.db).getMessage(state.verifiedThroughMessageId).catch(() => null))
-            ?.createdAt ?? null)
+        ? ((
+            await createChatsStorage(app.db)
+              .getMessage(state.verifiedThroughMessageId)
+              .catch(() => null)
+          )?.createdAt ?? null)
         : null,
       // A usable extraction and review connection; without one the queue cannot run for this chat.
       connectionAvailable: await readContinuityConfig(app.db, req.params.chatId, { allowHistoricalBackfill: true })
@@ -7777,6 +7783,101 @@ export async function gameRoutes(app: FastifyInstance) {
   app.get<{ Params: { chatId: string } }>("/:chatId/scene-timeline", async (req) =>
     readSceneTimeline(app.db, req.params.chatId),
   );
+  app.get<{ Params: { chatId: string; messageId: string } }>("/:chatId/turn-review/:messageId", async (req, reply) => {
+    try {
+      return await getGameTurnReview(
+        app.db,
+        req.params.chatId,
+        req.params.messageId,
+        () =>
+          (app as unknown as { isGameTurnUpdating?: (chatId: string) => boolean }).isGameTurnUpdating?.(
+            req.params.chatId,
+          ) ?? false,
+      );
+    } catch (error) {
+      return reply
+        .status(error instanceof Error && error.message === "Chat not found" ? 404 : 400)
+        .send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+  app.patch<{
+    Params: { chatId: string; messageId: string };
+    Body: { revision?: string; swipeIndex?: number; correction?: unknown };
+  }>("/:chatId/turn-review/:messageId", async (req, reply) => {
+    try {
+      const body = z
+        .object({
+          revision: z.string().min(1).max(128),
+          swipeIndex: z.number().int().nonnegative(),
+          correction: z.discriminatedUnion("field", [
+            z
+              .object({
+                field: z.literal("time"),
+                value: z
+                  .object({
+                    day: z.number().int().min(1).max(1000000),
+                    hour: z.number().int().min(0).max(23),
+                    minute: z.number().int().min(0).max(59),
+                  })
+                  .strict(),
+              })
+              .strict(),
+            z.object({ field: z.literal("location"), locationId: z.string().trim().min(1).max(256) }).strict(),
+            z
+              .object({ field: z.literal("presence"), name: z.string().trim().min(1).max(256), present: z.boolean() })
+              .strict(),
+          ]),
+        })
+        .strict()
+        .parse(req.body);
+      return await correctGameTurnReview(
+        app.db,
+        req.params.chatId,
+        req.params.messageId,
+        body,
+        () =>
+          (app as unknown as { isGameTurnUpdating?: (chatId: string) => boolean }).isGameTurnUpdating?.(
+            req.params.chatId,
+          ) ?? false,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply
+        .status(/stale|busy|latest|read-only|active|manually corrected/i.test(message) ? 409 : 400)
+        .send({ error: message });
+    }
+  });
+  app.post<{
+    Params: { chatId: string; messageId: string };
+    Body: { swipeIndex?: number; elapsedMinutes?: number; timeEvidence?: string };
+  }>("/:chatId/turn-review/:messageId/clock", async (req, reply) => {
+    try {
+      const body = z
+        .object({
+          swipeIndex: z.number().int().nonnegative(),
+          elapsedMinutes: z.number().int().min(1).max(1440),
+          timeEvidence: z.string().trim().min(1).max(4000),
+        })
+        .strict()
+        .parse(req.body);
+      return await applyGameTurnClock(
+        app.db,
+        req.params.chatId,
+        req.params.messageId,
+        body,
+        // Scene analysis can finish while other turn agents are still running.
+        // Its source-bound clock write is serialized; only narration blocks it.
+        () =>
+          (app as unknown as { activeGenerations?: Map<string, unknown> }).activeGenerations?.has(req.params.chatId) ??
+          false,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply
+        .status(/active|latest|captured|exact source|immutable/i.test(message) ? 409 : 400)
+        .send({ error: message });
+    }
+  });
   app.post<{ Params: { chatId: string } }>("/:chatId/scene-timeline/sync", async (req) => {
     await readSceneTimeline(app.db, req.params.chatId);
     const timelineChat = await createChatsStorage(app.db).getById(req.params.chatId);
@@ -11814,9 +11915,10 @@ export async function gameRoutes(app: FastifyInstance) {
     }
     const mapValidation = validateGeneratedGameMap(parsedMap);
     if (!mapValidation.ok) {
-      return reply
-        .status(422)
-        .send({ error: `The AI returned an unusable map: ${mapValidation.error}. Try generating again.`, code: "MAP_INVALID" });
+      return reply.status(422).send({
+        error: `The AI returned an unusable map: ${mapValidation.error}. Try generating again.`,
+        code: "MAP_INVALID",
+      });
     }
     const map: GameMap = mapValidation.map;
 
@@ -12621,7 +12723,7 @@ export async function gameRoutes(app: FastifyInstance) {
         z.object({
           npcId: z.string(),
           action: z.string().min(1).max(GAME_REPUTATION_ACTION_MAX_LENGTH),
-          modifier: z.number().optional(),
+          modifier: z.number().finite().min(-100).max(100).optional(),
         }),
       ),
       /** Message the reputation tags were read from; defaults to the newest chat message. */
@@ -12652,6 +12754,9 @@ export async function gameRoutes(app: FastifyInstance) {
       const result = processReputationActions(currentNpcs, actions);
       reputationState.result = result;
       reputationState.previousNpcs = currentNpcs;
+      // A free-text or unresolved action is not a reputation event. Leave the
+      // message available for a later valid analysis of the same turn.
+      if (result.changes.length === 0) return {};
       const hydratedMeta = await buildHydratedGameMeta(chatId, {
         ...freshMeta,
         gameNpcs: result.npcs,
@@ -14410,12 +14515,7 @@ export async function gameRoutes(app: FastifyInstance) {
         }
 
         // Extract and apply reputation tags from party response
-        const repRegex = /\[reputation:\s*npc="([^"]+)"\s*action="([^"]+)"\]/gi;
-        let repMatch: RegExpExecArray | null;
-        const repActions: Array<{ npcId: string; action: string }> = [];
-        while ((repMatch = repRegex.exec(raw)) !== null) {
-          repActions.push({ npcId: repMatch[1]!.trim(), action: repMatch[2]!.trim() });
-        }
+        const repActions = extractPartyReputationActions(raw);
         let partyReputation: LegacyReputationChange[] = [];
         if (repActions.length > 0) {
           try {
@@ -14423,16 +14523,18 @@ export async function gameRoutes(app: FastifyInstance) {
               const currentNpcs = (freshMeta.gameNpcs as GameNpc[]) ?? [];
               const result = processReputationActions(currentNpcs, repActions);
               partyReputation = legacyReputationChanges(currentNpcs, result);
-              return { gameNpcs: result.npcs };
+              return result.changes.length > 0 ? { gameNpcs: result.npcs } : {};
             });
-            logger.info(`[party-turn] Applied ${repActions.length} reputation change(s)`);
+            if (partyReputation.length > 0) {
+              logger.info("[party-turn] Applied %d reputation change(s)", partyReputation.length);
+            }
           } catch (err) {
             logger.warn(err, "[party-turn] Failed to apply reputation");
           }
         }
 
         // Strip reputation tags from the displayed content
-        const cleanRaw = raw.replace(/\[reputation:\s*npc="[^"]+"\s*action="[^"]+"\]/gi, "").trim();
+        const cleanRaw = stripPartyReputationTags(raw);
 
         // Save party response as a message in the game chat
         const partyMsg = await chats.createMessage({

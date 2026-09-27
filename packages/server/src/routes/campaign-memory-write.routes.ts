@@ -1,3 +1,9 @@
+import {
+  worldHistorySchema,
+  WORLD_HISTORY_ATTRIBUTE,
+  readGameCalendar,
+  isWorldHistoryDateValid,
+} from "@marinara-engine/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
@@ -15,7 +21,7 @@ import { logger } from "../lib/logger.js";
 import { campaignMemoryRelationshipKindError } from "../services/game/campaign-memory-relationship-kinds.js";
 import type { DB } from "../db/connection.js";
 import { eq } from "../db/file-query.js";
-import { campaignMemoryEntities, campaignMemoryFacts } from "../db/schema/index.js";
+import { campaignMemoryEntities, campaignMemoryFacts, chats } from "../db/schema/index.js";
 import {
   campaignEntityIdentity,
   readCampaignMemoryProjection,
@@ -77,7 +83,15 @@ const entityInput = z
     tags: z.array(z.string().trim().min(1).max(200)).max(100).default([]),
     summary: z.string().max(MAX_TEXT).optional(),
     body: z.string().trim().max(MAX_ENTITY_BODY).optional(),
-    attributes: z.record(z.string().max(200), jsonValue).default({}),
+    attributes: z
+      .record(z.string().max(200), jsonValue)
+      .refine(
+        (attributes) =>
+          attributes[WORLD_HISTORY_ATTRIBUTE] === undefined ||
+          worldHistorySchema.safeParse(attributes[WORLD_HISTORY_ATTRIBUTE]).success,
+        "Invalid world history date or references",
+      )
+      .default({}),
     status: z.enum(["active", "archived"]).default("active"),
     manualLock: z.boolean().default(false),
   })
@@ -128,6 +142,7 @@ const relationshipInput = z
     targetEntityId: z.string().trim().min(1).max(300),
     type: z.string().trim().min(1).max(500),
     inverseLabel: z.string().trim().min(1).max(500),
+    notes: z.string().max(20000).optional(),
     status: z.enum(["proposed", "active", "ended", "held"]).default("proposed"),
     effectiveFrom: z.string().trim().max(300).optional(),
     effectiveTo: z.string().trim().max(300).optional(),
@@ -178,6 +193,7 @@ const relationshipPatch = z
   .object({
     type: relationshipInput.shape.type,
     inverseLabel: relationshipInput.shape.inverseLabel,
+    notes: relationshipInput.shape.notes,
     status: relationshipInput.shape.status.removeDefault(),
     effectiveFrom: relationshipInput.shape.effectiveFrom,
     effectiveTo: relationshipInput.shape.effectiveTo,
@@ -216,6 +232,7 @@ const querySchema = z
   .object({
     offset: z.coerce.number().int().min(0).default(0),
     limit: z.coerce.number().int().min(1).max(100).default(50),
+    recordId: z.string().trim().min(1).max(300).optional(),
   })
   .strict();
 
@@ -248,6 +265,41 @@ function errorResponse(reply: FastifyReply, error: unknown) {
           : 400;
   if (!known) logger.error({ err: error }, "Campaign memory authoring failed");
   return reply.status(status).send({ error: { code, message } });
+}
+
+async function validateWorldHistory(db: DB, command: CampaignMemoryMutationCommand) {
+  if (command.recordType !== "entity") return;
+  const input = command.action === "create" ? command.input : command.patch;
+  if (!input.attributes || input.attributes[WORLD_HISTORY_ATTRIBUTE] === undefined) return;
+  const history = worldHistorySchema.parse(input.attributes[WORLD_HISTORY_ATTRIBUTE]);
+  const existing =
+    command.action === "update"
+      ? await createCampaignMemoryStorage(db).getEntity({ chatId: command.chatId }, command.recordId)
+      : null;
+  const kind = command.action === "create" ? command.input.kind : existing?.kind;
+  if (kind !== "note")
+    throw new CampaignMemoryMutationError("CAMPAIGN_MEMORY_INVALID_VALUE", "World history must be a wiki note");
+  const chat = (await db.select().from(chats).where(eq(chats.id, command.chatId)).limit(1))[0];
+  const metadata = typeof chat?.metadata === "string" ? JSON.parse(chat.metadata) : chat?.metadata;
+  const calendar = readGameCalendar(metadata as Record<string, unknown>);
+  if (calendar && !isWorldHistoryDateValid(history.date, calendar.config))
+    throw new CampaignMemoryMutationError(
+      "CAMPAIGN_MEMORY_INVALID_VALUE",
+      "Historical date is outside the campaign calendar",
+    );
+  const projection = await readCampaignMemoryProjection(db, command.chatId);
+  const references = new Map(projection.entities.map((entity) => [entity.entityId, entity]));
+  const find = (id: string) => references.get(projection.entityIdMap.get(id) ?? id);
+  if (
+    history.participantEntityIds.some(
+      (id) => !["character", "persona", "organization"].includes(find(id)?.kind ?? ""),
+    ) ||
+    (history.locationEntityId && find(history.locationEntityId)?.kind !== "location")
+  )
+    throw new CampaignMemoryMutationError(
+      "CAMPAIGN_MEMORY_INVALID_REFERENCE",
+      "Historical links must reference existing campaign people, organizations or places",
+    );
 }
 
 function provenance(operationId: string) {
@@ -450,7 +502,8 @@ async function mapCrossSessionReferences(db: DB, command: CampaignMemoryMutation
   }
   if (command.recordType === "fact") {
     command.input.subjectEntityId = await mapEntityId(command.input.subjectEntityId);
-    if (command.input.supersedesFactId) command.input.supersedesFactId = await mapFactId(command.input.supersedesFactId);
+    if (command.input.supersedesFactId)
+      command.input.supersedesFactId = await mapFactId(command.input.supersedesFactId);
   } else if (command.recordType === "knowledge") {
     command.input.holderEntityId = await mapEntityId(command.input.holderEntityId);
     if (command.input.attributedClaim)
@@ -505,6 +558,7 @@ async function execute(
     const command = buildCommand(chatId, parsed);
     await mapCrossSessionReferences(app.db, command);
     await validateRelationshipEndpoints(app.db, command);
+    await validateWorldHistory(app.db, command);
     return mode === "preview"
       ? await previewCampaignMemoryMutation(app.db, command)
       : await applyCampaignMemoryMutation(app.db, command);
@@ -601,7 +655,13 @@ export async function campaignMemoryWriteRoutes(app: FastifyInstance) {
         },
       });
     try {
-      const rows = await createCampaignMemoryStorage(app.db).listMutationJournal({ chatId: request.params.chatId });
+      const allRows = await createCampaignMemoryStorage(app.db).listMutationJournal({ chatId: request.params.chatId });
+      const rows = query.data.recordId
+        ? allRows
+            .filter((row) => row.recordType === "relationship" && row.recordId === query.data.recordId)
+            .reverse()
+            .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        : allRows;
       return {
         items: rows.slice(query.data.offset, query.data.offset + query.data.limit),
         total: rows.length,

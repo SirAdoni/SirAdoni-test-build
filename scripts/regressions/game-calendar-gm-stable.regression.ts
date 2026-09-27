@@ -83,7 +83,14 @@ try {
     /Time [A-Za-z]+, 2 March 300 AR \(upcoming: Lantern Fair in 3 days; deadline Bridge toll in 7 days\), Day 2, 09:00/u,
   );
   assert.match(day6.state, /Time [A-Za-z]+, 6 March 300 AR \(upcoming: deadline Bridge toll in 3 days\)/u);
-  assert.match(without.state, /Time early spring, Day 2, 09:00 \(morning\)/u);
+  assert.match(without.state, /Time Day 2, 09:00 \(morning\)/u);
+  const corrected = await runtime({ gameTime: { day: 4, hour: 14, minute: 0 } });
+  assert.match(
+    corrected.state,
+    /Time Day 4, 14:00 \(afternoon\)/u,
+    "the runtime clock follows metadata rather than the stale snapshot",
+  );
+  assert.equal(hash(corrected), hash(without), "clock corrections do not change the stable cache prefix");
   assert.equal(all(disabled), all(without), "a switched-off calendar leaves the injected prompt byte-identical");
   assert.equal(disabled.reminder, without.reminder, "and the per-turn reminder too");
 

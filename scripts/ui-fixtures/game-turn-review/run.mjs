@@ -1,0 +1,72 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { chromium } from "@playwright/test";
+import { startFixtureServer, stopFixtureServer } from "../lib/fixture-server.mjs";
+
+let fixture;
+let browser;
+const screenshotDir = path.join(path.dirname(fileURLToPath(import.meta.url)), ".out");
+fs.mkdirSync(screenshotDir, { recursive: true });
+try {
+  fixture = startFixtureServer(fileURLToPath(new URL("./component-server.mjs", import.meta.url)));
+  const { base } = await fixture.ready;
+  browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(String(error)));
+  await page.goto(base);
+  await page.getByRole("button", { name: "What changed this turn?" }).click();
+  await page.getByText("Day 8, 06:05").first().waitFor();
+  await page.screenshot({ path: path.join(screenshotDir, "desktop-expanded.png"), fullPage: true });
+  await page.getByRole("button", { name: "Open supporting line" }).click();
+  assert.match(await page.locator("[data-source-selection]").innerText(), /fixture-message/);
+  await page.getByRole("button", { name: "Correct the recorded state" }).click();
+  await page.getByLabel("Day", { exact: true }).fill("9");
+  await page.getByRole("button", { name: "Apply", exact: true }).first().click();
+  await page.getByText("Day 8, 07:00").first().waitFor();
+  await page.getByPlaceholder("Add a person").fill("New arrival");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await page.getByText("New arrival", { exact: true }).waitFor();
+  await page.getByLabel("Day", { exact: true }).fill("10");
+  await page.getByRole("button", { name: "Apply", exact: true }).first().click();
+  await page.getByLabel("Saving turn correction").waitFor();
+  await page.setViewportSize({ width: 390, height: 844 });
+  const panel = page.locator("[aria-label='What changed this turn?']");
+  const box = await panel.boundingBox();
+  assert.ok(box && box.width <= 390, "review fits narrow mobile viewport");
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), "mobile has no horizontal overflow");
+  await page.screenshot({ path: path.join(screenshotDir, "mobile-expanded.png"), fullPage: true });
+  assert.deepEqual(pageErrors, [], `browser page errors: ${pageErrors.join(" | ")}`);
+  await browser.close();
+  browser = await chromium.launch({ headless: true });
+  for (const mode of ["readonly", "pending"]) {
+    await fetch(`${base}/control?mode=${mode}`);
+    const statusPage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    await statusPage.goto(`${base}/?mode=${mode}`);
+    await statusPage.getByRole("button", { name: "What changed this turn?" }).click();
+    if (mode === "readonly") assert.equal(await statusPage.getByRole("button", { name: "Correct the recorded state" }).count(), 0);
+    if (mode === "pending") await statusPage.getByText("Turn review is still being prepared", { exact: false }).waitFor();
+    await statusPage.close();
+  }
+  await fetch(`${base}/control?mode=error`);
+  const errorPage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await errorPage.goto(`${base}/?mode=error`);
+  await errorPage.getByText("Could not load this turn review.").waitFor();
+  await fetch(`${base}/control?mode=normal`);
+  await errorPage.getByRole("button", { name: "Retry" }).click();
+  await errorPage.getByRole("button", { name: "What changed this turn?" }).waitFor();
+  await errorPage.close();
+  await fetch(`${base}/control?mode=mismatch`);
+  const mismatchPage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await mismatchPage.goto(`${base}/?mode=mismatch`);
+  await mismatchPage.getByRole("button", { name: "What changed this turn?" }).click();
+  await mismatchPage.getByText("This review belongs to a different saved swipe.").waitFor();
+  assert.equal(await mismatchPage.getByRole("button", { name: "Correct the recorded state" }).count(), 0);
+  await mismatchPage.close();
+  console.log(`game turn review UI fixture passed: desktop/mobile disclosure, source link, stale reload, correction busy state, missing person, readonly, pending, retry, mismatched swipe; screenshots=${screenshotDir}`);
+} finally {
+  await browser?.close();
+  await stopFixtureServer(fixture?.server);
+}

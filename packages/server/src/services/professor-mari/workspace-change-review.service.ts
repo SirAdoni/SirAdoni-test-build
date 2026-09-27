@@ -188,7 +188,8 @@ export function isProfessorMariPrivateDataPath(absolutePath: string): boolean {
     const rel = relativeInside(storageRoot, absolutePath);
     if (rel === null) continue;
     const normalized = repeatedlyDecodePath(rel);
-    if (normalized.startsWith("tables/") && /(?:^|\/)(?:app_settings|game_prep_boards)(?:\/|$)/u.test(normalized)) return true;
+    if (normalized.startsWith("tables/") && /(?:^|\/)(?:app_settings|game_prep_boards)(?:\/|$)/u.test(normalized))
+      return true;
     const name = normalized.split("/").at(-1) ?? "";
     if (
       normalized.startsWith("tables/") &&

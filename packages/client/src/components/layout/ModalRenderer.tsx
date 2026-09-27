@@ -88,8 +88,14 @@ const RandomTablesModal = lazy(() =>
 const PrepBoardModal = lazy(() =>
   import("../modals/PrepBoardModal").then((module) => ({ default: module.PrepBoardModal })),
 );
+const FamilyTreeModal = lazy(() =>
+  import("../modals/FamilyTreeModal").then((module) => ({ default: module.FamilyTreeModal })),
+);
 const GameCalendarModal = lazy(() =>
   import("../modals/GameCalendarModal").then((module) => ({ default: module.GameCalendarModal })),
+);
+const WorldHistoryModal = lazy(() =>
+  import("../modals/WorldHistoryModal").then((module) => ({ default: module.WorldHistoryModal })),
 );
 const InitiativeTrackerModal = lazy(() =>
   import("../modals/InitiativeTrackerModal").then((module) => ({ default: module.InitiativeTrackerModal })),
@@ -284,8 +290,14 @@ export function ModalRenderer() {
     case "prep-board":
       content = <PrepBoardModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
       break;
+    case "family-tree":
+      content = <FamilyTreeModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
+      break;
     case "game-calendar":
       content = <GameCalendarModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
+      break;
+    case "world-history":
+      content = <WorldHistoryModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;
       break;
     case "initiative-tracker":
       content = <InitiativeTrackerModal open onClose={closeModal} chatId={(modal?.props?.chatId as string) ?? ""} />;

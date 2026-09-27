@@ -64,6 +64,13 @@ function sourceIds(receipt: { sources: GameContinuitySource[] }): string[] {
   return receipt.sources.map((source) => source.messageId);
 }
 
+function hasReviewWithheld(receipt: {
+  review?: { withheld?: { records: readonly unknown[]; findings: readonly unknown[] } } | null;
+}): boolean {
+  const withheld = receipt.review?.withheld;
+  return Boolean(withheld && (withheld.records.length > 0 || withheld.findings.length > 0));
+}
+
 function recordLine(record: GameContinuityRecord & { receiptId: string; sessionNumber: number }): string {
   const conditions = record.conditions.length ? ` conditions=${JSON.stringify(record.conditions)}` : "";
   const knowledge = record.knowledge ? ` knowledge=${JSON.stringify(record.knowledge)}` : "";
@@ -124,6 +131,7 @@ export async function buildGameContinuityPromptContext(
   const currentPublished = state.receipts.filter(
     (item) =>
       state.currentPublishedReceiptIds.includes(item.receipt.id) &&
+      !hasReviewWithheld(item.receipt) &&
       (options.sessionNumber === undefined || item.receipt.sessionNumber <= options.sessionNumber),
   );
   const allRecords = state.records.filter(
@@ -146,6 +154,25 @@ export async function buildGameContinuityPromptContext(
     ...allRecords.filter((record) => priority(record) === 1).sort((left, right) => chronological(right, left)),
   ];
 
+  // One published slice does not mean the entire long message was reviewed.
+  const covered = new Set(
+    messages
+      .filter((message) => {
+        const ranges = currentPublished
+          .flatMap(({ receipt }) => receipt.sources)
+          .filter((source) => source.messageId === message.messageId)
+          .map((source) => [source.start ?? 0, source.end ?? (source.start ?? 0) + codepoints(source.content).length])
+          .sort((left, right) => left[0]! - right[0]!);
+        let end = 0;
+        for (const range of ranges) {
+          if (range[0]! > end) return false;
+          end = Math.max(end, range[1]!);
+        }
+        return ranges.length > 0 && end >= codepoints(message.content).length;
+      })
+      .map((message) => message.messageId),
+  );
+
   const pendingSourceMessageIds = new Set<string>();
   const unresolvedSourceMessageIds = new Set<string>();
   for (const item of state.receipts) {
@@ -166,6 +193,10 @@ export async function buildGameContinuityPromptContext(
       (item.receipt.status === "published" && !item.sourceCurrent)
     )
       ids.forEach((id) => unresolvedSourceMessageIds.add(id));
+    // Keep the safe facts from partial publications, but retire their warning
+    // only for messages fully covered by clean publications in this session scope.
+    if ((item.receipt.status === "published" || item.receipt.status === "verified") && hasReviewWithheld(item.receipt))
+      ids.filter((id) => !covered.has(id)).forEach((id) => unresolvedSourceMessageIds.add(id));
   }
   const relevantGaps = state.gaps.filter((gap) =>
     state.receipts.some(
@@ -184,24 +215,6 @@ export async function buildGameContinuityPromptContext(
     typeof config.activationMessageId === "string"
       ? messages.findIndex((message) => message.messageId === config.activationMessageId)
       : -1;
-  // One published slice does not mean the entire long message was reviewed.
-  const covered = new Set(
-    messages
-      .filter((message) => {
-        const ranges = currentPublished
-          .flatMap(({ receipt }) => receipt.sources)
-          .filter((source) => source.messageId === message.messageId)
-          .map((source) => [source.start ?? 0, source.end ?? codepoints(source.content).length])
-          .sort((left, right) => left[0]! - right[0]!);
-        let end = 0;
-        for (const range of ranges) {
-          if (range[0]! > end) return false;
-          end = Math.max(end, range[1]!);
-        }
-        return ranges.length > 0 && end >= codepoints(message.content).length;
-      })
-      .map((message) => message.messageId),
-  );
   const recentCandidates = messages.filter(
     (message, index) =>
       index <= throughIndex &&

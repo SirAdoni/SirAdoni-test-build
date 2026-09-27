@@ -175,11 +175,19 @@ export async function readGameContinuityState(db: DB, chatId: string): Promise<G
   const currentPublished = receiptStates.filter(
     (item) => item.sourceCurrent && item.receipt.status === "published" && publishedEntriesAreCurrent(item.receipt),
   );
+  const reviewWithheld = (receipt: GameContinuityReceipt) => {
+    const withheld = receipt.review?.withheld;
+    return Boolean(withheld && (withheld.records.length > 0 || withheld.findings.length > 0));
+  };
+  // A partially published receipt keeps its valid records, but its source range is not
+  // proof that the message was fully reviewed. A later clean receipt may replace that
+  // coverage, so only clean current publications contribute to the coverage map.
+  const coveragePublished = currentPublished.filter(({ receipt }) => !reviewWithheld(receipt));
   const currentCoverage = new Map<string, Array<[number, number]>>();
-  for (const { receipt } of currentPublished) {
+  for (const { receipt } of coveragePublished) {
     for (const source of receipt.sources) {
       const ranges = currentCoverage.get(source.messageId) ?? [];
-      ranges.push([source.start ?? 0, source.end ?? Array.from(source.content).length]);
+      ranges.push([source.start ?? 0, source.end ?? (source.start ?? 0) + Array.from(source.content).length]);
       currentCoverage.set(source.messageId, ranges);
     }
   }
@@ -232,6 +240,23 @@ export async function readGameContinuityState(db: DB, chatId: string): Promise<G
       }
       continue;
     }
+    if (reviewWithheld(receipt)) {
+      const withheldMessageIds = new Set([
+        ...(receipt.review?.withheld?.findings.map((finding) => finding.messageId) ?? []),
+        ...(receipt.review?.withheld?.records.flatMap((record) =>
+          record.evidence.map((evidence) => evidence.messageId),
+        ) ?? []),
+      ]);
+      for (const source of receipt.sources) {
+        if (withheldMessageIds.has(source.messageId) && !fullyCoveredCurrentMessage(source.messageId))
+          gaps.push({
+            batchId: receipt.id,
+            status: "published",
+            reason: "CONTINUITY_REVIEW_WITHHELD",
+            messageId: source.messageId,
+          });
+      }
+    }
     let hasManualOverride = false;
     for (const entryId of generatedIds) {
       if (entryIsManualOverride(entryId, receipt)) {
@@ -251,10 +276,10 @@ export async function readGameContinuityState(db: DB, chatId: string): Promise<G
   // Continuous verified watermark over eligible accepted turns; a turn with no receipt at all is a gap.
   const verifiedCoverage = new Map([...currentCoverage].map(([messageId, ranges]) => [messageId, [...ranges]]));
   for (const { receipt, sourceCurrent } of receiptStates) {
-    if (!sourceCurrent || receipt.status !== "verified") continue;
+    if (!sourceCurrent || receipt.status !== "verified" || reviewWithheld(receipt)) continue;
     for (const source of receipt.sources) {
       const ranges = verifiedCoverage.get(source.messageId) ?? [];
-      ranges.push([source.start ?? 0, source.end ?? Array.from(source.content).length]);
+      ranges.push([source.start ?? 0, source.end ?? (source.start ?? 0) + Array.from(source.content).length]);
       verifiedCoverage.set(source.messageId, ranges);
     }
   }

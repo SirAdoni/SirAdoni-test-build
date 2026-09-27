@@ -3731,6 +3731,23 @@ export function ChatSettingsDrawer({
   const [gameSpecialInstructionsDraft, setGameSpecialInstructionsDraft] = useState(
     (metadata.gameSpecialInstructions as string) ?? "",
   );
+  const gamePromptDirectEdits = useMemo(
+    () =>
+      Array.isArray(metadata.gamePromptDirectEdits)
+        ? metadata.gamePromptDirectEdits.filter(
+            (entry: unknown): entry is { role: string; find: string; replace: string } =>
+              typeof entry === "object" &&
+              entry !== null &&
+              "role" in entry &&
+              "find" in entry &&
+              "replace" in entry &&
+              typeof entry.role === "string" &&
+              typeof entry.find === "string" &&
+              typeof entry.replace === "string",
+          )
+        : [],
+    [metadata.gamePromptDirectEdits],
+  );
   const [gameImagePromptInstructionsDraft, setGameImagePromptInstructionsDraft] = useState(
     (metadata.gameImagePromptInstructions as string) ?? "",
   );
@@ -5132,6 +5149,7 @@ export function ChatSettingsDrawer({
           {modeSettingsSurfaces.promptSettingsSurface === "game" && (
             <div style={{ order: CHAT_SETTINGS_ORDER.promptPreset }}>
               <GameExtraPromptSection
+                chatId={chat.id}
                 storedValue={(metadata.gameSystemPrompt as string) ?? ""}
                 specialInstructionsValue={gameSpecialInstructionsDraft}
                 promptPresetId={effectiveModePromptPresetId}
@@ -5146,6 +5164,13 @@ export function ChatSettingsDrawer({
                 onSpecialInstructionsChange={setGameSpecialInstructionsDraft}
                 onPromptPresetChange={handleModePromptPresetChange}
                 onGmPromptTemplateChange={updateGameGmPromptTemplateSelection}
+                directEdits={gamePromptDirectEdits}
+                onDirectEditsCommit={(gamePromptDirectEdits) =>
+                  updateMeta.mutateAsync({ id: chat.id, gamePromptDirectEdits })
+                }
+                onDirectEditsReset={() =>
+                  updateMeta.mutateAsync({ id: chat.id, gamePromptDirectEdits: [], gamePromptTextReplacements: [] })
+                }
               />
             </div>
           )}

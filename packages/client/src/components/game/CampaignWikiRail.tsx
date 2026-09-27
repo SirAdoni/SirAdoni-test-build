@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { ChevronDown, ChevronRight, History, House, Loader2, PanelLeftClose, Search, X } from "lucide-react";
+import { ChevronDown, ChevronRight, History, House, Loader2, Network, PanelLeftClose, Search, X } from "lucide-react";
 import type { CampaignMemoryEntityKind } from "@marinara-engine/shared";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
@@ -387,6 +387,8 @@ export interface CampaignWikiRailProps {
   portraits: Map<string, string>;
   timelineActive: boolean;
   onShowTimeline: () => void;
+  factionsActive?: boolean;
+  onShowFactions?: () => void;
   /** The front page is on screen (desktop) or open (phone). */
   homeActive: boolean;
   onShowHome: () => void;
@@ -412,6 +414,8 @@ export function CampaignWikiRail({
   portraits,
   timelineActive,
   onShowTimeline,
+  factionsActive = false,
+  onShowFactions,
   homeActive,
   onShowHome,
   onCollapse,
@@ -551,6 +555,20 @@ export function CampaignWikiRail({
           <PanelLeftClose size={14} />
         </button>
       </div>
+      {onShowFactions && (
+        <button
+          type="button"
+          onClick={onShowFactions}
+          aria-pressed={factionsActive}
+          className={cn(
+            "mb-2 inline-flex min-h-10 items-center gap-2 rounded-lg border px-3 text-sm font-semibold",
+            factionsActive ? "border-primary/60 bg-primary/15" : "border-border hover:bg-secondary",
+          )}
+        >
+          <Network size={16} aria-hidden="true" />
+          {t("ui.game.factions.title")}
+        </button>
+      )}
       <label className="relative block">
         <Search
           size={14}

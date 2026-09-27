@@ -1,3 +1,5 @@
+import type { CampaignMemoryPage } from "./campaign-memory-api.js";
+
 /**
  * Pulse 3 campaign memory contracts.
  *
@@ -178,6 +180,8 @@ export interface CampaignMemoryRelationship {
   targetEntityId: string;
   type: string;
   inverseLabel: string;
+  /** User-editable context, separate from source evidence. Missing on older records. */
+  notes?: string;
   status: CampaignMemoryRelationshipStatus;
   effectiveFrom?: string;
   effectiveTo?: string;
@@ -192,6 +196,12 @@ export interface CampaignMemoryRelationship {
 export interface CampaignMemoryBacklink extends CampaignMemoryRelationship {
   direction: "outgoing" | "incoming";
   label: string;
+}
+
+/** A bounded neighborhood of existing organization records. Edges retain their write scope. */
+export interface CampaignFactionWeb {
+  entities: CampaignMemoryEntity[];
+  relationships: CampaignMemoryPage<CampaignMemoryRelationship>;
 }
 
 export interface CampaignMemoryMutationJournal {

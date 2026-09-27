@@ -241,15 +241,42 @@ const snap = { date: "the third day of the thaw", time: "Day 3, 14:00 (afternoon
 assert.equal(composeGameTimeLine(snap, {}), "the third day of the thaw, Day 3, 14:00 (afternoon)");
 assert.equal(composeGameTimeLine({ date: null, time: "Day 3, 14:00 (afternoon)" }, {}), "Day 3, 14:00 (afternoon)");
 assert.equal(composeGameTimeLine({ date: null, time: null }, {}), undefined);
-assert.equal(composeGameTimeLine(null, { gameTime: { day: 3, hour: 14, minute: 0 } }), undefined);
+assert.equal(
+  composeGameTimeLine({ date: null, time: "Day 5, 08:00 (morning)" }, { gameTime: { day: 3, hour: 14, minute: 0 } }),
+  "Day 3, 14:00 (afternoon)",
+  "a valid metadata clock overrides a stale snapshot clock",
+);
+assert.equal(
+  composeGameTimeLine(null, { gameTime: { day: 3, hour: 14, minute: 0 } }),
+  "Day 3, 14:00 (afternoon)",
+  "a valid metadata clock is sufficient without a snapshot",
+);
+assert.equal(
+  composeGameTimeLine(snap, { gameTime: { day: "invalid" } }),
+  "the third day of the thaw, Day 3, 14:00 (afternoon)",
+  "an invalid metadata clock falls back to the legacy snapshot",
+);
+assert.equal(
+  composeGameTimeLine(snap, { gameTime: { day: 4, hour: 0, minute: 7 } }),
+  "Day 4, 00:07 (midnight)",
+  "midnight uses the metadata clock",
+);
 assert.equal(
   composeGameTimeLine(snap, { gameCalendar: { ...state, enabled: false }, gameTime: { day: 3 } }),
-  "the third day of the thaw, Day 3, 14:00 (afternoon)",
-  "a switched-off calendar changes nothing",
+  "Day 3, 08:00 (morning)",
+  "a valid metadata clock remains authoritative when the calendar is switched off",
 );
 assert.equal(
   composeGameTimeLine(snap, { gameCalendar: { ...state, events: [] }, gameTime: { day: 3, hour: 14, minute: 0 } }),
   "Monday, 1 January 2024, Day 3, 14:00 (afternoon)",
+);
+assert.equal(
+  composeGameTimeLine(
+    { date: null, time: "Day 5, 08:00 (morning)" },
+    { gameCalendar: { ...state, events: [] }, gameTime: { day: 3, hour: 14, minute: 0 } },
+  ),
+  "Monday, 1 January 2024, Day 3, 14:00 (afternoon)",
+  "calendar date and clock both come from metadata when the clock is valid",
 );
 assert.equal(composeGameTimeLine(null, { gameCalendar: { ...state, events: [] } }), "Saturday, 30 December 2023");
 
@@ -274,7 +301,11 @@ assert.deepEqual(parseWeekdaysText("Oneday, Twoday\nRestday\n ,"), ["Oneday", "T
   // A 1-day year makes the year equal the clock day; a clock day past 2^53 used to spin nextOccurrence forever.
   const line = composeGameTimeLine(null, { gameCalendar: tiny, gameTime: { day: 1e300 } });
   assert.equal(typeof line, "string");
-  assert.equal(line, "Oneday, 1 Only 1000000000 (upcoming: Fest today)", "the clock day is clamped, not looped on");
+  assert.equal(
+    line,
+    "Oneday, 1 Only 1000000000 (upcoming: Fest today), Day 1000000000, 08:00 (morning)",
+    "the clock day is clamped, not looped on",
+  );
   const hostile = { get gameCalendar(): unknown { throw new Error("bad metadata"); } };
   assert.equal(composeGameTimeLine(snap, hostile), "the third day of the thaw, Day 3, 14:00 (afternoon)");
   const crowded = sanitizeGameCalendarState({

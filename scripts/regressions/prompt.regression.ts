@@ -315,9 +315,9 @@ replaceBuiltInAgentDefinitionsDist(regressionAgentDefinitions);
   const serverSharedDir = realpathSync(
     join(dirname(fileURLToPath(import.meta.url)), "../../packages/server/node_modules/@marinara-engine/shared"),
   );
-  const serverShared = (await import(pathToFileURL(join(serverSharedDir, "dist/index.js")).href)) as typeof import(
-    "../../packages/shared/dist/index.js"
-  );
+  const serverShared = (await import(
+    pathToFileURL(join(serverSharedDir, "dist/index.js")).href
+  )) as typeof import("../../packages/shared/dist/index.js");
   serverShared.replaceBuiltInAgentDefinitions(regressionAgentDefinitions);
 }
 import {
@@ -4086,12 +4086,17 @@ const cases: RegressionCase[] = [
       const loreIndex = generateRouteSource.indexOf("// ── Lorebook injection for game mode ──");
       const advancedPromptIndex = generateRouteSource.indexOf("await injectCharacterAdvancedPrompts();", loreIndex);
       const authorityIndex = generateRouteSource.indexOf(
-        "const gameSpecialInstructionsPrompt = buildGameSpecialInstructionsPrompt(gmCtx.gameSpecialInstructions);",
+        "const gameSpecialInstructionsPrompt = buildGameSpecialInstructionsPrompt(",
         advancedPromptIndex,
       );
       const reminderIndex = generateRouteSource.indexOf("const formatReminder =", authorityIndex);
       assert.ok(loreIndex >= 0 && loreIndex < advancedPromptIndex);
       assert.ok(advancedPromptIndex < authorityIndex && authorityIndex < reminderIndex);
+      assert.match(
+        generateRouteSource.slice(authorityIndex, reminderIndex),
+        /buildGameSpecialInstructionsPrompt\(\s*gmCtx\.gameSpecialInstructions,\s*promptTextReplacements,\s*\)/u,
+        "Game Extra Instructions must apply per-chat edits to their built-in authority wrapper",
+      );
     },
   },
   {
@@ -4548,7 +4553,8 @@ const cases: RegressionCase[] = [
       assert.match(sceneSystem, /not proof of unstated player interiority, consent, habits/u);
       assert.match(sceneUser, /Process narration beats in chronological order/u);
       assert.match(sceneUser, /last explicit scene state wins/u);
-      assert.match(sceneUser, /One disagreement, routine assistance, an NPC's interpretation/u);
+      assert.match(sceneUser, /require a concrete action and a depicted NPC reaction or stated shift in stance/u);
+      assert.match(sceneUser, /Use only these exact action IDs: helped, rescued, gifted/u);
 
       const gameRouteSource = readFileSync(
         new URL("../../packages/server/src/routes/game.routes.ts", import.meta.url),
@@ -4955,7 +4961,8 @@ const cases: RegressionCase[] = [
       assert.doesNotMatch(reminder, /In combat, dialogue, danger, or any decision point, stay concise/u);
       assert.match(reminder, /not a roll call of disconnected reports/u);
       assert.match(reminder, /hard GM\/PARTY information boundary/u);
-      assert.match(reminder, /Do not emit one for every agreeable line, gift, compliment, routine kindness/u);
+      assert.match(reminder, /exact action ID \(helped, rescued, gifted/u);
+      assert.match(reminder, /Do not infer a reaction from an unseen action, score a passing mood/u);
       assert.match(reminder, /never evict an unresolved obligation, external response, deadline, or durable hook/u);
       assert.doesNotMatch(reminder, /should naturally converse with each other from time to time/u);
       assert.match(partyPrompt, /silence and nonparticipation are normal/u);
@@ -5054,7 +5061,12 @@ const cases: RegressionCase[] = [
       assert.match(generateRouteSource, /const addressMode\s*=\s*gameAddressMode/u);
       assert.match(
         generateRouteSource,
-        /if \(isGameOocTurn\) \{[\s\S]{0,180}gameFinalOocReminder = formatReminder;[\s\S]{0,180}\} else \{[\s\S]{0,180}finalMessages\.push/u,
+        /const editedFormatReminder = replaceGamePromptText\(formatReminder, promptTextReplacements\);/u,
+        "Game prompt edits must apply to the format reminder before either OOC or scene generation",
+      );
+      assert.match(
+        generateRouteSource,
+        /if \(isGameOocTurn\) \{[\s\S]{0,180}gameFinalOocReminder = editedFormatReminder;[\s\S]{0,180}\} else \{[\s\S]{0,180}finalMessages\.push/u,
         "exclusive OOC guidance must be deferred instead of mixed into the normal scene-format tail",
       );
 
@@ -9091,11 +9103,7 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
     name: "game NPC sanitation rejects party aliases and place-name portraits without losing real NPCs",
     run() {
       const metadata = {
-        gameCharacterCards: [
-          { name: "Corvina Fernhollow" },
-          { name: "Calista Venn" },
-          { name: "Hilde Birchfield" },
-        ],
+        gameCharacterCards: [{ name: "Corvina Fernhollow" }, { name: "Calista Venn" }, { name: "Hilde Birchfield" }],
         spatialContext: {
           locations: [{ name: "Moonrise Tower" }, { name: "Hartwell Manor" }],
         },

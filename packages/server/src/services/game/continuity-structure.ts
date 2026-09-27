@@ -28,8 +28,14 @@ const MAX_RECORDS_PER_CALL = 60;
 
 /** Relationship types a person-to-person link may use, with the label read from the other side. */
 export const CONTINUITY_RELATIONSHIP_TYPES: Readonly<Record<string, string>> = {
+  "stranger-to": "regarded-as-stranger-by",
+  "acquaintance-of": "regarded-as-acquaintance-by",
+  "neutral-toward": "treated-neutrally-by",
+  "suspicious-of": "suspected-by",
   "friend-of": "friend-of",
   "enemy-of": "enemy-of",
+  "arch-nemesis-of": "regarded-as-arch-nemesis-by",
+  "eternal-ally-of": "regarded-as-eternal-ally-by",
   "rival-of": "rival-of",
   loves: "loved-by",
   hates: "hated-by",
@@ -165,11 +171,11 @@ export function buildContinuityStructurePrompt(input: {
   places: string[];
 }): string {
   return [
-    "You read verified campaign memory records from a fantasy roleplay and report two kinds of change they state.",
+    "You read verified game or roleplay campaign memory records and report two kinds of change they state.",
     "",
     'MOVEMENTS: a record states that a named person arrived at, entered, returned to or left a specific place. Report only completed movement that the record itself states. Plans, invitations, orders and intentions are not movement. presence is "present" for arriving and "absent" for leaving.',
     "",
-    `RELATIONSHIPS: a record establishes, changes, reveals or ends a lasting bond between two named people. Use exactly one type from: ${Object.keys(CONTINUITY_RELATIONSHIP_TYPES).join(", ")}. status is "active", "ended" (the bond was broken) or "proposed" (offered, not yet accepted). A single conversation, a favour or a passing mood is not a relationship. Hiring or a signed contract of service is "employs" from the employer. Swearing into someone's service is "sworn-to" from the one who swears.`,
+    `RELATIONSHIPS: a record establishes, changes, reveals or ends a lasting bond or expressly states a current stance between two named people. Use exactly one type from: ${Object.keys(CONTINUITY_RELATIONSHIP_TYPES).join(", ")}. status is "active", "ended" (the bond or stance ended) or "proposed" (offered, not yet accepted). A single conversation, a favour or a passing mood is not a relationship. Stranger and neutral require explicit wording, not the absence of evidence. Suspicion must be stated or visibly acted on. Lover-of requires an established romantic relationship, not one-sided attraction; use loves for explicit one-sided love. Arch-nemesis and eternal ally require an explicit enduring commitment, never a reputation score alone. Direction matters: A's suspicion of B says nothing about B's suspicion of A. Hiring or a signed contract of service is "employs" from the employer. Swearing into someone's service is "sworn-to" from the one who swears.`,
     "",
     "Use names exactly as they appear in the lists below. If a person or place is not in the lists, leave that item out. Report nothing you would have to guess.",
     "",

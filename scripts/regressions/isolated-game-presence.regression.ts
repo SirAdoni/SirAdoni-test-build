@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { resolveIsolatedPresentActorIds } from "../../packages/server/src/services/game/isolated-game-presence";
+import {
+  resolveIsolatedPresentActorIds,
+  selectIsolatedActorCandidateIds,
+} from "../../packages/server/src/services/game/isolated-game-presence";
 import { appendSceneVisits } from "../../packages/server/src/services/game/scene-timeline-model";
 
 const npcs = [{ id: "npc:dorian", characterId: "char:dorian", name: "Dorian" }];
@@ -34,6 +37,29 @@ assert.equal(
     characters,
   }).size,
   0,
+);
+const candidateCharacters = [
+  { id: "char:mara", name: "Mara Reed" },
+  { id: "char:nora", name: "Nora Pike" },
+  { id: "char:alice", name: "Alice Vale" },
+  { id: "char:alicia", name: "Alice Stone" },
+  { id: "char:alina", name: "Alina Stone" },
+];
+assert.deepEqual(
+  [...selectIsolatedActorCandidateIds({ presentIds: new Set(["player"]), excludedIds: ["player"], npcs: [], characters: candidateCharacters })],
+  ["char:mara", "char:nora", "char:alice", "char:alicia", "char:alina"],
+);
+assert.deepEqual(
+  [...selectIsolatedActorCandidateIds({ presentIds: new Set(), npcs: [], characters: candidateCharacters })],
+  ["char:mara", "char:nora", "char:alice", "char:alicia", "char:alina"],
+);
+assert.deepEqual(
+  [...selectIsolatedActorCandidateIds({ presentIds: new Set(), npcs: [{ id: "npc:dorian", characterId: "char:dorian", name: "Dorian" }], characters: [] })],
+  ["char:dorian"],
+);
+assert.deepEqual(
+  [...selectIsolatedActorCandidateIds({ presentIds: new Set(["already-here", "player"]), npcs: [], characters: [{ id: "a", name: "Mara Reed" }, { id: "b", name: "Mara Stone" }], excludedIds: ["player", "b"] })],
+  ["already-here", "a"],
 );
 assert.equal(
   resolveIsolatedPresentActorIds({

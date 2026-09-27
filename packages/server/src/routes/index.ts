@@ -54,6 +54,7 @@ import { privateNotebookRoutes } from "./private-notebook.routes.js";
 import { achievementsRoutes } from "./achievements.routes.js";
 import { gameRoutes } from "./game.routes.js";
 import { gameToolsRoutes } from "./game-tools.routes.js";
+import { familyTreeRoutes } from "./family-tree.routes.js";
 import { gameCalendarRoutes } from "./game-calendar.routes.js";
 import { randomTablesRoutes } from "./random-tables.routes.js";
 import { gamePrepBoardRoutes } from "./game-prep-board.routes.js";
@@ -151,6 +152,7 @@ export async function registerRoutes(app: FastifyInstance) {
   await app.register(gameContinuityBackfillRoutes, { prefix: "/api/game" });
   await app.register(campaignIndexRoutes, { prefix: "/api/game" });
   await app.register(gameToolsRoutes, { prefix: "/api/game-tools" });
+  await app.register(familyTreeRoutes, { prefix: "/api/family-tree" });
   await app.register(gameCalendarRoutes, { prefix: "/api/game-calendar" });
   await app.register(randomTablesRoutes, { prefix: "/api/random-tables" });
   await app.register(gamePrepBoardRoutes, { prefix: "/api/prep-board" });

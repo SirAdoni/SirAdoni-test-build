@@ -58,6 +58,20 @@ export function addMinutes(current: GameTime, minutes: number): GameTime {
   return { day: Math.max(1, day), hour, minute };
 }
 
+/** Convert a validated game clock to an absolute minute index for turn receipts. */
+export function gameTimeToMinutes(time: GameTime): number {
+  return (
+    Math.max(1, Math.trunc(time.day)) * 24 * 60 +
+    Math.min(23, Math.max(0, Math.trunc(time.hour))) * 60 +
+    Math.min(59, Math.max(0, Math.trunc(time.minute)))
+  );
+}
+
+/** Exact elapsed minutes between two clocks; positive values represent forward time. */
+export function elapsedGameMinutes(before: GameTime, after: GameTime): number {
+  return gameTimeToMinutes(after) - gameTimeToMinutes(before);
+}
+
 /** Get the time-of-day label for the current hour. */
 export function getTimeOfDay(hour: number): TimeOfDay {
   if (hour >= 5 && hour < 7) return "dawn";

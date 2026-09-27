@@ -110,9 +110,7 @@ export function arrangePanels(
           .map(([id]) => id),
       );
       const obstacles = blocks.filter((block) => !moved.has(block.id)).map((block) => block.rect);
-      for (const [id, rect] of [...placed.entries()]
-        .filter(([id]) => moved.has(id))
-        .sort((a, b) => a[1].y - b[1].y)) {
+      for (const [id, rect] of [...placed.entries()].filter(([id]) => moved.has(id)).sort((a, b) => a[1].y - b[1].y)) {
         if (obstacles.some((other) => rectsOverlap(rect, other))) {
           const free = settleAlongAxis(rect, obstacles, bounds, mode === "top" ? "x" : "y");
           if (free) placed.set(id, free);

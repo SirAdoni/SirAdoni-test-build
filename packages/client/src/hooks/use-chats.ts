@@ -1654,9 +1654,10 @@ function applyCachedSwipeToMessage(message: Message, swipe: MessageSwipe): Messa
 /** Peek at the assembled prompt for a chat */
 export function usePeekPrompt() {
   return useMutation({
-    mutationFn: (request: string | { chatId: string; messageId: string }) => {
+    mutationFn: (request: string | { chatId: string; messageId?: string; latestExact?: boolean }) => {
       const chatId = typeof request === "string" ? request : request.chatId;
       const messageId = typeof request === "string" ? undefined : request.messageId;
+      const latestExact = typeof request === "string" ? false : request.latestExact === true;
       return api.post<{
         messages: Array<{ role: string; content: string }>;
         chatMode?: string;
@@ -1685,7 +1686,7 @@ export function usePeekPrompt() {
         gameToolPlanning?: GameToolPlanningInfo | null;
         agentNote?: string;
         decisions?: { unanswered: string[]; decisionModelSet: boolean };
-      }>(`/chats/${chatId}/peek-prompt`, messageId ? { messageId } : {});
+      }>(`/chats/${chatId}/peek-prompt`, messageId ? { messageId } : latestExact ? { latestExact: true } : {});
     },
   });
 }

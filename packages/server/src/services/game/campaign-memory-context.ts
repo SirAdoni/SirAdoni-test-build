@@ -222,7 +222,9 @@ function recordKey(fact: CampaignMemoryFact): string | null {
 }
 function keywordsOf(fact: CampaignMemoryFact): string[] {
   const keys = objectValue(fact.value).keys;
-  return Array.isArray(keys) ? keys.filter((key): key is string => typeof key === "string" && key.trim().length >= 3) : [];
+  return Array.isArray(keys)
+    ? keys.filter((key): key is string => typeof key === "string" && key.trim().length >= 3)
+    : [];
 }
 const sourceHashMemo = new WeakMap<object, Map<string, string>>();
 function sourceHash(sourceContents: object, messageId: string, content: string): string {
@@ -787,7 +789,13 @@ export async function buildCampaignMemoryContextFromStorage(
   db: DB,
   input: StorageContextInput,
 ): Promise<CampaignMemoryContextResult> {
-  const { presence, dedupeContinuityReceipts, focusTexts, continuityThroughMessageId: _through, ...contextInput } = input;
+  const {
+    presence,
+    dedupeContinuityReceipts,
+    focusTexts,
+    continuityThroughMessageId: _through,
+    ...contextInput
+  } = input;
   const continuityReceiptRecords =
     dedupeContinuityReceipts && contextInput.audience.kind === "gm"
       ? await readContinuityReceiptRecords(db, input.chatId, input.continuityThroughMessageId)

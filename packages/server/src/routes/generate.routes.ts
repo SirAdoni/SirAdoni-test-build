@@ -54,12 +54,19 @@ import {
   type PromptFingerprint,
 } from "../services/generation/cache-send-guard.js";
 import { queueSceneTimeline, readSceneTimeline } from "../services/game/scene-timeline.service.js";
-import { isGameAutoSceneMediaEnabled, isGameSceneTimelineEnabled } from "@marinara-engine/shared";
+import { isGameTurnReviewMutationPending } from "../services/game/turn-review.service.js";
+import { isGameAutoSceneMediaEnabled, isGameSceneTimelineEnabled, readGameClock } from "@marinara-engine/shared";
 import {
   resolveIsolatedPresentActorIds,
+  selectIsolatedActorCandidateIds,
   type IsolatedPresenceCharacter,
 } from "../services/game/isolated-game-presence.js";
 import { readGameContinuityPromptContext } from "../services/game/continuity-context.js";
+import {
+  parseGamePromptTextReplacements,
+  replaceGamePromptText,
+} from "../services/game/game-prompt-text-replacements.js";
+import { applyGamePromptDirectEdits, parseGamePromptDirectEdits } from "../services/game/game-prompt-direct-edits.js";
 import { forwardedHeaders, queueAutomaticGameMedia } from "../services/game/automatic-game-media.js";
 // ──────────────────────────────────────────────
 // Routes: Generation (SSE Streaming with Tool Use + Agent Pipeline)
@@ -712,6 +719,10 @@ import {
   withActiveGameMapMeta,
 } from "../services/game/map-position.service.js";
 import { applyAllSegmentEdits } from "../services/game/segment-edits.js";
+import {
+  appendRecentOwnAcceptedDialogue,
+  buildRecentOwnAcceptedDialogue,
+} from "../services/game/isolated-game-history.js";
 import type { CharacterData, GameMap, GameNpc, Lorebook, LorebookEntry } from "@marinara-engine/shared";
 import {
   buildConversationProfileBlocks,
@@ -1287,6 +1298,9 @@ export async function generateRoutes(app: FastifyInstance) {
       }
     }
 
+    if (isGameTurnReviewMutationPending(input.chatId)) {
+      return reply.status(409).send({ error: "A turn correction is being saved; retry when it finishes" });
+    }
     if (activeGenerations.has(input.chatId)) {
       return reply.status(409).send({ error: "A generation is already in progress for this chat" });
     }
@@ -1329,9 +1343,21 @@ export async function generateRoutes(app: FastifyInstance) {
       throw err;
     };
 
+    // A correction may have finished during asynchronous request validation.
+    // Re-read its canonical clock/map after acquiring the generation slot.
+    if (requestChatMode === "game") {
+      const admittedChat = await chats.getById(input.chatId).catch(releaseActiveGenerationAndRethrow);
+      if (!admittedChat) {
+        releaseActiveGeneration();
+        return reply.status(404).send({ error: "Chat not found" });
+      }
+      chat.metadata = admittedChat.metadata;
+    }
+
     if (input.regenerateMessageId) {
       const regenCandidate = await chats.getMessage(input.regenerateMessageId).catch(releaseActiveGenerationAndRethrow);
-      const isolatedRegenerationRequested = requestChatMode === "game" && earlyMeta.gameNpcKnowledgeMode === "isolated";
+      const isolatedRegenerationRequested =
+        requestChatMode === "game" && !input.impersonate && earlyMeta.gameNpcKnowledgeMode === "isolated";
       if (isolatedRegenerationRequested) {
         if (input.userMessage || input.attachments?.length || input.pendingSpatialTransition) {
           releaseActiveGeneration();
@@ -1896,6 +1922,18 @@ export async function generateRoutes(app: FastifyInstance) {
       // Get chat messages
       const allChatMessages = await chats.listMessages(input.chatId);
       const chatMode = requestChatMode;
+      // Preserve the clock at the start of this telling. Current metadata alone cannot
+      // explain a historical turn, and a reroll must not advance the same duration twice.
+      const clockTarget = allChatMessages.find(
+        (message) => message.id === (input.regenerateMessageId ?? input.continueMessageId),
+      );
+      const priorTurnClock = parseExtra(parseExtra(clockTarget?.extra).gameTurnClock);
+      const turnClockBefore =
+        chatMode === "game" && !input.impersonate
+          ? clockTarget
+            ? readGameClock(priorTurnClock.before)
+            : readGameClock(chatMeta.gameTime)
+          : null;
       // Settings > Features "Cache-stable Game prompt" (Game turns on the Claude subscription only).
       const gameStableLayoutActive = isGameStableLayoutActive(chatMode, conn.provider);
       const advancedMemorySettings = normalizeAdvancedMemorySettings(chatMeta.advancedMemory);
@@ -4654,6 +4692,8 @@ export async function generateRoutes(app: FastifyInstance) {
         let gameRuntimeContext: GmPromptContext | null = null;
         let gameFinalRecencySeal: string | null = null;
         let gameFinalOocReminder: string | null = null;
+        const promptTextReplacements =
+          chatMode === "game" ? (parseGamePromptTextReplacements(chatMeta.gamePromptTextReplacements) ?? []) : [];
         historicalMemoryCutoffOrder = (() => {
           if ((!input.regenerateMessageId && !input.continueMessageId) || requestChatMode !== "game") return null;
           const targetId = input.regenerateMessageId ?? input.continueMessageId;
@@ -4729,7 +4769,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   .slice(-4)
                   .map((message) => (typeof message.content === "string" ? message.content : "")),
               });
-              appendGameGmCampaignMemory(finalMessages, historicalMemory);
+              appendGameGmCampaignMemory(finalMessages, historicalMemory, promptTextReplacements);
             } catch (err) {
               logger.error(
                 {
@@ -4740,12 +4780,16 @@ export async function generateRoutes(app: FastifyInstance) {
                 },
                 "Historical campaign memory projection unavailable; preserving the existing GM prompt",
               );
-              appendGameGmCampaignMemory(finalMessages, {
-                text: "[Campaign memory unavailable: canonical campaign memory was not validated for this request. Do not treat absent campaign memory as proof that no memory exists.]",
-                includedIds: [],
-                exclusions: [{ id: "campaign-memory", reason: "projection unavailable" }],
-                degraded: true,
-              });
+              appendGameGmCampaignMemory(
+                finalMessages,
+                {
+                  text: "[Campaign memory unavailable: canonical campaign memory was not validated for this request. Do not treat absent campaign memory as proof that no memory exists.]",
+                  includedIds: [],
+                  exclusions: [{ id: "campaign-memory", reason: "projection unavailable" }],
+                  degraded: true,
+                },
+                promptTextReplacements,
+              );
             }
             const historicalMemoryMetadata = finalMessages.at(-1)?.providerMetadata?.marinaraCampaignMemory;
             if (historicalMemoryMetadata && typeof historicalMemoryMetadata === "object")
@@ -4753,7 +4797,10 @@ export async function generateRoutes(app: FastifyInstance) {
           }
           gameRuntimeContext = gmCtx;
           canonicalGamePartyNames = gmCtx.partyNames;
-          gameFinalRecencySeal = resolvePromptMacros(buildGameRecencySeal(gmCtx.playerName));
+          gameFinalRecencySeal = replaceGamePromptText(
+            resolvePromptMacros(buildGameRecencySeal(gmCtx.playerName)),
+            promptTextReplacements,
+          );
 
           // ── Lorebook injection for game mode ──
           if (!presetHandledLorebooks && (useFullLorebookContext || !isGameOocTurn)) {
@@ -4908,7 +4955,10 @@ export async function generateRoutes(app: FastifyInstance) {
           // Keep Extra Instructions at system authority. Only macro-bearing
           // source needs the dynamic boundary; literal edits naturally change
           // the stable prefix on the next request.
-          const gameSpecialInstructionsPrompt = buildGameSpecialInstructionsPrompt(gmCtx.gameSpecialInstructions);
+          const gameSpecialInstructionsPrompt = buildGameSpecialInstructionsPrompt(
+            gmCtx.gameSpecialInstructions,
+            promptTextReplacements,
+          );
           if (gameSpecialInstructionsPrompt) {
             const resolvedGameSpecialInstructions = resolvePromptMacros(gameSpecialInstructionsPrompt);
             if (supportsFullLorebookContext(conn.provider)) {
@@ -5103,18 +5153,19 @@ export async function generateRoutes(app: FastifyInstance) {
               })(),
             }),
           );
+          const editedFormatReminder = replaceGamePromptText(formatReminder, promptTextReplacements);
           if (isGameOocTurn) {
-            gameFinalOocReminder = formatReminder;
+            gameFinalOocReminder = editedFormatReminder;
           } else {
             finalMessages.push({
               role: "user" as const,
-              content: formatReminder,
+              content: editedFormatReminder,
               contextKind: "injection",
               providerMetadata: { marinaraRuntimeContext: true },
             });
             logger.debug(
               "[generate/game] Injected format reminder (%d chars) near the prompt tail",
-              formatReminder.length,
+              editedFormatReminder.length,
             );
           }
         }
@@ -7151,12 +7202,24 @@ export async function generateRoutes(app: FastifyInstance) {
         // turn, so re-injecting impersonate/prefill would scramble the prompt.
         if (input.impersonate && followUpIteration === 0) {
           const impersonateInstruction = buildImpersonateInstruction({
+            gameMode: chatMode === "game",
             customPrompt: input.impersonatePromptTemplate || chatMeta.impersonatePrompt,
             direction: input.userMessage,
             personaName,
             personaDescription: resolvePromptMacros(personaDescription),
           });
-          finalMessages.push({ role: "user", content: impersonateInstruction });
+          // Game's GM instructions prohibit choosing player actions. Explicit
+          // Impersonate changes that role for this call. Keep it in the leading
+          // system block: providers may demote system messages placed after history.
+          if (chatMode === "game") {
+            const firstNonSystem = finalMessages.findIndex((message) => message.role !== "system");
+            finalMessages.splice(firstNonSystem < 0 ? finalMessages.length : firstNonSystem, 0, {
+              role: "system",
+              content: impersonateInstruction,
+            });
+          } else {
+            finalMessages.push({ role: "user", content: impersonateInstruction });
+          }
         }
 
         const tailMessages = appendGenerationTailMessages(finalMessages, {
@@ -7744,7 +7807,8 @@ export async function generateRoutes(app: FastifyInstance) {
           return prepared;
         };
 
-        const isolatedGameMode = chatMode === "game" && !isGameOocTurn && chatMeta.gameNpcKnowledgeMode === "isolated";
+        const isolatedGameMode =
+          chatMode === "game" && !input.impersonate && !isGameOocTurn && chatMeta.gameNpcKnowledgeMode === "isolated";
         const buildIsolatedGameActors = async () => {
           if (!gameRuntimeContext) throw new Error("ISOLATED_TURN_CONTEXT_UNAVAILABLE");
           const snapshot = await selectedGameStateForPrompt();
@@ -7810,9 +7874,22 @@ export async function generateRoutes(app: FastifyInstance) {
             characters: identityCharacters,
             excludedIds: personaId ? [personaId] : [],
           });
+          // Eligibility is separate from presence. The campaign roster must remain available
+          // for ordinary references such as "everyone" even when names leave the recent window.
+          // This is the known campaign/party catalogue, never the unrelated character library;
+          // the planner still has to establish arrivals before actors can perceive or reply.
+          const candidates = selectIsolatedActorCandidateIds({
+            presentIds: present,
+            npcs: gameRuntimeContext.npcs,
+            characters: charInfo,
+            excludedIds: personaId ? [personaId] : [],
+          });
           const loadedCharacterIds = new Set(charInfo.map((character) => character.id));
-          const additionalCharacterIds = [...present].filter(
-            (id) => !loadedCharacterIds.has(id) && libraryCharacters.some((character) => character.id === id),
+          const additionalCharacterIds = [...candidates].filter(
+            (id) =>
+              present.has(id) &&
+              !loadedCharacterIds.has(id) &&
+              libraryCharacters.some((character) => character.id === id),
           );
           const additionalCharInfo =
             additionalCharacterIds.length > 0
@@ -7837,6 +7914,7 @@ export async function generateRoutes(app: FastifyInstance) {
             name: string;
             card: string;
             authorizedMemory: string;
+            initiallyPresent: boolean;
             memoryProjection?: {
               includedCount: number;
               excludedCount: number;
@@ -7845,33 +7923,50 @@ export async function generateRoutes(app: FastifyInstance) {
             };
           }> = [];
           for (const character of isolatedCharInfo) {
-            if (!present.has(character.id) || character.id === playerId) continue;
+            if (!candidates.has(character.id) || character.id === playerId) continue;
             if (character.name.trim().toLocaleLowerCase() === playerName && !playerId) continue;
             actors.push({
               actorId: character.id,
               name: character.name,
               card: cardForCharacter(character),
               authorizedMemory: "",
+              initiallyPresent: present.has(character.id),
             });
           }
           for (const npc of gameRuntimeContext.npcs) {
             const actorId =
               typeof npc.characterId === "string" && npc.characterId.trim() ? npc.characterId.trim() : npc.id;
-            if (!present.has(actorId) || actorId === playerId || actors.some((actor) => actor.actorId === actorId))
+            if (!candidates.has(actorId) || actorId === playerId || actors.some((actor) => actor.actorId === actorId))
               continue;
-            let card = [
+            const card = [
               `Name: ${npc.name}`,
               npc.observedDescription && `Observed description: ${npc.observedDescription}`,
               npc.observedAppearance && `Observed appearance: ${npc.observedAppearance}`,
             ]
               .filter(Boolean)
               .join("\n");
-            if (npc.characterId) {
-              const row = await chars.getById(npc.characterId);
+            actors.push({
+              actorId,
+              name: npc.name,
+              card,
+              authorizedMemory: "",
+              initiallyPresent: present.has(actorId),
+            });
+          }
+          const memoryStorage = createCampaignMemoryStorage(app.db);
+          let entitiesPromise: ReturnType<typeof memoryStorage.listEntities> | undefined;
+          const resolveActorContext = async (actorId: string) => {
+            const actor = actors.find((candidate) => candidate.actorId === actorId);
+            if (!actor) throw new Error("ISOLATED_TURN_UNKNOWN_ACTOR");
+            const npc = gameRuntimeContext!.npcs.find((candidate) => candidate.characterId === actorId);
+            // The planner needs identities, not every character's full private context.
+            // Only selected speakers pay the card lookup and audience-memory projection cost.
+            if (npc?.characterId && !isolatedCharInfo.some((character) => character.id === actorId)) {
+              const row = await chars.getById(actorId);
               if (row) {
                 try {
                   const data = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
-                  card = [
+                  actor.card = [
                     `Name: ${data.name ?? npc.name}`,
                     data.description && `Description: ${data.description}`,
                     data.personality && `Personality: ${data.personality}`,
@@ -7884,11 +7979,8 @@ export async function generateRoutes(app: FastifyInstance) {
                 }
               }
             }
-            actors.push({ actorId, name: npc.name, card, authorizedMemory: "" });
-          }
-          const memoryStorage = createCampaignMemoryStorage(app.db);
-          const entities = await memoryStorage.listEntities({ chatId: input.chatId });
-          for (const actor of actors) {
+            entitiesPromise ??= memoryStorage.listEntities({ chatId: input.chatId });
+            const entities = await entitiesPromise;
             const matches = entities.filter(
               (entity) =>
                 entity.chatId === input.chatId &&
@@ -7905,7 +7997,13 @@ export async function generateRoutes(app: FastifyInstance) {
                 degraded: true,
                 exclusions: [{ reason: "character memory holder is unresolved", count: 1 }],
               };
-              continue;
+              return {
+                card: actor.card,
+                authorizedMemory: appendRecentOwnAcceptedDialogue(
+                  actor.authorizedMemory,
+                  buildRecentOwnAcceptedDialogue(chatMessages, chatMeta, actor.actorId, actor.name),
+                ),
+              };
             }
             const memory = await buildCampaignMemoryContextFromStorage(app.db, {
               chatId: input.chatId,
@@ -7927,8 +8025,15 @@ export async function generateRoutes(app: FastifyInstance) {
                 .slice(0, 32)
                 .map(([reason, count]) => ({ reason, count })),
             };
-          }
-          return actors;
+            return {
+              card: actor.card,
+              authorizedMemory: appendRecentOwnAcceptedDialogue(
+                actor.authorizedMemory,
+                buildRecentOwnAcceptedDialogue(chatMessages, chatMeta, actor.actorId, actor.name),
+              ),
+            };
+          };
+          return { actors, resolveActorContext };
         };
 
         // Only individual main-model inputs count toward the memory cutoff, never
@@ -8553,7 +8658,15 @@ export async function generateRoutes(app: FastifyInstance) {
             chatMode === "game" &&
             gameFinalRecencySeal &&
             (chatMeta.gameCacheStableFinalChecks === true || gameStableLayoutActive)
-              ? [{ content: gameFinalRecencySeal, pointer: resolvePromptMacros(buildGameRecencySealPointer()) }]
+              ? [
+                  {
+                    content: gameFinalRecencySeal,
+                    pointer: replaceGamePromptText(
+                      resolvePromptMacros(buildGameRecencySealPointer()),
+                      promptTextReplacements,
+                    ),
+                  },
+                ]
               : undefined;
           if (
             gameStableFinalChecks &&
@@ -8562,7 +8675,11 @@ export async function generateRoutes(app: FastifyInstance) {
             isFeatureEnabled("cacheFriendlyPromptLayout")
           ) {
             logger.debug(
-              { event: "prompt.layout.final_checks", chatId: input.chatId, movedChars: gameFinalRecencySeal!.length },
+              {
+                event: "prompt.layout.final_checks",
+                chatId: input.chatId,
+                movedChars: gameStableFinalChecks[0]!.content.length,
+              },
               "[generate/game] Final checks kept in the cached prefix",
             );
           }
@@ -8584,6 +8701,15 @@ export async function generateRoutes(app: FastifyInstance) {
                 ),
               ),
             );
+          const directPromptEdits =
+            chatMode === "game" ? (parseGamePromptDirectEdits(chatMeta.gamePromptDirectEdits) ?? []) : [];
+          if (directPromptEdits.length > 0 && !isolatedGameMode) {
+            // Edit the exact provider-shaped message text the user saw in Chat
+            // Settings, then enforce the context budget again before sending.
+            canonicalProviderMessages = await fitPromptForSend(
+              applyGamePromptDirectEdits(canonicalProviderMessages, directPromptEdits),
+            );
+          }
           const configuredResponderToolCount = responderToolDefs?.length ?? 0;
           const narratorWireToolCount =
             gameToolConnection || conn.provider === "openai_chatgpt" ? 0 : configuredResponderToolCount;
@@ -8798,7 +8924,7 @@ export async function generateRoutes(app: FastifyInstance) {
             };
           }> = [];
           if (isolatedGameMode) {
-            const isolatedActors = await buildIsolatedGameActors();
+            const { actors: isolatedActors, resolveActorContext } = await buildIsolatedGameActors();
             const isolatedPromptLogger = (
               kind: "planner" | "actor",
               messages: readonly ChatMessage[],
@@ -8821,7 +8947,11 @@ export async function generateRoutes(app: FastifyInstance) {
             };
             isolatedGameResult = await runIsolatedGameTurnWithProvider({
               plannerMessages: initialProviderMessages,
+              gameTime: readGameClock(chatMeta.gameTime),
+              promptTextReplacements,
+              promptDirectEdits: directPromptEdits,
               actors: isolatedActors,
+              resolveActorContext,
               playerAction: currentUserInputContent() ?? "",
               playerActorId: personaId ?? undefined,
               playerActorName: gameRuntimeContext?.playerName,
@@ -10311,7 +10441,10 @@ export async function generateRoutes(app: FastifyInstance) {
                 { role: "assistant", content: gameDraftWithCommands },
                 {
                   role: "user",
-                  content: `The engine has now rolled the requested dice:\n${resolvedSummary || "No dice were rolled."}${generalRolls.unresolved.length ? `\nUnresolved requests:\n${generalRolls.unresolved.join("\n")}` : ""}${rolled.sparse ? "\nSome checks could not be rolled and remain unresolved." : ""}\nRewrite your entire last narration using these real results, correcting any contradictory outcome before or after a check. Narrate the consequences now. Do not repeat this player's action, invent numbers, request more rolls, or include dice/check tags: the engine keeps their records. For unresolved requests, leave the outcome open and explain what the player needs to clarify in supported notation. Re-emit every original movement or package command still justified by these outcomes; omit commands invalidated by them. Only commands in your revised output will execute. Return only the complete revised GM narration in the game's language.`,
+                  content: replaceGamePromptText(
+                    `The engine has now rolled the requested dice:\n${resolvedSummary || "No dice were rolled."}${generalRolls.unresolved.length ? `\nUnresolved requests:\n${generalRolls.unresolved.join("\n")}` : ""}${rolled.sparse ? "\nSome checks could not be rolled and remain unresolved." : ""}\nRewrite your entire last narration using these real results, correcting any contradictory outcome before or after a check. Narrate the consequences now. Do not repeat this player's action, invent numbers, request more rolls, or include dice/check tags: the engine keeps their records. For unresolved requests, leave the outcome open and explain what the player needs to clarify in supported notation. Re-emit every original movement or package command still justified by these outcomes; omit commands invalidated by them. Only commands in your revised output will execute. Return only the complete revised GM narration in the game's language.`,
+                    promptTextReplacements,
+                  ),
                 },
               ]);
               logPromptSentToModel(continuationMessages, "Game narration after engine rolls");
@@ -11078,6 +11211,19 @@ export async function generateRoutes(app: FastifyInstance) {
             });
           } else if (savedMsg?.id) {
             const extraUpdate: Record<string, unknown> = {
+              ...(chatMode === "game" && !input.impersonate
+                ? {
+                    gameTurnClock: {
+                      before: turnClockBefore,
+                      after: readGameClock(parseExtra((await chats.getById(input.chatId))?.metadata).gameTime),
+                      // Rewriting the same turn must not undo the player's explicit clock correction.
+                      ...(priorTurnClock.manualCorrection === true ? { manualCorrection: true } : {}),
+                      sourceHash: createHash("sha256")
+                        .update(savedMsg.content ?? "")
+                        .digest("hex"),
+                    },
+                  }
+                : {}),
               ...(chatMode === "game" ? { gameOutcomeNarrationFailed } : {}),
               ...(gameToolPlan && gameToolConnection
                 ? {
@@ -15205,6 +15351,12 @@ export async function generateRoutes(app: FastifyInstance) {
   // Expose the active generation registry for status/abort routes and other
   // external consumers that read the decorated Fastify property.
   if (!app.hasDecorator("activeGenerations")) app.decorate("activeGenerations", activeGenerations);
+  if (!app.hasDecorator("isGameTurnUpdating")) {
+    app.decorate(
+      "isGameTurnUpdating",
+      (chatId: string) => activeGenerations.has(chatId) || (activeAgentRuns.get(chatId)?.size ?? 0) > 0,
+    );
+  }
 
   /**
    * GET /api/generate/status/:chatId

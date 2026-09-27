@@ -1785,12 +1785,9 @@ export function GameCombatUI({
       setSelectedAction(null);
       setPhase("player-turn");
     };
-    void Promise.resolve(onCustomInstruction(instruction)).then(
-      (sent) => {
-        if (sent === false) backToMenu();
-      },
-      backToMenu,
-    );
+    void Promise.resolve(onCustomInstruction(instruction)).then((sent) => {
+      if (sent === false) backToMenu();
+    }, backToMenu);
   }, [customInstruction, onCustomInstruction, playSfx]);
 
   useEffect(() => {
@@ -2625,8 +2622,7 @@ export function GameCombatUI({
               side="player"
               isTargetable={phase === "target-select" && selectingAllyTarget}
               isActive={
-                (phase === "player-turn" && i === activePlayerIndex) ||
-                activeCombatAction?.attackerId === member.id
+                (phase === "player-turn" && i === activePlayerIndex) || activeCombatAction?.attackerId === member.id
               }
               onSelect={
                 phase === "target-select" && selectingAllyTarget ? () => handleTargetSelect(member.id) : undefined

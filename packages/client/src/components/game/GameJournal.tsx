@@ -359,7 +359,9 @@ export function GameJournal({
       if (isEntryMovedError(error)) {
         const fresh = await handleEntryMoved();
         // Keep the user's text: point the editor at the entry's new position if it still exists.
-        const newIndex = fresh ? fresh.entries.findIndex((entry) => matchesExpectation(entry, editingEntry.expected)) : -1;
+        const newIndex = fresh
+          ? fresh.entries.findIndex((entry) => matchesExpectation(entry, editingEntry.expected))
+          : -1;
         if (newIndex >= 0) {
           setEditingEntry((current) => (current ? { ...current, index: newIndex } : current));
         } else {
@@ -473,7 +475,9 @@ export function GameJournal({
             </button>
           </div>
         ) : (
-          <div className="text-sm text-[var(--muted-foreground)]">{localizeUi("ui.game.gamejournal.loadingJournal")}</div>
+          <div className="text-sm text-[var(--muted-foreground)]">
+            {localizeUi("ui.game.gamejournal.loadingJournal")}
+          </div>
         )}
       </div>
     );
@@ -552,7 +556,9 @@ export function GameJournal({
               />
             )}
             {foldedSearchQuery && searchedEntries.length === 0 && visibleEntries.length > 0 ? (
-              <div className="text-center text-xs text-white/40">{localizeUi("ui.game.gamejournal.noSearchMatches")}</div>
+              <div className="text-center text-xs text-white/40">
+                {localizeUi("ui.game.gamejournal.noSearchMatches")}
+              </div>
             ) : (
               <TimelineView
                 entries={searchedEntries}
@@ -591,7 +597,9 @@ export function GameJournal({
               />
             )}
             {foldedSearchQuery && searchedLibraryEntries.length === 0 && libraryEntries.length > 0 ? (
-              <div className="text-center text-xs text-white/40">{localizeUi("ui.game.gamejournal.noSearchMatches")}</div>
+              <div className="text-center text-xs text-white/40">
+                {localizeUi("ui.game.gamejournal.noSearchMatches")}
+              </div>
             ) : (
               <LibraryView
                 entries={searchedLibraryEntries}
@@ -603,7 +611,9 @@ export function GameJournal({
             )}
           </>
         )}
-        {activeTab === "notes" && <NotesView notes={playerNotes} onChange={handleNotesChange} saved={notesSaved} failed={notesSaveFailed} />}
+        {activeTab === "notes" && (
+          <NotesView notes={playerNotes} onChange={handleNotesChange} saved={notesSaved} failed={notesSaveFailed} />
+        )}
       </div>
 
       {editingEntry && (
@@ -1127,7 +1137,10 @@ function LibraryView({
         const isBook = entry.readableType === "book" || entry.title.toLowerCase() === "book";
         const text = entry.content;
         return (
-          <div key={entryKey(entry, allEntries)} className="group relative rounded-lg border border-white/5 bg-white/3 px-3 py-2">
+          <div
+            key={entryKey(entry, allEntries)}
+            className="group relative rounded-lg border border-white/5 bg-white/3 px-3 py-2"
+          >
             <div className="flex items-center gap-1.5">
               <BookOpen size={11} className={isBook ? "text-amber-400/70" : "text-blue-400/70"} />
               <span

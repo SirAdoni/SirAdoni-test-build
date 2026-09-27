@@ -548,6 +548,7 @@ export function createCampaignMemoryStorage(
       targetEntityId: row.targetEntityId,
       type: row.type,
       inverseLabel: row.inverseLabel,
+      ...(row.notes == null ? {} : { notes: row.notes }),
       status: row.status as CampaignMemoryRelationship["status"],
       ...(row.effectiveFrom == null ? {} : { effectiveFrom: row.effectiveFrom }),
       ...(row.effectiveTo == null ? {} : { effectiveTo: row.effectiveTo }),
@@ -1203,6 +1204,8 @@ export function createCampaignMemoryStorage(
     provenance(input.provenance);
     oneOf(input.status, RELATIONSHIP_STATUSES, "relationship.status");
     nonblank(input.inverseLabel, "relationship.inverseLabel");
+    if (input.notes !== undefined && (typeof input.notes !== "string" || input.notes.length > 20000))
+      fail("CAMPAIGN_MEMORY_INVALID_VALUE", "Relationship notes must be text of at most 20000 characters");
     const normalizedEvidence = await normalizeEvidence({ chatId: input.chatId }, input.evidence);
     const relationshipId = input.relationshipId ?? randomUUID();
     const timestamp = now();
@@ -1213,6 +1216,7 @@ export function createCampaignMemoryStorage(
       targetEntityId: input.targetEntityId,
       type: input.type,
       inverseLabel: input.inverseLabel,
+      notes: input.notes ?? null,
       status: input.status,
       effectiveFrom: input.effectiveFrom ?? null,
       effectiveTo: input.effectiveTo ?? null,
@@ -1291,6 +1295,8 @@ export function createCampaignMemoryStorage(
         oneOf(next.status, RELATIONSHIP_STATUSES, "relationship.status");
         nonblank(next.type, "relationship.type");
         nonblank(next.inverseLabel, "relationship.inverseLabel");
+        if (next.notes !== undefined && (typeof next.notes !== "string" || next.notes.length > 20000))
+          fail("CAMPAIGN_MEMORY_INVALID_VALUE", "Relationship notes must be text of at most 20000 characters");
         next.evidence = await keepOrNormalizeEvidence(scope, relationshipFrom(row).evidence, patch.evidence, tx);
         provenance(next.provenance);
         await assertRelationshipEndpoints(scope, next, tx);
@@ -1301,6 +1307,7 @@ export function createCampaignMemoryStorage(
             targetEntityId: next.targetEntityId,
             type: next.type,
             inverseLabel: next.inverseLabel,
+            notes: next.notes ?? null,
             status: next.status,
             effectiveFrom: next.effectiveFrom ?? null,
             effectiveTo: next.effectiveTo ?? null,

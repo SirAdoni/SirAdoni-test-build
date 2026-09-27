@@ -225,6 +225,27 @@ try {
   await page.getByText("Real NPC", { exact: true }).waitFor();
   let contact = page.getByRole("dialog").last();
   assert.equal(await contact.getByText(/Recorded opinion: 0/).count(), 1, "numeric zero opinion renders");
+  assert.match(await contact.innerText(), /Relationship status: Friend/, "friend status renders");
+  assert.match(
+    await contact.locator("article").filter({ hasText: "Unknown" }).innerText(),
+    /Recorded opinion: Unknown[\s\S]*Relationship status: Unknown/,
+    "missing opinion and relationship stay unknown on the second contact",
+  );
+  await page.screenshot({ path: `${screenshotDir}/contact-book-desktop.png` });
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileContactPanel = contact.locator(".mari-modal-panel");
+  const mobileContactBox = await mobileContactPanel.boundingBox();
+  assert.ok(
+    mobileContactBox &&
+      mobileContactBox.x >= 0 &&
+      mobileContactBox.y >= 0 &&
+      mobileContactBox.x + mobileContactBox.width <= 391 &&
+      mobileContactBox.y + mobileContactBox.height <= 845,
+    "contact book fits a phone viewport",
+  );
+  await contact.getByText(/Relationship status: Friend/).waitFor();
+  await page.screenshot({ path: `${screenshotDir}/contact-book-mobile.png` });
+  await page.setViewportSize({ width: 1440, height: 900 });
   await contact.getByRole("button", { name: "Real NPC", exact: true }).click();
   assert.equal(
     await page.locator("[data-profile-callback]").textContent(),

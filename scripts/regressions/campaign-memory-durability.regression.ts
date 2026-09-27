@@ -128,6 +128,7 @@ try {
       targetEntityId: "durable-entity",
       type: "knows",
       inverseLabel: "known-by",
+      notes: "Preserved relationship note",
       status: "active",
       effectiveFrom: "1",
       effectiveTo: null,
@@ -171,6 +172,10 @@ try {
   const otherRows = tables.map(([, table, row]) => ({ table, row: { ...row, ...Object.fromEntries(Object.entries(row).map(([key, value]) => [key, key.endsWith("Id") && value !== targetChat ? `other-${value}` : value])), chatId: otherChat } }));
   const legacyRows = tables.map(([, table, row]) => ({ table, row: { ...row, ...Object.fromEntries(Object.entries(row).map(([key, value]) => [key, key.endsWith("Id") && value !== targetChat ? `legacy-${value}` : value])), chatId: legacyChat } }));
 
+  // Legacy records predate the optional notes field; preserve their default-null contract.
+  for (const { table, row } of legacyRows) {
+    if (table === campaignMemoryRelationships) delete (row as Record<string, unknown>).notes;
+  }
   for (const [, table, row] of tables) await db.insert(table).values(row as never);
   for (const { table, row } of otherRows) await db.insert(table).values(row as never);
   for (const { table, row } of legacyRows) await db.insert(table).values(row as never);
@@ -182,6 +187,9 @@ try {
     const rows = await reopened.select().from(table);
     assert.deepEqual(rows.find((candidate) => candidate.chatId === targetChat), row, `${tableName} persisted across close/reopen`);
   }
+
+  const legacyRelationship = (await reopened.select().from(campaignMemoryRelationships)).find((row) => row.chatId === legacyChat);
+  assert.equal(legacyRelationship?.notes, null, "Legacy omitted relationship notes reopen as null");
 
   const legacyBeforeDelete = await Promise.all(
     legacyRows.map(async ({ table, row }) => ({ table, row: (await reopened.select().from(table)).find((candidate) => candidate.chatId === legacyChat) })),

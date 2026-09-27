@@ -67,7 +67,7 @@ export async function importLorebookText(
   }
   const valid = parsed.entries.filter((entry) => !entry.invalid);
   if (valid.length === 0) throw new LorebookTextImportError("no valid entries");
-  if (valid.length >LOREBOOK_TEXT_IMPORT_MAX_ENTRIES) throw new LorebookTextImportError("too many entries");
+  if (valid.length > LOREBOOK_TEXT_IMPORT_MAX_ENTRIES) throw new LorebookTextImportError("too many entries");
 
   const existing = (await storage.listEntries(lorebookId)) as LorebookEntry[];
   const actions = planLorebookTextImport(valid, existing, request.duplicateMode);

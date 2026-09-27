@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { z } from "zod";
+import { worldHistorySchema } from "@marinara-engine/shared";
 import type {
   CampaignMemoryCurrentState,
   CampaignMemoryEvidence,
@@ -135,6 +137,27 @@ const copyEvidence = async (
 };
 const atOrBefore = (order: string | undefined, cutoff: string) => Boolean(order && order <= cutoff);
 
+// Only this validated, manually authored metadata may cross the otherwise identity-only boundary.
+const historicalSnapshotSchema = z.object({
+  entityId: z.string().min(1),
+  chatId: z.string().min(1),
+  kind: z.literal("note"),
+  owner: z.object({ type: z.literal("registry"), store: z.literal("campaign-memory"), recordId: z.string().min(1) }),
+  aliases: z.array(z.string().max(500)).min(1).max(100),
+  tags: z.array(z.string().max(200)).max(100),
+  body: z.string().max(20_000).optional(),
+  summary: z.string().max(20_000).optional(),
+  attributes: z.object({ worldHistory: worldHistorySchema }),
+  status: z.enum(["active", "archived"]),
+  manualLock: z.literal(true),
+  revision: z.number().int().positive(),
+  provenance: z.object({ actor: z.literal("user"), source: z.string(), sourceRevision: z.string() }),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+const canonicalTimestamp = (value: string) =>
+  Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+
 export async function projectCampaignMemoryBranch(
   db: DB,
   input: CampaignMemoryBranchProjectionInput,
@@ -252,6 +275,101 @@ export async function projectCampaignMemoryBranch(
         if (!held.some((item) => item.recordType === recordType && item.recordId === recordId))
           held.push({ recordType, recordId, reason });
       };
+      const entityById = new Map(entities.map((entity) => [entity.entityId, entity]));
+      const historyCandidateIds = new Set<string>();
+      const historySnapshots = new Map<string, z.infer<typeof historicalSnapshotSchema>>();
+      const journalRows = await tx
+        .select()
+        .from(campaignMemoryMutationJournal)
+        .where(
+          and(
+            eq(campaignMemoryMutationJournal.chatId, input.sourceChatId),
+            eq(campaignMemoryMutationJournal.recordType, "entity"),
+          ),
+        );
+      // ponytail: journal wall time proves only saves strictly before the message capture. Same-turn edits,
+      // ties and absent history stay held; a future message-anchored snapshot contract can widen this safely.
+      const rowsByEntity = new Map<string, typeof journalRows>();
+      for (const row of journalRows) rowsByEntity.set(row.recordId, [...(rowsByEntity.get(row.recordId) ?? []), row]);
+      for (const entity of entities) {
+        const rows = rowsByEntity.get(entity.entityId) ?? [];
+        const hasHistory =
+          entity.attributes.worldHistory !== undefined ||
+          rows.some((row) => {
+            try {
+              return JSON.parse(row.after ?? "null")?.attributes?.worldHistory !== undefined;
+            } catch {
+              return false;
+            }
+          });
+        if (!hasHistory) continue;
+        historyCandidateIds.add(entity.entityId);
+        const reject = () =>
+          hold(
+            "entity",
+            entity.entityId,
+            "world history has no unambiguous validated snapshot strictly before the fork message",
+          );
+        if (rows.some((row) => !canonicalTimestamp(row.createdAt) || row.createdAt === parsedCutoff.createdAt)) {
+          reject();
+          continue;
+        }
+        const candidates = rows
+          .filter((row) => row.createdAt < parsedCutoff.createdAt)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        const latest = candidates[0];
+        if (!latest || candidates[1]?.createdAt === latest.createdAt) {
+          reject();
+          continue;
+        }
+        let value: unknown;
+        try {
+          value = JSON.parse(latest.after ?? "null");
+        } catch {
+          reject();
+          continue;
+        }
+        const checked = historicalSnapshotSchema.safeParse(value);
+        if (
+          !checked.success ||
+          latest.actor !== "user" ||
+          checked.data.entityId !== entity.entityId ||
+          checked.data.chatId !== input.sourceChatId ||
+          checked.data.owner.recordId !== entity.entityId ||
+          !canonicalTimestamp(checked.data.createdAt) ||
+          !canonicalTimestamp(checked.data.updatedAt) ||
+          checked.data.createdAt > checked.data.updatedAt ||
+          checked.data.updatedAt > latest.createdAt
+        ) {
+          reject();
+          continue;
+        }
+        const snapshot = checked.data;
+        const refs = [
+          ...snapshot.attributes.worldHistory.participantEntityIds,
+          snapshot.attributes.worldHistory.locationEntityId,
+        ].filter((id): id is string => !!id);
+        if (
+          refs.some((id) => {
+            const target = entityById.get(id);
+            const isPlace = id === snapshot.attributes.worldHistory.locationEntityId;
+            return (
+              !target ||
+              !canonicalTimestamp(target.createdAt) ||
+              target.createdAt >= parsedCutoff.createdAt ||
+              !(isPlace ? target.kind === "location" : ["character", "persona", "organization"].includes(target.kind))
+            );
+          })
+        ) {
+          hold(
+            "entity",
+            entity.entityId,
+            "world history references an entity without a provable source-session identity at the fork",
+          );
+          continue;
+        }
+        historySnapshots.set(entity.entityId, snapshot);
+      }
       const factById = new Map(facts.map((r) => [r.factId, r]));
       const knowledgeById = new Map(knowledge.map((r) => [r.knowledgeId, r]));
       const eventById = new Map(events.map((r) => [r.eventId, r]));
@@ -494,9 +612,65 @@ export async function projectCampaignMemoryBranch(
           hold("current-state", id, "state depends on an event that was not copied");
         }
       }
+      // Family targets are encoded in fact values, so the generic subject dependency is insufficient.
+      // Resolve exact source-session identities only; ambiguous or cross-session targets remain held.
+      const familyTargets = new Map<string, { entityId: string; registry: boolean }>();
+      for (const id of [...factIds]) {
+        const fact = factById.get(id)!;
+        if (fact.predicate !== "family.link") continue;
+        const value = fact.value as { targetId?: unknown } | null;
+        if (
+          fact.author !== "user" ||
+          !fact.manualLock ||
+          !value ||
+          typeof value !== "object" ||
+          !("targetId" in value)
+        ) {
+          factIds.delete(id);
+          hold("fact", id, "family link is not a valid manually authored assertion");
+          continue;
+        }
+        if (value.targetId === null) continue;
+        let target: unknown;
+        try {
+          target = typeof value.targetId === "string" ? JSON.parse(value.targetId) : undefined;
+        } catch {
+          /* Held below. */
+        }
+        const tuple =
+          Array.isArray(target) && target.length === 2 && target.every((part) => typeof part === "string")
+            ? target
+            : null;
+        const matches = tuple
+          ? entities.filter(
+              (entity) =>
+                ["character", "persona"].includes(entity.kind) &&
+                (tuple[0] === "entity"
+                  ? entity.entityId === tuple[1] && entity.owner.type === "registry"
+                  : entity.owner.type === "existing" &&
+                    entity.owner.store === tuple[0] &&
+                    entity.owner.recordId === tuple[1]),
+            )
+          : [];
+        if (matches.length !== 1) {
+          factIds.delete(id);
+          hold("fact", id, "family target has no unique source-session identity");
+        } else familyTargets.set(id, { entityId: matches[0]!.entityId, registry: tuple![0] === "entity" });
+      }
+      dropSupersessionDependents();
       const requiredEntities = () => {
         const result = new Set<string>();
-        for (const id of factIds) result.add(factById.get(id)!.subjectEntityId);
+        for (const [id, snapshot] of historySnapshots) {
+          result.add(id);
+          snapshot.attributes.worldHistory.participantEntityIds.forEach((ref) => result.add(ref));
+          if (snapshot.attributes.worldHistory.locationEntityId)
+            result.add(snapshot.attributes.worldHistory.locationEntityId);
+        }
+        for (const id of factIds) {
+          result.add(factById.get(id)!.subjectEntityId);
+          const target = familyTargets.get(id);
+          if (target) result.add(target.entityId);
+        }
         for (const id of knowledgeIds) {
           const r = knowledgeById.get(id)!;
           result.add(r.holderEntityId);
@@ -540,8 +714,23 @@ export async function projectCampaignMemoryBranch(
       let changed = true;
       while (changed) {
         changed = false;
+        for (const [id, snapshot] of historySnapshots) {
+          const history = snapshot.attributes.worldHistory;
+          if (
+            unavailableEntities.has(id) ||
+            history.participantEntityIds.some((ref) => unavailableEntities.has(ref)) ||
+            (history.locationEntityId && unavailableEntities.has(history.locationEntityId))
+          ) {
+            historySnapshots.delete(id);
+            hold("entity", id, "world history depends on an entity with an unavailable owner");
+            changed = true;
+          }
+        }
         for (const id of [...factIds])
-          if (unavailableEntities.has(factById.get(id)!.subjectEntityId)) {
+          if (
+            unavailableEntities.has(factById.get(id)!.subjectEntityId) ||
+            (familyTargets.has(id) && unavailableEntities.has(familyTargets.get(id)!.entityId))
+          ) {
             factIds.delete(id);
             hold("fact", id, "fact depends on an entity with an unavailable owner");
             changed = true;
@@ -607,6 +796,12 @@ export async function projectCampaignMemoryBranch(
           factId: mapped(r.factId, "Fact"),
           chatId: input.targetChatId,
           subjectEntityId: mapped(r.subjectEntityId, "Fact subject"),
+          value: familyTargets.get(id)?.registry
+            ? {
+                ...(r.value as Record<string, unknown>),
+                targetId: JSON.stringify(["entity", mapped(familyTargets.get(id)!.entityId, "Family target")]),
+              }
+            : r.value,
           validFromOrder: factOrders.get(id)?.validFromOrder,
           validToOrder: factOrders.get(id)?.validToOrder,
           supersedesFactId: r.supersedesFactId ? mapped(r.supersedesFactId, "Superseded fact") : undefined,
@@ -686,7 +881,11 @@ export async function projectCampaignMemoryBranch(
         };
       });
       for (const entity of entities)
-        if (neededEntities.has(entity.entityId) && !unavailableEntities.has(entity.entityId))
+        if (
+          neededEntities.has(entity.entityId) &&
+          !unavailableEntities.has(entity.entityId) &&
+          !historySnapshots.has(entity.entityId)
+        )
           hold(
             "entity",
             entity.entityId,
@@ -694,17 +893,33 @@ export async function projectCampaignMemoryBranch(
           );
       const copiedEntities = entities
         .filter((r) => neededEntities.has(r.entityId) && !unavailableEntities.has(r.entityId))
-        .map((r) => ({
-          ...r,
-          entityId: mapped(r.entityId, "Entity"),
-          chatId: input.targetChatId,
-          owner: r.owner.type === "registry" ? { ...r.owner, recordId: mapped(r.entityId, "Entity") } : r.owner,
-          aliases: [],
-          tags: [],
-          summary: undefined,
-          attributes: {},
-          provenance: branchProvenance(r.provenance, input.sourceChatId, r.entityId),
-        }));
+        .map((current) => {
+          const snapshot = historySnapshots.get(current.entityId);
+          const r = snapshot ?? current;
+          const history = snapshot?.attributes.worldHistory;
+          return {
+            ...r,
+            entityId: mapped(r.entityId, "Entity"),
+            chatId: input.targetChatId,
+            owner: r.owner.type === "registry" ? { ...r.owner, recordId: mapped(r.entityId, "Entity") } : r.owner,
+            aliases: snapshot ? snapshot.aliases : [],
+            tags: snapshot ? snapshot.tags : [],
+            body: snapshot ? snapshot.body : historyCandidateIds.has(r.entityId) ? undefined : current.body,
+            summary: snapshot?.summary,
+            attributes: history
+              ? {
+                  worldHistory: {
+                    ...history,
+                    participantEntityIds: history.participantEntityIds.map((id) => mapped(id, "History participant")),
+                    locationEntityId: history.locationEntityId
+                      ? mapped(history.locationEntityId, "History location")
+                      : null,
+                  },
+                }
+              : {},
+            provenance: branchProvenance(r.provenance, input.sourceChatId, r.entityId),
+          };
+        });
       if (copiedEntities.length)
         await tx.insert(campaignMemoryEntities).values(
           copiedEntities.map((r) => ({

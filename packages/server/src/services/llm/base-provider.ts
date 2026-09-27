@@ -11,11 +11,7 @@ import {
 } from "../../config/runtime-config.js";
 import { requestHeadersWithIdentityEncoding, safeFetch, type SafeFetchOptions } from "../../utils/security.js";
 import { providerRequestIdFrom, safeHost } from "./provider-error.js";
-import {
-  estimateTextTokens,
-  sliceTextToTokenBudget,
-  type GenerationParameterSendKey,
-} from "@marinara-engine/shared";
+import { estimateTextTokens, sliceTextToTokenBudget, type GenerationParameterSendKey } from "@marinara-engine/shared";
 
 /** For models that reject assistant prefill but can continue an existing reply from history. */
 export const ASSISTANT_CONTINUATION_PROMPT =

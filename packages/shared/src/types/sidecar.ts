@@ -243,6 +243,10 @@ export interface SceneAnalysis {
   weather: string | null;
   /** Time of day update — applied immediately. */
   timeOfDay: string | null;
+  /** Exact elapsed in-world minutes, only when explicit evidence is supplied. */
+  elapsedMinutes?: number;
+  /** Exact contiguous narration/player-action quote supporting elapsedMinutes. */
+  timeEvidence?: string | null;
   /** Compact scene-genre hint for deterministic music scoring. */
   musicGenre?: MusicGenre | null;
   /** Compact scene-intensity hint for deterministic music scoring. */

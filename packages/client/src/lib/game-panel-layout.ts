@@ -448,8 +448,7 @@ function resolvePanelPositions(
             // A widget squeezed into a leftover gap must still show a few lines; below that,
             // shrinking every panel a step further gives a better layout.
             const squeezeFloor = Math.max(source.reading ? readingFloor : gapFloor, source.minHeight ?? 0, 64);
-            if (height < Math.min(squeezeFloor, source.height))
-              continue;
+            if (height < Math.min(squeezeFloor, source.height)) continue;
             const candidate = { ...source, x, y, height };
             const score = (item: GamePanelLayoutItem) => distance(item) + (source.height - item.height) * 2;
             if (!best || score(candidate) < score(best)) best = candidate;

@@ -61,8 +61,11 @@ export interface LogSourceSegment {
   readableContent?: string;
 }
 
-export type LogSegmentParser = (message: { id: string; role: CampaignLogMessage["role"]; content: string }) =>
-  readonly LogSourceSegment[];
+export type LogSegmentParser = (message: {
+  id: string;
+  role: CampaignLogMessage["role"];
+  content: string;
+}) => readonly LogSourceSegment[];
 
 export type LogLineKind = "narration" | "dialogue" | "readable" | "system" | "player";
 
@@ -122,8 +125,7 @@ function applyEdit(segment: LogSourceSegment, edit: GameSegmentEdit | null): Log
   }
   text = plainLogText(text);
   if (!text) return null;
-  const speaker =
-    segment.type === "dialogue" ? normalizeSpeaker(edit?.speaker || segment.speaker) || null : null;
+  const speaker = segment.type === "dialogue" ? normalizeSpeaker(edit?.speaker || segment.speaker) || null : null;
   return {
     kind: segment.type,
     speaker,

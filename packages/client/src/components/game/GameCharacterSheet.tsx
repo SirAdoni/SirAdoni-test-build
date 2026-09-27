@@ -526,16 +526,23 @@ export function GameCharacterSheet({
 
   // Plain text of what the sheet shows (the saved sheet, not an unsaved draft), for pasting into notes or chat.
   const buildSheetText = () => {
-    const lines: string[] = [card.level != null ? card.title + " (" + localizeUi("ui.game.gamecharactersheet.lvl") + " " + card.level + ")" : card.title];
+    const lines: string[] = [
+      card.level != null
+        ? card.title + " (" + localizeUi("ui.game.gamecharactersheet.lvl") + " " + card.level + ")"
+        : card.title,
+    ];
     const description = previewGameCard?.shortDescription || (!previewGameCard?.class ? card.subtitle : undefined);
-    if (previewGameCard?.class) lines.push(localizeUi("ui.game.gamecharactersheet.class") + ": " + previewGameCard.class);
+    if (previewGameCard?.class)
+      lines.push(localizeUi("ui.game.gamecharactersheet.class") + ": " + previewGameCard.class);
     if (description) lines.push(description);
     const pushSection = (title: string, entries: string[]) => {
       if (entries.length === 0) return;
       lines.push("", title + ":", ...entries.map((entry) => "- " + entry));
     };
     const attributeEntries = hasRpgAttributes
-      ? displayRpgStats.attributes.map((attr) => attr.name + " " + attr.value + " (" + formatAttributeModifier(attr.value) + ")")
+      ? displayRpgStats.attributes.map(
+          (attr) => attr.name + " " + attr.value + " (" + formatAttributeModifier(attr.value) + ")",
+        )
       : [];
     const poolEntries = previewRpgPools.map((pool) => pool.name + ": " + pool.value + "/" + pool.max);
     pushSection(localizeUi("ui.characters.statstab.attributes"), [...attributeEntries, ...poolEntries]);
@@ -646,24 +653,24 @@ export function GameCharacterSheet({
                   <ClipboardCopy size={14} />
                 </button>
                 {onSave && (
-                <button
-                  onClick={() => {
-                    // Reseed on entry: the parked draft can hold residue from
-                    // an edit session torn down mid-typing (the number inputs
-                    // flush pending edits on unmount, and their index-captured
-                    // commits land in whatever draft is current by then).
-                    // Editing must always start from the live card.
-                    setDraft(createDraft(card.gameCard));
-                    setIsEditing(true);
-                  }}
-                  disabled={isRegenerating}
-                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-button-bg)] p-0 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--foreground)] disabled:opacity-60 sm:h-auto sm:w-auto sm:min-w-0 sm:gap-1.5 sm:px-3 sm:py-1.5"
-                  title={localizeUi("ui.game.gamecharactersheet.editSheet")}
-                  aria-label={localizeUi("ui.game.gamecharactersheet.editSheet_8c3fdc2")}
-                >
-                  <Pencil size={13} />
-                  <span className="hidden sm:inline">{localizeUi("ui.game.gamecharactersheet.editSheet")}</span>
-                </button>
+                  <button
+                    onClick={() => {
+                      // Reseed on entry: the parked draft can hold residue from
+                      // an edit session torn down mid-typing (the number inputs
+                      // flush pending edits on unmount, and their index-captured
+                      // commits land in whatever draft is current by then).
+                      // Editing must always start from the live card.
+                      setDraft(createDraft(card.gameCard));
+                      setIsEditing(true);
+                    }}
+                    disabled={isRegenerating}
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-button-bg)] p-0 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--foreground)] disabled:opacity-60 sm:h-auto sm:w-auto sm:min-w-0 sm:gap-1.5 sm:px-3 sm:py-1.5"
+                    title={localizeUi("ui.game.gamecharactersheet.editSheet")}
+                    aria-label={localizeUi("ui.game.gamecharactersheet.editSheet_8c3fdc2")}
+                  >
+                    <Pencil size={13} />
+                    <span className="hidden sm:inline">{localizeUi("ui.game.gamecharactersheet.editSheet")}</span>
+                  </button>
                 )}
               </>
             )}
@@ -721,12 +728,7 @@ export function GameCharacterSheet({
             />
             {/* On phones the header buttons float over this row: the title (or the level badge, when
                 there is one) keeps clear of them, and the edit toolbar is wider than the view one. */}
-            <div
-              className={cn(
-                "min-w-0 flex-1 sm:pr-64",
-                card.level == null && (isEditing ? "pr-40" : "pr-24"),
-              )}
-            >
+            <div className={cn("min-w-0 flex-1 sm:pr-64", card.level == null && (isEditing ? "pr-40" : "pr-24"))}>
               <h2 className="max-w-full break-words text-lg font-bold text-[var(--foreground)]" title={card.title}>
                 {card.title}
               </h2>

@@ -4,7 +4,10 @@
 // ──────────────────────────────────────────────
 import { FolderInput, Swords } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
-import { SELECTION_EXTRA_ACTION_BUTTON_CLASS, SELECTION_EXTRA_ACTION_LABEL_CLASS } from "../../ui/selection-action-classes";
+import {
+  SELECTION_EXTRA_ACTION_BUTTON_CLASS,
+  SELECTION_EXTRA_ACTION_LABEL_CLASS,
+} from "../../ui/selection-action-classes";
 
 interface LibrarySelectionExtraActionsProps {
   disabled?: boolean;

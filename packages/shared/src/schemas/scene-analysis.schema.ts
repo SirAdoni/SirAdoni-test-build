@@ -41,6 +41,16 @@ export const sceneAnalysisContextSchema = z.object({
   enemyTier: z.string().max(40).nullable().optional().default(null),
   currentWeather: z.string().nullable(),
   currentTimeOfDay: z.string().nullable(),
+  /** Exact server clock used to distinguish a phase label from elapsed time. */
+  currentGameTime: z
+    .object({
+      day: z.number().int().positive(),
+      hour: z.number().int().min(0).max(23),
+      minute: z.number().int().min(0).max(59),
+    })
+    .nullable()
+    .optional()
+    .default(null),
   genre: z.string().nullable().optional().default(null),
   setting: z.string().nullable().optional().default(null),
   worldOverview: z.string().nullable().optional().default(null),

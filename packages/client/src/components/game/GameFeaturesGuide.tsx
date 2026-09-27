@@ -18,6 +18,12 @@ const CHAPTERS: GuideChapter[] = [
     bodyKey: "gameGuide.chapters.layout.body",
   },
   {
+    id: "turn-review",
+    titleKey: "gameGuide.chapters.turnReview.title",
+    summaryKey: "gameGuide.chapters.turnReview.summary",
+    bodyKey: "gameGuide.chapters.turnReview.body",
+  },
+  {
     id: "map",
     titleKey: "gameGuide.chapters.map.title",
     summaryKey: "gameGuide.chapters.map.summary",

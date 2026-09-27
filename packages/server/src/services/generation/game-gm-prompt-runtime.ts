@@ -19,6 +19,11 @@ import {
 } from "@marinara-engine/shared";
 import { isGameExtendedWidgetsEnabled } from "@marinara-engine/shared";
 import { buildGmSystemPromptParts, type GmPromptContext } from "../game/gm-prompts.js";
+import {
+  parseGamePromptTextReplacements,
+  replaceGamePromptText,
+  type GamePromptTextReplacement,
+} from "../game/game-prompt-text-replacements.js";
 import { listPartySprites } from "../game/sprite.service.js";
 import { generatePerceptionHints, formatPerceptionHints, type PerceptionContext } from "../game/perception.service.js";
 import { getMoraleTier, formatMoraleContext } from "../game/morale.service.js";
@@ -194,14 +199,18 @@ export const GAME_GM_CAMPAIGN_MEMORY_PRECEDENCE =
   "Precedence: current state and verified facts in this block override any conflicting character card, persona, or lore text; when they conflict, use this block.";
 
 /** Append the GM-only campaign-memory projection as a dynamic injection suffix. */
-export function appendGameGmCampaignMemory(messages: PromptMessage[], context: CampaignMemoryContextResult): void {
+export function appendGameGmCampaignMemory(
+  messages: PromptMessage[],
+  context: CampaignMemoryContextResult,
+  rules: readonly GamePromptTextReplacement[] = [],
+): void {
   if (!context.text.trim() && !context.degraded) return;
   const availability = context.degraded
     ? "Some campaign memory was excluded by validation or budget. Absence is not evidence that a fact never happened. Use current verified records over stale descriptions; respect each listed knowledge holder."
     : "These are current verified campaign records. World truth is not automatic character knowledge; only listed holders have the attributed knowledge.";
   const body = [
-    GAME_GM_CAMPAIGN_MEMORY_PRECEDENCE,
-    availability,
+    replaceGamePromptText(GAME_GM_CAMPAIGN_MEMORY_PRECEDENCE, rules),
+    replaceGamePromptText(availability, rules),
     context.text,
     formatGameGmCharacterBoundary(context),
     formatGameGmMemoryOmissions(context),
@@ -210,7 +219,7 @@ export function appendGameGmCampaignMemory(messages: PromptMessage[], context: C
     .join("\n");
   messages.push({
     role: "system",
-    content: `<campaign_memory audience="gm">\n${body}\n</campaign_memory>`,
+    content: `${replaceGamePromptText('<campaign_memory audience="gm">', rules)}\n${body}\n${replaceGamePromptText("</campaign_memory>", rules)}`,
     contextKind: "injection",
     providerMetadata: {
       marinaraRuntimeContext: true,
@@ -866,7 +875,21 @@ export async function injectGameGmPromptRuntime(args: {
         : null,
   };
 
-  const gmPromptParts = buildGmSystemPromptParts(gmCtx, { cacheFriendly: args.cacheFriendlyLayout === true });
+  const builtGmPromptParts = buildGmSystemPromptParts(gmCtx, { cacheFriendly: args.cacheFriendlyLayout === true });
+  const promptTextReplacements = parseGamePromptTextReplacements(args.chatMetadata.gamePromptTextReplacements) ?? [];
+  // Edit GM-owned blocks before they are assembled with lore, memory or other
+  // producer-owned context. Never run a broad replacement over the final prompt.
+  const gmPromptParts = {
+    ...builtGmPromptParts,
+    stable: replaceGamePromptText(builtGmPromptParts.stable, promptTextReplacements),
+    dynamic: replaceGamePromptText(builtGmPromptParts.dynamic, promptTextReplacements),
+    reference: builtGmPromptParts.reference
+      ? replaceGamePromptText(builtGmPromptParts.reference, promptTextReplacements)
+      : undefined,
+    referenceBlocks: builtGmPromptParts.referenceBlocks?.map((block) =>
+      replaceGamePromptText(block, promptTextReplacements),
+    ),
+  };
   const customGmPrompt =
     typeof args.chatMetadata.customGmPrompt === "string" ? args.chatMetadata.customGmPrompt.trim() : "";
   if (!args.cacheFriendlyLayout) {
@@ -1003,7 +1026,7 @@ export async function injectGameGmPromptRuntime(args: {
             ? args.chatMetadata.gameCampaignMemoryMaxCharacters
             : (args.campaignMemoryMaxCharacters ?? DEFAULT_CAMPAIGN_MEMORY_MAX_CHARACTERS),
       });
-      appendGameGmCampaignMemory(args.messages, campaignMemory);
+      appendGameGmCampaignMemory(args.messages, campaignMemory, promptTextReplacements);
     } catch (err) {
       logger.error(
         {
@@ -1015,12 +1038,16 @@ export async function injectGameGmPromptRuntime(args: {
         },
         "Campaign memory projection unavailable; preserving the existing GM prompt",
       );
-      appendGameGmCampaignMemory(args.messages, {
-        text: "[Campaign memory unavailable: canonical campaign memory was not validated for this request. Do not treat absent campaign memory as proof that no memory exists.]",
-        includedIds: [],
-        exclusions: [{ id: "campaign-memory", reason: "projection unavailable" }],
-        degraded: true,
-      });
+      appendGameGmCampaignMemory(
+        args.messages,
+        {
+          text: "[Campaign memory unavailable: canonical campaign memory was not validated for this request. Do not treat absent campaign memory as proof that no memory exists.]",
+          includedIds: [],
+          exclusions: [{ id: "campaign-memory", reason: "projection unavailable" }],
+          degraded: true,
+        },
+        promptTextReplacements,
+      );
     }
   }
 

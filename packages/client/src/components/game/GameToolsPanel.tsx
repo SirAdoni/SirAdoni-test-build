@@ -15,6 +15,7 @@ import {
   Maximize2,
   Sparkles,
   Swords,
+  Network,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -31,6 +32,7 @@ import { openRandomTables } from "../../lib/open-random-tables";
 import { openPrepBoard } from "../../lib/open-prep-board";
 import { openInitiativeTracker } from "../../lib/open-initiative-tracker";
 import { openGameCalendar } from "../../lib/open-game-calendar";
+import { useUIStore } from "../../stores/ui.store";
 
 function SectionTitle({ icon, title, action }: { icon: ReactNode; title: string; action?: ReactNode }) {
   return (
@@ -80,6 +82,34 @@ export function GameToolsPanel({ chatId }: { chatId: string }) {
   return (
     <div className="space-y-5">
       <GameDiceLog chatId={chatId} />
+      <section className="border-t border-border pt-4" aria-label={t("ui.familyTree.title")}>
+        <SectionTitle icon={<Network size={14} className="text-muted-foreground" />} title={t("ui.familyTree.title")} />
+        <p className="mb-2 text-xs text-muted-foreground">{t("ui.familyTree.description")}</p>
+        <button
+          type="button"
+          onClick={() => useUIStore.getState().openModal("family-tree", { chatId })}
+          className="flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md border border-border px-3 text-sm font-medium text-foreground hover:bg-secondary"
+        >
+          <Network size={15} />
+          {t("ui.familyTree.open")}
+        </button>
+      </section>
+
+      <section className="border-t border-border pt-4" aria-label={t("ui.worldHistory.title")}>
+        <SectionTitle
+          icon={<BookOpenText size={14} className="text-muted-foreground" />}
+          title={t("ui.worldHistory.title")}
+        />
+        <p className="mb-2 text-xs text-muted-foreground">{t("ui.worldHistory.help")}</p>
+        <button
+          type="button"
+          onClick={() => useUIStore.getState().openModal("world-history", { chatId })}
+          className="flex min-h-10 w-full items-center justify-center gap-1.5 rounded-md border border-border px-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary"
+        >
+          <BookOpenText size={14} />
+          {t("ui.worldHistory.open")}
+        </button>
+      </section>
 
       <section className="border-t border-border pt-4" aria-label={t("ui.prepBoard.title")}>
         <SectionTitle
