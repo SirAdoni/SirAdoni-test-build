@@ -8253,38 +8253,58 @@ function AdvancedSettings() {
   };
 
   const qc = useQueryClient();
+  type BackupMode = "full" | "data" | "incremental";
+  type AutomaticBackupFrequency = "daily" | "weekly" | "monthly";
+  type AutomaticBackupSettings = {
+    enabled: boolean;
+    frequency: AutomaticBackupFrequency;
+    retentionCount: number;
+    mode: BackupMode;
+    lastBackupAt: string | null;
+    lastError: string | null;
+    nextBackupAt: string | null;
+    backupExists: boolean;
+  };
   const [creatingBackup, setCreatingBackup] = useState(false);
+  const [downloadingBackupName, setDownloadingBackupName] = useState<string | null>(null);
 
-  /**
-   * Prepare a full backup, then hand its finished stream directly to the browser.
-   * Keeping the archive out of a page-held Blob lets Safari and memory-limited
-   * mobile browsers save large backups through their normal download handling.
-   */
+  /** Keep large archives out of page-held Blobs, including portable snapshot exports. */
+  const startBackupDownload = async (request: { mode?: BackupMode; backupName?: string }) => {
+    const started = await api.post<{ jobId: string; status: "preparing" }>("/backup/download/start", request);
+    const deadline = Date.now() + 60 * 60 * 1_000;
+    let status: {
+      status: "preparing" | "ready" | "failed";
+      error?: string;
+      downloadUrl?: string;
+    } = { status: started.status };
+    while (status.status === "preparing") {
+      if (Date.now() >= deadline) {
+        throw new Error(localizeUi("ui.panels.advancedsettings.backupPreparationTimedOut"));
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 2_000));
+      status = await api.get(`/backup/download/status/${encodeURIComponent(started.jobId)}`);
+    }
+    if (status.status === "failed") {
+      throw new Error(status.error || localizeUi("ui.panels.advancedsettings.failedToCreateBackup"));
+    }
+    if (!status.downloadUrl) {
+      throw new Error(localizeUi("ui.panels.advancedsettings.failedToCreateBackup"));
+    }
+    window.location.assign(status.downloadUrl);
+  };
+
   const handleCreateBackup = async () => {
+    const settings = automaticBackupQuery.data;
+    if (!settings) return;
     setCreatingBackup(true);
     try {
-      const started = await api.post<{ jobId: string; status: "preparing" }>("/backup/download/start");
-      const deadline = Date.now() + 60 * 60 * 1_000;
-      let status: {
-        status: "preparing" | "ready" | "failed";
-        error?: string;
-        downloadUrl?: string;
-      } = { status: started.status };
-      while (status.status === "preparing") {
-        if (Date.now() >= deadline) {
-          throw new Error(localizeUi("ui.panels.advancedsettings.backupPreparationTimedOut"));
-        }
-        await new Promise((resolve) => window.setTimeout(resolve, 2_000));
-        status = await api.get(`/backup/download/status/${encodeURIComponent(started.jobId)}`);
+      if (settings.mode === "incremental") {
+        await api.post("/backup");
+        await qc.invalidateQueries({ queryKey: ["backups"] });
+        toast.success(localizeUi("ui.panels.advancedsettings.incrementalBackupCreated"));
+        return;
       }
-      if (status.status === "failed") {
-        throw new Error(status.error || localizeUi("ui.panels.advancedsettings.failedToCreateBackup"));
-      }
-      if (!status.downloadUrl) {
-        throw new Error(localizeUi("ui.panels.advancedsettings.failedToCreateBackup"));
-      }
-
-      window.location.assign(status.downloadUrl);
+      await startBackupDownload({ mode: settings.mode });
       toast.success(localizeUi("ui.panels.advancedsettings.backupDownloadStarted"));
       qc.invalidateQueries({ queryKey: ["backups"] });
     } catch (err) {
@@ -8294,27 +8314,29 @@ function AdvancedSettings() {
     }
   };
 
-  const { data: backups } = useQuery<{ name: string; createdAt: string; path: string }[]>({
+  const handleDownloadBackup = async (backupName: string) => {
+    setDownloadingBackupName(backupName);
+    try {
+      await startBackupDownload({ backupName });
+      toast.success(localizeUi("ui.panels.advancedsettings.backupDownloadStarted"));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : localizeUi("ui.panels.advancedsettings.failedToCreateBackup"));
+    } finally {
+      setDownloadingBackupName(null);
+    }
+  };
+
+  const { data: backups } = useQuery<{ name: string; createdAt: string; path: string; mode?: BackupMode }[]>({
     queryKey: ["backups"],
     queryFn: () => api.get("/backup"),
   });
-  type AutomaticBackupFrequency = "daily" | "weekly" | "monthly";
-  type AutomaticBackupSettings = {
-    enabled: boolean;
-    frequency: AutomaticBackupFrequency;
-    retentionCount: number;
-    lastBackupAt: string | null;
-    lastError: string | null;
-    nextBackupAt: string | null;
-    backupExists: boolean;
-  };
   const automaticBackupQuery = useQuery<AutomaticBackupSettings>({
     queryKey: ["backups", "automatic"],
     queryFn: () => api.get("/backup/automatic"),
     refetchInterval: (query) => (query.state.data?.enabled ? 30_000 : false),
   });
   const automaticBackupMutation = useMutation({
-    mutationFn: (settings: Pick<AutomaticBackupSettings, "enabled" | "frequency" | "retentionCount">) =>
+    mutationFn: (settings: Pick<AutomaticBackupSettings, "enabled" | "frequency" | "retentionCount" | "mode">) =>
       api.put<AutomaticBackupSettings>("/backup/automatic", settings),
     onSuccess: (settings) => {
       qc.setQueryData(["backups", "automatic"], settings);
@@ -8329,7 +8351,7 @@ function AdvancedSettings() {
     },
   });
   const updateAutomaticBackup = (
-    patch: Partial<Pick<AutomaticBackupSettings, "enabled" | "frequency" | "retentionCount">>,
+    patch: Partial<Pick<AutomaticBackupSettings, "enabled" | "frequency" | "retentionCount" | "mode">>,
   ) => {
     const current = automaticBackupQuery.data;
     if (!current) return;
@@ -8337,6 +8359,7 @@ function AdvancedSettings() {
       enabled: patch.enabled ?? current.enabled,
       frequency: patch.frequency ?? current.frequency,
       retentionCount: patch.retentionCount ?? current.retentionCount,
+      mode: patch.mode ?? current.mode ?? "full",
     });
   };
 
@@ -9097,6 +9120,35 @@ function AdvancedSettings() {
         {...getSettingsSectionAnchorProps("backup-export")}
       >
         <div className="flex flex-col gap-2">
+          <div className="rounded-lg border border-[var(--border)]/70 bg-[var(--secondary)]/35 p-2.5">
+            <label htmlFor="backup-mode" className="text-[0.6875rem] font-medium text-[var(--foreground)]">
+              {localizeUi("ui.panels.advancedsettings.backupModeLabel")}
+            </label>
+            <select
+              id="backup-mode"
+              aria-describedby="backup-mode-description"
+              value={automaticBackupQuery.data?.mode ?? "full"}
+              onChange={(event) => updateAutomaticBackup({ mode: event.target.value as BackupMode })}
+              disabled={
+                automaticBackupQuery.isLoading || !automaticBackupQuery.data || automaticBackupMutation.isPending
+              }
+              className="mari-chrome-field mt-1 h-9 w-full px-2 text-xs"
+            >
+              <option value="full">{localizeUi("ui.panels.advancedsettings.backupModeFull")}</option>
+              <option value="data">{localizeUi("ui.panels.advancedsettings.backupModeData")}</option>
+              <option value="incremental">{localizeUi("ui.panels.advancedsettings.backupModeIncremental")}</option>
+            </select>
+            <p
+              id="backup-mode-description"
+              className="mt-1 text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]"
+            >
+              {automaticBackupQuery.data?.mode === "data"
+                ? localizeUi("ui.panels.advancedsettings.backupModeDataDescription")
+                : automaticBackupQuery.data?.mode === "incremental"
+                  ? localizeUi("ui.panels.advancedsettings.backupModeIncrementalDescription")
+                  : localizeUi("ui.panels.advancedsettings.backupModeFullDescription")}
+            </p>
+          </div>
           {automaticBackupQuery.data && (
             <div className="rounded-lg border border-[var(--border)]/70 bg-[var(--secondary)]/35 p-2.5">
               <ToggleSetting
@@ -9166,11 +9218,25 @@ function AdvancedSettings() {
               </p>
               <div className="mt-2 flex items-start gap-1.5 rounded-md bg-[var(--background)]/45 px-2 py-1.5 text-[0.625rem] leading-relaxed text-[var(--muted-foreground)] ring-1 ring-[var(--border)]/60">
                 <FolderOpen size="0.75rem" className="mt-0.5 shrink-0 text-[var(--primary)]" aria-hidden="true" />
-                <p>{localizeUi("settings.transfer.automaticBackup.location")}</p>
+                <p>
+                  {automaticBackupQuery.data.mode === "incremental"
+                    ? localizeUi("ui.panels.advancedsettings.automaticBackupsLocationIncremental")
+                    : localizeUi("settings.transfer.automaticBackup.location")}
+                </p>
               </div>
             </div>
           )}
-          <button onClick={handleCreateBackup} disabled={creatingBackup} className={SETTINGS_PRIMARY_BUTTON_CLASS}>
+          <button
+            onClick={handleCreateBackup}
+            disabled={
+              creatingBackup ||
+              downloadingBackupName !== null ||
+              automaticBackupQuery.isLoading ||
+              !automaticBackupQuery.data ||
+              automaticBackupMutation.isPending
+            }
+            className={SETTINGS_PRIMARY_BUTTON_CLASS}
+          >
             {creatingBackup ? (
               <>
                 <Loader2 size="0.8125rem" className="animate-spin" />
@@ -9178,8 +9244,14 @@ function AdvancedSettings() {
               </>
             ) : (
               <>
-                <Download size="0.8125rem" />
-                {localizeUi("ui.panels.advancedsettings.downloadBackup")}
+                {automaticBackupQuery.data?.mode === "incremental" ? (
+                  <HardDrive size="0.8125rem" />
+                ) : (
+                  <Download size="0.8125rem" />
+                )}
+                {automaticBackupQuery.data?.mode === "incremental"
+                  ? localizeUi("ui.panels.advancedsettings.incrementalCreateBackup")
+                  : localizeUi("ui.panels.advancedsettings.downloadBackup")}
               </>
             )}
           </button>
@@ -9215,10 +9287,37 @@ function AdvancedSettings() {
                     <span className="text-[0.5625rem] text-[var(--muted-foreground)]">
                       {new Date(b.createdAt).toLocaleString()}
                     </span>
+                    {b.mode && (
+                      <span className="text-[0.5625rem] text-[var(--muted-foreground)]">
+                        {localizeUi(
+                          b.mode === "full"
+                            ? "ui.panels.advancedsettings.backupModeFull"
+                            : b.mode === "data"
+                              ? "ui.panels.advancedsettings.backupModeData"
+                              : "ui.panels.advancedsettings.backupModeIncremental",
+                        )}
+                      </span>
+                    )}
                   </div>
+                  {(b.mode === "data" || b.mode === "incremental") && (
+                    <button
+                      type="button"
+                      disabled={creatingBackup || downloadingBackupName !== null}
+                      aria-label={localizeUi("ui.panels.advancedsettings.downloadBackupNamed", { name: b.name })}
+                      title={localizeUi("ui.panels.advancedsettings.downloadBackup")}
+                      onClick={() => handleDownloadBackup(b.name)}
+                      className="ml-2 rounded p-1 text-[var(--muted-foreground)] disabled:opacity-50 transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+                    >
+                      {downloadingBackupName === b.name ? (
+                        <Loader2 size="0.75rem" className="animate-spin" />
+                      ) : (
+                        <Download size="0.75rem" />
+                      )}
+                    </button>
+                  )}
                   <button
                     type="button"
-                    disabled={deleteBackupMutation.isPending}
+                    disabled={deleteBackupMutation.isPending || creatingBackup || downloadingBackupName !== null}
                     aria-label={localizeUi("ui.panels.advancedsettings.deleteBackupNamed", { name: b.name })}
                     title={localizeUi("ui.panels.advancedsettings.deleteBackup")}
                     onClick={async () => {

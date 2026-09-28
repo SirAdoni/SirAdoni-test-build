@@ -93,12 +93,15 @@ function PhotoMenuFixture() {
   );
 }
 function Harness() {
+  const portraitFixture = new URLSearchParams(window.location.search);
   const surface = useRef<HTMLElement>(null);
   const [opened, setOpened] = useState(true);
   const [profile, setProfile] = useState("");
   const [editing, setEditing] = useState(true);
   const [statusRevision, setStatusRevision] = useState(0);
   const [photoUpdates, setPhotoUpdates] = useState(0);
+  const [portraitBatches, setPortraitBatches] = useState<{ completedBatches: number; totalBatches: number } | null>(null);
+  const [portraitStyle, setPortraitStyle] = useState("");
   return (
     <QueryClientProvider client={queryClient}>
       <GamePanelContext.Provider value={{ chatId: "hud-chat", surface, layoutEditing: editing }}>
@@ -159,13 +162,27 @@ function Harness() {
           {opened && (
             <GameContactBookWidget
               chatId="hud-chat"
-              campaignKey="hud-campaign"
+              campaignKey={portraitFixture.get("campaign") || "hud-campaign"}
               open
               onClose={() => setOpened(false)}
               onOpenCharacter={setProfile}
+              campaignPortraitCount={portraitFixture.has("empty") ? 0 : 12}
+              campaignPortraitProgress={portraitBatches}
+              portraitGenerationEnabled={!portraitFixture.has("unavailable")}
+              onGenerateMissingCampaignPortraits={async (style) => {
+                if (portraitFixture.has("fail")) throw new Error("Fixture image connection failed");
+                setPortraitStyle(style);
+                setPortraitBatches({ completedBatches: 0, totalBatches: 2 });
+                await new Promise((resolve) => setTimeout(resolve, 350));
+                setPortraitBatches({ completedBatches: 1, totalBatches: 2 });
+                await new Promise((resolve) => setTimeout(resolve, 350));
+                setPortraitBatches(null);
+                return { generated: 11, failed: 1 };
+              }}
             />
           )}
           {profile && <output data-profile-callback>{profile}</output>}
+          <output data-portrait-style hidden>{portraitStyle}</output>
         </section>
       </GamePanelContext.Provider>
     </QueryClientProvider>

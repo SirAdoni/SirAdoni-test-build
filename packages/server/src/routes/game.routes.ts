@@ -1,3 +1,5 @@
+import { resolveCampaignPortraitRoster } from "../services/game/campaign-portrait-roster.js";
+
 import { resolveStoredChatOptions, resolveStoredMaxTokens } from "../services/generation/generation-parameters.js";
 import {
   normalizeGameDifficulty,
@@ -5397,6 +5399,8 @@ function normalizeJournalMatch(value: string): string {
 
 type SceneAssetNpcCandidate = {
   npcId?: string | null;
+  characterId?: string | null;
+
   name: string;
   description: string;
   gender?: string | null;
@@ -5966,6 +5970,7 @@ export function upsertGameNpcAvatarEntries(
 
     nextNpcs.push({
       id: npcId || buildGameNpcId(entry.name),
+      ...(entry.characterId ? { characterId: entry.characterId } : {}),
       name: entry.name,
       emoji: "👤",
       description: entry.description,
@@ -5975,7 +5980,7 @@ export function upsertGameNpcAvatarEntries(
       avatarUrl: entry.avatarUrl,
       gender: entry.gender,
       pronouns: entry.pronouns,
-      descriptionSource: entry.description ? "narration" : undefined,
+      descriptionSource: entry.characterId ? "library" : entry.description ? "narration" : undefined,
     });
     changed = true;
   }
@@ -9445,6 +9450,15 @@ export async function gameRoutes(app: FastifyInstance) {
       const updatedNewMeta = {
         ...newMeta,
         ...carryMeta,
+        gameWidgetInitialState: structuredClone(
+          Array.isArray(prevMeta.gameWidgetState)
+            ? prevMeta.gameWidgetState
+            : Array.isArray((prevMeta.gameBlueprint as Record<string, unknown> | undefined)?.hudWidgets)
+              ? (prevMeta.gameBlueprint as Record<string, unknown>).hudWidgets
+              : Array.isArray((prevMeta.gameSetupConfig as Record<string, unknown> | undefined)?.customHudWidgets)
+                ? (prevMeta.gameSetupConfig as Record<string, unknown>).customHudWidgets
+                : [],
+        ),
         ...(carriedContinuity ? { gameContinuity: carriedContinuity } : {}),
         gameId,
         gameSessionNumber: sessionNumber,
@@ -16332,6 +16346,8 @@ export async function gameRoutes(app: FastifyInstance) {
     npcsNeedingAvatars: z
       .array(
         z.object({
+          characterId: z.string().min(1).max(200).nullable().optional(),
+
           npcId: z.string().min(1).max(200).nullable().optional(),
           name: z.string().min(1).max(200),
           description: z.string().max(5000),
@@ -16343,6 +16359,8 @@ export async function gameRoutes(app: FastifyInstance) {
       .optional(),
     // Stable NPC ids are capped at 200 characters; the explicit `id:` selector adds three more.
     forceNpcAvatarNames: z.array(z.string().min(1).max(203)).max(10).optional(),
+    campaignPortraitBatch: z.boolean().optional(),
+    npcPortraitStylePrompt: z.string().max(1000).optional(),
     illustration: z
       .object({
         segment: z.number().int().min(0).max(500).optional(),
@@ -18295,6 +18313,10 @@ export async function gameRoutes(app: FastifyInstance) {
 
   app.post("/generate-assets/preview", async (req) => {
     const input = generateAssetsSchema.parse(req.body);
+    if (input.campaignPortraitBatch && input.forceNpcAvatarNames?.length)
+      throw Object.assign(new Error("Missing portrait batches cannot replace assigned portraits."), {
+        statusCode: 400,
+      });
     const chats = createChatsStorage(app.db);
     const connections = createConnectionsStorage(app.db);
     const agents = createAgentsStorage(app.db);
@@ -18306,10 +18328,20 @@ export async function gameRoutes(app: FastifyInstance) {
     const enableGen = !!meta.enableSpriteGeneration;
     const backgroundGenerationEnabled = meta.gameStoryboardViewerDisplayMode !== "background";
     const imgConnId = await resolveGameImageConnectionId(meta, agents);
-    if (!enableGen || !imgConnId) return { items: [] };
+    if (!enableGen || !imgConnId) {
+      if (input.campaignPortraitBatch)
+        throw Object.assign(new Error("Enable game image generation and choose an image connection first."), {
+          statusCode: 400,
+        });
+      return { items: [] };
+    }
 
     const imgConn = await connections.getWithKey(imgConnId);
-    if (!imgConn) return { items: [] };
+    if (!imgConn) {
+      if (input.campaignPortraitBatch)
+        throw Object.assign(new Error("Image generation connection not found."), { statusCode: 400 });
+      return { items: [] };
+    }
     const imgFallback = await resolveImageConnectionFallback(connections, imgConn.id);
 
     const imageSettings = await loadImageGenerationUserSettings(app.db);
@@ -18347,6 +18379,7 @@ export async function gameRoutes(app: FastifyInstance) {
     const genre = (setupCfg?.genre as string) || "";
     const setting = (setupCfg?.setting as string) || "";
     const artStyle = resolveGameSetupArtStylePrompt(setupCfg);
+    const portraitArtStyle = input.npcPortraitStylePrompt?.trim() || artStyle;
     const styleProfileId =
       ((setupCfg?.imageStyleProfileId as string | undefined) ?? (meta.imageStyleProfileId as string | undefined)) ||
       null;
@@ -18578,7 +18611,7 @@ export async function gameRoutes(app: FastifyInstance) {
 
     if (input.npcsNeedingAvatars?.length) {
       const forceNpcAvatarNames = input.forceNpcAvatarNames ?? [];
-      const currentNpcs = (meta.gameNpcs as GameNpc[]) ?? [];
+      let currentNpcs = (meta.gameNpcs as GameNpc[]) ?? [];
       const existingNpcAvatars = createExistingNpcAvatarLookup();
       markDuplicateNpcAvatarNames(existingNpcAvatars, currentNpcs);
       markDuplicateNpcAvatarNames(existingNpcAvatars, input.npcsNeedingAvatars);
@@ -18602,13 +18635,23 @@ export async function gameRoutes(app: FastifyInstance) {
       }
 
       for (const npc of input.npcsNeedingAvatars) {
-        const generatedAvatarUrl = buildNpcAvatarUrl(input.chatId, npc.name);
+        const generatedAvatarUrl = input.campaignPortraitBatch ? null : buildNpcAvatarUrl(input.chatId, npc.name);
         if (!existingNpcAvatars.ambiguousNames.has(normalizeJournalMatch(npc.name))) {
           addExistingNpcAvatar(existingNpcAvatars, npc.name, generatedAvatarUrl, npc.npcId);
         }
       }
 
       const allChars = await loadGameLinkedCharacters(meta, parseChatCharacterIds(chat.characterIds));
+      if (input.campaignPortraitBatch) {
+        const roster = resolveCampaignPortraitRoster(
+          meta,
+          parseChatCharacterIds(chat.characterIds),
+          allChars,
+          input.npcsNeedingAvatars,
+        );
+        currentNpcs = roster.npcs;
+        input.npcsNeedingAvatars = roster.candidates;
+      }
       const appearanceByCharacterId = new Map(
         allChars.map((row) => {
           const data = parseStoredJson<Record<string, unknown>>(row.data) ?? {};
@@ -18629,7 +18672,7 @@ export async function gameRoutes(app: FastifyInstance) {
       }
 
       type PreviewAssetItem = (typeof items)[number];
-      const portraitPreviewItems: Array<PreviewAssetItem | null> = new Array(input.npcsNeedingAvatars.length).fill(
+      const portraitPreviewItems: Array<PreviewAssetItem | null> = new Array(input.npcsNeedingAvatars!.length).fill(
         null,
       );
       let nextNpcIndex = 0;
@@ -18639,7 +18682,7 @@ export async function gameRoutes(app: FastifyInstance) {
           const npc = input.npcsNeedingAvatars?.[index];
           if (!npc) return;
           const admittedNpc = findNpcRecordForAsset(currentNpcs, npc);
-          const admittedCard = allChars.find((ch) => ch.id === admittedNpc?.characterId);
+          const admittedCard = allChars.find((ch) => ch.id === (admittedNpc?.characterId ?? npc.characterId));
           if (
             !isForcedSceneAssetNpcAvatar(forceNpcAvatarNames, npc) &&
             admittedNpc?.descriptionSource !== "user" &&
@@ -18649,7 +18692,7 @@ export async function gameRoutes(app: FastifyInstance) {
             continue;
           if (
             isSceneAssetNpcIgnored(npc, portraitSanitizationOptions) ||
-            isNarrationNpcNameExcluded(npc.name, portraitExcludedNames)
+            (!input.campaignPortraitBatch && isNarrationNpcNameExcluded(npc.name, portraitExcludedNames))
           ) {
             continue;
           }
@@ -18666,7 +18709,8 @@ export async function gameRoutes(app: FastifyInstance) {
           if (!forceNpcAvatar && libraryAvatar) continue;
           const presentCharacter = findPresentRecordForAsset(presentCharacters, npc, metadataNpc);
           const appearance =
-            (metadataNpc?.characterId && appearanceByCharacterId.get(metadataNpc.characterId)) ||
+            ((metadataNpc?.characterId ?? npc.characterId) &&
+              appearanceByCharacterId.get(metadataNpc?.characterId ?? npc.characterId!)) ||
             resolveNpcPortraitAppearance(npc, metadataNpc, presentCharacter);
           const publicIdentityTraits = resolveNpcPortraitPublicIdentityTraits(npc, metadataNpc, presentCharacter);
           const portraitReviewKey = npc.npcId?.trim() || npc.name;
@@ -18679,7 +18723,8 @@ export async function gameRoutes(app: FastifyInstance) {
             appearance,
             gender: publicIdentityTraits.gender,
             pronouns: publicIdentityTraits.pronouns,
-            artStyle,
+            artStyle: portraitArtStyle,
+            styleCacheKey: input.campaignPortraitBatch ? portraitArtStyle : undefined,
             imgSource,
             imgModel,
             imgBaseUrl,
@@ -18713,7 +18758,7 @@ export async function gameRoutes(app: FastifyInstance) {
       const portraitPreviewWorkerCount =
         meta.gameSequentialAgents === true || input.queueImageGenerationRequests
           ? 1
-          : Math.min(GAME_ASSET_PORTRAIT_CONCURRENCY, input.npcsNeedingAvatars.length);
+          : Math.min(GAME_ASSET_PORTRAIT_CONCURRENCY, input.npcsNeedingAvatars!.length);
       await Promise.all(Array.from({ length: portraitPreviewWorkerCount }, () => runPortraitPreviewWorker()));
       items.push(...portraitPreviewItems.filter((item): item is PreviewAssetItem => item !== null));
     }
@@ -18723,6 +18768,10 @@ export async function gameRoutes(app: FastifyInstance) {
 
   app.post("/generate-assets", async (req) => {
     const input = generateAssetsSchema.parse(req.body);
+    if (input.campaignPortraitBatch && input.forceNpcAvatarNames?.length)
+      throw Object.assign(new Error("Missing portrait batches cannot replace assigned portraits."), {
+        statusCode: 400,
+      });
     const automaticAssetAdmissionMode = input.automatic ? automaticGameMediaAdmissionMode(input.chatId) : undefined;
     // Accepted image work belongs to the server: navigating away must not discard the gallery result.
     const assetAbortSignal = AbortSignal.timeout(GAME_ASSET_GENERATION_TIMEOUT_MS);
@@ -18776,6 +18825,10 @@ export async function gameRoutes(app: FastifyInstance) {
       const imgConnId = await resolveGameImageConnectionId(meta, agents);
 
       if (!enableGen || !imgConnId) {
+        if (input.campaignPortraitBatch)
+          throw Object.assign(new Error("Enable game image generation and choose an image connection first."), {
+            statusCode: 400,
+          });
         logger.info(
           "[game/generate-assets] skipped: enableSpriteGeneration=%s imageConnectionConfigured=%s",
           enableGen,
@@ -18791,6 +18844,8 @@ export async function gameRoutes(app: FastifyInstance) {
 
       const imgConn = await connections.getWithKey(imgConnId);
       if (!imgConn) {
+        if (input.campaignPortraitBatch)
+          throw Object.assign(new Error("Image generation connection not found."), { statusCode: 400 });
         logger.info("[game/generate-assets] skipped: image connection %s not found", imgConnId);
         return {
           generatedBackground: null,
@@ -18816,6 +18871,7 @@ export async function gameRoutes(app: FastifyInstance) {
       const genre = (setupCfg?.genre as string) || "";
       const setting = (setupCfg?.setting as string) || "";
       const artStyle = resolveGameSetupArtStylePrompt(setupCfg);
+      const portraitArtStyle = input.npcPortraitStylePrompt?.trim() || artStyle;
       const styleProfileId =
         ((setupCfg?.imageStyleProfileId as string | undefined) ?? (meta.imageStyleProfileId as string | undefined)) ||
         null;
@@ -19130,7 +19186,7 @@ export async function gameRoutes(app: FastifyInstance) {
         const forceNpcAvatarNames = input.forceNpcAvatarNames ?? [];
         const latestChat = await chats.getById(input.chatId);
         const latestMeta = latestChat ? parseMeta(latestChat.metadata) : meta;
-        const currentNpcs = (latestMeta.gameNpcs as GameNpc[]) ?? [];
+        let currentNpcs = (latestMeta.gameNpcs as GameNpc[]) ?? [];
         const existingNpcAvatars = createExistingNpcAvatarLookup();
         markDuplicateNpcAvatarNames(existingNpcAvatars, currentNpcs);
         markDuplicateNpcAvatarNames(existingNpcAvatars, input.npcsNeedingAvatars);
@@ -19154,7 +19210,7 @@ export async function gameRoutes(app: FastifyInstance) {
         }
 
         for (const npc of input.npcsNeedingAvatars) {
-          const generatedAvatarUrl = buildNpcAvatarUrl(input.chatId, npc.name);
+          const generatedAvatarUrl = input.campaignPortraitBatch ? null : buildNpcAvatarUrl(input.chatId, npc.name);
           if (!existingNpcAvatars.ambiguousNames.has(normalizeJournalMatch(npc.name))) {
             addExistingNpcAvatar(existingNpcAvatars, npc.name, generatedAvatarUrl, npc.npcId);
           }
@@ -19166,6 +19222,16 @@ export async function gameRoutes(app: FastifyInstance) {
           parseChatCharacterIds((latestChat ?? chat).characterIds),
           true,
         );
+        if (input.campaignPortraitBatch) {
+          const roster = resolveCampaignPortraitRoster(
+            latestMeta,
+            parseChatCharacterIds((latestChat ?? chat).characterIds),
+            allChars,
+            input.npcsNeedingAvatars,
+          );
+          currentNpcs = roster.npcs;
+          input.npcsNeedingAvatars = roster.candidates;
+        }
         const appearanceByCharacterId = new Map(
           allChars.map((row) => {
             const data = parseStoredJson<Record<string, unknown>>(row.data) ?? {};
@@ -19252,7 +19318,7 @@ export async function gameRoutes(app: FastifyInstance) {
             ? latestMeta.gameImageStyleReferenceCharacterId
             : undefined;
         let styleReferenceImage: string | undefined;
-        if (styleReferenceCharacterId) {
+        if (styleReferenceCharacterId && !input.campaignPortraitBatch) {
           const referencePath = charAvatarById.get(styleReferenceCharacterId);
           styleReferenceImage = referencePath ? (readAvatarBase64(referencePath) ?? undefined) : undefined;
         }
@@ -19273,17 +19339,24 @@ export async function gameRoutes(app: FastifyInstance) {
             const npc = input.npcsNeedingAvatars?.[nextNpcIndex++];
             if (!npc) return;
             const admittedNpc = findNpcRecordForAsset(currentNpcs, npc);
-            const admittedCard = allChars.find((ch) => ch.id === admittedNpc?.characterId);
+            const admittedCard = allChars.find((ch) => ch.id === (admittedNpc?.characterId ?? npc.characterId));
             if (
               !isForcedSceneAssetNpcAvatar(forceNpcAvatarNames, npc) &&
               admittedNpc?.descriptionSource !== "user" &&
               admittedNpc?.descriptionSource !== "library" &&
               (!admittedCard || !isVerifiedNpcCharacterData(admittedCard.data))
-            )
+            ) {
+              if (input.campaignPortraitBatch) {
+                failedNpcAvatars.push({
+                  name: npc.name,
+                  reason: "No user-authored or verified campaign appearance is available for this character yet.",
+                });
+              }
               continue;
+            }
             if (
               isSceneAssetNpcIgnored(npc, portraitSanitizationOptions) ||
-              isNarrationNpcNameExcluded(npc.name, portraitExcludedNames)
+              (!input.campaignPortraitBatch && isNarrationNpcNameExcluded(npc.name, portraitExcludedNames))
             ) {
               continue;
             }
@@ -19312,7 +19385,8 @@ export async function gameRoutes(app: FastifyInstance) {
               }
               const presentCharacter = findPresentRecordForAsset(presentCharacters, npc, metadataNpc);
               const sourceAppearance =
-                (metadataNpc?.characterId && appearanceByCharacterId.get(metadataNpc.characterId)) ||
+                ((metadataNpc?.characterId ?? npc.characterId) &&
+                  appearanceByCharacterId.get(metadataNpc?.characterId ?? npc.characterId!)) ||
                 resolveNpcPortraitAppearance(npc, metadataNpc, presentCharacter);
               reviewSourceKey = createHash("sha256")
                 .update(
@@ -19353,7 +19427,7 @@ export async function gameRoutes(app: FastifyInstance) {
                 complete: completeVisualReview,
               });
               const publicIdentityTraits = resolveNpcPortraitPublicIdentityTraits(npc, metadataNpc, presentCharacter);
-              if (styleReferenceCharacterId) {
+              if (styleReferenceCharacterId && !input.campaignPortraitBatch) {
                 if (!styleReferenceImage) throw new Error("The campaign portrait style reference is unavailable.");
                 if (
                   resolveSceneIllustrationReferenceImageLimit({
@@ -19377,8 +19451,9 @@ export async function gameRoutes(app: FastifyInstance) {
                 appearance,
                 gender: publicIdentityTraits.gender,
                 pronouns: publicIdentityTraits.pronouns,
-                artStyle,
-                styleReferenceImage,
+                artStyle: portraitArtStyle,
+                styleCacheKey: input.campaignPortraitBatch ? portraitArtStyle : undefined,
+                styleReferenceImage: input.campaignPortraitBatch ? undefined : styleReferenceImage,
                 reviewPortrait: (image) =>
                   reviewNpcPortrait({
                     name: npc.name,
@@ -19463,7 +19538,7 @@ export async function gameRoutes(app: FastifyInstance) {
         );
         const portraitWorkerCount = Math.min(
           meta.gameSequentialAgents === true ? 1 : portraitWorkerLimit,
-          input.npcsNeedingAvatars.length,
+          input.npcsNeedingAvatars!.length,
         );
         await Promise.all(Array.from({ length: portraitWorkerCount }, () => runPortraitWorker()));
 
@@ -19482,17 +19557,55 @@ export async function gameRoutes(app: FastifyInstance) {
                   })();
               const metadataNpc = findNpcRecordForAsset(currentNpcs, generatedAvatar);
               return {
+                characterId: candidate?.characterId ?? metadataNpc?.characterId,
                 description: candidate?.description?.trim() || metadataNpc?.description || "",
                 gender: candidate?.gender ?? metadataNpc?.gender,
                 pronouns: candidate?.pronouns ?? metadataNpc?.pronouns,
               };
             })(),
           }));
+          const persistedNpcAvatarKeys = new Set<string>();
+          const persistenceChat = await chats.getById(input.chatId);
+          const persistenceChatIds = parseChatCharacterIds(persistenceChat?.characterIds ?? chat.characterIds);
+          const persistenceCards = input.campaignPortraitBatch
+            ? await loadGameLinkedCharacters(
+                persistenceChat ? parseMeta(persistenceChat.metadata) : latestMeta,
+                persistenceChatIds,
+                true,
+              )
+            : [];
           await chats.patchMetadata(input.chatId, (freshMeta) => {
             const freshNpcs = Array.isArray(freshMeta.gameNpcs) ? (freshMeta.gameNpcs as GameNpc[]) : [];
+            const safeAvatarEntries = avatarEntries.filter((entry) => {
+              if (input.campaignPortraitBatch) {
+                try {
+                  resolveCampaignPortraitRoster(freshMeta, persistenceChatIds, persistenceCards, [entry]);
+                } catch {
+                  return false;
+                }
+                if (
+                  entry.characterId &&
+                  persistenceCards.some((card) => card.id === entry.characterId && card.avatarPath)
+                )
+                  return false;
+              }
+              const matches = entry.npcId
+                ? freshNpcs.filter((npc) => npc.id === entry.npcId)
+                : freshNpcs.filter((npc) => normalizeJournalMatch(npc.name) === normalizeJournalMatch(entry.name));
+              if (
+                matches.length > 1 ||
+                (matches.some((npc) => npc.avatarUrl?.trim()) &&
+                  !isForcedSceneAssetNpcAvatar(input.forceNpcAvatarNames ?? [], entry))
+              )
+                return false;
+              persistedNpcAvatarKeys.add(
+                entry.npcId ? `id:${entry.npcId}` : `name:${normalizeJournalMatch(entry.name)}`,
+              );
+              return true;
+            });
             const nextNpcs = upsertGameNpcAvatarEntries(
               freshNpcs,
-              avatarEntries,
+              safeAvatarEntries,
               gameNpcSanitizationOptionsFromMetadata(freshMeta),
             );
             return nextNpcs !== freshNpcs ? { gameNpcs: nextNpcs } : {};
@@ -19502,7 +19615,9 @@ export async function gameRoutes(app: FastifyInstance) {
             postPersistChat ? parseMeta(postPersistChat.metadata) : latestMeta,
           );
           const deliverableNpcAvatars = generatedNpcAvatars.filter(
-            (npc) => !isSceneAssetNpcIgnored(npc, postPersistOptions),
+            (npc) =>
+              !isSceneAssetNpcIgnored(npc, postPersistOptions) &&
+              persistedNpcAvatarKeys.has(npc.npcId ? `id:${npc.npcId}` : `name:${normalizeJournalMatch(npc.name)}`),
           );
           generatedNpcAvatars.splice(0, generatedNpcAvatars.length, ...deliverableNpcAvatars);
         }

@@ -4,6 +4,16 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Added selectable backup modes under Settings → Advanced → Backup & Export: Full, Chats & game data, and Changed files only. Data-only backups preserve chats, campaign records and long-term memory without media. Changed-files snapshots share unchanged files with earlier snapshots, remain independently restorable, and can be downloaded as complete ZIPs. Full remains the default; the selected mode also applies to scheduled backups.
+
+
+- Improved ChatGPT Game prompt cache replay for medium-sized conversations and prompts with runtime context after the player message. Exact repeated instructions and unchanged portions of trusted context can reuse their earlier copies while retaining all changed text and instruction roles. Session-frozen NPC cards keep small current updates separate instead of repeatedly rebuilding the cached prefix; current character information remains available. Existing history, context-size, and state-safety checks remain in place. Cache percentages still vary with changed context and provider cache availability.
+
+- Added a current-campaign “Generate missing portraits” button in Contact Book, with an editable shared stylized 2.5D look, progress, and preservation of existing portraits.
+- Fixed inherited Learned Magic and Intel & Leads entries disappearing when branching a later game session; new sessions retain an immutable starting widget state.
+
+- Separate Character Replies now makes one corrective planning attempt when the generated scene fails validation, while continuing to reject unknown or offscene witnesses before any character reply runs.
+
 - Fixed memory status to distinguish checked batches from continuous source coverage and explain withheld facts without hiding accepted memories. Coverage warnings now open the relevant details.
 - Strengthened targeted memory repairs so omitted source messages require their own evidenced additions, and repairs cannot duplicate an unchanged claim merely by assigning different search keys.
 

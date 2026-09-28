@@ -67,11 +67,11 @@ const backupRouteSource = await readFile(
 );
 assert.match(
   backupRouteSource,
-  /withAutomaticBackupLifecycleLock\(\(\) =>\s*writeAutomaticBackup\(app, settings\.retentionCount\)/u,
+  /withAutomaticBackupLifecycleLock\(\(\) =>\s*writeAutomaticBackup\(app, settings\.retentionCount, settings\.mode\)/u,
 );
 assert.match(
   backupRouteSource,
-  /withAutomaticBackupLifecycleLock\(\(\) =>\s*pruneAutomaticBackupFiles\(backupsRoot, next\.retentionCount\)/u,
+  /withAutomaticBackupLifecycleLock\(\(\) =>\s*pruneScheduledBackupHistory\(backupsRoot, next\.retentionCount\)/u,
 );
 assert.match(
   backupRouteSource,

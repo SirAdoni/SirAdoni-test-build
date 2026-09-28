@@ -352,7 +352,16 @@ export function safeGeneratedAssetSlug(name: string, opts: { maxBytes?: number; 
 
 export function npcPortraitSlug(req: NpcPortraitRequest): string {
   const identityHash = createHash("sha256")
-    .update([req.npcId ?? "", req.npcName, req.appearance, req.gender ?? "", req.pronouns ?? ""].join("\n"))
+    .update(
+      [
+        req.npcId ?? "",
+        req.npcName,
+        req.appearance,
+        req.gender ?? "",
+        req.pronouns ?? "",
+        ...(req.styleCacheKey ? [req.styleCacheKey] : []),
+      ].join("\n"),
+    )
     .digest("hex")
     .slice(0, 8);
   return safeGeneratedAssetSlug(req.npcName, {
@@ -498,6 +507,8 @@ export interface NpcPortraitRequest {
   pronouns?: string | null;
   /** Unified art style prompt for visual consistency. */
   artStyle?: string;
+  /** Optional cache namespace for a user-selected campaign portrait style. */
+  styleCacheKey?: string;
   /** Explicitly approved campaign portrait, used only as a visual style reference. */
   styleReferenceImage?: string;
   /** Host acceptance gate: candidate bytes must pass before any avatar file is published. */
@@ -589,13 +600,21 @@ export async function buildNpcPortraitProviderPrompt(req: NpcPortraitRequest): P
       req.artStyle ? `Art style: ${req.artStyle}` : "",
     ],
   });
-  return compileGameImagePrompt(
-    req.dynamicPromptGenerator ? { ...req, preserveFullSourcePrompt: true } : req,
+  const compiled = compileGameImagePrompt(
+    {
+      ...req,
+      ...(req.dynamicPromptGenerator ? { preserveFullSourcePrompt: true } : {}),
+      ...(req.styleCacheKey ? { omitProfileStyleText: true } : {}),
+    },
     "portrait",
     prompt,
     1400,
     GAME_PORTRAIT_NEGATIVE_PROMPT,
   );
+  // Keep the explicit batch rendering choice even if the prompt writer omits it.
+  return req.styleCacheKey && req.artStyle?.trim()
+    ? { ...compiled, prompt: `Portrait rendering style: ${req.artStyle.trim()}\n${compiled.prompt}` }
+    : compiled;
 }
 
 export async function buildNpcPortraitImagePrompt(req: NpcPortraitRequest): Promise<string> {

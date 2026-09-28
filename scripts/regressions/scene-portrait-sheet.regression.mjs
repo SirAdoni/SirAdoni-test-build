@@ -116,7 +116,7 @@ try {
     assert.equal(await singer.evaluate((img) => img.style.top), "", "cleared card crop does not resurrect stale member crop");
     if (viewport.width < 640) {
       await page.getByRole("button", { name: "Open party members" }).click();
-      await page.getByTitle("Quenby - Click to open character sheet").first().click();
+      await page.locator("[data-game-party-popover]").getByTitle("Quenby - Click to open character sheet").click();
     } else await quenby.click();
     const dialog = page.getByRole("dialog", { name: "Quenby", exact: true });
     await dialog.waitFor();
@@ -138,7 +138,7 @@ try {
     const mentor = page.locator('button[aria-label="Maelis"]:visible img').first();
     if (viewport.width < 640) {
       await page.getByRole("button", { name: "Open party members" }).click();
-      await page.getByTitle("Maelis - Click to open character sheet").first().click();
+      await page.locator("[data-game-party-popover]").getByTitle("Maelis - Click to open character sheet").click();
     } else await mentor.click();
     const mentorDialog = page.getByRole("dialog", { name: "Maelis", exact: true });
     await mentorDialog.waitFor();
@@ -151,7 +151,7 @@ try {
     const explicitAvatar = page.locator('button[aria-label="Wynne Brack"]:visible img').first();
     if (viewport.width < 640) {
       await page.getByRole("button", { name: "Open party members" }).click();
-      await page.getByTitle("Wynne Brack - Click to open character sheet").first().click();
+      await page.locator("[data-game-party-popover]").getByTitle("Wynne Brack - Click to open character sheet").click();
     } else await explicitAvatar.click();
     const explicitDialog = page.getByRole("dialog", { name: "Dame Wynne Brack", exact: true });
     await explicitDialog.waitFor();
@@ -170,7 +170,7 @@ try {
     const disabledAvatar = page.locator('button[aria-label="No Stats"]:visible img').first();
     if (viewport.width < 640) {
       await page.getByRole("button", { name: "Open party members" }).click();
-      await page.getByTitle("No Stats - Click to open character sheet").first().click();
+      await page.locator("[data-game-party-popover]").getByTitle("No Stats - Click to open character sheet").click();
     } else await disabledAvatar.click();
     const disabledDialog = page.getByRole("dialog", { name: "No Stats", exact: true });
     await disabledDialog.waitFor();

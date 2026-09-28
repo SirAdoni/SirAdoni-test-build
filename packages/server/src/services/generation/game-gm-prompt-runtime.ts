@@ -222,6 +222,8 @@ export function appendGameGmCampaignMemory(
     content: `${replaceGamePromptText('<campaign_memory audience="gm">', rules)}\n${body}\n${replaceGamePromptText("</campaign_memory>", rules)}`,
     contextKind: "injection",
     providerMetadata: {
+      // Producer-owned current records may be archived only as a scoped turn snapshot.
+      marinaraPromptHistoryReplaySnapshot: true,
       marinaraRuntimeContext: true,
       marinaraCampaignMemory: {
         audience: "gm",
@@ -475,6 +477,8 @@ export async function injectGameGmPromptRuntime(args: {
   resolvePromptMacros(value: string): string;
   resolveCharacterPromptMacros(value: string, profile: CharacterMacroProfile): string;
   cacheFriendlyLayout?: boolean;
+  /** Replay already caches carried updates; avoid counting that text as uncached rent. */
+  preserveReplayPrefix?: boolean;
   campaignMemoryMaxCharacters?: number;
   /** Only live current requests may read the latest durable campaign memory. */
   campaignMemoryRequestMode?: "live-current";
@@ -683,6 +687,7 @@ export async function injectGameGmPromptRuntime(args: {
               const history = args.mappedMessages.filter((message) => message.contextKind === "history");
               return {
                 sessionKey: String(sessionNumber),
+                preserveReplayPrefix: args.preserveReplayPrefix === true,
                 turnKey: history.length,
                 suffixChars: history.reduce(
                   (sum, message) => sum + (typeof message.content === "string" ? message.content.length : 0),

@@ -123,7 +123,11 @@ function validatePublicText(value: unknown, field: string): string {
   return result;
 }
 
-function normalizePlan(value: unknown, actors: readonly IsolatedGameActor[], playerActorId?: string): IsolatedGamePlan {
+export function normalizeIsolatedGamePlan(
+  value: unknown,
+  actors: readonly IsolatedGameActor[],
+  playerActorId?: string,
+): IsolatedGamePlan {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("plan must be an object");
   const raw = value as Record<string, unknown>;
   if (!Array.isArray(raw.publicScene) || !Array.isArray(raw.actorRequests)) fail("plan arrays are required");
@@ -355,7 +359,7 @@ export async function runIsolatedGameTurn(input: IsolatedGameTurnInput): Promise
   if (actors.size > MAX_TRUSTED_ACTORS) fail("trusted actor roster is too large");
   const rawPlan = await input.plan(input.gmPrompt, signal);
   signal.throwIfAborted();
-  const plan = normalizePlan(rawPlan, [...actors.values()], input.playerActorId);
+  const plan = normalizeIsolatedGamePlan(rawPlan, [...actors.values()], input.playerActorId);
   const selectedNames = new Set<string>();
   const selectedActorIds = new Set<string>();
   for (const request of plan.actorRequests) {

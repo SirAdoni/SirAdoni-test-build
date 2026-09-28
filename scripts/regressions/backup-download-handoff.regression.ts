@@ -26,11 +26,25 @@ assert.match(
   /"\/download\/file\/:jobId",\s*\{ exposeHeadRoute: false,/u,
   "HEAD requests must not consume the one-time prepared backup job",
 );
-const handlerStart = settingsPanelSource.indexOf("const handleCreateBackup = async () =>");
-const handlerEnd = settingsPanelSource.indexOf("const { data: backups }", handlerStart);
-assert.ok(handlerStart >= 0 && handlerEnd > handlerStart);
-const handlerSource = settingsPanelSource.slice(handlerStart, handlerEnd);
-assert.match(handlerSource, /window\.location\.assign\(status\.downloadUrl\)/u);
-assert.doesNotMatch(handlerSource, /\.blob\(\)|createObjectURL|showSaveFilePicker/u);
+const downloadStart = settingsPanelSource.indexOf("const startBackupDownload = async");
+const createStart = settingsPanelSource.indexOf("const handleCreateBackup = async () =>");
+const createEnd = settingsPanelSource.indexOf("const handleDownloadBackup", createStart);
+const listStart = settingsPanelSource.indexOf("const { data: backups }");
+assert.ok(downloadStart >= 0 && createStart > downloadStart && createEnd > createStart && listStart > createEnd);
+const downloadSource = settingsPanelSource.slice(downloadStart, createStart);
+const createSource = settingsPanelSource.slice(createStart, createEnd);
+assert.match(downloadSource, /api\.post<[^>]+>\("\/backup\/download\/start", request\)/u);
+assert.match(downloadSource, /window\.location\.assign\(status\.downloadUrl\)/u);
+assert.doesNotMatch(downloadSource, /\.blob\(\)|createObjectURL|showSaveFilePicker/u);
+assert.match(createSource, /settings\.mode === "incremental"[\s\S]*?api\.post\("\/backup"\)/u);
+assert.match(createSource, /startBackupDownload\(\{ mode: settings\.mode \}\)/u);
+assert.doesNotMatch(
+  createSource.match(/if \(settings\.mode === "incremental"\)[\s\S]*?return;/u)?.[0] ?? "",
+  /startBackupDownload/u,
+);
+assert.match(
+  settingsPanelSource,
+  /disabled=\{\s*automaticBackupQuery\.isLoading\s*\|\|\s*!automaticBackupQuery\.data\s*\|\|\s*automaticBackupMutation\.isPending\s*\}/u,
+);
 
 console.log("Backup download handoff regression passed.");

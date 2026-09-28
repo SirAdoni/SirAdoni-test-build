@@ -4739,6 +4739,7 @@ export async function generateRoutes(app: FastifyInstance) {
               mappedMessages,
               personaName,
               cacheFriendlyLayout: supportsFullLorebookContext(conn.provider),
+              preserveReplayPrefix: conn.provider === "openai_chatgpt" && isFeatureEnabled("chatgptHistoryReplay"),
               resolvePromptMacros,
               resolveCharacterPromptMacros: (value, profile) =>
                 resolveGameCharacterCardMacros(value, profile, promptMacroContext),
@@ -5161,7 +5162,8 @@ export async function generateRoutes(app: FastifyInstance) {
               role: "user" as const,
               content: editedFormatReminder,
               contextKind: "injection",
-              providerMetadata: { marinaraRuntimeContext: true },
+              // Preserve the user role; only an exact, producer-marked copy may reference an earlier snapshot.
+              providerMetadata: { marinaraRuntimeContext: true, marinaraPromptHistoryReplaySnapshot: true },
             });
             logger.debug(
               "[generate/game] Injected format reminder (%d chars) near the prompt tail",
@@ -8336,6 +8338,8 @@ export async function generateRoutes(app: FastifyInstance) {
               role: "system",
               content: gameFinalRecencySeal,
               contextKind: "injection",
+              // Scope these producer-owned checks to the current turn during history replay.
+              providerMetadata: { marinaraRuntimeContext: true, marinaraPromptHistoryReplaySnapshot: true },
             });
           }
           if (gameFinalOocReminder) {
@@ -8343,6 +8347,7 @@ export async function generateRoutes(app: FastifyInstance) {
               role: "system",
               content: gameFinalOocReminder,
               contextKind: "injection",
+              providerMetadata: { marinaraRuntimeContext: true, marinaraPromptHistoryReplaySnapshot: true },
             });
           }
           if (

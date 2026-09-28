@@ -13,11 +13,13 @@ import {
 import { applyGamePromptDirectEdits, type GamePromptDirectEdit } from "../../services/game/game-prompt-direct-edits.js";
 import {
   ISOLATED_MAX_LINES_PER_ACTOR,
+  normalizeIsolatedGamePlan,
   runIsolatedGameTurn,
   type IsolatedGameActor,
   type IsolatedGameActorPrompt,
   type IsolatedGameTurnResult,
 } from "../../services/game/game-isolated-turn.js";
+import { logger } from "../../lib/logger.js";
 
 export type IsolatedTurnProviderRequest = (messages: readonly ChatMessage[], options: ChatOptions) => Promise<string>;
 
@@ -91,6 +93,7 @@ function contextLimitError(): Error {
 
 const PLAN_INSTRUCTION = [
   "Return only one JSON object with keys publicScene, actorRequests, and optional spatialDirective.",
+  "Use only exact NPC IDs from the supplied trusted actor roster in actorRequests, perceivedBy, and arrivingActorIds. Never substitute a name, the player ID, or any ID not listed in this roster.",
   "publicScene is an ordered array of scene beats with {beat:number,text:string,perceivedBy:string[],contextOnly?:boolean,arrivingActorIds?:string[]}.",
   "actorRequests is an array of {beat:number,actorId:string,perceivedBy:string[]}, with at most 12 requests total in this turn, including repeat appearances. A character may be requested again later in the conversation to respond to intervening replies; do not duplicate a request without a conversational reason. The known roster may be larger; select only the participants needed for this scene. Order requests in conversational order within each beat. Each request's perceivedBy lists exact NPC IDs who can hear or see that actor's public speech/actions at that point; use [] for a reply nobody else witnesses. Include only actual witnesses present at that beat, not offscene characters or later arrivals. Later speakers receive earlier accepted lines only when included in this audience; private thoughts are never shared and whispers reach only their named recipient.",
   "Each perceivedBy must contain only exact trusted NPC IDs who could observe or hear that beat; use [] for player-only narration. Do not assume every present actor heard private communication.",
@@ -260,9 +263,44 @@ export async function runIsolatedGameTurnWithProvider(
     signal: input.signal,
     maxConcurrency: input.maxConcurrency,
     resolveActorContext: input.resolveActorContext,
-    plan: async () => {
+    plan: async (_gmPrompt, signal) => {
       const messages = planMessages(input.plannerMessages, input.actors, input.promptTextReplacements);
-      return parseGameJsonish(await request("planner", messages));
+      const parseAndValidate = async (requestMessages: readonly ChatMessage[]) =>
+        normalizeIsolatedGamePlan(
+          parseGameJsonish(await request("planner", requestMessages)),
+          input.actors,
+          input.playerActorId,
+        );
+      try {
+        return await parseAndValidate(messages);
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.startsWith("ISOLATED_TURN_INVALID:")) throw error;
+        const validationFailure = error.message.slice("ISOLATED_TURN_INVALID:".length).trim();
+        const safeDiagnostic = validationFailure.match(
+          /^(publicScene|actorRequests)\[(\d+)\] references an? (unknown|nonpresent) audience actor$/u,
+        );
+        const safeValidationFailure = safeDiagnostic
+          ? `${safeDiagnostic[1]}[${safeDiagnostic[2]}] references ${safeDiagnostic[3] === "unknown" ? "an unknown" : "a nonpresent"} audience actor`
+          : "planner result failed structural or trusted-roster validation";
+        signal.throwIfAborted();
+        logger.warn(
+          { validationFailure: safeValidationFailure },
+          "[isolated-game] Planner result rejected; retrying once",
+        );
+        const retryMessages = [
+          ...messages,
+          {
+            role: "user" as const,
+            content: [
+              `The previous plan failed validation: ${safeValidationFailure}.`,
+              "Generate the plan again from the original scene and context, respecting the supplied trusted NPC IDs and witness boundaries.",
+              "Do not invent IDs or omit any actor who truly witnesses the beat.",
+            ].join(" "),
+            contextKind: "injection" as const,
+          },
+        ];
+        return parseAndValidate(retryMessages);
+      }
     },
     actor: async (prompt) => {
       const messages = actorPromptMessages(prompt, input.promptTextReplacements, input.gameTime);

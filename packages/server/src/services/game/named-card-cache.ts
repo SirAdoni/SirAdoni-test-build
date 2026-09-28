@@ -58,6 +58,8 @@ export interface NamedCardFreezeOptions {
   turnKey: number;
   /** Characters after the cached cards (the history and the tail) that a fold would re-send. */
   suffixChars: number;
+  /** Keep replayable update prefixes cached until this turn's uncached updates reach the standard fold size. */
+  preserveReplayPrefix?: boolean;
 }
 
 /** Never fold a frozen card list for fewer carried characters than this, however short the session. */
@@ -217,7 +219,8 @@ function planFrozenNamedCardLayout(
   const newTurn = previous.turnKey !== freeze.turnKey;
   const carried = newTurn ? carriedBefore + updateChars : carriedBefore;
   const threshold = Math.max(NAMED_CARD_FREEZE_MIN_FOLD_CHARS, freeze.suffixChars);
-  if (updates.length > 0 && carried >= threshold) return foldAll();
+  const shouldFold = freeze.preserveReplayPrefix ? updateChars >= NAMED_CARD_FOLD_CHARS : carried >= threshold;
+  if (updates.length > 0 && shouldFold) return foldAll();
 
   const snapshot: NamedCardSnapshot = { ...previous, carried, turnKey: freeze.turnKey };
   const changed = newTurn && JSON.stringify(snapshot) !== JSON.stringify(previous);

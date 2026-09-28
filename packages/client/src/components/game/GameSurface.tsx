@@ -289,7 +289,10 @@ import { GameInventory, type InventoryItem as GameInventoryItem } from "./GameIn
 import { addInventoryQuantity, renameInventoryIdentity, updateInventoryQuantity } from "./game-inventory-identity";
 import { GameReadableDisplay } from "./GameReadableDisplay";
 import {
+  buildCampaignPortraitBatches,
+  buildCampaignPortraitRosterCandidates,
   buildMissingSceneAssetGenerationPayload,
+  DEFAULT_CAMPAIGN_PORTRAIT_STYLE_PROMPT,
   normalizeSceneAssetNameForGeneration,
   type SceneAssetNpcAvatarCandidate,
 } from "./game-asset-generation-payload";
@@ -328,8 +331,17 @@ type GameAssetGenerationPayload = {
   backgroundTag?: string;
   backgroundDescription?: string;
   forceBackground?: boolean;
-  npcsNeedingAvatars?: Array<{ name: string; description: string; gender?: string | null; pronouns?: string | null }>;
+  npcsNeedingAvatars?: Array<{
+    npcId?: string | null;
+    characterId?: string | null;
+    name: string;
+    description: string;
+    gender?: string | null;
+    pronouns?: string | null;
+  }>;
   forceNpcAvatarNames?: string[];
+  campaignPortraitBatch?: boolean;
+  npcPortraitStylePrompt?: string;
   illustration?: import("@marinara-engine/shared").SceneIllustrationRequest;
   illustrationNarration?: string;
   useAvatarReferences?: boolean;
@@ -375,7 +387,8 @@ type GameAssetGenerationResult = {
   generatedBackground: string | null;
   fallbackBackground?: string | null;
   generatedIllustration: { tag: string; segment?: number } | null;
-  generatedNpcAvatars: Array<{ name: string; avatarUrl: string }>;
+  generatedNpcAvatars: Array<{ npcId?: string | null; characterId?: string | null; name: string; avatarUrl: string }>;
+  failedNpcAvatars?: Array<{ name: string; reason: string }>;
 };
 
 function persistReplayPresentationCue(
@@ -3568,6 +3581,11 @@ function GameSurfaceComponent({
   const npcPortraitUploadInputRef = useRef<HTMLInputElement>(null);
   const [pendingNpcPortraitUploadName, setPendingNpcPortraitUploadName] = useState<string | null>(null);
   const [generatingNpcPortraitNames, setGeneratingNpcPortraitNames] = useState<Set<string>>(() => new Set());
+  const [campaignPortraitProgress, setCampaignPortraitProgress] = useState<{
+    completedBatches: number;
+    totalBatches: number;
+  } | null>(null);
+  const campaignPortraitGeneratingRef = useRef(false);
   const [npcCharacterSyncRetryToken, setNpcCharacterSyncRetryToken] = useState(0);
   const npcCharacterSyncKeyRef = useRef<string | null>(null);
   const npcCharacterSyncRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -4491,6 +4509,29 @@ function GameSurfaceComponent({
     return buildNpcAvatarRequests(sceneAssetNpcs, npcAvatarLookup, failedNpcAvatarNames);
   }, [failedNpcAvatarNames, npcAvatarLookup, sceneAssetNpcs]);
 
+  const campaignPortraitCandidates = useMemo(() => {
+    const setup = chatMeta.gameSetupConfig as Record<string, unknown> | undefined;
+    const gmCharacterId = typeof setup?.gmCharacterId === "string" ? setup.gmCharacterId.trim() : "";
+    const activeCharacterIds = new Set(
+      mergeUniqueIds(
+        getActivePartyIds(chatMeta),
+        chatCharacterIds.filter((id) => id !== gmCharacterId),
+      ),
+    );
+    const metadataNpcs = Array.isArray(chatMeta.gameNpcs) ? (chatMeta.gameNpcs as GameNpc[]) : [];
+    return buildCampaignPortraitRosterCandidates(npcs, metadataNpcs, characters, activeCharacterIds);
+  }, [chatCharacterIds, chatMeta, characters, npcs]);
+
+  const campaignPortraitBatches = useMemo(
+    () =>
+      buildCampaignPortraitBatches(
+        campaignPortraitCandidates,
+        npcAvatarLookup,
+        DEFAULT_CAMPAIGN_PORTRAIT_STYLE_PROMPT,
+        new Set(characters.filter((character) => character.avatarUrl).map((character) => character.id)),
+      ),
+    [campaignPortraitCandidates, characters, npcAvatarLookup],
+  );
   const npcCharacterSyncSignature = useMemo(() => {
     const roster = npcs.map((npc) => ({
       id: npc.id,
@@ -8082,6 +8123,82 @@ function GameSurfaceComponent({
     ],
   );
 
+  const handleGenerateMissingCampaignPortraits = useCallback(
+    async (stylePrompt: string): Promise<{ generated: number; failed: number }> => {
+      if (!activeChatId) return { generated: 0, failed: 0 };
+      if (campaignPortraitGeneratingRef.current) {
+        throw new Error(localizeUi("ui.game.gamesurfacecomponent.campaignPortraitGenerationAlreadyRunning"));
+      }
+      const batches = buildCampaignPortraitBatches(
+        campaignPortraitCandidates,
+        npcAvatarLookup,
+        stylePrompt,
+        new Set(characters.filter((character) => character.avatarUrl).map((character) => character.id)),
+      );
+      if (batches.length === 0) return { generated: 0, failed: 0 };
+      if (!gameImageGenerationEnabled)
+        throw new Error(localizeUi("ui.game.gamesurfacecomponent.enableGameImageGenerationAndChooseAnImageConnection"));
+
+      campaignPortraitGeneratingRef.current = true;
+      setCampaignPortraitProgress({ completedBatches: 0, totalBatches: batches.length });
+      let generated = 0;
+      let failed = 0;
+      let firstError: unknown;
+      try {
+        for (let index = 0; index < batches.length; index += 1) {
+          if (useChatStore.getState().activeChatId !== activeChatId) break;
+          const batch = batches[index]!;
+          try {
+            const result = await runGameAssetGeneration(
+              {
+                chatId: activeChatId,
+                campaignPortraitBatch: true,
+                npcPortraitStylePrompt: batch.stylePrompt,
+                npcsNeedingAvatars: batch.candidates.map(
+                  ({ npcId, characterId, name, description, gender, pronouns }) => ({
+                    npcId,
+                    characterId,
+                    name,
+                    description: description ?? "",
+                    gender: gender ?? null,
+                    pronouns: pronouns ?? null,
+                  }),
+                ),
+                debugMode: useUIStore.getState().debugMode,
+              },
+              { allowPromptReview: true },
+            );
+            if (!result) break;
+            if (useChatStore.getState().activeChatId !== activeChatId) break;
+            if (result) {
+              await applyGeneratedAssets(result);
+              generated += result.generatedNpcAvatars.length;
+              failed += result.failedNpcAvatars?.length ?? 0;
+            }
+          } catch (error) {
+            firstError ??= error;
+            failed += batch.candidates.length;
+          }
+          setCampaignPortraitProgress({ completedBatches: index + 1, totalBatches: batches.length });
+        }
+      } finally {
+        campaignPortraitGeneratingRef.current = false;
+        setCampaignPortraitProgress(null);
+      }
+      if (firstError && generated === 0) throw firstError;
+      return { generated, failed };
+    },
+    [
+      activeChatId,
+      applyGeneratedAssets,
+      campaignPortraitCandidates,
+      characters,
+      gameImageGenerationEnabled,
+      localizeUi,
+      npcAvatarLookup,
+      runGameAssetGeneration,
+    ],
+  );
   const handleRemoveNpcFromJournal = useCallback(
     async (npcId: string, npcName: string): Promise<Journal | undefined> => {
       if (!activeChatId) return;
@@ -13000,6 +13117,13 @@ function GameSurfaceComponent({
                     refreshKey={latestAssistantMsg?.id}
                     onCloseContacts={() => setContactBookVisible(false)}
                     onOpenCharacter={(characterId) => useGameModeStore.getState().openCharacterSheet(characterId)}
+                    campaignPortraitCount={campaignPortraitBatches.reduce(
+                      (count, batch) => count + batch.candidates.length,
+                      0,
+                    )}
+                    campaignPortraitProgress={campaignPortraitProgress}
+                    portraitGenerationEnabled={gameImageGenerationEnabled}
+                    onGenerateMissingCampaignPortraits={handleGenerateMissingCampaignPortraits}
                   />
                 </Suspense>
               )}

@@ -6,6 +6,7 @@ export type SceneAssetNpcAvatarCandidate = {
   /** Local roster id accepted for GameNpc-shaped inputs; requests emit it as npcId. */
   id?: string;
   npcId?: string | null;
+  characterId?: string | null;
   name: string;
   description: string;
   gender?: string | null;
@@ -69,6 +70,126 @@ function isChatOwnedNpcAvatar(avatarUrl: string | undefined, chatId: string): bo
   }
 }
 
+export const CAMPAIGN_PORTRAIT_BATCH_SIZE = 10;
+export const DEFAULT_CAMPAIGN_PORTRAIT_STYLE_PROMPT =
+  "Cohesive stylized 2.5D game portrait illustration, dimensional painterly shading, clean shapes, expressive features, and a drawn finish; not photorealistic.";
+
+export type CampaignPortraitBatch = {
+  candidates: Array<SceneAssetNpcAvatarCandidate & { npcId: string }>;
+  stylePrompt: string;
+};
+
+export type CampaignPortraitCharacter = {
+  id: string;
+  name: string;
+  description?: string | null;
+  appearance?: string | null;
+  avatarUrl?: string | null;
+};
+
+/** Joins the saved NPC roster and active character cards by stable identity. */
+export function buildCampaignPortraitRosterCandidates(
+  trackedNpcs: SceneAssetNpcAvatarCandidate[],
+  metadataNpcs: SceneAssetNpcAvatarCandidate[],
+  activeCharacters: CampaignPortraitCharacter[],
+  activeCharacterIds: ReadonlySet<string>,
+): SceneAssetNpcAvatarCandidate[] {
+  const byNpcId = new Map<string, SceneAssetNpcAvatarCandidate>();
+  for (const candidate of [...trackedNpcs, ...metadataNpcs]) {
+    const npcId = candidate.npcId?.trim() || candidate.id?.trim();
+    const name = candidate.name.trim();
+    if (!npcId || !name) continue;
+    const previous = byNpcId.get(npcId);
+    byNpcId.set(npcId, {
+      ...previous,
+      ...candidate,
+      id: npcId,
+      npcId,
+      characterId: candidate.characterId?.trim() || previous?.characterId || null,
+      name: previous?.name || name,
+      description: previous?.description || candidate.description || "",
+      gender: candidate.gender ?? previous?.gender ?? null,
+      pronouns: candidate.pronouns ?? previous?.pronouns ?? null,
+      avatarUrl: candidate.avatarUrl || previous?.avatarUrl || undefined,
+    });
+  }
+
+  const linkedCharacterIds = new Set(
+    [...byNpcId.values()].map((candidate) => candidate.characterId?.trim()).filter((id): id is string => !!id),
+  );
+  for (const character of activeCharacters) {
+    if (!activeCharacterIds.has(character.id) || linkedCharacterIds.has(character.id)) continue;
+    byNpcId.set(`party:${character.id}`, {
+      id: `party:${character.id}`,
+      npcId: `party:${character.id}`,
+      characterId: character.id,
+      name: character.name,
+      description: [character.description, character.appearance].filter(Boolean).join("\n\n"),
+      avatarUrl: character.avatarUrl ?? undefined,
+    });
+  }
+  return [...byNpcId.values()];
+}
+
+/** Selects only identified campaign characters without an assigned or linked portrait. */
+export function buildCampaignPortraitBatches(
+  candidates: SceneAssetNpcAvatarCandidate[],
+  avatarLookup: ReadonlyMap<string, string>,
+  stylePrompt: string,
+  linkedAvatarCharacterIds: ReadonlySet<string> = new Set(),
+): CampaignPortraitBatch[] {
+  const idsByName = new Map<string, Set<string>>();
+  for (const candidate of candidates) {
+    const npcId = candidate.npcId?.trim() || candidate.id?.trim();
+    const nameKey = normalizeSceneAssetNameForGeneration(candidate.name);
+    if (!npcId || !nameKey) continue;
+    const ids = idsByName.get(nameKey) ?? new Set<string>();
+    ids.add(npcId);
+    idsByName.set(nameKey, ids);
+  }
+  const groupedById = new Map<string, Array<SceneAssetNpcAvatarCandidate & { npcId: string }>>();
+  for (const candidate of candidates) {
+    const npcId = candidate.npcId?.trim() || candidate.id?.trim();
+    const nameKey = normalizeSceneAssetNameForGeneration(candidate.name);
+    if (!npcId || !nameKey) continue;
+    const group = groupedById.get(npcId) ?? [];
+    group.push({ ...candidate, npcId });
+    groupedById.set(npcId, group);
+  }
+
+  const selected: Array<SceneAssetNpcAvatarCandidate & { npcId: string }> = [];
+  for (const group of groupedById.values()) {
+    const first = group[0];
+    if (!first) continue;
+    const nameKey = normalizeSceneAssetNameForGeneration(first.name);
+    // Conflicting duplicate ids or an assigned avatar on any duplicate suppress the whole identity.
+    if (
+      group.some((candidate) => normalizeSceneAssetNameForGeneration(candidate.name) !== nameKey) ||
+      group.some((candidate) => !!candidate.avatarUrl?.trim()) ||
+      group.some(
+        (candidate) => !!candidate.characterId?.trim() && linkedAvatarCharacterIds.has(candidate.characterId.trim()),
+      )
+    )
+      continue;
+    // Name lookup is safe only when that name uniquely identifies a campaign character.
+    if (
+      !group.some((candidate) => candidate.characterId?.trim()) &&
+      idsByName.get(nameKey)?.size === 1 &&
+      avatarLookup.has(nameKey)
+    )
+      continue;
+    selected.push(first);
+  }
+
+  const batches: CampaignPortraitBatch[] = [];
+  for (let index = 0; index < selected.length; index += CAMPAIGN_PORTRAIT_BATCH_SIZE) {
+    batches.push({
+      candidates: selected.slice(index, index + CAMPAIGN_PORTRAIT_BATCH_SIZE),
+      stylePrompt: stylePrompt.trim() || DEFAULT_CAMPAIGN_PORTRAIT_STYLE_PROMPT,
+    });
+  }
+  return batches;
+}
 export function getMissingBackgroundTag(
   backgroundTag: string | undefined | null,
   manifest: AssetManifestMap,

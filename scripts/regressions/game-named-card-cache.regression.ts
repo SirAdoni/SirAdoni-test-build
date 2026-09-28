@@ -14,13 +14,18 @@ process.env.DATA_DIR = root;
 process.env.FILE_STORAGE_DIR = `${process.env.DATA_DIR}/storage`; // never the live store named in .env
 
 try {
-  const { planNamedCardLayout, layoutNamedCards, NAMED_CARD_FOLD_COUNT } = await import(
-    "../../packages/server/src/services/game/named-card-cache.js"
-  );
+  const {
+    planNamedCardLayout,
+    layoutNamedCards,
+    NAMED_CARD_FOLD_COUNT,
+    NAMED_CARD_FOLD_CHARS,
+    NAMED_CARD_FREEZE_MIN_FOLD_CHARS,
+  } = await import("../../packages/server/src/services/game/named-card-cache.js");
   const { buildGmSystemPromptParts } = await import("../../packages/server/src/services/game/gm-prompts.js");
 
   const card = (id: string, text = `${id} original`) => ({ id, name: id, card: `Name: ${id}\n${text}` });
-  const cachedText = (layout: { stable: Array<{ card: string }> }) => layout.stable.map((entry) => entry.card).join("|");
+  const cachedText = (layout: { stable: Array<{ card: string }> }) =>
+    layout.stable.map((entry) => entry.card).join("|");
 
   // First turn: cache what is there.
   const first = planNamedCardLayout(null, [card("kriva"), card("audrey"), card("danica")]);
@@ -30,15 +35,25 @@ try {
   const baseline = cachedText(first);
 
   // Game Mode rewrites a card: the cached text stays, the new text rides uncached.
-  const rewritten = planNamedCardLayout(first.snapshot, [card("kriva", "keeps Blackbird on hard work"), card("audrey"), card("danica")]);
+  const rewritten = planNamedCardLayout(first.snapshot, [
+    card("kriva", "keeps Blackbird on hard work"),
+    card("audrey"),
+    card("danica"),
+  ]);
   assert.equal(cachedText(rewritten), baseline, "a rewritten card does not touch the cached prompt");
-  assert.deepEqual(rewritten.updates.map((entry) => entry.id), ["kriva"]);
+  assert.deepEqual(
+    rewritten.updates.map((entry) => entry.id),
+    ["kriva"],
+  );
   assert.equal(rewritten.changed, false, "nothing to save while the snapshot is unchanged");
 
   // A card created for someone named long ago would have gone into the middle; it now rides uncached.
   const created = planNamedCardLayout(first.snapshot, [card("roald"), card("kriva"), card("audrey"), card("danica")]);
   assert.equal(cachedText(created), baseline, "a newly named person does not reshuffle the cached cards");
-  assert.deepEqual(created.updates.map((entry) => entry.id), ["roald"]);
+  assert.deepEqual(
+    created.updates.map((entry) => entry.id),
+    ["roald"],
+  );
 
   // Someone leaving the selection (joining the party) stays cached instead of shifting every card after them.
   const dropped = planNamedCardLayout(first.snapshot, [card("kriva"), card("audrey")]);
@@ -102,6 +117,69 @@ try {
   assert.match(references, /old text/u);
   assert.ok(!references.includes("new text"), "updates never enter the cached reference blocks");
   assert.match(parts.dynamic, /<named_character_updates>[\s\S]*new text/u);
+
+  const freeze = (turnKey: number, sessionKey = "session", preserveReplayPrefix = false) => ({
+    sessionKey,
+    turnKey,
+    suffixChars: 0,
+    preserveReplayPrefix,
+  });
+  const frozenStart = planNamedCardLayout(null, [card("frozen", `Old ${"o".repeat(20_000)}`)], {
+    freeze: freeze(0),
+  });
+  const replacementText = `New ${"n".repeat(20_000)}`;
+  let replaySnapshot = frozenStart.snapshot;
+  let replayLayout = frozenStart;
+  for (let turnKey = 1; turnKey <= 4; turnKey += 1) {
+    replayLayout = planNamedCardLayout(replaySnapshot, [card("frozen", replacementText)], {
+      freeze: freeze(turnKey, "session", true),
+    });
+    assert.equal(replayLayout.folded, false, "replay mode keeps each sub-30k update in the tail");
+    assert.equal(replayLayout.updates[0]?.card, card("frozen", replacementText).card, "full update text is retained");
+    replaySnapshot = replayLayout.snapshot;
+  }
+  assert.ok(
+    (replayLayout.snapshot.carried ?? 0) >= NAMED_CARD_FREEZE_MIN_FOLD_CHARS,
+    "replay mode keeps the carried counter even after the legacy cumulative threshold is exceeded",
+  );
+
+  const exactFoldText = "x".repeat(NAMED_CARD_FOLD_CHARS);
+  const exactFold = planNamedCardLayout(frozenStart.snapshot, [{ id: "exact", name: "exact", card: exactFoldText }], {
+    freeze: freeze(1, "session", true),
+  });
+  assert.equal(exactFold.folded, true, "replay mode folds when current updates reach exactly 30k");
+
+  assert.equal(exactFold.stable.find((entry) => entry.id === "exact")?.card, exactFoldText, "fold keeps full text");
+
+  const sessionFold = planNamedCardLayout(frozenStart.snapshot, [card("frozen", replacementText)], {
+    freeze: freeze(1, "next-session", true),
+  });
+  assert.equal(sessionFold.folded, true, "a session change folds even when replay prefixes are preserved");
+  assert.equal(
+    sessionFold.stable.find((entry) => entry.id === "frozen")?.card,
+    card("frozen", replacementText).card,
+    "session fold keeps full card text",
+  );
+
+  let cumulativeSnapshot = frozenStart.snapshot;
+  let cumulativeFold = frozenStart;
+  for (let turnKey = 1; turnKey <= 4; turnKey += 1) {
+    cumulativeFold = planNamedCardLayout(cumulativeSnapshot, [card("frozen", replacementText)], {
+      freeze: freeze(turnKey),
+    });
+    cumulativeSnapshot = cumulativeFold.snapshot;
+    if (cumulativeFold.folded) break;
+  }
+  assert.equal(
+    cumulativeFold.folded,
+    true,
+    "the default still folds when carried characters reach the legacy threshold",
+  );
+  assert.equal(
+    cumulativeFold.stable.find((entry) => entry.id === "frozen")?.card,
+    card("frozen", replacementText).card,
+    "the default cumulative fold keeps full card text",
+  );
 
   console.log("game-named-card-cache regression passed");
 } finally {

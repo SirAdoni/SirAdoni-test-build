@@ -66,6 +66,22 @@ function resetReplayedContent(widget: HudWidget): HudWidget {
   }
 }
 
+function readInitialHudState(metadata: Record<string, unknown>): HudWidget[] | null {
+  const baseline = metadata.gameWidgetInitialState;
+  if (!Array.isArray(baseline)) return null;
+  const valid = baseline.every(
+    (widget) =>
+      typeof widget === "object" &&
+      widget !== null &&
+      typeof (widget as HudWidget).id === "string" &&
+      typeof (widget as HudWidget).type === "string" &&
+      typeof (widget as HudWidget).label === "string" &&
+      typeof (widget as HudWidget).config === "object" &&
+      (widget as HudWidget).config !== null,
+  );
+  return valid ? (baseline as HudWidget[]) : null;
+}
+
 export function restoreBranchHudLists(
   metadata: Record<string, unknown>,
   copiedMessages: Array<{ content?: string | null }>,
@@ -74,16 +90,19 @@ export function restoreBranchHudLists(
   const setup = metadata.gameSetupConfig as { customHudWidgets?: unknown } | null;
   const hasBlueprintWidgets = Array.isArray(blueprint?.hudWidgets);
   const hasSetupWidgets = Array.isArray(setup?.customHudWidgets);
-  const initial = hasBlueprintWidgets
-    ? (blueprint.hudWidgets as HudWidget[])
-    : hasSetupWidgets
-      ? (setup.customHudWidgets as HudWidget[])
-      : Array.isArray(metadata.gameWidgetState)
-        ? (metadata.gameWidgetState as HudWidget[])
-        : [];
+  const initialHudState = readInitialHudState(metadata);
+  const initial =
+    initialHudState ??
+    (hasBlueprintWidgets
+      ? (blueprint.hudWidgets as HudWidget[])
+      : hasSetupWidgets
+        ? (setup.customHudWidgets as HudWidget[])
+        : Array.isArray(metadata.gameWidgetState)
+          ? (metadata.gameWidgetState as HudWidget[])
+          : []);
   let widgets = initial.map((widget) => {
-    const copy = { ...widget, config: { ...widget.config } };
-    return hasBlueprintWidgets ? copy : resetReplayedContent(copy);
+    const copy = { ...widget, config: structuredClone(widget.config) };
+    return hasBlueprintWidgets || initialHudState ? copy : resetReplayedContent(copy);
   });
 
   for (const message of copiedMessages) {

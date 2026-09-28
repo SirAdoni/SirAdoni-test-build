@@ -4947,6 +4947,7 @@ export async function chatsRoutes(app: FastifyInstance) {
             firstOmittedMessage.createdAt as string,
           );
         }
+        // Carry the immutable session-start baseline in settingsToKeep and replay only this cutoff prefix.
         settingsToKeep.gameWidgetState = restoreBranchHudLists(sourceMeta, sourceMessagesToCopy);
       }
       const inheritedSourceEntries = sourceSummaryEntries.filter((entry) => {

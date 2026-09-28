@@ -19,6 +19,10 @@ export function GameSpecialPanels({
   refreshKey,
   onCloseContacts,
   onOpenCharacter,
+  campaignPortraitCount,
+  campaignPortraitProgress,
+  portraitGenerationEnabled,
+  onGenerateMissingCampaignPortraits,
 }: {
   personaId?: string;
   personaStats?: unknown;
@@ -32,6 +36,10 @@ export function GameSpecialPanels({
   refreshKey?: string;
   onCloseContacts: () => void;
   onOpenCharacter: (characterId: string) => void;
+  campaignPortraitCount: number;
+  campaignPortraitProgress: { completedBatches: number; totalBatches: number } | null;
+  portraitGenerationEnabled: boolean;
+  onGenerateMissingCampaignPortraits: (stylePrompt: string) => Promise<{ generated: number; failed: number }>;
 }) {
   const projection = useGameStatusProjection(personaId, personaStats, playerStats);
   return (
@@ -63,6 +71,10 @@ export function GameSpecialPanels({
             open
             onClose={onCloseContacts}
             onOpenCharacter={onOpenCharacter}
+            campaignPortraitCount={campaignPortraitCount}
+            campaignPortraitProgress={campaignPortraitProgress}
+            portraitGenerationEnabled={portraitGenerationEnabled}
+            onGenerateMissingCampaignPortraits={onGenerateMissingCampaignPortraits}
           />
         </Suspense>
       )}

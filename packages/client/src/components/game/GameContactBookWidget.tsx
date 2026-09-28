@@ -7,6 +7,7 @@ import { api } from "../../lib/api-client";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { Modal } from "../ui/Modal";
 import { CharacterPhoto } from "../ui/CharacterPhoto";
+import { DEFAULT_CAMPAIGN_PORTRAIT_STYLE_PROMPT } from "./game-asset-generation-payload";
 import {
   contactCategoryId,
   displayOpinion,
@@ -40,10 +41,15 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onOpenCharacter?: (characterId: string) => void;
+  campaignPortraitCount?: number;
+  campaignPortraitProgress?: { completedBatches: number; totalBatches: number } | null;
+  portraitGenerationEnabled?: boolean;
+  onGenerateMissingCampaignPortraits?: (stylePrompt: string) => Promise<{ generated: number; failed: number }>;
 }
 
 const groupsKey = (campaignKey: string) => `marinara-game-contact-groups:${campaignKey}`;
 const categoriesKey = (campaignKey: string) => `marinara-game-contact-categories:${campaignKey}`;
+const portraitStyleKey = (campaignKey: string) => `marinara-game-contact-portrait-style:${campaignKey}`;
 
 function readJson(key: string): unknown {
   try {
@@ -183,7 +189,18 @@ function CategoryTree({
   );
 }
 
-export function GameContactBookWidget({ chatId, campaignKey, refreshKey, open, onClose, onOpenCharacter }: Props) {
+export function GameContactBookWidget({
+  chatId,
+  campaignKey,
+  refreshKey,
+  open,
+  onClose,
+  onOpenCharacter,
+  campaignPortraitCount = 0,
+  campaignPortraitProgress = null,
+  portraitGenerationEnabled = false,
+  onGenerateMissingCampaignPortraits,
+}: Props) {
   const { t } = useTranslation();
   const [groups, setGroups] = useState<Record<string, string[]>>({});
   const [categories, setCategories] = useState<ContactCategory[]>([]);
@@ -191,6 +208,9 @@ export function GameContactBookWidget({ chatId, campaignKey, refreshKey, open, o
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newCategoryParent, setNewCategoryParent] = useState("");
+  const [portraitStyle, setPortraitStyle] = useState(DEFAULT_CAMPAIGN_PORTRAIT_STYLE_PROMPT);
+  const [portraitGenerationBusy, setPortraitGenerationBusy] = useState(false);
+  const [portraitGenerationMessage, setPortraitGenerationMessage] = useState("");
   const contactsQuery = useQuery({
     queryKey: ["game-contact-book", chatId, refreshKey],
     queryFn: () => api.get<ContactBookResult>(`/game/${encodeURIComponent(chatId)}/contacts`),
@@ -206,6 +226,14 @@ export function GameContactBookWidget({ chatId, campaignKey, refreshKey, open, o
     setGroups(state.groups);
     setCategories(state.categories);
   }, [campaignKey, t]);
+  useEffect(() => {
+    try {
+      setPortraitStyle(localStorage.getItem(portraitStyleKey(campaignKey)) || DEFAULT_CAMPAIGN_PORTRAIT_STYLE_PROMPT);
+    } catch {
+      setPortraitStyle(DEFAULT_CAMPAIGN_PORTRAIT_STYLE_PROMPT);
+    }
+    setPortraitGenerationMessage("");
+  }, [campaignKey]);
   const result = contactsQuery.data ?? { contacts: [], coverage: { complete: true, pendingSessions: 0 } };
   const visible = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
@@ -257,6 +285,38 @@ export function GameContactBookWidget({ chatId, campaignKey, refreshKey, open, o
     const removed = result.removed;
     if (removed.has(selectedCategory)) setSelectedCategory("all");
     if (removed.has(newCategoryParent)) setNewCategoryParent("");
+  };
+  const savePortraitStyle = (value: string) => {
+    setPortraitStyle(value);
+    try {
+      localStorage.setItem(portraitStyleKey(campaignKey), value);
+    } catch {
+      // Keep the edit for this view when browser storage is unavailable.
+    }
+  };
+  const generateMissingPortraits = async () => {
+    if (
+      !onGenerateMissingCampaignPortraits ||
+      !portraitGenerationEnabled ||
+      campaignPortraitCount <= 0 ||
+      portraitGenerationBusy ||
+      campaignPortraitProgress !== null
+    )
+      return;
+    setPortraitGenerationBusy(true);
+    setPortraitGenerationMessage("");
+    try {
+      const result = await onGenerateMissingCampaignPortraits(portraitStyle);
+      setPortraitGenerationMessage(t("ui.game.contactBook.portraitGeneration.success", result));
+    } catch (error) {
+      setPortraitGenerationMessage(
+        t("ui.game.contactBook.portraitGeneration.failure", {
+          error: error instanceof Error && error.message ? error.message : t("ui.game.contactBook.retry"),
+        }),
+      );
+    } finally {
+      setPortraitGenerationBusy(false);
+    }
   };
   if (contactsQuery.isPending)
     return (
@@ -462,6 +522,53 @@ export function GameContactBookWidget({ chatId, campaignKey, refreshKey, open, o
         <p role="status" className="mb-3 text-sm text-[var(--muted-foreground)]">
           {t("ui.game.contactBook.coveragePending")}
         </p>
+      )}
+      {onGenerateMissingCampaignPortraits && (
+        <section className="mb-3 space-y-2 rounded-xl border border-[var(--border)] bg-[var(--sidebar)] p-3">
+          <label htmlFor="campaign-portrait-style" className="block text-sm font-medium">
+            {t("ui.game.contactBook.portraitGeneration.styleLabel")}
+          </label>
+          <textarea
+            id="campaign-portrait-style"
+            value={portraitStyle}
+            onChange={(event) => savePortraitStyle(event.target.value)}
+            maxLength={1000}
+            rows={3}
+            className="w-full resize-y rounded-lg border border-[var(--border)] bg-transparent px-3 py-2 text-sm"
+            aria-describedby="campaign-portrait-style-hint"
+          />
+          <p id="campaign-portrait-style-hint" className="text-xs text-[var(--muted-foreground)]">
+            {t("ui.game.contactBook.portraitGeneration.styleHint")}
+          </p>
+          <button
+            type="button"
+            onClick={() => void generateMissingPortraits()}
+            disabled={
+              campaignPortraitCount <= 0 ||
+              !portraitGenerationEnabled ||
+              portraitGenerationBusy ||
+              campaignPortraitProgress !== null
+            }
+            className="min-h-11 rounded-lg bg-[var(--primary)] px-3 py-2 text-sm font-medium text-[var(--primary-foreground)] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {t("ui.game.contactBook.portraitGeneration.generateMissing", { count: campaignPortraitCount })}
+          </button>
+          {!portraitGenerationEnabled && (
+            <p className="text-xs text-[var(--muted-foreground)]">
+              {t("ui.game.contactBook.portraitGeneration.unavailable")}
+            </p>
+          )}
+          {campaignPortraitProgress && (
+            <p role="status" className="text-sm text-[var(--muted-foreground)]">
+              {t("ui.game.contactBook.portraitGeneration.progress", campaignPortraitProgress)}
+            </p>
+          )}
+          {portraitGenerationMessage && (
+            <p role="status" className="text-sm text-[var(--muted-foreground)]">
+              {portraitGenerationMessage}
+            </p>
+          )}
+        </section>
       )}
       {content}
     </Modal>
